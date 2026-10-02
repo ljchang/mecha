@@ -142,6 +142,19 @@ pub struct Source {
 }
 
 impl Source {
+    /// When the chat began, as RFC 3339 UTC, read from its id: a session id
+    /// starts with its UTC start (`session::new_id`). `None` for an id that
+    /// does not, so a caller falls back rather than invents.
+    pub fn chat_began(&self) -> Option<String> {
+        let stamp = self.chat.get(..15)?;
+        chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M%S")
+            .ok()
+            .map(|t| {
+                t.and_utc()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            })
+    }
+
     fn check(&self) -> Result<()> {
         if self.chat.trim().is_empty() {
             bail!("a memory record needs the chat it came from");
@@ -218,6 +231,24 @@ pub struct Fact {
     pub replaces: Option<String>,
 }
 
+/// When a record was said, which is what a reader dates it by: the time it
+/// names as true from, else the start of the chat it came from, and only
+/// then the night it was written. Dated by the write, a fever from Tuesday
+/// read on Friday as Friday's news (2026-10-02, the first real night).
+fn said_at(valid_from: Option<&str>, source: &Source, ingested_at: &str) -> String {
+    valid_from
+        .map(str::to_owned)
+        .or_else(|| source.chat_began())
+        .unwrap_or_else(|| ingested_at.to_owned())
+}
+
+impl Fact {
+    /// See [`said_at`].
+    pub fn said_at(&self) -> String {
+        said_at(self.valid_from.as_deref(), &self.source, &self.ingested_at)
+    }
+}
+
 /// An episode to write (§9.2).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewEpisode {
@@ -275,6 +306,26 @@ pub struct SharedFact {
     pub valid_to: Option<String>,
     pub ingested_at: String,
     pub shared_at: String,
+}
+
+impl SharedFact {
+    /// When the original was said, as [`Fact::said_at`]; never when it was
+    /// shared, which is the owner's act, not the fact's date.
+    pub fn said_at(&self) -> String {
+        said_at(self.valid_from.as_deref(), &self.source, &self.ingested_at)
+    }
+}
+
+impl Episode {
+    /// When the conversation happened: its end, its start, else the start of
+    /// the chat — a stretch past the first turn has no start of its own —
+    /// and only then the night it was written.
+    pub fn said_at(&self) -> String {
+        self.ended_at
+            .clone()
+            .or_else(|| self.started_at.clone())
+            .unwrap_or_else(|| said_at(None, &self.source, &self.ingested_at))
+    }
 }
 
 /// What [`forget_chat`] removed.
@@ -957,7 +1008,7 @@ impl Memory {
         Ok(ep)
     }
 
-    /// Facts in one table: pinned first, then newest first.
+    /// Facts in one table: pinned first, then the most recently said first.
     pub fn facts(&self, table: Table, filter: Filter) -> Result<Vec<Fact>> {
         let (filter_sql, binds) = filter.sql();
         let sql = format!(
@@ -966,7 +1017,12 @@ impl Memory {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| fact_of(table, r))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut out: Vec<Fact> = rows.collect::<rusqlite::Result<_>>()?;
+        // By when it was said, as `episodes` is: a budget cuts in this order,
+        // so a fact said long ago but written tonight must not crowd out one
+        // said since (review of #514).
+        out.sort_by_cached_key(|f| (std::cmp::Reverse(f.pinned), std::cmp::Reverse(f.said_at())));
+        Ok(out)
     }
 
     /// Episodes, pinned first, then the most recent chat first.
@@ -978,7 +1034,11 @@ impl Memory {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(binds), episode_of)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut out: Vec<Episode> = rows.collect::<rusqlite::Result<_>>()?;
+        // By when it happened, which the SQL cannot see for a stretch dated
+        // by its chat's id; stable, so the uid order breaks ties.
+        out.sort_by_cached_key(|e| (std::cmp::Reverse(e.pinned), std::cmp::Reverse(e.said_at())));
+        Ok(out)
     }
 
     /// One fact, wherever it lives.
@@ -1378,11 +1438,7 @@ impl Memory {
             match kind {
                 Recallable::Episodes => {
                     for e in self.episodes(Filter::Recallable)? {
-                        let date = e
-                            .ended_at
-                            .clone()
-                            .or(e.started_at.clone())
-                            .unwrap_or(e.ingested_at.clone());
+                        let date = e.said_at();
                         let mut text = e.summary.clone();
                         if !e.open_threads.is_empty() {
                             text.push_str(&format!(" (Left open: {}.)", e.open_threads.join("; ")));
@@ -1401,13 +1457,14 @@ impl Memory {
                 }
                 Recallable::Facts(t) => {
                     for f in self.facts(*t, Filter::Recallable)? {
+                        let date = f.said_at();
                         pool.insert(
                             f.uid.clone(),
                             Recollection {
                                 uid: f.uid,
                                 kind: *kind,
                                 text: f.text,
-                                date: f.ingested_at,
+                                date,
                                 origin: f.origin,
                             },
                         );

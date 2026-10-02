@@ -33,6 +33,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mecha serve` restarts, and on unified memory it only moved the weights
   into the server's process memory.
 
+- **See and edit what a persona remembers.** A persona's editor has a
+  Memories tab: its conversations, what it knows about itself and about you,
+  and anything waiting for your approval, each with the day it was said.
+  Keep what is waiting, edit a fact's wording, pin, share a fact about you
+  with everyone or a group, or forget something for good.
+
+- **The uncensored Qwen3.6 model is about 40% faster.** Its download lacks
+  the multi-token-prediction head that lets production draft ahead;
+  `scripts/mtp-graft.py` copies the head from production's file, and the
+  router speculates with it (99.8 against 69.9 tok/s, one stream; the
+  router's four slots are unmeasured). Without the grafted file the router
+  serves the model as before and prints the command that builds it. If four
+  slots turn out slower, removing the two `SPEC` lines from the preset in
+  `start-router.sh` turns speculation off again.
+- **The hardware page covers a separate GPU, and every model beside the
+  chat model.** Each memory tier now has two columns — unified memory, and a
+  graphics card with system RAM beside it — and a new *Beside the chat model*
+  table gives what embeddings, OCR, layout, image generation and the three
+  voice models cost on the GB10, whether each holds its memory always, on
+  demand or per request, and where every number comes from. Only measured
+  cells say measured.
 - **A persona's voice is picked in its settings.** The settings form has a
   Voice field listing the voices the voice worker has, so `voice = "…"` no
   longer has to be typed into `persona.toml`. A save is checked against the
@@ -671,6 +692,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its idle footprint, and the old figure counted only the GPU side. A server
   that has already loaded the model needs 12 GB, so a second picture soon
   after the first is no longer refused for memory it would not use.
+
+- **A persona's memories are dated by when they were said.** Everything a
+  persona remembered was dated by the night it was written, so something you
+  mentioned on Tuesday read as Friday's news. Memories now carry the day of
+  the conversation they came from, in your timezone, and "recent" means
+  recently said.
+
+- **The knowledge-graph page names the embedder mecha-graph actually uses**:
+  `harrier-oss-v1-0.6b` on a llama-server at `:8081`, launched by
+  `scripts/llama/mecha-embed-server` — not ollama with `nomic-embed-text`,
+  which mecha-graph dropped in 0.1.1. The page says plainly that the
+  repository has no installer that sets the server up from nothing.
 
 - **Voice expressiveness settings the speech model ignored are no longer
   sent as if they worked.** The live model, Chatterbox Turbo, drops

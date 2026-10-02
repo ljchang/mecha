@@ -35,7 +35,13 @@
 > voices_dir` is a one-release alias, and the two serve flags override per
 > run), and `[personas] crisis_cooldown_minutes` is fully the owner's to set
 > (the owner's ruling — the cooldown is the window in which a further hit
-> does *not* re-pause, so longer is weaker). Steps 6–8 are unbuilt. The
+> does *not* re-pause, so longer is weaker). **Step 6 is split in two**:
+> 6a — `hardware.md` gains F5's separate-GPU
+> column and a *Beside the chat model* table of every feature's model, cost,
+> residency and evidence, measured on the GB10 (each row dated), and the graph
+> page names the embedder mecha-graph uses — is built; 6b, the
+> `Recommendation` rows, `--probe` and the test holding the page to them, is
+> next, and parses that table. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -45,7 +51,9 @@
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two
 > columns (unified memory, and a separate GPU beside system RAM). Step 8 (how
 > to add a feature, in `ARCHITECTURE.md` and `CLAUDE.md`) is the owner's
-> addition.
+> addition. **Step 7 was redesigned on 2026-10-02** (§10, rulings F7–F10):
+> enabling a feature offers to install its sidecar software and a chosen
+> model, from installers that ship inside the binary.
 
 **2026-09-30.** One question: *how does a new user install only the parts of
 mecha they want — and how do `mecha setup`, the web app, the CLI, the API and
@@ -63,7 +71,9 @@ and, a turn later: *"Web should also be optional feature."*
 
 §1 is what exists today, read from `origin/main` at `259231d6`. §2 is how
 eight other systems handle the same problem, with sources. §3–§6 are the
-design. §7 is the rulings. §8 is what this deliberately does not do.
+design. §7 is the rulings. §8 is what this deliberately does not do. §9 is
+the build order, and §10 (2026-10-02) is installing what a feature runs,
+with step 7's own build order (§10.6).
 
 ---
 
@@ -79,7 +89,8 @@ design. §7 is the rulings. §8 is what this deliberately does not do.
 | What does this design add? | One closed `Feature` registry in `mecha-core`, read by six consumers: setup, `mecha features`, `/api/features`, route guards, CLI guards and tool registration | §3–§5 |
 | What turns a feature on? | A bool in one `[features]` table, global file only, every feature listed so a user can see what exists (F1, ruled). A settings table is only settings; enabled without them is *unready*, shown with the fix | §5 |
 | What does an off feature look like? | Hidden in the web app, 404 `feature_off` from its routes, one sentence and `mecha features enable <feature>` from its CLI verbs, absent from the tool list. A feature that is *configured but not answering* is **never** hidden | §4.2 |
-| Model recommendations? | Yes, as data on each feature: model, download command, memory, and whether it was **measured** or is arithmetic. Printed, never written into config | §6 |
+| Model recommendations? | Yes, as data on each feature: model, pinned source, memory, and whether it was **measured** or is arithmetic. Chosen and downloaded in setup; never written into config | §6, §10.4 |
+| Does enabling a feature install what it runs? | Yes, on one yes (F7): the sidecar software and a chosen model, from installers inside the binary; what already runs is left alone (F8); llama.cpp is a pin that moves, measured before it is promoted (F9) | §10 |
 
 ---
 
@@ -149,7 +160,7 @@ machine runs*, never as advice:
 
 | Feature | Model | Where it is written down |
 |---|---|---|
-| Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`. **Drift:** `website/docs/features/memory/graph/index.md` still says ollama with `nomic-embed-text` |
+| Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`; `website/docs/features/memory/graph/index.md` names it as of step 6a (#512) |
 | OCR | PaddleOCR-VL 1.6 (GGUF + mmproj) | a comment in `scripts/llama/install.sh`, `DOCUMENT-EXTRACTION-DESIGN.md` §5–6 |
 | Layout | `PP-DocLayoutV3.onnx` | `scripts/layout/install.sh` |
 | Image generation | Qwen-Image 2.1 Q4, `qwen3vl_8b_w4a8`, the 2.1 VAE | `ImageConfig` defaults, `features/tools/image-generation.md` (~15 GB peak, measured) |
@@ -575,7 +586,8 @@ memory from a page load. So:
   `?probe=1` could use exactly the load-free probes named below and nothing
   else; it is not in this design. Its states are `Off`, `Blocked`, `Unready`, `On` and `Unknown` —
   every state but `Down`, which only a probe can produce.
-- `mecha features --probe` and `mecha setup` may probe, using only calls that
+- `mecha features --probe`, `mecha setup` and `mecha features enable` (§10.2
+  item 4's provided-detection) may probe, using only calls that
   load nothing: `served_props` / `GET /models` against the router, the
   systemd unit state for a socket-activated server, ComfyUI's
   `/system_stats` (to be confirmed load-free on this install before step 6
@@ -882,7 +894,7 @@ pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
     pub memory: Memory,           // the column and its cost, as one value (F5)
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
-    pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
+    pub source: Source,           // repository, file(s), revision, sha256, size (§10.4)
     pub residency: Residency,     // Resident | OnDemand | PerRequest
 }
 
@@ -909,11 +921,12 @@ pub enum Peak {
 
 Rules:
 
-- **Printed, never written.** `mecha setup <feature>` prints the row for this
-  machine's tier and the download command. It does not write a model name
-  into config: the config value is read back from the running server
-  (`mecha setup --write`), per `onboarding.rs`'s rule that setup never writes
-  down a number the user merely believes.
+- **Fetched on a yes, never written.** `mecha setup <feature>` shows the rows
+  for this machine's tier and downloads the one chosen (§10.4, the owner's
+  ask of 2026-10-02; this line first said *printed*). It does not write a
+  model name into config: the config value is read back from the running
+  server (`mecha setup --write`), per `onboarding.rs`'s rule that setup never
+  writes down a number the user merely believes.
 - **Evidence on every row.** Only the GB10 has measurements. Rows for other
   tiers are `Peak::Arithmetic` (from `hardware.md`'s formula) or
   `Peak::Unmeasured` — one enum, so a number without a source or a source
@@ -934,8 +947,13 @@ Rules:
   that does not fit the card and fail an OCR server that fits host RAM with
   room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
-  PDF arrives; an image generation borrows ~15 GB for its duration (and
-  `[image] min_available_mb` already refuses one that would not fit).
+  PDF arrives, and image generation is the same class — mecha asks ComfyUI
+  to free its models after `[image] unload_after_secs` (600) — with one leak
+  the row must carry: the timer lives in the process that drew the picture,
+  so a one-shot `mecha run` or a serve restart inside the window leaves
+  ~12 GiB held (measured on 2026-10-02: 11.9 GiB nine hours after a picture
+  drawn five minutes before a serve restart). `[image] min_available_mb`
+  refuses a start that would not fit.
 - **`hardware.md` is generated from the rows, or checked against them.** A
   test that fails when the page and the registry disagree ends the drift
   that §1.3 found.
@@ -950,7 +968,7 @@ genuinely not known yet, and the output must say so rather than guess.
 
 ## 7. Rulings
 
-| # | Decision | Ruling (2026-09-30) |
+| # | Decision | Ruling (F1–F6 2026-09-30; F7–F10 2026-10-02) |
 |---|---|---|
 | **F1** | What turns a feature on | **A `[features]` table of bools** in the global config, every feature listed. The owner, overruling the doc's recommendation of table presence: *"The problem with table existing is that users need to know what features are available. I feel like a registry or having to toggle bools is a better design."* §5's three rules are what keep the bool from being a second source of truth |
 | **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
@@ -958,6 +976,10 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F4** | What an off route returns | **404** with `{"error":"feature_off","feature":"image","fix":"mecha features enable image"}`, only behind `owner_guard` (§4.2 item 4). 503 stays for `Unready` |
 | **F5** | Recommendation tiers | **`hardware.md`'s four — 16, 32, 64 and 128 GB — in two columns**: unified memory, and a separate GPU beside system RAM, where the tier is the GPU's memory and the auxiliary models (OCR, embeddings, speech to text) may run from system RAM or the CPU. One page and one table agree on the tiers; the column is what keeps a 24 GB GPU with 64 GB of RAM from being steered as a 24 GB machine. Only the 128 GB unified row is measured (this GB10); every other cell says `Arithmetic` or `Unmeasured`. Ruled by the owner 2026-09-30 |
 | **F6** | Existing installs, when `[features]` arrives | **`mecha setup` offers.** It detects a feature in use (an `[image]` table, a mail `[[mcp]]` entry, a non-empty persona store, an installed voice unit file) and offers to write its bool — the same predicate as the upgrade notice (§4.2), so the two cannot disagree. **Which states count** (owner, 2026-09-30): `On` and `Unready`, the latter named with its reason ("no account is authorised yet"); `Unknown` never, or the offer would write a bool off a store it could not read. Never grandfathered as on: that is a second source of truth. On this machine the deploy that ships the table writes it by hand, in the same change, so nothing disappears |
+| **F7** | When a feature's sidecars install | **Enabling offers it.** `mecha features enable <id>` (and `mecha setup`) shows what it will download and install, with sources and sizes, and installs on one yes; `--no-install` flips the switch only. Off never uninstalls; `mecha setup <feature> --remove` does. Ruled by the owner 2026-10-02 (§10.2 item 3) |
+| **F8** | This machine's hand installs | **Detected and left alone.** A sidecar whose port answers, or whose unit mecha did not write, is *provided*; nothing is installed over it and no file mecha did not write is touched. Moving this box onto managed copies is a later, explicit step. Ruled by the owner 2026-10-02 (§10.2 item 4) |
+| **F9** | How llama.cpp is obtained | **A prebuilt release when one matches, else a build from the pinned commit.** Prebuilt assets are verified by sha256; the build checks the toolchain first. Ruled by the owner 2026-10-02, with the owner's observation that updating it often improves performance — so `--upgrade` measures before it promotes (§10.3) |
+| **F10** | Trusting an engine newer than the shipped pin | **Only for a tag the owner confirmed at a terminal.** `--to <tag>` names it; bare `--upgrade` prints the newest tag and asks for confirmation of that tag before downloading. For a confirmed tag the release API's sha256 over TLS is trusted (and, for a build, the commit GitHub names for the tag) — the one exception to item 1's reviewed-pin rule, and only on this path. Ruled by the owner 2026-10-02 (§10.3) |
 
 ---
 
@@ -981,8 +1003,10 @@ genuinely not known yet, and the output must say so rather than guess.
   everyone. Not before.
 - **Compile-time cargo features** for a smaller binary (§5.1): the weight is
   in services and models, not in the binary.
-- **Downloading models, or detecting the machine's hardware beyond total and
-  available memory.** Setup prints the command; the user runs it.
+- **Detecting the machine's hardware beyond memory and the GPU's compute
+  capability.** (Downloading models was here until the owner's ask of
+  2026-10-02; §10 replaces it. The compute capability is what §10.3's build
+  fallback needs.)
 - **macOS and Windows install paths.** §1.4's units are Linux user units;
   what replaces them elsewhere is its own question.
 - **The harness levers** (§3). They already have their own closed set.
@@ -1060,12 +1084,19 @@ Each step is a PR, and each leaves every surface working.
    gains F5's discrete column, with every discrete cell marked `Arithmetic`
    or `Unmeasured` until someone measures one. The Mac note that "unified
    memory has no separate GPU pool" stays: it is scoped to Macs and still
-   true (#435). Fix the embeddings page.
-7. **Installers**: one `scripts/<feature>/install.sh` per feature that needs a
-   service, each with `--remove`, copying rather than symlinking (the
-   `scripts/llama/install.sh` pattern), with no `/home/<user>` or checkout
-   path in any unit. The router, ComfyUI and Chatterbox get units in the repo
-   for the first time.
+   true (#435). Fix the embeddings page. (Split in #512: 6a is the page,
+   6b the rows, the probe and the test.) The rows carry their pinned
+   `Source` (§10.4), not a download command, so 7a's downloader can fetch
+   what setup lists.
+7. **Installers** — §10, which replaced this step's first form (one
+   `scripts/<feature>/install.sh` per feature) on 2026-10-02: a user who ran
+   `cargo install` has no `scripts/`, so installers ship in the binary,
+   enabling a feature offers them, and they fetch the sidecar software and a
+   chosen model. Split 7a–7f (§10.6). What carries over is the intent of
+   "copy, never symlink": **nothing mecha writes points into a checkout**,
+   and no unit names `/home/<user>`. A link *between* two mecha-owned
+   directories under `~/.mecha/sidecars/` is allowed — it is how an engine
+   is promoted and rolled back (§10.3).
 8. **How to add a feature, written down** — the owner, 2026-09-30: *"we
    should make sure we document design pattern for adding new features in
    docs and Claude.md."* A new `docs/ARCHITECTURE.md` §Features holds the
@@ -1119,3 +1150,398 @@ Each step is a PR, and each leaves every surface working.
   passes the first test.
 - `/api/features` opens no socket: a test with a listener on the OCR port
   asserts that it was never connected to.
+
+---
+
+## 10. Installing what a feature runs
+
+**2026-10-02.** The owner, after step 6a:
+
+> "if possible, i would also like to have all of the sidecar software
+> installed if the feature is enabled. Not sure if this is needed for llama
+> server, comfyui, python, or anything else we are using. It would be great
+> if it was really easy for a user to install and get started, especially
+> with us giving default models. Part of the setup process could be
+> selecting from the recommended models and downloading it."
+
+and, on llama.cpp: *"I'm finding often updating it improves our model
+performance."* This replaces step 7's shell scripts and reverses two lines
+of this design: §8's "downloading models" and §6's "printed, never written"
+(the model is now fetched on a yes; the *config* rule — never write down a
+number the user merely believes — stands). Rulings F7–F10 (§7) settle the
+four decisions it raised; F10 came from this section's own review.
+
+### 10.1 What a clean machine cannot reproduce today
+
+Inventoried on 2026-10-02 against this box. A **sidecar** is a program or
+model, not mecha's own, that a feature needs running.
+
+| Sidecar | Features | How it got here | In the repo |
+|---|---|---|---|
+| llama.cpp (`llama-server`) | the chat model (every feature), `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md`'s upgrade bullet named `~/llama.cpp/build/bin` where the stub's RUNPATH is `~/llama.cpp-next/build/bin` (corrected there in this change) |
+| the router and its chat model | every feature | `llama-local.service`, box only; its drop-in runs the *working tree's* `scripts/start-router.sh` | the launcher; no unit; `start-router.sh` prints an `hf download` line when the model is missing |
+| embeddings server | `graph`, persona file search | the always-on unit is box only; `install-embed.sh` converts it to on demand and refuses to run without it | the launcher and the on-demand units |
+| OCR server | `ocr` | `scripts/llama/install.sh` | **yes** — units, launcher, `--remove`; the model is a comment, unpinned |
+| layout | `layout` | `scripts/layout/install.sh` | **yes** — hash-pinned requirements, model pinned by revision and sha256 |
+| ComfyUI, ComfyUI-GGUF, three model files | `image` | `git clone` at `88ab4a06` and `6ea2651`, a venv with torch cu130; downloads in a box-local `dl-logs/download.sh` | file names only; no unit, no requirements, no URLs |
+| voice venv (pipecat, sherpa-onnx) and Parakeet | `voice`, `dictate`, `calls` | `python3 -m venv`, unpinned; the Parakeet tarball by hand | the servers' source; units that name `/home/ljchang` |
+| Chatterbox | `calls`, read-aloud | a Docker image built by hand from `nvcr.io/nvidia/pytorch`, recipe in prose (`VOICE-RESEARCH.md`), mounting the live checkout | the server's source only |
+
+Only layout is reproducible from the repository, and **none of it is
+reachable by a user who ran `cargo install mecha-cli`**: they have no
+`scripts/` directory. That one fact decides the shape below.
+
+### 10.2 The design
+
+1. **A closed `Sidecar` registry in `mecha-core`, beside `Feature`.** Each
+   entry names the features that need it, the port and health check that
+   prove it is running, its install method, its disk size, and its sources —
+   every one pinned: a release asset by a sha256 a reviewer read and
+   committed (GitHub's per-asset `digest` is how that pin is *authored*,
+   never what is trusted at install time — that is F10's exception alone),
+   a git commit, a Hugging Face file by revision and sha256, a
+   requirements lock with `--require-hashes`. A source enters only by a
+   reviewed change to the binary, like a feature (§8): no URL from config,
+   a project file, or the model.
+2. **Installers ship inside the binary.** Unit templates, launchers and lock
+   files are `include_str!`'d and written out by `mecha setup`; units use
+   `%h` and name no checkout. What runs is always the written copy, never a
+   working tree's file (the 2026-08-20 incident `mecha-embed-server`'s
+   header records). Payloads (venvs, clones, engine builds) live under
+   `~/.mecha/sidecars/<id>/`; a manifest there records every file mecha
+   wrote with its hash, which is what `--remove` removes and what an
+   upgrade may replace.
+3. **Enable offers the install (F7).** `mecha features enable image` prints
+   the plan — each sidecar with its source and size, the model choice (10.4),
+   the total download and disk — and installs on one yes; `--no-install`
+   only flips the switch, and **answering no to the plan writes nothing** —
+   the feature stays as it was, with `--no-install` named for an owner who
+   wants the switch without the download. The switch is written **after** a
+   successful
+   install and its health check — a check that belongs to installing, never
+   to enabling, so a provided sidecar (item 4) reaches the switch without
+   one and nothing is woken. A failed download leaves the feature as it
+   was with the command that resumes, never `Unready` with a half-written
+   tree. `mecha setup` offers the same plan per feature. **A part's
+   sidecars ride its parent's plan**, each as its own choice: a part has no
+   bool and `enable` refuses a part id (§4.2), so `mecha features enable
+   documents` offers the OCR server and the layout model separately, and
+   `enable voice` offers Parakeet (`dictate`), the worker and Chatterbox
+   (`calls`). Later, `mecha setup <part>` — which already resolves a part to
+   its parent (`switch_owner`) — offers that part's sidecars alone. Switching a feature
+   off never uninstalls; `mecha setup <feature> --remove` does, and keeps
+   downloaded models unless `--models` is given, because the cache is shared.
+   Even then it keeps any model file another enabled feature has claimed —
+   **or could use**: any file that any `Recommendation` row of any switched-on
+   feature names, and the chat model's files always, since every feature
+   needs it. Over-keeping is the safe direction, because a switch can be on
+   with no claim behind it (`--no-install`, F6's offer, a feature
+   re-enabled after a failed install). It says which files it kept and why,
+   so removing one feature never breaks another. **A claim
+   is a manifest record, not a written file**: when setup resolves a
+   feature's model — downloaded, found already in the cache, or a path the
+   owner brought — it records `(feature, row, file)`, so a model mecha did
+   not download (item 4 prices it at zero) is still claimed by the feature
+   that uses it. Without the claim, the order of enablement would decide
+   whether a shared file survives. The claim is setup's own record and
+   writes nothing into config, so §6's rule stands.
+   Installing runs only from a terminal: the web app still shows the command
+   and never runs it (§8), and no tool exposes it to a model. **Without a
+   tty, nothing installs and nothing is silently skipped**: `features enable`
+   refuses with the `--no-install` hint (which still writes the switch, as
+   today), and `setup engine --upgrade` refuses whether or not `--to` is
+   given — a flag typed into a trigger, a hook or `ssh host …` is not the
+   owner at a terminal, which is what F10's trust rests on. That is a
+   deliberate change for scripted callers of `features enable`, which today
+   is a plain config write; none in the repo calls it. **An install that
+   succeeds but fails its health check** leaves the switch unwritten and
+   says so — installed, not answering, with the check's error and the
+   command to retry it — so a manifest with the feature off is never a
+   silent half state.
+4. **What is already running is provided, not installed (F8).** Before
+   planning, each sidecar is asked with **§4.3's load-free probes only, by
+   install method** — never a uniform `/health` on its port, because the
+   first connection to a socket-activated server *is* its cold start: the
+   systemd unit state for the on-demand servers (OCR, embeddings), whose
+   socket unit existing and being enabled is enough; `served_props` /
+   `GET /models` for the router; ComfyUI's `/system_stats`, which §4.3
+   requires to be confirmed load-free before step 6 relies on it (6b's
+   `--probe` is the first reader; 7e re-confirms it on the installed
+   ComfyUI); the voice
+   servers' unit state. **An idle-stopped sidecar is provided, never
+   absent** — a probe that read it as absent would plan an install over it,
+   the llama-embed incident of 2026-08-19 that `llama-ocr.socket`'s header
+   records. **Three things make a sidecar *provided***, and the plan
+   installs nothing for it: a running answer; a unit of that name mecha did
+   not write; or **a payload on disk, outside `~/.mecha/sidecars/`, that
+   mecha's manifest does not claim** — a hand-built clone or venv, a Docker
+   image of the sidecar's name, an engine tree. Mecha's own tree is never
+   provided: the manifest row is written **before** the first byte, marked
+   `incomplete` until the health check passes, so an interrupted install
+   reads as *resumable* — with the command that resumes it — never as
+   someone else's install. The third is what covers a stopped sidecar with no unit
+   (ComfyUI here) and one with no probe at all (Chatterbox, a container).
+   Models are the same: a recommended model the hub resolver (item 6)
+   already finds **and whose sha256 matches the row's** is priced at zero in
+   the plan's download total; one that is present but does not match — a
+   truncated or different file — is neither provided nor handed to a
+   launcher, and the plan offers to fetch it. A file mecha
+   did not write is never overwritten. On this machine every sidecar is
+   provided, so setup installs nothing here. Moving this box onto managed
+   copies is a separate, explicit step, later, and its first target is named:
+   `llama-local.service`, whose drop-in runs the working tree's
+   `scripts/start-router.sh` — the 2026-08-20 class item 2 exists to end.
+5. **Python through `uv`.** One pinned `uv` binary (sha256) under
+   `~/.mecha/sidecars/uv/` when the machine lacks one; every venv is created
+   by it from a hash-locked requirements file per platform, with its own
+   Python, so a system Python's version is never a requirement. Torch-heavy
+   sidecars (ComfyUI, Chatterbox) carry one lock per accelerator (CUDA x64,
+   CUDA arm64, Apple, CPU).
+6. **Models download natively, resumable and verified.** Rust fetches the
+   pinned file from Hugging Face's resolve URL into the standard cache
+   layout, through **one hub resolver** that the unit templates and launchers
+   share, so the download and the launcher cannot look in different places
+   (a verified download the launcher then calls missing). Its order is
+   `HF_HUB` (mecha's own, which `start-router.sh` and the embed launcher
+   read today), then the `hf` CLI's `HF_HUB_CACHE`, then `HF_HOME/hub`, then
+   `~/.cache/huggingface/hub` — the `hf` CLI reads the middle two and not the
+   first, and it is still how layout's model and the router's missing-model
+   hint arrive, so with `HF_HOME` set today the two already disagree. 7a
+   brings the launchers onto the resolver's order. It resumes a partial
+   file, and refuses one whose sha256 differs — no `hf`
+   CLI and no Python needed for a llama-only feature.
+
+### 10.3 The engine, and keeping it current (F9)
+
+llama.cpp lands ~25 commits a day with a release per merge (`b11347` on
+2026-10-02, 161 commits after this box's build of 2026-09-26), and the owner
+measures that updates help. So the engine is a **pin that moves**, never a
+pin that sits:
+
+- **Getting it:** an official release asset when one matches the OS,
+  architecture and backend — the release carries `ubuntu-cuda-13.4-arm64`,
+  `-x64`, `macos-arm64`, Vulkan and CPU builds — verified by its sha256;
+  otherwise a build from the pinned commit, after a toolchain check (cmake,
+  a compiler, `nvcc` and the GPU's compute capability from `nvidia-smi`)
+  that names what is missing. **Whether the arm64 CUDA asset runs on the
+  GB10's sm_121 is unmeasured** — 7b's first measurement; this box was
+  built from source because nothing else was known to.
+- **Self-contained, so a link can move it.** A build from source bakes the
+  build tree's absolute path into the binary's RUNPATH (§10.1's stub, and
+  `-next` after it), so copying `build/bin` somewhere and swapping a link
+  would change nothing that runs. The build fallback therefore installs
+  with `cmake --install` into the engine's directory with an
+  `$ORIGIN`-relative RUNPATH, and 7b asserts it with the `readelf -d` check
+  `LLAMA-SERVER.md` prescribes; a release asset is checked the same way
+  rather than assumed.
+- **Side by side:** each engine lives in `~/.mecha/sidecars/llama/<tag>/`,
+  with the **resolved commit sha** recorded in the manifest and the ledger
+  (a tag is a label; a rollback and an audit need the build), and the units
+  name a `current` link, so an upgrade is a new directory and
+  a link swap, and the previous one stays for `--rollback` (today's `.prev`
+  copy, made structural).
+- **`mecha setup engine --upgrade [--to <tag>]`** fetches or builds the new
+  engine (`engine` is a reserved noun in `setup`'s feature position, never a
+  feature id), then **measures before it promotes**. The measurement loads
+  another engine's copy of the chat model, so in `hold.rs`'s terms it **is a
+  switch**. It measures **one engine at a time** — the old engine, stop, the
+  new one, stop — and, since the router keeps its model resident from boot
+  (`load-on-startup`, and no idle eviction), it **stops the router first**,
+  once it owns the switch and has seen no run live, and restarts it at the
+  end on whichever engine won. So it never holds two copies of the chat
+  model (two at ~28.5 GB each is an out-of-memory failure on every tier
+  below 128 GB), and it refuses up front, with the number, when available
+  memory cannot hold the largest single step: the chat model plus whichever
+  smoke-test models are installed (§6's sum, applied to the measurement),
+  counting the router's resident copy too if it cannot be stopped.
+  **Every leg runs against a server the gate starts from the engine under
+  test, on a port of its own — never :8080, :8081 or :8085**, which reach
+  the live router and the socket-held backends on whatever engine they
+  already run, so a pass there would grade the predecessor and credit the
+  candidate. As a switch,
+  it writes one with `begin_switch` — which makes runs that start
+  meanwhile wait — and then checks `live()`. A hold alone would not do:
+  `try_hold` is not exclusive and returns `Ok` beside other runs, so a
+  benchmark behind it would run under contention and write the number this
+  rule exists to keep out of the ledger. **If any run is live it withdraws
+  the switch and declines**, saying so, rather than waiting — a deliberate
+  departure from the module's ruling that a switch waits without limit,
+  because nobody wants an upgrade benchmark holding the router back
+  indefinitely; the owner reruns it when the box is quiet. If
+  `begin_switch` finds a switch already pending (a `mecha model use`
+  waiting on runs), it declines the same way and names it — it never
+  queues behind, or cancels, someone else's switch. Then: the chat model loaded on
+  both engines with the router's flags, one completion and one embedding
+  as a smoke test, then single-stream generation and prefill at fixed
+  prompt lengths (`scripts/bench-slots.sh`'s method). It promotes when the
+  new engine is no slower beyond the measured noise, says so with both
+  numbers, and otherwise keeps the old one unless `--force`. Each run
+  appends to a ledger, which is what turns "updates help" into `Measured`
+  rows. The switch restarts the router only when no run holds the model
+  (`hold.rs`, the update skill's `serve_held`).
+- **The shipped pin** is the newest engine the project has measured, bumped
+  by a reviewed change, so a new user gets a known build and `--upgrade`
+  gets them the latest.
+- **`--upgrade` has its own trust rule (F10)**, distinct from item 1's. A tag
+  past the shipped pin has no reviewed hash by construction, so the upgrade
+  path trusts **the release API's digest over TLS for a tag the owner has
+  confirmed at a terminal**. `--to <tag>` names one; bare `--upgrade`
+  resolves the newest release, prints its tag, and asks the owner to confirm
+  *that tag* before anything is downloaded — printing is disclosure, the
+  confirmation is the choice. A build from an unreviewed tag trusts the
+  commit GitHub names for that tag. It is the only path that trusts the
+  serving channel's own hash, and it is acceptable only because the owner,
+  at a terminal, chose the tag — not config, not a project file, not a
+  model. Every other source still needs review.
+- **Adopting a provided engine is the explicit step F8 deferred.** Today
+  all three launchers run `${LLAMA_SERVER:-llama-server}` from `PATH`
+  (`path.conf` puts `~/.local/bin` first), so nothing reads a `current` link
+  until the units' `LLAMA_SERVER` names it — which is 7c's unit templates on
+  a clean machine. On a machine whose engine is *provided* (this one),
+  `setup engine --upgrade` **refuses**, naming `mecha setup engine --adopt`:
+  a promotion no server reads would write a `Measured` row for an upgrade
+  that reached nothing — a half-applied promotion reading as complete.
+  `--adopt` installs the shipped pin side by side, points the three units'
+  `LLAMA_SERVER` at `current` under the same gate as a promotion, and keeps
+  the hand-installed stub untouched as the first rollback. It runs only when
+  the owner asks; nothing adopts by default.
+- **One engine serves three servers.** Once adopted (or installed by 7c),
+  the router, the embeddings server and the OCR server all run the
+  `current` link (`LLAMA-SERVER.md`, the bullet *Upgrading llama.cpp: the build tree is the deployment*),
+  so a promotion reaches all three: the router at the gated restart, the
+  two on-demand servers at their next cold start, ungated. So the gate's
+  smoke test covers each — a chat completion, an embedding, **and an OCR
+  page** (the mtmd path the chat measurement does not exercise) — and a
+  failure in any keeps the old engine. **A smoke test whose model is not
+  installed is *not run*, never *passed*** — on a light install that is
+  usually two of the three. The gate runs the ones it can, promotes on
+  those, and the output and the ledger row name the ones not run, so a
+  `Measured` row never covers more than was measured; requiring all three
+  would make an engine upgrade depend on enabling features the owner
+  declined.
+- **The switch is held from before the measurement to the end of the
+  promotion.** `begin_switch` is taken before the first load and withdrawn
+  only after the router answers on the winning engine, so no run starts on
+  either engine in between, and no run is answered by the old engine while
+  the link already names the new one. Inside it, a promotion swaps the
+  link, stops the two on-demand backends (their sockets stay, so the next
+  request starts them on the new engine — a warm OCR or embeddings server
+  would otherwise answer on the old one for up to ten idle minutes), and
+  restarts the router. A runs-live refusal happens only at the start, before
+  anything moved; after that, the one way to a **partial** promotion is a
+  step that fails — the router does not come back, a backend will not
+  stop — and the output and the ledger row say so, name the step and its
+  error, and print the command that finishes it. A half-applied promotion
+  must not read as complete.
+- **`--rollback` undoes all three, under the same switch.** It takes
+  `begin_switch` — and, unlike the measurement, **waits** for live runs as
+  any switch does (`hold.rs`'s ruling), because a rollback is the one change
+  the owner wants even when the box is busy; `--now` is the way out, as it
+  is for `mecha model use` (`request_now` cancels the holders). Once clear,
+  it swaps the link back, stops the two on-demand backends, restarts the
+  router, and withdraws the switch. A step that fails is reported the same
+  way as a promotion's: named, with the command that finishes it, never as
+  a rollback that completed.
+- **`--adopt` is terminal-only too.** It downloads only the reviewed pin, so
+  F10's trust is not at stake, but it changes what every server runs on a
+  hand-installed machine, so it refuses without a tty like `--upgrade`, and
+  runs under the same held switch as a promotion.
+
+### 10.4 Choosing a model
+
+Step 6b's `Recommendation` row gains its source, so the list setup shows is
+the list it can fetch. The type, so 6b and 7a cannot read it differently:
+
+```rust
+/// Where a pinned sidecar or model comes from. Every variant carries a hash
+/// or commit a reviewer committed (§10.2 item 1); F10's upgrade path is the
+/// one exception, and it never constructs one of these.
+pub enum Source {
+    /// A release asset, per platform. A bump carries one sha256 per asset it
+    /// pins — one per platform asset §10.3 lists for an engine release.
+    ReleaseAsset { repo: &'static str, tag: &'static str, asset: &'static str, sha256: &'static str, bytes: u64 },
+    /// A clone; `bytes` is the reviewed size of the checkout, for the plan.
+    GitCommit { url: &'static str, commit: &'static str, bytes: u64 },
+    /// One repository at one revision, and every file the row needs from it —
+    /// a GGUF and its projector, or a diffusion model's three files. A row is
+    /// never a projector-less model.
+    HuggingFace { repo: &'static str, revision: &'static str, files: &'static [HubFile] },
+    /// A `--require-hashes` lock, shipped in the binary; `bytes` is the
+    /// reviewed download size of the packages it pins.
+    PythonLock { lock: &'static str, bytes: u64 },
+}
+
+pub struct HubFile { pub path: &'static str, pub sha256: &'static str, pub bytes: u64 }
+```
+
+Every variant carries a size — `HuggingFace`'s is the sum of its files' —
+so the plan's download total is a sum, never an estimate.
+For each feature the plan shows the rows for this machine's tier and memory
+shape, **the default preselected**, each with its evidence and whether it
+fits beside what is already enabled (the sum, §6), and rows that do not fit
+stay visible with the reason. *Bring your own* is always a choice: a path to
+a GGUF, or a model already in the cache. After the download, the setting is
+read back from the running server (`mecha setup --write`), never written
+from the row.
+
+### 10.5 Out of scope, still
+
+macOS and Windows service managers (§8: the units are Linux user units; on
+macOS the engine and models install, and starting them stays manual until
+launchd is designed); system packages (`apt`, CUDA drivers, Docker) — setup
+names them and stops; installing anything from the web app; and installing
+inside a trial. An environment may switch a feature on (§5.1), but a trial
+home never runs an installer: a switch that is on over an absent sidecar is
+what §4.2 already shows — configured, not answering — and the trial reads
+it as that, never as a reason to fetch.
+
+### 10.6 Build order
+
+Step 7 becomes these, each a PR that leaves every feature working:
+
+- **7a.** The `Sidecar` registry, the manifest, provided-detection, the
+  plan printed by `features enable` and `setup` (installing nothing yet),
+  and the native downloader with its resume and hash tests. Layout's
+  installer moves in as the first entry, since it is already pinned.
+- **7b.** The engine: release-asset fetch, the build fallback, side-by-side
+  directories, `--upgrade` with its measurement, `--rollback`, and `--adopt` for a provided engine.
+- **7c.** The router unit and chat model choice; the embeddings and OCR
+  servers on demand from nothing.
+- **7d.** `uv` and the voice venv, Parakeet and the voice worker.
+- **7e.** ComfyUI, ComfyUI-GGUF and the image models.
+- **7f.** Chatterbox — a venv lock first; the Docker recipe, written down as
+  a file this time, where the venv cannot be satisfied (the GB10's ABI
+  trouble is the case on record).
+
+**How to know it works:** a clean container (no `~/.mecha`, no `scripts/`)
+runs `cargo install` then `mecha features enable documents`, answers yes to
+the OCR server, and gets a `document_read` that reads a scanned page through
+OCR (`ocr` is a part, so `enable` refuses it by name — its install rides
+`documents`' plan, item 3). Beside it, each of these fails on the behaviour
+it guards against:
+
+- the same run with the sidecar already provided — running, or **installed
+  and idle-stopped** — installs nothing and wakes nothing;
+- an install interrupted mid-download is offered as *resumable* on the next
+  run, and resuming completes it — mecha's own partial tree is never read as
+  provided;
+- a hash mismatch on any source fails the install with nothing written and
+  the switch untouched;
+- `--no-install` writes the switch and fetches nothing;
+- `--remove` deletes exactly the manifest's files and leaves a file mecha
+  did not write in the same directory;
+- `--upgrade` against a slower engine (a stub that answers slowly) declines
+  to promote and says so with both numbers;
+- without a tty, `features enable <id>` installs nothing and `setup engine
+  --upgrade` refuses — with and without `--to`. (Plain `mecha setup` is
+  covered already: without a terminal it prints the outstanding list and
+  exits 1 before offering anything.) The install tests themselves drive a
+  pty with a size, since the tty rule is what they cross;
+- bare `--upgrade` with the confirmation declined downloads no byte, and a
+  confirmation of tag *A* never fetches tag *B*: the tag resolved at fetch
+  time is re-checked against the tag confirmed, and a mismatch stops;
+- `--upgrade` on a provided engine refuses and names `--adopt`, writing no
+  ledger row; `--adopt` without a tty refuses;
+- a run that tries to start mid-promotion waits for the switch and is
+  answered by the winning engine, never by the old one through a link that
+  already names the new.
