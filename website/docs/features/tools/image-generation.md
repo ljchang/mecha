@@ -152,7 +152,7 @@ versions of them) it used.
   doesn't, the tool needs `min_available_mb` (19 GB). Below that it declines
   and says why; try again once a large build or another model has finished.
   After ten idle minutes it asks the server to unload its models. On a
-  machine running the `comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
+  machine running the `mecha-comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
   the server is also restarted after ten idle minutes, which returns nearly
   all of its memory, and a picture asked for during a restart waits for it
   instead of failing.

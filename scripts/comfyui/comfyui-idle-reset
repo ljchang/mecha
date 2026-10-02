@@ -27,38 +27,52 @@ min_free_mb="${COMFY_MIN_FREE_MB:-4096}"
 meminfo="${MECHA_MEMINFO:-/proc/meminfo}"
 proc="${MECHA_PROC:-/proc}"
 
+# Every tick says what it decided: a decline is correct for this minute, and
+# silent it would be invisible for good - "declined" and "never ran" would
+# read the same in the journal (scripts/model-idle.sh's rule). A check that
+# cannot run at all fails the unit, which `mecha doctor` reports (its
+# `mecha-*` glob is why the units are named mecha-comfyui-idle-reset).
+say() { echo "comfyui-idle-reset: $*"; }
+
 pid=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null)
-[ -n "$pid" ] && [ "$pid" != 0 ] || exit 0
+if [ -z "$pid" ] || [ "$pid" = 0 ]; then say "$unit is not running; nothing to release"; exit 0; fi
 
-# Summed, so a process on several devices is one total rather than lines.
-gpu=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null \
-      | awk -F', *' -v p="$pid" '$1==p {s+=$2} END {print s+0}')
-gpu=${gpu:-0}
+# Three states, not two: a figure for the pid, no row for it (holding no GPU
+# memory), or unknown. Unknown is not zero - read as zero, a loaded server
+# would fall under the floor and never be restarted.
+apps=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null) \
+  || { say "nvidia-smi could not list compute apps, so what $unit holds is unknown"; exit 1; }
+gpu=$(awk -F', *' -v p="$pid" '$1==p { if ($2 !~ /^[0-9]+$/) bad=1; s+=$2 } END { print (bad ? "unknown" : s+0) }' <<<"$apps")
+if [ "$gpu" = unknown ]; then say "nvidia-smi reports no usable figure for pid $pid, so what $unit holds is unknown"; exit 1; fi
 rss=$(awk '/^VmRSS:/ {print int($2/1024)}' "$proc/$pid/status" 2>/dev/null)
-rss=${rss:-0}
+if [ -z "$rss" ]; then say "cannot read $proc/$pid/status, so what $unit holds is unknown"; exit 1; fi
 held=$((gpu + rss))
-[ "$held" -ge "$held_mib" ] || exit 0                 # nothing worth releasing
+if [ "$held" -lt "$held_mib" ]; then say "holds ${held} MiB (gpu ${gpu} + rss ${rss}), under ${held_mib}: nothing to release"; exit 0; fi
 
-# Busy, or unreadable: leave it. Unknown is never idle.
-queue=$(curl -s --max-time 5 "$url/queue") || exit 0
-python3 -c '
+# Busy, or unreadable: leave it. Unknown is never idle. An unreachable queue
+# is the server's own state (often a restart in progress), so it is said,
+# not failed.
+if ! queue=$(curl -s --max-time 5 "$url/queue"); then say "holds ${held} MiB but $url/queue did not answer: left alone"; exit 0; fi
+if ! python3 -c '
 import json, sys
 q = json.loads(sys.argv[1])
 # The keys are required: a reply that parses but is not a queue (a proxy'"'"'s
 # error envelope, a changed API) is unknown, and unknown is busy.
 sys.exit(0 if not q["queue_running"] and not q["queue_pending"] else 1)
-' "$queue" 2>/dev/null || exit 0
+' "$queue" 2>/dev/null; then say "holds ${held} MiB with a job queued, or a queue reply it cannot read: left alone"; exit 0; fi
 
 # An open connection is a client mid-call: mecha polls on a keep-alive
 # connection through a whole job and pools it ~90 s after - and it is the
-# only guard before a job is queued, while references upload. So, like the
-# queue: a check that cannot run means busy, never "nobody connected".
-conn=$(ss -Htn state established "( sport = :$port )" 2>/dev/null) || exit 0
-[ -z "$conn" ] || exit 0
+# only guard before a job is queued, while references upload. A check that
+# cannot run means busy, never "nobody connected", and fails the unit.
+conn=$(ss -Htn state established "( sport = :$port )" 2>/dev/null) \
+  || { say "ss could not list connections to :$port, so whether a client is mid-call is unknown"; exit 1; }
+if [ -n "$conn" ]; then say "holds ${held} MiB but a client is connected to :$port: left alone"; exit 0; fi
 
 # Used within the window: not idle. An unreadable journal is not "unused".
-recent=$(journalctl --user -u "$unit" --since "-${idle_min}min" --no-pager -o cat 2>/dev/null) || exit 0
-grep -qE 'got prompt|Prompt executed' <<<"$recent" && exit 0
+recent=$(journalctl --user -u "$unit" --since "-${idle_min}min" --no-pager -o cat 2>/dev/null) \
+  || { say "cannot read $unit's journal, so when it was last used is unknown"; exit 1; }
+if grep -qE 'got prompt|Prompt executed' <<<"$recent"; then say "holds ${held} MiB, used within ${idle_min} min: left alone"; exit 0; fi
 
 free_mb=$(awk '/^MemFree:/ {print int($2/1024)}' "$meminfo" 2>/dev/null)
 # The new CUDA context is created by the *new* process, after this one has
@@ -67,12 +81,14 @@ free_mb=$(awk '/^MemFree:/ {print int($2/1024)}' "$meminfo" 2>/dev/null)
 after_mb=$(( ${free_mb:-0} + held ))
 if [ -z "$free_mb" ] || [ "$after_mb" -lt "$min_free_mb" ]; then
   if [ "$gpu" -ge 1024 ]; then
-    echo "comfyui idle with ${held} MiB held but only ~${after_mb} MB free after a restart: /free instead"
+    say "idle with ${held} MiB held but only ~${after_mb} MB free after a restart: /free instead"
     curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
          -d '{"unload_models": true, "free_memory": true}' "$url/free" >/dev/null
+  else
+    say "idle with ${held} MiB held, mostly outside the GPU, and only ~${after_mb} MB free after a restart: left alone"
   fi
   exit 0
 fi
 
-echo "comfyui idle ${idle_min}+ min holding ${held} MiB (gpu ${gpu} + rss ${rss}): restarting"
+say "idle ${idle_min}+ min holding ${held} MiB (gpu ${gpu} + rss ${rss}): restarting"
 systemctl --user restart "$unit"
