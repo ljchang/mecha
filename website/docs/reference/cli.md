@@ -200,9 +200,9 @@ copy of `web/dist`.
 | `--port <PORT>` | Override `[web] port` (default `63242`). |
 | `--assets <PATH>` | Override the directory containing the built app. |
 | `--owner-login <LOGIN>` | Override the permitted Tailscale identity. |
-| `--voice-port <PORT>` | Override `[voice] voice_port` for this run: the mounted voice facade's port; `0` disables. |
+| `--voice-port <PORT>` | Override `[voice] voice_port` for this run: the mounted voice facade's port; `0` disables. `mecha features` reports `[voice]`, not a run's flags. |
 | `--voice-yes` | Allow voice calls without per-call approval; configured outbound actions still stage. |
-| `--offer-target <URL>` | Override `[voice] offer_target` for this run: the voice worker's offer endpoint. Empty disables proxying. |
+| `--offer-target <URL>` | Override `[voice] offer_target`'s address for this run. Empty disables proxying. With `[voice] offer_target = ""` calls are off, and this flag can't switch them back on. |
 
 ```bash
 mecha serve --assets ./web/dist
