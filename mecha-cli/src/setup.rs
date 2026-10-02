@@ -1927,23 +1927,42 @@ fn build_subagent(
 /// assistant's chats do. No fallbacks — a persona answering on a different
 /// model than the one named is the silent swap §12.6 exists to prevent.
 ///
-/// **Without the provider's `seed`.** A pinned seed is how a measured run
-/// repeats exactly; in a conversation it restarts the sampler's draws at the
-/// same state every turn, and a turn that adds little ("mm") comes back as
-/// an earlier reply word for word — 7 of 7 in the 2026-10-02 replay. The
-/// server picks a fresh seed per request when none is sent.
+/// **The conversation goes without the provider's `seed`; a judge keeps
+/// it** ([`PersonaUse`]). A pinned seed is how a measured run repeats
+/// exactly. In a conversation it restarts the sampler's draws at the same
+/// state every turn, and a turn that adds little ("mm") comes back as an
+/// earlier reply word for word — 7 of 7 in the 2026-10-02 replay; the
+/// server picks a fresh seed per request when none is sent. The crisis
+/// judge is the measuring case: the same words should get the same verdict,
+/// and a reported miss should be reproducible from the text.
 pub fn persona_provider(
     bound: &crate::follow::Bound,
+    for_use: PersonaUse,
 ) -> Result<Box<dyn mecha_core::provider::Provider>> {
     let (_, provider_cfg) = bound.config.provider(Some(&bound.provider_name))?;
-    mecha_core::provider::build(&unseeded(provider_cfg))
+    mecha_core::provider::build(&persona_provider_config(provider_cfg, for_use))
 }
 
-/// `cfg` with no seed, for a provider that converses rather than measures.
-fn unseeded(cfg: &mecha_core::config::ProviderConfig) -> mecha_core::config::ProviderConfig {
-    mecha_core::config::ProviderConfig {
-        seed: None,
-        ..cfg.clone()
+/// What a persona chat asks a provider for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonaUse {
+    /// The persona's own turns.
+    Converse,
+    /// A one-shot that classifies the owner's words (`persona::judge`).
+    Judge,
+}
+
+/// `cfg` as `for_use` gets it: unseeded to converse, untouched to judge.
+fn persona_provider_config(
+    cfg: &mecha_core::config::ProviderConfig,
+    for_use: PersonaUse,
+) -> mecha_core::config::ProviderConfig {
+    match for_use {
+        PersonaUse::Converse => mecha_core::config::ProviderConfig {
+            seed: None,
+            ..cfg.clone()
+        },
+        PersonaUse::Judge => cfg.clone(),
     }
 }
 
@@ -2439,7 +2458,7 @@ mod persona_provider_tests {
     use super::*;
 
     #[test]
-    fn a_persona_provider_converses_unseeded_and_keeps_everything_else() {
+    fn a_persona_converses_unseeded_and_its_judge_keeps_the_seed() {
         let cfg = mecha_core::config::ProviderConfig {
             kind: "local".into(),
             model: Some("m".into()),
@@ -2447,12 +2466,14 @@ mod persona_provider_tests {
             seed: Some(42),
             ..Default::default()
         };
-        let p = unseeded(&cfg);
-        assert_eq!(p.seed, None);
+        let chat = persona_provider_config(&cfg, PersonaUse::Converse);
+        assert_eq!(chat.seed, None);
         assert_eq!(
-            (p.kind, p.model, p.temperature),
-            (cfg.kind, cfg.model, cfg.temperature)
+            (&chat.kind, &chat.model, chat.temperature),
+            (&cfg.kind, &cfg.model, cfg.temperature)
         );
+        let judge = persona_provider_config(&cfg, PersonaUse::Judge);
+        assert_eq!(judge.seed, Some(42), "a verdict reproducible from the text");
     }
 }
 

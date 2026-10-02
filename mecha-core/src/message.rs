@@ -215,6 +215,18 @@ impl Message {
             .join("")
     }
 
+    /// A user message with no tool result in it — the person's own text (or
+    /// the harness's folded beside it), never a completed tool round, which
+    /// rides in a user message too. The one definition; see
+    /// `agent::is_plain_user_text` for the bug that centralised it.
+    pub fn is_plain_user_text(&self) -> bool {
+        self.role == Role::User
+            && !self
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+    }
+
     pub fn tool_uses(&self) -> Vec<(&str, &str, &Value)> {
         self.content
             .iter()
@@ -411,13 +423,7 @@ pub enum PriorThinking {
 /// user message" would move the cut inside a run and take the reasoning that
 /// chose a call away from the step that reads its result.
 fn answering(messages: &[Message]) -> Option<usize> {
-    messages.iter().rposition(|m| {
-        m.role == Role::User
-            && !m
-                .content
-                .iter()
-                .any(|b| matches!(b, Block::ToolResult { .. }))
-    })
+    messages.iter().rposition(Message::is_plain_user_text)
 }
 
 /// Whether `message` loses its thinking under [`PriorThinking::Drop`]: an

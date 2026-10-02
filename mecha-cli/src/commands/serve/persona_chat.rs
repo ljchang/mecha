@@ -39,6 +39,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use super::chat::{self, ChatState, WireEvent};
 use super::library::LibraryState;
+use crate::setup::PersonaUse;
 
 /// Every persona chat's key starts with this; nothing else's does.
 pub const KEY_PREFIX: &str = "p-";
@@ -60,10 +61,13 @@ fn valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// How a persona agent's provider is made — the router's, in `serve`; a
-/// scripted one in tests.
+/// How a persona chat's providers are made — the router's, in `serve`; a
+/// scripted one in tests — and what each is for: the conversation goes
+/// unseeded, the crisis judge keeps the seed (`setup::persona_provider`).
 type ProviderFactory = Arc<
-    dyn Fn(&crate::follow::Bound) -> Result<Box<dyn mecha_core::provider::Provider>> + Send + Sync,
+    dyn Fn(&crate::follow::Bound, PersonaUse) -> Result<Box<dyn mecha_core::provider::Provider>>
+        + Send
+        + Sync,
 >;
 
 /// A built persona agent, the binding it was built on, and what it refused.
@@ -554,7 +558,7 @@ impl PersonaChats {
         Self::with(
             root.join("personas"),
             root.join("work"),
-            Arc::new(|_| anyhow::bail!("this test opens no persona chat")),
+            Arc::new(|_, _| anyhow::bail!("this test opens no persona chat")),
         )
     }
 
@@ -583,8 +587,12 @@ impl PersonaChats {
         {
             return Ok((Arc::clone(&b.agent), b.refused.clone()));
         }
-        let (agent, refused) =
-            crate::setup::persona_agent(bound, pinned, (self.provider)(bound)?, &self.store)?;
+        let (agent, refused) = crate::setup::persona_agent(
+            bound,
+            pinned,
+            (self.provider)(bound, PersonaUse::Converse)?,
+            &self.store,
+        )?;
         let agent = Arc::new(agent);
         agents.retain(|_, b| b.generation == bound.generation);
         agents.insert(
@@ -2907,7 +2915,7 @@ impl PersonaChats {
         // run and pauses it, as a keyword hit does. Not inside the cooldown,
         // which a pause would not break anyway.
         let judge_job: Option<JudgeJob> = (switches.crisis && !hit && !cooling).then(|| {
-            (self.provider)(&bound)
+            (self.provider)(&bound, PersonaUse::Judge)
                 .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
                 .map_err(|e| format!("the judge could not be reached: {e:#}"))
         });
@@ -3044,12 +3052,18 @@ impl PersonaChats {
             let _ = forwarder.await;
             match &outcome {
                 Ok(o) => {
-                    // Read ahead of `record_run`, so this run's reply is not
-                    // among the ones it is compared with.
-                    let earlier = Session::assistant_replies(&session.path);
+                    // Only a turn that ran to its own end is measured: a
+                    // stopped one (the owner's stop, the judge's concern)
+                    // keeps a partial reply, which would read low, and a
+                    // judge-stopped one is never shown. Read ahead of
+                    // `record_run`, so this reply is not among the earlier.
+                    let earlier = (o.stop_cause == mecha_core::agent::StopCause::Completed)
+                        .then(|| Session::assistant_replies(&session.path));
                     let _ = session.record_run(&before, &conversation);
                     let _ = session.record_outcome(o);
-                    record_echo(&chats.store, &persona, &session.meta.id, earlier, &conversation);
+                    if let Some(earlier) = earlier {
+                        record_echo(&chats.store, &persona, &session.meta.id, earlier, &conversation);
+                    }
                 }
                 // The record agrees with the rollback, or a resume replays
                 // the failed turn (the assistant's rule, `chat::begin_turn`).
@@ -3396,7 +3410,7 @@ impl PersonaChats {
             let words = text.clone();
             // Its words and receipt, so a concern can hold them back.
             let steered = Some((text.clone(), request_id.clone()));
-            match (self.provider)(bound) {
+            match (self.provider)(bound, PersonaUse::Judge) {
                 Ok(provider) => {
                     let model = bound.model.clone();
                     let stopping = chat.stopping.clone();
@@ -4551,7 +4565,7 @@ mod tests {
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
-            Arc::new(move |_| {
+            Arc::new(move |_, _| {
                 Ok(Box::new(Capture(
                     Arc::clone(&for_persona),
                     mode.clone(),

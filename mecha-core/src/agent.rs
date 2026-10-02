@@ -198,11 +198,7 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
 /// bug in the voice facade and centralised here so no sixth grows its own
 /// wrong copy.
 pub fn is_plain_user_text(m: &Message) -> bool {
-    m.role == Role::User
-        && !m
-            .content
-            .iter()
-            .any(|b| matches!(b, Block::ToolResult { .. }))
+    m.is_plain_user_text()
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
