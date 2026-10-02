@@ -1320,8 +1320,20 @@ impl PersonaChats {
         // fact about them (review of #519). Counted store-wide — it cannot
         // say whose it is — and unshareable only from the CLI.
         let mut shared_unreadable = 0;
-        if let Some(sh) = Shared::open_existing(&self.store).map_err(failed)? {
-            let listing = sh.all().map_err(failed)?;
+        // A shared store that will not read costs the share marks, not the
+        // page whose job includes forgetting (review of #519; recall's rule,
+        // review of #477).
+        let mut shared_problem = None;
+        let listing =
+            Shared::open_existing(&self.store).and_then(|sh| sh.map(|sh| sh.all()).transpose());
+        let listing = match listing {
+            Ok(l) => l,
+            Err(e) => {
+                shared_problem = Some(format!("{e:#}"));
+                None
+            }
+        };
+        if let Some(listing) = listing {
             shared_unreadable = listing.unreadable;
             for f in listing.facts {
                 if f.learned_by == p.name {
@@ -1379,7 +1391,7 @@ impl PersonaChats {
         }
         Ok(serde_json::json!({
             "episodes": episodes, "facts": facts, "groups": groups,
-            "shared_unreadable": shared_unreadable,
+            "shared_unreadable": shared_unreadable, "shared_problem": shared_problem,
         }))
     }
 
@@ -5481,6 +5493,16 @@ mod tests {
             ny["facts"]["user"][0]["day"], "2026-09-29",
             "in the owner's zone"
         );
+
+        // A shared store that will not read costs the share marks, not the page.
+        std::fs::write(
+            mecha_core::persona::memory::Shared::path(&w.store()),
+            b"not a database",
+        )
+        .unwrap();
+        let hurt = page(&w);
+        assert!(hurt["shared_problem"].is_string(), "{hurt}");
+        assert_eq!(hurt["facts"]["user"].as_array().unwrap().len(), 2, "{hurt}");
     }
 
     #[tokio::test]
