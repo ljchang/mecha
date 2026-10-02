@@ -1,0 +1,176 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["gguf==0.19.0", "numpy==2.5.3"]
+# ///
+"""scripts/mtp-graft.py, round-tripped on synthetic GGUFs.
+
+`uv run scripts/test_mtp_graft.py`, under the same pins as the script, because
+the graft leans on gguf's reader/writer internals: this is what notices a
+version that moved them, the day it moves rather than the day a re-upload
+needs a rebuild.
+
+A two-layer base and a three-layer donor with `nextn_predict_layers = 1` stand
+in for HauhauCS and unsloth. The donor's shared tensors hold different bytes
+from the base's, so "BASE byte for byte" is a measured claim, not a name check.
+"""
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+from gguf import GGMLQuantizationType, GGUFReader, GGUFValueType, GGUFWriter, quants
+
+GRAFT = Path(__file__).with_name("mtp-graft.py")
+ARCH = "qwen35moe"
+
+
+def write(path, blocks, nextn=None, fill=0.0, tensors=None, arch=ARCH, embd_rows=8, split=False):
+    w = GGUFWriter(str(path), arch=arch)
+    if blocks is not None:
+        w.add_key_value(f"{arch}.block_count", blocks, GGUFValueType.UINT32)
+    if split:
+        w.add_key_value("split.no", 0, GGUFValueType.UINT16)
+        w.add_key_value("split.count", 2, GGUFValueType.UINT16)
+    w.add_key_value("general.name", f"fill-{fill}", GGUFValueType.STRING)
+    if nextn is not None:
+        w.add_key_value(f"{arch}.nextn_predict_layers", nextn, GGUFValueType.UINT32)
+    names = tensors if tensors is not None else (
+        [f"blk.{i}.attn_q.weight" for i in range(blocks or 0)] + ["token_embd.weight", "output.weight"])
+    for i, name in enumerate(names):
+        if name.endswith("ffn_down_exps.weight"):
+            # Quantized, as every tensor of the real Q4_K_M is: byte-shaped
+            # uint8 data whose logical shape gguf recovers from the type — the
+            # other branch of the reader and writer from the F32 ones here.
+            data = np.arange(4 * 64, dtype=np.float32).reshape(4, 64) * 0.01 + fill + i
+            w.add_tensor(name, quants.quantize(data, GGMLQuantizationType.Q8_0),
+                         raw_dtype=GGMLQuantizationType.Q8_0)
+            continue
+        rows = embd_rows if name in ("token_embd.weight", "output.weight") else 4
+        w.add_tensor(name, np.full((rows, 4), fill + i, dtype=np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+class Graft(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.base, self.donor, self.out = self.dir / "base.gguf", self.dir / "donor.gguf", self.dir / "out.gguf"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def graft(self):
+        return subprocess.run([sys.executable, str(GRAFT), str(self.base), str(self.donor), str(self.out)],
+                              capture_output=True, text=True, timeout=60)
+
+    def refused(self, why):
+        r = self.graft()
+        self.assertNotEqual(r.returncode, 0, why)
+        self.assertFalse(self.out.exists(), "a refusal must leave nothing under the name")
+        self.assertFalse(Path(str(self.out) + ".partial").exists())
+        return r.stderr
+
+    def test_the_head_is_added_and_the_base_is_kept_byte_for_byte(self):
+        quant = ["blk.1.ffn_down_exps.weight"]
+        write(self.base, 2, fill=0.0,
+              tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight", *quant, "token_embd.weight", "output.weight"])
+        write(self.donor, 3, nextn=1, fill=100.0,
+              tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight", *quant, "blk.2.attn_q.weight",
+                       "blk.2.ffn_down_exps.weight", "blk.2.nextn.eh_proj.weight",
+                       "token_embd.weight", "output.weight"])
+        r = self.graft()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out, base, donor = GGUFReader(self.out), GGUFReader(self.base), GGUFReader(self.donor)
+        self.assertEqual(out.fields[f"{ARCH}.block_count"].contents(), 3)
+        self.assertEqual(out.fields[f"{ARCH}.nextn_predict_layers"].contents(), 1)
+        self.assertEqual(out.fields["general.name"].contents(), "fill-0.0", "the base's keys, not the donor's")
+        got = {t.name: t for t in out.tensors}
+        self.assertEqual(set(got), {t.name for t in base.tensors}
+                         | {"blk.2.attn_q.weight", "blk.2.ffn_down_exps.weight", "blk.2.nextn.eh_proj.weight"})
+        kept = list(base.tensors) + [t for t in donor.tensors if t.name.startswith("blk.2.")]
+        for t in kept:
+            g = got[t.name]
+            self.assertTrue(np.array_equal(g.data, t.data), t.name)
+            self.assertEqual(g.tensor_type, t.tensor_type, t.name)
+            self.assertEqual(list(g.shape), list(t.shape), t.name)
+        self.assertEqual(got["blk.2.ffn_down_exps.weight"].tensor_type, GGMLQuantizationType.Q8_0,
+                         "the quantized branch was exercised")
+        self.assertFalse(Path(str(self.out) + ".partial").exists())
+
+    def test_a_base_that_already_has_a_head_is_refused(self):
+        write(self.base, 3, nextn=1)
+        write(self.donor, 3, nextn=1)
+        self.assertIn("already declares", self.refused("nothing to graft"))
+
+    def test_a_donor_without_a_head_is_refused(self):
+        write(self.base, 2)
+        write(self.donor, 3)
+        self.assertIn("no MTP head", self.refused("nothing to give"))
+
+    def test_block_counts_that_do_not_line_up_are_refused(self):
+        write(self.base, 2)
+        write(self.donor, 4, nextn=1)
+        self.assertIn("do not line up", self.refused("the head would land on the wrong layer"))
+
+    def test_a_shard_of_a_split_file_is_refused_on_either_side(self):
+        # One shard passes every other check and would yield a tensor subset
+        # still naming siblings it no longer has.
+        for base_split in (True, False):
+            with self.subTest(base_split=base_split):
+                write(self.base, 2, split=base_split)
+                write(self.donor, 3, nextn=1, split=not base_split)
+                self.assertIn("split GGUF", self.refused("a shard is not a model"))
+
+    def test_a_file_that_is_not_a_gguf_is_a_message_not_a_traceback(self):
+        self.base.write_bytes(b"not a model at all")
+        write(self.donor, 3, nextn=1)
+        err = self.refused("garbage in")
+        self.assertIn("not a readable GGUF", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_missing_block_count_is_a_message_not_a_traceback(self):
+        write(self.base, 2)
+        write(self.donor, None, nextn=1, tensors=["token_embd.weight", "output.weight"])
+        err = self.refused("no layer count, no place for the head")
+        self.assertIn(f"no {ARCH}.block_count", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_donor_without_the_shared_tensors_is_refused(self):
+        # The head reads BASE's embeddings and output; a donor without them
+        # cannot show it was built over the same vocabulary.
+        write(self.base, 2)
+        write(self.donor, 3, nextn=1, tensors=["blk.0.attn_q.weight", "blk.2.attn_q.weight"])
+        self.assertIn("donor lacks token_embd.weight", self.refused("nothing to compare the vocabulary by"))
+
+    def test_a_head_declared_but_not_carried_is_refused(self):
+        write(self.base, 2)
+        write(self.donor, 3, nextn=1, tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight",
+                                               "token_embd.weight", "output.weight"])
+        self.assertIn("carries no tensors", self.refused("a key without its layer"))
+
+    def test_the_pins_here_are_the_scripts_pins(self):
+        # The graft runs under *this* file's environment, so a drifted header —
+        # the interpreter as much as the packages — would test one and build
+        # with another. The whole PEP 723 block, not one line of it.
+        def block(p):
+            lines = p.read_text().splitlines()
+            start = lines.index("# /// script")
+            return lines[start:lines.index("# ///", start) + 1]
+        self.assertEqual(block(Path(__file__)), block(GRAFT))
+        self.assertTrue(any(l.startswith("# dependencies") and "==" in l for l in block(GRAFT)),
+                        "the script must pin its dependencies")
+
+    def test_a_donor_of_another_model_is_refused(self):
+        write(self.base, 2)
+        write(self.donor, 3, nextn=1, embd_rows=16)
+        self.assertIn("not the same model", self.refused("a head over another vocabulary mis-drafts"))
+
+
+if __name__ == "__main__":
+    unittest.main()
