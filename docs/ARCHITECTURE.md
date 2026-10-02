@@ -548,16 +548,41 @@ workspace**. Six decisions, each a bug if undone:
   image generation keeps working in a conversation holding mail. `[image]` is
   stripped from project layers, loudly, like `[web]`: a cloned repository must
   not choose where model-written prompts go.
-- **Refuse to start without memory headroom** (`min_available_mb`, 16 GB). On
+- **Refuse to start without memory headroom** (`min_available_mb`, 19 GB). On
   the GB10 the GPU allocates from the one pool everything else uses; the first
   generation on this box, beside `llama-server` and a parallel link, was a
   global OOM that killed `llama-server` and took the machine down. An
-  unreadable `/proc/meminfo` refuses rather than passes. After
-  `unload_after_secs` of idleness the tool asks the server to `/free` its
-  models, so ~15 GB is not held between requests. The timer lives in the
-  mecha process, so it serves `mecha serve` and the TUI; a one-shot
-  `mecha run` exits first and leaves the models loaded until the next
-  long-lived generation or a server restart.
+  unreadable `/proc/meminfo` refuses rather than passes. The figure is the
+  measured cost of a generation from a server holding no model: ~18.5 GB above
+  its idle footprint, where a footprint on this unified-memory box is GPU-used
+  **plus** RSS, which do not overlap (2026-10-02; the earlier 16 GB rested on a
+  "15 GB peak" that counted the GPU side alone). **What a job asks for follows
+  what the server already holds** (`memory_need_mb`), because memory it holds
+  is already gone from the available pool: a server that has loaded nothing
+  since it started, or whose `/system_stats` cannot be read, is asked for the
+  whole `min_available_mb`; one that has loaded the model is asked for that
+  figure less `LOAD_COST_MB` (~7 GB, what loading cost; 12 GB at the default),
+  so an operator's added margin is kept. ComfyUI's `torch_vram_total` is 0 in a fresh
+  process and stays above 0 through a `/free`, so it cannot tell a server
+  still holding the model (~2 GB more) from a freed one (~9-12 GB more to
+  reload), and the larger is asked.
+- **Idle memory is released beside the server, not by mecha.** A loaded
+  ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
+  user timer, installed by `scripts/comfyui/install.sh`) restarts
+  `comfyui.service` once it has held a model for 10 idle minutes with an
+  empty queue and no open connection, leaving a 1.1 GB process with its port
+  up; below 4 GB of `MemFree` it sends `/free` instead, because a new CUDA
+  context failed to come up there. A restart also empties the server's temp
+  directory, whoever left files in it. mecha's own `unload_after_secs` timer
+  stays as a best-effort early `/free`, but it lives in the mecha process and
+  dies with it: a `serve` restarted five minutes after the last picture left
+  12.2 GB held for ten hours (2026-10-02), and on unified memory `/free` moves
+  the weights into the server's RSS (6.9–8.9 GB) rather than releasing them.
+  The first request of a job waits for a server that is not answering yet
+  (`ComfyUi::await_server`), so a picture asked for during a restart waits
+  instead of reporting the server down: up to 90 s for a server this process
+  has had an answer from (it is restarting), 45 s for one it never has (the
+  slowest start measured was 40 s; a stopped service is reported after that).
 - **Read-only, by the owner's ruling (2026-09-25).** Web chats start
   read-only, and a picture should be one request in any of them. The tool
   changes nothing of the owner's: it creates new files under `images/` in the
@@ -1350,6 +1375,15 @@ module.
       `RECALL_EMBED_WAIT` (8 s, past the on-demand server's cold start);
       slower or down, recall is by words. `persona memory write` embeds what
       has no vector after writing.
+  - **The curation page** (§9.8): the editor's Memories tab, over
+    `GET`/`POST /api/personas/{name}/memory` (`PersonaChats::memory`,
+    `memory_act`). Acts are a closed set (`MemoryAct`: approve, pin, unpin,
+    correct, forget, share, unshare), each the same core call the CLI's
+    owner door makes, and each answers with the page as it now stands. The
+    lock holds as for every persona route (hidden answers as missing), and
+    a page shows and unshares only copies its own persona learned, so a
+    locked persona's shared facts never surface through another's page. No
+    tool reaches the route, so no model edits memory.
   - **The memory tools** (`persona::memory_tools`, §9.7 "on demand"):
     `memory_search` and `memory_read`, inserted in `setup::persona_agent`
     beside the file tools, and only if they can never send.

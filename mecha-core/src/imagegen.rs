@@ -83,11 +83,19 @@ pub struct ImageConfig {
     /// Refuse to start below this much available memory, in MB. `0` skips
     /// the check. On unified memory (GB10) the GPU's allocations come out of
     /// the same pool as everything else, and the first generation on this
-    /// machine took it down alongside `llama-server` and a parallel link; a
-    /// cold 1024² generation measured a 15 GB peak.
+    /// machine took it down alongside `llama-server` and a parallel link. A
+    /// generation from a server holding no model needs ~18.5 GB above its
+    /// idle footprint (GPU + RSS, measured 2026-10-02; the earlier "15 GB
+    /// peak" counted the GPU side only), and an idle-reset server holds no
+    /// model, so the default covers that with a little room.
     pub min_available_mb: u64,
     /// Ask the server to unload its models this long after the last
-    /// generation, so ~15 GB is not held between requests. `0` keeps them.
+    /// generation. `0` keeps them. Best effort only: the timer lives in this
+    /// process and dies with it (a `serve` restarted after the last picture
+    /// left 12.2 GB held for 10 h on 2026-10-02), and on unified memory
+    /// `/free` moves the weights into the server's RSS rather than releasing
+    /// them. The durable release is `scripts/comfyui/comfyui-idle-reset`,
+    /// beside the server.
     pub unload_after_secs: u64,
     /// The directory the server writes its temp files into — for ComfyUI,
     /// the `--temp-directory` path with `temp` appended. When set, each job's
@@ -108,7 +116,8 @@ impl Default for ImageConfig {
             vae: "qwen_image_2.1_vae_bf16.safetensors".into(),
             steps: 40,
             timeout_secs: 600,
-            min_available_mb: 16_384,
+            // `LOAD_COST_MB` is derived from this figure; change both.
+            min_available_mb: 19_456,
             unload_after_secs: 600,
             server_temp_dir: None,
         }
@@ -536,6 +545,50 @@ pub fn comfy_graph(
     graph
 }
 
+/// How much free memory a job needs before it starts, in MB, given what the
+/// server already holds. Memory the server holds is already gone from the
+/// available pool, so asking for a generation's whole peak again would refuse
+/// a warm picture that needs little more.
+///
+/// `loaded` is [`loaded_from_stats`]: `Some(false)` is a server that has
+/// loaded nothing since it started (the idle reset leaves it so), which pays
+/// the whole cold cost, `min_mb`. `Some(true)` has loaded the model at some
+/// point, but ComfyUI's stats cannot tell a server still holding it (~2 GB
+/// more needed) from one that was `/free`d (its weights moved to RSS, and
+/// reloading needs ~9-12 GB more, measured 2026-10-02), so it is asked for
+/// the larger of the two. `None` - the stats could not be read - pays cold:
+/// unknown is never warm.
+pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
+    match loaded {
+        // What a load costs is what a loaded server has already paid; the
+        // rest of the operator's figure is their margin, theirs to keep
+        // (review of #515).
+        // Never computed down to 0: `memory_verdict` reads 0 as "check off",
+        // which would also drop its refusal on an unreadable gauge. Only the
+        // operator's own 0 switches the check off.
+        Some(true) if min_mb == 0 => 0,
+        Some(true) => min_mb.saturating_sub(LOAD_COST_MB).max(1),
+        Some(false) | None => min_mb,
+    }
+}
+
+/// What loading the model costs, which a server that has loaded it has
+/// already paid: the default cold figure (19 GiB) less what a reload from a
+/// `/free`d state still needs (~12 GiB, the worse of the two states
+/// `/system_stats` cannot tell apart). **The 19_456 is `ImageConfig`'s default
+/// `min_available_mb`**, written out because a `Default` impl is not const:
+/// change one, change both.
+pub const LOAD_COST_MB: u64 = 19_456 - 12_288;
+
+/// Whether ComfyUI's `/system_stats` says it has loaded a model since it
+/// started. Its `torch_vram_total` is 0 in a fresh process and stays above 0
+/// once anything has loaded - through a `/free`, too, so it answers "has
+/// loaded", never "holds now". `None` for a reply this cannot read.
+pub fn loaded_from_stats(stats: &Value) -> Option<bool> {
+    let total = stats.pointer("/devices/0/torch_vram_total")?.as_f64()?;
+    Some(total > 0.0)
+}
+
 /// Whether there is room to start, as a sentence for the model if not.
 /// `available` is `None` when it could not be read, which is a refusal rather
 /// than a pass: an unreadable gauge is not an empty tank.
@@ -630,6 +683,12 @@ struct ComfyUi {
     base: reqwest::Url,
     http: reqwest::Client,
     poll: Duration,
+    /// Whether the server has answered this process at least once. One that
+    /// has, and now does not, is restarting and is waited for in full
+    /// ([`SERVER_WAIT`]); one never seen may simply not be running, and gets
+    /// only [`UNSEEN_WAIT`] - enough for a restart already under way, not a
+    /// minute and a half of every picture against a stopped service.
+    answered: std::sync::atomic::AtomicBool,
 }
 
 /// Why a generation did not produce an image.
@@ -637,6 +696,24 @@ enum Failure {
     Cancelled,
     Other(anyhow::Error),
 }
+
+/// How long a job waits for an image server that is not answering yet
+/// (`ComfyUi::await_server`), and how often it asks meanwhile. Tests wait
+/// two seconds, so the ones aimed at a closed port stay fast.
+#[cfg(not(test))]
+const SERVER_WAIT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const SERVER_WAIT: Duration = Duration::from_secs(2);
+const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
+/// The wait for a server this process has never had an answer from. The
+/// processes that meet a restart are the unseen ones - a one-shot `mecha
+/// run`, the first picture after a `serve` restart - so it covers the slowest
+/// start measured (40 s once; 4-10 s usually), while a stopped service is
+/// still reported in half of [`SERVER_WAIT`] (review of #515).
+#[cfg(not(test))]
+const UNSEEN_WAIT: Duration = Duration::from_secs(45);
+#[cfg(test)]
+const UNSEEN_WAIT: Duration = Duration::from_secs(1);
 
 impl From<anyhow::Error> for Failure {
     fn from(e: anyhow::Error) -> Self {
@@ -715,6 +792,7 @@ impl ComfyUi {
             base,
             http,
             poll: Duration::from_secs(1),
+            answered: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -747,6 +825,51 @@ impl ComfyUi {
             .await?;
         let status = res.status();
         Ok((status, res.text().await?))
+    }
+
+    /// Wait out a server that is restarting: the first request after one
+    /// meets a closed port or a slow answer, and that is a few seconds of
+    /// start, not a server that is gone. ComfyUI is restarted on purpose when
+    /// it sits idle holding a model (`scripts/comfyui/comfyui-idle-reset`,
+    /// measured 4-10 s, once 40 s), and by every deploy; failing the picture
+    /// at the first refused connect told the model the server was down.
+    /// Only a connect or timeout failure is waited on - a server that
+    /// answers, even with an error, is answered - and a cancel ends the wait.
+    async fn await_server(
+        &self,
+        cancel: Option<&CancellationToken>,
+        wait: Duration,
+    ) -> std::result::Result<(), Failure> {
+        let wait = if self.answered.load(Ordering::Relaxed) {
+            wait
+        } else {
+            wait.min(UNSEEN_WAIT)
+        };
+        let deadline = Instant::now() + wait;
+        loop {
+            let attempt = self
+                .http
+                .get(self.endpoint("queue")?)
+                .timeout(Duration::from_secs(5))
+                .send();
+            let err = match attempt.await {
+                Ok(_) => {
+                    self.answered.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(e) if (e.is_connect() || e.is_timeout()) && Instant::now() < deadline => e,
+                Err(e) => return Err(Failure::Other(e.into())),
+            };
+            tracing::debug!("image server not answering yet, waiting: {err}");
+            let pause = tokio::time::sleep(SERVER_WAIT_STEP);
+            match cancel {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => return Err(Failure::Cancelled),
+                    _ = pause => {}
+                },
+                None => pause.await,
+            }
+        }
     }
 
     /// Every file the graph names is one the server can load, checked before
@@ -974,6 +1097,7 @@ impl ComfyUi {
                 Failure::Other(e.context("the image job could not be recorded for cleanup"))
             })
         };
+        self.await_server(cancel, SERVER_WAIT).await?;
         self.preflight(cfg).await?;
         // `comfy_graph`'s masked arm needs the picture it masks; without one
         // the mask would drop out of the graph and the whole frame be redrawn.
@@ -1191,6 +1315,26 @@ impl ComfyUi {
     /// Drop a job from the server's history. Best effort.
     async fn forget(&self, id: &str) {
         let _ = self.post_json("history", &json!({"delete": [id]})).await;
+    }
+
+    /// Whether the server has loaded a model since it started
+    /// ([`loaded_from_stats`]); `None` if it cannot say - including a server
+    /// that is restarting, which is then asked for the cold cost.
+    async fn loaded(&self) -> Option<bool> {
+        let res = self
+            .http
+            .get(self.endpoint("system_stats").ok()?)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .ok()?;
+        // Any answer, even an error, is a server that is up.
+        self.answered.store(true, Ordering::Relaxed);
+        if !res.status().is_success() {
+            return None;
+        }
+        let stats: Value = res.json().await.ok()?;
+        loaded_from_stats(&stats)
     }
 
     /// Ask the server to drop its models and free the memory they held.
@@ -2697,7 +2841,12 @@ impl Tool for ImageGenerate {
         }
         // Before reading anything: up to a hundred megabytes of references is
         // itself a cost on the pool this check guards.
-        if let Err(why) = memory_verdict(mem_available_mb(), self.cfg.min_available_mb) {
+        let need = if self.cfg.min_available_mb == 0 {
+            0
+        } else {
+            memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb)
+        };
+        if let Err(why) = memory_verdict(mem_available_mb(), need) {
             return Ok(refused(why));
         }
         req.references = match read_references(ctx, &paths).await {
@@ -3143,6 +3292,156 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-pixels";
+
+    /// What a job asks for follows what the server holds: cold after a
+    /// restart or when unknown, and less by the load's cost once it has loaded
+    /// the model, keeping whatever margin the operator added.
+    #[test]
+    fn the_memory_asked_for_follows_what_the_server_holds() {
+        assert_eq!(memory_need_mb(Some(false), 19_456), 19_456);
+        assert_eq!(
+            memory_need_mb(None, 19_456),
+            19_456,
+            "unknown is never warm"
+        );
+        assert_eq!(memory_need_mb(Some(true), 19_456), 12_288);
+        // An operator's raised margin is kept, not capped at the default's.
+        assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
+        // A small figure is not computed into the "check off" sentinel: the
+        // unreadable-gauge refusal must survive it.
+        assert_eq!(memory_need_mb(Some(true), 4_000), 1);
+        assert!(memory_verdict(None, memory_need_mb(Some(true), 4_000)).is_err());
+        // Only the operator's own 0 switches it off.
+        assert_eq!(memory_need_mb(Some(true), 0), 0);
+    }
+
+    /// The stats as ComfyUI 0.37 answered them on 2026-10-02, fresh, loaded
+    /// and after `/free`; anything else reads as unknown.
+    #[test]
+    fn loaded_is_read_from_the_servers_stats() {
+        let stats =
+            |total: Value| json!({"devices": [{"name": "cuda:0", "torch_vram_total": total}]});
+        assert_eq!(loaded_from_stats(&stats(json!(0))), Some(false));
+        assert_eq!(
+            loaded_from_stats(&stats(json!(6_000_000_000u64))),
+            Some(true)
+        );
+        assert_eq!(loaded_from_stats(&stats(json!("5 GB"))), None);
+        assert_eq!(loaded_from_stats(&json!({"devices": []})), None);
+        assert_eq!(loaded_from_stats(&json!({"system": {}})), None);
+    }
+
+    /// A loopback address nothing listens on yet.
+    fn closed_port() -> std::net::SocketAddr {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = probe.local_addr().unwrap();
+        drop(probe);
+        addr
+    }
+
+    fn server_at(addr: std::net::SocketAddr) -> ComfyUi {
+        ComfyUi::for_config(&ImageConfig {
+            url: format!("http://{addr}"),
+            ..ImageConfig::default()
+        })
+        .unwrap()
+    }
+
+    /// A server restarting under a job (the idle reset, a deploy) is waited
+    /// for: the job asks again until the port answers, rather than telling
+    /// the model the image server is not running. Never seen before, it is
+    /// met within the short wait an idle reset fits in.
+    #[tokio::test]
+    async fn a_restarting_server_is_waited_for_not_reported_down() {
+        let addr = closed_port();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+                        )
+                        .await;
+                });
+            }
+        });
+        let started = Instant::now();
+        let waited = server_at(addr).await_server(None, SERVER_WAIT).await;
+        assert!(waited.is_ok(), "a server that came up was reported down");
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "answered before the server existed"
+        );
+    }
+
+    /// The wait is bounded: a server that never comes is reported, with the
+    /// connection error the tool turns into "Is the image server running?".
+    #[tokio::test]
+    async fn a_server_that_never_comes_is_reported_after_the_wait() {
+        let started = Instant::now();
+        let waited = server_at(closed_port())
+            .await_server(None, Duration::from_millis(800))
+            .await;
+        match waited {
+            Err(Failure::Other(e)) => assert!(
+                e.chain().any(|c| c.is::<reqwest::Error>()),
+                "not a connection error: {e:#}"
+            ),
+            Err(Failure::Cancelled) => panic!("reported as cancelled"),
+            Ok(()) => panic!("a closed port answered"),
+        }
+        assert!(started.elapsed() >= Duration::from_millis(700));
+    }
+
+    /// A server never seen by this process gets the short wait, not the full
+    /// one: a stopped service is reported in seconds. One that has answered
+    /// before is waited for in full, since it is restarting.
+    #[tokio::test]
+    async fn only_a_server_seen_before_is_waited_for_in_full() {
+        let unseen = server_at(closed_port());
+        let started = Instant::now();
+        assert!(unseen
+            .await_server(None, Duration::from_secs(60))
+            .await
+            .is_err());
+        assert!(
+            started.elapsed() < UNSEEN_WAIT + Duration::from_secs(2),
+            "a never-seen server was waited on for {:?}",
+            started.elapsed()
+        );
+
+        let seen = server_at(closed_port());
+        seen.answered.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        assert!(seen.await_server(None, UNSEEN_WAIT * 3).await.is_err());
+        assert!(
+            started.elapsed() >= UNSEEN_WAIT * 2,
+            "a server seen before was given up on after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A cancel ends the wait at once: a stopped picture does not sit out
+    /// the rest of a 90 s window.
+    #[tokio::test]
+    async fn a_cancel_ends_the_wait() {
+        let token = CancellationToken::new();
+        let stop = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stop.cancel();
+        });
+        let started = Instant::now();
+        let waited = server_at(closed_port())
+            .await_server(Some(&token), Duration::from_secs(60))
+            .await;
+        assert!(matches!(waited, Err(Failure::Cancelled)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     fn ctx(dir: &std::path::Path) -> ToolCtx {
         ToolCtx {
@@ -3623,6 +3922,39 @@ mod tests {
         assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
         assert_eq!(sniff_image(b"<svg xmlns=..."), None);
         assert_eq!(sniff_image(b"#!/bin/sh"), None);
+    }
+
+    /// The memory check asks the server what it holds when the check is on,
+    /// and not when it is off. Every other tool test switches the check off
+    /// (`min_available_mb: 0`), which is the blind spot review of #303 found:
+    /// a check reachable from no test can be miswired with the suite green.
+    #[tokio::test]
+    async fn the_memory_check_asks_the_server_what_it_holds() {
+        let ask = |min_available_mb: u64| async move {
+            let (url, seen) = fake(vec![json!({}), done()], "200 OK").await;
+            let dir = tempdir();
+            ImageGenerate::new(ImageConfig {
+                url,
+                min_available_mb,
+                unload_after_secs: 0,
+                ..Default::default()
+            })
+            .unwrap()
+            .polling_every(Duration::from_millis(10))
+            .call(json!({"prompt": "a fox", "seed": 7}), &ctx(&dir))
+            .await
+            .unwrap();
+            let asked = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("GET /system_stats"));
+            asked
+        };
+        // 1 MB is available on any machine, so the verdict passes and only
+        // the question is measured.
+        assert!(ask(1).await, "the check never asked the server");
+        assert!(!ask(0).await, "a switched-off check still asked");
     }
 
     #[tokio::test]
