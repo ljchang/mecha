@@ -1796,7 +1796,8 @@ pub struct VoiceConfig {
     pub stt_url: Option<String>,
     /// Where the voice worker accepts WebRTC offers; `/api/offer` proxies
     /// to it. Unset is [`VoiceConfig::DEFAULT_OFFER_TARGET`]; empty turns
-    /// voice calls off. `mecha serve --offer-target` overrides it per run.
+    /// the proxy off (calls stay on: a browser can reach the worker's own
+    /// door). `mecha serve --offer-target` overrides it per run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offer_target: Option<String>,
     /// The loopback port `mecha serve` mounts the voice facade on — the
@@ -1825,7 +1826,7 @@ impl VoiceConfig {
         self.stt_url.as_deref().unwrap_or(Self::DEFAULT_STT_URL)
     }
 
-    /// The offer target, or `None` when it is set empty: calls are off.
+    /// The offer target, or `None` when it is set empty: no proxy.
     pub fn offer_target(&self) -> Option<&str> {
         Some(
             self.offer_target
@@ -1844,7 +1845,7 @@ impl VoiceConfig {
     /// `[image] url` and `[documents] ocr_url` (review of #503): the owner's
     /// audio goes to `stt_url` and a call's media to `offer_target`, and
     /// dictation's whole argument is that the clip never leaves the box. An
-    /// empty `offer_target` stays legal — it turns calls off.
+    /// empty `offer_target` stays legal — it turns the proxy off.
     pub fn validate(&self) -> Result<()> {
         let loopback = |key: &str, raw: &str, why: &str| -> Result<()> {
             let url = reqwest::Url::parse(raw).with_context(|| format!("[voice] {key} `{raw}`"))?;
