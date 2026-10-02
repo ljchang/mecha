@@ -65,8 +65,9 @@ and, a turn later: *"Web should also be optional feature."*
 
 §1 is what exists today, read from `origin/main` at `259231d6`. §2 is how
 eight other systems handle the same problem, with sources. §3–§6 are the
-design. §7 is the rulings. §8 is what this deliberately does not do. §10
-(2026-10-02) is installing what a feature runs.
+design. §7 is the rulings. §8 is what this deliberately does not do. §9 is
+the build order, and §10 (2026-10-02) is installing what a feature runs,
+with step 7's own build order (§10.6).
 
 ---
 
@@ -1201,13 +1202,23 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    Installing runs only from a terminal: the web app still shows the command
    and never runs it (§8), and no tool exposes it to a model.
 4. **What is already running is provided, not installed (F8).** Before
-   planning, each sidecar's port is asked its health check
-   (`/health`, ComfyUI's `/system_stats`, the voice servers' own); an
-   answer, or a unit of that name that mecha did not write, makes it
-   *provided*, and the plan installs nothing for it. A file mecha did not
-   write is never overwritten. On this machine every sidecar answers, so
-   setup installs nothing here; moving this box onto managed copies is a
-   separate, explicit step, later.
+   planning, each sidecar is asked with **§4.3's load-free probes only, by
+   install method** — never a uniform `/health` on its port, because the
+   first connection to a socket-activated server *is* its cold start: the
+   systemd unit state for the on-demand servers (OCR, embeddings), whose
+   socket unit existing and being enabled is enough; `served_props` /
+   `GET /models` for the router; ComfyUI's `/system_stats`, carrying §4.3's
+   "to be confirmed load-free" caveat until 7e confirms it; the voice
+   servers' unit state. **An idle-stopped sidecar is provided, never
+   absent** — a probe that read it as absent would plan an install over it,
+   the llama-embed incident of 2026-08-19 that `llama-ocr.socket`'s header
+   records. A running answer, or a unit of that name mecha did not write,
+   makes it *provided*, and the plan installs nothing for it. A file mecha
+   did not write is never overwritten. On this machine every sidecar is
+   provided, so setup installs nothing here. Moving this box onto managed
+   copies is a separate, explicit step, later, and its first target is named:
+   `llama-local.service`, whose drop-in runs the working tree's
+   `scripts/start-router.sh` — the 2026-08-20 class item 2 exists to end.
 5. **Python through `uv`.** One pinned `uv` binary (sha256) under
    `~/.mecha/sidecars/uv/` when the machine lacks one; every venv is created
    by it from a hash-locked requirements file per platform, with its own
@@ -1252,6 +1263,25 @@ pin that sits:
 - **The shipped pin** is the newest engine the project has measured, bumped
   by a reviewed change, so a new user gets a known build and `--upgrade`
   gets them the latest.
+- **`--upgrade` has its own trust rule**, distinct from item 1's. A tag past
+  the shipped pin has no reviewed hash by construction, so the upgrade path
+  trusts **the release API's digest over TLS for a tag the owner names at a
+  terminal** (`--to <tag>`, or `latest` resolved and printed before the
+  download), and a build from an unreviewed tag trusts the commit GitHub
+  names for it. That is acceptable because the owner, at a terminal, is the
+  one choosing — not config, not a project file, not a model — and it is
+  the only path that trusts the serving channel's own hash. Every other
+  source still needs review.
+- **One engine serves three servers.** The router, the embeddings server and
+  the OCR server all run the `current` link (`LLAMA-SERVER.md` §Upgrading),
+  so a promotion reaches all three: the router at the gated restart, the
+  two on-demand servers at their next cold start, ungated. So the gate's
+  smoke test covers each — a chat completion, an embedding, **and an OCR
+  page** (the mtmd path the chat measurement does not exercise) — and a
+  failure in any keeps the old engine. `--rollback` swaps the link back
+  *and* stops the two on-demand backends (their sockets stay), so the next
+  request starts them on the restored engine instead of the one just
+  rolled back.
 
 ### 10.4 Choosing a model
 
@@ -1292,6 +1322,15 @@ Step 7 becomes these, each a PR that leaves every feature working:
 
 **How to know it works:** a clean container (no `~/.mecha`, no `scripts/`)
 runs `cargo install` then `mecha features enable ocr`, answers yes, and gets
-a working `document_read`; the same run with the port already answered
-installs nothing; and a hash mismatch on any source fails the install with
-nothing written.
+a working `document_read`. Beside it, each of these fails on the behaviour
+it guards against:
+
+- the same run with the sidecar already provided — running, or **installed
+  and idle-stopped** — installs nothing and wakes nothing;
+- a hash mismatch on any source fails the install with nothing written and
+  the switch untouched;
+- `--no-install` writes the switch and fetches nothing;
+- `--remove` deletes exactly the manifest's files and leaves a file mecha
+  did not write in the same directory;
+- `--upgrade` against a slower engine (a stub that answers slowly) declines
+  to promote and says so with both numbers.
