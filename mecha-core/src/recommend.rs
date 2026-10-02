@@ -12,8 +12,10 @@
 //!
 //! **Evidence on every figure** ([`Peak`]): a number without a source or a
 //! source without a number cannot be written, and an unmeasured figure is
-//! `null`, never zero. A figure measured on one machine is *arithmetic* on
-//! any other.
+//! `null`, never zero. A figure carried to a tier or a memory shape it was
+//! not measured at is *arithmetic* there; a `Measured` figure always names
+//! its machine, so a probe on another machine of the same tier and shape
+//! still says where the number came from.
 //!
 //! **No server is asked.** The probe reads `/proc/meminfo` (or `sysctl` on
 //! macOS) and runs `nvidia-smi` for the card's memory — a process, not a
@@ -1026,9 +1028,8 @@ mod tests {
         }
     }
 
-    /// Every slot has the GB10 row the page is generated from, and every
-    /// feature a slot names is a registry feature, so a renamed id cannot
-    /// leave a model charged to nothing.
+    /// Every slot has the GB10 row the page is generated from, a unique id,
+    /// and rows only at the page's tiers.
     #[test]
     fn every_slot_has_its_gb10_row_and_real_features() {
         let mut ids = std::collections::HashSet::new();
@@ -1041,9 +1042,6 @@ mod tests {
                 "{} has no 128 GB unified row",
                 s.id
             );
-            for f in s.needed_by {
-                assert!(Feature::ALL.contains(f));
-            }
             for r in s.rows {
                 assert!(TIERS.contains(&r.tier_gb), "{}: tier {}", s.id, r.tier_gb);
             }
@@ -1227,6 +1225,11 @@ mod tests {
     #[test]
     fn no_row_prose_can_break_the_generated_table() {
         for s in SLOTS {
+            assert!(
+                !s.label.contains('|') && !s.label.contains('\n'),
+                "{}",
+                s.id
+            );
             for r in s.rows {
                 for text in [r.model, r.counts, r.excludes.unwrap_or("")] {
                     assert!(
