@@ -383,7 +383,10 @@ machine from starting is one people turn off.
   the stub was *ever* swapped, not what the last upgrade did, since an
   in-place rebuild touches neither stub. So every upgrade appends one line to
   **`~/.local/bin/llama-server.upgrades`**: the date, the kind, the commit
-  before and after, and the rollback that undoes it. Read its last line:
+  before and after, and the rollback that undoes it. **Until that file has a
+  line, the answer is the first branch**: the last upgrade (2026-10-02's
+  reading) was the new-tree swap to `-next`, so the `.prev` stub is the
+  rollback. Otherwise read its last line:
   - **new tree** (the stub was swapped): restore the `.prev` stub, which
     loads the previous tree's `build/bin`. That tree must still be whole;
     never delete or rebuild it while its stub is the rollback.
@@ -392,10 +395,9 @@ machine from starting is one people turn off.
     Restoring the `.prev` stub here would go back two generations.
 
   Confirm against the commit, never an mtime: `VERSION.txt` and the record
-  name it. The record does not exist yet — the next upgrade starts it. Until
-  then: as of 2026-10-02 the last upgrade was the new-tree swap to `-next`
-  (`c841aeeb` → `95887577`, `REMOTE-SURFACE-DESIGN.md` records the night), so
-  today the `.prev` stub is the rollback. Either way a
+  name it. The record does not exist yet; the next upgrade starts it, with
+  the `-next` swap (`c841aeeb` → `95887577`, which `REMOTE-SURFACE-DESIGN.md`
+  records) as the line before it. Either way a
   rollback has to be a file you restore, not a commit you would have to
   rebuild under pressure. (FEATURES-DESIGN §10.3 makes this structural:
   side-by-side engine directories and a ledger.)
