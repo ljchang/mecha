@@ -168,7 +168,8 @@ class NothingIsCancelled(unittest.TestCase):
         self.assertEqual(up.late_turns, 2, "a span was lost")
         self.assertEqual([f.messages[0]["content"].endswith("first span") for f in inp.frames], [True, True])
 
-    def test_live_audio_queues_behind_the_turn_it_closed(self):
+    def test_unwired_live_audio_queues_behind_the_turn_it_closed(self):
+        # The fakes' path (`deliver` unset); `HandedOver` measures the wired one.
         async def scenario():
             inp, stt = FakeInput(), SlowSTT("what I said before")
             up = UplinkAudio(inp, LinkWatch(), stt)
@@ -465,31 +466,60 @@ class AcrossAGap(unittest.TestCase):
 
 
 class HandedOver(unittest.TestCase):
-    """With the call's queue of turns wired (`deliver`), a late turn is
-    handed to it rather than pushed from the uplink's own task, so it can
-    never land inside a typed turn's answer (review of #499, pass 5)."""
+    """As `run_bot` wires it: the uplink hands its late turn to the call's
+    one queue of turns (`TypedTurns.deliver`), so it never lands inside a
+    typed turn's answer (review of #499, pass 5) - and still goes before
+    the live audio that closed its span (§2.5; pass 6, whose finding was
+    that the ordering test above only measured the unwired path)."""
 
-    def test_a_late_turn_goes_to_the_calls_one_queue(self):
-        handed = []
+    def wired(self, inp, stt, busy=lambda: False, late_secs=10.0):
+        from worker import TypedTurns
+
+        up = UplinkAudio(inp, LinkWatch(), stt)
+        turns = TypedTurns(None, busy, log=lambda _: None, late_secs=late_secs)
+        up.deliver = turns.deliver
+        return up, asyncio.get_running_loop().create_task(turns.run())
+
+    def test_live_audio_queues_behind_the_turn_it_closed(self):
+        async def scenario():
+            inp, stt = FakeInput(), SlowSTT("what I said before")
+            up, task = self.wired(inp, stt)
+            await up.on_start({"tz_offset_min": 0})
+            await up.on_audio(opus_batch(0, 0, 130_000, n_frames=25))
+            await up.on_audio(opus_batch(1, 500, 0))  # live: enqueues flush, then audio
+            await asyncio.wait_for(stt.started.wait(), 2.0)
+            before = list(inp.order)
+            stt.gate.set()
+            await up.drain()
+            task.cancel()
+            return before, inp
+
+        before, inp = run(scenario())
+        self.assertEqual(before, [], "live audio was pushed while its predecessor was still transcribing")
+        self.assertEqual(inp.order[0], "LLMMessagesAppendFrame", "the live audio overtook the late turn")
+        self.assertIn("what I said before", inp.frames[0].messages[0]["content"])
+        self.assertGreater(len(inp.audio), 0)
+
+    def test_an_answer_under_way_holds_the_live_audio_too(self):
+        """The bot is answering when the span closes: the late turn waits
+        for it (bounded), and the live speech waits behind the late turn
+        rather than overtaking it."""
 
         async def scenario():
             inp, stt = FakeInput(), FakeSTT("what I said in the tunnel")
-            up = UplinkAudio(inp, LinkWatch(), stt)
-            up.deliver = handed.append
+            answering = {"until": asyncio.get_running_loop().time() + 0.4}
+            busy = lambda: asyncio.get_running_loop().time() < answering["until"]  # noqa: E731
+            up, task = self.wired(inp, stt, busy=busy)
             await up.on_start({"tz_offset_min": 0})
-            await up.on_audio(opus_batch(0, 300_000, 200_000, n_frames=25))
-            await up.flush_late()
+            await up.on_audio(opus_batch(0, 0, 130_000, n_frames=25))
+            await up.on_audio(opus_batch(1, 500, 0))
             await up.drain()
-            pushed_before = len(inp.frames)
-            for send in handed:
-                await send()
-            return inp, pushed_before
+            task.cancel()
+            return inp
 
-        inp, pushed_before = run(scenario())
-        self.assertEqual(pushed_before, 0, "the uplink pushed the late turn itself")
-        self.assertEqual(len(handed), 1)
-        self.assertEqual(len(inp.frames), 1)
-        self.assertIn("what I said in the tunnel", inp.frames[0].messages[0]["content"])
+        inp = run(scenario())
+        self.assertEqual(inp.order[0], "LLMMessagesAppendFrame", "the live audio overtook the late turn")
+        self.assertGreater(len(inp.audio), 0)
 
 
 class Injection(unittest.TestCase):
