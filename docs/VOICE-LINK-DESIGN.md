@@ -259,6 +259,25 @@ on arrival. Age decides which lane it takes:
   applied to speech — a run's input surviving the run — and it is what
   keeps "the outage outlasted the conversation" from meaning "what was
   said is gone".
+- **Typed** (since #499): a line the owner types into a live call, sent on
+  the same data channel (`{"t": "typed"}`). This is the channel's one field
+  that reaches the agent, and it reaches it the only way speech does: as a
+  user turn appended to the same context (`LLMMessagesAppendFrame`), so it
+  sits behind the hosted door, the persona lock and the crisis layer by
+  construction. It is never a setting or a command.
+
+Late and typed turns share **one consumer** (`TypedTurns`): every turn
+put to the model outside live audio goes through it, in order, and none
+is pushed over an answer under way (`answer_pending`: the model
+answering, the bot speaking, or the model done less than
+`TYPED_SETTLE_SECS` ago, which is the gap before a short answer's first
+audio). A late turn goes first and waits least. The live audio that
+closed its span is queued behind the flush on the uplink's own queue, so
+the flush awaits the delivery and the consumer bounds a late turn's wait
+at `LATE_BOT_WAIT_SECS`. A typed line waiting on an answer steps aside for
+it, and a turn just pushed whose answer has not begun still counts as in
+the way. Typed lines are bounded at `TYPED_QUEUE_MAX`; the page is told
+when one is dropped (`typed-dropped`). Late turns are never dropped.
 
 The boundary is a constant because it is a judgement: past two minutes the
 assistant is not *in conversation* with what it is hearing, and pretending
