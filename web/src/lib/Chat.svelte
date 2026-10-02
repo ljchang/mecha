@@ -1162,12 +1162,15 @@
     // A fresh session's mic starts live; mute and typing carry over a
     // reconnect, so the track is set from them once it exists (review of
     // #499, pass 6).
-    vSession.connect().then(applyMic, (e) => {
-      vState = {
-        name: 'idle',
-        label: `could not connect: ${e?.message ?? e} — tap the logo to try again`,
-      };
-    });
+    vSession
+      .connect()
+      .then(applyMic)
+      .catch((e) => {
+        vState = {
+          name: 'idle',
+          label: `could not connect: ${e?.message ?? e} — tap the logo to try again`,
+        };
+      });
   }
 
   // The state label has said "tap to reconnect" since voice shipped and
