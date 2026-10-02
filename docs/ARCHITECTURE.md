@@ -1303,6 +1303,15 @@ module.
       is left, unused parts passed on — so owner facts can never price out
       the persona's own canon; a section cut, even to nothing, keeps its
       heading and says how many it left out (review of #477).
+    - **A record is dated by when it was said**, in the owner's day:
+      `Fact::said_at` / `Episode::said_at` take `valid_from`, else the
+      episode's own span, else the start of the source chat
+      (`Source::chat_began`, read from the session id), and the write night
+      only last; `local_day` renders it in `[agent] timezone`. Dated by the
+      write, the first real night (2026-10-02) showed a six-day fever from
+      30 September as that morning's news, and a UTC day put most of the
+      owner's late-evening chats a day ahead. Episode order and per-turn
+      recency use the same date.
     - **Two stems, chosen by the harness.** `MEMORY_STEM` arms `private`;
       `UNTRUSTED_MEMORY_STEM` (any record of untrusted origin folded) arms
       `private` and `untrusted`. `Taint::arm_for_content` re-reads the
@@ -1363,6 +1372,15 @@ module.
       `RECALL_EMBED_WAIT` (8 s, past the on-demand server's cold start);
       slower or down, recall is by words. `persona memory write` embeds what
       has no vector after writing.
+  - **The curation page** (§9.8): the editor's Memories tab, over
+    `GET`/`POST /api/personas/{name}/memory` (`PersonaChats::memory`,
+    `memory_act`). Acts are a closed set (`MemoryAct`: approve, pin, unpin,
+    correct, forget, share, unshare), each the same core call the CLI's
+    owner door makes, and each answers with the page as it now stands. The
+    lock holds as for every persona route (hidden answers as missing), and
+    a page shows and unshares only copies its own persona learned, so a
+    locked persona's shared facts never surface through another's page. No
+    tool reaches the route, so no model edits memory.
   - **The memory tools** (`persona::memory_tools`, §9.7 "on demand"):
     `memory_search` and `memory_read`, inserted in `setup::persona_agent`
     beside the file tools, and only if they can never send.

@@ -438,6 +438,14 @@ git -C ~/Github/mecha status --porcelain          # expect: empty
   with `sha256sum` got a different number for the same bytes and nearly
   read it as "the file changed", which would have restarted `llama-local`
   for nothing. `git diff --quiet A B -- path` is the algorithm-free form.
+- **`scripts/mtp-graft.py` is a launch input too, through a file it built.**
+  The uncensored Qwen3.6 preset serves a graft whose name hashes that script
+  (`start-router.sh` `graft_path`), so a move that changes it retires the
+  graft: before restarting `llama-local`, run the router script with a stub
+  server (`LLAMA_SERVER=/bin/echo XDG_RUNTIME_DIR=<scratch>`) and run the
+  "to graft its head" line it prints, if any. Skipped, the restart serves
+  that arm without MTP (~70 against ~100 tok/s) and says so only in the
+  journal (docs/LLAMA-SERVER.md §Router mode).
 
 Verify the worker the same way as every other unit: its own `Uvicorn
 running on http://127.0.0.1:7860` line, from a journal window that opens

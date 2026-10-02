@@ -85,8 +85,22 @@ pub fn carries_now(messages: &[Message]) -> bool {
     !messages.iter().any(|m| m.role == Role::Assistant) && !carries(messages)
 }
 
-fn day(stamp: &str) -> &str {
-    stamp.get(..10).unwrap_or(stamp)
+/// The owner's calendar day of a stored stamp, in `[agent] timezone` (`None`
+/// is the machine's own zone, as `Config::timezone` documents). Stamps are
+/// UTC, and a chat at 23:00 in New York is already tomorrow there; the
+/// owner chats late, so a UTC day would date most evenings a day ahead. A
+/// stamp that will not parse keeps its first ten characters.
+pub fn local_day(stamp: &str, tz: Option<chrono_tz::Tz>) -> String {
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(stamp) else {
+        return stamp.get(..10).unwrap_or(stamp).to_owned();
+    };
+    match tz {
+        Some(tz) => at.with_timezone(&tz).format("%Y-%m-%d").to_string(),
+        None => at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string(),
+    }
 }
 
 /// The owner's `about-me.md` at each level `p` reads (§4.5): everyone's, then
@@ -173,7 +187,7 @@ fn clip(text: &str, max: usize) -> String {
 /// rather than dropped; the recent episodes have a third of their own, so
 /// they are a floor however many facts there are; the facts share what is
 /// left, newest and pinned first. A section a budget cut short says so.
-pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
+pub fn chat_start(store: &Store, p: &Persona, tz: Option<chrono_tz::Tz>) -> Result<Recalled> {
     let s = &p.settings.memory;
     let third = BUDGET_CHARS / 3;
     let mut untrusted = false;
@@ -235,15 +249,11 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
             if share < 40 {
                 break;
             }
-            let when = e
-                .ended_at
-                .as_deref()
-                .or(e.started_at.as_deref())
-                .unwrap_or(&e.ingested_at);
+            let when = e.said_at();
             // Its id, so the persona can read it in full with `memory_read`.
             let mut line = format!(
                 "- {} · [{}] {}",
-                day(when),
+                local_day(&when, tz),
                 super::memory_tools::short(&e.uid),
                 e.summary
             );
@@ -274,7 +284,7 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
     let rows = |facts: Vec<Fact>| -> Vec<Row> {
         facts
             .into_iter()
-            .map(|f| (day(&f.ingested_at).to_owned(), f.text, f.origin))
+            .map(|f| (f.said_at(), f.text, f.origin))
             .collect()
     };
 
@@ -334,7 +344,7 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
                 shared
                     .iter()
                     .filter(|f| f.from_table == table)
-                    .map(|f| (day(&f.shared_at).to_owned(), f.text.clone(), f.origin)),
+                    .map(|f| (f.said_at(), f.text.clone(), f.origin)),
             );
             dated.sort_by(|a, b| b.0.cmp(&a.0));
             let mut out = rows(pinned);
@@ -366,7 +376,11 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
         let total = facts.len();
         let mut lines = Vec::new();
         for (date, text, origin) in facts {
-            if take(&mut lines, &mut share, format!("- {date} · {text}")) {
+            if take(
+                &mut lines,
+                &mut share,
+                format!("- {} · {text}", local_day(&date, tz)),
+            ) {
                 untrusted |= origin == Origin::ModelUntrusted;
             }
         }
@@ -459,6 +473,7 @@ pub fn per_turn(
     message: &str,
     qvec: Option<&[f32]>,
     already: &str,
+    tz: Option<chrono_tz::Tz>,
 ) -> Result<Option<MemoryBlock>> {
     if !would_search(store_dir, p, message) {
         return Ok(None);
@@ -491,7 +506,7 @@ pub fn per_turn(
                 Recallable::Facts(_) => String::new(),
             };
             clip(
-                &format!("- {} · {what}{id}: {}", day(&r.date), r.text),
+                &format!("- {} · {what}{id}: {}", local_day(&r.date, tz), r.text),
                 share,
             )
         })

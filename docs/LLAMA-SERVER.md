@@ -108,6 +108,13 @@ came from), 300 generated tokens, single-stream median of 3:
 | `-c 524288 -np 2` | 85.51 | 107.39 | 40 GB |
 | `-c 1048576 -np 4` | **83–85** | **135–140** | 53 GB |
 
+The memory column's method is not recorded, so it does not reconcile with
+later readings from this page alone. On 2026-10-02 `nvidia-smi` gave
+**41.5 GiB** for the `-np 4` server's GPU memory alone; host memory —
+including a prompt cache that fills over hours and never shrinks (`-cram`,
+below) — is outside that figure. `hardware.md` cites the `nvidia-smi` figure
+and says what it leaves out.
+
 Four slots cost **~5% of single-stream speed** and return **~1.6× throughput**.
 On a 500-token answer the interactive cost is under a second.
 
@@ -364,13 +371,36 @@ machine from starting is one people turn off.
 
 - **Upgrading llama.cpp: the build tree *is* the deployment.**
   `~/.local/bin/llama-server` is a 72 KB dynamically-linked stub that resolves
-  `libllama.so` / `libggml.so` from **`~/llama.cpp/build/bin/`**, not from
-  `~/.local/lib` — whose copies are stale and load nothing. So `cmake --build`
-  replaces what a restart will run, and "rebuild" and "deploy" are not
-  separable steps here. Roll back by restoring `build/bin.prev` (the whole 75 MB
-  library set, with a `VERSION.txt` naming the commit) and
-  `~/.local/bin/llama-server.prev` — a rollback has to be a file you restore,
-  not a commit you would have to rebuild under pressure.
+  `libllama.so` / `libggml.so` from **the build tree its RUNPATH names**, not
+  from `~/.local/lib` — whose copies are stale and load nothing. Ask the
+  stub, don't trust this line: `readelf -d ~/.local/bin/llama-server | grep
+  RUNPATH`. On 2026-10-02 it named **`~/llama.cpp-next/build/bin`**
+  (`95887577`); `~/llama.cpp` (`c841aeeb`) is the tree before it. So `cmake
+  --build` in the named tree replaces what a restart will run, and "rebuild"
+  and "deploy" are not separable steps here. **Which rollback applies is
+  decided by the trees, never by a version string** — a stub's `--version`
+  names the commit it was compiled at, not the libraries it loads (on
+  2026-10-02 the `.prev` stub reported `a4ce259` while loading `c841aeeb`'s
+  libraries). Look in the tree the live stub's RUNPATH names:
+  - **it has a `build/bin.prev`** — that tree was last rebuilt in place:
+    restore `build/bin.prev` (the whole library set; its `VERSION.txt` names
+    the commit it holds). Restoring the `.prev` stub here would go back two
+    generations. An in-place rebuild must therefore always leave a
+    `build/bin.prev`, and a rollback that consumes it leaves none.
+  - **it has none** — the last upgrade swapped the stub to a new tree:
+    restore `~/.local/bin/llama-server.prev`, which loads the previous
+    tree's `build/bin`. That tree must still be whole; never delete or
+    rebuild it while its stub is the rollback.
+
+  On 2026-10-02 `~/llama.cpp-next` had no `build/bin.prev`, so the `.prev`
+  stub (onto `~/llama.cpp`, `c841aeeb`) was the rollback. Every upgrade also
+  appends one line to **`~/.local/bin/llama-server.upgrades`** — the date,
+  the kind, the commits before and after — so the trees can be checked
+  against a record; it does not exist yet, and the next upgrade starts it.
+  It is the stopgap until FEATURES-DESIGN §10.3's side-by-side directories
+  and ledger (step 7b) retire both it and this procedure. Either way a
+  rollback has to be a file you restore, not a commit you would have to
+  rebuild under pressure.
 
   **Replace the stub with `mv`, never `cp`.** Every llama-server here —
   `llama-local` (:8080) and the on-demand backends behind :8081 and :8085 —
@@ -520,6 +550,32 @@ Measured on 2026-09-26 against `c841aee`, unless a bullet names another build:
   that pair is the build's +14%; the 21.1 above is the same file on the
   new build through a router, a separate run.
   The router serves the UD-Q4_K_XL and both uncensored builds.
+- **The Qwen3.6 uncensored arm speculates from a grafted head.** HauhauCS's
+  conversion dropped the MTP head; it differs from production's file by
+  exactly `blk.40.*` (20 tensors, 504 MiB), `block_count` and
+  `nextn_predict_layers`, so `scripts/mtp-graft.py` copies the head across
+  and `start-router.sh` serves the result with `draft-mtp`. Measured
+  2026-10-02 on `95887577`, single stream, `-c 32768`, thinking off, warm:
+  69.9 tok/s without speculation, 98.9 at n-max 3 (0.74 acceptance), 99.8 at
+  n-max 2 (0.81). The stock head guesses the abliterated model's prose worst
+  (0.47–0.52 at 3), which is why it drafts 2. Speculation changes speed, never
+  output: the target verifies every drafted token. **A graft is derived, not
+  downloaded**, so its file name carries all three inputs' hashes — both
+  blobs and `mtp-graft.py` itself (`graft_path`): a re-upload or a script fix
+  names a file not built yet, and the preset falls back to the plain file
+  with the line that builds it, rather than serving the old graft under an
+  unchanged alias. Grafts live in `MECHA_GRAFT_DIR` (default
+  `~/models/mtp-graft`). A damaged graft does not fall back: the graft *is*
+  the weights, so it fails the child's start; only an empty file is refused.
+  **After any edit to `mtp-graft.py`, rebuild before restarting the router**
+  — the edit retires the graft, and a restart without the rebuild drops the
+  arm to ~70 tok/s with only a `warn` in `llama-local`'s journal. Nothing
+  prunes retired grafts or `.partial` leftovers (~21 GB each): delete by hand
+  every file in `MECHA_GRAFT_DIR` but the one the router's line names.
+  Four slots with MTP are unmeasured (two attempts contaminated by a busy
+  GPU); if they regress, drop the preset's two `SPEC` lines. **The first request of
+  a fresh child is warmup** — 3–4× slower on the same prompts — so discard it
+  before reading a rate.
 - **`reasoning-preserve` is pinned in every Qwen preset**, because the new
   build flipped its default (#28174: "template default" → enabled) and the
   templates disagree about what unset means. Qwen3.6:

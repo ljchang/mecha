@@ -103,7 +103,7 @@ fn fact(dir: &Path, table: Table, text: &str, origin: Origin) {
 }
 
 async fn search(dir: &Path, query: &str) -> ToolOutput {
-    MemorySearch::new(dir.to_path_buf(), "mara".into(), None)
+    MemorySearch::new(dir.to_path_buf(), "mara".into(), None, None)
         .call(json!({ "query": query }), &ToolCtx::default())
         .await
         .unwrap()
@@ -215,7 +215,7 @@ fn reading_a_conversation_returns_its_turns_and_carries_their_taint() {
     );
     let p = persona(&dir);
 
-    let r = read_episode(&dir, &p, short(&clean)).unwrap();
+    let r = read_episode(&dir, &p, short(&clean), None).unwrap();
     assert!(!r.untrusted);
     assert!(
         r.text
@@ -226,7 +226,7 @@ fn reading_a_conversation_returns_its_turns_and_carries_their_taint() {
     assert!(r.text.contains("Holdfast it is."));
     assert!(!r.text.contains("sings"), "only its own turns: {}", r.text);
 
-    let r = read_episode(&dir, &p, short(&web)).unwrap();
+    let r = read_episode(&dir, &p, short(&web), None).unwrap();
     assert!(r.untrusted, "the turns read from outside carry it");
     assert!(r.text.contains("kelp sings at dawn"));
 }
@@ -237,7 +237,7 @@ fn a_turn_no_checkpoint_covers_is_read_as_from_outside() {
     transcript(&dir, "c1", &[owner("hello there"), says("hi")]);
     let uid = episode(&dir, "c1", 0, 1, "Said hello.", Origin::ModelClean);
     assert!(
-        read_episode(&dir, &persona(&dir), short(&uid))
+        read_episode(&dir, &persona(&dir), short(&uid), None)
             .unwrap()
             .untrusted
     );
@@ -249,15 +249,15 @@ fn an_id_or_a_record_that_could_reach_elsewhere_is_refused() {
     transcript(&dir, "c1", &[owner("hello"), says("hi"), checkpoint(false)]);
     let p = persona(&dir);
     for bad in ["", "zz", "../../etc", "abc", "not-hex-at-all"] {
-        assert!(read_episode(&dir, &p, bad).is_err(), "`{bad}`");
+        assert!(read_episode(&dir, &p, bad, None).is_err(), "`{bad}`");
     }
     // A record naming a chat that is not a session id never becomes a path.
     let uid = episode(&dir, "../escape", 0, 1, "Odd.", Origin::ModelClean);
-    let err = read_episode(&dir, &p, short(&uid)).unwrap_err();
+    let err = read_episode(&dir, &p, short(&uid), None).unwrap_err();
     assert!(err.contains("cannot be opened"), "{err}");
     // A conversation gone from disk: the memory of it is what is left.
     let gone = episode(&dir, "c2", 0, 1, "Gone.", Origin::ModelClean);
-    let err = read_episode(&dir, &p, short(&gone)).unwrap_err();
+    let err = read_episode(&dir, &p, short(&gone), None).unwrap_err();
     assert!(err.contains("no longer kept"), "{err}");
 }
 
@@ -275,7 +275,7 @@ fn a_long_conversation_is_cut_once_and_keeps_its_end() {
         ],
     );
     let uid = episode(&dir, "c1", 0, 1, "A long talk.", Origin::ModelClean);
-    let r = read_episode(&dir, &persona(&dir), short(&uid)).unwrap();
+    let r = read_episode(&dir, &persona(&dir), short(&uid), None).unwrap();
     assert!(r.text.chars().count() < MAX_READ_CHARS + 400);
     assert!(r.text.contains("of the middle omitted"), "{}", r.text);
     // The end is where it landed: one cut, not the head of a cut.
@@ -321,11 +321,11 @@ fn a_files_only_persona_reads_the_words_and_never_what_a_tool_brought_back() {
     let mut p = persona(&dir);
 
     p.settings.files.answers = Answers::Open;
-    let open = read_episode(&dir, &p, short(&uid)).unwrap();
+    let open = read_episode(&dir, &p, short(&uid), None).unwrap();
     assert!(open.text.contains("kelp sings at dawn"), "{}", open.text);
 
     p.settings.files.answers = Answers::Files;
-    let r = read_episode(&dir, &p, short(&uid)).unwrap();
+    let r = read_episode(&dir, &p, short(&uid), None).unwrap();
     for gone in ["kelp sings at dawn", "kelp song", "web_search", "tidepools"] {
         assert!(!r.text.contains(gone), "`{gone}` came back: {}", r.text);
     }
@@ -358,8 +358,8 @@ fn the_tools_are_offered_as_the_memory_switches_say() {
 #[test]
 fn neither_tool_can_send_anywhere() {
     let dir = world();
-    let search = MemorySearch::new(dir.clone(), "mara".into(), None);
-    let read = MemoryRead::new(dir, "mara".into());
+    let search = MemorySearch::new(dir.clone(), "mara".into(), None, None);
+    let read = MemoryRead::new(dir, "mara".into(), None);
     for caps in [search.capabilities(), read.capabilities()] {
         assert_eq!(caps.egress, crate::tool::Egress::None);
         assert!(caps.private_data && caps.untrusted_input);
@@ -367,7 +367,7 @@ fn neither_tool_can_send_anywhere() {
 }
 
 async fn read(dir: &Path, id: &str) -> ToolOutput {
-    MemoryRead::new(dir.to_path_buf(), "mara".into())
+    MemoryRead::new(dir.to_path_buf(), "mara".into(), None)
         .call(json!({ "id": id }), &ToolCtx::default())
         .await
         .unwrap()
