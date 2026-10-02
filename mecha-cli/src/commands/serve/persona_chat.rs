@@ -675,7 +675,7 @@ impl PersonaChats {
         Ok(serde_json::json!({ "name": p.name, "version": p.state.version }))
     }
 
-    /// [`Personas::files_in`] with no voice list, which is what the tests
+    /// [`PersonaChats::files_in`] with no voice list, which is what the tests
     /// that are not about voices need.
     #[cfg(test)]
     pub fn files(
@@ -750,7 +750,7 @@ impl PersonaChats {
         Ok(serde_json::Value::Object(out))
     }
 
-    /// [`Personas::save_in`] with no voice list, which is what the tests
+    /// [`PersonaChats::save_in`] with no voice list, which is what the tests
     /// that are not about voices need.
     #[cfg(test)]
     pub fn save(
@@ -763,9 +763,11 @@ impl PersonaChats {
     }
 
     /// Save one owner file, verbatim, and take a version (`write_owner_file`).
-    /// A form save is held to the voices listed now, not when the page
-    /// loaded: a voice the worker has since lost is refused here rather than
-    /// at the next call.
+    /// A form save that picks a voice is held to the voices listed now, not
+    /// when the page loaded: a voice the worker has since lost is refused
+    /// here rather than at the next call — and a list that could not be read
+    /// refuses with its reason, never as "not one of the choices", which
+    /// would say the worker lacks a voice nobody could ask it about.
     pub fn save_in(
         &self,
         library: &LibraryState,
@@ -831,6 +833,11 @@ impl PersonaChats {
                 // the owner picked a portrait.
                 if hidden.is_some() && changes.get("character").is_some_and(|v| v.is_null()) {
                     changes.remove("character");
+                }
+                if let Some(why) = voices.unread.as_deref().filter(|_| picks_voice(&changes)) {
+                    return Err(Refusal::Bad(format!(
+                        "a voice cannot be picked now — {why}; nothing was saved"
+                    )));
                 }
                 let form = self.form(library, body.unlock.as_deref(), voices);
                 mecha_core::persona::edit_settings(&self.store, &p.name, &form, &changes, &base)
@@ -3768,7 +3775,7 @@ pub async fn files(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let voices = form_voices(&state).await;
+    let voices = form_voices(&state, Some(OPEN_WAIT)).await;
     respond(
         chat.personas
             .files_in(&state.library, &name, q.unlock.as_deref(), &voices),
@@ -3785,20 +3792,44 @@ pub async fn save(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let voices = form_voices(&state).await;
+    // Only a voice being picked is checked against the list (`tomlform`
+    // checks the paths a save sends), so no other save asks the worker. One
+    // that does waits as long as the worker does: a TTS still loading is
+    // slow, not voiceless, and the owner is waiting on this save.
+    let voices = match &body.changes {
+        Some(changes)
+            if body.file == mecha_core::persona::OwnerFile::Settings && picks_voice(changes) =>
+        {
+            form_voices(&state, None).await
+        }
+        _ => Default::default(),
+    };
     respond(chat.personas.save_in(&state.library, &name, body, &voices))
 }
 
+/// Does this form save set a voice? Leaving it out or clearing it (`null`,
+/// the worker's own voice) needs no list.
+fn picks_voice(changes: &serde_json::Map<String, serde_json::Value>) -> bool {
+    changes.get("voice").is_some_and(|v| !v.is_null())
+}
+
+/// How long opening the editor waits for the voice list. Shorter than the
+/// worker's own wait, because the editor is one page of many fields: a slow
+/// worker costs the voice choice there, and a save that picks one waits in
+/// full.
+const OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The voices the settings form offers: the worker's list
 /// (`runner_voices`, as Library → Voices reads it), or why it could not be
-/// had. Bounded tighter than the worker's own wait, because the editor
-/// waits on it and the field is one of many: a slow worker costs the voice
-/// choice, not the page.
-async fn form_voices(state: &super::WebState) -> mecha_core::persona::VoiceChoices {
-    const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-    let listed = match &state.offer_target {
-        None => Err("voice calls are not wired on this serve"),
-        Some(target) => tokio::time::timeout(WAIT, super::runner_voices(target))
+/// had. `wait` caps it below the worker's own wait; `None` is the worker's.
+async fn form_voices(
+    state: &super::WebState,
+    wait: Option<std::time::Duration>,
+) -> mecha_core::persona::VoiceChoices {
+    let listed = match (&state.offer_target, wait) {
+        (None, _) => Err("voice calls are not wired on this serve"),
+        (Some(target), None) => super::runner_voices(target).await,
+        (Some(target), Some(wait)) => tokio::time::timeout(wait, super::runner_voices(target))
             .await
             .unwrap_or(Err("the voice worker did not answer in time")),
     };
@@ -8061,6 +8092,29 @@ mod tests {
             "{field}"
         );
         assert_eq!(files["settings"]["form"]["values"]["voice"], "vctk_p297");
+
+        // And a save that picks one then is refused with that reason, not
+        // as a voice the worker lacks — nothing written. A save that leaves
+        // the voice alone still goes through.
+        let base = &files["settings"]["digest"];
+        let (status, why) = read(save(state(None), "default", base).await).await;
+        assert_ne!(status, StatusCode::OK, "a voice was picked from no list");
+        assert!(why.contains("not wired"), "{why}");
+        assert!(!why.contains("not one of the choices"), "{why}");
+        let toml = std::fs::read_to_string(w.store().join("mara/persona.toml")).unwrap();
+        assert!(toml.contains("voice = \"vctk_p297\""), "{toml}");
+        let (status, text) = read(
+            super::save(
+                State(state(None)),
+                axum::extract::Path("mara".to_string()),
+                Json(body(serde_json::json!({
+                    "file": "settings", "changes": { "safety.dose": false }, "base": base,
+                }))),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
     }
 
     /// An offer to a persona chat (§11): refused as the page is while the
