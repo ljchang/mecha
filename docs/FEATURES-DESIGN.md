@@ -887,7 +887,7 @@ pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
     pub memory: Memory,           // the column and its cost, as one value (F5)
     pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
-    pub fetch: &'static str,      // "hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF"
+    pub source: Source,           // repository, file(s), revision, sha256, size (§10.4)
     pub residency: Residency,     // Resident | OnDemand | PerRequest
 }
 
@@ -956,7 +956,7 @@ genuinely not known yet, and the output must say so rather than guess.
 
 ## 7. Rulings
 
-| # | Decision | Ruling (2026-09-30) |
+| # | Decision | Ruling (F1–F6 2026-09-30; F7–F10 2026-10-02) |
 |---|---|---|
 | **F1** | What turns a feature on | **A `[features]` table of bools** in the global config, every feature listed. The owner, overruling the doc's recommendation of table presence: *"The problem with table existing is that users need to know what features are available. I feel like a registry or having to toggle bools is a better design."* §5's three rules are what keep the bool from being a second source of truth |
 | **F2** | Off in the web app | **Removed from navigation**, as the owner asked in the opening message; Settings → Features lists everything. `Unready` and `Unknown` are shown with a banner, never removed (§4.1) |
@@ -1072,13 +1072,18 @@ Each step is a PR, and each leaves every surface working.
    gains F5's discrete column, with every discrete cell marked `Arithmetic`
    or `Unmeasured` until someone measures one. The Mac note that "unified
    memory has no separate GPU pool" stays: it is scoped to Macs and still
-   true (#435). Fix the embeddings page.
+   true (#435). Fix the embeddings page. The rows carry their pinned
+   `Source` (§10.4), not a download command, so 7a's downloader can fetch
+   what setup lists.
 7. **Installers** — §10, which replaced this step's first form (one
    `scripts/<feature>/install.sh` per feature) on 2026-10-02: a user who ran
    `cargo install` has no `scripts/`, so installers ship in the binary,
    enabling a feature offers them, and they fetch the sidecar software and a
-   chosen model. Split 7a–7f (§10.6). Copying rather than symlinking, and no
-   `/home/<user>` or checkout path in any unit, carry over.
+   chosen model. Split 7a–7f (§10.6). What carries over is the intent of
+   "copy, never symlink": **nothing mecha writes points into a checkout**,
+   and no unit names `/home/<user>`. A link *between* two mecha-owned
+   directories under `~/.mecha/sidecars/` is allowed — it is how an engine
+   is promoted and rolled back (§10.3).
 8. **How to add a feature, written down** — the owner, 2026-09-30: *"we
    should make sure we document design pattern for adding new features in
    docs and Claude.md."* A new `docs/ARCHITECTURE.md` §Features holds the
@@ -1160,7 +1165,7 @@ model, not mecha's own, that a feature needs running.
 
 | Sidecar | Features | How it got here | In the repo |
 |---|---|---|---|
-| llama.cpp (`llama-server`) | the chat model (every feature), `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md` names `~/llama.cpp/build/bin` where the stub's RUNPATH is `~/llama.cpp-next/build/bin` |
+| llama.cpp (`llama-server`) | the chat model (every feature), `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md`'s upgrade bullet named `~/llama.cpp/build/bin` where the stub's RUNPATH is `~/llama.cpp-next/build/bin` (corrected there in this change) |
 | the router and its chat model | every feature | `llama-local.service`, box only; its drop-in runs the *working tree's* `scripts/start-router.sh` | the launcher; no unit; `start-router.sh` prints an `hf download` line when the model is missing |
 | embeddings server | `graph`, persona file search | the always-on unit is box only; `install-embed.sh` converts it to on demand and refuses to run without it | the launcher and the on-demand units |
 | OCR server | `ocr` | `scripts/llama/install.sh` | **yes** — units, launcher, `--remove`; the model is a comment, unpinned |
@@ -1209,7 +1214,12 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    off never uninstalls; `mecha setup <feature> --remove` does, and keeps
    downloaded models unless `--models` is given, because the cache is shared.
    Installing runs only from a terminal: the web app still shows the command
-   and never runs it (§8), and no tool exposes it to a model.
+   and never runs it (§8), and no tool exposes it to a model. **Without a
+   tty, nothing installs and nothing is silently skipped**: `features enable`
+   refuses with the `--no-install` hint (which still writes the switch, as
+   today), and `setup engine --upgrade` refuses whether or not `--to` is
+   given — a flag typed into a trigger, a hook or `ssh host …` is not the
+   owner at a terminal, which is what F10's trust rests on.
 4. **What is already running is provided, not installed (F8).** Before
    planning, each sidecar is asked with **§4.3's load-free probes only, by
    install method** — never a uniform `/health` on its port, because the
@@ -1264,7 +1274,9 @@ pin that sits:
   GB10's sm_121 is unmeasured** — 7b's first measurement; this box was
   built from source because nothing else was known to.
 - **Side by side:** each engine lives in `~/.mecha/sidecars/llama/<tag>/`,
-  and the units name a `current` link, so an upgrade is a new directory and
+  with the **resolved commit sha** recorded in the manifest and the ledger
+  (a tag is a label; a rollback and an audit need the build), and the units
+  name a `current` link, so an upgrade is a new directory and
   a link swap, and the previous one stays for `--rollback` (today's `.prev`
   copy, made structural).
 - **`mecha setup engine --upgrade [--to <tag>]`** fetches or builds the new
