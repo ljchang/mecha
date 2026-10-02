@@ -16,9 +16,12 @@
 >   binary cannot read, reads as *lasting* (it over-retains, visibly), not
 >   as a state that silently expires. See the note at §5.
 > - **Shipped since this pass:** dating from the source chat, in the owner's
->   timezone (#514, `persona::memory::said_at`, `recall::local_day`), so
->   §4.0's second bullet and §4.5's "the fix in progress" describe what is
->   now built. Rendering the *age* and setting `valid_from` are not.
+>   timezone (#514, `persona::memory::said_at`, `recall::local_day`): the
+>   fix that §4.0's second bullet and §4.5's "the fix in progress"
+>   anticipate. Rendering the *age* and setting `valid_from` are not built.
+> - **Ranking by use** (§4.1(e), §5.4) is kept open by the owner as a
+>   question to answer from the usage log, not rejected: see §9.13 for how
+>   it is measured without letting the persona's own recalls judge it.
 > - **Measure in use and revisit**: every access to a memory is logged with
 >   its time, so age-based decay and retrieval frequency can be compared on
 >   real use (§1.2's ACT-R form needs the timestamps, not a count) before

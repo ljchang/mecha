@@ -836,7 +836,7 @@ shape:
 | `uid` | stable id |
 | `text` | one sentence |
 | `kind` | `stated` (the owner said it), `observed` (it happened in the chat), `inferred` (the writer's reading) |
-| `source` | chat id and turn range — **mandatory**: a fact with no source is never written |
+| `source` | chat id and turn range — **mandatory**: a fact with no source is never written. A fact derived from several chats (D27) will need a list of sources, every one of them a deletion key (§9.13) |
 | `learned_by` | the persona whose chat it came from |
 | `audience` | `shared.db` only: `everyone`, or the group it was shared with (§4.5) |
 | `origin` | classified from the taint at those turns (§9.6) |
@@ -877,10 +877,11 @@ What may be recorded about the owner:
   makes turning them off, or comparing with and without them, one switch.
 - **Never**: a relationship score, a mood label, or the owner's reactions
   used as a signal. *(Amended by the owner, 2026-10-02, D26: a mood the
-  owner states may be kept as a short-term state that expires, and one
-  the writer reads from how the owner seems goes to the inferred table
-  (D18's switch) and expires the same way, §9.13. The other two stand. The usage log's curation acts are read by the
-  owner in a report, never by a persona or by recall.)*
+  owner states may be kept as a short-term state that expires, and one the
+  writer reads from how the owner seems goes to the inferred table (D18's
+  switch) and expires the same way, §9.13.)* The relationship score and the
+  reactions stand: the usage log's curation acts (D28) are read by the owner
+  in a report, never by a persona or by recall.
 
 How they shape a chat: rendered as dated, sourced context in the first user
 turn, under a standing line in the base block — *facts about the owner are
@@ -968,7 +969,11 @@ an owner-origin one; only forgetting deletes.
   one pass — with `secure_delete` on so the text does not survive in freed
   pages, and the write-ahead log truncated after, so it does not survive
   there either. A truncation another reader blocks is reported, never
-  passed off as done. This is why `source` is mandatory.
+  passed off as done. This is why `source` is mandatory. Two rulings of
+  2026-10-02 widen what that pass must reach (§9.13): a derived fact dies or
+  is rebuilt when *any* chat in its source list is forgotten, not only the
+  one in `source` (D27); and the usage log's rows for the chat, or for the
+  record, are erased with it (D28).
 - **Deleting a persona** deletes its folder, `memory.db` with it. As built,
   `mecha persona remove` *parks* the folder under `removed/` (reversible, as
   `imagelib remove` is) — so its memory is still on disk until that folder
@@ -1116,7 +1121,11 @@ The first is a question of what a fact is; the research is
   record of its own. *Short-term state* — days to weeks. *Ongoing situation*
   — months. *Lasting fact* — no expiry; it changes only when superseded.
   The writer gives a state a coarse expected duration from a closed set,
-  which sets `valid_to`; never a free number.
+  which sets `valid_to`; never a free number. Both are wire formats on an
+  append-only store, so an unknown or missing value degrades toward
+  keeping: no tier reads as a lasting fact, and an unknown duration as the
+  longest. Over-retention shows on the curation page; a durable fact
+  silently expired does not.
 - **Expiry is a recall rule, not deletion.** Past `valid_to`, a state stops
   riding at chat start; it stays in the store, reachable by `memory_search`
   and labelled past. States render in the past tense with their date.
@@ -1141,13 +1150,20 @@ The first is a question of what a fact is; the research is
 - **Measure in use, and revisit** (D28). Every access to a memory is logged —
   at chat start, per turn, by `memory_search`, by `memory_read` — with the
   chat, the turn and the time, beside the owner's curation acts (approve,
-  correct, pin, forget). The log **records only**: it never strengthens
-  recall, because use-driven strengthening is how a persona fixates, and it
-  would make the data its own cause. A report (`mecha persona memory
-  report`, and the web curation page, §9.8) reads it per tier: how often,
-  how old at use, what the owner corrected or forgot. Ranking by age, by use
-  or by both is an experiment judged against that report (§13), never a
-  default. The log is a record of the chats it names, so **`forget` erases
+  correct, pin, forget). The log **records only**: by default nothing in it
+  changes what is recalled, because use-driven strengthening is how a
+  persona fixates. A report (`mecha persona memory report`, and the web
+  curation page, §9.8) reads it per tier: how often, how old at use, what
+  the owner corrected or forgot. **Whether age or use matters more is the
+  owner's question**, and it is answered in two steps. First from the log
+  alone, offline: does a record's age, or its count of uses, better predict
+  what the owner keeps, corrects or forgets? Only then, if ever, a ranking
+  arm under §13 — age, use, or both — scored on the **owner's acts**, never
+  on further uses: in a use-ranked arm the persona's own recalls feed the
+  signal, so uses cannot judge it. Uses counted for any ranking come from
+  the harness-keyed doors (chat start, per turn), which the owner's words
+  key (§9.7); the persona's own `memory_search` calls are logged but not
+  counted toward one. The log is a record of the chats it names, so **`forget` erases
   its rows in the same pass** as the records: by uid for one record, by
   chat for `forget_chat` (§9.9). A forgotten chat leaves no trace of which
   memories it recalled, or when.
