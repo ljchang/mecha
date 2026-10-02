@@ -61,9 +61,13 @@ recent=$(journalctl --user -u "$unit" --since "-${idle_min}min" --no-pager -o ca
 grep -qE 'got prompt|Prompt executed' <<<"$recent" && exit 0
 
 free_mb=$(awk '/^MemFree:/ {print int($2/1024)}' "$meminfo" 2>/dev/null)
-if [ -z "$free_mb" ] || [ "$free_mb" -lt "$min_free_mb" ]; then
+# The new CUDA context is created by the *new* process, after this one has
+# given its memory back, so what it will find is MemFree plus what is held
+# now - not MemFree alone, which on Linux is low by design (page cache).
+after_mb=$(( ${free_mb:-0} + held ))
+if [ -z "$free_mb" ] || [ "$after_mb" -lt "$min_free_mb" ]; then
   if [ "$gpu" -ge 1024 ]; then
-    echo "comfyui idle with ${held} MiB held but only ${free_mb:-unknown} MB free: /free instead of a restart"
+    echo "comfyui idle with ${held} MiB held but only ~${after_mb} MB free after a restart: /free instead"
     curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
          -d '{"unload_models": true, "free_memory": true}' "$url/free" >/dev/null
   fi
