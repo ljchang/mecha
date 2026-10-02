@@ -28,9 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The uncensored Qwen3.6 model is about 40% faster.** Its download lacks
   the multi-token-prediction head that lets production draft ahead;
   `scripts/mtp-graft.py` copies the head from production's file, and the
-  router speculates with it (99.8 against 69.9 tok/s, one stream). Without
-  the grafted file the router serves the model as before and prints the
-  command that builds it.
+  router speculates with it (99.8 against 69.9 tok/s, one stream; the
+  router's four slots are unmeasured). Without the grafted file the router
+  serves the model as before and prints the command that builds it. If four
+  slots turn out slower, removing the two `SPEC` lines from the preset in
+  `start-router.sh` turns speculation off again.
 - **A persona's voice is picked in its settings.** The settings form has a
   Voice field listing the voices the voice worker has, so `voice = "…"` no
   longer has to be typed into `persona.toml`. A save is checked against the
