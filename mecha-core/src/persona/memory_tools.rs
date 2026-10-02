@@ -37,8 +37,12 @@
 //! these are memory, whose own switches are its control, so they stay. What
 //! changes is what `memory_read` returns: the owner's words and the
 //! persona's, with each tool result left out where it stood
-//! ([`words_only`]), so a chat from when the persona answered from anything
-//! cannot bring the web back in by memory.
+//! ([`words_only`]), so reading a chat from when the persona answered from
+//! anything does not hand it that chat's tool output verbatim. It is not a
+//! seal: an episode's summary was written from a rendering with tool results
+//! in it, and `memory_search` and the recall folds return summaries
+//! unfiltered, as the persona's own kept replies may restate what it read.
+//! The ruling accepted that level; the taint still marks all of it.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -322,13 +326,16 @@ pub fn read_episode(
     let untrusted = chat.turns[from as usize..to as usize]
         .iter()
         .any(|t| t.message.is_none() || t.taint.is_none_or(|t| t.untrusted));
-    // `messages_in` reads no origin; the taint is the turns' own, above.
     let mut messages = messages_in(
         &chat,
         Stretch {
             from,
             to,
-            origin: Origin::ModelClean,
+            origin: if untrusted {
+                Origin::ModelUntrusted
+            } else {
+                Origin::ModelClean
+            },
         },
     );
     if persona.settings.files.answers == Answers::Files {
@@ -354,9 +361,10 @@ pub fn read_episode(
 
 /// An earlier conversation as a files-only persona may read it (§10.4,
 /// owner ruling 2026-10-02): the owner's words and its own. What a tool
-/// brought back is left out where it stood, and its call with it, so a chat
-/// from when the persona answered from anything cannot bring the web back in
-/// by memory. The harness's folded text (files, memory, notices) is dropped:
+/// brought back is left out where it stood, and its call with it; what the
+/// words themselves restate stays (see the module header). The orphaned
+/// results are fine here only because these messages are rendered to prose
+/// and never sent. The harness's folded text (files, memory, notices) is dropped:
 /// the persona reaches its files and its memory through their own tools.
 fn words_only(messages: Vec<Message>) -> Vec<Message> {
     messages
