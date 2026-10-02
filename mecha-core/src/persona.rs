@@ -2004,12 +2004,24 @@ pub fn relationship_choices(dir: &Path) -> Vec<(String, bool)> {
 /// The names a settings form offers beside its fixed choices, read from the
 /// stores where the form is built — the relationships a persona can name
 /// ([`relationship_choices`]), the declared groups, the characters the
-/// viewer may see.
+/// viewer may see, and the voices the TTS lists.
 #[derive(Debug, Clone, Default)]
 pub struct FormChoices {
     pub relationships: Vec<String>,
     pub groups: Vec<String>,
     pub characters: Vec<String>,
+    pub voices: VoiceChoices,
+}
+
+/// The voices a call can speak in, as the voice worker listed them — or why
+/// it could not be asked, which is not "none". The list is the worker's
+/// rather than this crate's because a persona naming a voice the TTS does
+/// not have is refused when a call starts (§11), so the form offers only
+/// what that check will pass.
+#[derive(Debug, Clone, Default)]
+pub struct VoiceChoices {
+    pub names: Vec<String>,
+    pub unread: Option<String>,
 }
 
 /// Said on every switch the harness stores and does not read yet, so a form
@@ -2017,8 +2029,9 @@ pub struct FormChoices {
 const UNBUILT: &str = "Not built yet: saved now, used once it is.";
 
 /// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
-/// except `voice`, whose profiles are not built. Edited in place — the
-/// owner's comments stay — and saved through [`edit_settings`].
+/// except `voice_speed`, a number the form has no field kind for (it is
+/// edited as text). Edited in place — the owner's comments stay — and saved
+/// through [`edit_settings`].
 pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
     use crate::tomlform::{Field, Form, Kind, Opt, Section};
     let text = |max, placeholder: &str| Kind::Text {
@@ -2063,7 +2076,34 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                         options: Opt::names(&c.characters),
                         none: Some("No portrait".into()),
                     },
-                )),
+                ))
+                // A voice the worker could not list is still shown when the
+                // file names it (the page draws a value beside the options),
+                // and an unchanged field is never sent, so an unreadable
+                // list costs the choice, not the voice already set.
+                .field(
+                    Field::new(
+                        "voice",
+                        "Voice",
+                        Kind::Choice {
+                            options: Opt::names(&c.voices.names),
+                            none: Some("Default voice".into()),
+                        },
+                    )
+                    .help(match &c.voices.unread {
+                        // Honest — the worker really has none — but it reads
+                        // like a misconfigured voices directory, so say it.
+                        None if c.voices.names.is_empty() => {
+                            "The voice worker lists no voices.".to_string()
+                        }
+                        None => "How it sounds on a call. Each one plays in Library → Voices."
+                            .to_string(),
+                        Some(why) => format!(
+                            "The voice list could not be read ({why}), so none can be \
+                             picked now; a voice already set is kept."
+                        ),
+                    }),
+                ),
             Section::new("Model and tools")
                 // Read by nothing yet: persona chats follow the model the
                 // chat's chip (and every other surface) has picked.

@@ -148,8 +148,8 @@
     </div>
   {/if}
   <div class="barnote">
-    A persona speaks in one of these when its settings name it: <code>voice = "name"</code>, with
-    <code>voice_speed</code> if it should talk faster or slower.
+    A persona speaks in one of these when its settings pick it (Voice, in the persona's settings),
+    with <code>voice_speed</code> in its <code>persona.toml</code> if it should talk faster or slower.
   </div>
 {:else if !error}
   <div class="empty">Loading…</div>
