@@ -1072,7 +1072,8 @@ Each step is a PR, and each leaves every surface working.
    gains F5's discrete column, with every discrete cell marked `Arithmetic`
    or `Unmeasured` until someone measures one. The Mac note that "unified
    memory has no separate GPU pool" stays: it is scoped to Macs and still
-   true (#435). Fix the embeddings page. The rows carry their pinned
+   true (#435). Fix the embeddings page. (Split in #512: 6a is the page,
+   6b the rows, the probe and the test.) The rows carry their pinned
    `Source` (§10.4), not a download command, so 7a's downloader can fetch
    what setup lists.
 7. **Installers** — §10, which replaced this step's first form (one
@@ -1215,6 +1216,8 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    its parent (`switch_owner`) — offers that part's sidecars alone. Switching a feature
    off never uninstalls; `mecha setup <feature> --remove` does, and keeps
    downloaded models unless `--models` is given, because the cache is shared.
+   Even then it keeps any model file another enabled feature's chosen row
+   names, and says which, so removing one feature never breaks another.
    Installing runs only from a terminal: the web app still shows the command
    and never runs it (§8), and no tool exposes it to a model. **Without a
    tty, nothing installs and nothing is silently skipped**: `features enable`
@@ -1241,9 +1244,13 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    the llama-embed incident of 2026-08-19 that `llama-ocr.socket`'s header
    records. **Three things make a sidecar *provided***, and the plan
    installs nothing for it: a running answer; a unit of that name mecha did
-   not write; or **a payload on disk that mecha's manifest does not claim**
-   — a hand-built clone or venv, a Docker image of the sidecar's name, an
-   engine tree. The third is what covers a stopped sidecar with no unit
+   not write; or **a payload on disk, outside `~/.mecha/sidecars/`, that
+   mecha's manifest does not claim** — a hand-built clone or venv, a Docker
+   image of the sidecar's name, an engine tree. Mecha's own tree is never
+   provided: the manifest row is written **before** the first byte, marked
+   `incomplete` until the health check passes, so an interrupted install
+   reads as *resumable* — with the command that resumes it — never as
+   someone else's install. The third is what covers a stopped sidecar with no unit
    (ComfyUI here) and one with no probe at all (Chatterbox, a container).
    Models are the same: a recommended model the hub resolver (item 6)
    already finds is priced at zero in the plan's download total. A file mecha
@@ -1296,10 +1303,16 @@ pin that sits:
 - **`mecha setup engine --upgrade [--to <tag>]`** fetches or builds the new
   engine (`engine` is a reserved noun in `setup`'s feature position, never a
   feature id), then **measures before it promotes**. The measurement loads
-  the chat model the router is holding, so it **takes the model's hold
-  first** (`hold.rs`) and declines, saying so, while a run holds it — a
-  throughput number taken under contention must never reach the ledger as
-  `Measured`. Then: the chat model loaded on
+  another engine's copy of the chat model, so in `hold.rs`'s terms it **is a
+  switch**: it writes one with `begin_switch` — which makes runs that start
+  meanwhile wait — and then checks `live()`. A hold alone would not do:
+  `try_hold` is not exclusive and returns `Ok` beside other runs, so a
+  benchmark behind it would run under contention and write the number this
+  rule exists to keep out of the ledger. **If any run is live it withdraws
+  the switch and declines**, saying so, rather than waiting — a deliberate
+  departure from the module's ruling that a switch waits without limit,
+  because nobody wants an upgrade benchmark holding the router back
+  indefinitely; the owner reruns it when the box is quiet. Then: the chat model loaded on
   both engines with the router's flags, one completion and one embedding
   as a smoke test, then single-stream generation and prefill at fixed
   prompt lengths (`scripts/bench-slots.sh`'s method). It promotes when the
@@ -1400,6 +1413,9 @@ it guards against:
 
 - the same run with the sidecar already provided — running, or **installed
   and idle-stopped** — installs nothing and wakes nothing;
+- an install interrupted mid-download is offered as *resumable* on the next
+  run, and resuming completes it — mecha's own partial tree is never read as
+  provided;
 - a hash mismatch on any source fails the install with nothing written and
   the switch untouched;
 - `--no-install` writes the switch and fetches nothing;

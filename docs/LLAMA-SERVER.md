@@ -370,20 +370,28 @@ machine from starting is one people turn off.
   RUNPATH`. On 2026-10-02 it named **`~/llama.cpp-next/build/bin`**
   (`95887577`); `~/llama.cpp` (`c841aeeb`) is the tree before it. So `cmake
   --build` in the named tree replaces what a restart will run, and "rebuild"
-  and "deploy" are not separable steps here. **Which rollback applies is one
-  `readelf` away** — compare the RUNPATH of `~/.local/bin/llama-server.prev`
-  with the live stub's:
-  - **they differ** — the last upgrade was a new tree: restore the `.prev`
-    stub, which loads the previous tree's `build/bin`. That tree must still
-    be whole; it is kept for this reason, so never delete or rebuild it
-    while its stub is the rollback.
-  - **they match** — the last upgrade rebuilt one tree in place: restore that
-    tree's `build/bin.prev` (the whole library set, with a `VERSION.txt`
-    naming the commit). Restoring the `.prev` stub here would go back two
-    generations.
+  and "deploy" are not separable steps here. **There are two kinds of
+  upgrade, and nothing lying around tells you which was last** — the
+  RUNPATHs of the live stub and `~/.local/bin/llama-server.prev` say whether
+  the stub was *ever* swapped, not what the last upgrade did, since an
+  in-place rebuild touches neither stub. So every upgrade appends one line to
+  **`~/.local/bin/llama-server.upgrades`**: the date, the kind, the commit
+  before and after, and the rollback that undoes it. Read its last line:
+  - **new tree** (the stub was swapped): restore the `.prev` stub, which
+    loads the previous tree's `build/bin`. That tree must still be whole;
+    never delete or rebuild it while its stub is the rollback.
+  - **in place** (one tree rebuilt): restore that tree's `build/bin.prev`
+    (the whole library set, with a `VERSION.txt` naming the commit).
+    Restoring the `.prev` stub here would go back two generations.
 
-  Either way a rollback has to be a file you restore, not a commit you would
-  have to rebuild under pressure.
+  Confirm against the commit, never an mtime: `VERSION.txt` and the record
+  name it. The record does not exist yet — the next upgrade starts it. Until
+  then: as of 2026-10-02 the last upgrade was the new-tree swap to `-next`
+  (`c841aeeb` → `95887577`, `REMOTE-SURFACE-DESIGN.md` records the night), so
+  today the `.prev` stub is the rollback. Either way a
+  rollback has to be a file you restore, not a commit you would have to
+  rebuild under pressure. (FEATURES-DESIGN §10.3 makes this structural:
+  side-by-side engine directories and a ledger.)
 
   **Replace the stub with `mv`, never `cp`.** Every llama-server here —
   `llama-local` (:8080) and the on-demand backends behind :8081 and :8085 —
