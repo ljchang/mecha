@@ -1854,7 +1854,6 @@ class UplinkAudio:
             logger.info(f"uplink: late span {from_ms:.0f}–{to_ms:.0f} ms held no speech")
             return
         prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
-        self.late_turns += 1
         logger.info(
             f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
         )
@@ -1882,6 +1881,10 @@ class UplinkAudio:
     async def _send_late(self, turn: str):
         from loguru import logger
 
+        # Counted where it is sent, not where it was transcribed: a turn the
+        # consumer never got to (the call ending) is not one that landed
+        # (review of #499, pass 8).
+        self.late_turns += 1
         # Appended to the context and run at once — not a `TranscriptionFrame`.
         # A transcript-only turn has no VAD edge for any stop strategy to
         # rule on, so it sat on the aggregator's 15 s wall-clock timeout
@@ -2463,21 +2466,27 @@ class TypedTurns:
             if self._late:
                 send, done = self._late.popleft()
                 try:
-                    await self._until(False, self._late_secs, ahead=True)
-                    await send()
-                    self._pushed()
-                except asyncio.CancelledError:
-                    done.cancel()
-                    raise
-                except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's turns
-                    self._log(f"voice late turn failed: {e.__class__.__name__}")
-                finally:
-                    if not done.done():
-                        done.set_result(None)
-                try:
+                    try:
+                        await self._until(False, self._late_secs, ahead=True)
+                        await send()
+                        self._pushed()
+                    finally:
+                        # Resolved the moment the turn is sent, so the live
+                        # audio behind the flush moves then, not after the
+                        # answer; and resolved, never cancelled, even at
+                        # teardown: a cancelled future would raise
+                        # `CancelledError` in the flush, which the uplink's
+                        # consumer does not catch (review of #499, pass 8).
+                        if not done.done():
+                            done.set_result(None)
                     await self._answered()
                 except asyncio.CancelledError:
                     raise
+                except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's turns
+                    # Covers the wait after the send too: anything raised
+                    # there would end the call's one consumer, and every
+                    # later line would be shown and never answered (pass 8).
+                    self._log(f"voice late turn failed: {e.__class__.__name__}")
                 continue
             text = self._typed.popleft()
             try:
