@@ -252,15 +252,19 @@ pub const SLOTS: &[Slot] = &[
         runs_on: RunsOn::Gpu,
         residency: Residency::Resident,
         rows: &[
-            // Measured on the router's uncensored arm of the same model and
-            // quant (same architecture, same geometry) — what was resident.
+            // Read on the GB10 on 2026-10-02 (`nvidia-smi`, `-c 1048576 -np
+            // 4`) off the router's uncensored arm — HauhauCS's Q4_K_M of the
+            // same base, before #516 grafted an MTP head onto it — not off the
+            // file this row pins, so it is arithmetic for that file. A reading
+            // of the production file is owed; the grafted arm read 45,747 MiB
+            // the same evening.
             Recommendation {
                 tier_gb: 128,
                 memory: Memory::Unified {
-                    peak: Peak::Measured { mb: 42_461, machine: GB10, date: "2026-10-02" },
+                    peak: Peak::Arithmetic { mb: 42_461 },
                 },
                 model: QWEN36_MODEL,
-                counts: "the server's GPU memory at four 262k slots",
+                counts: "the server's GPU memory at four 262k slots, read off the uncensored arm of the same base (HauhauCS Q4_K_M) on the GB10",
                 sources: QWEN36,
                 excludes: Some(
                     "the chat server's process memory, and the router's prompt cache (`cache-ram`, up to 16 GiB)",
@@ -652,17 +656,38 @@ enum GpuRead {
     None,
 }
 
+/// A wedged driver can hang `nvidia-smi`; the probe gives it this long, then
+/// reports no card it could read rather than hanging with it.
+const NVIDIA_SMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn nvidia_total_mb() -> GpuRead {
-    let Ok(out) = std::process::Command::new("nvidia-smi")
+    let Ok(mut child) = std::process::Command::new("nvidia-smi")
         .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
     else {
         return GpuRead::None;
     };
-    if !out.status.success() {
-        return GpuRead::None;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => return GpuRead::None,
+            Ok(None) if started.elapsed() > NVIDIA_SMI_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return GpuRead::None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
     }
-    parse_nvidia_total(&String::from_utf8_lossy(&out.stdout))
+    let mut text = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        use std::io::Read;
+        let _ = out.read_to_string(&mut text);
+    }
+    parse_nvidia_total(&text)
 }
 
 fn parse_nvidia_total(text: &str) -> GpuRead {
@@ -674,15 +699,15 @@ fn parse_nvidia_total(text: &str) -> GpuRead {
     if lines.is_empty() {
         return GpuRead::None;
     }
-    let mut sum = 0u64;
-    for l in &lines {
-        match l.parse::<u64>() {
-            Ok(mb) => sum += mb,
-            // The GB10 answers `[N/A]`: its GPU has no memory of its own.
-            Err(_) => return GpuRead::Unified,
-        }
+    // The GB10 answers `[N/A]`: its GPU has no memory of its own. Only when
+    // every card says so is the machine one pool; a card that reports its
+    // memory beside one that does not is still a card.
+    let cards: Vec<u64> = lines.iter().filter_map(|l| l.parse().ok()).collect();
+    if cards.is_empty() {
+        GpuRead::Unified
+    } else {
+        GpuRead::Cards(cards.iter().sum())
     }
-    GpuRead::Cards(sum)
 }
 
 fn host_total_mb() -> anyhow::Result<u64> {
@@ -762,11 +787,26 @@ pub struct Sum {
     pub resident_mb: Option<u64>,
     pub loaded_mb: Option<u64>,
     pub band: Option<Band>,
-    /// The known figures added up, beside a `None` sum: a floor, never the
-    /// sum — so a machine with one unmeasured row still learns something.
+    /// Beside a `None` sum, the known figures added up — a floor, never the
+    /// sum — and the rows that are unmeasured, each for its own sum: the
+    /// resident line names only resident rows.
+    pub resident_floor: Floor,
+    pub loaded_floor: Floor,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Floor {
     pub known_mb: u64,
-    /// The rows whose figure in this pool is unmeasured.
     pub unknown: Vec<&'static str>,
+}
+
+impl Floor {
+    fn take(&mut self, label: &'static str, p: &Peak) {
+        match p.mb() {
+            Some(mb) => self.known_mb += mb as u64,
+            None => self.unknown.push(label),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -894,17 +934,15 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
     let sum = |total_mb: u64, pick: &dyn Fn(&Line) -> Option<Peak>| {
         let mut resident = Some(0u64);
         let mut loaded = Some(0u64);
-        let mut known = 0u64;
-        let mut unknown = Vec::new();
+        let mut resident_floor = Floor::default();
+        let mut loaded_floor = Floor::default();
         for l in &lines {
             let Some(p) = pick(l) else { continue };
             loaded = add(loaded, &p);
-            match p.mb() {
-                Some(mb) => known += mb as u64,
-                None => unknown.push(l.label),
-            }
+            loaded_floor.take(l.label, &p);
             if l.residency == Residency::Resident {
                 resident = add(resident, &p);
+                resident_floor.take(l.label, &p);
             }
         }
         Sum {
@@ -912,8 +950,8 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
             resident_mb: resident,
             loaded_mb: loaded,
             band: loaded.map(|l| Band::of(l, total_mb)),
-            known_mb: known,
-            unknown,
+            resident_floor,
+            loaded_floor,
         }
     };
     let (gpu, host) = match machine {
@@ -1037,6 +1075,10 @@ mod tests {
     fn nvidia_smi_reads_cards_or_says_unified() {
         assert!(matches!(parse_nvidia_total("[N/A]\n"), GpuRead::Unified));
         assert!(matches!(
+            parse_nvidia_total("[N/A]\n24576\n"),
+            GpuRead::Cards(24_576)
+        ));
+        assert!(matches!(
             parse_nvidia_total("24576\n24576\n"),
             GpuRead::Cards(49_152)
         ));
@@ -1118,8 +1160,8 @@ mod tests {
         assert!(!ocr.own_row);
         assert_eq!(ocr.gpu, Peak::Arithmetic { mb: 2_641 });
         assert_eq!(ocr.host, Some(Peak::Arithmetic { mb: 888 }));
-        assert_eq!(host.unknown, vec!["chat"]);
-        assert!(host.known_mb >= 888);
+        assert_eq!(host.loaded_floor.unknown, vec!["chat"]);
+        assert!(host.loaded_floor.known_mb >= 888);
     }
 
     /// A GPU model with no recorded split, on a card: the whole figure on
@@ -1139,7 +1181,12 @@ mod tests {
         let layout = b.lines.iter().find(|l| l.slot == "layout").unwrap();
         assert_eq!(layout.gpu, Peak::Arithmetic { mb: 0 });
         assert!(matches!(layout.host, Some(Peak::Arithmetic { .. })));
-        assert!(b.host.unwrap().unknown.contains(&"image generation"));
+        assert!(b
+            .host
+            .unwrap()
+            .loaded_floor
+            .unknown
+            .contains(&"image generation"));
     }
 
     /// The page names no chat model at 16 GB, so neither does the probe: the
@@ -1155,7 +1202,7 @@ mod tests {
         assert_eq!(chat.model, None);
         assert_eq!(b.gpu.loaded_mb, None);
         assert_eq!(b.gpu.band, None);
-        assert_eq!(b.gpu.unknown, vec!["chat"]);
+        assert_eq!(b.gpu.loaded_floor.unknown, vec!["chat"]);
     }
 
     /// A 24 GiB card is the 16 GB tier — no chat row — yet the figures that
@@ -1166,9 +1213,30 @@ mod tests {
             gpu_mb: 24_576,
             host_mb: 65_536,
         };
-        let b = budget(m, &[Feature::Graph]);
+        let b = budget(m, &[Feature::Graph, Feature::Image]);
         assert_eq!(b.gpu.loaded_mb, None);
-        assert_eq!(b.gpu.known_mb, 5_243);
+        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + 20_070);
+        // Each line's floor is its own: nothing resident is known here, and
+        // image generation (released on idle) is not charged to it.
+        assert_eq!(b.gpu.resident_floor.known_mb, 0);
+        assert_eq!(b.gpu.resident_floor.unknown, vec!["chat"]);
+    }
+
+    /// A row's prose lands in markdown cells; a pipe would split a cell and
+    /// break the generated table without the page test noticing why.
+    #[test]
+    fn no_row_prose_can_break_the_generated_table() {
+        for s in SLOTS {
+            for r in s.rows {
+                for text in [r.model, r.counts, r.excludes.unwrap_or("")] {
+                    assert!(
+                        !text.contains('|') && !text.contains('\n'),
+                        "{}: {text}",
+                        s.id
+                    );
+                }
+            }
+        }
     }
 
     #[test]
