@@ -62,25 +62,25 @@ Open:
   feature (image generation). It opens anyway from Settings → Voice's link
   (`OPENS_ANYWAY`), but has no tab of its own.
 
-**2026-10-01 — persona memory: written nightly and recalled at chat start,
-live; recall on every turn merged, not yet installed (mecha-5d).** #462,
-#463, #468, #477 and #481 are in HISTORY under 2026-10-01. The first four are
-live: #462/#463/#468 in mecha-d7's `85ca4dfe`/`997a2894`, #477 in mecha-d7's
-`1238cb5e`. The installed binary carries both `persona memory write` and
-`MEMORY_STEM` (`strings ~/.cargo/bin/mecha`, 2026-10-01). The
+**2026-10-01/02 — persona memory: written nightly, recalled at chat start
+and on every turn, live; the memory tools merged, not yet installed
+(mecha-5d).** #462, #463, #468, #477 and #481 are in HISTORY under
+2026-10-01, #498 under 2026-10-02. All but #498 are live: #481 went in with
+mecha-d7's `72e404ca` (20:48Z), and `strings ~/.cargo/bin/mecha | grep -cF
+"what this message brought to mind"` → 1 on 2026-10-02. The
 `mecha-ruminate` timer runs the writer from 03:30 UTC on 2026-10-02, its
-first real night. What is open, verified against `4bbed7ca`:
+first real night. What is open, verified against `a1645e96`:
 
-- **#481 (recall on every turn) is merged as `b6d15059` and not installed**
-  (`strings ~/.cargo/bin/mecha | grep -cF "what this message brought to mind"`
-  → 0 at 2026-10-01 ~19:40Z). It is binary-only, handed to mecha-d7.
-  - Its first writable open builds `memory.db` schema v3 (read-only
-    handles never migrate).
-  - Once installed, the nightly also embeds records, which needs
-    `[documents]` switched on: meaning-based recall reuses that feature's
-    embedder, and with Documents off recall is by words alone.
+- **#498 (`memory_search` / `memory_read`) is merged as `c496bb99` and not
+  installed** (`strings ~/.cargo/bin/mecha | grep -cF "Read a remembered
+  conversation in full"` → 0 on 2026-10-02). It is binary-only, handed to
+  mecha-d7. Installing it adds two tools to every persona chat whose memory
+  is on, from the chat's next pinned version.
+- **Meaning-based recall needs `[documents]` switched on**: it reuses that
+  feature's embedder, and with Documents off recall is by words alone. It
+  also stays words-only until the nightly has embedded at least half the
+  pool (`recall_search`'s `embedded * 2 >= pool.len()`).
 - **Still unbuilt in §9:**
-  - the `recall` and `recall_open` tools;
   - the owner's curation page (§9.8);
   - an after-chat writer (D3's "after a session"), which needs an idle
     signal from serve;
@@ -109,12 +109,21 @@ first real night. What is open, verified against `4bbed7ca`:
     while shared copies of the whole chain go.
   - `correct` on an inferred fact keeps `kind = Inferred` with
     `origin = Owner`.
+  - **`answers = "files"` does not withhold the memory tools (#498).**
+    `setup::persona_agent` inserts them after `registry_as`, past its refusal
+    of `untrusted_input` tools, so a files-only persona can still
+    `memory_read` a past chat, raw tool output included. The interlock still
+    holds: both tools are `Egress::None`, and a read of a chat from outside
+    returns `.from_outside()`. Either record "memory is exempt, the
+    `[memory]` switches are the control" in the code comment and the
+    ARCHITECTURE bullet, or gate `offers_read` (or both) on
+    `answers != Answers::Files`. Put to the owner on 2026-10-02, unruled.
 - **Review minors carried:**
   - #468: `Op::Invalidate` is not gated by the `[memory]` switches;
     `--chat` on a chat with no checkpoint exits without saying so.
   - #477: the section headings sit outside `BUDGET_CHARS` (about 6300 in
     practice); the page-notice path of `memory_block` has no test.
-  - #481, all three still true on `4bbed7ca`:
+  - #481, all three still true on `a1645e96`:
     - `per_turn`'s "already in the chat" check matches a record's first 60
       characters, but `chat_start` can clip an episode to ~24 characters
       of summary, so on a tight budget the same episode re-folds on every
@@ -126,6 +135,9 @@ first real night. What is open, verified against `4bbed7ca`:
       `embed_memory` is quadratic in batches. That shows exactly on a first
       night over a large store; read a slow embed stage that way before
       blaming the writer.
+  - #498: `read_episode` cuts twice. `render` keeps a long conversation's
+    tail, then the `MAX_READ_CHARS` cut keeps the head of that, so the end
+    of a very long conversation can be lost.
 
 **2026-10-01 — persona autolock, framing, and personas from the main chat
 are live (mecha-69).** #469, #473, #480, #484 and #493–#496 are in HISTORY

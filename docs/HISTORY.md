@@ -14,6 +14,25 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-02 — a persona can search its memory and open a past
+conversation (#498).** PERSONA-DESIGN §9.7's `recall` and `recall_open`,
+named `memory_search` and `memory_read` (`persona::memory_tools`). Owner
+approval 2026-10-01: offer them whenever memory is on, and give episodes an
+id in the recall blocks.
+- `memory_search` runs `Memory::recall_search`, the same fusion per-turn
+  recall uses, and shares its `[memory]` switches through
+  `memory_tools::kinds`.
+- `memory_read` opens the turns an episode's `source` names, by id only.
+  The chat name comes from the stored record and `is_chat_id` refuses
+  anything else before a path is joined. A conversation any of whose turns
+  is untrusted or unreadable comes back `.from_outside()`.
+- Both tools are `Egress::None`, are offered from the pinned settings so the
+  tool list cannot change mid-chat, and read the switches live on each call.
+- Two workflow review passes, counted from the PR's comments. Pass 1 caught
+  a description naming `memory_read` in a chat that had not been given it.
+  Pass 2 raised the `answers = "files"` exemption, now an open owner
+  decision in HANDOFF.
+
 **2026-10-01 — calling a persona (#483), and a voice library (#490).**
 - **Calls (#483):** a call into a persona chat is answered by the persona
   (`PersonaChats::speak`), through the typed turn's own door, so the lock,
