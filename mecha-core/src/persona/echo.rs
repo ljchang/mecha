@@ -93,7 +93,9 @@ pub struct Echoes {
     pub repeated: usize,
     /// The highest echo; `None` when nothing was measured.
     pub max: Option<f64>,
-    /// Lines that did not parse — counted, never silently dropped.
+    /// Lines that did not parse, or held no usable number — counted, never
+    /// silently dropped. An unparseable line names no persona, so every
+    /// persona's reading counts it.
     pub skipped: usize,
 }
 
@@ -112,7 +114,11 @@ pub fn echoes(dir: &Path, persona: &str, since: chrono::DateTime<chrono::Utc>) -
             out.skipped += 1;
             continue;
         };
-        if r.persona != persona || r.at < since || !r.echo.is_finite() {
+        if r.persona != persona || r.at < since {
+            continue;
+        }
+        if !r.echo.is_finite() {
+            out.skipped += 1;
             continue;
         }
         out.replies += 1;
