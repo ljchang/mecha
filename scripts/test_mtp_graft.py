@@ -29,7 +29,8 @@ ARCH = "qwen35moe"
 
 def write(path, blocks, nextn=None, fill=0.0, tensors=None, arch=ARCH, embd_rows=8, split=False):
     w = GGUFWriter(str(path), arch=arch)
-    w.add_key_value(f"{arch}.block_count", blocks, GGUFValueType.UINT32)
+    if blocks is not None:
+        w.add_key_value(f"{arch}.block_count", blocks, GGUFValueType.UINT32)
     if split:
         w.add_key_value("split.no", 0, GGUFValueType.UINT16)
         w.add_key_value("split.count", 2, GGUFValueType.UINT16)
@@ -37,7 +38,7 @@ def write(path, blocks, nextn=None, fill=0.0, tensors=None, arch=ARCH, embd_rows
     if nextn is not None:
         w.add_key_value(f"{arch}.nextn_predict_layers", nextn, GGUFValueType.UINT32)
     names = tensors if tensors is not None else (
-        [f"blk.{i}.attn_q.weight" for i in range(blocks)] + ["token_embd.weight", "output.weight"])
+        [f"blk.{i}.attn_q.weight" for i in range(blocks or 0)] + ["token_embd.weight", "output.weight"])
     for i, name in enumerate(names):
         if name.endswith("ffn_down_exps.weight"):
             # Quantized, as every tensor of the real Q4_K_M is: byte-shaped
@@ -126,12 +127,44 @@ class Graft(unittest.TestCase):
                 write(self.donor, 3, nextn=1, split=not base_split)
                 self.assertIn("split GGUF", self.refused("a shard is not a model"))
 
+    def test_a_file_that_is_not_a_gguf_is_a_message_not_a_traceback(self):
+        self.base.write_bytes(b"not a model at all")
+        write(self.donor, 3, nextn=1)
+        err = self.refused("garbage in")
+        self.assertIn("not a readable GGUF", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_missing_block_count_is_a_message_not_a_traceback(self):
+        write(self.base, 2)
+        write(self.donor, None, nextn=1, tensors=["token_embd.weight", "output.weight"])
+        err = self.refused("no layer count, no place for the head")
+        self.assertIn(f"no {ARCH}.block_count", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_donor_without_the_shared_tensors_is_refused(self):
+        # The head reads BASE's embeddings and output; a donor without them
+        # cannot show it was built over the same vocabulary.
+        write(self.base, 2)
+        write(self.donor, 3, nextn=1, tensors=["blk.0.attn_q.weight", "blk.2.attn_q.weight"])
+        self.assertIn("donor lacks token_embd.weight", self.refused("nothing to compare the vocabulary by"))
+
+    def test_a_head_declared_but_not_carried_is_refused(self):
+        write(self.base, 2)
+        write(self.donor, 3, nextn=1, tensors=["blk.0.attn_q.weight", "blk.1.attn_q.weight",
+                                               "token_embd.weight", "output.weight"])
+        self.assertIn("carries no tensors", self.refused("a key without its layer"))
+
     def test_the_pins_here_are_the_scripts_pins(self):
-        # The graft runs under *this* file's environment, so a drifted header
-        # would test one gguf and build with another.
-        deps = lambda p: [l for l in p.read_text().splitlines() if l.startswith("# dependencies")]
-        self.assertEqual(deps(Path(__file__)), deps(GRAFT))
-        self.assertTrue(deps(GRAFT), "the script must pin its dependencies")
+        # The graft runs under *this* file's environment, so a drifted header —
+        # the interpreter as much as the packages — would test one and build
+        # with another. The whole PEP 723 block, not one line of it.
+        def block(p):
+            lines = p.read_text().splitlines()
+            start = lines.index("# /// script")
+            return lines[start:lines.index("# ///", start) + 1]
+        self.assertEqual(block(Path(__file__)), block(GRAFT))
+        self.assertTrue(any(l.startswith("# dependencies") and "==" in l for l in block(GRAFT)),
+                        "the script must pin its dependencies")
 
     def test_a_donor_of_another_model_is_refused(self):
         write(self.base, 2)

@@ -106,7 +106,7 @@ graft_path() {
   d=$(readlink "$2" 2>/dev/null || true)
   case "$b" in */blobs/*) ;; *) return 0 ;; esac
   case "$d" in */blobs/*) ;; *) return 0 ;; esac
-  s=$(sha256sum "$GRAFT_SCRIPT" 2>/dev/null || true)
+  s=$(sha256sum "$GRAFT_SCRIPT" 2>/dev/null || shasum -a 256 "$GRAFT_SCRIPT" 2>/dev/null || true)
   [ -n "$s" ] || return 0
   b=$(basename "$b")
   d=$(basename "$d")
