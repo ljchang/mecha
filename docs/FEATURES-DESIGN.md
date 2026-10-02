@@ -45,7 +45,7 @@
 > is written to that ruling; F5 is `hardware.md`'s four tiers, in two
 > columns (unified memory, and a separate GPU beside system RAM). Step 8 (how
 > to add a feature, in `ARCHITECTURE.md` and `CLAUDE.md`) is the owner's
-> addition. **Step 7 was redesigned on 2026-10-02** (§10, rulings F7–F9):
+> addition. **Step 7 was redesigned on 2026-10-02** (§10, rulings F7–F10):
 > enabling a feature offers to install its sidecar software and a chosen
 > model, from installers that ship inside the binary.
 
@@ -967,6 +967,7 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F7** | When a feature's sidecars install | **Enabling offers it.** `mecha features enable <id>` (and `mecha setup`) shows what it will download and install, with sources and sizes, and installs on one yes; `--no-install` flips the switch only. Off never uninstalls; `mecha setup <feature> --remove` does. Ruled by the owner 2026-10-02 (§10.2 item 3) |
 | **F8** | This machine's hand installs | **Detected and left alone.** A sidecar whose port answers, or whose unit mecha did not write, is *provided*; nothing is installed over it and no file mecha did not write is touched. Moving this box onto managed copies is a later, explicit step. Ruled by the owner 2026-10-02 (§10.2 item 4) |
 | **F9** | How llama.cpp is obtained | **A prebuilt release when one matches, else a build from the pinned commit.** Prebuilt assets are verified by sha256; the build checks the toolchain first. Ruled by the owner 2026-10-02, with the owner's observation that updating it often improves performance — so `--upgrade` measures before it promotes (§10.3) |
+| **F10** | Trusting an engine newer than the shipped pin | **Only for a tag the owner confirmed at a terminal.** `--to <tag>` names it; bare `--upgrade` prints the newest tag and asks for confirmation of that tag before downloading. For a confirmed tag the release API's sha256 over TLS is trusted (and, for a build, the commit GitHub names for the tag) — the one exception to item 1's reviewed-pin rule, and only on this path. Ruled by the owner 2026-10-02 (§10.3) |
 
 ---
 
@@ -1149,8 +1150,8 @@ and, on llama.cpp: *"I'm finding often updating it improves our model
 performance."* This replaces step 7's shell scripts and reverses two lines
 of this design: §8's "downloading models" and §6's "printed, never written"
 (the model is now fetched on a yes; the *config* rule — never write down a
-number the user merely believes — stands). Rulings F7–F9 (§7) settle the
-three decisions it raised.
+number the user merely believes — stands). Rulings F7–F10 (§7) settle the
+four decisions it raised; F10 came from this section's own review.
 
 ### 10.1 What a clean machine cannot reproduce today
 
@@ -1159,7 +1160,7 @@ model, not mecha's own, that a feature needs running.
 
 | Sidecar | Features | How it got here | In the repo |
 |---|---|---|---|
-| llama.cpp (`llama-server`) | chat, `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md` names the wrong tree |
+| llama.cpp (`llama-server`) | chat, `graph`, `ocr` | built by hand from a clone (CUDA, sm_121, shared libs); `~/.local/bin/llama-server` is a stub whose RUNPATH names the build tree | no build commands, no pin; `LLAMA-SERVER.md` names `~/llama.cpp/build/bin` where the stub's RUNPATH is `~/llama.cpp-next/build/bin` |
 | the router and its chat model | every feature | `llama-local.service`, box only; its drop-in runs the *working tree's* `scripts/start-router.sh` | the launcher; no unit; `start-router.sh` prints an `hf download` line when the model is missing |
 | embeddings server | `graph`, persona file search | the always-on unit is box only; `install-embed.sh` converts it to on demand and refuses to run without it | the launcher and the on-demand units |
 | OCR server | `ocr` | `scripts/llama/install.sh` | **yes** — units, launcher, `--remove`; the model is a comment, unpinned |
@@ -1194,7 +1195,9 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    the plan — each sidecar with its source and size, the model choice (10.4),
    the total download and disk — and installs on one yes; `--no-install`
    only flips the switch. The switch is written **after** a successful
-   install and health check, so a failed download leaves the feature as it
+   install and its health check — a check that belongs to installing, never
+   to enabling, so a provided sidecar (item 4) reaches the switch without
+   one and nothing is woken. A failed download leaves the feature as it
    was with the command that resumes, never `Unready` with a half-written
    tree. `mecha setup` offers the same plan per feature. Switching a feature
    off never uninstalls; `mecha setup <feature> --remove` does, and keeps
@@ -1227,8 +1230,12 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    CUDA arm64, Apple, CPU).
 6. **Models download natively, resumable and verified.** Rust fetches the
    pinned file from Hugging Face's resolve URL into the standard cache
-   layout (`~/.cache/huggingface/hub`, which the router already scans),
-   resumes a partial file, and refuses one whose sha256 differs — no `hf`
+   layout, at the hub `scripts/start-router.sh` resolves — `HF_HUB`, else
+   `~/.cache/huggingface/hub` — through one resolver the unit templates
+   read too, so the download and the launcher cannot look in different
+   places (a verified download the launcher then calls missing; honouring
+   `HF_HOME` / `HF_HUB_CACHE` as well is a later decision, and nothing reads
+   them today). It resumes a partial file, and refuses one whose sha256 differs — no `hf`
    CLI and no Python needed for a llama-only feature.
 
 ### 10.3 The engine, and keeping it current (F9)
@@ -1263,25 +1270,37 @@ pin that sits:
 - **The shipped pin** is the newest engine the project has measured, bumped
   by a reviewed change, so a new user gets a known build and `--upgrade`
   gets them the latest.
-- **`--upgrade` has its own trust rule**, distinct from item 1's. A tag past
-  the shipped pin has no reviewed hash by construction, so the upgrade path
-  trusts **the release API's digest over TLS for a tag the owner names at a
-  terminal** (`--to <tag>`, or `latest` resolved and printed before the
-  download), and a build from an unreviewed tag trusts the commit GitHub
-  names for it. That is acceptable because the owner, at a terminal, is the
-  one choosing — not config, not a project file, not a model — and it is
-  the only path that trusts the serving channel's own hash. Every other
-  source still needs review.
+- **`--upgrade` has its own trust rule (F10)**, distinct from item 1's. A tag
+  past the shipped pin has no reviewed hash by construction, so the upgrade
+  path trusts **the release API's digest over TLS for a tag the owner has
+  confirmed at a terminal**. `--to <tag>` names one; bare `--upgrade`
+  resolves the newest release, prints its tag, and asks the owner to confirm
+  *that tag* before anything is downloaded — printing is disclosure, the
+  confirmation is the choice. A build from an unreviewed tag trusts the
+  commit GitHub names for that tag. It is the only path that trusts the
+  serving channel's own hash, and it is acceptable only because the owner,
+  at a terminal, chose the tag — not config, not a project file, not a
+  model. Every other source still needs review.
 - **One engine serves three servers.** The router, the embeddings server and
-  the OCR server all run the `current` link (`LLAMA-SERVER.md` §Upgrading),
+  the OCR server all run the `current` link (`LLAMA-SERVER.md`, the bullet *Upgrading llama.cpp: the build tree is the deployment*),
   so a promotion reaches all three: the router at the gated restart, the
   two on-demand servers at their next cold start, ungated. So the gate's
   smoke test covers each — a chat completion, an embedding, **and an OCR
   page** (the mtmd path the chat measurement does not exercise) — and a
-  failure in any keeps the old engine. `--rollback` swaps the link back
-  *and* stops the two on-demand backends (their sockets stay), so the next
-  request starts them on the restored engine instead of the one just
-  rolled back.
+  failure in any keeps the old engine. **A smoke test whose model is not
+  installed is *not run*, never *passed*** — on a light install that is
+  usually two of the three. The gate runs the ones it can, promotes on
+  those, and the output and the ledger row name the ones not run, so a
+  `Measured` row never covers more than was measured; requiring all three
+  would make an engine upgrade depend on enabling features the owner
+  declined.
+- **`--rollback` undoes all three.** It swaps the link back, stops the two
+  on-demand backends (their sockets stay, so the next request starts them
+  on the restored engine), and restarts the router under the same
+  `hold.rs` gate as a promotion. If a run holds the model, it says the
+  router is **still on the rolled-back engine** and prints the command that
+  finishes the job — a rollback that half-applied must not read as one that
+  completed, and a bad engine is exactly the one a run may be holding.
 
 ### 10.4 Choosing a model
 
@@ -1300,7 +1319,11 @@ from the row.
 macOS and Windows service managers (§8: the units are Linux user units; on
 macOS the engine and models install, and starting them stays manual until
 launchd is designed); system packages (`apt`, CUDA drivers, Docker) — setup
-names them and stops; and installing anything from the web app.
+names them and stops; installing anything from the web app; and installing
+inside a trial. An environment may switch a feature on (§5.1), but a trial
+home never runs an installer: a switch that is on over an absent sidecar is
+what §4.2 already shows — configured, not answering — and the trial reads
+it as that, never as a reason to fetch.
 
 ### 10.6 Build order
 
