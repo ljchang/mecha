@@ -110,6 +110,11 @@ rate were preferences wearing call-control clothes, so they live on
 now, reading and writing the voice stack's own preference store — the one store
 every page reads. A choice made there is the choice the next call opens with.
 
+**Listen** under a finished reply reads it aloud without a call — a
+persona's reply in its voice, the assistant's in yours — with code, links
+and Markdown marks left out. It goes through the same worker, and keeps no
+trace of the text there.
+
 **Voice.** Six generated references plus Chatterbox's own built-in voice, and
 any you have cloned. **Library → Voices** lists them all: tap one to hear a
 short sentence spoken in it, record or upload a new one, and see which
