@@ -39,11 +39,16 @@ checkout, and what runs is a copy of it in `~/.local/bin`, never the
 checkout's own file (a `git checkout` would otherwise change a running
 service). On the machine these docs were written on it runs on demand (the port is held from
 boot, the model loads on the first request and stops after ten idle
-minutes). The repository has no installer that sets it up from nothing yet.
+minutes). Run it with that script's flags: `--embeddings --pooling last
+--embd-normalize 2` — `--pooling last` is not optional for this model, and
+the default pooling returns plausible vectors that retrieve worse, with
+nothing to say so. The repository has no installer that sets the server up
+from nothing yet; `scripts/llama/install-embed.sh` only moves an existing
+always-on one to on demand.
 What it costs is under [Beside the chat
 model](/docs/getting-started/hardware#beside-the-chat-model).
 To point it elsewhere, set `[llm] embed_url` in mecha-graph's config or
-`MECHA_GRAPH_EMBED_URL`; everything else is
+`MECHA_GRAPH_EMBED_URL` (mecha-graph 0.1.5); everything else is
 self-contained. To see it work with no
 personal data at all, a checkout's `eval/synthetic/run.sh` builds a
 throwaway graph from a fictional corpus and grades 24 retrieval queries
