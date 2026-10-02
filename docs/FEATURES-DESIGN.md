@@ -35,8 +35,9 @@
 > voices_dir` is a one-release alias, and the two serve flags override per
 > run), and `[personas] crisis_cooldown_minutes` is fully the owner's to set
 > (the owner's ruling — the cooldown is the window in which a further hit
-> does *not* re-pause, so longer is weaker). Steps 6–8 are unbuilt. The feature set rides on the session record and, since the
-> owner's ruling of 2026-10-01, in every experiment row's condition hash —
+> does *not* re-pause, so longer is weaker). Steps 6–8 are unbuilt. The
+> feature set rides on the session record and, since the owner's ruling
+> of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
 > the operator's (ARCHITECTURE §Features). The owner
 > ruled F1–F6 the same day (§7): the switch is a `[features]` table of

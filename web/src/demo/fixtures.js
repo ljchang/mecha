@@ -1826,7 +1826,7 @@ export const features = {
     on('image', 'Image generation', 'http://127.0.0.1:8188/'),
     on('library', 'Character and style library', '~/.mecha/imagelib', { part_of: 'image' }),
     on('personas', 'Personas', '~/.mecha/personas'),
-    on('voice', 'Voice', '`mecha voice-serve`, and the facade `mecha serve` mounts on port 8990'),
+    on('voice', 'Voice', '`mecha voice-serve`, and the facade `mecha serve` mounts on [voice] voice_port 8990'),
     on('dictate', 'Dictation', 'speech to text at http://127.0.0.1:8992/v1', { part_of: 'voice', requires: ['web'] }),
     on('calls', 'Voice calls', "offers to http://127.0.0.1:7860/api/offer", { part_of: 'voice', requires: ['web'] }),
     on('cloning', 'Voice cloning', '~/voices', { part_of: 'voice', requires: ['web'] }),

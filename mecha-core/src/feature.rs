@@ -1220,7 +1220,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                     .to_string()
             }
             port => {
-                format!("`mecha voice-serve`, and the facade `mecha serve` mounts on port {port}")
+                format!("`mecha voice-serve`, and the facade `mecha serve` mounts on [voice] voice_port {port}")
             }
         }),
         Feature::Dictate => on(format!("speech to text at {}", cfg.voice.stt_url())),
