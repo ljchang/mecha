@@ -1281,6 +1281,15 @@ module.
       is left, unused parts passed on — so owner facts can never price out
       the persona's own canon; a section cut, even to nothing, keeps its
       heading and says how many it left out (review of #477).
+    - **A record is dated by when it was said**, in the owner's day:
+      `Fact::said_at` / `Episode::said_at` take `valid_from`, else the
+      episode's own span, else the start of the source chat
+      (`Source::chat_began`, read from the session id), and the write night
+      only last; `local_day` renders it in `[agent] timezone`. Dated by the
+      write, the first real night (2026-10-02) showed a six-day fever from
+      30 September as that morning's news, and a UTC day put most of the
+      owner's late-evening chats a day ahead. Episode order and per-turn
+      recency use the same date.
     - **Two stems, chosen by the harness.** `MEMORY_STEM` arms `private`;
       `UNTRUSTED_MEMORY_STEM` (any record of untrusted origin folded) arms
       `private` and `untrusted`. `Taint::arm_for_content` re-reads the
