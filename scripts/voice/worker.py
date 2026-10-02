@@ -275,6 +275,9 @@ UPLINK_DRAIN_SPEED = 4.0
 # anyway: live speech queues behind it, and a listener would rather hear a
 # reply cut than wait half a minute for their own words.
 LATE_BOT_WAIT_SECS = 10.0
+# Beyond that wait, how long a flush waits for the turn queue before giving
+# up on it and letting the live audio behind it go (`flush_late`).
+LATE_HANDOFF_SLACK_SECS = 5.0
 # pipecat's VAD controller forces a speech stop `audio_idle_timeout` (1.0 s,
 # wall clock) after frames stop arriving. On the buffered uplink frames stop
 # arriving exactly when the link stalls, the hold already keeps the *turn*
@@ -1777,7 +1780,8 @@ class UplinkAudio:
             self._arm_late_settle()
             return
         # Live: a span that was being assembled is closed first, so its turn
-        # precedes the speech that ended it — both are queue items, in order.
+        # precedes the speech that ended it — both are queue items, in order,
+        # and the flush returns only once its turn is delivered (§2.5).
         self._work.put_nowait(self.flush_late)
         if dropped_ms:
             logger.warning(f"uplink: the page dropped {dropped_ms / 1000:.0f}s of audio before batch {seq}")
@@ -1855,9 +1859,17 @@ class UplinkAudio:
             f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
         )
         if self.deliver is not None:
-            # Handed to the call's one consumer of turns, which waits for the
-            # answer under way - never this queue, which holds live speech.
-            self.deliver(lambda: self._send_late(prefix + text))
+            # Handed to the call's one consumer of turns, and awaited: the
+            # live audio that closed this span is the next item on this
+            # queue, and §2.5 puts the turn before it. The consumer bounds
+            # its own wait at `LATE_BOT_WAIT_SECS`; this bound is only for a
+            # consumer that is gone (the call ending), so live audio is never
+            # held behind nothing.
+            done = self.deliver(lambda: self._send_late(prefix + text))
+            try:
+                await asyncio.wait_for(asyncio.shield(done), LATE_BOT_WAIT_SECS + LATE_HANDOFF_SLACK_SECS)
+            except TimeoutError:
+                logger.warning("uplink: the late turn was not delivered in time; live audio goes on behind it")
             return
         # Never interrupts — within reason: the queue behind this holds live
         # speech, so the wait for the bot to finish is bounded.
@@ -2274,20 +2286,37 @@ class TypedTurns:
     turn pushed from the uplink's own task could land inside a typed turn's
     answer the same way (pass 5). Here a turn waits until the answer before
     it is over (`busy`, which is `answer_pending`; bounded), and only then
-    is given to the model."""
+    is given to the model.
+
+    A late turn goes first and waits least. §2.5 puts it *before* the live
+    audio that closed its span, and that audio is queued behind the flush
+    on the uplink's own queue, so the flush waits for this delivery
+    (`deliver` returns when it is pushed): a late turn jumps the typed
+    lines, waits for the answer under way only as long as the uplink always
+    has (`late_secs`, `LATE_BOT_WAIT_SECS`), and a typed line waiting on an
+    answer steps aside for it rather than hold live speech for minutes
+    (review of #499, pass 6)."""
 
     def __init__(self, push, busy, log=print,
-                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS):
+                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS,
+                 late_secs=LATE_BOT_WAIT_SECS):
         self._push = push
         self._busy = busy
         self._log = log
         self._start_secs = start_secs
         self._end_secs = end_secs
-        # Unbounded, because a late turn is speech and is never dropped; the
-        # typed lines in it are counted against `TYPED_QUEUE_MAX` - a page
-        # pasting in a loop is not a conversation.
-        self._queue: asyncio.Queue = asyncio.Queue()
-        self._typed_waiting = 0
+        self._late_secs = late_secs
+        # Typed lines, bounded at `TYPED_QUEUE_MAX` - a page pasting in a
+        # loop is not a conversation; late turns, never refused - each is
+        # something the owner said.
+        self._typed: collections.deque[str] = collections.deque()
+        self._late: collections.deque = collections.deque()
+        self._ready = asyncio.Event()
+        # Until when a turn just pushed may still be about to be answered:
+        # between the push and the model's first frame `busy` reads false,
+        # and a turn that stepped aside for a late one must not have that
+        # gap taken as the answer being over (review of #499, pass 6).
+        self._unstarted_until: float | None = None
 
     def put(self, data) -> str:
         """Enqueue a client message's payload: "queued", "not-a-turn", or
@@ -2296,53 +2325,104 @@ class TypedTurns:
         text = typed_turn(data)
         if text is None:
             return "not-a-turn"
-        if self._typed_waiting >= TYPED_QUEUE_MAX:
+        if len(self._typed) >= TYPED_QUEUE_MAX:
             self._log(f"voice typed turn dropped: {TYPED_QUEUE_MAX} already waiting")
             return "full"
-        self._typed_waiting += 1
-        self._queue.put_nowait(("typed", text))
+        self._typed.append(text)
+        self._ready.set()
         return "queued"
 
-    def deliver(self, send):
-        """Enqueue another turn: `send` is awaited, in order with the typed
-        lines, when the answer before it is over. Never refused - the late
-        turn it carries is something the owner said."""
-        self._queue.put_nowait(("turn", send))
+    def deliver(self, send) -> asyncio.Future:
+        """Enqueue a late turn: `send` is awaited ahead of any typed line,
+        once the answer under way is over or `late_secs` has passed. The
+        future is done when it has been sent (or failed): what the uplink
+        awaits before the live audio behind it moves."""
+        done = asyncio.get_running_loop().create_future()
+        self._late.append((send, done))
+        self._ready.set()
+        return done
 
-    async def _until(self, want: bool, secs: float):
+    def _pushed(self):
+        self._unstarted_until = time.monotonic() + self._start_secs
+
+    def _answering(self) -> bool:
+        """`busy`, noting that an answer asked for has begun - whoever looks."""
+        if self._busy():
+            self._unstarted_until = None
+            return True
+        return False
+
+    def _in_the_way(self) -> bool:
+        """Whether a turn about to be pushed would barge in: an answer under
+        way, or one just asked for that has not begun (bounded)."""
+        if self._answering():
+            return True
+        return self._unstarted_until is not None and time.monotonic() < self._unstarted_until
+
+    async def _until(self, want: bool, secs: float, yield_to_late: bool = False, ahead: bool = False):
+        """True when `busy` reads `want` (with `ahead`, when nothing is in
+        the way of the next push), False at the bound - and None the moment
+        a late turn is waiting, if asked to step aside for one."""
         for _ in range(int(secs * 10)):
-            if bool(self._busy()) == want:
+            if yield_to_late and self._late:
+                return None
+            if bool(self._in_the_way() if ahead else self._answering()) == want:
                 return True
             await asyncio.sleep(0.1)
         return False
 
+    async def _answered(self):
+        """This answer, begun and over, before the next turn goes: bounded
+        either way, and never in a late turn's way - which then waits on
+        the same answer itself (`_in_the_way`)."""
+        if await self._until(True, self._start_secs, yield_to_late=True):
+            await self._until(False, self._end_secs, yield_to_late=True)
+
     async def run(self):
         while True:
-            kind, item = await self._queue.get()
-            if kind == "typed":
-                self._typed_waiting -= 1
+            if not self._late and not self._typed:
+                self._ready.clear()
+                await self._ready.wait()
+                continue
+            if self._late:
+                send, done = self._late.popleft()
+                try:
+                    await self._until(False, self._late_secs, ahead=True)
+                    await send()
+                    self._pushed()
+                except asyncio.CancelledError:
+                    done.cancel()
+                    raise
+                except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's turns
+                    self._log(f"voice late turn failed: {e.__class__.__name__}")
+                finally:
+                    if not done.done():
+                        done.set_result(None)
+                try:
+                    await self._answered()
+                except asyncio.CancelledError:
+                    raise
+                continue
+            text = self._typed.popleft()
             try:
                 # Not over an answer under way - a turn here is not a
-                # barge-in.
-                await self._until(False, self._end_secs)
-                if kind == "typed":
-                    # The words go to the journal only through
-                    # `spoken_words`, so an incognito call keeps none of them.
-                    self._log(f"voice typed turn: {spoken_words(item, 80)}")
-                    await self._push(item)
-                else:
-                    await item()
-                # This answer, begun and over, before the next turn goes:
-                # bounded either way.
-                if await self._until(True, self._start_secs):
-                    await self._until(False, self._end_secs)
+                # barge-in; but a late turn arriving meanwhile goes first.
+                if await self._until(False, self._end_secs, yield_to_late=True, ahead=True) is None:
+                    self._typed.appendleft(text)
+                    continue
+                # The words go to the journal only through `spoken_words`, so
+                # an incognito call keeps none of them.
+                self._log(f"voice typed turn: {spoken_words(text, 80)}")
+                await self._push(text)
+                self._pushed()
+                await self._answered()
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's typing
                 # Said, without the words, and the next turn still goes: a
                 # consumer that died here would leave every later line shown
                 # on the page and never answered (review of #499).
-                self._log(f"voice {kind} turn failed: {e.__class__.__name__}")
+                self._log(f"voice typed turn failed: {e.__class__.__name__}")
 
 
 def spoken_words(text: str, limit: int) -> str:

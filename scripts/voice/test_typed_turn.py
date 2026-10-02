@@ -262,6 +262,78 @@ class Gap(unittest.TestCase):
         self.assertGreaterEqual(sent[1][1], events["ended"][0], "the late turn landed inside the typed turn's answer")
 
 
+class LateFirst(unittest.TestCase):
+    """The uplink's live audio waits behind a late turn's delivery (§2.5),
+    so a late turn goes ahead of typed lines and waits least (review of
+    #499, pass 6)."""
+
+    def test_a_late_turn_jumps_the_typed_lines_waiting(self):
+        sent = []
+
+        async def push(text):
+            sent.append(text)
+
+        async def late():
+            sent.append("late")
+
+        async def main():
+            turns = TypedTurns(push, lambda: False, log=lambda _: None, start_secs=0.1, end_secs=0.5)
+            for line in ("one", "two"):
+                turns.put({"text": line})
+            done = turns.deliver(late)
+            task = asyncio.create_task(turns.run())
+            await asyncio.wait_for(done, 2.0)
+            await asyncio.sleep(0.6)
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertEqual(sent, ["late", "one", "two"])
+
+    def test_a_late_turn_does_not_wait_out_a_typed_lines_bound(self):
+        """A typed line is waiting on a long answer: the late turn arriving
+        meanwhile goes at its own short bound, not the typed line's three
+        minutes - live speech is queued behind it."""
+        sent = []
+
+        async def late():
+            sent.append(("late", asyncio.get_running_loop().time()))
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
+            turns = TypedTurns(None, lambda: True, log=lambda _: None, start_secs=1.0, end_secs=180.0,
+                               late_secs=0.4)
+            turns.put({"text": "waits on the answer"})
+            task = asyncio.create_task(turns.run())
+            await asyncio.sleep(0.2)
+            done = turns.deliver(late)
+            await asyncio.wait_for(done, 3.0)
+            task.cancel()
+            return t0
+
+        t0 = asyncio.run(main())
+        self.assertEqual([k for k, _ in sent], ["late"])
+        self.assertLess(sent[0][1] - t0, 1.5, "the late turn waited behind the typed line's bound")
+
+    def test_delivered_means_sent(self):
+        order = []
+
+        async def late():
+            await asyncio.sleep(0.2)
+            order.append("sent")
+
+        async def main():
+            turns = TypedTurns(None, lambda: False, log=lambda _: None)
+            task = asyncio.create_task(turns.run())
+            done = turns.deliver(late)
+            await done
+            order.append("awaited")
+            task.cancel()
+
+        asyncio.run(main())
+        self.assertEqual(order, ["sent", "awaited"])
+
+
 class Queue(unittest.TestCase):
     def test_put_says_why_a_line_was_not_queued(self):
         from worker import TYPED_QUEUE_MAX
