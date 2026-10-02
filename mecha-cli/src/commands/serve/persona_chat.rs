@@ -3266,9 +3266,9 @@ impl PersonaChats {
             }
         }
         if switches.crisis && safety::keyword_hit(&text) {
-            let cooling = ps.crisis_paused_at.is_some_and(|t| {
-                t.elapsed() < chat.follower.current().config.personas.crisis_cooldown()
-            });
+            let cooling = ps
+                .crisis_paused_at
+                .is_some_and(|t| t.elapsed() < bound.config.personas.crisis_cooldown());
             if let Err(e) =
                 safety::record_crisis(&self.store, "web", safety::Tier::Keyword, !cooling)
             {
@@ -3294,9 +3294,9 @@ impl PersonaChats {
         }
         // The judge reads a steer too, alongside the run it joins: a concern
         // the keywords missed stops that run and pauses the persona.
-        let cooling = ps.crisis_paused_at.is_some_and(|t| {
-            t.elapsed() < chat.follower.current().config.personas.crisis_cooldown()
-        });
+        let cooling = ps
+            .crisis_paused_at
+            .is_some_and(|t| t.elapsed() < bound.config.personas.crisis_cooldown());
         if switches.crisis && !cooling {
             let chats = Arc::clone(self);
             let key = key.to_string();
