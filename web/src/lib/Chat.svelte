@@ -1176,6 +1176,14 @@
     startVoice({ keep: true });
   }
 
+  // Listen's voice for the assistant's replies: both halves of what
+  // Settings → Voice stores, as an assistant call applies them (review of
+  // #502).
+  function ownerVoice() {
+    const p = readVoicePrefs();
+    return { voice: p.voice ?? null, speed: p.speed ?? null };
+  }
+
   let vMuted = $state(false);
   function toggleMute() {
     if (!vSession) return;
@@ -1844,7 +1852,7 @@
              (`reply-export.js`), so the server keeps no trace, and a reply
              saved to the device is the owner's own act, like text copied
              out (INCOGNITO-DESIGN §1, R2's refinement). -->
-        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, voice: readVoicePrefs().voice ?? null } : null} download /></div>
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, ...ownerVoice() } : null} download /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,

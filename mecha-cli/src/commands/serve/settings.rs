@@ -812,6 +812,12 @@ pub struct SpeakBody {
     /// The owner's chosen voice, for the assistant's replies.
     #[serde(default)]
     pub(super) voice: Option<String>,
+    /// The owner's chosen rate, for the assistant's replies: Settings →
+    /// Voice stores it beside the voice, and an assistant call applies both
+    /// (review of #502). Never read for a persona chat, whose call never
+    /// takes the listener's rate either.
+    #[serde(default)]
+    pub(super) speed: Option<f64>,
 }
 
 /// The most a speak request carries, as the worker takes it
@@ -876,6 +882,17 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
                     return (StatusCode::BAD_REQUEST, "not a voice name\n").into_response();
                 }
                 request["voice"] = serde_json::json!(v);
+            }
+            if let Some(speed) = body.speed {
+                let range = mecha_core::persona::VOICE_SPEED;
+                if !range.contains(&speed) {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("speed is {}–{}\n", range.start(), range.end()),
+                    )
+                        .into_response();
+                }
+                request["speed"] = serde_json::json!(speed);
             }
         }
     }
