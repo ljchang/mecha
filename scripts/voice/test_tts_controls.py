@@ -76,20 +76,42 @@ class Controls(unittest.TestCase):
         self.assertIsNone(controls)
         self.assertEqual(optional_controls(controls, exaggeration=0.8), {})
 
-    def test_an_unreachable_server_is_unknown_and_asked_once(self):
+    def test_a_failed_ask_is_retried_only_after_the_interval(self):
         old = worker.TTS_URL
         worker.TTS_URL = "http://127.0.0.1:9/v1"
         self.addCleanup(setattr, worker, "TTS_URL", old)
         available_voices(refresh=True)
         self.assertIsNone(tts_controls())
-        # Asked again per sentence, a dead TTS would cost a timeout each:
-        # point the URL at a live listing and the cached "unknown" stands.
         asked = []
         httpd, url = tts_server({"voices": ["default"], "controls": ["temperature"]}, asked=asked)
         self.addCleanup(httpd.shutdown)
         worker.TTS_URL = url
+        # Within the interval a dead TTS is not asked again per sentence ...
         self.assertIsNone(tts_controls())
         self.assertEqual(asked, [])
+        # ... and after it, "could not ask" has not latched as "honours
+        # nothing": the TTS that came back is asked and believed.
+        worker._controls_asked_at -= worker.CONTROLS_RETRY_SECS
+        self.assertEqual(tts_controls(), frozenset({"temperature"}))
+        self.assertEqual(len(asked), 1)
+
+    def test_only_a_refusal_is_asked_again(self):
+        asked = []
+        httpd, url = tts_server({"voices": ["default"], "controls": ["temperature"]}, asked=asked)
+        self.addCleanup(httpd.shutdown)
+        old = worker.TTS_URL
+        worker.TTS_URL = url
+        self.addCleanup(setattr, worker, "TTS_URL", old)
+        for status in (None, 500, 503):
+            asyncio.run(worker.reask_after_refusal(status))
+        self.assertEqual(asked, [], "a dead or failing TTS was asked on the error path")
+        asyncio.run(worker.reask_after_refusal(400))
+        self.assertEqual(len(asked), 1)
+
+    def test_unknown_is_labelled_unknown_never_false(self):
+        self.assertEqual(worker.controls_label(None, "cfg_weight"), "unknown")
+        self.assertEqual(worker.controls_label(frozenset({"temperature"}), "cfg_weight"), "False")
+        self.assertEqual(worker.controls_label(frozenset({"cfg_weight"}), "cfg_weight"), "True")
 
     def wav_body(self, listing):
         """The body `tts_wav` (the library preview, the play button) sends

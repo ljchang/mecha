@@ -94,6 +94,10 @@ class Controls(unittest.TestCase):
         self.assertEqual(self.speak(client, exaggeration=2.5).status_code, 400)
         self.assertEqual(self.speak(client, cfg_weight=1.5).status_code, 400)
 
+    def test_an_unknown_model_fails_at_import(self):
+        with self.assertRaises(RuntimeError):
+            server("turbo-ish")
+
     def test_original_unset_leaves_the_librarys_default(self):
         mod, client = server("original")
         self.assertEqual(self.speak(client).status_code, 200)

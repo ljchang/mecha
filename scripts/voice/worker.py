@@ -965,10 +965,14 @@ _voices_cache = None
 # not be asked - and nothing optional is sent then: the old server was
 # always Turbo, which ignores every control this would send.
 _controls_cache = None
-# Whether the list has been asked for since the last refresh - apart from
-# `_voices_cache`, which stays None when the asking failed, so a TTS that
-# cannot be listed is asked once, not once per sentence.
-_controls_asked = False
+# When the list was last asked for without an answer (monotonic seconds), or
+# None. A failed ask is retried, but not sooner than CONTROLS_RETRY_SECS:
+# "could not ask" must not latch as "honours nothing" for the life of the
+# process (a TTS restarted mid-call would otherwise lose the original
+# model's controls for the rest of it), and a dead TTS must not cost a
+# 5 s timeout on every sentence.
+_controls_asked_at = None
+CONTROLS_RETRY_SECS = 30.0
 
 
 def available_voices(refresh=False):
@@ -990,12 +994,12 @@ def available_voices(refresh=False):
     until a worker restart nobody was told to do. Refetching only on a miss
     keeps the happy path at zero extra requests - a known voice never pays.
     """
-    global _voices_cache, _controls_cache, _controls_asked
+    global _voices_cache, _controls_cache, _controls_asked_at
     if refresh:
         _voices_cache = None
     if _voices_cache is not None:
         return _voices_cache
-    _controls_asked = True
+    _controls_asked_at = time.monotonic()
     import json
     import urllib.request
 
@@ -1015,11 +1019,31 @@ def available_voices(refresh=False):
 
 
 def tts_controls() -> frozenset | None:
-    """The controls the TTS honours (see `_controls_cache`), asking it if
-    nothing has yet. None is unknown, and sends nothing optional."""
-    if not _controls_asked:
+    """The controls the TTS honours (see `_controls_cache`). An answer stands
+    until a refresh; without one the TTS is asked, at most once per
+    CONTROLS_RETRY_SECS. None is unknown, and sends nothing optional."""
+    if _voices_cache is None and (
+        _controls_asked_at is None
+        or time.monotonic() - _controls_asked_at >= CONTROLS_RETRY_SECS
+    ):
         available_voices()
     return _controls_cache
+
+
+def controls_label(controls: frozenset | None, name: str) -> str:
+    """Whether `name` is honoured, for a log line: unknown is its own answer,
+    never "no" - could not ask and does not honour are opposite findings."""
+    return "unknown" if controls is None else str(name in controls)
+
+
+async def reask_after_refusal(status: int | None) -> None:
+    """Ask the TTS what it honours again after it refused a request (4xx):
+    one restarted under another model refuses what the old one honoured, and
+    the next sentence should send what this one lists. Only on a 4xx - the
+    server answered, so asking is cheap; a dead one is left to
+    `tts_controls`' paced retry. After the error is out, never before it."""
+    if status is not None and 400 <= status < 500:
+        await asyncio.to_thread(available_voices, True)
 
 
 def optional_controls(controls: frozenset | None, **wanted: float) -> dict:
@@ -1163,7 +1187,7 @@ class LocalTTS(OpenAITTSService):
             return
         # Whether the TTS honours cfg_weight at all: on Turbo the nudge is
         # computed and never sent, and the line must not read as applied.
-        honoured = "cfg_weight" in (await asyncio.to_thread(tts_controls) or ())
+        honoured = controls_label(await asyncio.to_thread(tts_controls), "cfg_weight")
         logger.debug(
             f"voice affect latch: context={context_id} key={self._affect_key} "
             f"cfg_weight={self._affect_params[1]:.3f} (baseline "
@@ -1230,11 +1254,8 @@ class LocalTTS(OpenAITTSService):
             ) as r:
                 if r.status_code != 200:
                     error = await r.text()
-                    # A TTS restarted under another model refuses what the
-                    # old one honoured: ask it again, so the next sentence
-                    # sends what this one lists.
-                    await asyncio.to_thread(available_voices, True)
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
+                    await reask_after_refusal(r.status_code)
                     return
                 await self.start_tts_usage_metrics(text)
                 self._echo_window.note(text)
@@ -1243,10 +1264,10 @@ class LocalTTS(OpenAITTSService):
                         await self.stop_ttfb_metrics()
                         yield TTSAudioRawFrame(chunk, self.sample_rate, 1, context_id=context_id)
         except Exception as e:
+            yield ErrorFrame(error=f"TTS failed: {e}")
             # The typed client raises on a 4xx before the branch above sees
             # it, so the same re-ask, here.
-            await asyncio.to_thread(available_voices, True)
-            yield ErrorFrame(error=f"TTS failed: {e}")
+            await reask_after_refusal(getattr(e, "status_code", None))
 
 
 class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
@@ -2230,10 +2251,9 @@ async def tts_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
     )
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(f"{TTS_URL}/audio/speech", json=body)
-        if r.status_code >= 400:
-            # As in `run_tts`: a TTS restarted under another model is
-            # asked again before the next request.
-            await asyncio.to_thread(available_voices, True)
+        # As in `run_tts`: a TTS restarted under another model is asked
+        # again before the next request.
+        await reask_after_refusal(r.status_code if r.status_code >= 400 else None)
         r.raise_for_status()
         return r.content
 
@@ -2591,14 +2611,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     # A persona's expressiveness its TTS cannot honour is spoken without,
     # since refusing would end the call - but said, once, rather than
     # dropped where nobody looks (the server refuses it one level down).
-    honoured = await asyncio.to_thread(tts_controls) or frozenset()
-    dropped = [k for k in ("exaggeration", "cfg_weight") if k in bound and k not in honoured]
+    honoured = await asyncio.to_thread(tts_controls)
+    dropped = [
+        k for k in ("exaggeration", "cfg_weight")
+        if k in bound and (honoured is None or k not in honoured)
+    ]
     if dropped:
         from loguru import logger
 
         logger.info(
             f"persona voice sets {', '.join(dropped)}, which the TTS's model does not "
             "honour; speaking without"
+            if honoured is not None
+            else f"persona voice sets {', '.join(dropped)}; the TTS did not say which "
+            "controls it honours, so they are not sent"
         )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
