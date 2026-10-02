@@ -18,6 +18,10 @@ The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-2.0
     MECHA_VOICE_TTS_CFG_WEIGHT    guidance weight, 0.0-1.0 (lower = more
                       expressive pacing; it moves *against* exaggeration)
+                      Both are sent only when the TTS lists them as
+                      honoured: the original Chatterbox does, Turbo (the
+                      default live model) drops them, and then they do
+                      nothing (see `TTS_EXAGGERATION`).
 """
 
 import asyncio
@@ -97,15 +101,15 @@ TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
 # that cannot ask.
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
 
-# Chatterbox's expressiveness pair, and the whole reason the voice sounded
-# flat: the serving wrapper defaulted `exaggeration` to 0.0 - the monotone
-# end of the scale, not the neutral middle - and nothing here sent the
-# field at all, so every utterance since launch went out at the minimum.
-# Resemble's expressive recipe raises exaggeration against a *lowered*
-# cfg_weight, because a high one rushes the cadence. Sent on every request
-# rather than left to the server's default: two places holding an opinion
-# about how mecha sounds is one place too many, and the server's is now
-# the library's neutral rather than this one.
+# Chatterbox's expressiveness pair. Resemble's expressive recipe raises
+# exaggeration against a *lowered* cfg_weight, because a high one rushes
+# the cadence. **Honoured by the original Chatterbox only**: Turbo, the
+# live voice, accepts both and drops them (chatterbox_server.py `CONTROLS`),
+# so these were sent to a model that ignored them from 2026-08-26 until the
+# server began saying so - and the "flat voice" this was credited with
+# fixing was the references (docs/VOICE-RESEARCH.md, the correction under
+# "The voice was flat"). Sent only when the server lists them as controls
+# (`tts_controls`): an unlisted one is refused there, not ignored.
 TTS_EXAGGERATION = float(os.environ.get("MECHA_VOICE_TTS_EXAGGERATION", "0.8"))
 TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
 
@@ -959,6 +963,20 @@ class ParakeetSTT(SegmentGatedSTT):
 
 
 _voices_cache = None
+# The per-request controls the TTS's loaded model honours, as its
+# `/v1/voices` lists them; fetched with the voice list and dropped with it.
+# None is "unknown" - a server that predates the list, or one that could
+# not be asked - and nothing optional is sent then: the old server was
+# always Turbo, which ignores every control this would send.
+_controls_cache = None
+# When the list was last asked for without an answer (monotonic seconds), or
+# None. A failed ask is retried, but not sooner than CONTROLS_RETRY_SECS:
+# "could not ask" must not latch as "honours nothing" for the life of the
+# process (a TTS restarted mid-call would otherwise lose the original
+# model's controls for the rest of it), and a dead TTS must not cost a
+# 5 s timeout on every sentence.
+_controls_asked_at = None
+CONTROLS_RETRY_SECS = 30.0
 
 
 def available_voices(refresh=False):
@@ -980,11 +998,12 @@ def available_voices(refresh=False):
     until a worker restart nobody was told to do. Refetching only on a miss
     keeps the happy path at zero extra requests - a known voice never pays.
     """
-    global _voices_cache
+    global _voices_cache, _controls_cache, _controls_asked_at
     if refresh:
         _voices_cache = None
     if _voices_cache is not None:
         return _voices_cache
+    _controls_asked_at = time.monotonic()
     import json
     import urllib.request
 
@@ -992,11 +1011,74 @@ def available_voices(refresh=False):
 
     try:
         with urllib.request.urlopen(f"{TTS_URL}/voices", timeout=5) as r:
-            _voices_cache = json.load(r).get("voices") or None
+            listed = json.load(r)
+        _voices_cache = listed.get("voices") or None
+        controls = listed.get("controls")
+        _controls_cache = frozenset(controls) if isinstance(controls, list) else None
     except Exception as e:  # noqa: BLE001 - any failure is the same answer
         logger.debug(f"voice list unavailable at {TTS_URL}/voices: {e}")
         _voices_cache = None
+        _controls_cache = None
     return _voices_cache
+
+
+def tts_controls() -> frozenset | None:
+    """The controls the TTS honours (see `_controls_cache`). An answer stands
+    until a refresh; without one the TTS is asked, at most once per
+    CONTROLS_RETRY_SECS. None is unknown, and sends nothing optional."""
+    # Keyed on the controls, not the voices: a server that listed voices but
+    # no controls (one that predates the list - which is what a worker
+    # restarted first, as the restart order says, finds) is unknown too,
+    # and must be asked again once the new server is up.
+    if _controls_cache is None and (
+        _controls_asked_at is None
+        or time.monotonic() - _controls_asked_at >= CONTROLS_RETRY_SECS
+    ):
+        available_voices(refresh=True)
+    return _controls_cache
+
+
+def controls_label(controls: frozenset | None, name: str) -> str:
+    """Whether `name` is honoured, for a log line: unknown is its own answer,
+    never "no" - could not ask and does not honour are opposite findings."""
+    return "unknown" if controls is None else str(name in controls)
+
+
+_noted_unsent_defaults = False
+
+
+def note_unsent_defaults(honoured: frozenset | None) -> None:
+    """Say once per process when the assistant's own TTS_EXAGGERATION /
+    TTS_CFG_WEIGHT are not reaching the voice - the persona path says so per
+    call, and the owner's environment deserves the same line, not silence."""
+    global _noted_unsent_defaults
+    if _noted_unsent_defaults or (honoured is not None and {"exaggeration", "cfg_weight"} <= honoured):
+        return
+    _noted_unsent_defaults = True
+    from loguru import logger
+
+    logger.info(
+        f"exaggeration={TTS_EXAGGERATION} / cfg_weight={TTS_CFG_WEIGHT} are not sent: "
+        + ("the TTS did not say which controls it honours" if honoured is None
+           else "the TTS's model does not honour them")
+    )
+
+
+async def reask_after_refusal(status: int | None) -> None:
+    """Ask the TTS what it honours again after it refused a request (4xx):
+    one restarted under another model refuses what the old one honoured, and
+    the next sentence should send what this one lists. Only on a 4xx - the
+    server answered, so asking is cheap; a dead one is left to
+    `tts_controls`' paced retry. After the error is out, never before it."""
+    if status is not None and 400 <= status < 500:
+        await asyncio.to_thread(available_voices, True)
+
+
+def optional_controls(controls: frozenset | None, **wanted: float) -> dict:
+    """The subset of `wanted` the TTS honours - what rides in the request's
+    `extra_body`. A control the model would drop is never sent, because the
+    server refuses it rather than speaking as if it had landed."""
+    return {k: v for k, v in wanted.items() if controls and k in controls}
 
 
 class LocalTTS(OpenAITTSService):
@@ -1131,10 +1213,13 @@ class LocalTTS(OpenAITTSService):
         # fact the chat promised not to leave (review of #376).
         if names_incognito(self._affect_key):
             return
+        # Whether the TTS honours cfg_weight at all: on Turbo the nudge is
+        # computed and never sent, and the line must not read as applied.
+        honoured = controls_label(await asyncio.to_thread(tts_controls), "cfg_weight")
         logger.debug(
             f"voice affect latch: context={context_id} key={self._affect_key} "
             f"cfg_weight={self._affect_params[1]:.3f} (baseline "
-            f"{self._cfg_weight:.3f})"
+            f"{self._cfg_weight:.3f}, honoured={honoured})"
         )
 
     async def _poll_affect_params(self) -> tuple[float, float]:
@@ -1181,21 +1266,24 @@ class LocalTTS(OpenAITTSService):
                 "voice": self._settings.voice,
                 "speed": self._speed,
                 "response_format": "pcm",
-                # Not fields of OpenAI's speech API, so they ride in
-                # extra_body rather than being silently dropped by the
-                # typed client - which is how a knob gets plumbed to a
-                # server that accepts it and still never arrives.
-                "extra_body": {
-                    "exaggeration": exaggeration,
-                    "cfg_weight": cfg_weight,
-                },
             }
+            # Not fields of OpenAI's speech API, so they ride in extra_body
+            # rather than being silently dropped by the typed client - and
+            # only those the TTS's model honours (`optional_controls`).
+            extra = optional_controls(
+                await asyncio.to_thread(tts_controls),
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+            )
+            if extra:
+                create_params["extra_body"] = extra
             async with self._client.audio.speech.with_streaming_response.create(
                 **create_params
             ) as r:
                 if r.status_code != 200:
                     error = await r.text()
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
+                    await reask_after_refusal(r.status_code)
                     return
                 await self.start_tts_usage_metrics(text)
                 self._echo_window.note(text)
@@ -1205,6 +1293,9 @@ class LocalTTS(OpenAITTSService):
                         yield TTSAudioRawFrame(chunk, self.sample_rate, 1, context_id=context_id)
         except Exception as e:
             yield ErrorFrame(error=f"TTS failed: {e}")
+            # The typed client raises on a 4xx before the branch above sees
+            # it, so the same re-ask, here.
+            await reask_after_refusal(getattr(e, "status_code", None))
 
 
 class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
@@ -2171,21 +2262,26 @@ SAMPLE_LINE = (
 
 async def tts_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
     """`text` in `voice`, as a WAV, from the TTS server - the expressiveness a
-    call opens with, so what is heard here is the voice as a call sounds.
+    call opens with, so what is heard here is the voice as a call sounds:
+    the same honoured-only controls a call sends (`optional_controls`).
     Raises on any failure; the route says which."""
+    body = {
+        "input": text,
+        "model": "tts",
+        "voice": voice,
+        "response_format": "wav",
+        "speed": speed,
+    }
+    body |= optional_controls(
+        await asyncio.to_thread(tts_controls),
+        exaggeration=TTS_EXAGGERATION,
+        cfg_weight=TTS_CFG_WEIGHT,
+    )
     async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"{TTS_URL}/audio/speech",
-            json={
-                "input": text,
-                "model": "tts",
-                "voice": voice,
-                "response_format": "wav",
-                "speed": speed,
-                "exaggeration": TTS_EXAGGERATION,
-                "cfg_weight": TTS_CFG_WEIGHT,
-            },
-        )
+        r = await client.post(f"{TTS_URL}/audio/speech", json=body)
+        # As in `run_tts`: a TTS restarted under another model is asked
+        # again before the next request.
+        await reask_after_refusal(r.status_code if r.status_code >= 400 else None)
         r.raise_for_status()
         return r.content
 
@@ -2540,6 +2636,25 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         # other call on this worker can reach it.
         echo_window=stt.echo_window,
     )
+    # A persona's expressiveness its TTS cannot honour is spoken without,
+    # since refusing would end the call - but said, once, rather than
+    # dropped where nobody looks (the server refuses it one level down).
+    honoured = await asyncio.to_thread(tts_controls)
+    note_unsent_defaults(honoured)
+    dropped = [
+        k for k in ("exaggeration", "cfg_weight")
+        if k in bound and (honoured is None or k not in honoured)
+    ]
+    if dropped:
+        from loguru import logger
+
+        logger.info(
+            f"persona voice sets {', '.join(dropped)}, which the TTS's model does not "
+            "honour; speaking without"
+            if honoured is not None
+            else f"persona voice sets {', '.join(dropped)}; the TTS did not say which "
+            "controls it honours, so they are not sent"
+        )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
     # so neither is configured here. The session key travels as a header -
