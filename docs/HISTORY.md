@@ -35,7 +35,11 @@ ruling of 2026-10-01: "[voice] holds everything voice".
   strips out of `config.rs` and requires the two lists to agree.
 - **The features rows:** Dictate names `stt_url`; Calls stays on with
   "no proxy" when `offer_target` is empty; Cloning reads `[voice]
-  voices_dir`.
+  voices_dir`. The sentinel is not settled everywhere: three other readers
+  still take an absent target as "voice calls are not wired on this
+  serve". They are `settings::speak` (Listen), `library_voice_sample`, and
+  `library_voices`' worker list. HANDOFF carries it; found by #506's
+  review, by the rule of the sentinel trap below.
 - **Seven review passes,** counted from the PR's comments. Pass 3 found the
   empty-`offer_target` sentinel unmounting the voice facade (Traps →
   Review process). mecha-d7 merged it at mecha-ce's named head and
