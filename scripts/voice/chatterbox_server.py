@@ -55,6 +55,13 @@ CONTROLS = {
     "turbo": ("temperature",),
     "original": ("temperature", "exaggeration", "cfg_weight"),
 }
+# Checked here, at import, rather than at load: every lookup of
+# CONTROLS[MODEL_KIND] is then safe for anything that imports this module,
+# startup or not, and an unknown kind still fails the start - never a quiet
+# fallback to Turbo advertising controls its model drops.
+if MODEL_KIND not in CONTROLS:
+    raise RuntimeError(f"CHATTERBOX_MODEL must be turbo or original, not {MODEL_KIND!r}")
+
 # The original model's own documented ranges: exaggeration past 1.0 is
 # Resemble's expressive end, which the worker and a persona may ask for.
 BOUNDS = {"exaggeration": (0.0, 2.0), "cfg_weight": (0.0, 1.0)}
@@ -165,14 +172,10 @@ def load():
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
         model = ChatterboxTurboTTS.from_pretrained(device="cuda")
-    elif MODEL_KIND == "original":
+    else:  # "original", the only other kind CONTROLS admits
         from chatterbox.tts import ChatterboxTTS
 
         model = ChatterboxTTS.from_pretrained(device="cuda")
-    else:
-        # Fails the start, never falls back: a server that quietly loaded
-        # Turbo would advertise controls its model drops.
-        raise RuntimeError(f"CHATTERBOX_MODEL must be turbo or original, not {MODEL_KIND!r}")
     # Warm pass: the first generate pays kernel compilation; pay it at
     # boot, not on the first thing the owner says.
     model.generate("Warm up.")

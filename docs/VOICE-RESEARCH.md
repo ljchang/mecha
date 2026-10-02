@@ -1674,6 +1674,29 @@ ever feels laggy. `scripts/voice/llama-voxtral.service` is written and
 ready; installing it is the one step needing sudo, and until then :8082
 runs under nohup.
 
+**How the container is run, and how to restart it (2026-10-02).** The
+`docker run` line is not in a unit file, so it is written here:
+
+```bash
+docker run -d --name chatterbox --restart unless-stopped \
+  --device nvidia.com/gpu=all -p 127.0.0.1:8881:8881 \
+  -v ~/models/voices:/voices:ro \
+  -v ~/models/hf-cache:/root/.cache/huggingface \
+  -v ~/Github/mecha/scripts/voice:/srv:ro \
+  mecha/chatterbox:serve \
+  uvicorn --app-dir /srv chatterbox_server:app --host 0.0.0.0 --port 8881
+```
+
+`CHATTERBOX_MODEL` (`turbo`, the default, or `original`) is read at
+start, so switching models means recreating the container with
+`-e CHATTERBOX_MODEL=original`: `docker restart` keeps the old
+environment. The server serves the shared checkout, as the voice worker
+does, and the two must move together in one order: **restart the worker
+first, then the container.** A new server refuses a control its model
+drops, and an old worker sends `exaggeration` / `cfg_weight` on every
+sentence, so a new server under an old worker refuses every sentence; a
+new worker under an old server sends nothing optional and is safe.
+
 Phase 1 status: **speech servers done** (:8082 ears, :8881 launch voice,
 :8880 fallback voice, all measured). Next: Phase 2, the facade — where
 mecha itself enters.
