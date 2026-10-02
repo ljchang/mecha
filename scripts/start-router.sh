@@ -133,8 +133,8 @@ qwen_sampling() {
 # it makes each prompt a prefix of the next — the cached prefix survives a new
 # user turn instead of re-reading from the first dropped block — at the cost
 # of context that fills sooner. Gemma's template has no such rule. Persona
-# chats send no earlier reasoning back at all (`PriorThinking::Drop`), so for
-# them this flag renders nothing; it governs the assistant's runs.
+# chats send back no earlier *reply's* reasoning (`PriorThinking::Drop`); a
+# turn that called a tool keeps its own, so this flag still renders those.
 #
 # A Qwen projector's image-token floor. Qwen's own default lets an image
 # shrink to 8 tokens (clip.cpp `set_limit_image_tokens(8, 4096)`), and the

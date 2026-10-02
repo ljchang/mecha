@@ -1508,6 +1508,13 @@ module.
     Qwen's own templates use. A tool result is a user message too, so "the
     last user message" would cut inside a run, and the reasoning that chose
     a call would never reach the step that reads its result.
+    - Only *replies* lose their thinking. An earlier turn that called a tool
+      keeps its thinking. On 2026-08-10, with reasoning stripped from
+      tool-calling turns, llama-server's model emitted a bare `<tool_call>`
+      with no think block 6 of 6 times, and the turn arrived empty
+      (`openai::encode_message`). Persona agents always have tools, and the
+      replies that repeated were plain text, so this costs the repetition
+      fix nothing.
     - An all-thinking assistant message is kept whole, because an empty
       message is a 400.
     - The transcript records every thinking block; only the wire is cut.
