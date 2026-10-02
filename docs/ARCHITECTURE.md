@@ -1341,6 +1341,23 @@ module.
       `RECALL_EMBED_WAIT` (8 s, past the on-demand server's cold start);
       slower or down, recall is by words. `persona memory write` embeds what
       has no vector after writing.
+  - **The memory tools** (`persona::memory_tools`, §9.7 "on demand"):
+    `memory_search` and `memory_read`, inserted in `setup::persona_agent`
+    beside the file tools, and only if they can never send.
+    - Offered by the chat's *pinned* settings, so the tool list — the front
+      of the cached prefix — never changes mid-chat. Each call reads the
+      switches live, and a switched-off memory says so.
+      `a_persona_with_memory_off_is_offered_no_memory_tools` drives the doors.
+    - Both declare `private` and `untrusted`. A result is marked from
+      outside only when something it returns was: an approved record of
+      untrusted origin, or a turn of the earlier chat.
+    - `memory_read` reads another conversation, which `tool::recall`
+      forbids itself because it would launder that chat's content. So it
+      carries each turn's recorded taint (`writer::read_chat`; uncovered or
+      unreadable counts as untrusted). The chat comes from the stored
+      episode, never from the model, and a chat id that is not a session id
+      is refused before it can become a path.
+    - Episode lines in the recall blocks carry `memory_tools::short` ids.
   - **The writer** (`persona::writer`, §9.6) runs from `mecha persona memory
     write`, which `scripts/ruminate.sh` calls nightly; nothing writes after a
     chat yet. It never runs during a chat, and only on a provider that
