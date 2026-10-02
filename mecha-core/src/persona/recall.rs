@@ -240,7 +240,13 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
                 .as_deref()
                 .or(e.started_at.as_deref())
                 .unwrap_or(&e.ingested_at);
-            let mut line = format!("- {} · {}", day(when), e.summary);
+            // Its id, so the persona can read it in full with `memory_read`.
+            let mut line = format!(
+                "- {} · [{}] {}",
+                day(when),
+                super::memory_tools::short(&e.uid),
+                e.summary
+            );
             if !e.open_threads.is_empty() {
                 line.push_str(&format!(" (Left open: {}.)", e.open_threads.join("; ")));
             }
@@ -252,11 +258,11 @@ pub fn chat_start(store: &Store, p: &Persona) -> Result<Recalled> {
         episode_section = match (lines.is_empty(), cut) {
             (true, 0) => None,
             (true, cut) => Some(format!(
-                "Recent conversations:\n({cut} remembered, none shown here.)"
+                "Recent conversations (an id in brackets opens one in full with `memory_read`):\n({cut} remembered, none shown here.)"
             )),
-            (false, 0) => Some(format!("Recent conversations:\n{}", lines.join("\n"))),
+            (false, 0) => Some(format!("Recent conversations (an id in brackets opens one in full with `memory_read`):\n{}", lines.join("\n"))),
             (false, cut) => Some(format!(
-                "Recent conversations:\n{}\n(And {cut} more not shown here.)",
+                "Recent conversations (an id in brackets opens one in full with `memory_read`):\n{}\n(And {cut} more not shown here.)",
                 lines.join("\n")
             )),
         };
@@ -457,18 +463,9 @@ pub fn per_turn(
     if !would_search(store_dir, p, message) {
         return Ok(None);
     }
-    let s = &p.settings.memory;
-    let mut kinds = Vec::new();
-    if s.episodic {
-        kinds.push(Recallable::Episodes);
-    }
-    if s.semantic {
-        kinds.push(Recallable::Facts(Table::Persona));
-    }
-    if s.user_facts != UserFacts::Off {
-        kinds.push(Recallable::Facts(Table::User));
-        kinds.push(Recallable::Facts(Table::Inferred));
-    }
+    // One reading of the switches, shared with the memory tools, so a new
+    // `[memory]` switch is learned once (review of #498).
+    let kinds = super::memory_tools::kinds(&p.settings);
     let m = Memory::open_to_edit(store_dir, &p.name)?;
     // Already in the chat by its opening words: chat start may have shown a
     // long episode cut short, and the whole text would not match it.
@@ -489,7 +486,14 @@ pub fn per_turn(
                 Recallable::Facts(Table::Inferred) => "your guess about the owner",
                 Recallable::Facts(Table::Persona) => "between you",
             };
-            clip(&format!("- {} · {what}: {}", day(&r.date), r.text), share)
+            let id = match r.kind {
+                Recallable::Episodes => format!(" [{}]", super::memory_tools::short(&r.uid)),
+                Recallable::Facts(_) => String::new(),
+            };
+            clip(
+                &format!("- {} · {what}{id}: {}", day(&r.date), r.text),
+                share,
+            )
         })
         .collect();
     let stem = if untrusted {
