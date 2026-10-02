@@ -1439,9 +1439,9 @@ module.
       place of a reply on a crisis pause, and after the reply on a run the
       judge stopped, since what was already spoken cannot be unsaid. A
       verdict that lands after the reply has finished is not heard: the
-      call's turn has closed, so it reaches only the page, and the call does
-      not wait for it (up to `JUDGE_WAIT`), by the owner's ruling of
-      2026-10-02. The pause is spoken in the persona's own voice, by the
+      call's turn has closed, so it reaches only the page. The call does
+      not hold the turn open waiting for it (which could take up to
+      `JUDGE_WAIT`), by the owner's ruling of 2026-10-02. The pause is spoken in the persona's own voice, by the
       owner's ruling of 2026-10-01.
     - The lock and approval are checked before the barge-in (the
       assistant's #376 order), so a refused call never stops the reply in
