@@ -1494,11 +1494,15 @@ module.
   four-character owner turn. Both changes sit at the persona's own seams, so
   the assistant's runs keep their seed, their reasoning and their cached
   prefix.
-  - `setup::persona_provider` builds from `unseeded(cfg)`. A pinned seed
-    makes a measured run repeat exactly. In a conversation it makes every
-    request reuse the same sampler draws, and a turn that adds little comes
-    back as an earlier reply. With no `seed` sent, llama-server draws a fresh
-    one per request.
+  - `setup::persona_provider` takes a `PersonaUse`. `Converse` drops the
+    seed, and `Judge` keeps it for the crisis judge and the steering judge.
+    A pinned seed makes a measured run repeat exactly, which is what a
+    verdict wants: the same words should get the same verdict, and a
+    reported miss should be reproducible. In a conversation the seed makes
+    every request reuse the same sampler draws, and a turn that adds little
+    comes back as an earlier reply. With no `seed` sent, llama-server draws
+    a fresh one per request. All three come from one `ProviderFactory`, so
+    the use is named at each call site, never assumed.
   - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
     the newest user message that carries no tool result, which is the cut
     Qwen's own templates use. A tool result is a user message too, so "the
@@ -1521,7 +1525,10 @@ module.
     the run is recorded. They never come from the live conversation: by the
     late stretch of a chat compaction has summarised most turns away, and a
     copy of one of them would score as new. `Rewrite` records are read too,
-    because the turns a compacting run adds exist only there. It has its own file
+    because the turns a compacting run adds exist only there. Only a run
+    whose `stop_cause` is `Completed` is measured. A stopped run keeps a
+    partial reply, which would read low, and a judge-stopped reply is never
+    shown at all. It has its own file
     for the same reason `calls.jsonl` does. When there is nothing to compare
     the result is `None` and nothing is written. `mecha persona show` reads
     the last `SHOWN_DAYS` days, and an unreadable file is reported as such,
