@@ -181,7 +181,7 @@ which puts the resident sum near 55 GiB rather than 47.
 | `documents` (`file_search`), `graph`, and `personas` file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
 | `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
 | `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
-| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle — with the `comfyui-idle-reset` timer installed, ComfyUI is restarted after ten idle minutes and holds ~1.1 GB until the next picture | ~13.6 loaded and idle (GPU + process memory); ~15 peak warm, ~18.5 above idle from cold | Measured 2026-09-25 (peak), 2026-10-02 (footprints) |
+| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle — with the `mecha-comfyui-idle-reset` timer installed, ComfyUI is restarted after ten idle minutes and holds ~1.1 GB until the next picture | ~13.6 loaded and idle (GPU + process memory); ~15 peak warm, ~18.5 above idle from cold | Measured 2026-09-25 (peak), 2026-10-02 (footprints) |
 | `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | Measured 2026-10-02 |
 | `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4, and 2.5 of system memory | Measured 2026-10-02 |
 | `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | Measured 2026-10-02 |

@@ -29,6 +29,7 @@ echo "systemctl $*" >> "$CALLS"
 case "$*" in *show*) echo "${FAKE_PID-4242}";; esac
 """,
     "nvidia-smi": """#!/bin/bash
+[ -n "${FAKE_SMI_BROKEN:-}" ] && exit 9
 [ -n "${FAKE_GPU_MIB:-}" ] && echo "${FAKE_PID-4242}, $FAKE_GPU_MIB"
 echo "1111, 42461"
 """,
@@ -52,7 +53,7 @@ exit 0
 
 
 class IdleReset(unittest.TestCase):
-    def run_script(self, *, gpu=12500, rss_mib=1400, queue=IDLE_QUEUE, memfree_mib=30000, **extra):
+    def run_script(self, *, gpu=12500, rss_mib=1400, queue=IDLE_QUEUE, memfree_mib=30000, rc=0, **extra):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             bindir = d / "bin"
@@ -77,7 +78,11 @@ class IdleReset(unittest.TestCase):
                 env["FAKE_GPU_MIB"] = str(gpu)
             env.update({k: v for k, v in extra.items() if v is not None})
             out = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
-            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(out.returncode, rc, out.stdout + out.stderr)
+            # Every tick says what it decided: a silent decline reads the same
+            # as a timer that never ran.
+            self.assertIn("comfyui-idle-reset:", out.stdout, "the script decided silently")
+            self.last_said = out.stdout
             return calls.read_text()
 
     def restarted(self, calls):
@@ -117,12 +122,22 @@ class IdleReset(unittest.TestCase):
     def test_an_open_connection_is_a_client_mid_call(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_CONNECTED="1")))
 
-    def test_a_connection_check_that_cannot_run_is_busy(self):
-        # The only guard while references upload, before anything is queued.
-        self.assertFalse(self.restarted(self.run_script(FAKE_SS_BROKEN="1")))
+    def test_a_connection_check_that_cannot_run_is_busy_and_fails_the_unit(self):
+        # The only guard while references upload, before anything is queued;
+        # a failed unit is what `mecha doctor` can see.
+        self.assertFalse(self.restarted(self.run_script(FAKE_SS_BROKEN="1", rc=1)))
 
-    def test_a_journal_that_cannot_be_read_is_not_unused(self):
-        self.assertFalse(self.restarted(self.run_script(FAKE_JOURNAL_BROKEN="1")))
+    def test_a_journal_that_cannot_be_read_is_not_unused_and_fails_the_unit(self):
+        self.assertFalse(self.restarted(self.run_script(FAKE_JOURNAL_BROKEN="1", rc=1)))
+
+    def test_an_unreadable_gpu_figure_is_unknown_not_zero(self):
+        # Read as zero, a loaded server (12.2 GPU + 1.4 RSS) would fall under
+        # the floor on its RSS alone and never be restarted.
+        calls = self.run_script(gpu="[N/A]", rss_mib=1400, rc=1)
+        self.assertFalse(self.restarted(calls))
+        self.assertIn("unknown", self.last_said)
+        calls = self.run_script(FAKE_SMI_BROKEN="1", rc=1)
+        self.assertFalse(self.restarted(calls))
 
     def test_use_within_the_window_is_not_idle(self):
         self.assertFalse(self.restarted(self.run_script(FAKE_RECENT="1")))

@@ -484,12 +484,13 @@ and `mecha-slots` are `.timer`-fired and exec fresh on each firing, so they
 pick up a new binary by themselves. Knowing which list a unit is on is the
 difference between a restart that matters and cargo-culting six of them.
 
-**`comfyui-idle-reset.timer` is the one installed by copy.** It runs
+**`mecha-comfyui-idle-reset.timer` is the one installed by copy.** It runs
 `~/.local/bin/comfyui-idle-reset`, which `scripts/comfyui/install.sh`
 copied, so a change to `scripts/comfyui/` reaches nothing until that script
 is run again. Verify it with `systemctl --user list-timers
-comfyui-idle-reset.timer`, and its last decision with `journalctl --user -u
-comfyui-idle-reset -n 5`. It restarts `comfyui.service` on its own, but only
+mecha-comfyui-idle-reset.timer`, and its last decision with `journalctl --user -u
+mecha-comfyui-idle-reset -n 5` (every tick says what it decided; a check that
+cannot run fails the unit, which `mecha doctor` reports). It restarts `comfyui.service` on its own, but only
 when ComfyUI is idle and holding memory; a deploy never needs to restart
 ComfyUI for it.
 
