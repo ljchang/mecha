@@ -45,6 +45,11 @@ def main():
         sys.exit(__doc__.split("\n\n")[1])
     base_p, donor_p, out_p = sys.argv[1:]
     base, donor = GGUFReader(base_p), GGUFReader(donor_p)
+    # A shard holds a subset of the tensors and names its siblings in split.*;
+    # grafting one would carry those keys onto a file that has no siblings.
+    for p, r in ((base_p, base), (donor_p, donor)):
+        if "split.count" in r.fields:
+            sys.exit(f"{p} is one shard of a split GGUF; merge it first (llama-gguf-split --merge)")
     arch = base.fields["general.architecture"].contents()
     if donor.fields["general.architecture"].contents() != arch:
         sys.exit(f"architectures differ: {arch} vs {donor.fields['general.architecture'].contents()}")

@@ -210,7 +210,10 @@ if [ -n "$F" ] && [ -n "$MP" ]; then
   SPEC=""
   if [ -n "$G" ] && [ -s "$G" ]; then
     F=$G
-    SPEC=$(printf '%s\n' "spec-type = draft-mtp" "spec-draft-n-max = 2")
+    # Newline first, appended to the line above it in the heredoc: empty, it
+    # adds nothing, where a line of its own would leave a blank inside the
+    # section for the preset parser to read.
+    SPEC=$'\nspec-type = draft-mtp\nspec-draft-n-max = 2'
   elif [ -n "$G" ]; then
     warn "qwen3.6-35b-a3b-uncensored: serving without MTP; to graft its head: mkdir -p '$(dirname "$G")' && uv run '$GRAFT_SCRIPT' '$F' '$PROD_MODEL' '$G'"
   else
@@ -224,8 +227,7 @@ mmproj = $MP
 $(qwen_vision)
 ctx-size = ${MECHA_LLAMA_CTX:-1048576}
 parallel = ${MECHA_LLAMA_NP:-4}
-cache-ram = ${MECHA_LLAMA_CRAM:-16384}
-$SPEC
+cache-ram = ${MECHA_LLAMA_CRAM:-16384}$SPEC
 $(qwen_sampling 0.6)
 EOF
 else
