@@ -33,6 +33,12 @@ Voice needs a **git checkout** and three local services:
 | Speech to text | Parakeet TDT via `sherpa-onnx`, `:8992` | hears you |
 | Text to speech | Chatterbox Turbo (docker), `:8881` | speaks back |
 
+mecha's side of these addresses is the [`[voice]`](/docs/reference/configuration#voice)
+table: `stt_url` for the web app's dictation, `offer_target` and `voice_port`
+for calls, and `voices_dir` for recorded voices. The voice worker reads its
+own: `MECHA_VOICE_STT`, `MECHA_VOICE_TTS` and `MECHA_VOICE_LLM` in its
+environment, so a speech server moved to another address is set in both.
+
 There is no standby for any of them. A second TTS was kept running for a
 while as a "fallback" and was removed once it became clear nothing failed
 over to it automatically — a spare that needs a config edit and a restart is
@@ -135,7 +141,7 @@ the clips if you share them. The script only adds files and never overwrites
 one, and it takes speaker ids, never a URL.
 
 **Cloning your own** happens in Library → Voices: record someone reading the
-passage there, or upload a WAV recorded elsewhere. It needs `[web] voices_dir` pointed at the host directory the
+passage there, or upload a WAV recorded elsewhere. It needs `[voice] voices_dir` pointed at the host directory the
 TTS container mounts as `/voices`; unset, the endpoint answers *not configured*
 rather than failing obscurely. A reference is **5 to 120 seconds** — under five
 Chatterbox has too little voice to condition on, and past two minutes the extra

@@ -12,8 +12,8 @@ keys are a hard parse error at startup rather than a silent no-op.
 Paths may start with `~` or `~/`, which is expanded to your home directory when
 the file is loaded. That covers the path-valued keys — `[agent]
 system_prompt_file`, `[tools] workspace`, `[sandbox] writable` and `readable`,
-`[outbox] dir`, `[messages] dir`, `[skills] dir`, `[web] assets` and
-`voices_dir`, `[harness] source_dir` — plus `[[mcp]] command` and each `[[mcp]]
+`[outbox] dir`, `[messages] dir`, `[skills] dir`, `[web] assets`, `[voice]
+voices_dir`, `[harness] source_dir` — plus `[[mcp]] command` and each `[[mcp]]
 args` entry that starts with `~/`. `~user` and a `~` anywhere
 but the start stay literal, and environment variables (`$HOME`) are never
 expanded — write the path out or use `~`.
@@ -567,7 +567,30 @@ Global file only. See [The web surface](/docs/features/interfaces/web) for insta
 | `port` | integer | `63242` | Listen on `127.0.0.1`; front with `tailscale serve`. |
 | `owner_login` | string | unset | Required Tailscale login. Without it, `mecha serve` refuses to start. |
 | `assets` | path | unset | Built web app directory. Unset serves API routes only. |
-| `voices_dir` | path | unset | Host directory of TTS voice references. Unset disables voice cloning in settings. |
+| `voices_dir` | path | unset | **Moved to `[voice] voices_dir`.** Still read for one release, as if it were `[voice] voices_dir`; where both are set, `[voice]` wins. |
+
+## `[voice]`
+
+Global file only: a project's `mecha.toml` and an experiment environment
+cannot set it, because `stt_url` is where your audio goes. Every key has a
+default that matches the setup in [Voice](/docs/features/interfaces/voice),
+so set only what differs on your machine.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `stt_url` | string | `http://127.0.0.1:8992/v1` | The OpenAI-compatible speech-to-text server dictation sends audio to, up to its `/v1`. |
+| `offer_target` | string | `http://127.0.0.1:7860/api/offer` | Where the voice worker accepts calls; the web app's call button reaches it through `mecha serve`. Empty turns voice calls off. `mecha serve --offer-target` overrides it for one run. |
+| `voice_port` | integer | `8990` | The loopback port `mecha serve` mounts the voice facade on, for the voice worker to call. `0` doesn't mount it. `mecha serve --voice-port` overrides it for one run. |
+| `voices_dir` | path | unset | Host directory of the TTS server's voice references (the directory its container mounts as `/voices`). Unset disables recording and cloning voices. |
+
+## `[personas]`
+
+Global file only, like `[voice]`: a safety setting is yours, never a
+cloned repository's or an experiment's.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `crisis_cooldown_minutes` | integer | `15` | After a persona chat pauses for a crisis message, how many minutes a further crisis message in the same chat does **not** pause it again, so talking something through isn't stopped at every message. Longer pauses less often; `0` pauses on every one. |
 
 ## `[[hook]]`
 
