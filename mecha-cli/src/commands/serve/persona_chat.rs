@@ -8272,6 +8272,7 @@ mod tests {
             chat: Some(Arc::clone(&w.chat)),
             offer_target: Some(Arc::new(target)),
             voices_dir: None,
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
             library: Arc::clone(&library),
             features_at_start: Arc::default(),
             gate: Arc::default(),
