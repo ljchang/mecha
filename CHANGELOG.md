@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/proc/meminfo` and `nvidia-smi` and asks no server. The hardware page's
   *Beside the chat model* table is now generated from the same rows, which
   also pin each model's source (revision and sha256) for the installers to
-  come.
+  come. `mecha features --json` now warns about an unknown `[features]` key on
+  stderr too, as the plain listing always did.
 - **An idle image server gives its memory back.** A new user timer
   (`scripts/comfyui/install.sh`) restarts ComfyUI once it has held a model
   for ten idle minutes, with nothing queued and nobody connected. That takes
