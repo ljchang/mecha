@@ -2186,6 +2186,8 @@ def typed_turn(data) -> str | None:
 # hold the next line forever.
 TYPED_ANSWER_START_SECS = 60.0
 TYPED_ANSWER_END_SECS = 180.0
+# The most typed lines waiting at once.
+TYPED_QUEUE_MAX = 20
 
 
 class TypedTurns:
@@ -2206,14 +2208,20 @@ class TypedTurns:
         self._log = log
         self._start_secs = start_secs
         self._end_secs = end_secs
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        # Bounded: a page pasting in a loop is not a conversation.
+        self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=TYPED_QUEUE_MAX)
 
     def put(self, data) -> bool:
-        """Enqueue a client message's payload; False when it is no turn."""
+        """Enqueue a client message's payload; False when it is no turn, or
+        the queue is full (said in the journal, without the words)."""
         text = typed_turn(data)
         if text is None:
             return False
-        self._queue.put_nowait(text)
+        try:
+            self._queue.put_nowait(text)
+        except asyncio.QueueFull:
+            self._log(f"voice typed turn dropped: {TYPED_QUEUE_MAX} already waiting")
+            return False
         return True
 
     async def _until(self, want: bool, secs: float):
@@ -2226,16 +2234,25 @@ class TypedTurns:
     async def run(self):
         while True:
             text = await self._queue.get()
-            # Not over an answer being spoken - a typed line is not a barge-in.
-            await self._until(False, self._end_secs)
-            # The words go to the journal only through `spoken_words`, so an
-            # incognito call keeps none of them.
-            self._log(f"voice typed turn: {spoken_words(text, 80)}")
-            await self._push(text)
-            # This answer, begun and finished, before the next line goes:
-            # bounded either way.
-            if await self._until(True, self._start_secs):
+            try:
+                # Not over an answer being spoken - a typed line is not a
+                # barge-in.
                 await self._until(False, self._end_secs)
+                # The words go to the journal only through `spoken_words`, so
+                # an incognito call keeps none of them.
+                self._log(f"voice typed turn: {spoken_words(text, 80)}")
+                await self._push(text)
+                # This answer, begun and finished, before the next line goes:
+                # bounded either way.
+                if await self._until(True, self._start_secs):
+                    await self._until(False, self._end_secs)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's typing
+                # Said, without the words, and the next line still goes: a
+                # consumer that died here would leave every later line shown
+                # on the page and never answered (review of #499).
+                self._log(f"voice typed turn failed: {e.__class__.__name__}")
 
 
 def spoken_words(text: str, limit: int) -> str:
@@ -2614,7 +2631,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
     try:
         await runner.run()
     finally:
+        # Awaited, not only cancelled: an exception it held would otherwise
+        # surface only as a GC-time warning (the review of #386's rule).
         typed_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typed_task
         await settle_deadline(deadline, fired)
 
 
