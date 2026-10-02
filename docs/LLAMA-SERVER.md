@@ -108,11 +108,11 @@ came from), 300 generated tokens, single-stream median of 3:
 | `-c 524288 -np 2` | 85.51 | 107.39 | 40 GB |
 | `-c 1048576 -np 4` | **83–85** | **135–140** | 53 GB |
 
-The memory column's method is not recorded. On 2026-10-02 `nvidia-smi`
-gave **41.5 GiB** for the `-np 4` server's GPU memory alone, which excludes
-the prompt cache in host memory — then llama-server's `-cram` default of
-8192 MiB (below), now 16 GiB from the start scripts — the likely
-difference. `hardware.md` cites the `nvidia-smi` figure
+The memory column's method is not recorded, so it does not reconcile with
+later readings from this page alone. On 2026-10-02 `nvidia-smi` gave
+**41.5 GiB** for the `-np 4` server's GPU memory alone; host memory —
+including a prompt cache that fills over hours and never shrinks (`-cram`,
+below) — is outside that figure. `hardware.md` cites the `nvidia-smi` figure
 and says what it leaves out.
 
 Four slots cost **~5% of single-stream speed** and return **~1.6× throughput**.
