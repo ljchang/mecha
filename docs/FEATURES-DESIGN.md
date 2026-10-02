@@ -130,7 +130,7 @@ in whichever way the code underneath happens to fail:
 | **503** | chat, personas, `/api/today`, `/api/entity/{create,merge}` |
 | **502** | mail reads, graph reads, the graph queue, `/api/dictate`, `/api/offer` |
 | **409** | every write that runs a child verb — `review::verb_output` maps any failed child to CONFLICT |
-| **501** | voice cloning without `[web] voices_dir` |
+| **501** | voice cloning without `[voice] voices_dir` (formerly `[web] voices_dir`) |
 | **200, empty** | `/api/mail` (no triage store), `/api/questions`, `/api/frontdoor` — which also **creates** `~/.mecha/requests` as a side effect |
 
 `/api/library*` never checks `[image]` at all: the Library tab works as a

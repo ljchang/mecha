@@ -1822,8 +1822,14 @@ impl VoiceConfig {
     pub const DEFAULT_OFFER_TARGET: &'static str = "http://127.0.0.1:7860/api/offer";
     pub const DEFAULT_VOICE_PORT: u16 = 8990;
 
+    /// Trimmed, as `offer_target` is: `Url::parse` accepts surrounding
+    /// spaces, so an untrimmed value would validate and then post to
+    /// `…/v1%20/…` (review of #503, pass 4).
     pub fn stt_url(&self) -> &str {
-        self.stt_url.as_deref().unwrap_or(Self::DEFAULT_STT_URL)
+        self.stt_url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(Self::DEFAULT_STT_URL)
     }
 
     /// The offer target, or `None` when it is set empty: no proxy.
