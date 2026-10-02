@@ -85,7 +85,7 @@ they are placed into are not.
 | 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*; or a 35B-A3B with its experts in system RAM (`--n-cpu-moe`), *Unmeasured*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* — plus the offloaded experts if you take that path, most of the model's ~21 GB, *Arithmetic* |
 | 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GiB, *Arithmetic* |
 | 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the chat model and its context (the unified cell's figure without the embeddings server), with image generation's ~15 GB and speech's ~5 GB beside it, ~50 GB, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU, the CPU-side models and the GPU servers' host memory, ~14 GiB, *Arithmetic* |
-| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~80 GiB in all with everything loaded, up to ~96 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the unified row's GPU models, ~47–70 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the prompt cache, ~6–22 GiB, *Arithmetic* |
+| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~80 GiB in all with everything loaded, up to ~96 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the GPU models' card memory, ~47 GiB resident and ~74 with everything loaded — counting image generation's whole peak on the card, since its split is unmeasured — *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' process memory, ~6 GiB, and up to ~22 with a full prompt cache, *Arithmetic* |
 
 ### 16 GB
 
@@ -184,13 +184,14 @@ which puts the resident sum near 60 GiB rather than 50.
 | embeddings — `graph`, `documents`, `personas` | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.8 | loaded: GPU and process memory | Measured 2026-10-02 |
 | OCR — `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 3.4 | loaded: GPU and process memory | Measured 2026-10-02 |
 | layout — `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 | peak process memory | Measured 2026-09-29 |
-| image generation — `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle | ~19.6 | peak, a picture from cold: ~1.1 idle after the reset and ~18.5 to load; ~15 warm, ~13.6 loaded and idle | Arithmetic |
+| image generation — `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle | ~19.6 | peak, a picture from cold: ~1.1 idle after the reset and ~18.5 to load; ~15 warm, ~13.6 loaded and idle; not counted: from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset | Arithmetic |
 | speech to text — `dictate`, `calls` | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | process memory | Measured 2026-10-02 |
 | speech — `calls` | Chatterbox Turbo | GPU | Resident | 7.8 | GPU and process memory | Measured 2026-10-02 |
 | turn detection — `calls` | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | the worker's process memory | Measured 2026-10-02 |
 
 Added up — which is *arithmetic*, since nobody has seen every row loaded at
-the same moment — the resident models hold about 50 GiB, and everything
+the same moment — the resident models hold about 50 GiB (51 with image
+generation's ~1.1 GiB between pictures), and everything
 loaded at once with an image generating from cold about 80, of the GB10's
 121.7 GiB (`MemTotal` in `/proc/meminfo`), before the operating system.
 **Two things come on top**, and the chat row says so: the chat server's own

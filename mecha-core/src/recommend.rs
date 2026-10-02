@@ -191,7 +191,8 @@ pub struct Slot {
 
 const GB10: &str = "DGX Spark (GB10)";
 
-/// GiB → MiB, for the arithmetic rows written from `hardware.md`'s GB figures.
+/// Tenths of a decimal GB → MiB, for the arithmetic rows written from
+/// `hardware.md`'s GB figures.
 const fn gb(tenths: u32) -> u32 {
     // tenths of a decimal GB, as MiB: 10^9 / 2^20 ≈ 953.674
     ((tenths as u64 * 100_000_000) / 1_048_576) as u32
@@ -215,6 +216,32 @@ const QWEN36: &[Source] = &[Source::HuggingFace {
     files: QWEN36_FILES,
 }];
 const QWEN36_MODEL: &str = "Qwen3.6-35B-A3B Q4_K_M, with its vision projector";
+
+const EMBED_SOURCES: &[Source] = &[Source::HuggingFace {
+    repo: "mradermacher/harrier-oss-v1-0.6b-GGUF",
+    revision: "d79decec1ab9442e969e79804515b9c31683d30e",
+    files: &[HubFile {
+        path: "harrier-oss-v1-0.6b.f16.gguf",
+        sha256: "f3af313d8f58b59f282bdf7299a6ad738efdcb0644e7a98ee6deb106336e717a",
+        bytes: 1_198_183_680,
+    }],
+}];
+const OCR_SOURCES: &[Source] = &[Source::HuggingFace {
+    repo: "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
+    revision: "511b09642bb324401f15f97cc23bc67e8f0a291d",
+    files: &[
+        HubFile {
+            path: "PaddleOCR-VL-1.6-GGUF.gguf",
+            sha256: "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8",
+            bytes: 935_769_056,
+        },
+        HubFile {
+            path: "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
+            sha256: "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a",
+            bytes: 881_770_560,
+        },
+    ],
+}];
 
 /// The registry. Order is the page's row order.
 pub const SLOTS: &[Slot] = &[
@@ -308,15 +335,19 @@ pub const SLOTS: &[Slot] = &[
             },
             model: "harrier-oss-v1-0.6b f16, 32k context",
             counts: "loaded: GPU and process memory",
-            sources: &[Source::HuggingFace {
-                repo: "mradermacher/harrier-oss-v1-0.6b-GGUF",
-                revision: "d79decec1ab9442e969e79804515b9c31683d30e",
-                files: &[HubFile {
-                    path: "harrier-oss-v1-0.6b.f16.gguf",
-                    sha256: "f3af313d8f58b59f282bdf7299a6ad738efdcb0644e7a98ee6deb106336e717a",
-                    bytes: 1_198_183_680,
-                }],
-            }],
+            sources: EMBED_SOURCES,
+            excludes: None,
+        },
+        // The GB10's two readings, kept apart for a card: arithmetic there.
+        Recommendation {
+            tier_gb: 128,
+            memory: Memory::Discrete {
+                gpu: Peak::Arithmetic { mb: 5_243 },
+                host: Peak::Arithmetic { mb: 702 },
+            },
+            model: "harrier-oss-v1-0.6b f16, 32k context",
+            counts: "the GB10's GPU and process readings, carried to a card",
+            sources: EMBED_SOURCES,
             excludes: None,
         }],
     },
@@ -334,22 +365,19 @@ pub const SLOTS: &[Slot] = &[
             },
             model: "PaddleOCR-VL 1.6 (GGUF and projector)",
             counts: "loaded: GPU and process memory",
-            sources: &[Source::HuggingFace {
-                repo: "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
-                revision: "511b09642bb324401f15f97cc23bc67e8f0a291d",
-                files: &[
-                    HubFile {
-                        path: "PaddleOCR-VL-1.6-GGUF.gguf",
-                        sha256: "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8",
-                        bytes: 935_769_056,
-                    },
-                    HubFile {
-                        path: "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
-                        sha256: "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a",
-                        bytes: 881_770_560,
-                    },
-                ],
-            }],
+            sources: OCR_SOURCES,
+            excludes: None,
+        },
+        // The GB10's two readings, kept apart for a card: arithmetic there.
+        Recommendation {
+            tier_gb: 128,
+            memory: Memory::Discrete {
+                gpu: Peak::Arithmetic { mb: 2_641 },
+                host: Peak::Arithmetic { mb: 888 },
+            },
+            model: "PaddleOCR-VL 1.6 (GGUF and projector)",
+            counts: "the GB10's GPU and process readings, carried to a card",
+            sources: OCR_SOURCES,
             excludes: None,
         }],
     },
@@ -421,7 +449,9 @@ pub const SLOTS: &[Slot] = &[
                     ],
                 },
             ],
-            excludes: None,
+            excludes: Some(
+                "from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset",
+            ),
         }],
     },
     Slot {
@@ -462,6 +492,18 @@ pub const SLOTS: &[Slot] = &[
             model: "Chatterbox Turbo",
             counts: "GPU and process memory",
             // The chatterbox package fetches its own snapshot (step 7f).
+            sources: &[],
+            excludes: None,
+        },
+        // The GB10's two readings, kept apart for a card: arithmetic there.
+        Recommendation {
+            tier_gb: 128,
+            memory: Memory::Discrete {
+                gpu: Peak::Arithmetic { mb: 5_512 },
+                host: Peak::Arithmetic { mb: 2_506 },
+            },
+            model: "Chatterbox Turbo",
+            counts: "the GB10's GPU and process readings, carried to a card",
             sources: &[],
             excludes: None,
         }],
@@ -714,12 +756,17 @@ pub struct Line {
 }
 
 /// One pool's sum: `None` when any figure in it is unmeasured.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Sum {
     pub total_mb: u64,
     pub resident_mb: Option<u64>,
     pub loaded_mb: Option<u64>,
     pub band: Option<Band>,
+    /// The known figures added up, beside a `None` sum: a floor, never the
+    /// sum — so a machine with one unmeasured row still learns something.
+    pub known_mb: u64,
+    /// The rows whose figure in this pool is unmeasured.
+    pub unknown: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -756,15 +803,25 @@ fn pick(
             return Some((r, true));
         }
     }
-    // No row of its own: the same model's nearest figure, carried. A chat
-    // model has rows per tier and gets none below its smallest — the page
-    // names no model at 16 GB.
+    // No row of its own: the same model's nearest figure, carried — the
+    // machine's shape first, then the nearest tier at or below this one,
+    // else the smallest above. A chat model has rows per tier and gets none
+    // below its smallest — the page names no model at 16 GB.
     if slot.needed_by.is_empty() {
         return None;
     }
-    slot.rows
-        .iter()
+    let same: Vec<&'static Recommendation> = slot.rows.iter().filter(|r| shape_ok(r)).collect();
+    let pool: Vec<&'static Recommendation> = if same.is_empty() {
+        slot.rows.iter().collect()
+    } else {
+        same
+    };
+    let t = tier.unwrap_or(0);
+    pool.iter()
+        .filter(|r| r.tier_gb <= t)
         .max_by_key(|r| r.tier_gb)
+        .or_else(|| pool.iter().min_by_key(|r| r.tier_gb))
+        .copied()
         .map(|r| (r, false))
 }
 
@@ -805,8 +862,13 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
             (Machine::Discrete { .. }, Memory::Discrete { gpu, host }) => (gpu, Some(host)),
             // A unified figure on a card: placed whole in the pool it runs
             // on, which is arithmetic until somebody measures the split.
+            // A one-pool figure on a card, with no split recorded: the whole
+            // figure goes to the pool the model runs on, and the other pool's
+            // share is unmeasured — never a zero, since a GPU server's figure
+            // may hold process memory too. A CPU model holds no card memory:
+            // that zero is a fact of where it runs, not an estimate.
             (Machine::Discrete { .. }, Memory::Unified { peak }) => match slot.runs_on {
-                RunsOn::Gpu => (peak.carried(), Some(Peak::Arithmetic { mb: 0 })),
+                RunsOn::Gpu => (peak.carried(), Some(Peak::Unmeasured)),
                 RunsOn::Cpu => (Peak::Arithmetic { mb: 0 }, Some(peak.carried())),
             },
         };
@@ -832,9 +894,15 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
     let sum = |total_mb: u64, pick: &dyn Fn(&Line) -> Option<Peak>| {
         let mut resident = Some(0u64);
         let mut loaded = Some(0u64);
+        let mut known = 0u64;
+        let mut unknown = Vec::new();
         for l in &lines {
             let Some(p) = pick(l) else { continue };
             loaded = add(loaded, &p);
+            match p.mb() {
+                Some(mb) => known += mb as u64,
+                None => unknown.push(l.label),
+            }
             if l.residency == Residency::Resident {
                 resident = add(resident, &p);
             }
@@ -844,6 +912,8 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
             resident_mb: resident,
             loaded_mb: loaded,
             band: loaded.map(|l| Band::of(l, total_mb)),
+            known_mb: known,
+            unknown,
         }
     };
     let (gpu, host) = match machine {
@@ -1042,10 +1112,34 @@ mod tests {
             "the chat row's host figure is unmeasured"
         );
         assert_eq!(host.band, None);
-        // OCR has no card row of its own: carried, so arithmetic.
+        // OCR has no 32 GB card row: the 128 GB card row, carried — the
+        // machine's shape first, so its measured split survives.
         let ocr = b.lines.iter().find(|l| l.slot == "ocr").unwrap();
         assert!(!ocr.own_row);
-        assert!(matches!(ocr.gpu, Peak::Arithmetic { .. }));
+        assert_eq!(ocr.gpu, Peak::Arithmetic { mb: 2_641 });
+        assert_eq!(ocr.host, Some(Peak::Arithmetic { mb: 888 }));
+        assert_eq!(host.unknown, vec!["chat"]);
+        assert!(host.known_mb >= 888);
+    }
+
+    /// A GPU model with no recorded split, on a card: the whole figure on
+    /// the card and the host share unmeasured — never a zero, because a GPU
+    /// server's figure may hold process memory too. A CPU model holds no
+    /// card memory, and that zero is a fact, not an estimate.
+    #[test]
+    fn without_a_split_the_other_pool_is_unmeasured_not_zero() {
+        let m = Machine::Discrete {
+            gpu_mb: 65_536,
+            host_mb: 131_072,
+        };
+        let b = budget(m, &[Feature::Image, Feature::Layout]);
+        let image = b.lines.iter().find(|l| l.slot == "image").unwrap();
+        assert!(matches!(image.gpu, Peak::Arithmetic { .. }));
+        assert_eq!(image.host, Some(Peak::Unmeasured));
+        let layout = b.lines.iter().find(|l| l.slot == "layout").unwrap();
+        assert_eq!(layout.gpu, Peak::Arithmetic { mb: 0 });
+        assert!(matches!(layout.host, Some(Peak::Arithmetic { .. })));
+        assert!(b.host.unwrap().unknown.contains(&"image generation"));
     }
 
     /// The page names no chat model at 16 GB, so neither does the probe: the
@@ -1061,6 +1155,20 @@ mod tests {
         assert_eq!(chat.model, None);
         assert_eq!(b.gpu.loaded_mb, None);
         assert_eq!(b.gpu.band, None);
+        assert_eq!(b.gpu.unknown, vec!["chat"]);
+    }
+
+    /// A 24 GiB card is the 16 GB tier — no chat row — yet the figures that
+    /// are known still add up, as a floor beside the unknown sum.
+    #[test]
+    fn a_null_sum_still_reports_what_is_known() {
+        let m = Machine::Discrete {
+            gpu_mb: 24_576,
+            host_mb: 65_536,
+        };
+        let b = budget(m, &[Feature::Graph]);
+        assert_eq!(b.gpu.loaded_mb, None);
+        assert_eq!(b.gpu.known_mb, 5_243);
     }
 
     #[test]
