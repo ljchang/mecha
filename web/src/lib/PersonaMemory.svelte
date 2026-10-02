@@ -132,6 +132,9 @@
 
 <div class="memory">
   {#if error}<div class="warnline">{error}</div>{/if}
+  {#if data?.shared_unreadable}
+    <div class="warnline">{data.shared_unreadable} shared {data.shared_unreadable === 1 ? 'copy' : 'copies'} this version cannot read — what is shared may be more than shown here. <code>mecha persona memory shared</code> lists them.</div>
+  {/if}
   {#if !data && !error}
     <div class="mnote">loading…</div>
   {:else if data && sections.empty}

@@ -1309,14 +1309,21 @@ impl PersonaChats {
         let Some(m) = Memory::open_existing(&self.store, &p.name).map_err(failed)? else {
             return Ok(serde_json::json!({
                 "episodes": [], "facts": {"persona": [], "user": [], "inferred": []},
-                "groups": groups,
+                "groups": groups, "shared_unreadable": 0,
             }));
         };
         let standing = |s: Status| s != Status::Invalidated;
         let day = |at: &str| mecha_core::persona::recall::local_day(at, tz);
         let mut shared: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        // A shared copy this binary cannot read is said, never shown as "not
+        // shared": this is the page where the owner decides who else reads a
+        // fact about them (review of #519). Counted store-wide — it cannot
+        // say whose it is — and unshareable only from the CLI.
+        let mut shared_unreadable = 0;
         if let Some(sh) = Shared::open_existing(&self.store).map_err(failed)? {
-            for f in sh.all().map_err(failed)?.facts {
+            let listing = sh.all().map_err(failed)?;
+            shared_unreadable = listing.unreadable;
+            for f in listing.facts {
                 if f.learned_by == p.name {
                     // `group: null` is everyone.
                     let group = match &f.audience {
@@ -1370,7 +1377,10 @@ impl PersonaChats {
                 .collect();
             facts.insert(key.into(), rows.into());
         }
-        Ok(serde_json::json!({ "episodes": episodes, "facts": facts, "groups": groups }))
+        Ok(serde_json::json!({
+            "episodes": episodes, "facts": facts, "groups": groups,
+            "shared_unreadable": shared_unreadable,
+        }))
     }
 
     /// One curation act on `name`'s memory (§9.8), then the page as it now
@@ -1421,6 +1431,10 @@ impl PersonaChats {
                     .map_err(bad)?;
             }
             MemoryAct::Unshare { id } => {
+                // Never created by asking, as the CLI's door guards.
+                if !Shared::path(&self.store).is_file() {
+                    return Err(Refusal::Bad("nothing is shared".into()));
+                }
                 let sh = Shared::open(&self.store).map_err(failed)?;
                 let uid = sh.resolve(&id).map_err(bad)?;
                 // Only a copy this persona learned: another's is not this
@@ -5370,9 +5384,8 @@ mod tests {
         );
     }
 
-    /// The avatar's framing: set and cleared from the page, carried by the
-    /// list, refused out of range, and behind the lock like every write.
-    /// A fact in `who`'s memory from a chat begun at `chat`'s stamp.
+    /// A fact in `who`'s memory, from a chat whose id dates it 30 September
+    /// 2026 at 02:49 UTC — the 29th in New York — so a page's `day` is fixed.
     fn remember(
         w: &World,
         who: &str,
@@ -5494,6 +5507,18 @@ mod tests {
             Origin::ModelUntrusted,
         );
         let short = |u: &str| u[..8].to_string();
+        // Unsharing before anything was ever shared makes no shared store.
+        assert!(matches!(
+            act(
+                &w,
+                MemoryAct::Unshare {
+                    id: "abcd1234".into()
+                },
+                None
+            ),
+            Err(Refusal::Bad(_))
+        ));
+        assert!(!mecha_core::persona::memory::Shared::path(&w.store()).exists());
 
         let v = act(&w, MemoryAct::Approve { id: short(&cand) }, None).unwrap();
         assert!(user(&v).iter().all(|f| f["status"] == "active"), "{v}");
@@ -5640,6 +5665,8 @@ mod tests {
         );
     }
 
+    /// The avatar's framing: set and cleared from the page, carried by the
+    /// list, refused out of range, and behind the lock like every write.
     #[tokio::test]
     async fn a_frame_is_placed_listed_checked_and_locked_like_any_write() {
         use mecha_core::persona::Frame;
@@ -7007,6 +7034,39 @@ mod tests {
 
     fn body<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> T {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// The page's memory acts, exactly as `memoryActBody` sends them: the tag
+    /// and the unlock beside the flattened fields, every variant (review of
+    /// #519).
+    #[test]
+    fn the_memory_page_body_parses_as_the_page_sends_it() {
+        let b: MemoryBody = body(serde_json::json!({
+            "action": "correct", "id": "u1", "text": "Tuesdays.", "unlock": "tok"
+        }));
+        assert!(
+            matches!(&b.act, MemoryAct::Correct { id, text } if id == "u1" && text == "Tuesdays.")
+        );
+        assert_eq!(b.unlock.as_deref(), Some("tok"));
+        let b: MemoryBody =
+            body(serde_json::json!({ "action": "share", "id": "u1", "group": "work" }));
+        assert!(matches!(&b.act, MemoryAct::Share { group: Some(g), .. } if g == "work"));
+        assert!(b.unlock.is_none());
+        let b: MemoryBody = body(serde_json::json!({ "action": "share", "id": "u1" }));
+        assert!(matches!(&b.act, MemoryAct::Share { group: None, .. }));
+        for a in ["approve", "pin", "unpin", "forget", "unshare"] {
+            let _: MemoryBody = body(serde_json::json!({ "action": a, "id": "u1" }));
+        }
+        for bad in [
+            serde_json::json!({ "action": "delete_everything", "id": "u1" }),
+            serde_json::json!({ "action": "correct", "id": "u1" }),
+            serde_json::json!({ "id": "u1" }),
+        ] {
+            assert!(
+                serde_json::from_value::<MemoryBody>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     /// A visible persona whose portrait is a locked character: a locked page
