@@ -33,10 +33,12 @@ cargo install mecha-graph-mcp      # the MCP server
 
 Embeddings come from a second llama-server on `127.0.0.1:8081`, serving
 `harrier-oss-v1-0.6b` — its own port, because one llama-server holds one
-model and the chat model's port must not answer embedding requests.
-`scripts/llama/install-embed.sh` in a mecha checkout installs it on demand:
-the port is held from boot and the model loads on the first request and
-stops after ten idle minutes. What it costs is under [Beside the chat
+model and the chat model's port must not answer embedding requests. The
+launcher is `scripts/llama/mecha-embed-server` in a mecha checkout; on the
+machine these docs were written on it runs on demand (the port is held from
+boot, the model loads on the first request and stops after ten idle
+minutes). The repository has no installer that sets it up from nothing yet.
+What it costs is under [Beside the chat
 model](/docs/getting-started/hardware#beside-the-chat-model).
 To point it elsewhere, set `[llm] embed_url` in mecha-graph's config or
 `MECHA_GRAPH_EMBED_URL`; everything else is
