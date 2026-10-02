@@ -671,6 +671,12 @@ struct ComfyUi {
     base: reqwest::Url,
     http: reqwest::Client,
     poll: Duration,
+    /// Whether the server has answered this process at least once. One that
+    /// has, and now does not, is restarting and is waited for in full
+    /// ([`SERVER_WAIT`]); one never seen may simply not be running, and gets
+    /// only [`UNSEEN_WAIT`] - enough for a restart already under way, not a
+    /// minute and a half of every picture against a stopped service.
+    answered: std::sync::atomic::AtomicBool,
 }
 
 /// Why a generation did not produce an image.
@@ -687,6 +693,13 @@ const SERVER_WAIT: Duration = Duration::from_secs(90);
 #[cfg(test)]
 const SERVER_WAIT: Duration = Duration::from_secs(2);
 const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
+/// The wait for a server this process has never had an answer from: an idle
+/// reset takes 4-10 s, so a restart in progress is still met, while a stopped
+/// service is reported in seconds rather than after [`SERVER_WAIT`].
+#[cfg(not(test))]
+const UNSEEN_WAIT: Duration = Duration::from_secs(12);
+#[cfg(test)]
+const UNSEEN_WAIT: Duration = Duration::from_secs(1);
 
 impl From<anyhow::Error> for Failure {
     fn from(e: anyhow::Error) -> Self {
@@ -765,6 +778,7 @@ impl ComfyUi {
             base,
             http,
             poll: Duration::from_secs(1),
+            answered: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -812,6 +826,11 @@ impl ComfyUi {
         cancel: Option<&CancellationToken>,
         wait: Duration,
     ) -> std::result::Result<(), Failure> {
+        let wait = if self.answered.load(Ordering::Relaxed) {
+            wait
+        } else {
+            wait.min(UNSEEN_WAIT)
+        };
         let deadline = Instant::now() + wait;
         loop {
             let attempt = self
@@ -820,7 +839,10 @@ impl ComfyUi {
                 .timeout(Duration::from_secs(5))
                 .send();
             let err = match attempt.await {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.answered.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
                 Err(e) if (e.is_connect() || e.is_timeout()) && Instant::now() < deadline => e,
                 Err(e) => return Err(Failure::Other(e.into())),
             };
@@ -1295,6 +1317,7 @@ impl ComfyUi {
         if !res.status().is_success() {
             return None;
         }
+        self.answered.store(true, Ordering::Relaxed);
         let stats: Value = res.json().await.ok()?;
         loaded_from_stats(&stats)
     }
@@ -3305,7 +3328,8 @@ mod tests {
 
     /// A server restarting under a job (the idle reset, a deploy) is waited
     /// for: the job asks again until the port answers, rather than telling
-    /// the model the image server is not running.
+    /// the model the image server is not running. Never seen before, it is
+    /// met within the short wait an idle reset fits in.
     #[tokio::test]
     async fn a_restarting_server_is_waited_for_not_reported_down() {
         let addr = closed_port();
@@ -3350,6 +3374,34 @@ mod tests {
             Ok(()) => panic!("a closed port answered"),
         }
         assert!(started.elapsed() >= Duration::from_millis(700));
+    }
+
+    /// A server never seen by this process gets the short wait, not the full
+    /// one: a stopped service is reported in seconds. One that has answered
+    /// before is waited for in full, since it is restarting.
+    #[tokio::test]
+    async fn only_a_server_seen_before_is_waited_for_in_full() {
+        let unseen = server_at(closed_port());
+        let started = Instant::now();
+        assert!(unseen
+            .await_server(None, Duration::from_secs(60))
+            .await
+            .is_err());
+        assert!(
+            started.elapsed() < UNSEEN_WAIT + Duration::from_secs(2),
+            "a never-seen server was waited on for {:?}",
+            started.elapsed()
+        );
+
+        let seen = server_at(closed_port());
+        seen.answered.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        assert!(seen.await_server(None, UNSEEN_WAIT * 3).await.is_err());
+        assert!(
+            started.elapsed() >= UNSEEN_WAIT * 2,
+            "a server seen before was given up on after {:?}",
+            started.elapsed()
+        );
     }
 
     /// A cancel ends the wait at once: a stopped picture does not sit out

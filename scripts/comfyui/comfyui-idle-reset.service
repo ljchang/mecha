@@ -1,6 +1,6 @@
 [Unit]
 Description=Restart ComfyUI when it has held a model unused for 10 minutes
-Documentation=file:%h/Github/mecha/docs/ARCHITECTURE.md
+Documentation=https://github.com/ljchang/mecha/blob/main/docs/ARCHITECTURE.md
 
 [Service]
 Type=oneshot
