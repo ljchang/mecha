@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona's voice is picked in its settings.** The settings form has a
+  Voice field listing the voices the voice worker has, so `voice = "…"` no
+  longer has to be typed into `persona.toml`. A save is checked against the
+  list as it stands then; when the worker cannot be asked, the field says
+  why and keeps the voice already set. `voice_speed` is still edited as text.
+
 - **Voice and persona settings in the config file.** A new `[voice]`
   table holds the speech-to-text address dictation uses (`stt_url`, until
   now fixed in the code), the voice worker's address and the voice facade's
