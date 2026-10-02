@@ -155,7 +155,7 @@ machine runs*, never as advice:
 
 | Feature | Model | Where it is written down |
 |---|---|---|
-| Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`. **Drift:** `website/docs/features/memory/graph/index.md` still says ollama with `nomic-embed-text` — fixed in step 6a (#512) |
+| Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`; `website/docs/features/memory/graph/index.md` names it as of step 6a (#512) |
 | OCR | PaddleOCR-VL 1.6 (GGUF + mmproj) | a comment in `scripts/llama/install.sh`, `DOCUMENT-EXTRACTION-DESIGN.md` §5–6 |
 | Layout | `PP-DocLayoutV3.onnx` | `scripts/layout/install.sh` |
 | Image generation | Qwen-Image 2.1 Q4, `qwen3vl_8b_w4a8`, the 2.1 VAE | `ImageConfig` defaults, `features/tools/image-generation.md` (~15 GB peak, measured) |
