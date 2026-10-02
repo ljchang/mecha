@@ -86,7 +86,9 @@ pub struct Args {
     #[arg(long)]
     pub owner_login: Option<String>,
     /// Override `[voice] offer_target` for this run: where the voice runner
-    /// accepts WebRTC offers, which `/api/offer` proxies to. Empty disables.
+    /// accepts WebRTC offers, which `/api/offer` proxies to, and the worker's
+    /// address for Listen and voice previews. Empty means serve reaches no
+    /// voice worker: no call relay, no Listen, no voice previews.
     #[arg(long)]
     pub offer_target: Option<String>,
 }

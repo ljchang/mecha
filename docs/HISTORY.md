@@ -35,9 +35,9 @@ ruling of 2026-10-01: "[voice] holds everything voice".
   strips out of `config.rs` and requires the two lists to agree.
 - **The features rows:** Dictate names `stt_url`; Calls stays on when
   `offer_target` is empty (#503 first worded it "no proxy"); Cloning reads
-  `[voice] voices_dir`. The sentinel is not settled everywhere: three other
-  readers still take an absent target as "voice calls are not wired on this
-  serve". They are `settings::speak` (Listen), `library_voice_sample`, and
+  `[voice] voices_dir`. The sentinel was not settled everywhere: three other
+  readers took an absent target as "voice calls are not wired on this
+  serve". They were `settings::speak` (Listen), `library_voice_sample`, and
   `library_voices`' worker list. HANDOFF carried it; found by #506's review,
   by the rule of the sentinel trap below. Settled the same day by the
   owner's choice, "Say it honestly", over splitting the address in two:
