@@ -888,6 +888,19 @@ export function createVoiceSession(opts = {}) {
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
     uplinkMode = (await attachUplinkTap()) ? "channel" : "rtp";
+    // A flagged connection sends only what is piped through the sender, so a
+    // tap that did not attach (a slow or missing worker script, a transform
+    // that would not construct) must leave it piped straight through, or the
+    // "direct path" carries nothing. Measured in Chromium 149: a bare sender
+    // on a flagged connection sent 0 packets in 3 s; piped through, 149
+    // (review of #534, pass 3). If even that fails the call cannot be heard,
+    // and it says so.
+    if (uplinkMode !== "channel" && insertable) {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
+      if (sender && !passThrough(sender)) {
+        cfg.onTranscript({ who: "bot", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false });
+      }
+    }
     if (!pc) return; // ended while the worker was loading
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
