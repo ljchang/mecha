@@ -232,12 +232,22 @@ impl Machinery {
     pub fn real() -> Result<Machinery> {
         let home = dirs::home_dir().context("no home directory")?;
         let mecha_home = crate::work::mecha_home()?;
-        let mut unit_dirs = vec![home.join(".config/systemd/user")];
+        // systemd's user search path, as `Facts::read` finds the config
+        // directory (`dirs`, so `XDG_CONFIG_HOME` and `XDG_DATA_HOME` count):
+        // a package's unit in /usr/share is as much a hand install as one in
+        // ~/.config.
+        let mut unit_dirs: Vec<PathBuf> = [dirs::config_dir(), dirs::data_dir()]
+            .into_iter()
+            .flatten()
+            .map(|d| d.join("systemd/user"))
+            .collect();
         unit_dirs.extend(
             [
                 "/etc/systemd/user",
-                "/usr/lib/systemd/user",
                 "/usr/local/lib/systemd/user",
+                "/usr/local/share/systemd/user",
+                "/usr/lib/systemd/user",
+                "/usr/share/systemd/user",
             ]
             .map(PathBuf::from),
         );
@@ -442,29 +452,53 @@ pub fn plan(
 
     let mut sidecars = Vec::new();
     for s in SIDECARS.iter().filter(|s| needs(s.needed_by)) {
-        let state = match manifest.entry(s.id) {
-            Some(e) if e.incomplete => SidecarState::Incomplete,
-            Some(_) => SidecarState::Installed,
-            None => {
-                let mut state = SidecarState::Missing { step: s.installer };
-                for ev in s.evidence {
-                    match m.check(ev) {
-                        Lookup::Found(by, path) => {
-                            // Something mecha wrote is never someone else's:
-                            // not under its own tree, and not in its record.
-                            let ours = path
-                                .as_deref()
-                                .is_some_and(|p| p.starts_with(&sidecars_dir) || manifest.wrote(p));
-                            if !ours {
-                                state = SidecarState::Provided { by };
-                                break;
-                            }
+        // What the machine shows, read only when mecha's record does not
+        // settle it.
+        let from_evidence = || {
+            let mut state = SidecarState::Missing { step: s.installer };
+            for ev in s.evidence {
+                match m.check(ev) {
+                    Lookup::Found(by, path) => {
+                        // Something mecha wrote is never someone else's: not
+                        // under its own tree, and not in its record.
+                        let ours = path
+                            .as_deref()
+                            .is_some_and(|p| p.starts_with(&sidecars_dir) || manifest.wrote(p));
+                        if !ours {
+                            return SidecarState::Provided { by };
                         }
-                        Lookup::Unknown(why) => state = SidecarState::Unknown { why },
+                    }
+                    Lookup::Unknown(why) => state = SidecarState::Unknown { why },
+                    Lookup::Absent => {}
+                }
+            }
+            state
+        };
+        // The record says what was written; the disk says whether it is
+        // still there. All of it: installed (or incomplete, if the install
+        // never finished). Some: incomplete — resumable. None: the record is
+        // stale, and the machine is read as if it were not there.
+        let state = match manifest.entry(s.id) {
+            None => from_evidence(),
+            Some(e) if e.wrote.is_empty() => SidecarState::Unknown {
+                why: format!("mecha's record for {} names nothing it wrote", s.id),
+            },
+            Some(e) => {
+                let mut present = 0;
+                let mut unknown = None;
+                for w in &e.wrote {
+                    match m.exists(w) {
+                        Lookup::Found(..) => present += 1,
+                        Lookup::Unknown(why) => unknown = Some(why),
                         Lookup::Absent => {}
                     }
                 }
-                state
+                match (unknown, present) {
+                    (Some(why), _) => SidecarState::Unknown { why },
+                    (None, 0) => from_evidence(),
+                    (None, n) if n == e.wrote.len() && !e.incomplete => SidecarState::Installed,
+                    (None, _) => SidecarState::Incomplete,
+                }
             }
         };
         sidecars.push(PlannedSidecar {
@@ -693,17 +727,20 @@ mod tests {
     fn what_the_manifest_records_is_mecha_s_not_provided() {
         let root = scratch();
         let m = machinery(&root);
+        let tree = root.join("home/.mecha/sidecars");
+        std::fs::create_dir_all(tree.join("layout")).unwrap();
+        std::fs::create_dir_all(tree.join("ocr")).unwrap();
         let manifest = Manifest {
             entries: vec![
                 Entry {
                     sidecar: "layout".into(),
                     incomplete: true,
-                    wrote: vec![],
+                    wrote: vec![tree.join("layout")],
                 },
                 Entry {
                     sidecar: "ocr-server".into(),
                     incomplete: false,
-                    wrote: vec![],
+                    wrote: vec![tree.join("ocr")],
                 },
             ],
         };
@@ -725,6 +762,91 @@ mod tests {
         assert_eq!(state("layout"), SidecarState::Incomplete);
         assert_eq!(state("ocr-server"), SidecarState::Installed);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The record is checked against the disk: an install whose files are
+    /// all gone is read as if it were not there; one with some gone is
+    /// incomplete, resumable; an entry that names nothing is unknown.
+    #[test]
+    fn mecha_s_record_is_checked_against_the_disk() {
+        let root = scratch();
+        let m = machinery(&root);
+        let tree = root.join("home/.mecha/sidecars");
+        std::fs::create_dir_all(tree.join("ocr/a")).unwrap();
+        let manifest = Manifest {
+            entries: vec![
+                Entry {
+                    sidecar: "layout".into(),
+                    incomplete: false,
+                    wrote: vec![tree.join("layout")],
+                },
+                Entry {
+                    sidecar: "ocr-server".into(),
+                    incomplete: false,
+                    wrote: vec![tree.join("ocr/a"), tree.join("ocr/b")],
+                },
+                Entry {
+                    sidecar: "embed-server".into(),
+                    incomplete: false,
+                    wrote: vec![],
+                },
+            ],
+        };
+        std::fs::write(
+            Manifest::path(&m.mecha_home),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let p = plan(Feature::Documents, &m, &GB10, &root.join("hub"), false).unwrap();
+        let state = |id: &str| {
+            p.sidecars
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .state
+                .clone()
+        };
+        assert_eq!(
+            state("layout"),
+            SidecarState::Missing { step: "7a-3" },
+            "every file gone: stale record"
+        );
+        assert_eq!(
+            state("ocr-server"),
+            SidecarState::Incomplete,
+            "some files gone: resumable"
+        );
+        assert!(matches!(
+            state("embed-server"),
+            SidecarState::Unknown { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A model a sidecar serves is needed by no feature that sidecar does not
+    /// serve — or a plan would price a model with nothing to run it.
+    #[test]
+    fn sidecars_and_their_slots_agree_on_who_needs_them() {
+        for sc in SIDECARS {
+            for slot_id in sc.serves {
+                let slot = recommend::SLOTS.iter().find(|s| s.id == *slot_id).unwrap();
+                if sc.needed_by.is_empty() {
+                    continue;
+                }
+                for f in slot.needed_by {
+                    assert!(
+                        sc.needed_by.contains(f),
+                        "slot {slot_id} is needed by {f:?}, but sidecar {} is not",
+                        sc.id
+                    );
+                }
+                assert!(
+                    !slot.needed_by.is_empty(),
+                    "{slot_id} needs every feature but {} does not",
+                    sc.id
+                );
+            }
+        }
     }
 
     /// A manifest that cannot be read is an error — never an empty record
@@ -813,11 +935,13 @@ mod tests {
     fn an_installed_comfyui_holds_its_own_models_too() {
         let root = scratch();
         let m = machinery(&root);
+        let tree = root.join("home/.mecha/sidecars/comfyui");
+        std::fs::create_dir_all(&tree).unwrap();
         let manifest = Manifest {
             entries: vec![Entry {
                 sidecar: "comfyui".into(),
                 incomplete: false,
-                wrote: vec![],
+                wrote: vec![tree],
             }],
         };
         std::fs::create_dir_all(root.join("home/.mecha/sidecars")).unwrap();
