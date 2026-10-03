@@ -2891,7 +2891,10 @@ impl PersonaChats {
         // the assistant's chats, which persona chats lacked — so a chat the
         // router moved mid-way stayed credited to its first model, and the
         // writer waited for that model for good (2026-10-03). Before the
-        // conversation is taken, so a refusal leaves the chat as it was.
+        // conversation is taken, so this append's own failure leaves the chat
+        // as it was; and before the owner's message, so the record covers the
+        // turn it governs. A turn the crisis layer then pauses is still
+        // recorded under it: the message ran on no model, but is the chat's.
         if let Some((bound, agent)) = &ready {
             if ps.recorded_generation != Some(bound.generation) {
                 ps.session
@@ -2899,7 +2902,10 @@ impl PersonaChats {
                         agent,
                         &bound.config,
                         &bound.provider_name,
-                        &bound.levers_off,
+                        // The persona agent's own levers, not the binding's
+                        // (the assistant's): it forces several off (review
+                        // of #530).
+                        &mecha_core::persona::agent::levers_off(&bound.levers_off, agent.config()),
                         None,
                     )))
                     .map_err(|e| Refusal::Failed(format!("recording: {e:#}")))?;
@@ -4950,6 +4956,24 @@ mod tests {
         };
         turn(&w, &key, "Hello there.").await;
         assert_eq!(configs(&file(&w)), 1, "the first turn names its model");
+        // The levers the persona agent ran without, not the assistant's: no
+        // persona prompt carries learned rules (review of #530).
+        let text = file(&w);
+        let recorded: serde_json::Value = text
+            .lines()
+            .find(|l| l.contains("\"record\":\"config\""))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .unwrap();
+        let off = recorded["levers_off"].to_string();
+        assert!(off.contains("learned_rules"), "{off}");
+        assert!(
+            !w.chat
+                .follower
+                .current()
+                .levers_off
+                .contains(&mecha_core::harness::Lever::LearnedRules),
+            "the assistant's own set must not already say it, or this proves nothing"
+        );
         turn(&w, &key, "And again.").await;
         assert_eq!(configs(&file(&w)), 1, "the same binding names nothing new");
 
