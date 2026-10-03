@@ -3263,7 +3263,7 @@ mod tests {
         let args = json!({
             "to": ["a@x.org", "b@x.org"],
             "subject": "Tuesday?",
-            "body_markdown": "Dear A,\n\nHello.\n\nLuke",
+            "body_markdown": "Dear A,\n\nHello.\n\nDana",
             "account": "dartmouth",
             "importance": "high",
             "attachments": [{"name": "f.pdf"}],
@@ -3280,7 +3280,7 @@ mod tests {
         let mut keys: Vec<String> = args.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         assert_eq!(seen, keys);
-        assert_eq!(view.body.as_deref(), Some("Dear A,\n\nHello.\n\nLuke"));
+        assert_eq!(view.body.as_deref(), Some("Dear A,\n\nHello.\n\nDana"));
         // Reading order, not map order.
         assert_eq!(
             view.headers
@@ -3303,7 +3303,7 @@ mod tests {
         let args = json!({
             "to": ["a@x.org", "b@x.org"],
             "subject": "Tuesday?",
-            "body_markdown": "Dear A,\n\nHello.\n\nLuke",
+            "body_markdown": "Dear A,\n\nHello.\n\nDana",
             "account": "dartmouth",
             "importance": "high",
         });
@@ -3313,7 +3313,7 @@ mod tests {
             "b@x.org",
             "Tuesday?",
             "Dear A,",
-            "Luke",
+            "Dana",
             "dartmouth",
             "high",
         ] {
@@ -3396,7 +3396,7 @@ mod tests {
     #[test]
     fn a_timestamp_is_spoken_as_a_time_in_its_own_offset() {
         let spoken = DraftView::of(&json!({
-            "title": "Walk with Sage",
+            "title": "Walk with Rhea",
             "start_time": "2026-08-28T14:00:00-04:00",
             "end_time": "2026-08-28T14:30:00-04:00",
         }))

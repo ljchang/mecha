@@ -239,8 +239,8 @@ impl GraphTool {
     /// Entity metadata: node id, aliases, identifiers, per-source coverage,
     /// interaction count, last seen.
     ///
-    /// Added because the audit was inconsistent without it. "Luke was last
-    /// seen on August 13" came back supported while "Luke has 1,212 recorded
+    /// Added because the audit was inconsistent without it. "Dana was last
+    /// seen on August 13" came back supported while "Dana has 1,212 recorded
     /// interactions" came back unsupported — the same class of claim, judged
     /// two ways, because both live in entity metadata and the verifier could
     /// only reach whichever of them happened to surface in a search result.
@@ -480,8 +480,8 @@ pub async fn coverage(
 /// interactive command and wrong here. A positive control on the
 /// `llm·uses` class — 78% human acceptance, durable properties that plainly
 /// appear in several sources — returned "no witness" for all eight
-/// candidates, because their subject is the bare string "Luke" and the
-/// graph holds two Luke nodes. Coverage came back empty and every claim
+/// candidates, because their subject is the bare string "Dana" and the
+/// graph holds two Dana nodes. Coverage came back empty and every claim
 /// about the graph's owner became unjudgeable.
 ///
 /// That is the third distinct thing one duplicate identity has broken
@@ -518,7 +518,7 @@ pub async fn coverage_best(
         // verify counterpart spell this field differently, and reading the
         // wrong one fails silently — the re-ask got an empty string, found
         // nothing, and fell back to the very name that was ambiguous, so
-        // the control run reported "measured on 'Luke'" and no coverage.
+        // the control run reported "measured on 'Dana'" and no coverage.
         let Some(id) = best["id"].as_str().filter(|s| !s.is_empty()) else {
             return Ok((String::new(), vec![], true));
         };
@@ -2712,7 +2712,7 @@ mod vet_tests {
         // must come first and the reply form last.
         let cand = Candidate {
             candidate_id: 1,
-            statement: "Luke prefers DIY.".into(),
+            statement: "Dana prefers DIY.".into(),
             subject: Some("Dana Whitfield".into()),
             origin_source: None,
             subject_ambiguous: false,
@@ -2726,7 +2726,7 @@ mod vet_tests {
         };
         let q = vet_question(&cand, cand.evidence.as_ref().unwrap());
         let ev_at = q.find("a long transcript").unwrap();
-        let claim_at = q.find("Luke prefers DIY.").unwrap();
+        let claim_at = q.find("Dana prefers DIY.").unwrap();
         let form_at = q.rfind("VERDICT:").unwrap();
         assert!(ev_at < claim_at && claim_at < form_at);
     }
