@@ -39,6 +39,7 @@ class Engine:
         self.transcribed = 0
         self.forget_once = False
         self.silent = False
+        self.refused = 0
         engine = self
 
         class H(BaseHTTPRequestHandler):
@@ -74,7 +75,10 @@ class Engine:
                         engine.forget_once = False
                         engine.registered.clear()
                     if req["voice"] not in engine.registered:
-                        return self._send(400, b'{"error":"unknown voice"}')
+                        return self._send(400, json.dumps({"error": f"unknown voice '{req['voice']}'"}).encode())
+                    if req["input"] == "refuse me":
+                        engine.refused += 1
+                        return self._send(400, b'{"error":"empty text after normalisation"}')
                     engine.spoken.append(req)
                     return self._send(200, b"" if engine.silent else PCM, "audio/pcm")
                 self._send(404, b"{}")
@@ -113,6 +117,22 @@ class Adapter(unittest.TestCase):
         v = self.client.get("/v1/voices").json()
         self.assertEqual(v["voices"], ["default", "vctk_p297"])  # the house voice is `default`
         self.assertEqual(v["controls"], ["temperature", "instructions"])
+
+    def test_default_is_not_offered_without_a_house_voice(self):
+        os.remove(os.path.join(self.voices, "house.wav"))
+        self.assertEqual(self.client.get("/v1/voices").json()["voices"], ["vctk_p297"])
+
+    def test_temperature_out_of_range_is_refused_not_clamped(self):
+        self.assertEqual(self.speak(temperature=2.5).status_code, 400)
+        self.assertEqual(self.speak(temperature=0.0).status_code, 200)
+        self.assertEqual(self.engine.spoken[-1]["temperature"], 0.0)
+
+    def test_an_engine_refusal_is_said_not_retried_as_amnesia(self):
+        self.speak(voice="vctk_p297")
+        r = self.client.post("/v1/audio/speech", json={"input": "refuse me", "voice": "vctk_p297", "response_format": "pcm"})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("empty text", r.json()["detail"])
+        self.assertEqual(self.engine.refused, 1, "a deterministic refusal was asked twice")
 
     def test_default_speaks_as_the_house_voice(self):
         r = self.speak()
