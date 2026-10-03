@@ -146,6 +146,19 @@ jobs:
       - uses: actions/checkout@v7
       - run: python3 scripts/voice/test_echo_filter.py
 
+  # The Breeze adapter (scripts/voice/breeze_server.py) is where the voice's
+  # fail-closed answers live: a 503 for an unreadable voices directory or a
+  # missing house voice, a 502 for an engine's 200 with no audio, one bounded
+  # re-register after an engine restart. Its tests stand in for the engine
+  # and Parakeet, so they need no GPU, only the adapter's own imports.
+  breeze-adapter:
+    name: breeze adapter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: pip install fastapi httpx numpy
+      - run: python3 scripts/voice/test_breeze_server.py
+
   # The daytime mail sweep's idle check (scripts/model-idle.sh): its whole job
   # is its exit code — run, skip quietly, or fail so `mecha doctor` sees it —
   # and a change that turns a loud failure quiet is only caught by running
