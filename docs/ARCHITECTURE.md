@@ -3745,6 +3745,15 @@ speaker; the chat model's prompt is untouched.
   completion, the facade starts an *opening* direction from the owner's words
   when the turn starts, so its wait overlaps the model writing the first
   sentence; index 0 takes that result under a 2.5 s deadline.
+- **Delivery, never identity.** The frame (`voice_direction::SYSTEM`) asks
+  for emotion, energy, pace, emphasis and texture, allows pitch *movement*
+  within a line, and forbids a pitch level, register, age or accent — a
+  named level re-designs the speaker, and adjacent lines swung up to 14.5
+  semitones when it was asked for. Code puts `voice_direction::ANCHOR` in
+  front of what is sent and recorded, never in what the director is shown
+  back; and a reply's last direction is carried into the next reply's scene
+  (`Directions::carried`), so a new reply moves on from it rather than
+  starting cold.
 - **Harness speech is not directed**: offers and read-backs (`say`), the
   failure line, a turn answered without a model, and the persona crisis
   pause are `skipped` (`harness`).
