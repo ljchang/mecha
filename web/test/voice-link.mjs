@@ -246,6 +246,12 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.equal(passThrough({ createEncodedStreams: () => ({ readable, writable }) }), true);
   assert.equal(piped, writable, 'the receiver was not piped into its own writable');
   assert.equal(passThrough({ createEncodedStreams: () => { throw new Error('already taken'); } }), false);
+  // A pipe made and then broken is said, not swallowed: construction is not delivery.
+  let broken = 0;
+  const rejecting = { pipeTo: () => Promise.reject(new Error('locked')) };
+  assert.equal(passThrough({ createEncodedStreams: () => ({ readable: rejecting, writable: {} }) }, () => { broken++; }), true);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(broken, 1, 'a pipe that rejected was not reported');
 
   // The connection is made with the flag when it is needed, and every
   // incoming track is passed through before the speaker plays it.
@@ -255,7 +261,7 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.ok(at >= 0, 'no ontrack handler');
   const ontrack = src.slice(at, src.indexOf('speaker.srcObject = e.streams[0];', at));
   assert.ok(ontrack.length > 0, 'the speaker is no longer set inside ontrack');
-  assert.match(ontrack, /passThrough\(e\.receiver\)/, 'an incoming track plays before it is piped through');
+  assert.match(ontrack, /passThrough\(e\.receiver[,)]/, 'an incoming track plays before it is piped through');
   assert.match(ontrack, /could not be piped through/, 'a receiver that could not be piped is not said');
   // A fallback keeps the tap's worker: every outgoing frame passes through
   // it, so terminating it stops the RTP the fallback relies on (measured,
@@ -270,7 +276,7 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   // A flagged connection whose tap did not attach pipes the sender through,
   // or the fallback is a silent call (0 packets measured, review of #534).
   const after = src.slice(src.indexOf('uplinkMode = (await attachUplinkTap()) ?'));
-  assert.match(after.slice(0, 1500), /if \(uplinkMode !== "channel" && insertable\)[\s\S]*passThrough\(sender\)/, 'a failed tap on a flagged connection leaves the sender unpiped');
+  assert.match(after.slice(0, 1500), /if \(uplinkMode !== "channel" && insertable\)[\s\S]*passThrough\(sender[,)]/, 'a failed tap on a flagged connection leaves the sender unpiped');
   // Chromium without the flag never declares a buffered uplink it cannot fill.
   const attach = src.slice(src.indexOf('async function attachUplinkTap('), src.indexOf('function uplinkFailed('));
   assert.match(attach, /if \(needsInsertableStreams\(\) && !insertable\) return false;/, 'a flagless Chromium tap is declared and dead');
@@ -279,5 +285,7 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.ok(guardAt >= 0 && guardAt < src.indexOf('if (uplinkMode !== "channel" && insertable)'), 'the sender pass-through runs before the ended-call guard');
   // A dead tap on a flagged connection is not promised a direct path.
   assert.match(failed, /tap to reconnect/, 'a dead tap is told it is on the direct path');
+  assert.match(failed, /const tapDead = !fromWorker && insertable && !!uplinkWorker;/, 'a working main-thread tap is told to reconnect');
+  assert.match(failed, /uplinkWorker\.onerror = \(\) =>/, 'the kept worker lost its only witness');
   console.log('insertable streams: ok');
 }

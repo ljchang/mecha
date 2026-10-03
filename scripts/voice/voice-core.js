@@ -302,13 +302,15 @@ export function needsInsertableStreams(g = globalThis) {
   const has = (C) => typeof C === "function" && !!C.prototype && "createEncodedStreams" in C.prototype;
   return has(g.RTCRtpSender) && has(g.RTCRtpReceiver);
 }
-/* A receiver on an insertable-streams connection plays only what is piped
-   through it. True when it was; false leaves the caller to know the far
-   side may be silent. */
-export function passThrough(receiver) {
+/* A sender or receiver on an insertable-streams connection carries only what
+   is piped through it. False when the pipe could not be made; `onBroken` when
+   one that was made rejects - construction is not delivery (the #231 lesson,
+   review of #534). The caller guards `onBroken` against a call that ended,
+   since closing the connection rejects every pipe too. */
+export function passThrough(target, onBroken = () => {}) {
   try {
-    const { readable, writable } = receiver.createEncodedStreams();
-    readable.pipeTo(writable).catch(() => { /* the call ended */ });
+    const { readable, writable } = target.createEncodedStreams();
+    readable.pipeTo(writable).catch(() => onBroken());
     return true;
   } catch { return false; }
 }
@@ -898,9 +900,8 @@ export function createVoiceSession(opts = {}) {
     // and it says so.
     if (uplinkMode !== "channel" && insertable) {
       const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
-      if (sender && !passThrough(sender)) {
-        cfg.onTranscript({ who: "bot", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false });
-      }
+      const deaf = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false }); };
+      if (sender && !passThrough(sender, deaf)) deaf();
     }
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
@@ -914,7 +915,8 @@ export function createVoiceSession(opts = {}) {
     pc.ontrack = (e) => {
       if (insertable && !seen.has(e.receiver)) {
         seen.add(e.receiver);
-        if (!passThrough(e.receiver)) cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false });
+        const mute = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false }); };
+        if (!passThrough(e.receiver, mute)) mute();
       }
       speaker.srcObject = e.streams[0];
     };
@@ -1118,7 +1120,9 @@ export function createVoiceSession(opts = {}) {
     // terminates it with the connection.
     if (uplinkWorker) {
       uplinkWorker.onmessage = null;
-      uplinkWorker.onerror = null;
+      // Kept, not dropped: every outgoing frame passes through this worker
+      // now, so its death is the call going silent and must be said.
+      uplinkWorker.onerror = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: the microphone path stopped - tap to reconnect", interim: false }); };
       try { uplinkWorker.postMessage({ stop: true }); } catch { /* gone */ }
     }
     behindShownS = 0; behind = { sounded: false };
@@ -1130,7 +1134,10 @@ export function createVoiceSession(opts = {}) {
     // and piping the sender through measured 0 packets in 2.5 s, as did
     // terminating (review of #534, pass 4). Only a new connection carries the
     // voice, so the page says so rather than promise a direct path.
-    const tapDead = !fromWorker && insertable;
+    // The witness is the worker transform, not the flag: on the main-thread
+    // `createEncodedStreams` tap (Chromium before `RTCRtpScriptTransform`)
+    // the pipe ends in an unconditional enqueue and the direct path works.
+    const tapDead = !fromWorker && insertable && !!uplinkWorker;
     cfg.onTranscript({ who: "bot", text: tapDead
       ? `voice: the microphone path stopped (${why}) - tap to reconnect`
       : `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
