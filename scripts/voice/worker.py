@@ -134,6 +134,17 @@ AFFECT_POLL_TIMEOUT_SECONDS = 0.05
 # - only this table grows, nothing else here needs to change.
 AFFECT_CFG_WEIGHT_DELTA = -0.05
 
+# The voice director (docs/VOICE-BREEZE-DESIGN.md): how each sentence should
+# sound, asked of the facade per sentence when the TTS honours
+# `instructions`. The facade bounds the call (`voice_direction::
+# SENTENCE_DEADLINE` / `FIRST_SENTENCE_DEADLINE` in mecha-core: 1.5 s, and
+# 2.5 s for the first sentence, whose direction began with the turn); these
+# are those plus 0.3 s, so the facade's own deadline is the one that fires
+# and a sentence never waits on a facade that has stopped answering.
+DIRECT_URL = f"{FACADE_URL}/mecha-direct"
+DIRECT_TIMEOUT_SECONDS = 1.8
+DIRECT_FIRST_TIMEOUT_SECONDS = 2.8
+
 # Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
 # transcribes; "from beginning to end" phrasing makes the model refuse, and
 # naming an escape token ("output NOSPEECH") anchors the model into
@@ -1074,11 +1085,14 @@ async def reask_after_refusal(status: int | None) -> None:
         await asyncio.to_thread(available_voices, True)
 
 
-def optional_controls(controls: frozenset | None, **wanted: float) -> dict:
+def optional_controls(controls: frozenset | None, **wanted) -> dict:
     """The subset of `wanted` the TTS honours - what rides in the request's
     `extra_body`. A control the model would drop is never sent, because the
-    server refuses it rather than speaking as if it had landed."""
-    return {k: v for k, v in wanted.items() if controls and k in controls}
+    server refuses it rather than speaking as if it had landed; nor is one
+    with no value (`instructions` when the director gave none)."""
+    return {
+        k: v for k, v in wanted.items() if controls and k in controls and v is not None
+    }
 
 
 class LocalTTS(OpenAITTSService):
@@ -1132,6 +1146,13 @@ class LocalTTS(OpenAITTSService):
         # per sentence - see that method's docstring for why.
         self._affect_context_id: str | None = None
         self._affect_params: tuple[float, float] = (self._exaggeration, self._cfg_weight)
+        # The director's side channel: its own client, so a slow direction
+        # never shares a connection pool with the affect poll, and the
+        # sentence count within the answer being spoken (reset when the
+        # context id moves, which is the base class's answer boundary).
+        self._direct_client = httpx.AsyncClient()
+        self._direct_context: str | None = None
+        self._direct_index = 0
 
     @property
     def speed(self) -> float:
@@ -1247,6 +1268,50 @@ class LocalTTS(OpenAITTSService):
             pass
         return self._exaggeration, self._cfg_weight
 
+    async def direction_for(self, text: str, context_id: str) -> str | None:
+        """How this sentence should sound, from the facade's director, or
+        None - in which case it is spoken undirected. Never raises, never
+        waits past DIRECT_*_TIMEOUT_SECONDS, and never writes the sentence
+        or its direction to the journal: the session file is where they are
+        kept, and an incognito chat's are kept nowhere, so its calls leave
+        no line here at all."""
+        if not self._affect_key:
+            return None
+        if context_id != self._direct_context:
+            self._direct_context = context_id
+            self._direct_index = 0
+        index = self._direct_index
+        self._direct_index += 1
+        timeout = DIRECT_FIRST_TIMEOUT_SECONDS if index == 0 else DIRECT_TIMEOUT_SECONDS
+        outcome = "unanswered"
+        direction = None
+        try:
+            r = await self._direct_client.post(
+                DIRECT_URL,
+                json={
+                    "session": self._affect_key,
+                    "context": context_id,
+                    "index": index,
+                    "sentence": text.strip(),
+                    "voice": self._settings.voice,
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200:
+                body = r.json()
+                outcome = body.get("outcome") or "unknown"
+                line = body.get("direction")
+                direction = line if isinstance(line, str) and line.strip() else None
+            else:
+                outcome = f"http {r.status_code}"
+        except Exception as e:  # noqa: BLE001 - any failure speaks undirected
+            outcome = type(e).__name__
+        if not names_incognito(self._affect_key):
+            from loguru import logger
+
+            logger.debug(f"voice direction: index={index} outcome={outcome}")
+        return direction
+
     async def run_tts(self, text: str, context_id: str):
         from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
@@ -1269,11 +1334,20 @@ class LocalTTS(OpenAITTSService):
             }
             # Not fields of OpenAI's speech API, so they ride in extra_body
             # rather than being silently dropped by the typed client - and
-            # only those the TTS's model honours (`optional_controls`).
+            # only those the TTS's model honours (`optional_controls`). The
+            # director is asked only when `instructions` would be sent: on a
+            # TTS that drops it, a direction is a model call for nothing.
+            controls = await asyncio.to_thread(tts_controls)
+            direction = (
+                await self.direction_for(text, context_id)
+                if controls and "instructions" in controls
+                else None
+            )
             extra = optional_controls(
-                await asyncio.to_thread(tts_controls),
+                controls,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
+                instructions=direction,
             )
             if extra:
                 create_params["extra_body"] = extra
@@ -2681,6 +2755,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         if not UNLOGGED.active:
             raise RuntimeError("an incognito call reached run_bot without its log silence")
         headers["X-Voice-Unlogged"] = "1"
+    # The TTS takes a voice direction per sentence, so the facade may start
+    # the first one from the owner's words while the reply is being written.
+    if honoured and "instructions" in honoured:
+        headers["X-Voice-Directed"] = "1"
     # §6.2: the same namespaced key `mecha-cli`'s facade keys its cache by
     # (`hosted_completion`'s `confirm_key`) - a hosted chat session and this
     # connection's own voice slot must not collide, so the namespace has to
