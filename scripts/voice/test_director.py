@@ -178,5 +178,50 @@ class Director(unittest.TestCase):
         self.assertNotIn("incognito-0123", text)
 
 
+class Streams(unittest.TestCase):
+    """`"streams": true` in the TTS's `/v1/voices` is what sends
+    `X-Voice-TTS-Streams: 1`; absent or anything else sends nothing."""
+
+    def listed(self, listing):
+        class Tts(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps(listing).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        httpd, url = serve(Tts)
+        self.addCleanup(httpd.shutdown)
+        old = worker.TTS_URL
+        worker.TTS_URL = url + "/v1"
+        self.addCleanup(setattr, worker, "TTS_URL", old)
+        available_voices(refresh=True)
+        return worker.tts_streams(), worker.tts_controls()
+
+    def test_a_streaming_tts_is_said_to_the_facade(self):
+        streams, controls = self.listed(
+            {"voices": ["default"], "controls": ["instructions"], "streams": True}
+        )
+        self.assertTrue(streams)
+        self.assertEqual(
+            worker.tts_headers(controls, streams),
+            {"X-Voice-Directed": "1", "X-Voice-TTS-Streams": "1"},
+        )
+
+    def test_chatterbox_lists_no_stream_and_sends_neither(self):
+        streams, controls = self.listed({"voices": ["default"], "controls": ["temperature"]})
+        self.assertFalse(streams)
+        self.assertEqual(worker.tts_headers(controls, streams), {})
+
+    def test_only_an_explicit_true_streams(self):
+        for value in ("true", 1, "yes", None):
+            streams, _ = self.listed({"voices": ["default"], "streams": value})
+            self.assertFalse(streams, value)
+
+
 if __name__ == "__main__":
     unittest.main()

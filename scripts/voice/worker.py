@@ -980,6 +980,12 @@ _voices_cache = None
 # not be asked - and nothing optional is sent then: the old server was
 # always Turbo, which ignores every control this would send.
 _controls_cache = None
+# Whether the TTS streams audio as it synthesises (`"streams": true` in its
+# `/v1/voices`), fetched with the list. Only an explicit true counts: absent
+# is Chatterbox, which speaks a sentence once all of it is made, and an
+# unknown answer keeps the whole-sentence prompt, whose length rules are the
+# safe side of a latency it cannot see.
+_streams_cache = False
 # When the list was last asked for without an answer (monotonic seconds), or
 # None. A failed ask is retried, but not sooner than CONTROLS_RETRY_SECS:
 # "could not ask" must not latch as "honours nothing" for the life of the
@@ -1009,7 +1015,7 @@ def available_voices(refresh=False):
     until a worker restart nobody was told to do. Refetching only on a miss
     keeps the happy path at zero extra requests - a known voice never pays.
     """
-    global _voices_cache, _controls_cache, _controls_asked_at
+    global _voices_cache, _controls_cache, _controls_asked_at, _streams_cache
     if refresh:
         _voices_cache = None
     if _voices_cache is not None:
@@ -1026,10 +1032,12 @@ def available_voices(refresh=False):
         _voices_cache = listed.get("voices") or None
         controls = listed.get("controls")
         _controls_cache = frozenset(controls) if isinstance(controls, list) else None
+        _streams_cache = listed.get("streams") is True
     except Exception as e:  # noqa: BLE001 - any failure is the same answer
         logger.debug(f"voice list unavailable at {TTS_URL}/voices: {e}")
         _voices_cache = None
         _controls_cache = None
+        _streams_cache = False
     return _voices_cache
 
 
@@ -1047,6 +1055,32 @@ def tts_controls() -> frozenset | None:
     ):
         available_voices(refresh=True)
     return _controls_cache
+
+
+def tts_streams() -> bool:
+    """Whether the TTS streams audio as it synthesises, so a spoken turn is
+    prompted without the whole-sentence length rules (the facade's
+    `VOICE_BLOCK_STREAMING`). Asked with the controls, on the same pacing;
+    anything but an explicit true is False."""
+    tts_controls()
+    return _streams_cache
+
+
+def tts_headers(honoured: frozenset | None, streams: bool) -> dict:
+    """What the facade is told about the TTS on every completion of a call.
+
+    `X-Voice-Directed`: the TTS takes a voice direction per sentence, so the
+    facade may start the first one from the owner's words while the reply is
+    being written. `X-Voice-TTS-Streams`: the TTS streams, so the spoken-turn
+    prompt drops its length rules - they were a latency control for an
+    engine that speaks a sentence only once all of it is synthesised (owner
+    ruling, 2026-10-03). Each is sent as exactly "1" or not at all."""
+    headers = {}
+    if honoured and "instructions" in honoured:
+        headers["X-Voice-Directed"] = "1"
+    if streams is True:
+        headers["X-Voice-TTS-Streams"] = "1"
+    return headers
 
 
 def controls_label(controls: frozenset | None, name: str) -> str:
@@ -2755,10 +2789,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named:
         if not UNLOGGED.active:
             raise RuntimeError("an incognito call reached run_bot without its log silence")
         headers["X-Voice-Unlogged"] = "1"
-    # The TTS takes a voice direction per sentence, so the facade may start
-    # the first one from the owner's words while the reply is being written.
-    if honoured and "instructions" in honoured:
-        headers["X-Voice-Directed"] = "1"
+    headers.update(tts_headers(honoured, await asyncio.to_thread(tts_streams)))
     # §6.2: the same namespaced key `mecha-cli`'s facade keys its cache by
     # (`hosted_completion`'s `confirm_key`) - a hosted chat session and this
     # connection's own voice slot must not collide, so the namespace has to

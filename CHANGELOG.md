@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   incognito chat, where it is directed and nothing is kept. On a voice that
   does not take direction, nothing changes and no extra call is made.
 
+- **A streaming voice is no longer told to keep it short.** When the speech
+  engine streams audio as it synthesises (Breeze lists `"streams": true`),
+  the worker says so (`X-Voice-TTS-Streams: 1`) and a spoken turn opens with
+  a block that keeps every voice rule but the length ones, and a persona's
+  call note drops "short sentences, the first one short". Those rules were a
+  latency control for an engine that speaks a sentence only once all of it is
+  made; on Chatterbox the prompt is byte-for-byte what it was.
+
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
   OCR, layout, image generation, speech to text, speech and turn detection —
