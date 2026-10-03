@@ -23,11 +23,18 @@
    call nobody can hear (review of #231). */
 self.postMessage({ ready: true });
 
+/* The page's fallback to RTP says `stop`: the copies end, the frames do not.
+   Every outgoing frame passes through this worker, so it must outlive the
+   buffered path - ended, it would take the RTP fallback down with it
+   (review of #534, measured). */
+let copying = true;
+self.onmessage = (e) => { if (e.data && e.data.stop) copying = false; };
+
 onrtctransform = (event) => {
   const { readable, writable } = event.transformer;
   const tap = new TransformStream({
     transform(frame, controller) {
-      try {
+      if (copying) try {
         const copy = frame.data.slice(0);
         self.postMessage({ ts: frame.timestamp, data: copy }, [copy]);
       } catch { /* a frame that cannot be copied is still sent */ }

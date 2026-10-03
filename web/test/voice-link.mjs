@@ -228,3 +228,64 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.equal(refusesAnswer(sdp, {}), null);
   console.log('incognito answer gate: ok');
 }
+
+// ---- Chromium taps only on an insertable-streams connection ----------------
+{
+  const { needsInsertableStreams, passThrough } = await import('../../scripts/voice/voice-core.js');
+  const withApi = function () {}; withApi.prototype = { createEncodedStreams() {} };
+  const without = function () {}; without.prototype = {};
+  assert.equal(needsInsertableStreams({ RTCRtpSender: withApi, RTCRtpReceiver: withApi }), true, 'Chromium was not told apart');
+  assert.equal(needsInsertableStreams({ RTCRtpSender: without, RTCRtpReceiver: without }), false, 'Safari/Firefox would get the flag');
+  assert.equal(needsInsertableStreams({ RTCRtpSender: withApi, RTCRtpReceiver: without }), false, 'a half API would leave the far side unpiped');
+  assert.equal(needsInsertableStreams({}), false, 'no WebRTC at all is not Chromium');
+
+  // The receiver's frames are piped straight through, or the far side is silent.
+  let piped = null;
+  const readable = { pipeTo: (w) => { piped = w; return Promise.resolve(); } };
+  const writable = {};
+  assert.equal(passThrough({ createEncodedStreams: () => ({ readable, writable }) }), true);
+  assert.equal(piped, writable, 'the receiver was not piped into its own writable');
+  assert.equal(passThrough({ createEncodedStreams: () => { throw new Error('already taken'); } }), false);
+  // A pipe made and then broken is said, not swallowed: construction is not delivery.
+  let broken = 0;
+  const rejecting = { pipeTo: () => Promise.reject(new Error('locked')) };
+  assert.equal(passThrough({ createEncodedStreams: () => ({ readable: rejecting, writable: {} }) }, () => { broken++; }), true);
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(broken, 1, 'a pipe that rejected was not reported');
+
+  // The connection is made with the flag when it is needed, and every
+  // incoming track is passed through before the speaker plays it.
+  const src = (await import('node:fs')).readFileSync(new URL('../../scripts/voice/voice-core.js', import.meta.url), 'utf8');
+  assert.match(src, /new RTCPeerConnection\(insertable \? \{ encodedInsertableStreams: true \} : undefined\)/, 'the connection no longer asks for insertable streams');
+  const at = src.indexOf('pc.ontrack = (e) => {');
+  assert.ok(at >= 0, 'no ontrack handler');
+  const ontrack = src.slice(at, src.indexOf('speaker.srcObject = e.streams[0];', at));
+  assert.ok(ontrack.length > 0, 'the speaker is no longer set inside ontrack');
+  assert.match(ontrack, /passThrough\(e\.receiver[,)]/, 'an incoming track plays before it is piped through');
+  assert.match(ontrack, /could not be piped through/, 'a receiver that could not be piped is not said');
+  // A fallback keeps the tap's worker: every outgoing frame passes through
+  // it, so terminating it stops the RTP the fallback relies on (measured,
+  // review of #534). Only `end()` may terminate it.
+  const failed = src.slice(src.indexOf('function uplinkFailed('), src.indexOf('function micLive('));
+  assert.ok(failed.length > 0, 'uplinkFailed not found');
+  assert.doesNotMatch(failed, /\.terminate\(/, 'a fallback terminates the worker every frame passes through');
+  assert.match(failed, /postMessage\(\{ stop: true \}\)/, 'a fallback does not tell the tap to stop copying');
+  const tap = (await import('node:fs')).readFileSync(new URL('../public/voice-uplink-transform.js', import.meta.url), 'utf8');
+  assert.match(tap, /if \(copying\) try/, 'the tap copies after it was told to stop');
+  assert.match(tap, /controller\.enqueue\(frame\);/, 'the tap no longer passes every frame on');
+  // A flagged connection whose tap did not attach pipes the sender through,
+  // or the fallback is a silent call (0 packets measured, review of #534).
+  const after = src.slice(src.indexOf('uplinkMode = (await attachUplinkTap()) ?'));
+  assert.match(after.slice(0, 1500), /if \(uplinkMode !== "channel" && insertable\)[\s\S]*passThrough\(sender[,)]/, 'a failed tap on a flagged connection leaves the sender unpiped');
+  // Chromium without the flag never declares a buffered uplink it cannot fill.
+  const attach = src.slice(src.indexOf('async function attachUplinkTap('), src.indexOf('function uplinkFailed('));
+  assert.match(attach, /if \(needsInsertableStreams\(\) && !insertable\) return false;/, 'a flagless Chromium tap is declared and dead');
+  // The pass-through runs after the ended-while-loading guard, never on a null pc.
+  const guardAt = src.indexOf('if (!pc) return; // ended while the worker was loading');
+  assert.ok(guardAt >= 0 && guardAt < src.indexOf('if (uplinkMode !== "channel" && insertable)'), 'the sender pass-through runs before the ended-call guard');
+  // A dead tap on a flagged connection is not promised a direct path.
+  assert.match(failed, /tap to reconnect/, 'a dead tap is told it is on the direct path');
+  assert.match(failed, /const tapDead = !fromWorker && insertable && !!uplinkWorker;/, 'a working main-thread tap is told to reconnect');
+  assert.match(failed, /uplinkWorker\.onerror = \(\) =>/, 'the kept worker lost its only witness');
+  console.log('insertable streams: ok');
+}
