@@ -342,6 +342,16 @@ fn render_plan(p: &sidecar::Plan) -> String {
         out.push_str("Nothing to install: this machine has all of it.\n");
         return out;
     }
+    let unknown = p
+        .sidecars
+        .iter()
+        .filter(|s| matches!(s.state, SidecarState::Unknown { .. }))
+        .count();
+    if unknown > 0 {
+        out.push_str(&format!(
+            "{unknown} could not be checked — nothing is offered over them until they can be.\n"
+        ));
+    }
     let unverified = p
         .files
         .iter()
@@ -686,5 +696,76 @@ mod tests {
         assert!(text.starts_with("2 GPUs, the largest 24.0 GiB"), "{text}");
         assert!(text.contains("the 16 GB tier"), "{text}");
         assert!(!text.contains("48.0 GiB"), "{text}");
+    }
+
+    /// The plan in words: every state a person can meet, each with what to
+    /// do — and never "nothing to install" beside a gap.
+    #[test]
+    fn the_plan_says_each_state_and_what_to_do() {
+        use mecha_core::sidecar::{FileState, Plan, PlannedFile, PlannedSidecar, SidecarState};
+        let p = Plan {
+            feature: Feature::Documents,
+            sidecars: vec![
+                PlannedSidecar {
+                    id: "llama",
+                    label: "llama.cpp",
+                    state: SidecarState::Provided {
+                        by: "x on PATH".into(),
+                    },
+                },
+                PlannedSidecar {
+                    id: "ocr-server",
+                    label: "the OCR server",
+                    state: SidecarState::Missing { step: "7c" },
+                },
+                PlannedSidecar {
+                    id: "layout",
+                    label: "layout",
+                    state: SidecarState::Unknown {
+                        why: "denied".into(),
+                    },
+                },
+            ],
+            files: vec![
+                PlannedFile {
+                    slot: "chat",
+                    model: "",
+                    repo: None,
+                    path: "",
+                    state: FileState::NoRow,
+                },
+                PlannedFile {
+                    slot: "ocr",
+                    model: "m",
+                    repo: Some("org/r"),
+                    path: "a.gguf",
+                    state: FileState::Mismatch,
+                },
+                PlannedFile {
+                    slot: "ocr",
+                    model: "m",
+                    repo: Some("org/r"),
+                    path: "b.gguf",
+                    state: FileState::Download { bytes: 2 << 30 },
+                },
+            ],
+            download_bytes: 2 << 30,
+            nothing_to_do: false,
+        };
+        let text = render_plan(&p);
+        for want in [
+            "provided — x on PATH; left alone",
+            "not here — its installer arrives in step 7c",
+            "unknown — denied; nothing is offered over it",
+            "no recommended model",
+            "no model is recommended for this machine's tier",
+            "1 could not be checked",
+            "1 model file(s) at their path do not match their pins",
+            "To download: 2.0 GiB.",
+            "Installing is not built yet",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(!text.contains("Nothing to install"), "{text}");
     }
 }
