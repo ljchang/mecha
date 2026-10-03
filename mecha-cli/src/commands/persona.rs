@@ -579,8 +579,6 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
         "sessions": store.sessions_dir(&p.name),
         "notes": p.notes,
         "problems": store.problems(p, lib),
-        // `null` when unreadable — never an empty reading.
-        "echo": recent_echoes(store, p).ok(),
     })
 }
 
@@ -594,7 +592,7 @@ fn recent_echoes(store: &Store, p: &Persona) -> anyhow::Result<persona::echo::Ec
     persona::echo::echoes(&store.sessions_dir(&p.name), since)
 }
 
-/// One line for `describe`: the echo reading in words.
+/// One line for `mecha persona show`: the echo reading in words.
 fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
     let days = persona::echo::SHOWN_DAYS;
     let e = match echoes {
@@ -665,7 +663,6 @@ fn describe(store: &Store, lib: &Library, p: &Persona) {
         ),
         _ => {}
     }
-    println!("  echo:         {}", echo_line(&recent_echoes(store, p)));
     for n in &p.notes {
         println!("  note:         {n}");
     }
@@ -776,13 +773,17 @@ fn run_with(
         Cmd::Show { name, json } => {
             let store = load(dir);
             let p = find(&store, &name)?;
+            // The echo reads a week of transcripts, so only `show` asks for
+            // it — not `list`, nor the confirmations that describe a persona.
+            let echoes = recent_echoes(&store, p);
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&summary_json(&store, &lib, p))?
-                );
+                let mut summary = summary_json(&store, &lib, p);
+                // `null` when unreadable — never an empty reading.
+                summary["echo"] = serde_json::to_value(echoes.ok())?;
+                println!("{}", serde_json::to_string_pretty(&summary)?);
             } else {
                 describe(&store, &lib, p);
+                println!("  echo:         {}", echo_line(&echoes));
             }
         }
         Cmd::New {
@@ -1252,6 +1253,21 @@ mod tests {
             locked: false,
             edit: false,
         }
+    }
+
+    /// The echo reads a week of transcripts, so only `show` asks for it: the
+    /// summary `list --json` prints once per persona must not carry it.
+    #[test]
+    fn the_summary_list_prints_reads_no_transcripts() {
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib_dir, new("ada")).unwrap();
+        let loaded = Store::load(&store);
+        let (lib, _) = Library::load(&lib_dir);
+        let summary = summary_json(&loaded, &lib, loaded.get("ada").unwrap());
+        assert!(summary.get("echo").is_none(), "{summary}");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -1940,7 +1940,23 @@ pub fn persona_provider(
     for_use: PersonaUse,
 ) -> Result<Box<dyn mecha_core::provider::Provider>> {
     let (_, provider_cfg) = bound.config.provider(Some(&bound.provider_name))?;
-    mecha_core::provider::build(&persona_provider_config(provider_cfg, for_use))
+    build_for(provider_cfg, for_use)
+}
+
+/// Build `cfg` for `for_use`, after building it **as configured** — one
+/// verdict on the config for every use. A provider can refuse the config
+/// itself (Anthropic refuses any `seed`), and stripping the seed for the
+/// conversation alone would open a chat whose crisis judge then cannot be
+/// built: the chat running with its safety check degraded, where before
+/// both refused together.
+fn build_for(
+    cfg: &mecha_core::config::ProviderConfig,
+    for_use: PersonaUse,
+) -> Result<Box<dyn mecha_core::provider::Provider>> {
+    // The verdict on the config as written, for every use; what each use
+    // then gets is `persona_provider_config`'s alone to say.
+    mecha_core::provider::build(cfg)?;
+    mecha_core::provider::build(&persona_provider_config(cfg, for_use))
 }
 
 /// What a persona chat asks a provider for.
@@ -2474,6 +2490,32 @@ mod persona_provider_tests {
         );
         let judge = persona_provider_config(&cfg, PersonaUse::Judge);
         assert_eq!(judge.seed, Some(42), "a verdict reproducible from the text");
+    }
+
+    /// A config the provider refuses is refused for the chat as well as its
+    /// judge: unseeding the chat alone would open it with no crisis judge.
+    #[test]
+    fn a_config_the_judge_cannot_run_on_opens_no_chat() {
+        let refused = mecha_core::config::ProviderConfig {
+            kind: "anthropic".into(),
+            model: Some("claude-opus-5".into()),
+            api_key: Some("unused".into()),
+            seed: Some(42),
+            ..Default::default()
+        };
+        for use_ in [PersonaUse::Converse, PersonaUse::Judge] {
+            let err = build_for(&refused, use_).err().map(|e| format!("{e:#}"));
+            assert!(
+                err.as_deref().is_some_and(|e| e.contains("seed")),
+                "{use_:?}: {err:?}"
+            );
+        }
+        let fine = mecha_core::config::ProviderConfig {
+            seed: None,
+            ..refused
+        };
+        assert!(build_for(&fine, PersonaUse::Converse).is_ok());
+        assert!(build_for(&fine, PersonaUse::Judge).is_ok());
     }
 }
 
