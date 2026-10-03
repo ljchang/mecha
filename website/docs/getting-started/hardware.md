@@ -87,8 +87,8 @@ added up — and the tiers they are placed into are not.
 |---|---|---|
 | 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*; or a 35B-A3B with its experts in system RAM (`--n-cpu-moe`), *Unmeasured*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* — plus the offloaded experts if you take that path, most of the model's ~21 GB, *Arithmetic* |
 | 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GiB, *Arithmetic* |
-| 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the chat model and its context (the unified cell's figure without the embeddings server), with image generation's ~15 GB and speech's ~5 GB beside it, ~50 GB, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU, the CPU-side models and the GPU servers' host memory, ~14 GiB, *Arithmetic* |
-| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: ~44.2 GiB, *Arithmetic* — the recommended file and its cache. Every other feature's model beside it: ~83 GiB in all with everything loaded, up to ~99 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the GPU models' card memory, ~50 GiB resident and ~77 with everything loaded — counting image generation's whole peak on the card, since its split is unmeasured — *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' process memory, ~6 GiB, and up to ~22 with a full prompt cache, *Arithmetic* |
+| 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the chat model and its context (the unified cell's figure without the embeddings server), with image generation's ~15 GB and speech's ~4 GB beside it, ~49 GB, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU, the CPU-side models and the GPU servers' host memory, ~12 GiB, *Arithmetic* |
+| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: ~44.2 GiB, *Arithmetic* — the recommended file and its cache. Every other feature's model beside it: ~79 GiB in all with everything loaded, up to ~95 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the GPU models' card memory, ~48 GiB resident and ~75 with everything loaded — counting image generation's whole peak on the card, since its split is unmeasured — *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' process memory, ~4 GiB, and up to ~20 with a full prompt cache, *Arithmetic* |
 
 ### 16 GB
 
@@ -116,7 +116,7 @@ The first tier where a mid-size model is comfortable.
   start to feel like they are working rather than being demonstrated.
 - **With a separate GPU**: a 35B-A3B at Q4 with 128k context is ~24 GB
   (20.7 weights + 2.7 cache + 0.9 projector), which leaves a 32 GiB card
-  ~10 GB — room for speech's ~5 GB, not for image generation's ~15 GB.
+  ~10 GB — room for speech's ~4 GB, not for image generation's ~15 GB.
 
 ### 64 GB
 
@@ -181,7 +181,7 @@ the server gives it back (below), and **per request** holds it only while
 working.
 It describes how each is installed here: the embeddings and OCR servers sit
 behind a systemd socket, and started by hand instead they are resident,
-which puts the resident sum near 62 GiB rather than 53.
+which puts the resident sum near 59 GiB rather than 49.
 
 | Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | What it counts | Evidence |
 |---|---|---|---|---|---|---|
@@ -191,19 +191,19 @@ which puts the resident sum near 62 GiB rather than 53.
 | layout — `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 | peak process memory | Measured 2026-09-29 |
 | image generation — `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle | ~19.6 | peak, a picture from cold: ~1.1 idle after the reset and ~18.5 to load; ~15 warm, ~13.6 loaded and idle; not counted: from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset | Arithmetic |
 | speech to text — `voice` | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | process memory | Measured 2026-10-02 |
-| speech — `voice` | Chatterbox Turbo | GPU | Resident | 7.8 | GPU and process memory | Measured 2026-10-02 |
+| speech — `voice` | Breeze TTS 2 Q6_K, in qwentts.cpp | GPU | Resident | 4.1 | peak while speaking: GPU memory and the server's and adapter's process memory | Measured 2026-10-03 |
 | turn detection — `voice` | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | the worker's process memory | Measured 2026-10-02 |
 
 Added up — which is *arithmetic*, since nobody has seen every row loaded at
-the same moment — the resident models hold about 53 GiB (54 with image
+the same moment — the resident models hold about 49 GiB (51 with image
 generation's ~1.1 GiB between pictures), and everything
-loaded at once with an image generating from cold about 83, of the GB10's
+loaded at once with an image generating from cold about 79, of the GB10's
 121.7 GiB (`MemTotal` in `/proc/meminfo`), before the operating system.
 **Two things come on top**, and the chat row says so: the chat server's own
 process memory, which has not been measured for this configuration, and the
 router's prompt cache — `cache-ram` lets it keep up to 16 GiB of saved
 prompt prefixes in host memory (`scripts/start-router.sh`), which puts the
-total near 99 GiB with a full cache.
+total near 95 GiB with a full cache.
 
 **Release the memory beside the server, not from mecha.** mecha's own
 ten-minute unload timer lives in the mecha process that drew the picture, so a
@@ -224,7 +224,7 @@ the machine down.
 **On a separate GPU**, the CPU rows stay where they are and cost system RAM.
 The two on-demand llama-servers (embeddings and OCR) can run on the CPU
 from system RAM with `-ngl 0`, slower by an amount nobody here has measured.
-Image generation and Chatterbox want the card. **None of the separate-GPU
+Image generation and the speech server want the card. **None of the separate-GPU
 placements has been measured** — the numbers above are what each model costs,
 and where it costs it on your machine is arithmetic until you run it.
 

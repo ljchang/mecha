@@ -149,12 +149,17 @@ pub const SIDECARS: &[Sidecar] = &[
         installer: "7d",
         models_in_hub: true,
     },
+    // The speech server and its OpenAI-shaped adapter, the default since
+    // 2026-10-03 (Chatterbox, a Docker image, before it).
     Sidecar {
-        id: "chatterbox",
-        label: "Chatterbox",
+        id: "breeze-tts",
+        label: "the speech server (Breeze)",
         needed_by: &[Feature::Voice],
         serves: &["tts"],
-        evidence: &[Evidence::DockerImage("mecha/chatterbox")],
+        evidence: &[
+            Evidence::UserUnit("mecha-breeze-tts.service"),
+            Evidence::UserUnit("mecha-breeze-adapter.service"),
+        ],
         installer: "7f",
         models_in_hub: true,
     },
@@ -871,14 +876,10 @@ mod tests {
         let root = scratch();
         let mut m = machinery(&root);
         m.docker = Box::new(|_| Lookup::Unknown("docker daemon did not answer".into()));
-        let p = plan(Feature::Voice, &m, &GB10, &root.join("hub"), false).unwrap();
-        let cb = p.sidecars.iter().find(|s| s.id == "chatterbox").unwrap();
-        assert!(
-            matches!(cb.state, SidecarState::Unknown { .. }),
-            "{:?}",
-            cb.state
-        );
-        assert!(!p.nothing_to_do);
+        assert!(matches!(
+            m.check(&Evidence::DockerImage("any/image")),
+            Lookup::Unknown(_)
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

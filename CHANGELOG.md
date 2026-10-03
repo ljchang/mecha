@@ -621,6 +621,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The memory figures count speech as Breeze, the new default voice.**
+  `mecha features --probe` and the hardware page now use Breeze TTS 2 (Q6_K,
+  qwentts.cpp): 4.1 GiB at its peak while speaking, read on the GB10, where
+  Chatterbox was 7.8 GiB. The machine-wide sums fall by the difference,
+  about 4 GiB.
 - **The model launchers find the Hugging Face cache the way `hf` does.**
   The router, the embeddings and OCR servers and the other start scripts
   looked only at `HF_HUB`, then `~/.cache/huggingface/hub`; they now also
