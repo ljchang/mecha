@@ -617,6 +617,12 @@ pub(super) fn cloned_voices(dir: &std::path::Path) -> Result<Vec<serde_json::Val
                 let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
                     continue;
                 };
+                // The default voice is a managed file, not a clone: listed
+                // as one, the page would offer to delete it (refused, a dead
+                // button) and count it among the owner's cloned voices.
+                if name == "default" {
+                    continue;
+                }
                 // A bounded read: the fmt/data headers live in the first
                 // few hundred bytes, and slurping every clone's megabytes
                 // to answer a settings GET would make the page cost more
@@ -697,6 +703,16 @@ pub async fn library_voices(
         if let Some(n) = c["name"].as_str() {
             names.insert(n.to_string());
         }
+    }
+    // The default voice is a file on Breeze, never a clone (`cloned_voices`
+    // skips it): on the list from disk too, so an unreachable worker does not
+    // leave the one voice that must exist without a row.
+    if state
+        .voices_dir
+        .as_ref()
+        .is_some_and(|d| d.join("default.wav").is_file())
+    {
+        names.insert("default".to_string());
     }
     // And every voice a persona names: one that is in neither list is
     // exactly what this page is placed to say, rather than leaving the first
@@ -939,7 +955,9 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
 /// than denylisted: this string becomes `<voices_dir>/<name>.wav` on one
 /// side and a `voice` field the TTS resolves on the other, so anything
 /// beyond lowercase, digits, `-` and `_` is refused — including `default`,
-/// which names the model's built-in voice and must stay unshadowable.
+/// which names the default voice and must stay unshadowable: on Breeze it is
+/// `default.wav` in this same directory, so a clone of that name would
+/// silently replace it and a delete would leave every call voiceless.
 fn valid_voice_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 40
@@ -1058,7 +1076,7 @@ pub const MAX_CLONE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct CloneQuery {
-    name: String,
+    pub(super) name: String,
 }
 
 /// POST /api/settings/voice/clone?name=x — body is the WAV itself.
@@ -1078,7 +1096,7 @@ pub async fn voice_clone(
     let Some(dir) = state.voices_dir.as_ref() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "voice cloning is not configured — set [voice] voices_dir to the host directory the TTS container mounts as /voices\n",
+            "voice cloning is not configured — set [voice] voices_dir to the directory the TTS reads its voices from (~/models/voices by default)\n",
         )
             .into_response();
     };
@@ -1254,6 +1272,23 @@ pub async fn voice_clone_delete(State(state): St, Json(q): Json<CloneQuery>) -> 
             ),
         )
             .into_response();
+    }
+    // On Breeze a voice is a pair: the TTS writes `<name>.txt`, a verbatim
+    // transcript of the same recording, the first time the voice is spoken.
+    // Removing the voice removes what was said in it too, or the delete
+    // leaves the words behind where nothing lists them.
+    let transcript = path.with_extension("txt");
+    if let Err(e) = std::fs::remove_file(&transcript) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "the recording was deleted, but its transcript {} was not: {e:#}\n",
+                    transcript.display()
+                ),
+            )
+                .into_response();
+        }
     }
     voice(State(state)).await.into_response()
 }

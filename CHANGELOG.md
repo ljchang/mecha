@@ -47,9 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves the same speech interface as the Chatterbox server, in front of Breeze TTS 2
   on a qwentts.cpp fork. It transcribes each voice clip once with Parakeet (an editable
   `.txt` beside the WAV), registers voices with the engine, speaks the default voice
-  as a house voice, passes delivery instructions through, and stretches when speed is
-  not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are not
-  installed; `docs/VOICE-BREEZE-DESIGN.md` says what is left before the switch.
+  as the clip `default.wav`, passes delivery instructions through, and stretches when speed is
+  not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are installed
+  by hand; `docs/VOICE-BREEZE-DESIGN.md` §5 says which gates the switch left open.
 
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
@@ -629,6 +629,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **Breeze TTS 2 is the default voice.** The voice worker's `MECHA_VOICE_TTS`
+  now defaults to the Breeze adapter on `:8887` (engine on `:8886`) instead of
+  Chatterbox on `:8881`, which stays available as the rollback by setting the
+  variable back. The update skill says when the adapter needs a restart.
 
 - **The model launchers find the Hugging Face cache the way `hf` does.**
   The router, the embeddings and OCR servers and the other start scripts
