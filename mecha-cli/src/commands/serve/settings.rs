@@ -617,6 +617,12 @@ pub(super) fn cloned_voices(dir: &std::path::Path) -> Result<Vec<serde_json::Val
                 let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
                     continue;
                 };
+                // The default voice is a managed file, not a clone: listed
+                // as one, the page would offer to delete it (refused, a dead
+                // button) and count it among the owner's cloned voices.
+                if name == "default" {
+                    continue;
+                }
                 // A bounded read: the fmt/data headers live in the first
                 // few hundred bytes, and slurping every clone's megabytes
                 // to answer a settings GET would make the page cost more
