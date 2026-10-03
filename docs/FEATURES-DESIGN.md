@@ -898,12 +898,22 @@ chat server's process memory) is named in the probe's output rather than
 presented as whole:
 
 ```rust
+pub struct Slot {                 // one per model (6b, `recommend.rs`)
+    pub id: &'static str,         // "embeddings"
+    pub label: &'static str,
+    pub needed_by: &'static [Feature], // every feature that needs it; empty = all
+    pub runs_on: RunsOn,          // Gpu | Cpu
+    pub residency: Residency,     // Resident | OnDemand | ReleasedOnIdle | PerRequest
+    pub rows: &'static [Recommendation],
+}
+
 pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
     pub memory: Memory,           // the column and its cost, as one value (F5)
-    pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
-    pub source: Source,           // repository, file(s), revision, sha256, size (§10.4)
-    pub residency: Residency,     // Resident | OnDemand | PerRequest
+    pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF and projector)"
+    pub counts: &'static str,     // what the figure counts
+    pub sources: &'static [Source], // pinned (§10.4); empty when the sidecar fetches it
+    pub excludes: Option<&'static str>, // what the figure leaves out, named by the probe
 }
 
 /// F5's second column. `Unified`: one pool holds everything (a GB10, a Mac),

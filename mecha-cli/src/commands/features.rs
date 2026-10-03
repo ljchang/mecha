@@ -14,7 +14,6 @@ use mecha_core::feature::{self, Feature, Row, State, Switch};
 use mecha_core::recommend::{self, Budget, Floor, Machine, Peak, Sum};
 
 #[derive(clap::Args, Debug)]
-#[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -50,6 +49,11 @@ pub enum Cmd {
 }
 
 pub fn execute(args: Args) -> Result<()> {
+    // Checked here, not with clap's `args_conflicts_with_subcommands`: that
+    // also refuses the global flags (`mecha features --yes enable graph`).
+    if args.probe && args.cmd.is_some() {
+        anyhow::bail!("`--probe` reads the machine; it does not go with `enable` or `disable`");
+    }
     match args.cmd {
         Some(Cmd::Enable { ids }) => return set(&ids, true),
         Some(Cmd::Disable { ids }) => return set(&ids, false),
@@ -307,11 +311,23 @@ fn render_budget(b: &Budget) -> String {
                 );
             }
         }
-        Machine::Discrete { gpu_mb, host_mb } => out.push_str(&format!(
-            "A separate GPU: {} on the card, {} of system memory — {tier}.\n",
-            gib(gpu_mb),
-            gib(host_mb)
-        )),
+        Machine::Discrete {
+            gpu_mb,
+            cards,
+            host_mb,
+        } => out.push_str(&match cards {
+            1 => format!(
+                "A separate GPU: {} on the card, {} of system memory — {tier}.\n",
+                gib(gpu_mb),
+                gib(host_mb)
+            ),
+            n => format!(
+                "{n} GPUs, the largest {} — read by that one card, since a model that must sit \
+                 on one device cannot split — and {} of system memory — {tier}.\n",
+                gib(gpu_mb),
+                gib(host_mb)
+            ),
+        }),
     }
     out.push('\n');
     for l in &b.lines {
@@ -476,6 +492,7 @@ mod tests {
         let b = recommend::budget(
             Machine::Discrete {
                 gpu_mb: 32_768,
+                cards: 1,
                 host_mb: 65_536,
             },
             &[Feature::Ocr],
@@ -523,5 +540,23 @@ mod tests {
         assert!(text.contains("— comfortable"), "{text}");
         assert!(text.contains("Not in these sums:\n  chat: "), "{text}");
         assert!(!text.contains("System memory"), "{text}");
+    }
+
+    /// Two cards are named as two, and read by the largest — never shown as
+    /// one card holding their sum.
+    #[test]
+    fn the_probe_names_two_cards_and_reads_the_largest() {
+        let b = recommend::budget(
+            Machine::Discrete {
+                gpu_mb: 24_576,
+                cards: 2,
+                host_mb: 65_536,
+            },
+            &[],
+        );
+        let text = render_budget(&b);
+        assert!(text.starts_with("2 GPUs, the largest 24.0 GiB"), "{text}");
+        assert!(text.contains("the 16 GB tier"), "{text}");
+        assert!(!text.contains("48.0 GiB"), "{text}");
     }
 }
