@@ -151,6 +151,7 @@ impl QuarantinedPass {
             thinking: false,
             cache_prompt: self.cache_prompt,
             think: self.think,
+            think_budget: None,
         }
     }
 
