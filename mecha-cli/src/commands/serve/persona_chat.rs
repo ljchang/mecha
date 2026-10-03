@@ -2572,6 +2572,9 @@ impl PersonaChats {
             }
         }
         for _ in 0..BARGE_IN_TRIES {
+            // The last reply, read while the conversation is still here: the
+            // run about to start takes it.
+            let last_reply;
             {
                 let sessions = self.sessions.lock().await;
                 if let Some(live) = sessions.get(key).and_then(|ps| ps.live.as_ref()) {
@@ -2579,6 +2582,10 @@ impl PersonaChats {
                     // next try finds the conversation back.
                     live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                 }
+                last_reply = sessions
+                    .get(key)
+                    .and_then(|ps| ps.conversation.as_ref())
+                    .and_then(|c| crate::voice::last_reply(&c.messages));
             }
             let (tap, events) = tokio::sync::mpsc::unbounded_channel();
             let (done_tx, done) = tokio::sync::oneshot::channel();
@@ -2602,11 +2609,25 @@ impl PersonaChats {
                 .await
             {
                 Ok(_) => {
+                    // After `start`, which creates a first chat's session:
+                    // the transcript the director records in, and who speaks.
+                    let seed = {
+                        let sessions = self.sessions.lock().await;
+                        sessions.get(key).map(|ps| crate::voice::DirectorSeed {
+                            transcript: Some(Arc::clone(&ps.session)),
+                            character: Some(
+                                mecha_core::persona::strip_comments(&ps.pinned.identity).0,
+                            )
+                            .filter(|c| !c.trim().is_empty()),
+                            last_reply: last_reply.clone(),
+                        })
+                    };
                     return Hosted::Started(Box::new(HostedTurn {
                         events,
                         done,
                         cancel,
-                    }))
+                        seed: seed.unwrap_or_default(),
+                    }));
                 }
                 Err(Refusal::Busy) => {}
                 Err(r) => return Hosted::Failed(r.said()),
