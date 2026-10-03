@@ -287,6 +287,49 @@ pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaT
     PersonaTools { registry, refused }
 }
 
+/// The levers a persona agent ran without, for its `config` record
+/// (`RunConfig::of`): `install_off` (the binding's, from the install and its
+/// flags) for the two switches a persona shares with the assistant, the
+/// agent's own config for the ones it carries, and always off what a persona
+/// agent is built without — the prompt blocks its system prompt replaces, and
+/// the hooks, approval rules, outbox, mailbox and fallback
+/// `setup::persona_agent` never gives it. Recording the assistant's set instead
+/// claimed goal guidance and the situation brief were on for runs that
+/// structurally had neither (review of #530).
+pub fn levers_off(
+    install_off: &[crate::harness::Lever],
+    cfg: &AgentConfig,
+) -> Vec<crate::harness::Lever> {
+    use crate::harness::Lever;
+    Lever::ALL
+        .into_iter()
+        .filter(|lever| match lever {
+            // The persona's own prompt (`system_prompt`) stands in for the
+            // assistant's, so nothing the assistant's prompt carries rides.
+            Lever::Charter | Lever::LearnedRules | Lever::Skills => true,
+            // `setup::persona_agent` gives a persona agent no hooks, approval
+            // policy, outbox or mailbox, and `persona_provider` no fallback,
+            // whatever the install says (review of #530, pass 2).
+            Lever::Hooks
+            | Lever::ApprovalRules
+            | Lever::Outbox
+            | Lever::Messages
+            | Lever::Fallback => true,
+            Lever::StepEscalation => !cfg.step_escalation,
+            Lever::StepChecks => !cfg.step_checks,
+            Lever::GoalGuidance => !cfg.goal_guidance,
+            Lever::Boredom => !cfg.boredom,
+            Lever::CompactValidate => !cfg.compact_validate,
+            Lever::PredictiveCompaction => !cfg.predictive_compaction,
+            Lever::CarriedState => !cfg.carried_state,
+            Lever::SituationBrief => !cfg.situation_brief,
+            Lever::PastAppraisals => !cfg.past_appraisals,
+            Lever::SuccessExamples => !cfg.success_examples,
+            Lever::Mcp | Lever::CompactTool => install_off.contains(lever),
+        })
+        .collect()
+}
+
 /// The assistant's agent configuration with the persona's system prompt in
 /// place of its own, and every lever that reads an owner store switched off.
 ///
@@ -916,6 +959,69 @@ mod tests {
         assert_eq!(p.state.status, Status::Candidate);
         assert!(format!("{}", pin(&dir, "ada").unwrap_err()).contains("not approved"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A persona chat's `config` record names the levers its own agent ran
+    /// without, not the assistant's: on an install with every lever on, the
+    /// ones `agent_config` forces off and the prompt blocks a persona replaces
+    /// are recorded off, and the install's own switches pass through (review
+    /// of #530).
+    #[test]
+    fn a_persona_records_the_levers_its_own_agent_ran_without() {
+        use crate::harness::Lever;
+        let base = AgentConfig {
+            goal_guidance: true,
+            situation_brief: true,
+            past_appraisals: true,
+            success_examples: true,
+            boredom: true,
+            step_checks: true,
+            step_escalation: true,
+            compact_validate: true,
+            predictive_compaction: true,
+            carried_state: true,
+            ..AgentConfig::default()
+        };
+        let persona = agent_config(&base, "persona".into());
+        let off = levers_off(&[], &persona);
+        for forced in [
+            Lever::GoalGuidance,
+            Lever::SituationBrief,
+            Lever::PastAppraisals,
+            Lever::SuccessExamples,
+            Lever::StepChecks,
+            Lever::StepEscalation,
+            Lever::Charter,
+            Lever::LearnedRules,
+            Lever::Skills,
+        ] {
+            assert!(
+                off.contains(&forced),
+                "{forced:?} ran in no persona chat: {off:?}"
+            );
+        }
+        for never in [
+            Lever::Hooks,
+            Lever::ApprovalRules,
+            Lever::Outbox,
+            Lever::Messages,
+            Lever::Fallback,
+        ] {
+            assert!(
+                off.contains(&never),
+                "{never:?} is never a persona's: {off:?}"
+            );
+        }
+        for kept in [
+            Lever::Boredom,
+            Lever::Mcp,
+            Lever::CompactTool,
+            Lever::CarriedState,
+        ] {
+            assert!(!off.contains(&kept), "{kept:?} was on: {off:?}");
+        }
+        // The install's switches pass through.
+        assert!(levers_off(&[Lever::Mcp], &persona).contains(&Lever::Mcp));
     }
 
     #[test]

@@ -1431,6 +1431,13 @@ module.
       never swaps the resident model still holds. A router that will not say
       what it has loaded makes every chat wait. `persona memory write` is
       model-running and held in `main.rs`; no other `persona` verb is.
+      "The model it ran on" is the one it **last** ran on: a persona chat
+      follows the router turn by turn, so its door records a `config` on its
+      first turn in a process and at every switch (`recorded_generation`, the
+      assistant chat's rule), and `read_chat` takes the latest. Before
+      2026-10-03 persona chats recorded none, so a chat the router moved
+      mid-way stayed credited to the model it started on, and its writer
+      waited for that model for good.
     - A turn is the n-th `message` record in the file, not a position in the
       loaded list: a compaction's `rewrite` moves list positions, while the
       append-only file never moves an ordinal. `source` and the ledger

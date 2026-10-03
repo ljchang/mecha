@@ -734,6 +734,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona chat whose model changed partway through is still
+  remembered.** If the router switched a chat to another model mid-way, the
+  overnight memory writer kept waiting for the model the chat started on,
+  possibly forever. A persona chat now records each switch, and its memories
+  are written with the model it last ran on.
+
 - **The ComfyUI idle reset reads only what it needs, and fails when it cannot
   see free memory.** Its two journal checks now ask for the newest matching
   line (`journalctl -g … -n 1`) instead of reading the whole run's journal every
