@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features --probe` adds up what your models would hold.** Every
+  model the features you have on would load — the chat model, embeddings,
+  OCR, layout, image generation, speech to text, speech and turn detection —
+  with what each costs, how it holds memory (resident, on demand, released
+  on idle, per request) and on what evidence, summed against this machine's
+  memory: one pool on unified memory, or the card and system memory
+  separately with a separate GPU. A sum with an unmeasured figure in it is
+  shown as unknown, never as zero, and what the figures leave out — the chat
+  server's process memory, the router's prompt cache — is named. It reads
+  `/proc/meminfo` and `nvidia-smi` and asks no server. The hardware page's
+  *Beside the chat model* table is now generated from the same rows, which
+  also pin each model's source (revision and sha256) for the installers to
+  come. `mecha features --json` now warns about an unknown `[features]` key on
+  stderr too, as the plain listing always did.
 - **An idle image server gives its memory back.** A new user timer
   (`scripts/comfyui/install.sh`) restarts ComfyUI once it has held a model
   for ten idle minutes, with nothing queued and nobody connected. That takes

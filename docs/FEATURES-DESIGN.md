@@ -39,9 +39,9 @@
 > 6a — `hardware.md` gains F5's separate-GPU
 > column and a *Beside the chat model* table of every feature's model, cost,
 > residency and evidence, measured on the GB10 (each row dated), and the graph
-> page names the embedder mecha-graph uses — is built; 6b, the
-> `Recommendation` rows, `--probe` and the test holding the page to them, is
-> next, and parses that table. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
+> page names the embedder mecha-graph uses — is built; so is 6b: the
+> registry in `recommend.rs`, `mecha features --probe`, and the page's table
+> generated from the rows, with a test that fails when they disagree. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -887,15 +887,33 @@ Yes — and they belong in the registry, not in prose scattered across six
 pages, because a recommendation written in two places is two
 recommendations (the embeddings page already disagrees with the server).
 
-Each feature carries `Recommendation` rows:
+Each feature carries `Recommendation` rows — **built as slots** (6b,
+`recommend.rs`): a model is loaded once however many features need it (the
+embedder serves `graph`, `documents` and `personas`), so the rows hang off a
+`Slot` naming every feature that needs the model, and the probe counts a
+slot once if any of them is shown. Keyed by feature, a shared model was
+either under-counted or counted twice. A row also says what its figure
+`counts` and what it `excludes`, so a figure that leaves something out (the
+chat server's process memory) is named in the probe's output rather than
+presented as whole:
 
 ```rust
+pub struct Slot {                 // one per model (6b, `recommend.rs`)
+    pub id: &'static str,         // "embeddings"
+    pub label: &'static str,
+    pub needed_by: &'static [Feature], // every feature that needs it; empty = all
+    pub runs_on: RunsOn,          // Gpu | Cpu
+    pub residency: Residency,     // Resident | OnDemand | ReleasedOnIdle | PerRequest
+    pub rows: &'static [Recommendation],
+}
+
 pub struct Recommendation {
     pub tier_gb: u32,             // 16, 32, 64, 128 — hardware.md's tiers (F5)
     pub memory: Memory,           // the column and its cost, as one value (F5)
-    pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF + mmproj)"
-    pub source: Source,           // repository, file(s), revision, sha256, size (§10.4)
-    pub residency: Residency,     // Resident | OnDemand | PerRequest
+    pub model: &'static str,      // "PaddleOCR-VL 1.6 (GGUF and projector)"
+    pub counts: &'static str,     // what the figure counts
+    pub sources: &'static [Source], // pinned (§10.4); empty when the sidecar fetches it
+    pub excludes: Option<&'static str>, // what the figure leaves out, named by the probe
 }
 
 /// F5's second column. `Unified`: one pool holds everything (a GB10, a Mac),
