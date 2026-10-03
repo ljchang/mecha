@@ -612,6 +612,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breeze TTS 2 is the default voice.** The voice worker's `MECHA_VOICE_TTS`
+  now defaults to the Breeze adapter on `:8887` (engine on `:8886`) instead of
+  Chatterbox on `:8881`, which stays available as the rollback by setting the
+  variable back. The update skill says when the adapter needs a restart.
+
 - **The model launchers find the Hugging Face cache the way `hf` does.**
   The router, the embeddings and OCR servers and the other start scripts
   looked only at `HF_HUB`, then `~/.cache/huggingface/hub`; they now also

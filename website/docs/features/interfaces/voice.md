@@ -31,7 +31,7 @@ Voice needs a **git checkout** and three local services:
 |---|---|---|
 | A chat model | `llama-server`, `:8080` | answers the turn |
 | Speech to text | Parakeet TDT via `sherpa-onnx`, `:8992` | hears you |
-| Text to speech | Chatterbox Turbo (docker), `:8881` | speaks back |
+| Text to speech | Breeze TTS 2: the engine on `:8886`, its adapter on `:8887` | speaks back |
 
 mecha's side of these addresses is the [`[voice]`](/docs/reference/configuration#voice)
 table: `stt_url` for the web app's dictation, `offer_target` and `voice_port`
