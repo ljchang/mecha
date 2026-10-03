@@ -80,7 +80,7 @@ pub(crate) enum Asked {
 }
 
 impl Asked {
-    fn outcome(&self) -> (Outcome, Option<String>, Option<String>, Option<String>) {
+    pub(crate) fn outcome(&self) -> (Outcome, Option<String>, Option<String>, Option<String>) {
         // (outcome, direction, model, reason)
         match self {
             Asked::Line { line, model } => {
@@ -348,9 +348,23 @@ impl Directions {
 /// observation `follow` makes to resolve the model, so this asks nothing
 /// extra. Unknown is not a skip: the sentence is directed as before.
 async fn ask(shared: &Arc<Shared>, user: &str, deadline: Duration) -> Asked {
+    ask_on(&shared.follower, &shared.stopping, user, deadline).await
+}
+
+/// [`ask`] on a follower and a shutdown token rather than the facade's: the
+/// one implementation, which Listen calls from `serve` with the chat's own
+/// follower (`serve::listen`), so a tap and a call are directed under the
+/// same rules — the loaded model, never a switch waited on, never a
+/// single-slot server.
+pub(crate) async fn ask_on(
+    follower: &crate::follow::Follower,
+    stopping: &tokio_util::sync::CancellationToken,
+    user: &str,
+    deadline: Duration,
+) -> Asked {
     let until = tokio::time::Instant::now() + deadline;
     // Held, never waited for: a switch in flight is a skip.
-    let held = match shared.follower.try_hold("voice direction") {
+    let held = match follower.try_hold("voice direction") {
         Ok(Ok(held)) => held,
         Ok(Err(_switch)) => return Asked::Skipped("switching"),
         Err(e) => {
@@ -363,8 +377,8 @@ async fn ask(shared: &Arc<Shared>, user: &str, deadline: Duration) -> Asked {
     // The binding first, inside the same deadline: following can probe the
     // router, and the time it takes is the sentence's time too.
     let followed = tokio::select! {
-        r = tokio::time::timeout_at(until, shared.follower.follow()) => r,
-        _ = shared.stopping.cancelled() => return Asked::Skipped("shutdown"),
+        r = tokio::time::timeout_at(until, follower.follow()) => r,
+        _ = stopping.cancelled() => return Asked::Skipped("shutdown"),
     };
     let bound = match followed {
         Err(_) => return Asked::Timeout { model: None },
@@ -384,7 +398,7 @@ async fn ask(shared: &Arc<Shared>, user: &str, deadline: Duration) -> Asked {
     let model = bound.model.clone();
     let result = tokio::select! {
         r = tokio::time::timeout_at(until, vd::direct(bound.agent.provider(), &model, user)) => r,
-        _ = shared.stopping.cancelled() => return Asked::Skipped("shutdown"),
+        _ = stopping.cancelled() => return Asked::Skipped("shutdown"),
     };
     drop(held);
     match result {

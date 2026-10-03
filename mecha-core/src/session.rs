@@ -306,7 +306,9 @@ pub enum Record {
     /// director's line, or why there was none. Written by the voice facade
     /// while the sentence is about to play, so it lands wherever the clock
     /// put it — joined to its reply by `turn`, never by position. Read by
-    /// nothing that rebuilds a conversation; it is there to be studied.
+    /// nothing that rebuilds a conversation; it is there to be studied, and
+    /// read back by Listen (`Session::spoken_directions`) so a reply heard
+    /// again is spoken as it was directed.
     ///
     /// A build from before this record skips the line as one it cannot
     /// parse, and loses nothing it needs.
@@ -1777,6 +1779,25 @@ impl Session {
             .collect())
     }
 
+    /// Every spoken direction recorded in a transcript, in file order —
+    /// which is not reply order (`SpokenDirection` is joined by `turn`).
+    /// Malformed lines are skipped, as [`outcomes`](Session::outcomes) skips
+    /// them. Read by Listen, which speaks a reply with the directions it was
+    /// already given rather than asking again.
+    pub fn spoken_directions(path: &Path) -> Result<Vec<crate::voice_direction::SpokenDirection>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        Ok(text
+            .lines()
+            // A cheap test before the parse: a transcript is mostly messages.
+            .filter(|l| l.contains("\"spoken_direction\""))
+            .filter_map(|l| match serde_json::from_str(l) {
+                Ok(Record::SpokenDirection(d)) => Some(d),
+                _ => None,
+            })
+            .collect())
+    }
+
     /// The most recent outcome, without parsing the transcript that precedes
     /// it.
     ///
@@ -3039,6 +3060,15 @@ mod tests {
             Record::SpokenDirection(d) => assert_eq!(d, direction),
             other => panic!("read back as {other:?}"),
         }
+        // And Listen's reader finds it, and only it — not a message that
+        // merely quotes the wire name.
+        session
+            .append_messages(&[Message::user("what is a \"spoken_direction\"?")])
+            .unwrap();
+        assert_eq!(
+            Session::spoken_directions(&session.path).unwrap(),
+            vec![direction]
+        );
     }
 
     #[test]

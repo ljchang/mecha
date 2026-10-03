@@ -53,8 +53,8 @@ use crate::GlobalOpts;
 pub mod confirm;
 mod direct;
 
-pub(crate) use direct::last_reply;
 pub use direct::DirectorSeed;
+pub(crate) use direct::{ask_on as ask_director_on, last_reply, Asked as DirectorAsked};
 
 /// Loopback, by design rather than default — see the module docs.
 const LISTEN_HOST: &str = "127.0.0.1";

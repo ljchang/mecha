@@ -47,6 +47,7 @@ mod frontdoor;
 mod gate;
 pub(crate) mod incognito;
 mod library;
+mod listen;
 mod mail;
 mod model;
 mod persona_chat;
