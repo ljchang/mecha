@@ -1457,16 +1457,19 @@ const NEAR_COPY_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// owner's to ask for.
 const NO_RETRY_UNASKED: &str = "Do not call image_generate again for this unless the user asks.";
 
-/// How long the last picture drawn in a workspace answers an identical call.
-/// The repeats it is for arrive within seconds of the picture they copy.
+/// How long the last picture drawn in a workspace answers an identical call
+/// that would draw it again. The repeats it is for arrive within seconds of
+/// the picture they copy.
 const REPEAT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// What an identical call gets instead of a second render. Not an error: the
-/// picture exists, and the user already has it.
-const REPEAT_REFUSED: &str = "Nothing new was drawn: this call is exactly the one that last made \
-     a picture in this chat, and that picture is already in the chat, where the user sees it. \
-     Do not call image_generate again for it. If the user asked for another version, change the \
-     prompt or the seed.";
+/// What an identical seeded call gets, after [`refused`]'s lead, instead of
+/// a second render. An error, as every "nothing was drawn" is: the page
+/// counts a turn's pictures by `is_error` (`turnsWithoutPicture`), and a
+/// reply over no new picture must still say so (review of #543).
+const REPEAT_REFUSED: &str = "This call is exactly the one that last drew a picture in this \
+     chat, seed included, so it would draw that picture again — and it is already in the chat, \
+     where the user sees it. Do not call image_generate again for it. If the user asked for \
+     another version, change the prompt, or leave out the seed for a new picture.";
 
 /// How alike two pictures' layouts are, from -1 to 1: the correlation of
 /// their 32×32 grayscale thumbnails, so light and dark in the same places
@@ -1867,7 +1870,11 @@ pub struct ImageGenerate {
     near_copy_salt: std::collections::hash_map::RandomState,
     /// The last call that drew a picture, per workspace: a salted hash of the
     /// workspace, of the call's input, and when. An identical call next is
-    /// answered with [`REPEAT_REFUSED`], not drawn again. On a call on
+    /// answered with [`REPEAT_REFUSED`], not drawn again — only a new picture
+    /// with an explicit seed ([`ImageGenerate::draws_the_same`]): without one,
+    /// and on every edit, the tool draws a fresh seed, so the same input is
+    /// another picture, and the retry a near-copy notice describes is often
+    /// the same input as the call it retries (review of #543). On a call on
     /// 2026-10-03 a persona re-sent the call that had just drawn, word for
     /// word, four times in one run; the image server skipped each as a
     /// duplicate, returned nothing, and the run read that as a failure.
@@ -1951,16 +1958,32 @@ impl ImageGenerate {
         )
     }
 
+    /// Whether `input` would draw the same picture every time: a new picture
+    /// (no `reference_images`) with an explicit seed.
+    fn draws_the_same(input: &Value) -> bool {
+        let edit = input
+            .get("reference_images")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty());
+        !edit && input.get("seed").is_some_and(|s| !s.is_null())
+    }
+
     /// Whether `input` is the call that last drew a picture in this
-    /// workspace, inside [`REPEAT_WINDOW`]. Swept on every read.
+    /// workspace, inside [`REPEAT_WINDOW`], and would draw it again. Swept on
+    /// every read.
     fn is_repeat(&self, ctx: &ToolCtx, input: &Value) -> bool {
+        if !Self::draws_the_same(input) {
+            return false;
+        }
         let (place, call) = self.repeat_keys(ctx, input);
         let mut last = self.last_drawn.lock().unwrap_or_else(|p| p.into_inner());
         last.retain(|_, (_, at)| at.elapsed() < REPEAT_WINDOW);
         last.get(&place).is_some_and(|(drawn, _)| *drawn == call)
     }
 
-    /// Records `input` as the call that last drew a picture in this workspace.
+    /// Records `input` as the call that last drew a picture in this
+    /// workspace. Every call that drew replaces the last, so a repeat is
+    /// always of the call just before it.
     fn drew(&self, ctx: &ToolCtx, input: &Value) {
         let (place, call) = self.repeat_keys(ctx, input);
         self.last_drawn
@@ -2731,7 +2754,7 @@ impl Tool for ImageGenerate {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         if self.is_repeat(ctx, &input) {
-            return Ok(ToolOutput::ok(REPEAT_REFUSED));
+            return Ok(refused(REPEAT_REFUSED));
         }
         let (mut req, paths, mut ask, mask_path) = match self.request(&input) {
             Ok(parsed) => parsed,
@@ -6570,26 +6593,18 @@ mod tests {
         std::fs::write(dir.join("images/orig.png"), &scene).unwrap();
         let t = tool(&url);
         let c = ctx(&dir);
-        // Each edit words it differently: an identical call is answered
-        // without drawing (`REPEAT_REFUSED`).
-        let edit = |how: &'static str| {
+        // The same edit each time: an edit draws a fresh seed, so the same
+        // input is another picture, never a repeat (review of #543).
+        let edit = || {
             t.call(
-                json!({"prompt": format!("Keep the background unchanged. {how}"),
+                json!({"prompt": "Keep the background unchanged. Have her stand up.",
                        "reference_images": ["images/orig.png"]}),
                 &c,
             )
         };
-        assert!(edit("Have her stand up.")
-            .await
-            .unwrap()
-            .content
-            .contains("may not have taken"));
-        assert!(!edit("Have her stand.")
-            .await
-            .unwrap()
-            .content
-            .contains("nearly the same"));
-        let out = edit("Have her get up.").await.unwrap();
+        assert!(edit().await.unwrap().content.contains("may not have taken"));
+        assert!(!edit().await.unwrap().content.contains("nearly the same"));
+        let out = edit().await.unwrap();
         assert!(
             out.content.contains("may not have taken") && !out.content.contains("in a row"),
             "{}",
@@ -6988,7 +7003,7 @@ mod tests {
     #[tokio::test]
     async fn the_call_that_just_drew_is_not_drawn_again() {
         let (url, seen) = fake_with(Fake {
-            history: vec![done(), done(), done()],
+            history: vec![done(), done(), done(), done(), done()],
             ..Fake::default()
         })
         .await;
@@ -7005,11 +7020,14 @@ mod tests {
                 .count()
         };
 
-        // The same call again: answered, not drawn, and not as a picture —
-        // the page would show the first one twice.
+        // The same seeded call again: answered, not drawn, and as nothing
+        // drawn — the page counts a turn's pictures by `is_error`.
         let again = t.call(fox.clone(), &ctx(&dir)).await.unwrap();
-        assert_eq!(again.content, REPEAT_REFUSED);
-        assert!(!again.is_error);
+        assert_eq!(
+            again.content,
+            format!("Nothing was drawn. {REPEAT_REFUSED}")
+        );
+        assert!(again.is_error);
         assert_eq!(drawn(&seen), 1);
 
         // Another seed is another picture; the same call in another chat is
@@ -7030,6 +7048,15 @@ mod tests {
             elsewhere.content
         );
         assert_eq!(drawn(&seen), 3);
+
+        // Without a seed the tool draws a fresh one: "another one" sent as
+        // the same call is another picture.
+        let unseeded = json!({"prompt": "a fox"});
+        for _ in 0..2 {
+            let out = t.call(unseeded.clone(), &ctx(&dir)).await.unwrap();
+            assert!(out.content.starts_with("image: "), "{}", out.content);
+        }
+        assert_eq!(drawn(&seen), 5);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(other).ok();
     }
