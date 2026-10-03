@@ -7,7 +7,7 @@
 //! two readers independent.
 //!
 //! Here the axis is SOURCE. `bee:suggested·related_to` holds 300 behavioural
-//! generalisations drawn from single conversations — "Luke prefers DIY
+//! generalisations drawn from single conversations — "Robin prefers DIY
 //! approaches over formal design consultation" — every one at confidence
 //! 0.50 with no verdict history at all. The question they need is the one
 //! gossip can actually ask: does anything else in the graph show this, or is
@@ -145,8 +145,8 @@ pub async fn run(global: &crate::GlobalOpts, args: &CorroborateArgs) -> Result<(
         let cov = match coverage_cache.get(&subject) {
             Some(c) => c.clone(),
             None => {
-                // coverage_best, not coverage: a bare "Luke" is ambiguous
-                // while the graph holds two of him, and stopping there made
+                // coverage_best, not coverage: a bare "Robin" is ambiguous
+                // while the graph holds two of them, and stopping there made
                 // every claim about the graph's owner unjudgeable.
                 let c = match gossip::coverage_best(&client, &subject).await {
                     Ok((name, sources, guessed)) if !name.is_empty() => {
