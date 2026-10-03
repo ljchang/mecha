@@ -1,5 +1,5 @@
 #!/bin/bash
-S=$(ls -d ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/*/)
+S=$(ls -d ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}}/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/*/)
 M="$S/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
 # **A vision model is two files, and this one is multimodal.** The weights
 # carry the language model; the vision tower ships beside them as a separate
