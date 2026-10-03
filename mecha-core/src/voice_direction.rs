@@ -73,8 +73,6 @@ the words, and never add new ones. No preamble, no quotes, no markdown.";
 pub struct Scene {
     /// Who is speaking: a persona's identity, or `None` for the assistant.
     pub character: Option<String>,
-    /// The voice the engine speaks as, by name.
-    pub voice: Option<String>,
     /// What the speaker said last, before this turn.
     pub last_reply: Option<String>,
     /// What the owner just said: the words this turn answers.
@@ -103,11 +101,6 @@ pub fn prompt(scene: &Scene, directed: &[(String, String)], cue: Cue<'_>) -> Str
         None => p.push_str("Speaker: a warm, capable personal assistant."),
     }
     p.push('\n');
-    if let Some(v) = &scene.voice {
-        p.push_str("Voice: ");
-        p.push_str(&bounded(v, 80));
-        p.push('\n');
-    }
     if let Some(r) = &scene.last_reply {
         p.push_str("What the speaker said last: ");
         p.push_str(&bounded(r, MAX_CONTEXT_CHARS));
@@ -307,7 +300,6 @@ mod tests {
     fn scene() -> Scene {
         Scene {
             character: Some("Maya, a wry friend who teases gently.".into()),
-            voice: Some("vctk_p297".into()),
             last_reply: Some("Good luck with the grant!".into()),
             utterance: "I finally finished it, but I'm wiped out.".into(),
         }
