@@ -1536,9 +1536,10 @@ Step 7 becomes these, each a PR that leaves every feature working:
   servers on demand from nothing.
 - **7d.** `uv` and the voice venv, Parakeet and the voice worker.
 - **7e.** ComfyUI, ComfyUI-GGUF and the image models.
-- **7f.** Chatterbox — a venv lock first; the Docker recipe, written down as
-  a file this time, where the venv cannot be satisfied (the GB10's ABI
-  trouble is the case on record).
+- **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
+  default since 2026-10-03, built from a pinned commit with its model
+  converted at install. (This step was Chatterbox, with a venv lock and a
+  Docker recipe written down as a file, until Breeze replaced it.)
 
 **How to know it works:** a clean container (no `~/.mecha`, no `scripts/`)
 runs `cargo install` then `mecha features enable documents`, answers yes to
