@@ -1588,9 +1588,11 @@ module.
     set per run on `RunContext::think_budget`, because one persona agent
     answers typed and spoken turns alike). A compaction's summariser and
     validator are one-shot passes and keep the server's budget, since a thin
-    summary is the costlier failure. Only a server on this machine is sent the
-    field (`OpenAiCompatible::local`): a strict endpoint 400s on it, which is
-    never retried, and the caller would hear nothing. A typed turn keeps the
+    summary is the costlier failure. Only a llama-server is sent the field
+    (`OpenAiCompatible::local`: `kind = "local"`, the dialect, with a base
+    URL — not the address, since a proxy on this machine may speak OpenAI's
+    dialect): a strict endpoint 400s on it, which is never retried, and the
+    caller would hear nothing. A typed turn keeps the
     server's 4096. A persona's
     long thinking is its reply re-drafted until the budget runs out (40–50 s
     of silence on a call); replayed and judged blind, a 1024 cap beat the
