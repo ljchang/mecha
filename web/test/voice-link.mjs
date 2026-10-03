@@ -257,5 +257,15 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.ok(ontrack.length > 0, 'the speaker is no longer set inside ontrack');
   assert.match(ontrack, /passThrough\(e\.receiver\)/, 'an incoming track plays before it is piped through');
   assert.match(ontrack, /could not be piped through/, 'a receiver that could not be piped is not said');
+  // A fallback keeps the tap's worker: every outgoing frame passes through
+  // it, so terminating it stops the RTP the fallback relies on (measured,
+  // review of #534). Only `end()` may terminate it.
+  const failed = src.slice(src.indexOf('function uplinkFailed('), src.indexOf('function micLive('));
+  assert.ok(failed.length > 0, 'uplinkFailed not found');
+  assert.doesNotMatch(failed, /\.terminate\(/, 'a fallback terminates the worker every frame passes through');
+  assert.match(failed, /postMessage\(\{ stop: true \}\)/, 'a fallback does not tell the tap to stop copying');
+  const tap = (await import('node:fs')).readFileSync(new URL('../public/voice-uplink-transform.js', import.meta.url), 'utf8');
+  assert.match(tap, /if \(copying\) try/, 'the tap copies after it was told to stop');
+  assert.match(tap, /controller\.enqueue\(frame\);/, 'the tap no longer passes every frame on');
   console.log('insertable streams: ok');
 }

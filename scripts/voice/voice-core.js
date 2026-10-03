@@ -895,13 +895,13 @@ export function createVoiceSession(opts = {}) {
     // frames are piped through, before anything plays them. A receiver that
     // could not be piped is said in the call, once - silence with the call
     // reading "listening" is the failure nobody could name (review of #534).
-    // Once per receiver: a second `ontrack` for one already piped throws on
-    // `createEncodedStreams` and is not a failure.
-    const piped = new WeakSet();
+    // Once per receiver, piped or not: a second `ontrack` for one already
+    // piped throws on `createEncodedStreams` and is not a failure.
+    const seen = new WeakSet();
     pc.ontrack = (e) => {
-      if (insertable && !piped.has(e.receiver)) {
-        if (passThrough(e.receiver)) piped.add(e.receiver);
-        else cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false });
+      if (insertable && !seen.has(e.receiver)) {
+        seen.add(e.receiver);
+        if (!passThrough(e.receiver)) cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false });
       }
       speaker.srcObject = e.streams[0];
     };
@@ -1095,7 +1095,18 @@ export function createVoiceSession(opts = {}) {
     if (uplinkMode !== "channel") return;
     uplinkMode = "rtp";
     clearTimeout(pumpTimer); pumpTimer = 0;
-    if (uplinkWorker) { try { uplinkWorker.terminate(); } catch { /* gone */ } uplinkWorker = null; }
+    // The tap stays attached and its worker alive: every outgoing frame
+    // passes through that worker, so ending it (or detaching the transform)
+    // stops the RTP this fallback is about to rely on. Measured in Chromium
+    // 149 on a flagged connection: after `terminate()`, 1 packet reached the
+    // far end in 2.5 s, likewise after `sender.transform = null`; with the
+    // worker kept and only its copies ignored, 125 (review of #534). So the
+    // page stops listening and tells the worker to stop copying; `end()`
+    // terminates it with the connection.
+    if (uplinkWorker) {
+      uplinkWorker.onmessage = null;
+      try { uplinkWorker.postMessage({ stop: true }); } catch { /* gone */ }
+    }
     behindShownS = 0; behind = { sounded: false };
     // Each end tells the other; the worker's reader stays parked otherwise.
     if (!fromWorker) sendClientMessage("uplink", { state: "rtp", why });
