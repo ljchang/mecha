@@ -22,6 +22,43 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
+#523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live
+with `ed72a382`. `docs/VOICE-BREEZE-DESIGN.md` §5 records each gate's
+state.
+- **#534 (`fix/voice-uplink-chrome`), in review:** Chrome calls fall back
+  to the direct microphone path on every call (trap in HISTORY). Deploy:
+  rebuild `web/dist` and rsync it, with no restart. Probe: a Chrome call
+  shows no "buffered microphone path failed", and the worker logs
+  `batches=` climbing.
+- **Gates still open:**
+  - **2:** a call measured while ComfyUI renders.
+  - **4:** a failed CUDA init at boot leaves voice with no TTS. The
+    Chatterbox container no longer restarts at boot (restart policy `no`,
+    stopped at the owner's word around 04:15Z), and Breeze's unit retries
+    every 5 s.
+  - **6:** `mecha doctor` does not know `default.wav` is required.
+- **Read the director's records after a few calls.** Look at each
+  `spoken_direction` record's `latency_ms` against the previous sentence's
+  playback. If short sentences leave gaps, prefetch is the fix: direct
+  each sentence when its text streams, before the worker asks. #532
+  (mecha-1e) rewrites the director's prompt for continuity.
+- **Sentences reach Breeze in odd pieces.** The aggregator cuts on
+  ellipses, so "A little bit.." becomes one sentence and a lone "." the
+  next. #531 (mecha-1e) stops a bare "." reaching the engine; the
+  splitting itself is untouched.
+- **Old VCTK clips still say everything twice.** Re-cut one by deleting
+  `vctk_<id>.wav` and its `.txt` and running `add-vctk-voices.py`.
+- **Minors from review:**
+  - The facade's non-streaming reply path never marks harness lines, so
+    the director would direct them. Today's worker always streams.
+  - `test_director.py` is not in CI; it needs the worker venv.
+  - The idle reset has two test gaps: no test asserts `-q`, and no test
+    reaches the unreadable branch of the second journal check.
+- **Stale on this machine:** the worker drop-in
+  `mecha-voice-worker.service.d/breeze.conf` now repeats the default; its
+  `Wants=`/`After=` on the adapter are still worth keeping.
+
 **2026-10-03 — persona repetition: fixed and live; what is open
 (mecha-1e).** #517 and #522 are in HISTORY under 2026-10-02/03, deployed
 at `c6f59b05` (02:36Z). The owner's rulings are in `PERSONA-DESIGN.md`
@@ -37,7 +74,9 @@ at `c6f59b05` (02:36Z). The owner's rulings are in `PERSONA-DESIGN.md`
 - **Held on purpose, waiting on those readings:**
   - The call note's "the first one short" (`persona::call::note`) makes
     nearly every spoken reply open with "Good." or "Perfect.". Reword it
-    only if the pattern shows beyond one persona.
+    only if the pattern shows beyond one persona. On Breeze, the default
+    since 2026-10-03, the streaming note drops the rule (#527), so this
+    now applies only to a call on Chatterbox.
   - A harness nudge for variety.
 - **Unmeasured:** a live replay with a tool call in the history before the
   cut. The replay that measured the fix had tool turns flattened out.
@@ -1725,7 +1764,7 @@ decisions (accept refuses until the item's `show` was rendered; a merge
 accept gets its own confirmation sheet), depths that are `None` when a
 store cannot be read, and a 503 naming `MECHA_GRAPH_BIN` when the graph
 binary is absent |
-| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS (no standby — Kokoro was removed 2026-08-25; nothing failed over to it automatically), and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard — true of **both** doors since 2026-08-25, and only of `:8443` before it, when `:443` was a file mount whose `/api` went straight to the worker. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). **A call is the chat session it was started from (D3, 2026-08-25)**: the page names its key in the WebRTC offer (`request_data`, pipecat's own passthrough), the worker forwards it as `X-Chat-Session` beside the slot key it still mints, and `voice::SessionHost` — implemented by `serve::chat::VoiceHost` — runs the turn on that conversation's messages, taint, transcript and jail, with the facade keeping no record of its own. `chat::begin_turn` is the one implementation both doors go through. Spoken turns arrive on the page's SSE feed live (`WireEvent::User`, block stripped) and are marked `spoken` in the transcript; the D10 block now opens a *switch into speech* rather than a conversation (`last_turn_spoken`), and `--voice-yes` travels with the turn, so a spoken turn runs at Allow while a typed one in the same session obeys the page's mode. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the in-chat call overlay (`Chat.svelte`) carries a **seven**-voice picker and a 0.5–2.0x rate slider. They persist in `localStorage` (`mecha.voice.prefs`, `{voice, speed}`, read on each connection's first `onVoiceConfig`), so the next call opens where you left it rather than resetting to whatever the worker booted with. That key originally synced two shells; the standalone page was retired in 876580e and the preference is why it stays. Seven is six Kokoro-derived cloning references plus Chatterbox's own built-in `default`, which the server lists as selectable because it is one — `voice: "default"` generates with no reference rather than falling back to anything. The controls are driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list. **Call teardown, 2026-08-25:** the pipeline's idle timeout was pipecat's unchosen 300s default and killed a call five minutes into any pause — raised past a conversational silence and it now *announces itself* over the data channel before tearing down; client-side, ICE `disconnected` is a 15s grace window rather than a hang-up, since only `failed`/`closed` are terminal (no ICE restart: pipecat's `restart_pc` fires the very event this worker cancels the pipeline on). **Spoken outbox confirmation, 2026-08-25:** a run that stages drafts is asked about aloud — the offer composed from the store through `DraftView::spoken`, the answer matched by `review_policy::parse_answer` *before* any model sees it, so the release decision never enters a context window |
+| Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), **Breeze TTS 2** TTS since 2026-10-03 (`mecha-breeze-tts` :8886 behind `mecha-breeze-adapter` :8887, `docs/VOICE-BREEZE-DESIGN.md`; Chatterbox before it, its container stopped and not restarted at boot — no standby, as with Kokoro, removed 2026-08-25 because nothing failed over to it automatically), and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard — true of **both** doors since 2026-08-25, and only of `:8443` before it, when `:443` was a file mount whose `/api` went straight to the worker. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). **A call is the chat session it was started from (D3, 2026-08-25)**: the page names its key in the WebRTC offer (`request_data`, pipecat's own passthrough), the worker forwards it as `X-Chat-Session` beside the slot key it still mints, and `voice::SessionHost` — implemented by `serve::chat::VoiceHost` — runs the turn on that conversation's messages, taint, transcript and jail, with the facade keeping no record of its own. `chat::begin_turn` is the one implementation both doors go through. Spoken turns arrive on the page's SSE feed live (`WireEvent::User`, block stripped) and are marked `spoken` in the transcript; the D10 block now opens a *switch into speech* rather than a conversation (`last_turn_spoken`), and `--voice-yes` travels with the turn, so a spoken turn runs at Allow while a typed one in the same session obeys the page's mode. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the in-chat call overlay (`Chat.svelte`) carries a **seven**-voice picker and a 0.5–2.0x rate slider. They persist in `localStorage` (`mecha.voice.prefs`, `{voice, speed}`, read on each connection's first `onVoiceConfig`), so the next call opens where you left it rather than resetting to whatever the worker booted with. That key originally synced two shells; the standalone page was retired in 876580e and the preference is why it stays. Seven is six Kokoro-derived cloning references plus Chatterbox's own built-in `default`, which the server lists as selectable because it is one — `voice: "default"` generates with no reference rather than falling back to anything. The controls are driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list. **Call teardown, 2026-08-25:** the pipeline's idle timeout was pipecat's unchosen 300s default and killed a call five minutes into any pause — raised past a conversational silence and it now *announces itself* over the data channel before tearing down; client-side, ICE `disconnected` is a 15s grace window rather than a hang-up, since only `failed`/`closed` are terminal (no ICE restart: pipecat's `restart_pc` fires the very event this worker cancels the pipeline on). **Spoken outbox confirmation, 2026-08-25:** a run that stages drafts is asked about aloud — the offer composed from the store through `DraftView::spoken`, the answer matched by `review_policy::parse_answer` *before* any model sees it, so the release decision never enters a context window |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model. Counterfactual probes **branch** rather than regenerate (`counterfactual::branch_at` + `drive_branch`, 2026-08-30): the recorded prefix is resubmitted verbatim and only the continuation is sampled, so pre-point divergence is structurally impossible; replay wrappers narrow egress to `None` in the non-executing modes, and a recorded surface rebuilds from its `SurfaceStore` blob — dead tools included, recorded descriptions winning over live rewordings |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
