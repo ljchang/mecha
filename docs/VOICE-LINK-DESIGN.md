@@ -94,7 +94,10 @@ On that connection every outgoing frame passes through the tap's worker, so
 a fallback to RTP keeps the worker running and only stops its copies (a
 `stop` message); terminating it, or setting `sender.transform = null`, left
 1 packet reaching the far end in 2.5 s against 125 with the worker kept
-(review of #534). Only `end()` terminates it, with the connection.
+(review of #534). Only `end()` terminates it, with the connection. And a
+tap that fails to attach on that connection leaves the sender piped straight
+through: a bare sender on a flagged connection sent 0 packets in 3 s, and the
+real page with its tap script missing went from 0 packets to 434 once piped.
 
 ### 2.2 Delivery over a reliable channel — RTVI messages, not a second channel
 
