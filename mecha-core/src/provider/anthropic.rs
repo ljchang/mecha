@@ -166,6 +166,8 @@ impl Anthropic {
         // `req.think` needs nothing here: every request that asks it not to
         // think also leaves `thinking` false (a quarantined pass always
         // does), and that already sends `{"type": "disabled"}` below.
+        // `req.think_budget` neither: adaptive thinking takes no budget
+        // (`budget_tokens` is gone), so there is nothing to send it as.
         if req.thinking {
             obj.insert(
                 "thinking".into(),
@@ -872,6 +874,7 @@ mod tests {
             thinking: true,
             cache_prompt: false,
             think: None,
+            think_budget: None,
         }
     }
 
@@ -1262,6 +1265,7 @@ mod retry_tests {
             thinking: false,
             cache_prompt: false,
             think: None,
+            think_budget: None,
         }
     }
 
@@ -2847,6 +2851,7 @@ text = "Leave work better than you found it."
                 thinking: false,
                 cache_prompt: false,
                 think: None,
+                think_budget: None,
             }
         };
         let plain_result = "1. [>] Draft a reply".to_string();

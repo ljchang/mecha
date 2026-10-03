@@ -40,6 +40,14 @@ pub struct OpenAiCompatible {
     vision: bool,
     structured_output: crate::config::StructuredOutput,
     retry: crate::provider::retry::RetryPolicy,
+    /// A llama-server: `kind = "local"`, the wire dialect (as
+    /// `provider::router::follows_here` reads it — a `local` entry may sit on
+    /// a tailnet host), with an explicit base URL, since a `local` entry with
+    /// none falls back to api.openai.com. Gates the llama.cpp-only request
+    /// fields, which a strict endpoint such as OpenAI's own refuses with a
+    /// 400 — including one behind a proxy on this machine, which is why the
+    /// address is not the test (review of #541).
+    local: bool,
 }
 
 impl OpenAiCompatible {
@@ -64,6 +72,7 @@ impl OpenAiCompatible {
             vision: cfg.vision_enabled(),
             structured_output: cfg.structured_output,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
+            local: cfg.kind == "local" && cfg.base_url.is_some(),
         })
     }
 
@@ -111,6 +120,19 @@ impl OpenAiCompatible {
                 "chat_template_kwargs".into(),
                 json!({"enable_thinking": think}),
             );
+        }
+        // llama-server's per-request reasoning cap, read only for a template
+        // with thinking tags (`server-common.cpp`); measured honoured on
+        // 2026-10-03 (a 128-token cap cut a looping persona's reasoning to
+        // ~490 characters). Only when asked, so every other request's bytes
+        // are unchanged, and only to a llama-server (`self.local`): unlike
+        // `enable_thinking` above, whose one caller (the director) degrades to
+        // an undirected sentence, this rides a persona's spoken reply, and a
+        // 400 from a strict endpoint is `Invalid`, never retried or failed
+        // over, so the caller would hear nothing (review of #541). Elsewhere
+        // the server keeps its own budget.
+        if let (Some(budget), true) = (req.think_budget, self.local) {
+            obj.insert("reasoning_budget_tokens".into(), json!(budget));
         }
         if stream {
             obj.insert("stream".into(), json!(true));
@@ -839,6 +861,7 @@ mod tests {
             thinking: false,
             cache_prompt: false,
             think: None,
+            think_budget: None,
         }
     }
 
@@ -856,6 +879,59 @@ mod tests {
     }
 
     #[test]
+    fn a_reasoning_budget_is_sent_only_when_set_and_only_to_a_local_server() {
+        let local = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(local
+            .body(&plain_req(), false)
+            .get("reasoning_budget_tokens")
+            .is_none());
+        let capped = CompletionRequest {
+            think_budget: Some(1024),
+            ..plain_req()
+        };
+        let body = local.body(&capped, false);
+        assert_eq!(body["reasoning_budget_tokens"], json!(1024));
+        assert!(
+            body.get("chat_template_kwargs").is_none(),
+            "a cap is not a request to think or not"
+        );
+        // The default endpoint is OpenAI's own, which 400s on the field: a
+        // spoken persona turn there must keep the server's budget, not fail.
+        assert!(provider(None, None)
+            .body(&capped, false)
+            .get("reasoning_budget_tokens")
+            .is_none());
+        // So does a proxy on this machine that speaks OpenAI's dialect: the
+        // address is not the test, the dialect is.
+        let proxy = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "openai".into(),
+            base_url: Some("http://127.0.0.1:4000".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(proxy
+            .body(&capped, false)
+            .get("reasoning_budget_tokens")
+            .is_none());
+        // And a llama-server reached over the tailnet keeps its cap.
+        let tailnet = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://spark.tailnet:8080".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            tailnet.body(&capped, false)["reasoning_budget_tokens"],
+            json!(1024)
+        );
+    }
+
+    #[test]
     fn enable_thinking_is_sent_only_when_a_request_declines_it() {
         let p = provider(None, None);
         // `None` is today's request, byte for byte: no key at all.
@@ -868,6 +944,7 @@ mod tests {
         let declined = p.body(
             &CompletionRequest {
                 think: Some(false),
+                think_budget: None,
                 ..plain_req()
             },
             false,
