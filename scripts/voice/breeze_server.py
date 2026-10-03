@@ -65,7 +65,9 @@ CONTROLS = ("temperature", "instructions")
 REFUSED = ("exaggeration", "cfg_weight")
 
 app = FastAPI()
-_registered: dict[str, float] = {}  # voice name -> wav mtime it was registered at
+# voice name -> the (wav, txt) mtimes it was registered at: editing either
+# re-registers on the next request, as ruling D3's "editable" promises.
+_registered: dict[str, tuple[float, float]] = {}
 _lock = asyncio.Lock()
 
 
@@ -82,10 +84,17 @@ class SpeechRequest(BaseModel):
 
 
 def voice_names() -> list[str]:
+    """Breeze has no built-in voice, so an unreadable directory is not an
+    empty library: it is said, as a 503, rather than read as "no house voice"."""
     try:
         return sorted(f[:-4] for f in os.listdir(VOICES_DIR) if f.endswith(".wav"))
-    except OSError:
-        return []
+    except OSError as e:
+        raise HTTPException(503, f"cannot read the voices directory {VOICES_DIR}: {e}")
+
+
+def _stamp(wav_path: str) -> tuple[float, float]:
+    txt = wav_path[:-4] + ".txt"
+    return (os.path.getmtime(wav_path), os.path.getmtime(txt) if os.path.exists(txt) else 0.0)
 
 
 def clean_instructions(text: str | None) -> str:
@@ -128,11 +137,16 @@ async def transcript_for(client: httpx.AsyncClient, name: str, wav_path: str) ->
 
 async def ensure_registered(client: httpx.AsyncClient, name: str, force: bool = False) -> None:
     wav_path = os.path.join(VOICES_DIR, f"{name}.wav")
-    mtime = os.path.getmtime(wav_path)
+    # The warm path takes no lock: a cold voice's transcription (~5 s) must
+    # not hold up a sentence in a voice that needs nothing done.
+    if not force and _registered.get(name) == _stamp(wav_path):
+        return
     async with _lock:
-        if not force and _registered.get(name) == mtime:
+        if not force and _registered.get(name) == _stamp(wav_path):
             return
         ref_text = await transcript_for(client, name, wav_path)
+        # After the transcript, so a sidecar written just now is in the stamp.
+        stamp = _stamp(wav_path)
         with open(wav_path, "rb") as f:
             wav_b64 = base64.b64encode(f.read()).decode()
         r = await client.post(
@@ -142,7 +156,7 @@ async def ensure_registered(client: httpx.AsyncClient, name: str, force: bool = 
         )
         if r.status_code >= 400:
             raise HTTPException(503, f"the Breeze engine refused voice {name}: {r.text[:200]}")
-        _registered[name] = mtime
+        _registered[name] = stamp
 
 
 @app.get("/health")
@@ -222,9 +236,15 @@ async def speech(req: SpeechRequest):
     if req.response_format == "pcm" and abs(req.speed - 1.0) < 0.01:
         async def relay():
             try:
+                sent = 0
                 async for chunk in upstream.aiter_bytes():
                     if chunk:
+                        sent += len(chunk)
                         yield chunk
+                if not sent:
+                    # Headers are gone, so the most this can do is say so: a
+                    # 200 with no audio is a silent sentence, never a success.
+                    print(f"breeze: the engine answered 200 with no audio for voice {voice}", flush=True)
             finally:
                 await upstream.aclose()
                 await client.aclose()
@@ -236,6 +256,10 @@ async def speech(req: SpeechRequest):
     finally:
         await upstream.aclose()
         await client.aclose()
+    if not pcm:
+        # The envelope before the content: llama.cpp-family servers answer 200
+        # with nothing in it, and a silent RIFF would pass that on as speech.
+        raise HTTPException(502, "the Breeze engine answered 200 with no audio")
     if abs(req.speed - 1.0) >= 0.01:
         samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0
         samples = stretch(samples, req.speed, sr=RATE)
