@@ -333,6 +333,8 @@
     box-sizing: border-box;
     display: flex;
     justify-content: center;
+    /* Not stretched: the picture keeps its own shape, and its border with it. */
+    align-items: center;
   }
   .shot a {
     display: contents;
