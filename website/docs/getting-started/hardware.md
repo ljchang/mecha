@@ -78,8 +78,10 @@ measured ones, and sums of them, in GiB, as `nvidia-smi` and `ps` report
 them. No cell in the table below is measured on the file it names: the
 128 GB chat figure is the recommended file's size plus four slots' cache,
 arithmetic until that file is read (an uncensored build of the same base,
-read on the GB10, brackets it: 41.5 GiB before its MTP graft, 44.7 after). What the other models cost *is* measured, under [Beside the chat
-model](#beside-the-chat-model); the tiers they are placed into are not.
+read on the GB10, brackets it: 41.5 GiB before its MTP graft, 44.7 after).
+What most of the other models cost *is* measured, under [Beside the chat
+model](#beside-the-chat-model) — image generation's peak is two readings
+added up — and the tiers they are placed into are not.
 
 | Tier | Unified memory | Separate GPU, with system RAM beside it |
 |---|---|---|
