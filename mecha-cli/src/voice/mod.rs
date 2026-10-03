@@ -212,6 +212,12 @@ pub trait SessionHost: Send + Sync {
         unlogged: bool,
         tts_streams: bool,
     ) -> Hosted;
+
+    /// Whether this host still has the conversation `key` names — the same
+    /// key `speak` takes. The voice director's sweep asks, so a closed chat's
+    /// directing state (an incognito chat's words among it) does not outlive
+    /// the chat. Must not barge in or start anything: a read.
+    async fn holds(&self, key: &str) -> bool;
 }
 
 /// Open a spoken turn with the D10 block when the conversation has not just
@@ -678,6 +684,25 @@ impl Facade {
     /// deliberately lives with the caller — a mounted facade must not
     /// compete with its host process for SIGTERM.
     pub async fn serve(&self, listener: TcpListener, stop: CancellationToken) -> Result<()> {
+        // The voice director's state is swept for as long as the facade
+        // serves: idle replies, and conversations their host has closed.
+        {
+            let shared = Arc::clone(&self.shared);
+            let stop = stop.clone();
+            self.shared.handlers.spawn(async move {
+                let mut every = tokio::time::interval(direct::SWEEP_EVERY);
+                every.reset();
+                loop {
+                    tokio::select! {
+                        _ = every.tick() => {
+                            shared.directions.sweep(shared.mount.host.as_ref()).await;
+                        }
+                        _ = shared.stopping.cancelled() => return,
+                        _ = stop.cancelled() => return,
+                    }
+                }
+            });
+        }
         loop {
             tokio::select! {
                 accepted = listener.accept() => {

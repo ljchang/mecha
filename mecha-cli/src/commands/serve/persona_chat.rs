@@ -2537,6 +2537,11 @@ impl PersonaChats {
         Ok(())
     }
 
+    /// Whether a chat is open on `key` (`voice::SessionHost::holds`).
+    pub async fn holds(&self, key: &str) -> bool {
+        self.sessions.lock().await.contains_key(key)
+    }
+
     /// A spoken turn on `key`, barging in on any run in flight — the
     /// assistant's contract (`chat::VoiceHost`). Never `Hosted::Unknown`:
     /// that sends the words to the facade's own slot, where the assistant
