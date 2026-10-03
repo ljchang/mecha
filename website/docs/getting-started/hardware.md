@@ -75,17 +75,20 @@ architectural; **Unmeasured** means there is no number at all. A separate
 GPU has two pools, so its cells carry two figures, one per pool, each with
 its own marker. Figures from the formula are in GB, like the formula;
 measured ones, and sums of them, in GiB, as `nvidia-smi` and `ps` report
-them. One cell in the table below is
-measured: the chat model on the GB10. What the other models cost *is*
-measured, under [Beside the chat model](#beside-the-chat-model); the tiers
-they are placed into are not.
+them. No cell in the table below is measured on the file it names: the
+128 GB chat figure is the recommended file's size plus four slots' cache,
+arithmetic until that file is read (an uncensored build of the same base,
+read on the GB10, brackets it: 41.5 GiB before its MTP graft, 44.7 after).
+What most of the other models cost *is* measured, under [Beside the chat
+model](#beside-the-chat-model) — image generation's peak is two readings
+added up — and the tiers they are placed into are not.
 
 | Tier | Unified memory | Separate GPU, with system RAM beside it |
 |---|---|---|
 | 16 GB | An 8B at Q4, or a 14B at Q4 with little else running; 32k context. ~5–9 GB of weights plus the cache, *Arithmetic* | **GPU**: a 14B at Q4 with its context, ~9 GB of weights plus the cache, *Arithmetic*; or a 35B-A3B with its experts in system RAM (`--n-cpu-moe`), *Unmeasured*. **System RAM**: embeddings and OCR on the CPU plus the CPU-side models, ~10 GiB, *Arithmetic* — plus the offloaded experts if you take that path, most of the model's ~21 GB, *Arithmetic* |
 | 32 GB | A 14B at Q4–Q6, or a ~27–35B MoE at Q4 with modest context. ~24 GB for the MoE at 128k, *Arithmetic* | **GPU**: a 35B MoE at Q4 with 128k context, ~24 GB, *Arithmetic*. **System RAM**: as at 16 GB, ~10 GiB, *Arithmetic* |
 | 64 GB | A 30–35B MoE at Q4–Q5 with 128k–256k context, and an embeddings server. ~30–37 GB, *Arithmetic* | **GPU**: the chat model and its context (the unified cell's figure without the embeddings server), with image generation's ~15 GB and speech's ~5 GB beside it, ~50 GB, *Arithmetic*. **System RAM**: embeddings and OCR on the CPU, the CPU-side models and the GPU servers' host memory, ~14 GiB, *Arithmetic* |
-| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: 41.5 GiB, *Measured — GB10, 2026-10-02*. Every other feature's model beside it: ~76 GiB in all with everything loaded, up to ~92 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the unified row's GPU models, ~47–70 GiB, *Arithmetic*. **System RAM**: the CPU-side models and the prompt cache, ~6–22 GiB, *Arithmetic* |
+| 128 GB | A 35B-class MoE at Q4 with four slots of 262k: ~44.2 GiB, *Arithmetic* — the recommended file and its cache. Every other feature's model beside it: ~83 GiB in all with everything loaded, up to ~99 with a full prompt cache, *Arithmetic* ([the sum](#beside-the-chat-model)) | **GPU**: the GPU models' card memory, ~50 GiB resident and ~77 with everything loaded — counting image generation's whole peak on the card, since its split is unmeasured — *Arithmetic*. **System RAM**: the CPU-side models and the GPU servers' process memory, ~6 GiB, and up to ~22 with a full prompt cache, *Arithmetic* |
 
 ### 16 GB
 
@@ -163,38 +166,44 @@ its own — it is whether it fits **beside the chat model and everything else
 you have switched on**.
 
 What each costs on the GB10 above, read from the running servers —
-`nvidia-smi` for GPU memory, `ps` for the rest — in **GiB**, the base both
-tools report. Two figures carried from earlier measurements (layout, and
-image generation's peak) were written down in GB without saying which, and
-OCR's was recorded both ways (2,639 MiB in one note, 2.6 GB in another); the
-two bases differ by 7%. *How it
+`nvidia-smi` for GPU memory, `ps` for the rest, added together where both
+were read at one moment — in **GiB**, the base both tools report. Layout's
+figure was written down as "1.1 GB" without saying which base, and is read
+here as GiB; the two differ by 7%. The table is generated from the registry
+in `mecha-core/src/recommend.rs` — `mecha features --probe` adds up the same
+rows for whatever you have switched on, on your machine — and a test fails
+when the two disagree, so change the registry and paste the table it prints.
+*How it
 holds memory* is the part that decides the sum: **resident** holds it from
 start to stop, **on demand** holds nothing until the first request and frees
-it after ten idle minutes, and **per request** holds it only while working.
+it after ten idle minutes, **released on idle** holds it until a timer beside
+the server gives it back (below), and **per request** holds it only while
+working.
 It describes how each is installed here: the embeddings and OCR servers sit
 behind a systemd socket, and started by hand instead they are resident,
-which puts the resident sum near 55 GiB rather than 47.
+which puts the resident sum near 62 GiB rather than 53.
 
-| Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | Evidence |
-|---|---|---|---|---|---|
-| Chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | 41.5 at four 262k slots — the server process's GPU memory only; the router's prompt cache is host memory on top (below), which is why whole-machine readings of the same flags run higher | Measured 2026-10-02 |
-| `documents` (`file_search`), `graph`, and `personas` file search | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.1 loaded | Measured 2026-10-02 |
-| `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 2.6 loaded | Measured 2026-09-29 |
-| `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 peak | Measured 2026-09-29 |
-| `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle — with the `mecha-comfyui-idle-reset` timer installed, ComfyUI is restarted after ten idle minutes and holds ~1.1 GB until the next picture | ~13.6 loaded and idle (GPU + process memory); ~15 peak warm, ~18.5 above idle from cold | Measured 2026-09-25 (peak), 2026-10-02 (footprints) |
-| `voice` — speech to text | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | Measured 2026-10-02 |
-| `voice` — speech | Chatterbox Turbo | GPU | Resident | 5.4, and 2.5 of system memory | Measured 2026-10-02 |
-| `voice` — turn detection | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | Measured 2026-10-02 |
+| Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | What it counts | Evidence |
+|---|---|---|---|---|---|---|
+| chat — every feature | Qwen3.6-35B-A3B Q4_K_M, with its vision projector | GPU | Resident | ~44.2 | the pinned files and four 262k slots' cache; an uncensored build of the same base read 41.5 GiB on the GB10 before its MTP graft and 44.7 after; not counted: the chat server's process memory, and the router's prompt cache (`cache-ram`, up to 16 GiB) | Arithmetic |
+| embeddings — `graph`, `documents`, `personas` | harrier-oss-v1-0.6b f16, 32k context | GPU | On demand | 5.8 | loaded: GPU and process memory | Measured 2026-10-02 |
+| OCR — `ocr` | PaddleOCR-VL 1.6 (GGUF and projector) | GPU | On demand | 3.4 | loaded: GPU and process memory | Measured 2026-10-02 |
+| layout — `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 | peak process memory | Measured 2026-09-29 |
+| image generation — `image` | Qwen-Image 2.1 Q4, in ComfyUI | GPU | Released on idle | ~19.6 | peak, a picture from cold: ~1.1 idle after the reset and ~18.5 to load; ~15 warm, ~13.6 loaded and idle; not counted: from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset | Arithmetic |
+| speech to text — `voice` | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | process memory | Measured 2026-10-02 |
+| speech — `voice` | Chatterbox Turbo | GPU | Resident | 7.8 | GPU and process memory | Measured 2026-10-02 |
+| turn detection — `voice` | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | the worker's process memory | Measured 2026-10-02 |
 
 Added up — which is *arithmetic*, since nobody has seen every row loaded at
-the same moment — the resident models hold about 47 GiB of GPU memory, and
-everything loaded at once with an image generating about 70, plus about 6
-GiB of host memory for the processes around them. **The router's prompt
-cache comes on top**: `cache-ram` lets it keep up to 16 GiB of saved prompt
-prefixes in host memory (`scripts/start-router.sh`). On a unified pool all
-of it is the same memory — 76 GiB, and up to 92 GiB with a full prompt
-cache, of the GB10's 121.7 GiB (`MemTotal` in `/proc/meminfo`), before the
-operating system.
+the same moment — the resident models hold about 53 GiB (54 with image
+generation's ~1.1 GiB between pictures), and everything
+loaded at once with an image generating from cold about 83, of the GB10's
+121.7 GiB (`MemTotal` in `/proc/meminfo`), before the operating system.
+**Two things come on top**, and the chat row says so: the chat server's own
+process memory, which has not been measured for this configuration, and the
+router's prompt cache — `cache-ram` lets it keep up to 16 GiB of saved
+prompt prefixes in host memory (`scripts/start-router.sh`), which puts the
+total near 99 GiB with a full cache.
 
 **Release the memory beside the server, not from mecha.** mecha's own
 ten-minute unload timer lives in the mecha process that drew the picture, so a

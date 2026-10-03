@@ -111,6 +111,7 @@ pub mod provider;
 pub mod quarantine;
 pub mod questions;
 pub mod reading;
+pub mod recommend;
 pub mod replay;
 pub mod replay_priority;
 pub mod replay_run;
