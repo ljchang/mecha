@@ -331,6 +331,9 @@ fn render_plan(p: &sidecar::Plan) -> String {
                 "a file of the pinned size, placed by hand — not hashed by the plan".to_string()
             }
             FileState::NoRow => "no model is recommended for this machine's tier".to_string(),
+            FileState::KeeperUnknown { sidecar } => {
+                format!("kept by {sidecar}, which could not be checked — not priced")
+            }
         };
         out.push_str(&format!(
             "  {:<16} {what}\n  {:<16}   {state}\n",
