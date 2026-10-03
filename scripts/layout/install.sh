@@ -54,7 +54,10 @@ if ! command -v hf >/dev/null; then
   echo "install the Hugging Face CLI (hf) first, or download $repo@$rev by hand" >&2
   exit 1
 fi
-path="$(hf download "$repo" inference.onnx --revision "$rev" --quiet 2>/dev/null || hf download "$repo" inference.onnx --revision "$rev")"
+# The hub mecha's launchers and downloader read (mecha_core::fetch::hub_dir):
+# `hf` ignores mecha's HF_HUB, so it is told the directory outright.
+hub="${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}"
+path="$(hf download "$repo" inference.onnx --revision "$rev" --cache-dir "$hub" --quiet 2>/dev/null || hf download "$repo" inference.onnx --revision "$rev" --cache-dir "$hub")"
 path="$(echo "$path" | tail -1)"
 got="$(sha256sum "$path" | cut -d' ' -f1)"
 if [ "$got" != "$sha" ]; then
