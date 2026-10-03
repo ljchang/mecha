@@ -12,6 +12,12 @@
 /// What every call note opens with; registered as the harness's voice.
 pub const CALL_STEM: &str = "(From the harness: the owner is now speaking to you on a call";
 
+/// A picture made on a call appears on the owner's screen (the call screen
+/// draws it; it covered the chat's copy until 2026-10-03). Never what it
+/// shows: the persona has not seen it.
+const PICTURES: &str = "A picture you make appears on the owner's screen during the call; you \
+have not seen it, so say you sent it rather than what it shows.";
+
 /// The note, folded beside the owner's words on the first spoken turn of a
 /// stretch — the first of a call, and the first after any typed turn, since
 /// the persona has been writing for a reader since.
@@ -24,6 +30,9 @@ pub const CALL_STEM: &str = "(From the harness: the owner is now speaking to you
 /// the length rule goes — it was a latency control for an engine that
 /// speaks a sentence only once all of it is made (owner ruling, 2026-10-03:
 /// "now we don't need things short"). Two fixed texts, each a stable block.
+///
+/// Both end on [`PICTURES`]: the call screen shows a picture the persona
+/// makes, and the persona should know the owner can see it.
 pub fn note(streams: bool) -> String {
     if streams {
         return format!(
@@ -31,7 +40,7 @@ pub fn note(streams: bool) -> String {
 and the owner is listening, not reading. Answer as you would out loud, in \
 your own manner. No markdown, lists, headings or bracketed citations; if a \
 file says something, say which file in words. Write numbers, dates and \
-times as they are spoken.)"
+times as they are spoken. {PICTURES})"
         );
     }
     format!(
@@ -40,7 +49,7 @@ and the owner is listening, not reading. Answer as you would out loud, in \
 your own manner: short sentences, the first one short, since speaking starts \
 when it ends. No markdown, lists, headings or bracketed citations; if a file \
 says something, say which file in words. Write numbers, dates and times as \
-they are spoken.)"
+they are spoken. {PICTURES})"
     )
 }
 
@@ -78,5 +87,18 @@ mod tests {
             assert!(streaming.contains(kept), "{kept}");
         }
         assert!(note(false).contains("the first one short"));
+    }
+
+    #[test]
+    fn either_note_says_a_picture_reaches_the_owners_screen_unseen() {
+        for streams in [false, true] {
+            let note = note(streams);
+            assert!(note.contains("appears on the owner's screen"), "{note}");
+            assert!(note.contains("you have not seen it"), "{note}");
+            assert!(
+                note.ends_with(')'),
+                "the note closes its parenthesis: {note}"
+            );
+        }
     }
 }
