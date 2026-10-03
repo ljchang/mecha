@@ -135,6 +135,10 @@ qwen_sampling() {
 # of context that fills sooner. Gemma's template has no such rule. Persona
 # chats send back no earlier *reply's* reasoning (`PriorThinking::Drop`); a
 # turn that called a tool keeps its own, so this flag still renders those.
+# They pay the re-read above, but only for the last reply: the slot holds the
+# reasoning it generated, the next request presents that reply without it,
+# and the server re-processes from there — one reply's tokens a turn, never
+# the history, since every older reply was already sent without its own.
 #
 # A Qwen projector's image-token floor. Qwen's own default lets an image
 # shrink to 8 tokens (clip.cpp `set_limit_image_tokens(8, 4096)`), and the
