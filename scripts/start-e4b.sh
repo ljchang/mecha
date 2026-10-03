@@ -1,5 +1,5 @@
 #!/bin/bash
-S=$(ls -d ${HF_HUB:-$HOME/.cache/huggingface/hub}/models--unsloth--gemma-4-E4B-it-qat-GGUF/snapshots/*/)
+S=$(ls -d ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}/models--unsloth--gemma-4-E4B-it-qat-GGUF/snapshots/*/)
 source "$(dirname "$0")/mmproj.sh"
 # `|| exit 1`: mmproj_or_die's own exit ends only the $(...) subshell, and
 # this script has no `set -e`, so without it a missing projector fell through
