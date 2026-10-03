@@ -1,8 +1,10 @@
 [Unit]
 Description=Breeze TTS adapter (chatterbox_server's surface over the Breeze engine, :8887)
 Documentation=https://github.com/ljchang/mecha/blob/main/docs/VOICE-BREEZE-DESIGN.md
-Requires=mecha-breeze-tts.service
-Wants=mecha-parakeet.service
+# Wants=, not Requires=: an engine that fails to start (gate 4 in the design
+# doc) must leave the adapter up to answer a 503 that names it, rather than a
+# refused connection.
+Wants=mecha-breeze-tts.service mecha-parakeet.service
 After=mecha-breeze-tts.service mecha-parakeet.service
 
 [Service]
