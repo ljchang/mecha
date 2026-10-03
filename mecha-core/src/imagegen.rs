@@ -2083,7 +2083,8 @@ impl ImageGenerate {
             format!(
                 "{expected} If the user asked to move someone, change a pose or rearrange the \
                  picture, {edited} has now kept its layout through two edits in a row: stop \
-                 editing it, and tell the user the change may not have taken{offer}."
+                 editing it, and tell the user the change may not have taken{offer}. \
+                 {NO_RETRY_UNASKED}"
             )
         } else {
             let offer = redraw
@@ -6448,7 +6449,8 @@ mod tests {
         assert!(
             out.content
                 .contains("images/orig.png has now kept its layout through two edits in a row")
-                && out.content.contains("stop editing it"),
+                && out.content.contains("stop editing it")
+                && out.content.contains(NO_RETRY_UNASKED),
             "{}",
             out.content
         );
