@@ -316,7 +316,7 @@ pub fn tidy(raw: &str) -> Option<String> {
 /// The bidi controls and isolates, the zero-width set, and the byte-order
 /// mark — the ones that change how the text *around* them renders, which is
 /// the whole risk in a row of a list.
-fn is_format_char(ch: char) -> bool {
+pub(crate) fn is_format_char(ch: char) -> bool {
     matches!(ch as u32,
         0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF)
 }
