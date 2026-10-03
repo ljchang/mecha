@@ -136,14 +136,6 @@ pub fn sent(line: &str) -> String {
     format!("{ANCHOR}{line}")
 }
 
-/// The director's own line inside a recorded `direction`, as [`sent`] was
-/// given it — what goes back into a prompt's "already directed" list, which
-/// never shows the director the anchor. A line recorded without one is
-/// returned whole.
-pub fn unsent(direction: &str) -> &str {
-    direction.strip_prefix(ANCHOR).unwrap_or(direction)
-}
-
 /// What a Listen tap's directions are recorded under in
 /// [`SpokenDirection::turn`]: `listen:` and the page's key for the reply, so
 /// a second tap on the same reply finds them and a study tells them from a

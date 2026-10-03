@@ -925,20 +925,23 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
         state.chat.as_ref(),
         body.chat.as_deref().filter(|k| !k.is_empty()),
     ) {
-        if super::listen::worker_directs(target).await {
-            let seat = if super::persona_chat::is_persona_key(key) {
-                chat.personas.listen_seat(key, cue).await
-            } else {
-                chat.listen_seat(key, cue).await
-            };
-            if let Some(seat) = seat {
-                let voice = request["voice"].as_str().map(str::to_string);
-                let line =
-                    super::listen::direct(&chat.follower, &chat.stopping, &seat, voice.as_deref())
-                        .await;
-                if let Some(line) = line {
-                    request["instructions"] = serde_json::json!(line);
-                }
+        let seat = if super::persona_chat::is_persona_key(key) {
+            chat.personas.listen_seat(key, cue).await
+        } else {
+            chat.listen_seat(key, cue).await
+        };
+        if let Some(seat) = seat {
+            let voice = request["voice"].as_str().map(str::to_string);
+            let line = super::listen::direct(
+                &chat.follower,
+                &chat.stopping,
+                target,
+                &seat,
+                voice.as_deref(),
+            )
+            .await;
+            if let Some(line) = line {
+                request["instructions"] = serde_json::json!(line);
             }
         }
     }
