@@ -69,7 +69,11 @@ pub struct Turn {
 #[derive(Debug, Clone, Default)]
 pub struct Chat {
     pub turns: Vec<Turn>,
-    /// The model the chat ran on, from its header.
+    /// The model the chat last ran on: the latest `config` record's, else
+    /// the header's. A chat follows the router turn by turn, and its door
+    /// records a `config` at each switch (`Session::outcomes_attributed`
+    /// reads the same records the same way), so the header alone names only
+    /// the model a chat started on.
     pub model: Option<String>,
     /// When the chat was created, from its header.
     pub created_at: Option<String>,
@@ -90,6 +94,17 @@ pub fn read_chat(text: &str) -> Chat {
             continue;
         };
         match value.get("record").and_then(Value::as_str) {
+            // A `config` after the header names the model from there on; a
+            // blank one names nothing and leaves the last known.
+            Some("config") => {
+                if let Some(m) = value
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|m| !m.trim().is_empty())
+                {
+                    chat.model = Some(m.to_owned());
+                }
+            }
             Some("meta") => {
                 chat.model = value
                     .get("model")
