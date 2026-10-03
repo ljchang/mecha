@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serves the same speech interface as the Chatterbox server, in front of Breeze TTS 2
   on a qwentts.cpp fork. It transcribes each voice clip once with Parakeet (an editable
   `.txt` beside the WAV), registers voices with the engine, speaks the default voice
-  as a house voice, passes delivery instructions through, and stretches when speed is
+  as the clip `default.wav`, passes delivery instructions through, and stretches when speed is
   not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are not
   installed; `docs/VOICE-BREEZE-DESIGN.md` says what is left before the switch.
 
