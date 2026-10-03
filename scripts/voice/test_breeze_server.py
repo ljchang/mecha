@@ -203,6 +203,20 @@ class Adapter(unittest.TestCase):
             self.assertEqual(r.status_code, 502)
             self.assertIn("no audio", r.json()["detail"])
 
+    def test_nothing_speakable_is_a_pause_and_never_reaches_the_engine(self):
+        pause = int(RATE * self.mod.PAUSE_SECONDS) * 2
+        for text in (".", "...", "—", "*", "?!", "  "):
+            r = self.client.post("/v1/audio/speech", json={"input": text, "response_format": "pcm"})
+            self.assertEqual(r.status_code, 200, text)
+            self.assertEqual(r.content, b"\x00" * pause, text)
+        r = self.client.post("/v1/audio/speech", json={"input": ".", "response_format": "wav", "speed": 1.5})
+        self.assertTrue(r.content.startswith(b"RIFF"))
+        self.assertEqual(self.engine.spoken, [], "the engine was given nothing to say, and it invents")
+        for text in ("Mm.", "Hmm...", "3.", "好。"):
+            self.speak(input=text)
+        self.assertEqual([s["input"] for s in self.engine.spoken], ["Mm.", "Hmm...", "3.", "好。"])
+        self.assertEqual(self.speak(input=".", voice="nobody").status_code, 400, "a pause skipped the voice check")
+
     def test_an_unreadable_voices_directory_is_said(self):
         os.environ["VOICES_DIR"] = os.path.join(self.voices, "missing")
         self.mod = importlib.reload(self.mod)
