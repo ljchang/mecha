@@ -105,8 +105,9 @@ The injection concern stays recorded: a reply that quotes third-party text could
 1. The house voice exists and the owner has chosen it.
 2. A call measured while ComfyUI renders a picture. Q6_K runs at 0.76 under steady chat load and image generation is a heavier co-tenant. If it is too tight: a larger pre-buffer when the GPU is busy, Q5_K_M, or the fork's fused depth layer.
 3. The VCTK clips re-cut.
-4. The `tts` slot's measured peak in `recommend.rs` (Chatterbox Turbo, 8,018 MiB) re-measured for Breeze, or `mecha features --probe` sums a model the box no longer holds.
-5. The units installed and `mecha doctor` clean. Then the worker drop-in, restarted by the update skill's order: worker first.
+4. **The engine starts on a busy box.** On 2026-10-03 at 02:43Z and 02:45Z `tts-server` failed at CUDA init with `NV_ERR_NO_MEMORY` from `kgrctxAllocMainCtxBuffer` (kernel log), while `MemAvailable` read 42 GB and `MemFree` 20 GB: the driver could not allocate a context although the page cache was reclaimable. A unit that restarts into that loops. Find what the driver needs free, and whether starting at boot (before the cache fills) or a start-time retry is the answer.
+5. The `tts` slot's measured peak in `recommend.rs` (Chatterbox Turbo, 8,018 MiB) re-measured for Breeze, or `mecha features --probe` sums a model the box no longer holds.
+6. The units installed and `mecha doctor` clean. Then the worker drop-in, restarted by the update skill's order: worker first.
 
 ## 6. Rulings (owner, 2026-10-03)
 
