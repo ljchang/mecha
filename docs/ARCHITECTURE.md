@@ -1565,6 +1565,23 @@ module.
     - Every pressure reading goes through `Agent::wire_bytes`, never
       `message_bytes(messages)`. Measuring thinking that is never sent
       would compact early and spend the context the cut saves.
+  - `persona_agent` also sets `PriorTails::Trim` (`message.rs`): an earlier
+    reply that stops mid-sentence goes back cut to its last whole sentence
+    (`dangling_tail`). On 2026-10-03 a persona's replies began ending
+    "…\n\nI" and were spoken that way. A barge-in stores a reply as heard,
+    the model copies the shape, and each copy is one more example: 41 of
+    75 earlier replies ended mid-sentence by the end of one chat. Replayed,
+    4 of 4 replies stopped mid-sentence with that history and 0 of 4 with
+    it cut back.
+    - Mid-sentence means the last character continues a clause (a letter,
+      a digit, `, ; : -`). An ellipsis, a quote or an emoji ends a reply, and
+      a reply with no whole sentence before the break is left alone, never
+      emptied.
+    - Same cut as `PriorThinking` (the turn being answered is never
+      touched), and the same exemption: a turn that called a tool keeps its
+      text.
+    - The transcript keeps every reply as written or heard; `wire_bytes`
+      subtracts what the trim cuts.
   - The DRY sampler is not used. It ended the copies but garbled replies
     at every setting tried, and the model got around it by misspelling the
     same phrase. Its default window (`dry_penalty_last_n`, like
