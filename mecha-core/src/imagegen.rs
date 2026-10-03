@@ -1471,6 +1471,22 @@ const REPEAT_REFUSED: &str = "This call would draw exactly the picture last draw
      sees it. Do not call image_generate again for it. If the user asked for \
      another version, change the prompt, or leave out the seed for a new picture.";
 
+/// What an identical request gets while the first is still drawing: it
+/// cannot say the picture exists, since that render may yet fail (review of
+/// #543).
+const REPEAT_IN_FLIGHT: &str = "Another call in this turn is drawing exactly this picture — the \
+     same prompt, seed and size — right now. Do not call image_generate again for it: use that \
+     call's result.";
+
+/// The request a workspace last claimed: its hash, when, and whether it drew
+/// or is still drawing.
+#[derive(Debug, Clone, Copy)]
+struct Drawn {
+    key: u64,
+    at: Instant,
+    done: bool,
+}
+
 /// How alike two pictures' layouts are, from -1 to 1: the correlation of
 /// their 32×32 grayscale thumbnails, so light and dark in the same places
 /// score high whatever the colours. `None` when either does not decode or is
@@ -1879,7 +1895,7 @@ pub struct ImageGenerate {
     /// that had just drawn, word for word, four times in one run; the image
     /// server skipped each as a duplicate, returned nothing, and the run read
     /// that as a failure. Hashes only, as for `near_copies`.
-    last_drawn: std::sync::Mutex<std::collections::HashMap<u64, (u64, Instant)>>,
+    last_drawn: std::sync::Mutex<std::collections::HashMap<u64, Drawn>>,
     /// The persona form (`for_persona`): a cast name the library does not
     /// hold is refused, as before, rather than drawn as an extra.
     persona: bool,
@@ -1906,9 +1922,18 @@ struct Claim<'a> {
 }
 
 impl Claim<'_> {
-    /// The request drew: it stays the one an identical request repeats.
+    /// The request drew: it stays the one an identical request repeats,
+    /// now as a picture that exists.
     fn keep(mut self) {
         self.kept = true;
+        let mut last = self
+            .owner
+            .last_drawn
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(d) = last.get_mut(&self.place).filter(|d| d.key == self.key) {
+            d.done = true;
+        }
     }
 }
 
@@ -1922,7 +1947,7 @@ impl Drop for Claim<'_> {
             .last_drawn
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if last.get(&self.place).is_some_and(|(k, _)| *k == self.key) {
+        if last.get(&self.place).is_some_and(|d| d.key == self.key) {
             last.remove(&self.place);
         }
     }
@@ -1994,21 +2019,32 @@ impl ImageGenerate {
         (self.near_copy_salt.hash_one(&ctx.workspace), h.finish())
     }
 
-    /// Claims `req` as the request this workspace draws next, or `None` when
-    /// it is the one that last drew there, inside [`REPEAT_WINDOW`]. Claimed
+    /// Claims `req` as the request this workspace draws next, or says why
+    /// not: it is the one that last drew there, inside [`REPEAT_WINDOW`]
+    /// ([`REPEAT_REFUSED`]), or the one drawing there now
+    /// ([`REPEAT_IN_FLIGHT`]). Claimed
     /// before the render, so two identical calls in one turn — a turn's calls
     /// run concurrently — are one picture, not two (review of #543); the
     /// claim lapses unless [`Claim::keep`] is called, so a failed or
     /// cancelled request can be sent again as it was.
-    fn claim(&self, ctx: &ToolCtx, req: &Request) -> Option<Claim<'_>> {
+    fn claim(&self, ctx: &ToolCtx, req: &Request) -> Result<Claim<'_>, &'static str> {
         let (place, key) = self.repeat_keys(ctx, req);
         let mut last = self.last_drawn.lock().unwrap_or_else(|p| p.into_inner());
-        last.retain(|_, (_, at)| at.elapsed() < REPEAT_WINDOW);
-        if last.get(&place).is_some_and(|(drawn, _)| *drawn == key) {
-            return None;
+        last.retain(|_, d| d.at.elapsed() < REPEAT_WINDOW);
+        match last.get(&place) {
+            Some(d) if d.key == key && d.done => return Err(REPEAT_REFUSED),
+            Some(d) if d.key == key => return Err(REPEAT_IN_FLIGHT),
+            _ => {}
         }
-        last.insert(place, (key, Instant::now()));
-        Some(Claim {
+        last.insert(
+            place,
+            Drawn {
+                key,
+                at: Instant::now(),
+                done: false,
+            },
+        );
+        Ok(Claim {
             owner: self,
             place,
             key,
@@ -3097,8 +3133,9 @@ impl Tool for ImageGenerate {
         }
         // The request is final here — seed, size and references as the server
         // will get them — so an identical one is the same picture.
-        let Some(claim) = self.claim(ctx, &req) else {
-            return Ok(refused(REPEAT_REFUSED));
+        let claim = match self.claim(ctx, &req) {
+            Ok(claim) => claim,
+            Err(why) => return Ok(refused(why)),
         };
         // A call that starts invalidates any idle timer already armed, so a
         // `/free` cannot land while this job is loading or running.
@@ -7149,6 +7186,17 @@ mod tests {
             .filter(|o| o.content.starts_with("image: "))
             .count();
         assert_eq!(drew, 1, "{}\n---\n{}", a.content, b.content);
+        // The other is told the picture is being drawn, not that it exists:
+        // the render could still fail (review of #543).
+        let other = if a.content.starts_with("image: ") {
+            &b
+        } else {
+            &a
+        };
+        assert_eq!(
+            other.content,
+            format!("Nothing was drawn. {REPEAT_IN_FLIGHT}")
+        );
         assert_eq!(
             seen.lock()
                 .unwrap()
@@ -7173,6 +7221,20 @@ mod tests {
             assert!(out.is_error, "{}", out.content);
             assert!(!out.content.contains(REPEAT_REFUSED), "{}", out.content);
         }
+        // Two at once, the first failing: the second was told it was being
+        // drawn, never that it is in the chat, and the next is tried again.
+        let c = ctx(&dir);
+        let (a, b) = tokio::join!(t.call(fox.clone(), &c), t.call(fox.clone(), &c));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        for out in [&a, &b] {
+            assert!(!out.content.contains(REPEAT_REFUSED), "{}", out.content);
+        }
+        let next = t.call(fox.clone(), &c).await.unwrap();
+        assert!(
+            !next.content.contains("Nothing was drawn. "),
+            "{}",
+            next.content
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }
