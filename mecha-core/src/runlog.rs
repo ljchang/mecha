@@ -857,6 +857,7 @@ fn exhaustive(record: &Record) {
         | Record::Rewrite { .. }
         | Record::Extend { .. }
         | Record::Title { .. }
+        | Record::SpokenDirection(_)
         | Record::Outcome(_)
         | Record::GoalAnchor { .. } => {}
     }

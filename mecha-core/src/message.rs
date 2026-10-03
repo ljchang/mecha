@@ -377,6 +377,13 @@ pub struct CompletionRequest {
     pub thinking: bool,
     /// Mark the stable prefix (tools + system) as cacheable.
     pub cache_prompt: bool,
+    /// Whether the model may reason before answering, where the server lets
+    /// a request choose. `None` sends nothing and leaves the server's own
+    /// default, which is what every request did before this field existed;
+    /// `Some(false)` is for a short one-shot on the critical path (the voice
+    /// director) that a thinking model would otherwise spend seconds on.
+    /// Distinct from `thinking`, which only asks for a readable summary.
+    pub think: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
