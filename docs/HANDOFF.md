@@ -22,6 +22,34 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-10-03 — persona repetition: fixed and live; what is open
+(mecha-1e).** #517 and #522 are in HISTORY under 2026-10-02/03, deployed
+at `c6f59b05` (02:36Z). The owner's rulings are in `PERSONA-DESIGN.md`
+§12.7.
+
+- **Watch the reading, then decide.** `mecha persona show <name>` reports
+  how many replies in the last week's chats repeated an earlier one. The
+  first reading was 8 of 92 across 6 Stella chats, mostly but not all from
+  before the fix. The 7-day window (`echo::SHOWN_DAYS`, chats by last
+  write) straddles the 02:36Z deploy until 2026-10-10, so before then a
+  repeat can be either side of it. Let the numbers show whether repetition
+  is gone across personas before tuning anything else.
+- **Held on purpose, waiting on those readings:**
+  - The call note's "the first one short" (`persona::call::note`) makes
+    nearly every spoken reply open with "Good." or "Perfect.". Reword it
+    only if the pattern shows beyond one persona.
+  - A harness nudge for variety.
+- **Unmeasured:** a live replay with a tool call in the history before the
+  cut. The replay that measured the fix had tool turns flattened out.
+  `drops_thinking` leaves those turns as they were, which is the shape that
+  measured 0 of 6 on 2026-08-10, but nobody has replayed it.
+- **Minors carried from review:**
+  - `build_for` builds the judge's config twice. The reviewer offered a
+    `match` that reuses the first build, and left it to the owner.
+  - `mecha persona show` reads every chat active in the window on each
+    call.
+  - Deleted chats drop out of the reading; archived ones stay.
+
 **2026-10-02 — calls, the voice library, typing in a call and Listen are
 live; what is open (mecha-d7).** #483, #490, #491, #492 and #497 are in
 HISTORY under 2026-10-01; #499 and #502 under 2026-10-02. All are live:
@@ -88,21 +116,35 @@ against `a51e1c01`:
   also stays words-only until the nightly has embedded at least half the
   pool (`recall_search`'s `embedded * 2 >= pool.len()`).
 - **Still unbuilt in §9:**
-  - the owner's curation page (§9.8);
   - an after-chat writer (D3's "after a session"), which needs an idle
     signal from serve;
-  - candidates in `/queues` and `backlog.rs`: today they appear only in
-    `mecha persona memory show`;
+  - candidates in `/queues` and `backlog.rs`: today they appear in the
+    persona editor's Memories tab (#519, with Keep it) and in `mecha
+    persona memory show`, but not in the unified queue;
   - consolidation and `self_update` (§9.12).
-- **Read the first night (2026-10-02).** Look at the `persona memory` stage
-  in `~/.mecha/learning/logs/2026-10-02.log`:
-  - chats written vs waiting for their model (`writer::pick_model` writes
-    only while the chat's model is resident);
-  - what was embedded.
-  Then `mecha persona memory show stella`. A live run on a copy of one
-  real chat (2026-10-01, the resident uncensored model, 24 turns, ~63 s)
-  wrote 2 transient facts out of 8. Fact quality is prompt work, to be
-  measured.
+- **The first night is read (2026-10-02, mecha-5d).** In
+  `~/.mecha/learning/logs/2026-10-02.log`:
+  - 6 chats read, 29 memories embedded, and none waiting for their model;
+  - the 4 records from one chat that read outside content are candidates.
+
+  The owner's review of stella found most "facts about the owner" were
+  states or one-off events. That finding is #518 (D26, §9.13).
+- **Next in the lane: schema v4 (D26–D28), unbuilt.** It adds:
+  - the tier field, and a validity bucket that sets `valid_to`;
+  - the usage-access log;
+  - the writer prompt rewrite, A/B'd on copies of chats.
+
+  Three questions are left for that build by #518's pass 3:
+  - which of the tier and the duration bucket wins when they disagree;
+  - a backfill in which pre-tier rows do not all silently become
+    "lasting";
+  - D18's measurement duty restated for inferred moods.
+
+  Decay and use plots wait for the usage log.
+- **#514 minors:**
+  - `valid_from` is now first in `said_at` and is a sort key, stored
+    unvalidated (the writer never sets it yet);
+  - `writer::known()` still sorts by `ingested_at`.
 - **Unmeasured constants** (in #481): `MIN_COSINE` (0.5) and
   `MIN_QUERY_CHARS` (12).
 - **Design choices for the owner:**
@@ -317,10 +359,13 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-10-01/02 — modular installs: steps 0–5 shipped and live, 6–8 open.**
-Step 5, #503 (`[voice]` and `[personas]`), went live in mecha-d7's deploy of
-`7663b9a8` (2026-10-02, machine state below); the last of step 4, #476, in
-mecha-69's deploy of `36ff7573`.
+**2026-10-01/03 — modular installs: steps 0–6 shipped and live, 7a-1
+merged, the rest of 7 and 8 open.**
+Step 6 (#512, #513, #520) went live in mecha-1e's deploy of `c6f59b05`
+(2026-10-03), and HISTORY has it under 2026-10-02/03. Step 5, #503
+(`[voice]` and `[personas]`), went live in mecha-d7's deploy of `7663b9a8`
+(2026-10-02, machine state below); the last of step 4, #476, in mecha-69's
+deploy of `36ff7573`.
 `FEATURES-DESIGN.md` is the authority (§7 the owner's rulings, plus L1 and
 M1 in its status header; §9 the build order); `ARCHITECTURE.md` §Features
 holds the invariants and the "Adding a feature" checklist; what shipped is in
@@ -352,10 +397,17 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Steps 6–8:** model recommendations as data with `hardware.md` in F5's
-  two columns; per-feature installers with `--remove`; and the one
+- **Step 7a-1 is #521, merged (`d97d01a5`, 02:52Z) and not deployed.** It
+  is one Hugging Face hub resolver shared by 8 scripts, and a resumable
+  sha256-checked downloader (`mecha_core::fetch`). It is not in
+  `c6f59b05`, which is the install on this box.
+- **Left of 7, and 8:** per-feature installers with `--remove`, and the one
   `CLAUDE.md` bullet pointing at `ARCHITECTURE.md` §Features (the checklist
   there is already written).
+- **Owed: a measured memory reading for the production chat file** (unsloth
+  Qwen3.6-35B-A3B-MTP UD-Q4_K_M). The registry's ~44.2 GiB is arithmetic.
+  For scale, mecha-a3 measured the uncensored arm at 42,461 MiB before
+  #516's graft and 45,747 after.
 - **Not built from §5:** `mecha features` should say "off, 3 requests
   waiting" for a front door switched off with work in its store. Home keeps
   the count (a flat card with the command); the CLI row does not.
