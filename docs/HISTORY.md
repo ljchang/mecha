@@ -7189,6 +7189,19 @@ Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
 length bound: this is a record of what was measured, which is what this
 document is for.
 
+**2026-10-03 — Breeze TTS 2 holds about half of Chatterbox's memory
+(mecha-a3).** On the GB10, Q6_K, reading `nvidia-smi` and `ps` together
+(the method behind Chatterbox's 8,018 MiB):
+- At rest: **4,062 MiB**. That is 3,994 MiB GPU, 40 MiB `tts-server` RSS
+  and 28 MiB adapter RSS.
+- Peak, speaking one sentence through :8887: **4,185 MiB**. The GPU figure
+  stayed fixed; the server reached 155 MiB and the adapter 36 MiB.
+
+The figure goes into `recommend.rs`'s `tts` slot with #526, not merged when
+this was written. Check after it merges: `grep -F '4_185'
+mecha-core/src/recommend.rs`. That grep is ugrep on this machine, so a
+literal containing `$` needs `-F`.
+
 **2026-08-10/11, recovered 2026-08-27 — the turn ceiling was clipping a fifth
 of the benchmark, and nobody had re-derived it.** Salvaged out of PR #52 (a
 handoff refresh that went stale unmerged for sixteen days and was closed as
