@@ -41,7 +41,11 @@
 > residency and evidence, measured on the GB10 (each row dated), and the graph
 > page names the embedder mecha-graph uses — is built; so is 6b: the
 > registry in `recommend.rs`, `mecha features --probe`, and the page's table
-> generated from the rows, with a test that fails when they disagree. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
+> generated from the rows, with a test that fails when they disagree. **7a is split in three**: 7a-1 — `fetch.rs`, the one hub
+> resolver (the launchers and the layout installer brought onto its order)
+> and the resumable, sha256-checked downloader — is built; 7a-2 (the
+> `Sidecar` registry, the manifest, provided-detection and the printed plan)
+> and 7a-3 (layout as the first installed entry) are next. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1521,6 +1525,9 @@ Step 7 becomes these, each a PR that leaves every feature working:
   plan printed by `features enable` and `setup` (installing nothing yet),
   and the native downloader with its resume and hash tests. Layout's
   installer moves in as the first entry, since it is already pinned.
+  Built in three PRs: **7a-1** the hub resolver and the downloader;
+  **7a-2** the registry, the manifest, provided-detection and the plan;
+  **7a-3** layout installed through them.
 - **7b.** The engine: release-asset fetch, the build fallback, side-by-side
   directories, `--upgrade` with its measurement, `--rollback`, and `--adopt` for a provided engine.
 - **7c.** The router unit and chat model choice; the embeddings and OCR
