@@ -123,6 +123,7 @@ pub mod sandbox;
 pub mod search;
 pub mod session;
 pub mod shell_registry;
+pub mod sidecar;
 pub mod situation;
 pub mod skill;
 pub mod step;

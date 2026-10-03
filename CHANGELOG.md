@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features plan <id>` says what a feature would install.** It
+  lists every program the feature runs beside mecha — llama.cpp, the router,
+  the embeddings and OCR servers, ComfyUI, the voice servers — and whether
+  this machine already has each (a unit, a binary, a directory or a Docker
+  image that shows it, which is then left alone). Then it lists every pinned
+  model file: in the cache and matching, to download at its size, or kept by
+  a provided program. It installs nothing and asks no server; `--verify`
+  hashes model files placed by hand.
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
   OCR, layout, image generation, speech to text, speech and turn detection —

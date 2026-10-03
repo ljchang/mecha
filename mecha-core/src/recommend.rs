@@ -840,6 +840,13 @@ pub fn needed(shown: &[Feature]) -> Vec<&'static Slot> {
         .collect()
 }
 
+/// The row a slot uses on this machine — its own for the tier and shape, or
+/// the nearest one carried (`false`) — or none (the chat model below its
+/// smallest tier). The probe's choice, for the install plan to share.
+pub fn row_for(slot: &'static Slot, machine: &Machine) -> Option<(&'static Recommendation, bool)> {
+    pick(slot, machine, machine.tier_gb())
+}
+
 fn pick(
     slot: &'static Slot,
     machine: &Machine,
