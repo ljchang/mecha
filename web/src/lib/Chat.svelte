@@ -4,6 +4,7 @@
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
   import ChatProse from './ChatProse.svelte';
+  import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, downloadPicture } from './picture.js';
@@ -1891,7 +1892,7 @@
              (`reply-export.js`), so the server keeps no trace, and a reply
              saved to the device is the owner's own act, like text copied
              out (INCOGNITO-DESIGN §1, R2's refinement). -->
-        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, ...ownerVoice() } : null} download /></div>
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, ...ownerVoice(), ...replyContext(entries, i) } : null} download /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,

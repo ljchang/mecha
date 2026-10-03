@@ -188,6 +188,9 @@ struct PersonaSession {
     /// Whether the last turn was spoken: the call note rides on the first
     /// spoken turn of a stretch, and again after a typed one (§11).
     last_turn_spoken: bool,
+    /// The reply being read aloud, while a Listen tap speaks it
+    /// (`listen::Reply`): here so it goes when this chat does.
+    listen: Option<Arc<super::listen::Reply>>,
 }
 
 struct Live {
@@ -1294,6 +1297,7 @@ impl PersonaChats {
                 last_turn_spoken: false,
                 pending_crisis: None,
                 judge_answered: None,
+                listen: None,
             },
         );
         Ok(serde_json::json!({
@@ -1656,6 +1660,7 @@ impl PersonaChats {
                 last_turn_spoken: false,
                 pending_crisis: None,
                 judge_answered: None,
+                listen: None,
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -2549,6 +2554,39 @@ impl PersonaChats {
     /// Whether a chat is open on `key` (`voice::SessionHost::holds`).
     pub async fn holds(&self, key: &str) -> bool {
         self.sessions.lock().await.contains_key(key)
+    }
+
+    /// What a Listen tap on `key` speaks with, as `ChatState::listen_seat`
+    /// answers for the assistant: the persona's identity is who the
+    /// director directs, and a persona chat always keeps its transcript.
+    pub(super) async fn listen_seat(
+        &self,
+        key: &str,
+        cue: &super::listen::ListenCue,
+    ) -> Option<super::listen::Seat> {
+        let (transcript, character, current) = {
+            let sessions = self.sessions.lock().await;
+            let ps = sessions.get(key)?;
+            let character = mecha_core::persona::strip_comments(&ps.pinned.identity).0;
+            (
+                Arc::clone(&ps.session),
+                Some(character).filter(|c| !c.trim().is_empty()),
+                ps.listen.clone(),
+            )
+        };
+        if let Some(reply) = current.filter(|r| r.continues(cue)) {
+            return Some(super::listen::Seat {
+                reply,
+                transcript: Some(transcript),
+            });
+        }
+        let saved = super::listen::recall(&transcript, cue).await;
+        let reply = Arc::new(super::listen::Reply::new(cue, character, saved));
+        self.sessions.lock().await.get_mut(key)?.listen = Some(Arc::clone(&reply));
+        Some(super::listen::Seat {
+            reply,
+            transcript: Some(transcript),
+        })
     }
 
     /// A spoken turn on `key`, barging in on any run in flight — the
@@ -4797,6 +4835,9 @@ mod tests {
         chat: Arc<ChatState>,
         library: LibraryState,
         seen: Arc<StdMutex<Vec<CompletionRequest>>>,
+        /// What the assistant's agent was asked: the chat's follower, which
+        /// a Listen tap's director runs on.
+        assistant_seen: Arc<StdMutex<Vec<CompletionRequest>>>,
         sees: Arc<std::sync::atomic::AtomicBool>,
         judge: Arc<StdMutex<JudgeSays>>,
         judged: Arc<StdMutex<usize>>,
@@ -4886,9 +4927,10 @@ mod tests {
         let mut config = mecha_core::config::Config::default();
         tune(&mut config);
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
+        let assistant_seen = Arc::new(StdMutex::new(Vec::new()));
         let chat = chat::test_chat_built(
             Box::new(Capture(
-                Arc::new(StdMutex::new(Vec::new())),
+                Arc::clone(&assistant_seen),
                 Mode::Answer,
                 Arc::new(StdMutex::new(JudgeSays::Clear)),
                 Arc::new(StdMutex::new(0)),
@@ -4904,6 +4946,7 @@ mod tests {
             root,
             chat,
             seen,
+            assistant_seen,
             sees,
             judge,
             judged,
@@ -9424,6 +9467,7 @@ mod tests {
                     unlock,
                     voice,
                     speed,
+                    listen: None,
                 }),
             )
         };
@@ -9485,5 +9529,163 @@ mod tests {
             .await
             .unwrap();
         assert!(String::from_utf8_lossy(&why).contains("predates the play button"));
+    }
+
+    /// Listen's director pass (`listen`): a tap on a reply asks the
+    /// director once for the whole reply, with the persona and the owner's
+    /// words in its scene, speaks every piece with that line as
+    /// `instructions`, and records it in the chat's transcript; the same
+    /// reply tapped again is spoken with what was recorded and asks no
+    /// model; a worker whose engine takes no directions is never handed one,
+    /// and no model is asked for it.
+    #[tokio::test]
+    async fn a_listen_tap_is_directed_recorded_and_recalled() {
+        // The director runs on the chat's follower — the assistant's agent,
+        // on whichever model is loaded — never the persona's own.
+        let line = "Hello from Mara.";
+        const WHOLE: &str = "The dig went well. We found the second wall.";
+        let w = world();
+        let key = open_chat(&w).await;
+        let seen = Arc::new(StdMutex::new(Vec::<serde_json::Value>::new()));
+        let worker = |directs: bool| {
+            let kept = Arc::clone(&seen);
+            let mut app = axum::Router::new().route(
+                "/mecha/speak",
+                axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                    let kept = Arc::clone(&kept);
+                    async move {
+                        kept.lock().unwrap().push(body);
+                        ([("content-type", "audio/wav")], "RIFF")
+                    }
+                }),
+            );
+            if directs {
+                app = app.route(
+                    "/mecha/directs",
+                    axum::routing::get(|| async { Json(serde_json::json!({"directs": true})) }),
+                );
+            }
+            async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+                format!("http://{addr}/api/offer")
+            }
+        };
+        let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
+        let tap = |target: String, text: &str, index: u32| {
+            let state = super::super::WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+                chat: Some(Arc::clone(&w.chat)),
+                offer_target: Some(Arc::new(target)),
+                voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
+                library: Arc::clone(&library),
+                features_at_start: Arc::default(),
+                gate: Arc::default(),
+                review: Arc::new(super::super::review::ReviewState {
+                    outbox_root: w.root.join("outbox"),
+                    sessions_dir: None,
+                }),
+            };
+            super::super::settings::speak(
+                State(state),
+                Json(super::super::settings::SpeakBody {
+                    text: text.into(),
+                    chat: Some(key.clone()),
+                    unlock: None,
+                    voice: None,
+                    speed: None,
+                    listen: Some(super::super::listen::ListenCue {
+                        reply: "r1".into(),
+                        index,
+                        whole: Some(WHOLE.into()),
+                        asked: Some("How did the dig go?".into()),
+                        last_reply: None,
+                    }),
+                }),
+            )
+        };
+        let transcript = w.personas().sessions.lock().await[&key]
+            .session
+            .path
+            .clone();
+        let directions = || mecha_core::session::Session::spoken_directions(&transcript).unwrap();
+        let asked = || w.assistant_seen.lock().unwrap().len();
+
+        let target = worker(true).await;
+        let before = asked();
+        let r = tap(target.clone(), "The dig went well.", 0).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let sent = mecha_core::voice_direction::sent(line);
+        assert_eq!(seen.lock().unwrap().pop().unwrap()["instructions"], sent);
+        assert_eq!(asked(), before + 1, "one director call");
+        let prompt = w.assistant_seen.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            prompt.system.as_deref(),
+            Some(mecha_core::voice_direction::SYSTEM),
+            "the director's own frame"
+        );
+        let user = prompt.messages.last().unwrap().text();
+        assert!(
+            user.contains("They just said: How did the dig go?"),
+            "{user}"
+        );
+        assert!(
+            user.contains(&format!("direct all of it with one line: \"{WHOLE}\"")),
+            "{user}"
+        );
+        assert!(
+            !user.contains("a warm, capable personal assistant"),
+            "the persona speaks: {user}"
+        );
+        let recorded = directions();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].turn, "listen:r1");
+        assert_eq!(recorded[0].direction.as_deref(), Some(sent.as_str()));
+        assert_eq!(
+            recorded[0].outcome,
+            mecha_core::voice_direction::Outcome::Ok
+        );
+        assert_eq!(recorded[0].sentence, WHOLE, "the reply it covers");
+
+        // The next piece: the same line, and no second call.
+        let before = asked();
+        let r = tap(target.clone(), "We found the second wall.", 1).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().pop().unwrap()["instructions"], sent);
+        assert_eq!(asked(), before, "one direction per reply");
+        assert_eq!(directions().len(), 1);
+
+        // Tapped again: what was recorded, and no model asked.
+        let before = asked();
+        seen.lock().unwrap().clear();
+        tap(target.clone(), "The dig went well.", 0).await;
+        tap(target.clone(), "We found the second wall.", 1).await;
+        assert_eq!(asked(), before, "a recalled reply asks no model");
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|b| b["instructions"] == sent));
+        assert_eq!(
+            directions().len(),
+            1,
+            "a recalled line is not recorded again"
+        );
+
+        // A worker that takes no directions: none sent, none asked for.
+        let target = worker(false).await;
+        let before = asked();
+        let r = tap(target, "Something new entirely.", 0).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(seen
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .get("instructions")
+            .is_none());
+        assert_eq!(asked(), before);
     }
 }
