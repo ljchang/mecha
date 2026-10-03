@@ -14,6 +14,20 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-03 — modular installs, step 7a-1: one hub resolver and a
+download that keeps only what matches its pin (#521, mecha-a3).**
+`mecha_core::fetch` is installed with mecha-69's `ed72a382` (04:57Z) and
+mecha-5d's `27156c9e` (13:35Z), and is behaviour-neutral here: no `HF_*` or
+`XDG_CACHE_HOME` is set on any running server.
+- One resolver, in this order: `HF_HUB` → `HF_HUB_CACHE` → `HF_HOME/hub` →
+  `XDG_CACHE_HOME/huggingface/hub` → `~/.cache/huggingface/hub` (empty
+  variables skipped). The seven model launchers and
+  `scripts/layout/install.sh` share it: `grep -rlF
+  'XDG_CACHE_HOME:-$HOME/.cache}/huggingface' scripts | wc -l` → 8.
+- `fetch_hub_file` resumes and refuses: a `.part` file plus `Range`; a 206
+  at the wrong offset is refused, as are more bytes than the pin; only a
+  sha256 match is renamed into `blobs/<sha256>`.
+
 **2026-10-03 — a persona chat records the model it ran on (#530).** Found
 by mecha-05: a chat moved by the router to another model mid-way stayed
 credited to the model it started on, because persona chats wrote no
@@ -10307,6 +10321,12 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**This box's `grep` is ugrep, which reads a `$` inside a pattern as an
+anchor.** A check from a peer, `grep -rl 'XDG_CACHE_HOME:-$HOME/.cache}/…'`,
+printed 0 here against the 8 it counts with GNU grep, and nearly read as
+the claim being false (2026-10-03). Search for a literal with `-F`; a count
+that disagrees with a peer's is a tool difference until shown otherwise.
 
 **On unified memory the model's GPU allocations do not show as RSS, so a
 build can take the box down while `top` looks fine.** At 04:10Z on
