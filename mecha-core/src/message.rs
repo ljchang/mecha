@@ -548,6 +548,7 @@ pub fn dangling_tail(text: &str) -> Option<usize> {
             while j < chars.len() && matches!(chars[j].1, '.' | '!' | '?' | '…') {
                 j += 1;
             }
+            let lone_period = j == i + 1 && chars[i].1 == '.';
             while j < chars.len()
                 && matches!(
                     chars[j].1,
@@ -556,7 +557,10 @@ pub fn dangling_tail(text: &str) -> Option<usize> {
             {
                 j += 1;
             }
-            if j < chars.len() && chars[j].1.is_whitespace() {
+            if j < chars.len()
+                && chars[j].1.is_whitespace()
+                && !(lone_period && abbreviation(&chars, i, j))
+            {
                 cut = Some(chars[j].0);
             }
             i = j;
@@ -565,6 +569,35 @@ pub fn dangling_tail(text: &str) -> Option<usize> {
         }
     }
     cut
+}
+
+/// Whether the lone period at `dot` ends an abbreviation rather than a
+/// sentence: the word before it is a title or Latin short form ("Dr.",
+/// "e.g.") or a single initial, or the text after it carries on in lower
+/// case. A dangling reply is the only input [`dangling_tail`] sees, so a
+/// mistaken mark is often the last one and would win the cut: "…I saw Dr."
+/// is itself a reply ending mid-clause (review of #538).
+fn abbreviation(chars: &[(usize, char)], dot: usize, after: usize) -> bool {
+    const SHORT: &[&str] = &[
+        "mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "eg", "ie", "prof", "no",
+    ];
+    let start = chars[..dot]
+        .iter()
+        .rposition(|(_, c)| !(c.is_alphabetic() || *c == '.'))
+        .map_or(0, |p| p + 1);
+    let word: String = chars[start..dot]
+        .iter()
+        .map(|(_, c)| *c)
+        .filter(|c| *c != '.')
+        .flat_map(char::to_lowercase)
+        .collect();
+    let next = chars[after..]
+        .iter()
+        .map(|(_, c)| *c)
+        .find(|c| !c.is_whitespace());
+    word.chars().count() == 1
+        || SHORT.contains(&word.as_str())
+        || next.is_some_and(char::is_lowercase)
 }
 
 /// The text block a trim applies to: the last one of an earlier plain reply.
@@ -1000,6 +1033,17 @@ mod tests {
         }
         // A sentence mark inside a word is not a sentence end.
         assert_eq!(cut("See v1.2 and then"), None);
+        // Nor is an abbreviation (review of #538): the reviewer's two cases
+        // are left whole rather than cut to "…Dr." or "…e.g.".
+        assert_eq!(cut("Hmm, I saw Dr. Chen today and he"), None);
+        assert_eq!(cut("I was at the store, e.g. the big one, and then"), None);
+        assert_eq!(cut("We met J. Smith there and"), None);
+        assert_eq!(
+            cut("It was fine. I saw Dr. Chen and").as_deref(),
+            Some("It was fine.")
+        );
+        // A real sentence end still cuts, with a capital or a quote after it.
+        assert_eq!(cut("Come here. \"Now").as_deref(), Some("Come here."));
     }
 
     #[test]
