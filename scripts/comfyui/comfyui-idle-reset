@@ -41,6 +41,21 @@ proc="${MECHA_PROC:-/proc}"
 # `mecha-*` glob is why the units are named mecha-comfyui-idle-reset).
 say() { echo "comfyui-idle-reset: $*"; }
 
+# Whether the journal holds a served picture: 0 one did, 1 none did, 2 the
+# journal could not be read. Bounded - the newest match only, never the whole
+# run's journal every minute. `journalctl -g` exits 1 both when nothing
+# matches and when it fails; only a failure says why on stderr, which is
+# what tells "unused" from "unreadable" (and unreadable is never unused).
+journal_has() {
+  local err out rc
+  err=$(mktemp) || return 2
+  out=$(journalctl --user "$@" --no-pager -o cat -q -n 1 -g 'got prompt|Prompt executed' 2>"$err"); rc=$?
+  if [ "$rc" -ne 0 ] && [ -s "$err" ]; then rm -f "$err"; return 2; fi
+  rm -f "$err"
+  [ -n "$out" ] && return 0
+  return 1
+}
+
 pid=$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null)
 if [ -z "$pid" ] || [ "$pid" = 0 ]; then say "$unit is not running; nothing to release"; exit 0; fi
 
@@ -61,9 +76,11 @@ if [ "$held" -lt "$held_mib" ]; then say "holds ${held} MiB (gpu ${gpu} + rss ${
 # systemd's own mark for this run of the unit.
 inv=$(systemctl --user show "$unit" -p InvocationID --value 2>/dev/null)
 if [ -z "$inv" ]; then say "cannot read $unit's invocation id, so whether it has served anything is unknown"; exit 1; fi
-served=$(journalctl --user "_SYSTEMD_INVOCATION_ID=$inv" --no-pager -o cat 2>/dev/null) \
-  || { say "cannot read $unit's journal for this run, so whether it has served anything is unknown"; exit 1; }
-if ! grep -qE 'got prompt|Prompt executed' <<<"$served"; then say "holds ${held} MiB but has served nothing since it started: nothing to release"; exit 0; fi
+journal_has "_SYSTEMD_INVOCATION_ID=$inv"
+case $? in
+  2) say "cannot read $unit's journal for this run, so whether it has served anything is unknown"; exit 1;;
+  1) say "holds ${held} MiB but has served nothing since it started: nothing to release"; exit 0;;
+esac
 
 # Busy, or unreadable: leave it. Unknown is never idle. An unreachable queue
 # is the server's own state (often a restart in progress), so it is said,
@@ -86,16 +103,21 @@ conn=$(ss -Htn state established "( sport = :$port )" 2>/dev/null) \
 if [ -n "$conn" ]; then say "holds ${held} MiB but a client is connected to :$port: left alone"; exit 0; fi
 
 # Used within the window: not idle. An unreadable journal is not "unused".
-recent=$(journalctl --user -u "$unit" --since "-${idle_min}min" --no-pager -o cat 2>/dev/null) \
-  || { say "cannot read $unit's journal, so when it was last used is unknown"; exit 1; }
-if grep -qE 'got prompt|Prompt executed' <<<"$recent"; then say "holds ${held} MiB, used within ${idle_min} min: left alone"; exit 0; fi
+journal_has -u "$unit" --since "-${idle_min}min"
+case $? in
+  2) say "cannot read $unit's journal, so when it was last used is unknown"; exit 1;;
+  0) say "holds ${held} MiB, used within ${idle_min} min: left alone"; exit 0;;
+esac
 
 free_mb=$(awk '/^MemFree:/ {print int($2/1024)}' "$meminfo" 2>/dev/null)
+# Unknown is not zero: read as zero it falls into the /free branch below and
+# exits 0, which is a check that could not run reported as a decision.
+if [ -z "$free_mb" ]; then say "cannot read MemFree from $meminfo, so what a restart would find free is unknown"; exit 1; fi
 # The new CUDA context is created by the *new* process, after this one has
 # given its memory back, so what it will find is MemFree plus what is held
 # now - not MemFree alone, which on Linux is low by design (page cache).
-after_mb=$(( ${free_mb:-0} + held ))
-if [ -z "$free_mb" ] || [ "$after_mb" -lt "$min_free_mb" ]; then
+after_mb=$(( free_mb + held ))
+if [ "$after_mb" -lt "$min_free_mb" ]; then
   if [ "$gpu" -ge 1024 ]; then
     say "idle with ${held} MiB held but only ~${after_mb} MB free after a restart: /free instead"
     curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
