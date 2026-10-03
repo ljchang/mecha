@@ -711,6 +711,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A persona chat whose model changed partway through is still
+  remembered.** If the router switched a chat to another model mid-way, the
+  overnight memory writer kept waiting for the model the chat started on,
+  possibly forever. A persona chat now records each switch, and its memories
+  are written with the model it last ran on.
+
 - **A picture asked for while the image server restarts waits for it.** The
   first request of a job now waits for a server that is not answering yet:
   up to 90 seconds when this process has reached it before (it is
