@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Add Chatterbox cloning references cut from the VCTK corpus.
+"""Add cloning references cut from the VCTK corpus, for Breeze TTS 2 (the
+default TTS) or Chatterbox.
 
     python3 scripts/voice/add-vctk-voices.py --list        # who is on offer
     python3 scripts/voice/add-vctk-voices.py               # the curated set
@@ -21,10 +22,15 @@ Attribution, required by the licence and written beside the voices:
   CSTR VCTK Corpus (0.92), Centre for Speech Technology Research,
   University of Edinburgh. CC BY 4.0.
 
+Breeze clones from a clip *and its exact words*, so each `vctk_<id>.wav`
+gets a `vctk_<id>.txt` holding the corpus's own text for the utterances in
+it - exact, where the adapter would otherwise transcribe the clip with
+Parakeet.
+
 Additive by design: this writes new files into VOICES_DIR and never
-touches an existing one. The default voice is Chatterbox's own built-in
-and is not a file at all, so no run of this can change how mecha sounds
-until somebody picks a new voice in the page.
+touches an existing one. It only ever writes `vctk_<id>.*`, never the
+default voice (`default.wav`), so no run of this can change how
+mecha sounds until somebody picks a new voice in the page.
 """
 import argparse
 import io
@@ -134,15 +140,25 @@ def decode(flac: bytes) -> bytes:
 
 
 def reference_wav(speaker, entry):
-    """Concatenate utterances until ~12s, returned as one wav."""
-    batch = rows(entry["offset"], MAX_UTTERANCES + 4)["rows"]
-    chunks, total = [], 0.0
+    """Concatenate utterances until ~12s: one wav, and the words in it."""
+    batch = rows(entry["offset"], 2 * MAX_UTTERANCES + 4)["rows"]
+    chunks, texts, total = [], [], 0.0
     for row in batch:
         r = row["row"]
         if r["speaker_id"] != speaker:
             continue
+        # Read like every other column: a corpus without `text` fails here,
+        # loudly, rather than quietly turning off the dedupe and the
+        # transcript both - an output that would read like a clean run.
+        text = (r["text"] or "").strip()
+        # The dataset carries each utterance twice in a row (VCTK's two
+        # microphones), and a clip of every sentence said twice teaches the
+        # clone to repeat itself - Breeze copies that delivery.
+        if texts and text and text == texts[-1]:
+            continue
         pcm = decode(get(r["audio"][0]["src"]))
         chunks.append(pcm)
+        texts.append(text)
         total += len(pcm) / 2 / RATE
         if total >= TARGET_SECONDS or len(chunks) >= MAX_UTTERANCES:
             break
@@ -157,7 +173,10 @@ def reference_wav(speaker, entry):
         # clones the join as a speaking habit.
         gap = b"\x00" * (int(RATE * 0.15) * 2)
         out.writeframes(gap.join(chunks))
-    return buf.getvalue(), total
+    # No transcript when any utterance came without its text: a partial one
+    # is worse than none, which the adapter fills by transcribing the clip.
+    words = " ".join(texts) if all(texts) else None
+    return buf.getvalue(), total, words
 
 
 def main():
@@ -189,12 +208,22 @@ def main():
         if os.path.exists(path):
             sys.stderr.write(f"{name}: exists, left alone\n")
             continue
-        data, secs = reference_wav(sid, index[sid])
+        data, secs, words = reference_wav(sid, index[sid])
+        if not words:
+            sys.stderr.write(f"{name}: a corpus row had no text, so no transcript was written "
+                             "(the adapter will transcribe the clip once)\n")
         # Temp-sibling-and-rename: a half-written reference is a voice
         # the server will happily offer and fail to clone from.
         tmp = path + ".tmp"
         open(tmp, "wb").write(data)
         os.replace(tmp, path)
+        if words:
+            # After the clip, so the transcript is never older than it: the
+            # adapter re-transcribes a sidecar older than its wav.
+            txt = path[:-4] + ".txt"
+            with open(txt + ".tmp", "w", encoding="utf-8") as f:
+                f.write(words + "\n")
+            os.replace(txt + ".tmp", txt)
         e = index[sid]
         written.append((name, e, secs))
         print(f"{name}: {secs:.1f}s  {e['gender']} {e['accent']} {e['region']}")

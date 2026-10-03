@@ -64,13 +64,13 @@ voice worker ──/v1/audio/speech, /v1/voices──▶ breeze_server.py (:8887
   What it adds to the engine:
   - a transcript sidecar per voice;
   - registration with the engine, renewed if the engine has forgotten it;
-  - the house voice behind `default`;
+  - `default` as a clip like any other (`default.wav`);
   - speed by stretch.
 
   The engine's registry lives in memory, so a restarted engine has forgotten every voice. Measured against the real engine (2026-10-03): `GET /v1/audio/voices` answers `{"voices": [{"name": …, "kind": "registered"}]}`, and speaking an unregistered voice is HTTP 400 `unknown voice '<name>'`. The adapter asks the registry before retrying, and re-registers when the registry cannot be read.
 
   Unit: `scripts/voice/mecha-breeze-adapter.service`, which runs from the shared checkout as the worker does. Tests: `scripts/voice/test_breeze_server.py`, with stand-ins for the engine and the STT.
-- **The switch.** A drop-in on `mecha-voice-worker.service` sets `MECHA_VOICE_TTS=http://127.0.0.1:8887/v1`. Chatterbox keeps running, so rolling back means removing the drop-in and restarting the worker.
+- **The switch.** Breeze is the worker's default TTS: `MECHA_VOICE_TTS` defaults to `http://127.0.0.1:8887/v1`. **Rolling back** to Chatterbox means setting `MECHA_VOICE_TTS=http://127.0.0.1:8881/v1` in a drop-in on `mecha-voice-worker.service`, starting the `chatterbox` container (its restart policy is `no` since 2026-10-03, so it is down after a reboot), and restarting the worker. Chatterbox ignores `default.wav`: its `default` is its own built-in voice, so on the rollback the library's `default` is Chatterbox's, not the clip.
 
 ## 3. Delivery: the director, and the prompt on a streaming engine
 
@@ -95,13 +95,16 @@ Breeze takes, beside the text of a sentence, a free-text **voice direction**: `i
 ## 4. Voices
 
 - **Transcripts (ruling D3).** Each `<name>.wav` gets `<name>.txt`, written by Parakeet the first time the voice is spoken (about 5 s once) and editable afterwards. The port study measured Breeze tolerating small transcript errors.
-- **The house voice (ruling D2).** `default` speaks as `BREEZE_HOUSE_VOICE` (`house.wav` plus its `.txt`). Breeze has no built-in voice. The candidates are expressive clips rendered by Breeze from a library voice with a direction; the owner picks one.
-- **VCTK clips say their sentences twice** (the dataset rows are duplicated), and Breeze copies that delivery. Re-cut them with the duplicates removed before they serve Breeze; this belongs in `add-vctk-voices.py`.
+- **The default voice (ruling D2).** `default` is `default.wav` (plus its `.txt`) in the voices directory: a clip like any other, named for what it is, because Breeze has no built-in voice. A missing one is a 503 that says so, never another voice. `make-voices.py` writes one from a Kokoro reference when there is none, and `default` is a reserved name in the library, so no recording, upload or delete can replace it by accident. On the owner's machine it is `vctk_p297` trimmed to one reading (2026-10-03).
+- **VCTK clips say their sentences twice** (the dataset carries each utterance once per microphone, `mic1` and `mic2`, with identical text), and Breeze copies that delivery. `add-vctk-voices.py` now skips a row whose text repeats the one before and writes the corpus text as the clip's `.txt`. Clips added before that still say everything twice: delete `vctk_<id>.wav` and its `.txt` and run the script again to re-cut one.
 - **Speed (ruling D4).** At 1.0 the PCM streams through. At any other speed the adapter buffers the sentence and applies the WSOLA stretch shared with Chatterbox (`scripts/voice/audio_stretch.py`), so that sentence waits for its synthesis.
 
-## 5. Before the switch (gates)
+## 5. Gates
 
-1. The house voice exists and the owner has chosen it.
+The switch was made on 2026-10-03 (§7) with these not all met. As of that day: **1** met (the owner chose `vctk_p297`, trimmed to one reading, as `default.wav`); **3** met for clips added from then on (`add-vctk-voices.py` dedupes), older VCTK clips still say everything twice until re-cut; **5** measured by mecha-a3 (4,185 MiB peak, #526); **2**, **4** and **6** open. Gate 4 is the operational risk: the Chatterbox container no longer restarts at boot, so a boot where `tts-server` loses the CUDA-init race leaves voice with no TTS until a person starts one (its unit retries every 5 s).
+
+
+1. The default voice (`default.wav`) exists and the owner has chosen it.
 2. A call measured while ComfyUI renders a picture. Q6_K runs at 0.76 under steady chat load and image generation is a heavier co-tenant. If it is too tight: a larger pre-buffer when the GPU is busy, Q5_K_M, or the fork's fused depth layer.
 3. The VCTK clips re-cut.
 4. **The engine starts on a busy box.** On 2026-10-03 at 02:43Z and 02:45Z `tts-server` failed at CUDA init with `NV_ERR_NO_MEMORY` from `kgrctxAllocMainCtxBuffer` (kernel log), while `MemAvailable` read 42 GB and `MemFree` 20 GB: the driver could not allocate a context although the page cache was reclaimable. A unit that restarts into that loops. Find what the driver needs free, and whether starting at boot (before the cache fills) or a start-time retry is the answer.
@@ -112,7 +115,7 @@ Breeze takes, beside the text of a sentence, a free-text **voice direction**: `i
 
 - **D1.** The model writes delivery instructions (free text), sent as `instructions`. It may change to cues plus a menu. **Refined:** a director pass writes them per sentence, on the loaded model, recorded in the session (§3); in incognito it runs and nothing is kept.
 - **Brevity.** On a streaming engine the spoken-turn prompt drops its length rules (§3).
-- **D2.** `default` is a Breeze house voice.
+- **D2.** `default` is a Breeze voice clip the owner chooses. Simplified the same day: it is named `default.wav`, a clip like any other, rather than a separate "house" voice behind the name.
 - **D3.** Parakeet auto-transcribes each reference clip once, into an editable `.txt` sidecar.
 - **D4.** Speed other than 1.0 is applied by stretching the buffered sentence.
 - **Q6_K is the default; Q5_K_M is kept as the fallback.**
@@ -120,5 +123,6 @@ Breeze takes, beside the text of a sentence, a free-text **voice direction**: `i
 ## 7. Phases
 
 1. **The adapter** (#523, merged): the adapter, the shared stretch module, the units and this document.
-2. **The director and the streaming prompt** (the PR after #523, replacing the `[[…]]` plan): §3.
-3. **The gates in §5, then the switch.** The owner switched the worker to Breeze for testing on 2026-10-03 at 03:30Z, ahead of gates 1–5, with `vctk_p297` trimmed to one reading as the stand-in house voice; Chatterbox kept running for rollback.
+2. **The director and the streaming prompt** (#527, merged, replacing the `[[…]]` plan): §3.
+3. **The switch, made 2026-10-03.** The owner switched the worker to Breeze at 03:30Z, ahead of the gates in §5, and then made it the repo default (#528): `worker.py` defaults to the adapter on `:8887`, and `default` is the clip `default.wav` (on this machine `vctk_p297` trimmed to one reading). Both Breeze units start at boot. The Chatterbox container no longer restarts at boot and was stopped the same morning; §2 has the rollback.
+4. **The gates in §5** that the switch left open.
