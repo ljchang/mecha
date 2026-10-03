@@ -215,6 +215,18 @@ impl Message {
             .join("")
     }
 
+    /// A user message with no tool result in it — the person's own text (or
+    /// the harness's folded beside it), never a completed tool round, which
+    /// rides in a user message too. The one definition; see
+    /// `agent::is_plain_user_text` for the bug that centralised it.
+    pub fn is_plain_user_text(&self) -> bool {
+        self.role == Role::User
+            && !self
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+    }
+
     pub fn tool_uses(&self) -> Vec<(&str, &str, &Value)> {
         self.content
             .iter()
@@ -388,10 +400,195 @@ pub struct Refusal {
     pub explanation: Option<String>,
 }
 
+/// What happens to reasoning from before the turn being answered when the
+/// history goes back to the model. The transcript keeps every thinking
+/// block either way; this decides only what is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PriorThinking {
+    /// Sent back as recorded — the assistant's runs, where a follow-up
+    /// ("now the other file") leans on the analysis behind the last answer,
+    /// and where keeping it makes each prompt a prefix of the next.
+    #[default]
+    Keep,
+    /// Left out of earlier *replies* (a turn that called a tool keeps its
+    /// reasoning; see `drops_thinking`): a persona chat. Replayed on
+    /// 2026-10-02, a persona answering a four-character owner turn
+    /// re-derived its earlier plan from its own preserved thinking and sent
+    /// an earlier reply again word for word; with old thinking left out
+    /// (and no fixed seed) 0 of 8 replies copied one.
+    Drop,
+}
+
+/// The newest user message that carries no tool result — the turn the model
+/// is answering now. Tool results come back as user messages, so "the last
+/// user message" would move the cut inside a run and take the reasoning that
+/// chose a call away from the step that reads its result.
+fn answering(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(Message::is_plain_user_text)
+}
+
+/// Whether `message` loses its thinking under [`PriorThinking::Drop`]: an
+/// assistant *reply* ahead of the turn being answered.
+///
+/// - **Never a turn that called a tool.** With reasoning stripped from
+///   tool-calling turns in the history, llama-server's model emitted a bare
+///   `<tool_call>` with no think block, 6 of 6, and the turn arrived empty
+///   (2026-08-10, `provider::openai::encode_message`): shown its own calls
+///   without thinking, it obliged. The replies that came back word for word
+///   were plain text, so the repetition this cut is for is not there.
+/// - **Never an all-thinking message**, which would be left empty — a 400 on
+///   every provider.
+fn drops_thinking(message: &Message, index: usize, cut: usize) -> bool {
+    index < cut
+        && message.role == Role::Assistant
+        && message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Thinking { .. }))
+        && !message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { .. }))
+        && message
+            .content
+            .iter()
+            .any(|b| !matches!(b, Block::Thinking { .. }))
+}
+
+impl PriorThinking {
+    /// The history as it goes on the wire.
+    pub fn wire<'a>(self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
+        let cut = match (self, answering(messages)) {
+            (PriorThinking::Drop, Some(cut)) => cut,
+            _ => return std::borrow::Cow::Borrowed(messages),
+        };
+        std::borrow::Cow::Owned(
+            messages
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let mut m = m.clone();
+                    if drops_thinking(&m, i, cut) {
+                        m.content.retain(|b| !matches!(b, Block::Thinking { .. }));
+                    }
+                    m
+                })
+                .collect(),
+        )
+    }
+
+    /// `pressure::message_bytes` of [`PriorThinking::wire`], without building
+    /// it: every pressure reading asks this, several times a request, and a
+    /// whole-history clone per reading is the cost the walk is kept cheap to
+    /// avoid. The total less the thinking the cut leaves out.
+    pub fn wire_bytes(self, messages: &[Message]) -> usize {
+        let total = crate::pressure::message_bytes(messages);
+        let cut = match (self, answering(messages)) {
+            (PriorThinking::Drop, Some(cut)) => cut,
+            _ => return total,
+        };
+        let dropped: usize = messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| drops_thinking(m, *i, cut))
+            .flat_map(|(_, m)| &m.content)
+            .filter(|b| matches!(b, Block::Thinking { .. }))
+            .map(crate::pressure::block_bytes)
+            .sum();
+        total - dropped
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn think(t: &str) -> Block {
+        Block::Thinking {
+            text: t.into(),
+            signature: None,
+        }
+    }
+
+    fn thoughts(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(Message::thinking)
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn dropping_prior_thinking_cuts_at_the_turn_being_answered() {
+        let call = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "echo".into(),
+            input: json!({}),
+        };
+        let history = vec![
+            Message::user("hi"),
+            // An earlier turn's tool call keeps its reasoning: stripped, the
+            // model learns to call without thinking (`drops_thinking`).
+            Message::assistant(vec![think("chose"), call("t0")]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t0".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
+            // An earlier reply does not.
+            Message::assistant(vec![think("old"), Block::text("hello")]),
+            // All thinking: kept whole, or the message would be empty.
+            Message::assistant(vec![think("alone")]),
+            Message::user("mm"),
+            Message::assistant(vec![
+                think("now"),
+                Block::ToolUse {
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
+        ];
+        let wire = PriorThinking::Drop.wire(&history);
+        assert_eq!(thoughts(&wire), ["chose", "alone", "now"]);
+        // The pressure reading measures exactly what is sent, both ways.
+        for prior in [PriorThinking::Drop, PriorThinking::Keep] {
+            assert_eq!(
+                prior.wire_bytes(&history),
+                crate::pressure::message_bytes(&prior.wire(&history))
+            );
+        }
+        assert!(
+            PriorThinking::Drop.wire_bytes(&history) < PriorThinking::Keep.wire_bytes(&history)
+        );
+        assert_eq!(wire[3].text(), "hello");
+        assert_eq!(wire.len(), history.len());
+        // Keep borrows: no copy of a long history on every request.
+        assert!(matches!(
+            PriorThinking::Keep.wire(&history),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert_eq!(thoughts(&history), ["chose", "old", "alone", "now"]);
+    }
+
+    #[test]
+    fn with_no_owner_turn_nothing_is_dropped() {
+        let only_results = vec![Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "ok".into(),
+            is_error: false,
+        }])];
+        assert!(matches!(
+            PriorThinking::Drop.wire(&only_results),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 
     #[test]
     fn message_text_ignores_thinking_and_tool_traffic() {

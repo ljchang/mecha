@@ -503,27 +503,33 @@ pub fn message_bytes(messages: &[Message]) -> usize {
     messages
         .iter()
         .flat_map(|m| &m.content)
-        .map(|b| match b {
-            Block::Text { text } => text.len(),
-            Block::Thinking { text, signature } => {
-                text.len() + signature.as_ref().map_or(0, String::len)
-            }
-            // `input` is a `Value`; its rendered length is what goes on the
-            // wire, and a tool call's arguments can be most of a turn.
-            Block::ToolUse { id, name, input } => id.len() + name.len() + input.to_string().len(),
-            Block::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            } => tool_use_id.len() + content.len(),
-            // `data` excluded, `source` counted: it is a file path the
-            // model reads, and it is the only part of an image block whose
-            // length says anything about how much text is on the wire.
-            Block::Image {
-                media_type, source, ..
-            } => media_type.len() + source.as_ref().map_or(0, String::len),
-        })
+        .map(block_bytes)
         .sum()
+}
+
+/// One block's share of [`message_bytes`] — the one definition, so a reader
+/// that subtracts a block it will not send subtracts what was counted.
+pub fn block_bytes(b: &Block) -> usize {
+    match b {
+        Block::Text { text } => text.len(),
+        Block::Thinking { text, signature } => {
+            text.len() + signature.as_ref().map_or(0, String::len)
+        }
+        // `input` is a `Value`; its rendered length is what goes on the
+        // wire, and a tool call's arguments can be most of a turn.
+        Block::ToolUse { id, name, input } => id.len() + name.len() + input.to_string().len(),
+        Block::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } => tool_use_id.len() + content.len(),
+        // `data` excluded, `source` counted: it is a file path the
+        // model reads, and it is the only part of an image block whose
+        // length says anything about how much text is on the wire.
+        Block::Image {
+            media_type, source, ..
+        } => media_type.len() + source.as_ref().map_or(0, String::len),
+    }
 }
 
 #[cfg(test)]

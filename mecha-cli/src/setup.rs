@@ -1926,11 +1926,44 @@ fn build_subagent(
 /// a persona chat follows the router's loaded model exactly as the
 /// assistant's chats do. No fallbacks — a persona answering on a different
 /// model than the one named is the silent swap §12.6 exists to prevent.
+///
+/// **The conversation goes without the provider's `seed`; a judge keeps
+/// it** ([`PersonaUse`]). A pinned seed is how a measured run repeats
+/// exactly. In a conversation it restarts the sampler's draws at the same
+/// state every turn, and a turn that adds little ("mm") comes back as an
+/// earlier reply word for word — 7 of 7 in the 2026-10-02 replay; the
+/// server picks a fresh seed per request when none is sent. The crisis
+/// judge is the measuring case: the same words should get the same verdict,
+/// and a reported miss should be reproducible from the text.
 pub fn persona_provider(
     bound: &crate::follow::Bound,
+    for_use: PersonaUse,
 ) -> Result<Box<dyn mecha_core::provider::Provider>> {
     let (_, provider_cfg) = bound.config.provider(Some(&bound.provider_name))?;
-    mecha_core::provider::build(provider_cfg)
+    mecha_core::provider::build(&persona_provider_config(provider_cfg, for_use))
+}
+
+/// What a persona chat asks a provider for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonaUse {
+    /// The persona's own turns.
+    Converse,
+    /// A one-shot that classifies the owner's words (`persona::judge`).
+    Judge,
+}
+
+/// `cfg` as `for_use` gets it: unseeded to converse, untouched to judge.
+fn persona_provider_config(
+    cfg: &mecha_core::config::ProviderConfig,
+    for_use: PersonaUse,
+) -> mecha_core::config::ProviderConfig {
+    match for_use {
+        PersonaUse::Converse => mecha_core::config::ProviderConfig {
+            seed: None,
+            ..cfg.clone()
+        },
+        PersonaUse::Judge => cfg.clone(),
+    }
 }
 
 /// A persona chat's agent (`docs/PERSONA-DESIGN.md` §3.4): one per persona
@@ -2079,7 +2112,10 @@ pub fn persona_agent(
         Some(bound.model.clone()),
     )?
     .with_context_window(bound.context_window)
-    .with_clock(run_clock()?);
+    .with_clock(run_clock()?)
+    // A persona answers the turn in front of it from what was said, not
+    // from its own earlier plans, which it otherwise re-reads and re-sends.
+    .with_prior_thinking(mecha_core::message::PriorThinking::Drop);
     Ok((agent, tools.refused))
 }
 
@@ -2415,6 +2451,30 @@ pub fn surface_only_registry() -> Registry {
     // — the TUI's — asks the switch.
     r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
     r
+}
+
+#[cfg(test)]
+mod persona_provider_tests {
+    use super::*;
+
+    #[test]
+    fn a_persona_converses_unseeded_and_its_judge_keeps_the_seed() {
+        let cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            model: Some("m".into()),
+            temperature: Some(0.6),
+            seed: Some(42),
+            ..Default::default()
+        };
+        let chat = persona_provider_config(&cfg, PersonaUse::Converse);
+        assert_eq!(chat.seed, None);
+        assert_eq!(
+            (&chat.kind, &chat.model, chat.temperature),
+            (&cfg.kind, &cfg.model, cfg.temperature)
+        );
+        let judge = persona_provider_config(&cfg, PersonaUse::Judge);
+        assert_eq!(judge.seed, Some(42), "a verdict reproducible from the text");
+    }
 }
 
 #[cfg(test)]

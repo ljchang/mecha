@@ -1523,6 +1523,64 @@ module.
   the length when a call ends (`/call`, sent with `keepalive`, so a tab that
   closes still sends it), and serve clamps it to `MAX_CALL_SECS`. The same
   request releases the call's unlock.
+- **A persona chat samples unseeded and sends no earlier thinking.** On
+  2026-10-02 a persona sent one reply again, word for word, after a
+  four-character owner turn. Both changes sit at the persona's own seams, so
+  the assistant's runs keep their seed, their reasoning and their cached
+  prefix.
+  - `setup::persona_provider` takes a `PersonaUse`. `Converse` drops the
+    seed, and `Judge` keeps it for the crisis judge and the steering judge.
+    A pinned seed makes a measured run repeat exactly, which is what a
+    verdict wants: the same words should get the same verdict, and a
+    reported miss should be reproducible. In a conversation the seed makes
+    every request reuse the same sampler draws, and a turn that adds little
+    comes back as an earlier reply. With no `seed` sent, llama-server draws
+    a fresh one per request. All three come from one `ProviderFactory`, so
+    the use is named at each call site, never assumed.
+  - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
+    the newest user message that carries no tool result, which is the cut
+    Qwen's own templates use. A tool result is a user message too, so "the
+    last user message" would cut inside a run, and the reasoning that chose
+    a call would never reach the step that reads its result.
+    - Only *replies* lose their thinking. An earlier turn that called a tool
+      keeps its thinking. On 2026-08-10, with reasoning stripped from
+      tool-calling turns, llama-server's model emitted a bare `<tool_call>`
+      with no think block 6 of 6 times, and the turn arrived empty
+      (`openai::encode_message`). Persona agents always have tools, and the
+      replies that repeated were plain text, so this costs the repetition
+      fix nothing.
+    - An all-thinking assistant message is kept whole, because an empty
+      message is a 400.
+    - The transcript records every thinking block; only the wire is cut.
+    - Every pressure reading goes through `Agent::wire_bytes`, never
+      `message_bytes(messages)`. Measuring thinking that is never sent
+      would compact early and spend the context the cut saves.
+  - The DRY sampler is not used. It ended the copies but garbled replies
+    at every setting tried, and the model got around it by misspelling the
+    same phrase. Its default window (`dry_penalty_last_n`, like
+    `repeat_last_n`) is 64 tokens, too short to see an earlier turn, and
+    this build refuses `-1`.
+  - `persona::echo` measures how much each reply repeats the closest
+    earlier reply in its chat. It reads finished transcripts when asked,
+    never during a turn. Nothing acts on the number while a chat runs, and
+    the session file already holds every reply. So nothing is computed per
+    turn and nothing new is stored, and a better metric later can recompute
+    the whole history.
+    - `session_echoes` walks the records in order. Each run's last
+      assistant text before its `Outcome` is scored against every earlier
+      reply, including those inside `Rewrite` records. A compacting run's
+      own turns exist only there, and the live conversation has summarised
+      the early ones away.
+    - Only a run whose recorded `stop_cause` is `Completed` is scored. A
+      stopped run keeps a partial reply, which would read low, and a
+      judge-stopped reply was never shown. An unknown cause is not a
+      completed one.
+    - When there is nothing to compare, the result is `None` and the reply
+      is not counted.
+    - `mecha persona show` reads chats active in the last `SHOWN_DAYS` days
+      (by file modification time) and counts unreadable session files,
+      never reading them as empty.
+    - Deleted chats drop out of the history; archived ones stay.
 
 ## Security model
 

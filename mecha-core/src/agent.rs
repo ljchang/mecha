@@ -198,11 +198,7 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
 /// bug in the voice facade and centralised here so no sixth grows its own
 /// wrong copy.
 pub fn is_plain_user_text(m: &Message) -> bool {
-    m.role == Role::User
-        && !m
-            .content
-            .iter()
-            .any(|b| matches!(b, Block::ToolResult { .. }))
+    m.is_plain_user_text()
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
@@ -1452,6 +1448,9 @@ pub struct Agent {
     /// the daemon runs — so nothing here may cache a clock reading. See
     /// [`crate::clock`] for the voice call this cost.
     clock: Arc<dyn crate::clock::Clock>,
+    /// Whether reasoning from before the turn being answered goes back to
+    /// the model. Kept unless a driver says otherwise; see [`PriorThinking`].
+    prior_thinking: PriorThinking,
 }
 
 impl Agent {
@@ -1476,6 +1475,7 @@ impl Agent {
             context_window: None,
             cache_contended: false,
             clock: Arc::new(crate::clock::SystemClock),
+            prior_thinking: PriorThinking::Keep,
         })
     }
 
@@ -1484,6 +1484,25 @@ impl Agent {
     pub fn with_clock(mut self, clock: Arc<dyn crate::clock::Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Leave earlier turns' reasoning out of what is sent (or keep it, the
+    /// default). The transcript records it either way.
+    pub fn with_prior_thinking(mut self, prior: PriorThinking) -> Self {
+        self.prior_thinking = prior;
+        self
+    }
+
+    /// The history as this agent sends it.
+    fn wire<'a>(&self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
+        self.prior_thinking.wire(messages)
+    }
+
+    /// The size of the history as this agent sends it — what every pressure
+    /// reading measures, so thinking that never reaches the model never
+    /// counts toward compacting it away.
+    fn wire_bytes(&self, messages: &[Message]) -> usize {
+        self.prior_thinking.wire_bytes(messages)
     }
 
     /// What this agent thinks the time is, now.
@@ -2288,7 +2307,7 @@ impl Agent {
                     && (asked
                         || pressure.over_by(
                             limit,
-                            crate::pressure::message_bytes(messages),
+                            self.wire_bytes(messages),
                             self.cfg.predictive_compaction,
                         ))
                 {
@@ -2384,7 +2403,7 @@ impl Agent {
                     if !asked
                         && pressure.freed_enough(
                             limit,
-                            crate::pressure::message_bytes(messages),
+                            self.wire_bytes(messages),
                             self.cfg.predictive_compaction,
                         )
                     {
@@ -2557,12 +2576,12 @@ impl Agent {
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
             // one request.
-            let mut sent_bytes = crate::pressure::message_bytes(messages);
+            let mut sent_bytes = self.wire_bytes(messages);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: messages.clone(),
+                messages: self.wire(messages).into_owned(),
                 tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
@@ -2657,13 +2676,13 @@ impl Agent {
                         taint.private = true;
                         convo.taint = taint;
                     }
-                    request.messages = messages.clone();
+                    request.messages = self.wire(messages).into_owned();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
                     // prediction is measured from a transcript that was never
                     // sent.
                     pressure.invalidate();
-                    sent_bytes = crate::pressure::message_bytes(messages);
+                    sent_bytes = self.wire_bytes(messages);
                     self.complete(cx, &request, &events).await?
                 }
                 other => other?,
@@ -2817,7 +2836,7 @@ impl Agent {
                     // check above orders its cheap guards first. Measuring it
                     // twice in one expression pays that twice on every
                     // tool-calling turn.
-                    let transcript_bytes = crate::pressure::message_bytes(messages);
+                    let transcript_bytes = self.wire_bytes(messages);
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
@@ -3026,11 +3045,7 @@ impl Agent {
                                 &mut trace,
                                 &mut taint,
                                 &mut check_blocks,
-                                self.output_budget(
-                                    cx,
-                                    pressure,
-                                    crate::pressure::message_bytes(messages),
-                                ),
+                                self.output_budget(cx, pressure, self.wire_bytes(messages)),
                                 None,
                             )
                             .await;
@@ -3569,7 +3584,7 @@ impl Agent {
             response_schema: None,
             model: self.model.clone(),
             system: self.system.clone(),
-            messages: messages.clone(),
+            messages: self.wire(messages).into_owned(),
             // The load-bearing line.
             tools: Vec::new(),
             max_tokens: self.cfg.max_tokens,
@@ -3909,7 +3924,7 @@ impl Agent {
     ///   `SPILL_FLOOR_BYTES` regardless, because a result truncated to nothing
     ///   is worse than an oversized one: it costs a turn and says nothing.
     ///
-    /// `bytes` is `message_bytes(messages)`, measured by the caller — taken
+    /// `bytes` is `wire_bytes(messages)`, measured by the caller — taken
     /// rather than retaken: rendering every `ToolUse` input to measure it
     /// costs more the longer the transcript is, and the caller needs the same
     /// number in the same expression for the forecast.
@@ -15712,5 +15727,76 @@ justification = "this box never sends from an armed conversation"
                 .external,
             Some(false)
         );
+    }
+
+    /// Three turns on one conversation: a reply with thinking, a turn that
+    /// calls a tool before answering, and a plain one after. What each
+    /// request carried, as one string per request.
+    async fn sent_across_turns(prior: PriorThinking) -> (Vec<String>, Conversation) {
+        let think = |t: &str| Block::Thinking {
+            text: t.into(),
+            signature: None,
+        };
+        let (agent, provider) = agent_with(
+            vec![
+                assistant(
+                    vec![think("PLAN-A"), Block::text("first")],
+                    StopReason::EndTurn,
+                ),
+                assistant(
+                    vec![
+                        think("PLAN-B"),
+                        Block::ToolUse {
+                            id: "t1".into(),
+                            name: "echo".into(),
+                            input: json!({"value": "pong"}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("second")], StopReason::EndTurn),
+                assistant(vec![Block::text("third")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let agent = agent.with_prior_thinking(prior);
+        let mut convo = Conversation::from(vec![Message::user("hi")]);
+        agent.run(&mut convo, None).await.unwrap();
+        convo.push(Message::user("mm"));
+        agent.run(&mut convo, None).await.unwrap();
+        convo.push(Message::user("ok"));
+        agent.run(&mut convo, None).await.unwrap();
+        let sent = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::to_string(&r.messages).unwrap())
+            .collect();
+        (sent, convo)
+    }
+
+    #[tokio::test]
+    async fn dropped_prior_thinking_leaves_the_wire_and_stays_in_the_transcript() {
+        let (sent, convo) = sent_across_turns(PriorThinking::Drop).await;
+        assert_eq!(sent.len(), 4);
+        // Later turns no longer carry the first reply's plan…
+        assert!(!sent[1].contains("PLAN-A") && !sent[2].contains("PLAN-A"));
+        assert!(!sent[3].contains("PLAN-A"));
+        // …but the reasoning that chose a call reaches the step that reads
+        // its result (a tool result is not a new turn), and stays with that
+        // call in every later turn: a history of calls made without thinking
+        // teaches the model to call without thinking (`drops_thinking`).
+        assert!(sent[2].contains("PLAN-B") && sent[3].contains("PLAN-B"));
+        // The reply it belonged to is still sent, and the record keeps all.
+        assert!(sent[1].contains("first"));
+        let recorded = serde_json::to_string(&convo.messages).unwrap();
+        assert!(recorded.contains("PLAN-A") && recorded.contains("PLAN-B"));
+    }
+
+    #[tokio::test]
+    async fn kept_prior_thinking_is_sent_back_as_recorded() {
+        let (sent, _) = sent_across_turns(PriorThinking::Keep).await;
+        assert!(sent[1].contains("PLAN-A") && sent[2].contains("PLAN-A"));
     }
 }
