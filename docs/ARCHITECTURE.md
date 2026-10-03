@@ -9015,6 +9015,14 @@ the full checklist this grows into as each build step lands.
    reviewer read. `hardware.md`'s *Beside the chat model* table is generated
    from these rows; `the_hardware_page_holds_the_registry_table` prints the
    new table when they disagree.
+9. If it runs a program beside mecha (a server, an environment, a
+   container): a `Sidecar` in `sidecar::SIDECARS` naming every feature that
+   needs it, the slots it serves, the evidence a hand install leaves (a user
+   unit, a binary on `PATH`, a directory, a Docker image — checks that open
+   no socket, so an idle-stopped server reads provided, never missing), the
+   step whose installer brings it, and whether its models live in the hub.
+   `mecha features plan <id>` is the read-only answer to what enabling it
+   would install.
 
 ## Context, and knowing how much is left
 

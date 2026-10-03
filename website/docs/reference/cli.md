@@ -1649,6 +1649,7 @@ network, so a server that starts on demand is never woken to be asked.
 ```
 mecha features [--json]
 mecha features --probe [--json]
+mecha features plan <id> [--verify] [--json]
 mecha features enable <id>...
 mecha features disable <id>...
 ```
@@ -1681,6 +1682,21 @@ a session or a service starts (`run`, `chat`, `tui`, `serve`, `voice-serve`,
 `slack connect`, `trigger daemon`), and `mecha setup` offers each as a step.
 A feature that is set up but not yet usable is named with the reason; one whose
 store could not be read is never named.
+
+**`plan`** says what a feature runs beside mecha and whether this machine
+already has it, then lists every model file it loads. A part plans as its
+parent, so `plan ocr` is `plan documents`.
+
+- **Programs:** each one is either *provided* — a systemd user unit, a binary
+  on `PATH`, a directory or a Docker image shows it, and it is left alone —
+  or not here, with the build step whose installer brings it.
+- **Models:** each pinned file is either in the cache and matching its pin
+  (it costs nothing), a download at its pinned size, or kept by a provided
+  program outside the cache (ComfyUI's own models). A file placed by hand at
+  its path is reported as unverified unless `--verify` hashes it.
+
+It installs nothing and asks no server: an idle server whose unit is there
+reads provided, never missing.
 
 **`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
 comments, the order of the file and any key a newer build added are kept, and
