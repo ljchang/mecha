@@ -40,9 +40,13 @@ pub struct OpenAiCompatible {
     vision: bool,
     structured_output: crate::config::StructuredOutput,
     retry: crate::provider::retry::RetryPolicy,
-    /// A server on this machine (`imagegen::is_loopback`, the one definition):
-    /// here, llama-server. Gates the llama.cpp-only request fields, which a
-    /// strict endpoint such as OpenAI's own refuses with a 400.
+    /// A llama-server: `kind = "local"`, the wire dialect (as
+    /// `provider::router::follows_here` reads it — a `local` entry may sit on
+    /// a tailnet host), with an explicit base URL, since a `local` entry with
+    /// none falls back to api.openai.com. Gates the llama.cpp-only request
+    /// fields, which a strict endpoint such as OpenAI's own refuses with a
+    /// 400 — including one behind a proxy on this machine, which is why the
+    /// address is not the test (review of #541).
     local: bool,
 }
 
@@ -68,11 +72,7 @@ impl OpenAiCompatible {
             vision: cfg.vision_enabled(),
             structured_output: cfg.structured_output,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
-            local: cfg
-                .base_url
-                .as_deref()
-                .and_then(|u| reqwest::Url::parse(u).ok())
-                .is_some_and(|u| crate::imagegen::is_loopback(&u)),
+            local: cfg.kind == "local" && cfg.base_url.is_some(),
         })
     }
 
@@ -125,7 +125,7 @@ impl OpenAiCompatible {
         // with thinking tags (`server-common.cpp`); measured honoured on
         // 2026-10-03 (a 128-token cap cut a looping persona's reasoning to
         // ~490 characters). Only when asked, so every other request's bytes
-        // are unchanged, and only to a server on this machine: unlike
+        // are unchanged, and only to a llama-server (`self.local`): unlike
         // `enable_thinking` above, whose one caller (the director) degrades to
         // an undirected sentence, this rides a persona's spoken reply, and a
         // 400 from a strict endpoint is `Invalid`, never retried or failed
@@ -906,6 +906,29 @@ mod tests {
             .body(&capped, false)
             .get("reasoning_budget_tokens")
             .is_none());
+        // So does a proxy on this machine that speaks OpenAI's dialect: the
+        // address is not the test, the dialect is.
+        let proxy = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "openai".into(),
+            base_url: Some("http://127.0.0.1:4000".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(proxy
+            .body(&capped, false)
+            .get("reasoning_budget_tokens")
+            .is_none());
+        // And a llama-server reached over the tailnet keeps its cap.
+        let tailnet = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://spark.tailnet:8080".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            tailnet.body(&capped, false)["reasoning_budget_tokens"],
+            json!(1024)
+        );
     }
 
     #[test]
