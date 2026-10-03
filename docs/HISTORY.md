@@ -14,6 +14,22 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-03 — a persona chat records the model it ran on (#530).** Found
+by mecha-05: a chat moved by the router to another model mid-way stayed
+credited to the model it started on, because persona chats wrote no
+`config`, so the memory writer waited for that model, possibly for good.
+- Persona chats now record a `config` on their first turn in a process and
+  at each switch (`PersonaSession::recorded_generation`, the assistant
+  chat's rule), and `writer::read_chat` takes the latest.
+- The record describes the persona agent, not the install's assistant:
+  `persona::agent::levers_off` (the prompt blocks it replaces, and the
+  hooks, approval rules, outbox, mailbox and fallback it is built without,
+  are always off), `permission_mode = read-only`, and
+  `RulesCarried::none()`.
+- Three workflow review passes, counted from the PR's comments; passes 1
+  and 2 each found the record claiming the assistant's settings.
+  Installed 13:35:54Z the same day.
+
 **2026-10-02/03 — a persona no longer sends an earlier reply again (#517,
 #522).** The owner's report: late in a long persona chat, short turns
 ("mm") brought back an earlier reply word for word. A replay of that
@@ -9103,6 +9119,21 @@ All found by pre-push review or by running it.
 
 ### Providers
 
+**A cloning TTS given nothing to say speaks its prompt or its prior**
+(mecha-1e, 2026-10-03). Breeze, sent text with no letter or digit, did not
+refuse: "." came back as "Um", "Yeah", or the reference clip's own sentence;
+"..." as up to 15 s of babble or Ukrainian; "?!" as 20 s. Pipecat's splitter
+emits a lone "." after "...", so it reached the engine in live calls. Guard
+the input (#531), because the engine will not.
+
+**A one-sided example list in a prompt is copied as a menu** (mecha-1e,
+2026-10-03). The voice director, shown texture words, used "husky" in 21 of
+24 directions, and one draw collapsed into the same ten adjectives over 19
+lines; with no list at all it wandered into gestures and vocal events.
+Balance any example list and offer "or none". A fixed TTS seed did not cut
+line-to-line drift (5.5 semitones either way): the directions drove it, not
+sampling.
+
 **A sampler penalty sees only its window, and the default window is 64
 tokens.** Qwen's model card recommends presence penalty 1.5 "to reduce
 endless repetitions", and a persona chat on that profile still sent an
@@ -10276,6 +10307,19 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**On unified memory the model's GPU allocations do not show as RSS, so a
+build can take the box down while `top` looks fine.** At 04:10Z on
+2026-10-03 a global OOM killed `llama-server` (the :8080 router) in the
+middle of a `cargo test --workspace`. The kernel's task table held 16 `ld`
+(17.3 GiB) and 22 `rustc` (9.1 GiB), while GPU allocations already held
+~75 GB: the model, an idle ComfyUI, two TTS servers, embeddings and OCR.
+The router was the victim, not the build, because its unit runs at
+`oom_score_adj` 200; systemd restarted it 15 s later on the startup preset.
+The lesson: before a build here, read GPU use (`nvidia-smi
+--query-compute-apps`) as well as `free`, cap the build (`-j 4`,
+`CARGO_BUILD_JOBS=4`), never run two at once, and expect the model, not the
+build, to be what dies.
 
 **A tool's error text can arrive at exit 0.** On this machine `nvidia-smi`
 prints `[Insufficient Permissions]` or `[Unknown Error]` in a memory field
