@@ -99,8 +99,8 @@ Verified against `7663b9a8`.
 await the owner's merge, and both cut a live call, so restart only on zero
 holds.
 - **#531 (`fix/breeze-unspeakable`):** text with no letter or digit is never
-  sent to the engine; `breeze_server.speakable` plays `PAUSE_SECONDS` (0.3 s
-  / speed) of silence instead. The owner's report: "i'm getting occasional
+  sent to the engine: where `breeze_server.speakable` is false, `speech`
+  plays `PAUSE_SECONDS` (0.3 s / speed) of silence instead. The owner's report: "i'm getting occasional
   intrusions completely unlreated to the story sometimes not the same
   language and isn't in text transcript". Deploy: pull the shared checkout,
   restart `mecha-breeze-adapter`. Probe: a `pcm` request for `"."` to :8887
@@ -414,8 +414,9 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-10-01/03 — modular installs: steps 0–6 shipped and live, 7a-1
-merged, the rest of 7 and 8 open.**
+**2026-10-01/03 — modular installs: steps 0–6 and 7a-1 shipped and live,
+7a-2 in review, the rest of 7 and 8 open.**
+Step 7a-1 (#521) is installed; HISTORY has it under 2026-10-03.
 Step 6 (#512, #513, #520) went live in mecha-1e's deploy of `c6f59b05`
 (2026-10-03), and HISTORY has it under 2026-10-02/03. Step 5, #503
 (`[voice]` and `[personas]`), went live in mecha-d7's deploy of `7663b9a8`
@@ -452,24 +453,12 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Step 7a-1 is #521, merged (`d97d01a5`, 02:52Z) and installed.** It is
-  one Hugging Face hub resolver (HF_HUB → HF_HUB_CACHE → HF_HOME/hub →
-  XDG_CACHE_HOME/huggingface/hub → ~/.cache/huggingface/hub) shared by 8
-  scripts, and a resumable sha256-checked downloader
-  (`mecha_core::fetch::fetch_hub_file`: a `.part` file plus Range; a 206 at
-  the wrong offset and more bytes than the pin are refused; only a match is
-  renamed into `blobs/<sha256>`). `d97d01a5` is an ancestor of both
-  mecha-69's `ed72a382` install (04:57Z) and mecha-5d's `27156c9e` (13:35Z,
-  2026-10-03); behaviour-neutral here, since no `HF_*` or `XDG_CACHE_HOME` is
-  set on any running server. Check: `grep -rlF
-  'XDG_CACHE_HOME:-$HOME/.cache}/huggingface' scripts | wc -l` → 8. Use `-F`:
-  this box's `grep` is ugrep, which reads the `$` as an anchor and prints 0.
 - **Step 7a-2 is #526, in review (mecha-a3).** `sidecar.rs` (a registry of
   the programs features run, provided-detection by user unit, PATH,
   directory, or a docker image with no socket, and a manifest reader) and a
   read-only `mecha features plan <id> [--verify]`. It re-pins the `tts` slot
   to Breeze, measured at 4,185 MiB peak on the GB10 on 2026-10-03 against
-  Chatterbox's 8,018, so `hardware.md`'s sums fall by about 3.8 GiB.
+  Chatterbox's 8,018, so `hardware.md`'s sums fall by about 4 GiB (3,833 MiB, as #526 puts it).
   - Step 7f's installer must *build* the Breeze model: it is a local
     conversion of BreezeBlue/Breeze-TTS-2 (non-commercial weights) into
     qwentts.cpp's GGUF, with no published file to pin.
