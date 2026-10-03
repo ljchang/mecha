@@ -34,6 +34,15 @@ says so, never a fallback to another voice.
 is written by the model on a spoken turn (ruling D1, 2026-10-03). It is capped
 in length and stripped of control characters here; it never becomes text that
 is spoken.
+
+**Text with no letter or digit in it is a pause, never sent to the engine.**
+Given nothing to say, Breeze invents something: measured on the real engine
+(2026-10-03), "." came back as "Um", "Yeah", or the voice clip's own sentence
+read whole; "..." as fifteen seconds of babble or a phrase in Ukrainian; "?!"
+as twenty seconds of babble. Any letter at all ("Mm.", "Hmm...") was spoken as
+written. The worker's sentence splitter hands over a lone "." when a reply
+trails off in "...", so this is an owner hearing a stranger mid-story, with
+nothing in the transcript to say why.
 """
 import asyncio
 import base64
@@ -59,6 +68,9 @@ MIN_SPEED, MAX_SPEED = 0.5, 2.0
 # Long enough for a sentence of direction ("warmly, a little amused, slowing
 # down at the end"), short enough that it cannot carry a paragraph.
 INSTRUCTIONS_MAX = 300
+# What a sentence with nothing speakable in it plays as: a beat, the length
+# of the pause punctuation marks.
+PAUSE_SECONDS = 0.3
 # What Breeze honours per request. Chatterbox's pair is refused, not ignored,
 # on the rule chatterbox_server.py states: a control a model drops is refused
 # rather than spoken as if it had landed.
@@ -108,6 +120,12 @@ def clean_instructions(text: str | None) -> str:
         return ""
     flat = "".join(" " if c in "\r\n\t" else c for c in text if c.isprintable() or c in "\r\n\t")
     return " ".join(flat.split())[:INSTRUCTIONS_MAX]
+
+
+def speakable(text: str) -> bool:
+    """Whether there is a word to say: a letter or digit in any script.
+    Without one the engine hallucinates (module docstring)."""
+    return any(c.isalnum() for c in text)
 
 
 async def transcript_for(client: httpx.AsyncClient, name: str, wav_path: str) -> str:
@@ -231,6 +249,12 @@ async def speech(req: SpeechRequest):
         if req.voice in ("default", ""):
             raise HTTPException(503, f"the default voice is missing: no default.wav in {VOICES_DIR}")
         raise HTTPException(400, f"unknown voice: {req.voice}")
+    if not speakable(req.input):
+        # Speed applies here too: a beat at 1.5x is shorter, as speech is.
+        pause = b"\x00\x00" * int(RATE * PAUSE_SECONDS / req.speed)
+        if req.response_format == "pcm":
+            return Response(content=pause, media_type="audio/pcm")
+        return Response(content=wav_bytes(pause), media_type="audio/wav")
 
     body = {"input": req.input, "voice": voice, "response_format": "pcm"}
     if req.temperature is not None:

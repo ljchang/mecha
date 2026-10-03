@@ -1118,8 +1118,8 @@ not as a precedent.
 
 ### 9.13 Timescales, and measuring them (owner rulings, 2026-10-02)
 
-The first real night wrote mostly passing states as facts ("driving home",
-"a fever for six days"), and dated all of them by the night of the write.
+The first real night wrote mostly passing states as facts (a commute home,
+an illness in its sixth day), and dated all of them by the night of the write.
 The second is fixed (#514: dated by the source chat, in the owner's zone).
 The first is a question of what a fact is; the research is
 `PERSONA-MEMORY-TIMESCALES-RESEARCH.md`. The owner's rulings:

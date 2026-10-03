@@ -34,10 +34,11 @@
 
 Research pass, 2026-10-02. Prompted by the first real night of the persona
 memory writer. One persona held 4 episodes and 19 facts, and most "facts
-about the owner" were states or one-off events ("driving home", "kids cranky
-after daycare", "daughter has had a fever for six days", "has a sore back",
-"asked for a picture of X"). Durable facts went missing even where they were
-implied, such as who the named children are. This builds on
+about the owner" were states or one-off events (shapes like "is on the train
+home", "the dog was restless after the vet", "partner has had a cold for six
+days", "has a stiff neck", "asked for a picture of X"; the examples here are
+illustrative, never the owner's records). Durable facts went missing even
+where they were implied, such as who a named relative is. This builds on
 `docs/MEMORY-RESEARCH.md` (curation beats accumulation; invalidate, don't
 delete; stale memories are the worst distractors) and does not repeat it.
 
@@ -55,8 +56,8 @@ literature back it. What they back, though, is **not** "save everything and
 decay it faster". They back three separate moves:
 
 1. **Different kinds of memory have different lifetimes, and that is a
-   property of the claim, not of the store.** "Has two daughters" and "has a
-   fever" are both sentences about the owner. Only one of them describes the
+   property of the claim, not of the store.** "Has a brother named Theo" and
+   "has a cold" are both sentences about the owner. Only one of them describes the
    owner a month from now. Personality psychology has formalised exactly this
    split (state vs trait), and so has the newest agent work: type-conditioned
    decay, where a single uniform decay was shown to fail.
@@ -105,8 +106,9 @@ with an existing schema can be assimilated quickly.
 not a sentence lifted from one. The first night's failure looks like the
 classic one: the writer took single-episode content and committed it to the
 slow store. The schema exception also says when quick assimilation is
-legitimate. "Has two daughters" fits the owner's existing life structure and
-can be written from one mention. "Has a sore back" is an episode detail.
+legitimate. "Has a brother named Theo" fits the owner's existing life
+structure and can be written from one mention. "Has a stiff neck" is an
+episode detail.
 
 ### 1.2 Forgetting curves: shape, and why it has that shape
 
@@ -138,7 +140,7 @@ half-life. It forgets fast early and then flattens, which is the behaviour
 the owner described ("facts change very slowly; states are ephemeral") in one
 curve. But Anderson & Schooler's need statistics were for *words in an
 environment*. Nobody has measured the need-probability of "the owner's
-daughter had a fever" in companion chat. The shape transfers; the constants
+partner had a cold" in companion chat. The shape transfers; the constants
 do not.
 
 ### 1.3 Retrieval strengthens: the testing effect and the "new theory of disuse"
@@ -232,16 +234,16 @@ well developed.
   2000, *Psych. Review* 107:261–288;
   [PDF](https://www.researchgate.net/publication/12528554_The_Construction_of_Autobiographical_Memories_in_the_Self-Memory_System)).
   It has three levels:
-  - **lifetime periods** ("when the kids were in daycare");
-  - **general events** ("the week the youngest was sick");
-  - **event-specific knowledge** ("she had a fever on day six").
+  - **lifetime periods** ("when the owner lived abroad");
+  - **general events** ("the week the partner was sick");
+  - **event-specific knowledge** ("the cold was worst on day six").
 
 **Implication.** A state is not free-floating. It belongs to a *situation*,
 and it ends when the situation ends. The episode is the natural container for
 it. Conway also names a tier between "fact" and "state" that a two-way split
 misses: the **lifetime period**, which lasts months and is true now but not
-forever ("works nights this term", "is renovating the kitchen", "the kids are
-in daycare"). A design with only "permanent" and "ephemeral" will force these
+forever ("works nights this term", "is renovating the kitchen", "is
+training for a marathon"). A design with only "permanent" and "ephemeral" will force these
 into the wrong bin.
 
 ### 1.6 Summary across traditions
@@ -465,22 +467,22 @@ companion, and no evidence from human-rated companion outcomes at all.
 
 - *For:* the episode already has a date, a situation and a source. Conway and
   event segmentation say states live inside situations. Nothing new to build.
-  Privacy-positive: a child's fever never becomes a standalone record about
-  the owner.
+  Privacy-positive: a family member's illness never becomes a standalone
+  record about the owner.
 - *Against:*
   - an ongoing state that matters across chats ("in the middle of a grant
     resubmission", "recovering from surgery") is buried in prose;
   - per-turn recall may not surface it;
   - a persona that does not know the owner is unwell can be tone-deaf.
-- *Right for:* momentary and one-off things ("driving home", "asked for a
-  picture").
+- *Right for:* momentary and one-off things ("on the train home", "asked
+  for a picture").
 
 **(d) Where decay acts.** These are three different levers.
 
 - **Rendering** (show the age: "as of 30 Sep, 2 days ago") is cheap and the
   best evidenced: Zep's date ranges, LongMemEval's timestamps, Mem0's <15%
-  without them. It lets the model reason ("six days of fever as of Tuesday;
-  ask how she is"). It never hides anything.
+  without them. It lets the model reason ("six days of a cold as of Tuesday;
+  ask how they are"). It never hides anything.
 - **Retrieval scoring** (age-aware weight) means replacing the rank with a
   function of actual age. A power law, per §1.2, would be better than an
   exponential. *For:* it fixes the scale-free rank. *Against:* the constants
@@ -528,10 +530,10 @@ These are judgement, not measurement. No study supplies them.
 
 | Class | Examples (generic) | Store as | Default validity | Chat-start | Per-turn recall |
 |---|---|---|---|---|---|
-| momentary | driving home, cranky after daycare, asked for a picture | episode prose only | — | via episode | via episode |
-| acute state | child has a fever, sore back, travelling this week, deadline Friday | state record, `valid_to` = source date + bucket (days / ~2 weeks) | days–2 weeks | only while valid, with age | while valid; after, labelled "past" |
-| ongoing situation (Conway's lifetime period) | new job, kitchen renovation, a child in daycare, a term of night shifts | state record, `months` bucket | ~1–6 months; re-confirm | while valid, with age | yes |
-| lasting fact | has two daughters (named), allergy, partner's name, values, long-held preferences | fact | none: supersession only | yes, pinned/recent first | yes |
+| momentary | on the train home, the dog restless, asked for a picture | episode prose only | — | via episode | via episode |
+| acute state | partner has a cold, stiff neck, travelling this week, deadline Friday | state record, `valid_to` = source date + bucket (days / ~2 weeks) | days–2 weeks | only while valid, with age | while valid; after, labelled "past" |
+| ongoing situation (Conway's lifetime period) | new job, kitchen renovation, marathon training, a term of night shifts | state record, `months` bucket | ~1–6 months; re-confirm | while valid, with age | yes |
+| lasting fact | has a brother (named), allergy, partner's name, values, long-held preferences | fact | none: supersession only | yes, pinned/recent first | yes |
 | episodes | what a chat was about | episode | — | last few | age-aware ranking; never expired |
 
 Reference points:
@@ -560,8 +562,8 @@ chats over two months becomes "has recurring back pain".
   contributing chat does to it. Delete it, or re-derive it from what remains?
 
 The other direction matters as much. **Durable facts that states imply should
-be extracted from the first mention.** "My daughter has a fever", when the
-owner has named her, implies a lasting family fact. This is schema-consistent
+be extracted from the first mention.** "My brother Theo has a cold" implies
+a lasting family fact: the owner has a brother named Theo. This is schema-consistent
 fast learning (§1.1) and LongMemEval's fact-augmented keys. A writer prompt
 should ask explicitly: *for every person named, is there a lasting fact
 saying who they are to the owner?*
@@ -570,7 +572,7 @@ saying who they are to the owner?*
 
 - Render states in the **past tense with the source date and age**, and
   lasting facts in the present tense. For example: "As of Tue 30 Sep (2 days
-  ago), the owner said their daughter had had a fever for six days."
+  ago), the owner said their partner had had a cold for six days."
 - **Never re-tense a state into the present at render time.** The writer
   stores the sentence as said, dated from the chat (the fix in progress).
 - An expired state does not ride at chat start. If recalled per turn or by
@@ -594,7 +596,7 @@ saying who they are to the owner?*
   - no retrieval-driven strengthening;
   - a per-chat cap on how many states may ride.
 - **Privacy.** States are disproportionately health, family and location
-  (a child's illness; "driving home"). Shorter recall lifetimes reduce
+  (a family member's illness; "on the train home"). Shorter recall lifetimes reduce
   exposure but do not erase anything. Only `forget` erases, which is correct
   but should be said on the curation page. ChatGPT and Claude both say they
   avoid or exclude sensitive and health details by default. mecha's
@@ -607,7 +609,7 @@ A "state" category sits right next to that rule. The line that keeps them
 compatible:
 
 - **Allowed:** *stated circumstances*. Health events, logistics, situations,
-  plans, things that happened. "Daughter has a fever"; "has a sore back";
+  plans, things that happened. "Partner has a cold"; "has a stiff neck";
   "travelling to a conference this week".
 - **Not allowed, even when stated:** an *affect label as a record*. "Owner is
   stressed", "owner is sad tonight". Feelings stay in the episode prose,
