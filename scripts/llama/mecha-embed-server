@@ -31,7 +31,7 @@
 #
 # --pooling last is REQUIRED: these are decoder-only embedders. mean pooling
 # silently produces plausible-looking, worse vectors.
-M=$(ls ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}}/models--mradermacher--harrier-oss-v1-0.6b-GGUF/snapshots/*/harrier-oss-v1-0.6b.f16.gguf | head -1)
+M=$(ls ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}/models--mradermacher--harrier-oss-v1-0.6b-GGUF/snapshots/*/harrier-oss-v1-0.6b.f16.gguf | head -1)
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --host 127.0.0.1 --port "${MECHA_EMBED_PORT:-18081}" -ngl 999 \
   --embeddings --pooling last --embd-normalize 2 \
