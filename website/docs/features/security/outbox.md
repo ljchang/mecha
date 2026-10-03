@@ -96,7 +96,7 @@ message being answered underneath the draft, labelled for what it is:
 ```
 replying to — third-party content via mail__mail_get_thread (thread_id),
 not part of your draft:
-  --- [dartmouth] From: … · 2026-08-17T12:00:24Z
+  --- [campus] From: … · 2026-08-17T12:00:24Z
   Subject: COSAN Lab Research Opportunity Inquiry
   …
 ```

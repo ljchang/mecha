@@ -714,8 +714,7 @@ real interrupted call rather than reasoned about, because it decides
 whether "continue" is a usable thing to say out loud.
 
 - **The assistant's turn is recorded truncated at the cut** — the call
-  ended `"...two research [removed], a"`,
-  mid-clause. So the model's own context shows it stopping mid-word, which
+  ended mid-clause, on a word left hanging. So the model's own context shows it stopping mid-word, which
   is why **"continue" needs no special handling**: there is no competing
   task to advance and the evidence of the cut is in the transcript. The
   ambiguous case is being cut off mid-explanation of something it was also

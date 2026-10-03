@@ -34,9 +34,13 @@ ExecStart=-/bin/sh -c 'mecha-mail freebusy --days 60 --json | factory-publish sl
 # bookings leg names no account on purpose: it takes whatever
 # `mecha-mail accounts` calls the default, so the calendar a meeting lands
 # on follows the registry instead of a flag nobody can see. It used to say
-# `--account dartmouth`, which silently outvoted a registry default of
+# `--account campus`, which silently outvoted a registry default of
 # `personal` and put every stranger's meeting on a calendar its owner does
 # not open — the booking that started this was invisible for a day. The
 # polls leg still names one; that is a separate decision, not an oversight.
 # The `-` prefix: a failed slot push must not also skip the sweep, nor vice versa.
-ExecStart=-/bin/sh -c 'factory-publish drain; mecha-mail bookings; factory-publish polls sweep; mecha-mail polls --account dartmouth; mecha polls sweep'
+# `YOUR-MAIL-ACCOUNT` is a placeholder, as `mecha-voice-worker.service`'s
+# host is: set it to the account polls send from (`mecha-mail accounts`).
+# Left as shipped, the polls leg fails by name rather than sending from the
+# wrong account. The installed copy carries the real name.
+ExecStart=-/bin/sh -c 'factory-publish drain; mecha-mail bookings; factory-publish polls sweep; mecha-mail polls --account YOUR-MAIL-ACCOUNT; mecha polls sweep'
