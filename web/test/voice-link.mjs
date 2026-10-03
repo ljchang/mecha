@@ -267,5 +267,9 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   const tap = (await import('node:fs')).readFileSync(new URL('../public/voice-uplink-transform.js', import.meta.url), 'utf8');
   assert.match(tap, /if \(copying\) try/, 'the tap copies after it was told to stop');
   assert.match(tap, /controller\.enqueue\(frame\);/, 'the tap no longer passes every frame on');
+  // A flagged connection whose tap did not attach pipes the sender through,
+  // or the fallback is a silent call (0 packets measured, review of #534).
+  const after = src.slice(src.indexOf('uplinkMode = (await attachUplinkTap()) ?'));
+  assert.match(after.slice(0, 1500), /if \(uplinkMode !== "channel" && insertable\)[\s\S]*passThrough\(sender\)/, 'a failed tap on a flagged connection leaves the sender unpiped');
   console.log('insertable streams: ok');
 }
