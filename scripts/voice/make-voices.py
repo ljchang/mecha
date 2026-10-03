@@ -12,11 +12,11 @@ exact words, so each `<name>.wav` gets a `<name>.txt` holding the text it
 was synthesised from - exact, where the adapter would otherwise transcribe
 it with Parakeet.
 
-**The house voice.** Breeze has no built-in voice: `default` speaks as
-`house.wav` (`BREEZE_HOUSE_VOICE`), and without one every sentence in the
-default voice is refused. So this also writes `house.wav` and `house.txt`
-from one of the references (`--house`, af_heart unless named) - but only
-when there is no house voice yet, because one already there is the owner's
+**The default voice.** Breeze has no built-in voice: `default` is a clip
+like any other, `default.wav`, and without one every sentence in the default
+voice is refused. So this also writes `default.wav` and `default.txt` from
+one of the references (`--default`, af_heart unless named) - but only when
+there is no default voice yet, because one already there is the owner's
 choice (docs/VOICE-BREEZE-DESIGN.md §4). The references
 here are *synthesized by Kokoro* rather than cut from recordings of
 real people, which is the whole reason this script exists: Kokoro is
@@ -110,27 +110,28 @@ def write_text(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
-def ensure_house(source: str) -> str | None:
-    """Copy reference `source` as the house voice when there is none yet.
-    Returns the path written, or None when a house voice already exists."""
-    house = os.path.join(VOICES_DIR, "house.wav")
-    if os.path.exists(house):
+def ensure_default(source: str) -> str | None:
+    """Copy reference `source` as the default voice when there is none yet.
+    Returns the path written, or None when a default voice already exists."""
+    target = os.path.join(VOICES_DIR, "default.wav")
+    if os.path.exists(target):
         return None
     src = os.path.join(VOICES_DIR, f"{source}.wav")
-    tmp = house + ".tmp"
+    tmp = target + ".tmp"
     shutil.copyfile(src, tmp)
-    os.replace(tmp, house)
+    os.replace(tmp, target)
     with open(src[:-4] + ".txt", encoding="utf-8") as f:
-        write_text(house[:-4] + ".txt", f.read().strip())
-    return house
+        write_text(target[:-4] + ".txt", f.read().strip())
+    return target
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("voices", nargs="*", help="Kokoro voice ids (default: the curated six)")
     ap.add_argument("--list", action="store_true", help="print Kokoro's voices and exit")
-    ap.add_argument("--house", default="af_heart",
-                    help="the reference that becomes the house voice when there is none (default af_heart)")
+    ap.add_argument("--default", dest="default_voice", default="af_heart",
+                    help="the reference that becomes the default voice when there is none ("
+                         "af_heart); synthesised too if not among the voices asked for")
     args = ap.parse_args()
 
     try:
@@ -145,8 +146,8 @@ def main():
         return
 
     wanted = args.voices or CURATED
-    if args.house not in wanted and not os.path.exists(os.path.join(VOICES_DIR, "house.wav")):
-        wanted = wanted + [args.house]
+    if args.default_voice not in wanted and not os.path.exists(os.path.join(VOICES_DIR, "default.wav")):
+        wanted = wanted + [args.default_voice]
     unknown = [v for v in wanted if v not in available]
     if unknown:
         sys.exit(f"Kokoro has no such voice: {', '.join(unknown)}\n"
@@ -158,11 +159,11 @@ def main():
         n = synth(v, path)
         print(f"  {v:<12} {n/1024:7.0f} KiB  {path}")
     print(f"\n{len(wanted)} reference(s) in {VOICES_DIR}.")
-    house = ensure_house(args.house)
-    if house:
-        print(f"The house voice (`default`) is {args.house}: {house}")
+    written = ensure_default(args.default_voice)
+    if written:
+        print(f"The default voice is {args.default_voice}: {written}")
     else:
-        print("A house voice was already there; left as it is.")
+        print("A default voice was already there; left as it is.")
     print("The TTS reads this directory live - GET :8887/v1/voices to confirm.")
 
 

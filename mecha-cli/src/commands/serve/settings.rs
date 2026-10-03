@@ -939,7 +939,9 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
 /// than denylisted: this string becomes `<voices_dir>/<name>.wav` on one
 /// side and a `voice` field the TTS resolves on the other, so anything
 /// beyond lowercase, digits, `-` and `_` is refused — including `default`,
-/// which names the model's built-in voice and must stay unshadowable.
+/// which names the default voice and must stay unshadowable: on Breeze it is
+/// `default.wav` in this same directory, so a clone of that name would
+/// silently replace it and a delete would leave every call voiceless.
 fn valid_voice_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 40
@@ -1078,7 +1080,7 @@ pub async fn voice_clone(
     let Some(dir) = state.voices_dir.as_ref() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "voice cloning is not configured — set [voice] voices_dir to the host directory the TTS container mounts as /voices\n",
+            "voice cloning is not configured — set [voice] voices_dir to the directory the TTS reads its voices from (~/models/voices by default)\n",
         )
             .into_response();
     };

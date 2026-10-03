@@ -25,7 +25,7 @@ the *facade* — `mecha voice-serve`, and the `--voice-port` flag on
 `mecha serve` — which is the loopback endpoint the voice pipeline talks to.
 The pipeline itself is not packaged.
 
-Voice needs a **git checkout** and three local services:
+Voice needs a **git checkout** and three local services (the speech one is two processes):
 
 | What | Where | Why |
 |---|---|---|
@@ -127,8 +127,7 @@ persona's reply in its voice, the assistant's in yours — with code, links
 and Markdown marks left out. It goes through the same worker, and keeps no
 trace of the text there.
 
-**Voice.** Six generated references, the house voice that `default` speaks
-as, and any you have cloned. **Library → Voices** lists them all: tap one to hear a
+**Voice.** Six generated references, `default`, and any you have cloned. **Library → Voices** lists them all: tap one to hear a
 short sentence spoken in it, record or upload a new one, and see which
 personas speak in each. Breeze clones from a few seconds of reference audio and
 the exact words spoken in it, so a voice is a `.wav` on disk with its transcript
@@ -136,7 +135,7 @@ beside it as a `.txt` — written by `make-voices.py`, or by Parakeet the first
 time the voice is spoken, and yours to correct. The server reads the voices
 directory live, and dropping a clip in by hand works exactly as well as
 recording one through the page. Breeze has no built-in voice: `default` is
-`house.wav`, which `make-voices.py` writes from one of its references when
+`default.wav`, which `make-voices.py` writes from one of its references when
 there is none yet, and which you can replace with any clip you like.
 
 The six shipped references were synthesised from Kokoro's presets by
@@ -166,7 +165,7 @@ arrive as `content-type: audio/wav` (which forces any cross-origin caller
 through a preflight this server never answers), and a name is 1–40 characters of
 `a-z`, `0-9`, `-` or `_` — a closed alphabet rather than a denylist, because the
 string becomes a path on one side and a TTS field on the other. `default` is
-refused: it names the house voice and must stay unshadowable.
+refused: it names the default voice and must stay unshadowable.
 
 **Rate.** 0.5× to 2.0×, pitch-preserving — mecha speaks faster without
 sounding like a chipmunk.

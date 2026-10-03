@@ -25,8 +25,9 @@ Three things the engine does not do, done here:
   with the same pitch-preserving WSOLA Chatterbox uses (ruling D4), which costs
   that sentence its streaming.
 
-`voice: "default"` speaks as the house voice, `BREEZE_HOUSE_VOICE` (ruling D2):
-Breeze has no built-in voice. A house voice that does not exist is a 503 that
+`voice: "default"` is a clip like any other, `default.wav` (ruling D2, as the
+owner simplified it on 2026-10-03): Breeze has no built-in voice, so the
+default is a file, named for what it is. One that does not exist is a 503 that
 says so, never a fallback to another voice.
 
 `instructions` is Breeze's voice direction - how a sentence is delivered - and
@@ -51,7 +52,7 @@ from audio_stretch import stretch
 BREEZE_URL = os.environ.get("BREEZE_TTS_URL", "http://127.0.0.1:8886").rstrip("/")
 VOICES_DIR = os.path.expanduser(os.environ.get("VOICES_DIR", "~/models/voices"))
 STT_URL = os.environ.get("MECHA_VOICE_STT", "http://127.0.0.1:8992/v1").rstrip("/")
-HOUSE_VOICE = os.environ.get("BREEZE_HOUSE_VOICE", "house")
+DEFAULT_VOICE = "default"
 MODEL_NAME = os.environ.get("BREEZE_MODEL_NAME", "breeze-tts2-q6_k")
 RATE = 24000
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
@@ -88,7 +89,7 @@ class SpeechRequest(BaseModel):
 
 def voice_names() -> list[str]:
     """Breeze has no built-in voice, so an unreadable directory is not an
-    empty library: it is said, as a 503, rather than read as "no house voice"."""
+    empty library: it is said, as a 503, rather than read as "no default voice"."""
     try:
         return sorted(f[:-4] for f in os.listdir(VOICES_DIR) if f.endswith(".wav"))
     except OSError as e:
@@ -181,15 +182,15 @@ async def health():
 @app.get("/v1/voices")
 def voices():
     """Read off the directory, as chatterbox_server does: adding a voice is
-    dropping a wav in. `default` is the house voice."""
+    dropping a wav in. `default` (default.wav) leads the list when it exists."""
     on_disk = voice_names()
-    names = [n for n in on_disk if n != HOUSE_VOICE]
-    # `default` is the house voice, not a built-in: listed only when it can
-    # be spoken, so the picker never offers a voice that 503s every sentence.
-    house = ["default"] if HOUSE_VOICE in on_disk else []
+    names = [n for n in on_disk if n != DEFAULT_VOICE]
+    # `default` is a file, not a built-in: listed only when it can be spoken,
+    # so the picker never offers a voice that 503s every sentence.
+    first = [DEFAULT_VOICE] if DEFAULT_VOICE in on_disk else []
     return {
         "default": "default",
-        "voices": house + names,
+        "voices": first + names,
         "speed": {"min": MIN_SPEED, "max": MAX_SPEED, "default": 1.0},
         "model": MODEL_NAME,
         "controls": list(CONTROLS),
@@ -225,10 +226,10 @@ async def speech(req: SpeechRequest):
         value = getattr(req, name)
         if value is not None and not (lo <= value <= hi):
             raise HTTPException(400, f"{name} must be in [{lo}, {hi}]")
-    voice = HOUSE_VOICE if req.voice in ("default", "") else req.voice
+    voice = req.voice or DEFAULT_VOICE
     if voice not in voice_names():
         if req.voice in ("default", ""):
-            raise HTTPException(503, f"the house voice {HOUSE_VOICE!r} is not in {VOICES_DIR}")
+            raise HTTPException(503, f"the default voice is missing: no default.wav in {VOICES_DIR}")
         raise HTTPException(400, f"unknown voice: {req.voice}")
 
     body = {"input": req.input, "voice": voice, "response_format": "pcm"}
