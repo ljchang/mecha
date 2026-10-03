@@ -32,7 +32,7 @@ the default `warn` filter and every line the confirmation path writes is
 19:36:32  said    "Let me check your calendars first."
 19:36:37  said    "Let me create the first lab meeting for this Wednesday, September 16th."
 19:36:38  said    "That's drafted."                                    ← item 20260913T193636 (lab calendar)
-19:36:47  heard   "Um yeah, I don't want that one. I want my Luke Chang Gmail calendar."
+19:36:47  heard   "Um yeah, I don't want that one. I want my [owner's name] Gmail calendar."
 19:36:55  said    "Got it — let me scrap that draft and put it on your Gmail calendar instead."
 19:36:57  said    "That's drafted on your Gmail calendar for this Wednesday from noon to two."  ← item 20260913T193654
 19:37:02  said    "Want me to create more individual Wednesdays too?"

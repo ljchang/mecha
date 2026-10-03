@@ -1884,8 +1884,8 @@ mod tests {
     #[test]
     fn claim_extraction_drops_scaffolding() {
         let listed = "**Claims:**\n\
-             1. Dana Whitfield works at Dartmouth.\n\
-             - py-feat is a tool for fNIRS analysis.\n\
+             1. Dana Whitfield works at Fairhaven.\n\
+             - kelp-survey is a tool for transect analysis.\n\
              Is she the lab PI?\n\
              short\n\
              She maintains the /srv/example/Git directory.";
@@ -1928,9 +1928,9 @@ mod tests {
         // The good ones from the same run must survive. Both are second
         // person, so the rule cannot simply reject "you".
         for q in [
-            "Are you referring to the Dana Whitfield associated with the Chang \
-             lab at Dartmouth and the 'py-feat' paper?",
-            "Can you confirm if Dana Whitfield is associated with the Chang lab?",
+            "Are you referring to the Dana Whitfield associated with the Example \
+             lab at Fairhaven and the 'kelp-survey' paper?",
+            "Can you confirm if Dana Whitfield is associated with the Example lab?",
         ] {
             assert!(usable_question(q).is_some(), "rejected a real probe: {q}");
         }
@@ -1942,7 +1942,7 @@ mod tests {
         // syntax, which became the next round's "question" and was
         // answered earnestly.
         assert_eq!(
-            usable_question("tool:kg_search\nargs:{\"query\": \"ljchang\"}"),
+            usable_question("tool:kg_search\nargs:{\"query\": \"robin\"}"),
             None
         );
         assert_eq!(
