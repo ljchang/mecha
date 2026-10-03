@@ -112,6 +112,14 @@ impl OpenAiCompatible {
                 json!({"enable_thinking": think}),
             );
         }
+        // llama-server's per-request reasoning cap, read only for a template
+        // with thinking tags (`server-common.cpp`); measured honoured on
+        // 2026-10-03 (a 128-token cap cut a looping persona's reasoning to
+        // ~490 characters). Only when asked, so every other request's bytes
+        // are unchanged.
+        if let Some(budget) = req.think_budget {
+            obj.insert("reasoning_budget_tokens".into(), json!(budget));
+        }
         if stream {
             obj.insert("stream".into(), json!(true));
             obj.insert("stream_options".into(), json!({"include_usage": true}));
@@ -839,6 +847,7 @@ mod tests {
             thinking: false,
             cache_prompt: false,
             think: None,
+            think_budget: None,
         }
     }
 
@@ -856,6 +865,27 @@ mod tests {
     }
 
     #[test]
+    fn a_reasoning_budget_is_sent_only_when_a_request_sets_one() {
+        let p = provider(None, None);
+        assert!(p
+            .body(&plain_req(), false)
+            .get("reasoning_budget_tokens")
+            .is_none());
+        let capped = p.body(
+            &CompletionRequest {
+                think_budget: Some(1024),
+                ..plain_req()
+            },
+            false,
+        );
+        assert_eq!(capped["reasoning_budget_tokens"], json!(1024));
+        assert!(
+            capped.get("chat_template_kwargs").is_none(),
+            "a cap is not a request to think or not"
+        );
+    }
+
+    #[test]
     fn enable_thinking_is_sent_only_when_a_request_declines_it() {
         let p = provider(None, None);
         // `None` is today's request, byte for byte: no key at all.
@@ -868,6 +898,7 @@ mod tests {
         let declined = p.body(
             &CompletionRequest {
                 think: Some(false),
+                think_budget: None,
                 ..plain_req()
             },
             false,
