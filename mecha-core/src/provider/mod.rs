@@ -658,6 +658,7 @@ mod failover_tests {
             thinking: false,
             cache_prompt: false,
             think: None,
+            think_budget: None,
         }
     }
 
@@ -909,6 +910,7 @@ mod halt_tests {
             thinking: false,
             cache_prompt: false,
             think: None,
+            think_budget: None,
         };
         assert!(p.complete(&req, None).await.is_ok());
         FLAG.set("switched with --now".into()).unwrap();

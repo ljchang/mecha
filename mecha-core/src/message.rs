@@ -384,6 +384,12 @@ pub struct CompletionRequest {
     /// director) that a thinking model would otherwise spend seconds on.
     /// Distinct from `thinking`, which only asks for a readable summary.
     pub think: Option<bool>,
+    /// The most tokens the model may reason for before it must answer, where
+    /// the server lets a request choose (llama-server's
+    /// `reasoning_budget_tokens`, which otherwise falls back to the server's
+    /// `--reasoning-budget`). `None` sends nothing. Anthropic's adaptive
+    /// thinking takes no budget, so it is not sent there.
+    pub think_budget: Option<u32>,
 }
 
 #[derive(Debug, Clone)]

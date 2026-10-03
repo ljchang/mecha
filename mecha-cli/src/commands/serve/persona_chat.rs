@@ -259,6 +259,20 @@ const JUDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 /// The most text a session goal may carry.
 const MAX_GOAL: usize = 2000;
 
+/// How many tokens a persona may reason for on a spoken turn (owner,
+/// 2026-10-03: "start with call turns first"). A typed turn keeps the
+/// server's `--reasoning-budget` (4096).
+///
+/// A persona's thinking is its reply being drafted: a short block plans,
+/// and a long one re-drafts the same lines until the server's budget runs
+/// out — up to 23 copies of one sentence, 40–50 s of silence on a call.
+/// Replayed on nine of a chat's turns, judged blind by the same model with
+/// the order swapped: a 512-token cap lost to the full budget 10–20 and
+/// ended replies mid-sentence three times as often (it stops the draft
+/// half-written); a 1024-token cap beat the full budget 24–10, with the
+/// slowest reply 12.5 s against 41.3 s.
+const SPOKEN_THINK_BUDGET: u32 = 1024;
+
 /// Why a door refused, as the route will say it.
 #[derive(Debug)]
 pub enum Refusal {
@@ -3152,6 +3166,7 @@ impl PersonaChats {
             None => (mecha_core::agent::CancelHandle::new(), None),
         };
         let (tap, hosted_done) = hosted.unzip();
+        let spoken_turn = tap.is_some();
         // A second sender for what the harness says after the run: the
         // judge's pause, spoken behind a reply it cut off. Holding it is
         // load-bearing: `voice::pump` streams until every sender is gone, so
@@ -3189,6 +3204,10 @@ impl PersonaChats {
         let judge_cancel = cancel.clone();
         cx = cx.with_cancel_handle(cancel);
         cx.queued_input = Some(queue);
+        // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
+        if spoken_turn {
+            cx = cx.with_think_budget(SPOKEN_THINK_BUDGET);
+        }
 
         let session = Arc::clone(&ps.session);
         let unconsumed = Arc::clone(&queued_ids);
@@ -8462,6 +8481,35 @@ mod tests {
             crate::voice::Hosted::Failed(why) => panic!("refused: {why}"),
             _ => panic!("the call did not start"),
         }
+    }
+
+    /// A spoken turn reasons within `SPOKEN_THINK_BUDGET`; a typed turn in the
+    /// same chat leaves the server's own budget. Without the cap, a call waits
+    /// in silence while the persona re-drafts its reply.
+    #[tokio::test]
+    async fn a_call_turn_caps_the_personas_thinking_and_a_typed_turn_does_not() {
+        let w = world_with(Mode::Say("The dig went well.".into()));
+        let key = open_chat(&w).await;
+        turn(&w, &key, "typed first").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        spoken(&w, &key, "how was the dig").await;
+        turn(&w, &key, "typed again").await;
+
+        let budgets: Vec<Option<u32>> = w
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.think_budget)
+            .collect();
+        assert_eq!(
+            budgets,
+            vec![None, Some(SPOKEN_THINK_BUDGET), None],
+            "typed, spoken, typed"
+        );
     }
 
     /// The call note in the newest owner turn of a request, if any.

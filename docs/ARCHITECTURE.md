@@ -1582,6 +1582,23 @@ module.
       text.
     - The transcript keeps every reply as written or heard; `wire_bytes`
       subtracts what the trim cuts.
+  - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
+    every request the loop makes, the forced final turn included, sent as
+    llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,
+    set per run on `RunContext::think_budget`, because one persona agent
+    answers typed and spoken turns alike). A compaction's summariser and
+    validator are one-shot passes and keep the server's budget, since a thin
+    summary is the costlier failure. Only a llama-server is sent the field
+    (`OpenAiCompatible::local`: `kind = "local"`, the dialect, with a base
+    URL — not the address, since a proxy on this machine may speak OpenAI's
+    dialect): a strict endpoint 400s on it, which is never retried, and the
+    caller would hear nothing. A typed turn keeps the
+    server's 4096. A persona's
+    long thinking is its reply re-drafted until the budget runs out (40–50 s
+    of silence on a call); replayed and judged blind, a 1024 cap beat the
+    full budget 24–10, while a 512 cap lost 10–20 by stopping the draft
+    half-written. Anthropic's adaptive thinking takes no budget, so the
+    field is not sent there.
   - The DRY sampler is not used. It ended the copies but garbled replies
     at every setting tried, and the model got around it by misspelling the
     same phrase. Its default window (`dry_penalty_last_n`, like

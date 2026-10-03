@@ -392,6 +392,10 @@ impl Tool for Subagent {
             // sends — with an unstamped context, which the tool labels fully
             // tainted rather than clean. Fail closed, not fail silent.
             mailbox: None,
+            // The server's own budget. The cap is for a spoken persona turn,
+            // whose agent has no subagents; a child's reasoning is its own
+            // profile's business, like its `max_turns`.
+            think_budget: None,
         };
 
         // If somebody is watching the parent run, forward the child's events

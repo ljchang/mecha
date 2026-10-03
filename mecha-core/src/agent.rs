@@ -329,6 +329,13 @@ pub struct RunContext {
     /// where the route is built and never inside the loop. See
     /// [`crate::mailbox`].
     pub mailbox: Option<Arc<crate::mailbox::MailboxRoute>>,
+    /// The most tokens the model may reason for, per request in this run,
+    /// where the server lets a request choose — see
+    /// [`CompletionRequest::think_budget`]. `None` (the default) sends
+    /// nothing and leaves the server's own budget. Per run rather than per
+    /// agent because one persona agent answers both typed and spoken turns,
+    /// and only a spoken turn has someone waiting in silence for it.
+    pub think_budget: Option<u32>,
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -367,7 +374,14 @@ impl RunContext {
             policy: Arc::new(crate::policy::ExecPolicy::empty()),
             outbox: None,
             mailbox: None,
+            think_budget: None,
         }
+    }
+
+    /// Cap the model's reasoning per request in this run; see the field.
+    pub fn with_think_budget(mut self, tokens: u32) -> Self {
+        self.think_budget = Some(tokens);
+        self
     }
 
     /// Same policy, different root and approver — the sandboxed-run shape.
@@ -2600,6 +2614,7 @@ impl Agent {
                 thinking: self.cfg.thinking,
                 cache_prompt: self.cfg.cache_prompt,
                 think: None,
+                think_budget: cx.think_budget,
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -3605,6 +3620,7 @@ impl Agent {
             thinking: self.cfg.thinking,
             cache_prompt: self.cfg.cache_prompt,
             think: None,
+            think_budget: cx.think_budget,
         };
 
         let response = match self.complete(cx, &request, events).await? {
@@ -5716,6 +5732,49 @@ mod tests {
             "the nudge rides beside the tool results, not after them"
         );
         assert!(is_harness_voice(FINAL_ANSWER_NUDGE));
+    }
+
+    /// A run's reasoning cap reaches every request it makes, the forced final
+    /// turn included: that is the reply a spoken caller hears when a turn hits
+    /// a ceiling (review of #541).
+    #[tokio::test]
+    async fn a_runs_think_budget_rides_every_request_including_the_forced_final_turn() {
+        let looping = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "again"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(|_| looping()).collect();
+        turns.push(assistant(
+            vec![Block::text("here is what I have")],
+            StopReason::EndTurn,
+        ));
+        let (mut agent, provider) = agent_with(turns, PermissionMode::Allow);
+        agent.cfg.max_turns = 3;
+        agent.cfg.force_final_answer = true;
+        let cx = (**agent.context()).clone().with_think_budget(1024);
+
+        let mut convo = Conversation::user("loop forever");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(outcome.text, "here is what I have");
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            4,
+            "three looping turns and the forced final one"
+        );
+        assert!(
+            seen.last().unwrap().tools.is_empty(),
+            "the last is the final turn"
+        );
+        let budgets: Vec<Option<u32>> = seen.iter().map(|r| r.think_budget).collect();
+        assert_eq!(budgets, vec![Some(1024); 4]);
     }
 
     // --- the situation brief (3a) ---

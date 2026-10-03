@@ -181,6 +181,7 @@ mod tests {
             thinking: false,
             cache_prompt: true,
             think: None,
+            think_budget: None,
         }
     }
 
