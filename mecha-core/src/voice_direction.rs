@@ -30,11 +30,26 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// How long a sentence after the first may wait for its direction. A
-/// sentence is directed while the one before it plays — two to five seconds
-/// of audio — so this is the bound on how much of that slack one call may
-/// take before the sentence goes out undirected.
-pub const SENTENCE_DEADLINE: Duration = Duration::from_millis(1500);
+/// How long a sentence after the first may wait for its direction, from
+/// when the worker asks.
+///
+/// **Set above the measured cost.** On the loaded `qwen3.6-35b-a3b-uncensored`
+/// (2026-10-03: the real [`SYSTEM`], a scene, the growing "already directed"
+/// list, thinking off, 3 rounds × 6 sentences), a 12–25-word direction took
+/// a median 1.61 s, p90 1.77 s, max 1.83 s; a 6–12-word one, a median
+/// 1.11 s. The owner wants detailed directions, so the length stays and the
+/// deadline sits above it — an earlier 1.5 s would have timed out most
+/// sentences.
+///
+/// **The trade-off.** A sentence is asked about when the worker reaches it,
+/// which is while the sentence before it plays, so the slack a direction
+/// hides in is that sentence's *remaining* playback — about (1 − RTF) × its
+/// length, at Breeze's real-time factor. A short sentence before a long
+/// direction leaves a gap: the next sentence waits up to this long before it
+/// starts. The follow-up that removes it is prefetch: the facade directs
+/// each sentence as its text streams out of the model, before the worker
+/// asks, so the answer is usually waiting.
+pub const SENTENCE_DEADLINE: Duration = Duration::from_millis(2500);
 
 /// How long the first sentence may wait, counted from when the worker asks.
 /// Its direction was started from the owner's words when the turn began
