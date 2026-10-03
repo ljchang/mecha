@@ -1451,6 +1451,9 @@ pub struct Agent {
     /// Whether reasoning from before the turn being answered goes back to
     /// the model. Kept unless a driver says otherwise; see [`PriorThinking`].
     prior_thinking: PriorThinking,
+    /// Whether earlier replies that stop mid-sentence go back to the model
+    /// as they are. Kept unless a driver says otherwise; see [`PriorTails`].
+    prior_tails: PriorTails,
 }
 
 impl Agent {
@@ -1476,6 +1479,7 @@ impl Agent {
             cache_contended: false,
             clock: Arc::new(crate::clock::SystemClock),
             prior_thinking: PriorThinking::Keep,
+            prior_tails: PriorTails::Keep,
         })
     }
 
@@ -1493,16 +1497,24 @@ impl Agent {
         self
     }
 
+    /// Cut earlier replies that stop mid-sentence back to their last
+    /// complete sentence in what is sent (or keep them, the default). The
+    /// transcript records them either way.
+    pub fn with_prior_tails(mut self, tails: PriorTails) -> Self {
+        self.prior_tails = tails;
+        self
+    }
+
     /// The history as this agent sends it.
     fn wire<'a>(&self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
-        self.prior_thinking.wire(messages)
+        self.prior_tails.wire(self.prior_thinking.wire(messages))
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
     fn wire_bytes(&self, messages: &[Message]) -> usize {
-        self.prior_thinking.wire_bytes(messages)
+        self.prior_thinking.wire_bytes(messages) - self.prior_tails.dropped_bytes(messages)
     }
 
     /// What this agent thinks the time is, now.
