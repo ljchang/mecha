@@ -67,6 +67,8 @@ voice worker ──/v1/audio/speech, /v1/voices──▶ breeze_server.py (:8887
   - the house voice behind `default`;
   - speed by stretch.
 
+  The engine's registry lives in memory, so a restarted engine has forgotten every voice. Measured against the real engine (2026-10-03): `GET /v1/audio/voices` answers `{"voices": [{"name": …, "kind": "registered"}]}`, and speaking an unregistered voice is HTTP 400 `unknown voice '<name>'`. The adapter asks the registry before retrying, and re-registers when the registry cannot be read.
+
   Unit: `scripts/voice/mecha-breeze-adapter.service`, which runs from the shared checkout as the worker does. Tests: `scripts/voice/test_breeze_server.py`, with stand-ins for the engine and the STT.
 - **The switch.** A drop-in on `mecha-voice-worker.service` sets `MECHA_VOICE_TTS=http://127.0.0.1:8887/v1`. Chatterbox keeps running, so rolling back means removing the drop-in and restarting the worker.
 
