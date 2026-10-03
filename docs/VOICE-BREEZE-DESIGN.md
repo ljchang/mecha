@@ -80,8 +80,8 @@ Breeze takes, beside the text of a sentence, a free-text **voice direction**: `i
 
 1. **When it runs.** The worker asks the facade once per sentence, only when the TTS lists `instructions` in its `controls`. On Chatterbox no call is made.
 2. **On which model.** Whichever the session already has loaded (owner: "so we don't incur a model switching cost or run out of RAM"). The router is held without waiting and followed per call, never named from a cached binding; a model switch in flight skips the direction rather than waiting. Thinking is off for the call (`CompletionRequest::think`), since a reasoning pass would spend seconds per sentence.
-3. **Latency.** Measured on the router (`qwen3.6-35b-a3b`, thinking off): about 0.3–0.7 s to the first token and 1.9–3.6 s for a 30-word direction, barely slower while a reply streams in parallel. So:
-   - sentences after the first are directed while the one before plays, under a 1.5 s deadline;
+3. **Latency.** Measured on the loaded `qwen3.6-35b-a3b-uncensored` with the real prompt (the director's frame, a scene and the growing list of sentences already directed), thinking off, 3 rounds × 6 sentences: a 12–25-word direction took a median 1.61 s, p90 1.77 s, max 1.83 s; a 6–12-word one a median 1.11 s, max 1.32 s. The detailed length stays, as the owner wants. So:
+   - sentences after the first are directed while the one before plays, under a 2.5 s deadline. The slack is that sentence's remaining playback, about (1 − RTF) × its length, so a short sentence before a long direction leaves a gap; the follow-up is prefetch, where the facade directs each sentence as its text streams, before the worker asks;
    - the first sentence's direction (the *opening*) starts from the owner's words as the turn begins, overlapping the chat model's own time to its first sentence, and the first sentence waits at most 2.5 s for it;
    - directions are asked for at 12–25 words;
    - any failure, refusal or timeout speaks the sentence undirected.
