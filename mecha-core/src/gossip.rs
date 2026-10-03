@@ -239,8 +239,8 @@ impl GraphTool {
     /// Entity metadata: node id, aliases, identifiers, per-source coverage,
     /// interaction count, last seen.
     ///
-    /// Added because the audit was inconsistent without it. "Luke was last
-    /// seen on August 13" came back supported while "Luke has 1,212 recorded
+    /// Added because the audit was inconsistent without it. "Robin was last
+    /// seen on August 13" came back supported while "Robin has 1,212 recorded
     /// interactions" came back unsupported — the same class of claim, judged
     /// two ways, because both live in entity metadata and the verifier could
     /// only reach whichever of them happened to surface in a search result.
@@ -480,8 +480,8 @@ pub async fn coverage(
 /// interactive command and wrong here. A positive control on the
 /// `llm·uses` class — 78% human acceptance, durable properties that plainly
 /// appear in several sources — returned "no witness" for all eight
-/// candidates, because their subject is the bare string "Luke" and the
-/// graph holds two Luke nodes. Coverage came back empty and every claim
+/// candidates, because their subject is the bare string "Robin" and the
+/// graph holds two Robin nodes. Coverage came back empty and every claim
 /// about the graph's owner became unjudgeable.
 ///
 /// That is the third distinct thing one duplicate identity has broken
@@ -518,7 +518,7 @@ pub async fn coverage_best(
         // verify counterpart spell this field differently, and reading the
         // wrong one fails silently — the re-ask got an empty string, found
         // nothing, and fell back to the very name that was ambiguous, so
-        // the control run reported "measured on 'Luke'" and no coverage.
+        // the control run reported "measured on 'Robin'" and no coverage.
         let Some(id) = best["id"].as_str().filter(|s| !s.is_empty()) else {
             return Ok((String::new(), vec![], true));
         };
@@ -1884,8 +1884,8 @@ mod tests {
     #[test]
     fn claim_extraction_drops_scaffolding() {
         let listed = "**Claims:**\n\
-             1. Dana Whitfield works at Dartmouth.\n\
-             - py-feat is a tool for fNIRS analysis.\n\
+             1. Dana Whitfield works at Fairhaven.\n\
+             - kelp-survey is a tool for transect analysis.\n\
              Is she the lab PI?\n\
              short\n\
              She maintains the /srv/example/Git directory.";
@@ -1928,9 +1928,9 @@ mod tests {
         // The good ones from the same run must survive. Both are second
         // person, so the rule cannot simply reject "you".
         for q in [
-            "Are you referring to the Dana Whitfield associated with the Chang \
-             lab at Dartmouth and the 'py-feat' paper?",
-            "Can you confirm if Dana Whitfield is associated with the Chang lab?",
+            "Are you referring to the Dana Whitfield associated with the Example \
+             lab at Fairhaven and the 'kelp-survey' paper?",
+            "Can you confirm if Dana Whitfield is associated with the Example lab?",
         ] {
             assert!(usable_question(q).is_some(), "rejected a real probe: {q}");
         }
@@ -1942,7 +1942,7 @@ mod tests {
         // syntax, which became the next round's "question" and was
         // answered earnestly.
         assert_eq!(
-            usable_question("tool:kg_search\nargs:{\"query\": \"ljchang\"}"),
+            usable_question("tool:kg_search\nargs:{\"query\": \"robin\"}"),
             None
         );
         assert_eq!(
@@ -2712,7 +2712,7 @@ mod vet_tests {
         // must come first and the reply form last.
         let cand = Candidate {
             candidate_id: 1,
-            statement: "Luke prefers DIY.".into(),
+            statement: "Robin prefers DIY.".into(),
             subject: Some("Dana Whitfield".into()),
             origin_source: None,
             subject_ambiguous: false,
@@ -2726,7 +2726,7 @@ mod vet_tests {
         };
         let q = vet_question(&cand, cand.evidence.as_ref().unwrap());
         let ev_at = q.find("a long transcript").unwrap();
-        let claim_at = q.find("Luke prefers DIY.").unwrap();
+        let claim_at = q.find("Robin prefers DIY.").unwrap();
         let form_at = q.rfind("VERDICT:").unwrap();
         assert!(ev_at < claim_at && claim_at < form_at);
     }
