@@ -14,6 +14,53 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-03 — Breeze TTS 2 is the voice: an adapter, a director per
+sentence, no brevity rules on a streaming engine, and `default.wav`
+(#523, #525, #527, #528, #529; mecha-69).** Live with mecha-69's
+`ed72a382` (mecha 04:56Z, serve 04:59:03Z after a persona-chat hold
+cleared). `docs/VOICE-BREEZE-DESIGN.md` holds the measurements and the
+owner's rulings (§6).
+- **The engine and the adapter (#523).** `mecha-breeze-tts` (:8886, a
+  qwentts.cpp fork in `~/models/breeze-qwentts`, Q6_K) and
+  `mecha-breeze-adapter` (:8887, `scripts/voice/breeze_server.py`, the
+  surface `chatterbox_server.py` serves). Both are enabled at boot. The
+  adapter transcribes each clip once with Parakeet into an editable `.txt`,
+  registers voices and re-registers when the engine's registry no longer
+  holds one, and refuses `exaggeration`/`cfg_weight`. Probe:
+  `curl -s :8887/v1/voices` lists `"streams": true`.
+- **One write per session record (#525).** `Session::append` writes the
+  record and its newline in one `write_all`. `writeln!` issued two writes,
+  and a concurrent writer could merge two records into one line, losing
+  both. Eight threads × 300 appends merged lines on 3 of 3 runs before.
+- **The director (#527).** `POST /v1/mecha-direct` on the facade
+  (`voice::direct`, `mecha_core::voice_direction`) writes a 12–25-word
+  delivery direction per sentence on the loaded model, with thinking off
+  (`CompletionRequest::think`). The opening direction starts from the
+  owner's words when the turn begins. Each direction is a
+  `spoken_direction` record in the session; in incognito the director
+  runs and nothing is kept. A single-slot router preset skips
+  (`Bound::slots`). The worker asks only when the TTS lists `instructions`.
+  The first live call (a persona, 04:59Z): 23 of 26 sentences directed, 3
+  skipped as harness, median 723 ms, max 1,269 ms against a 2,500 ms
+  deadline.
+- **Brevity off on a streaming engine (#527).** The worker sends
+  `X-Voice-TTS-Streams: 1` when `/v1/voices` lists `"streams": true`, and
+  the facade opens the turn with `VOICE_BLOCK_STREAMING` and the persona
+  note without its length rule. Without the header, `VOICE_BLOCK` is
+  byte-identical, pinned by digest. Probe: `strings ~/.cargo/bin/mecha |
+  grep -c "Speak the way you would out loud"` → at least 1, and 0 before.
+  The phrase is in `VOICE_BLOCK_STREAMING` only; this build printed 2, and
+  what emitted the second copy was not run down.
+- **Breeze is the default (#528).** `worker.py`'s `MECHA_VOICE_TTS`
+  defaults to :8887. `default` is the clip `default.wav`, a reserved name
+  the library never offers to delete. `make-voices.py` and
+  `add-vctk-voices.py` write exact transcripts, and the latter skips
+  VCTK's duplicate mic rows.
+- **The ComfyUI idle reset, bounded (#529).** Its journal reads are
+  `journalctl -q -n 1 -g`, and an unreadable `MemFree` fails the unit.
+  `mecha-comfyui-idle-reset.timer` was installed at 04:57Z; its first tick
+  saw a queued job and left ComfyUI alone.
+
 **2026-10-03 — modular installs, step 7a-1: one hub resolver and a
 download that keeps only what matches its pin (#521, mecha-a3).**
 `mecha_core::fetch` is installed with mecha-69's `ed72a382` (04:57Z) and
@@ -2898,7 +2945,7 @@ the timing was not rerun.
 The old gossip quota observation used 10 candidates, three targets per night
 and a seven-day cooldown, requiring 21 distinct targets: nights under-filled
 with two on August 22, one on August 17 and two on August 16. It also recorded
-Frank Chang at 26 retrieval touches and suspected the probe's own reads.
+one contact at 26 retrieval touches and suspected the probe's own reads.
 The quota defect is superseded by the graph nightly's 25 candidates and
 least-recently-probed fallback when fresh candidates run out; those original
 figures remain historical observations. The proposed stranger-facing graph
@@ -4918,9 +4965,9 @@ What made all of this reviewable in the first place is the fifth change:
 **a group can be opened and its members verdicted one at a time** on the web
 (`GET /api/queue/items`, "Review each of the N"), which the TUI has had and
 the phone had not. The case for it is one real group — seventeen near-repeats
-naming Emmy, Sage, Katie, Joseph, Eni, Justin and Jesse as the owner's
-children, mostly Bee mishearing two names. Similarity is the grouping key, not
-agreement, so "Accept all 17" would have asserted every one of them. A verdict
+naming the owner's children, mostly Bee mishearing two names. Similarity is
+the grouping key, not agreement, so "Accept all 17" would have asserted
+every one of them. A verdict
 inside a group is deliberately plain — no cascade — because telling the
 members apart is the reason for being in there.
 
@@ -7143,6 +7190,19 @@ Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
 length bound: this is a record of what was measured, which is what this
 document is for.
 
+**2026-10-03 — Breeze TTS 2 holds about half of Chatterbox's memory
+(mecha-a3).** On the GB10, Q6_K, reading `nvidia-smi` and `ps` together
+(the method behind Chatterbox's 8,018 MiB):
+- At rest: **4,062 MiB**. That is 3,994 MiB GPU, 40 MiB `tts-server` RSS
+  and 28 MiB adapter RSS.
+- Peak, speaking one sentence through :8887: **4,185 MiB**. The GPU figure
+  stayed fixed; the server reached 155 MiB and the adapter 36 MiB.
+
+The figure goes into `recommend.rs`'s `tts` slot with #526, not merged when
+this was written. Check after it merges: `grep -F '4_185'
+mecha-core/src/recommend.rs`. That grep is ugrep on this machine, so a
+literal containing `$` needs `-F`.
+
 **2026-08-10/11, recovered 2026-08-27 — the turn ceiling was clipping a fifth
 of the benchmark, and nobody had re-derived it.** Salvaged out of PR #52 (a
 handoff refresh that went stale unmerged for sixteen days and was closed as
@@ -7932,6 +7992,20 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**A scripted provider cannot see a deadline set below the real cost.** The
+director shipped its first push with a 1.5 s per-sentence deadline. Every
+Rust test answered through a provider that returns instantly, so all of
+them passed. A bench on the router (`qwen3.6-35b-a3b-uncensored`, 3 rounds
+of 6 sentences, each prompt carrying the turn's growing "already directed"
+list) took a median 1.61 s and a p90 of 1.77 s, above that deadline (review
+of #527, pass 2), so it went to 2.5 s. The first live call then came in far
+lower: median 723 ms, max 1,269 ms, on `qwen3.6-35b-a3b` with the shorter
+prompts of a real turn's early sentences. Those are two measurements, on
+different models and prompt lengths, not one, and the live one is the
+population to size the deadline and any prefetch from. The trap is the
+tests: a timeout's value is a claim about a real server, and only a run
+against one can check it.
 
 **An activity sensor must listen to the person, not to what the page does.**
 The persona autolock first counted `scroll` as use. The chat pins itself to
@@ -10320,6 +10394,40 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**Chromium taps encoded audio only on a connection made for it.** Once
+Chrome shipped `RTCRtpScriptTransform`, the call page took that branch on a
+plain `RTCPeerConnection`. Chromium handed the transform no frames while
+RTP flowed, so every Chrome call declared the buffered uplink and fell back
+("RTP is arriving and no batch has", the owner's report on 2026-10-03).
+Chromium delivers only with `encodedInsertableStreams: true`, and then a
+receiver plays nothing unless its frames are piped through. Measured in
+Chromium 149: no flag, 0 frames against 150 RTP packets; flag alone, 0
+decoded samples at the far end; both, normal. Fixed in #534. A browser
+gaining the standard API can break a fallback that worked only because the
+API was missing.
+
+**A new CUDA context can fail at init with gigabytes "available".** From
+02:43Z to 02:55Z on 2026-10-03, `tts-server` (twice) and the on-demand OCR
+server failed at `cudaSetDevice` with `NV_ERR_NO_MEMORY` from
+`kgrctxAllocMainCtxBuffer`. `MemAvailable` read 30–42 GB at the time;
+processes already running were unaffected. Both started on a retry minutes
+later, and the cause is not pinned: no image render overlapped the
+failures, and the model switch came after them. An on-demand GPU server
+must expect a failed start and retry it, rather than read "available" as
+"can start".
+
+**`journalctl -g` exits 1 on no match, the same as a failure.** systemd
+255 with `-q -n 1 -g PATTERN` prints nothing and exits 1 when nothing
+matches, and exits 1 with a message on stderr when it cannot read. #529
+tells them apart by stderr. A stand-in that exits 0 on no match hides
+the confusion, so the test's stand-in now answers as the real one does.
+
+**A background wait dies with the worktree it runs in.** A CI watcher
+started inside a worktree that was then removed exited with "Unable to
+read current working directory" after the forced merge of #528. That read
+as a CI failure, and CI was still running. Run long waits from the main
+checkout, or remove the worktree only after they finish.
 
 **This box's `grep` is ugrep, which reads a `$` inside a pattern as an
 anchor.** A check from a peer, `grep -rl 'XDG_CACHE_HOME:-$HOME/.cache}/…'`,
