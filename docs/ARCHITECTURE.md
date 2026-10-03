@@ -688,7 +688,9 @@ conversation, so the capabilities do not change. Three rules:
   near-copy notice describes, always draw (review of #543). The claim is
   taken before the render, because a turn's calls run concurrently, and
   lapses unless the request drew, so a failed or cancelled one can be sent
-  again. On a call on 2026-10-03 a persona re-sent the seeded call that had
+  again. While the first is still drawing, an identical one is told so
+  (`REPEAT_IN_FLIGHT`), never that the picture exists — the render may yet
+  fail. On a call on 2026-10-03 a persona re-sent the seeded call that had
   just drawn, word for word, four times in one run; ComfyUI ran each in
   0.00 s as a duplicate of a finished prompt, kept no new output, and
   `/view` answered 404, which the run read as a failure. The record is
