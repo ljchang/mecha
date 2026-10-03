@@ -193,6 +193,12 @@ def voices():
         "speed": {"min": MIN_SPEED, "max": MAX_SPEED, "default": 1.0},
         "model": MODEL_NAME,
         "controls": list(CONTROLS),
+        # The first audio of a sentence arrives while the rest is still being
+        # synthesised, so a long sentence costs no silence up front. The
+        # worker passes this on, and the spoken-turn prompt drops its
+        # brevity rules, which existed for whole-sentence engines (owner
+        # ruling, 2026-10-03). Absent, as on Chatterbox, means it does not.
+        "streams": True,
     }
 
 
