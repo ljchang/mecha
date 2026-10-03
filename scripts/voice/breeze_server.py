@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""OpenAI-compatible TTS adapter for Breeze TTS 2 on qwentts.cpp.
+
+The voice worker talks to a TTS through one small surface - the one
+chatterbox_server.py serves - and this presents the same surface in front of
+the Breeze port's `tts-server` (~/models/breeze-qwentts, a qwentts.cpp fork):
+
+POST /v1/audio/speech  -> wav, or raw s16le pcm at 24 kHz, streamed at speed 1
+GET  /v1/voices        -> what this server can speak as, and which per-request
+                          controls the model honours (chatterbox_server's shape)
+GET  /health
+
+Three things the engine does not do, done here:
+
+- **Voices need a transcript.** Breeze clones from a reference clip *and its
+  exact text*. A voice is `<VOICES_DIR>/<name>.wav`; its text is the sidecar
+  `<name>.txt`, written once by transcribing the clip with Parakeet when it is
+  first spoken (owner ruling D3, 2026-10-03) and editable after. The port study
+  measured Breeze tolerating small transcript errors.
+- **Voices are registered with the engine** (`POST /v1/audio/voices`) on first
+  use and again when the clip changes, and once more if the engine has
+  restarted and forgotten them - its registry lives in memory.
+- **Speed.** The engine parses `speed` and ignores it. At 1.0 the PCM streams
+  straight through; at any other speed the sentence is buffered and stretched
+  with the same pitch-preserving WSOLA Chatterbox uses (ruling D4), which costs
+  that sentence its streaming.
+
+`voice: "default"` speaks as the house voice, `BREEZE_HOUSE_VOICE` (ruling D2):
+Breeze has no built-in voice. A house voice that does not exist is a 503 that
+says so, never a fallback to another voice.
+
+`instructions` is Breeze's voice direction - how a sentence is delivered - and
+is written by the model on a spoken turn (ruling D1, 2026-10-03). It is capped
+in length and stripped of control characters here; it never becomes text that
+is spoken.
+"""
+import asyncio
+import base64
+import io
+import os
+import wave
+
+import httpx
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel
+
+from audio_stretch import stretch
+
+BREEZE_URL = os.environ.get("BREEZE_TTS_URL", "http://127.0.0.1:8886").rstrip("/")
+VOICES_DIR = os.path.expanduser(os.environ.get("VOICES_DIR", "~/models/voices"))
+STT_URL = os.environ.get("MECHA_VOICE_STT", "http://127.0.0.1:8992/v1").rstrip("/")
+HOUSE_VOICE = os.environ.get("BREEZE_HOUSE_VOICE", "house")
+MODEL_NAME = os.environ.get("BREEZE_MODEL_NAME", "breeze-tts2-q6_k")
+RATE = 24000
+MIN_SPEED, MAX_SPEED = 0.5, 2.0
+# Long enough for a sentence of direction ("warmly, a little amused, slowing
+# down at the end"), short enough that it cannot carry a paragraph.
+INSTRUCTIONS_MAX = 300
+# What Breeze honours per request. Chatterbox's pair is refused, not ignored,
+# on the rule chatterbox_server.py states: a control a model drops is refused
+# rather than spoken as if it had landed.
+CONTROLS = ("temperature", "instructions")
+REFUSED = ("exaggeration", "cfg_weight")
+
+app = FastAPI()
+_registered: dict[str, float] = {}  # voice name -> wav mtime it was registered at
+_lock = asyncio.Lock()
+
+
+class SpeechRequest(BaseModel):
+    input: str
+    model: str = "breeze"  # accepted, ignored: one model per server
+    voice: str = "default"
+    response_format: str = "wav"
+    speed: float = 1.0
+    temperature: float | None = None
+    instructions: str | None = None
+    exaggeration: float | None = None
+    cfg_weight: float | None = None
+
+
+def voice_names() -> list[str]:
+    try:
+        return sorted(f[:-4] for f in os.listdir(VOICES_DIR) if f.endswith(".wav"))
+    except OSError:
+        return []
+
+
+def clean_instructions(text: str | None) -> str:
+    """The voice direction as sent: control characters out, one line,
+    capped. Empty means none."""
+    if not text:
+        return ""
+    flat = "".join(" " if c in "\r\n\t" else c for c in text if c.isprintable() or c in "\r\n\t")
+    return " ".join(flat.split())[:INSTRUCTIONS_MAX]
+
+
+async def transcript_for(client: httpx.AsyncClient, name: str, wav_path: str) -> str:
+    """The clip's text: the sidecar if there is one, else Parakeet's
+    transcript, written as the sidecar so it is done once and can be edited."""
+    txt = wav_path[:-4] + ".txt"
+    if os.path.exists(txt):
+        with open(txt, encoding="utf-8") as f:
+            text = f.read().strip()
+        if text:
+            return text
+    with open(wav_path, "rb") as f:
+        audio = f.read()
+    r = await client.post(
+        f"{STT_URL}/audio/transcriptions",
+        files={"file": (os.path.basename(wav_path), audio, "audio/wav")},
+        data={"model": "parakeet"},
+        timeout=120,
+    )
+    if r.status_code != 200:
+        raise HTTPException(503, f"could not transcribe voice {name}: STT answered {r.status_code}")
+    text = (r.json().get("text") or "").strip()
+    if not text:
+        raise HTTPException(503, f"could not transcribe voice {name}: empty transcript")
+    tmp = txt + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
+    os.replace(tmp, txt)
+    return text
+
+
+async def ensure_registered(client: httpx.AsyncClient, name: str, force: bool = False) -> None:
+    wav_path = os.path.join(VOICES_DIR, f"{name}.wav")
+    mtime = os.path.getmtime(wav_path)
+    async with _lock:
+        if not force and _registered.get(name) == mtime:
+            return
+        ref_text = await transcript_for(client, name, wav_path)
+        with open(wav_path, "rb") as f:
+            wav_b64 = base64.b64encode(f.read()).decode()
+        r = await client.post(
+            f"{BREEZE_URL}/v1/audio/voices",
+            json={"name": name, "wav_b64": wav_b64, "ref_text": ref_text},
+            timeout=120,
+        )
+        if r.status_code >= 400:
+            raise HTTPException(503, f"the Breeze engine refused voice {name}: {r.text[:200]}")
+        _registered[name] = mtime
+
+
+@app.get("/health")
+async def health():
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{BREEZE_URL}/health", timeout=3)
+        return {"status": "ok" if r.status_code == 200 else "loading"}
+    except httpx.HTTPError:
+        return {"status": "loading"}
+
+
+@app.get("/v1/voices")
+def voices():
+    """Read off the directory, as chatterbox_server does: adding a voice is
+    dropping a wav in. `default` is the house voice."""
+    names = [n for n in voice_names() if n != HOUSE_VOICE]
+    return {
+        "default": "default",
+        "voices": ["default"] + names,
+        "speed": {"min": MIN_SPEED, "max": MAX_SPEED, "default": 1.0},
+        "model": MODEL_NAME,
+        "controls": list(CONTROLS),
+    }
+
+
+def wav_bytes(pcm: bytes) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+@app.post("/v1/audio/speech")
+async def speech(req: SpeechRequest):
+    if req.response_format not in ("wav", "pcm"):
+        raise HTTPException(400, "wav or pcm only")
+    if not (MIN_SPEED <= req.speed <= MAX_SPEED):
+        raise HTTPException(400, f"speed must be in [{MIN_SPEED}, {MAX_SPEED}]")
+    for name in REFUSED:
+        if getattr(req, name) is not None:
+            raise HTTPException(400, f"{name} is not honoured by {MODEL_NAME}; refused, not ignored")
+    voice = HOUSE_VOICE if req.voice in ("default", "") else req.voice
+    if voice not in voice_names():
+        if req.voice in ("default", ""):
+            raise HTTPException(503, f"the house voice {HOUSE_VOICE!r} is not in {VOICES_DIR}")
+        raise HTTPException(400, f"unknown voice: {req.voice}")
+
+    body = {"input": req.input, "voice": voice, "response_format": "pcm"}
+    if req.temperature is not None:
+        body["temperature"] = req.temperature
+    direction = clean_instructions(req.instructions)
+    if direction:
+        body["instructions"] = direction
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5))
+    try:
+        await ensure_registered(client, voice)
+        upstream = await _open(client, body)
+        if upstream.status_code != 200:
+            # The engine restarted and forgot its voices, most likely: ask
+            # once more after registering again, then say what it said.
+            await upstream.aclose()
+            await ensure_registered(client, voice, force=True)
+            upstream = await _open(client, body)
+            if upstream.status_code != 200:
+                detail = (await upstream.aread()).decode(errors="replace")[:200]
+                await upstream.aclose()
+                raise HTTPException(502, f"the Breeze engine answered {upstream.status_code}: {detail}")
+    except BaseException:
+        await client.aclose()
+        raise
+
+    if req.response_format == "pcm" and abs(req.speed - 1.0) < 0.01:
+        async def relay():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    if chunk:
+                        yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(relay(), media_type="audio/pcm")
+
+    try:
+        pcm = await upstream.aread()
+    finally:
+        await upstream.aclose()
+        await client.aclose()
+    if abs(req.speed - 1.0) >= 0.01:
+        samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0
+        samples = stretch(samples, req.speed, sr=RATE)
+        pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+    if req.response_format == "pcm":
+        return Response(content=pcm, media_type="audio/pcm")
+    return Response(content=wav_bytes(pcm), media_type="audio/wav")
+
+
+async def _open(client: httpx.AsyncClient, body: dict) -> httpx.Response:
+    request = client.build_request("POST", f"{BREEZE_URL}/v1/audio/speech", json=body)
+    return await client.send(request, stream=True)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host=os.environ.get("BREEZE_HOST", "127.0.0.1"),
+                port=int(os.environ.get("BREEZE_PORT", "8887")))
