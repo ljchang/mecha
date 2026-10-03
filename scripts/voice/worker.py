@@ -137,12 +137,13 @@ AFFECT_CFG_WEIGHT_DELTA = -0.05
 # The voice director (docs/VOICE-BREEZE-DESIGN.md): how each sentence should
 # sound, asked of the facade per sentence when the TTS honours
 # `instructions`. The facade bounds the call (`voice_direction::
-# SENTENCE_DEADLINE` / `FIRST_SENTENCE_DEADLINE` in mecha-core: 1.5 s, and
-# 2.5 s for the first sentence, whose direction began with the turn); these
-# are those plus 0.3 s, so the facade's own deadline is the one that fires
-# and a sentence never waits on a facade that has stopped answering.
+# SENTENCE_DEADLINE` / `FIRST_SENTENCE_DEADLINE` in mecha-core: 2.5 s each -
+# a detailed direction measured 1.6 s median, 1.8 s max, on the loaded
+# model, and the first sentence's began with the turn); these are those plus
+# 0.3 s, so the facade's own deadline is the one that fires and a sentence
+# never waits on a facade that has stopped answering.
 DIRECT_URL = f"{FACADE_URL}/mecha-direct"
-DIRECT_TIMEOUT_SECONDS = 1.8
+DIRECT_TIMEOUT_SECONDS = 2.8
 DIRECT_FIRST_TIMEOUT_SECONDS = 2.8
 
 # Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
