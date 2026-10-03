@@ -2897,17 +2897,21 @@ impl PersonaChats {
         // recorded under it: the message ran on no model, but is the chat's.
         if let Some((bound, agent)) = &ready {
             if ps.recorded_generation != Some(bound.generation) {
+                // What this persona agent ran under, not the install's
+                // assistant (review of #530): its own levers; a read-only
+                // approver whatever `[tools] permission_mode` says
+                // (`setup::persona_agent`); and no learned rules rendered,
+                // which is an answer, not unknown.
+                let mut recorded = RunConfig::of(
+                    agent,
+                    &bound.config,
+                    &bound.provider_name,
+                    &mecha_core::persona::agent::levers_off(&bound.levers_off, agent.config()),
+                    Some(&mecha_core::learning::RulesCarried::none()),
+                );
+                recorded.permission_mode = mecha_core::config::PermissionMode::ReadOnly;
                 ps.session
-                    .append(&Record::Config(RunConfig::of(
-                        agent,
-                        &bound.config,
-                        &bound.provider_name,
-                        // The persona agent's own levers, not the binding's
-                        // (the assistant's): it forces several off (review
-                        // of #530).
-                        &mecha_core::persona::agent::levers_off(&bound.levers_off, agent.config()),
-                        None,
-                    )))
+                    .append(&Record::Config(recorded))
                     .map_err(|e| Refusal::Failed(format!("recording: {e:#}")))?;
                 ps.recorded_generation = Some(bound.generation);
             }
@@ -4989,9 +4993,19 @@ mod tests {
         turn(&w, &key, "Still there?").await;
         let text = file(&w);
         assert_eq!(configs(&text), 2, "a switch is recorded ahead of its turn");
+        // The writer reads the model from the `config` this door wrote, not
+        // the header: with the header naming another model, the record's
+        // still wins.
         let bound = w.chat.follower.current();
-        let chat = mecha_core::persona::writer::read_chat(&text);
+        let header = format!("\"model\":\"{}\"", bound.model);
+        assert!(
+            text.lines().next().unwrap().contains(&header),
+            "the header names it"
+        );
+        let started_elsewhere = text.replacen(&header, "\"model\":\"started-elsewhere\"", 1);
+        let chat = mecha_core::persona::writer::read_chat(&started_elsewhere);
         assert_eq!(chat.model.as_deref(), Some(bound.model.as_str()));
+        assert_eq!(recorded["permission_mode"], "read-only", "{recorded}");
     }
 
     /// The echo is read from transcripts (`persona::echo`), so what a persona
