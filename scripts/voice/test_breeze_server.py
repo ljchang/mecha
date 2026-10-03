@@ -125,6 +125,7 @@ class Adapter(unittest.TestCase):
         v = self.client.get("/v1/voices").json()
         self.assertEqual(v["voices"], ["default", "vctk_p297"])  # the house voice is `default`
         self.assertEqual(v["controls"], ["temperature", "instructions"])
+        self.assertIs(v["streams"], True)
 
     def test_default_is_not_offered_without_a_house_voice(self):
         os.remove(os.path.join(self.voices, "house.wav"))
