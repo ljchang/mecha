@@ -3263,7 +3263,7 @@ mod tests {
         let args = json!({
             "to": ["a@x.org", "b@x.org"],
             "subject": "Tuesday?",
-            "body_markdown": "Dear A,\n\nHello.\n\nDana",
+            "body_markdown": "Dear A,\n\nHello.\n\nRobin",
             "account": "dartmouth",
             "importance": "high",
             "attachments": [{"name": "f.pdf"}],
@@ -3280,7 +3280,7 @@ mod tests {
         let mut keys: Vec<String> = args.as_object().unwrap().keys().cloned().collect();
         keys.sort();
         assert_eq!(seen, keys);
-        assert_eq!(view.body.as_deref(), Some("Dear A,\n\nHello.\n\nDana"));
+        assert_eq!(view.body.as_deref(), Some("Dear A,\n\nHello.\n\nRobin"));
         // Reading order, not map order.
         assert_eq!(
             view.headers
@@ -3303,7 +3303,7 @@ mod tests {
         let args = json!({
             "to": ["a@x.org", "b@x.org"],
             "subject": "Tuesday?",
-            "body_markdown": "Dear A,\n\nHello.\n\nDana",
+            "body_markdown": "Dear A,\n\nHello.\n\nRobin",
             "account": "dartmouth",
             "importance": "high",
         });
@@ -3313,7 +3313,7 @@ mod tests {
             "b@x.org",
             "Tuesday?",
             "Dear A,",
-            "Dana",
+            "Robin",
             "dartmouth",
             "high",
         ] {

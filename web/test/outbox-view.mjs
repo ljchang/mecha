@@ -217,7 +217,7 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   const msg = (who, id) => `--- [work] From: ${who} <${id}@x> · 2026-09-2${id.slice(1)}T10:00:00Z\nCalendar date: x\nSubject: S\nMessage id (for mail_reply): ${id}\n\nbody ${id}`;
   const read = (ids, n = ids.length) => [...ids.map(([w, id]) => msg(w, id)), `--- end of thread · ${n} message${n === 1 ? '' : 's'}`].join('\n\n');
   const recorded = threadMessages(read([['Priya', 'M1']]));
-  const liveText = 'account:   work\nfrom:      Priya <c@x>\n\n' + read([['Priya', 'M1'], ['Dana', 'M2'], ['Priya', 'M3']]);
+  const liveText = 'account:   work\nfrom:      Priya <c@x>\n\n' + read([['Priya', 'M1'], ['Robin', 'M2'], ['Priya', 'M3']]);
   const live = liveThread(liveText, 'work');
   t('a live read parses past the triage block', live?.verified === true && live.messages.length === 3);
   const since = sinceDrafted(recorded, live);
