@@ -81,13 +81,18 @@ pub enum Cached {
     /// Something is there, and it is not the pinned file: a different size or
     /// a different hash. Neither provided nor handed to a launcher.
     Mismatch,
+    /// A plain file of the pinned size, not a blob named by its sha256 — put
+    /// there by hand. The cheap check does not read it (22 GB for the chat
+    /// pin); only a hash can say whether it is the pin.
+    Unverified,
     Absent,
 }
 
 /// Look in the cache for a pinned file. With `hash`, read it all and compare
-/// the sha256 (seconds for the 22 GB chat model); without, the size and the
-/// blob's name — `hf` names a blob by its sha256 — stand in, and a file
-/// whose name and size agree with the pin is taken as it.
+/// the sha256 (seconds for the 22 GB chat model). Without, never read a
+/// byte: the size and the blob's name — `hf` names a blob by its sha256 —
+/// stand in, a file whose name and size agree with the pin is taken as it,
+/// and a plain file of the right size is `Unverified`.
 pub fn cached(
     hub: &Path,
     repo: &str,
@@ -116,9 +121,7 @@ pub fn cached(
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     Ok(match named {
         Some(n) if n == file.sha256 => Cached::Verified,
-        // A plain file at the snapshot path (copied in by hand): hash it.
-        _ if sha256_file(&snap)? == file.sha256 => Cached::Verified,
-        _ => Cached::Mismatch,
+        _ => Cached::Unverified,
     })
 }
 
@@ -157,8 +160,8 @@ fn plain_relative(path: &str) -> bool {
 /// next call resumes. `progress` sees the bytes on disk so far.
 pub async fn fetch_hub_file(
     hub: &Path,
-    repo: &str,
-    revision: &str,
+    repo: &'static str,
+    revision: &'static str,
     file: &HubFile,
     progress: &mut dyn FnMut(u64),
 ) -> Result<PathBuf> {
@@ -168,8 +171,8 @@ pub async fn fetch_hub_file(
 async fn fetch_hub_file_from(
     base: &str,
     hub: &Path,
-    repo: &str,
-    revision: &str,
+    repo: &'static str,
+    revision: &'static str,
     file: &HubFile,
     progress: &mut dyn FnMut(u64),
 ) -> Result<PathBuf> {
@@ -177,8 +180,13 @@ async fn fetch_hub_file_from(
         bail!("refusing a pin whose repository, revision or path is not a plain relative name: {repo} {revision} {}", file.path);
     }
     let snap = snapshot_path(hub, repo, revision, file);
-    if cached(hub, repo, revision, file, false)? == Cached::Verified {
-        return Ok(snap);
+    match cached(hub, repo, revision, file, false)? {
+        Cached::Verified => return Ok(snap),
+        // A hand-placed file of the right size: only its hash can say.
+        Cached::Unverified if cached(hub, repo, revision, file, true)? == Cached::Verified => {
+            return Ok(snap);
+        }
+        _ => {}
     }
     let blob = blob_path(hub, repo, file);
     if !(blob.exists()
@@ -788,6 +796,48 @@ mod tests {
             .to_string();
         assert!(err.contains("did not write"), "{err}");
         assert_eq!(std::fs::read(&snap).unwrap(), b"someone else's");
+        let _ = std::fs::remove_dir_all(&hub);
+    }
+
+    /// A file of the pinned size placed by hand: the cheap check reads none
+    /// of it and says so; a fetch hashes it, takes it when it is the pin
+    /// (asking the server nothing), and leaves it alone when it is not.
+    #[tokio::test]
+    async fn a_hand_placed_file_of_the_right_size_is_hashed_before_it_counts() {
+        let body = b"pinned bytes".to_vec();
+        let s = serve(body.clone(), true, None).await;
+        let hub = scratch();
+        let sum = sha(&body);
+        let f = HubFile {
+            path: "m.gguf",
+            sha256: Box::leak(sum.into_boxed_str()),
+            bytes: body.len() as u64,
+        };
+        let snap = snapshot_path(&hub, "org/name", "r", &f);
+        std::fs::create_dir_all(snap.parent().unwrap()).unwrap();
+        std::fs::write(&snap, &body).unwrap();
+        assert_eq!(
+            cached(&hub, "org/name", "r", &f, false).unwrap(),
+            Cached::Unverified
+        );
+        fetch_hub_file_from(&s.base, &hub, "org/name", "r", &f, &mut |_| {})
+            .await
+            .unwrap();
+        assert!(
+            s.seen.lock().unwrap().is_empty(),
+            "a matching hand-placed file needs no download"
+        );
+        std::fs::write(&snap, b"other bytes!").unwrap();
+        assert_eq!(
+            cached(&hub, "org/name", "r", &f, false).unwrap(),
+            Cached::Unverified
+        );
+        let err = fetch_hub_file_from(&s.base, &hub, "org/name", "r", &f, &mut |_| {})
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not write"), "{err}");
+        assert_eq!(std::fs::read(&snap).unwrap(), b"other bytes!");
         let _ = std::fs::remove_dir_all(&hub);
     }
 

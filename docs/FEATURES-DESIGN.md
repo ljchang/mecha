@@ -43,9 +43,10 @@
 > registry in `recommend.rs`, `mecha features --probe`, and the page's table
 > generated from the rows, with a test that fails when they disagree. **7a is split in three**: 7a-1 — `fetch.rs`, the one hub
 > resolver (the launchers and the layout installer brought onto its order)
-> and the resumable, sha256-checked downloader — is built; 7a-2 (the
-> `Sidecar` registry, the manifest, provided-detection and the printed plan)
-> and 7a-3 (layout as the first installed entry) are next. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
+> and the resumable, sha256-checked downloader — is built (#521); so is
+> 7a-2: `sidecar.rs`, the manifest's reader, provided-detection and the
+> read-only `mecha features plan <id>`. 7a-3 (layout as the first installed
+> entry, and `enable` offering the plan) is next. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1326,8 +1327,9 @@ reachable by a user who ran `cargo install mecha-cli`**: they have no
    (a verified download the launcher then calls missing). Its order is
    `HF_HUB` (mecha's own, which `start-router.sh` and the embed launcher
    read today), then the `hf` CLI's `HF_HUB_CACHE`, then `HF_HOME/hub`, then
-   `~/.cache/huggingface/hub` — the `hf` CLI reads the middle two and not the
-   first, and it is still how layout's model and the router's missing-model
+   `XDG_CACHE_HOME/huggingface/hub` (`hf`'s own default for `HF_HOME`, added
+   on review of #521), then `~/.cache/huggingface/hub` — the `hf` CLI reads
+   the middle three and not the first, and it is still how layout's model and the router's missing-model
    hint arrive, so with `HF_HOME` set today the two already disagree. 7a
    brings the launchers onto the resolver's order. It resumes a partial
    file, and refuses one whose sha256 differs — no `hf`
