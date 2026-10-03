@@ -118,8 +118,9 @@ against `a51e1c01`:
 - **Still unbuilt in §9:**
   - an after-chat writer (D3's "after a session"), which needs an idle
     signal from serve;
-  - candidates in `/queues` and `backlog.rs`: today they appear only in
-    `mecha persona memory show`;
+  - candidates in `/queues` and `backlog.rs`: today they appear in the
+    persona editor's Memories tab (#519, with Keep it) and in `mecha
+    persona memory show`, but not in the unified queue;
   - consolidation and `self_update` (§9.12).
 - **The first night is read (2026-10-02, mecha-5d).** In
   `~/.mecha/learning/logs/2026-10-02.log`:
@@ -360,9 +361,11 @@ is open:
 
 **2026-10-01/03 — modular installs: steps 0–6 shipped and live, 7a-1
 merged, the rest of 7 and 8 open.**
-Step 5, #503 (`[voice]` and `[personas]`), went live in mecha-d7's deploy of
-`7663b9a8` (2026-10-02, machine state below); the last of step 4, #476, in
-mecha-69's deploy of `36ff7573`.
+Step 6 (#512, #513, #520) went live in mecha-1e's deploy of `c6f59b05`
+(2026-10-03), and HISTORY has it under 2026-10-02/03. Step 5, #503
+(`[voice]` and `[personas]`), went live in mecha-d7's deploy of `7663b9a8`
+(2026-10-02, machine state below); the last of step 4, #476, in mecha-69's
+deploy of `36ff7573`.
 `FEATURES-DESIGN.md` is the authority (§7 the owner's rulings, plus L1 and
 M1 in its status header; §9 the build order); `ARCHITECTURE.md` §Features
 holds the invariants and the "Adding a feature" checklist; what shipped is in
@@ -394,13 +397,6 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Step 6 is done (mecha-a3); HISTORY has it under 2026-10-02/03.**
-  - **#512** (step 6a): `hardware.md`'s two columns per tier and its
-    "Beside the chat model" table.
-  - **#513**: §10 and the owner's rulings F7–F10.
-  - **#520** (step 6b): `recommend.rs` and `mecha features --probe`. It went
-    live in mecha-1e's `c6f59b05`, and mecha-a3 checked the installed
-    `--help` and the probe.
 - **Step 7a-1 is #521, merged (`d97d01a5`, 02:52Z) and not deployed.** It
   is one Hugging Face hub resolver shared by 8 scripts, and a resumable
   sha256-checked downloader (`mecha_core::fetch`). It is not in
