@@ -315,6 +315,7 @@ fn render_plan(p: &sidecar::Plan) -> String {
     for f in &p.files {
         let what = match (f.repo, f.path) {
             (Some(repo), path) => format!("{repo}/{path}"),
+            (None, "") if f.model.is_empty() => "no recommended model".to_string(),
             (None, "") => f.model.to_string(),
             (None, path) => path.to_string(),
         };
@@ -329,6 +330,7 @@ fn render_plan(p: &sidecar::Plan) -> String {
             FileState::Unverified => {
                 "a file of the pinned size, placed by hand — not hashed by the plan".to_string()
             }
+            FileState::NoRow => "no model is recommended for this machine's tier".to_string(),
         };
         out.push_str(&format!(
             "  {:<16} {what}\n  {:<16}   {state}\n",
@@ -350,6 +352,19 @@ fn render_plan(p: &sidecar::Plan) -> String {
             "{unverified} model file(s) placed by hand are not hashed — `mecha features plan {} --verify` reads them.\n",
             p.feature.id()
         ));
+    }
+    let mismatched = p
+        .files
+        .iter()
+        .filter(|f| matches!(f.state, FileState::Mismatch))
+        .count();
+    if mismatched > 0 {
+        out.push_str(&format!(
+            "{mismatched} model file(s) at their path do not match their pins — move them aside for the pinned ones.\n"
+        ));
+    }
+    if p.files.iter().any(|f| matches!(f.state, FileState::NoRow)) {
+        out.push_str("No model is recommended at this machine's tier — see the hardware page.\n");
     }
     if p.download_bytes > 0 {
         out.push_str(&format!("To download: {}.\n", bytes_text(p.download_bytes)));
