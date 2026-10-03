@@ -14,6 +14,105 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-02/03 — a persona no longer sends an earlier reply again (#517,
+#522).** The owner's report: late in a long persona chat, short turns
+("mm") brought back an earlier reply word for word. A replay of that
+chat's prefix against the router found two causes and ruled out the usual
+fix (`PERSONA-DESIGN.md` §12.7 has the owner's rulings).
+- **The causes, measured.** With the provider's `seed = 42` and earlier
+  thinking sent back, the 4-character turn reproduced the earlier reply
+  7 of 7 times on the base model and 4 of 4 on the uncensored one. With
+  neither, 0 of 8 copied and 0 of 8 were damaged.
+- **Rejected options.** Qwen's "general" profile (presence penalty 1.5)
+  still copied 4 of 4: the penalty's window is 64 tokens (Traps →
+  Providers). DRY over the whole context ended the copies but damaged 2–5
+  replies in 8 at every setting tried.
+- **What shipped, persona chats only:**
+  - **No seed for the chat.** `setup::persona_provider` takes a
+    `PersonaUse`. `Converse` drops the seed, and `Judge` keeps it for the
+    crisis and steering judges, whose verdicts should be reproducible.
+    `build_for` checks the config as written first, so a config the
+    provider refuses stops chat and judge together (#522).
+  - **No earlier reply's thinking on the wire.** `message::PriorThinking`
+    is set to `Drop` by `persona_agent`. `drops_thinking` keeps the
+    thinking of any turn that called a tool, after review found stripping
+    it re-created the 2026-08-10 bare-`<tool_call>` failure. Every
+    pressure reading goes through `Agent::wire_bytes`. The assistant's
+    runs are unchanged.
+  - **An offline repetition score.** `persona::echo::session_echoes` reads
+    the transcripts and only `mecha persona show` asks for it, by the
+    owner's choice of offline over per-turn: nothing acts on it live, and
+    a better metric can recompute the history.
+- **Seven review passes on #517 and two on #522**, counted from the
+  reviewer's summary comments on each PR. Deployed by mecha-1e at `c6f59b05`, 2026-10-03 02:36Z, with
+  #520.
+- **First reading on the live store:** 8 of 92 replies in 6 Stella chats
+  over the week before repeated an earlier one, mostly from before the
+  fix.
+
+**2026-10-02/03 — modular installs, step 6: recommendations as data, and
+installers designed (#512, #513, #520; mecha-a3).**
+- **#512 (`5587bded`), step 6a.**
+  - `hardware.md` has two columns per tier (unified memory, and a separate
+    GPU) and a "Beside the chat model" table.
+  - The graph page names harrier on `:8081`, not ollama.
+  - FEATURES-DESIGN §6 had said image generation "borrows ~15 GB for its
+    duration"; it now says on demand, with a leak.
+- **#513 (`7c3eb2c2`), FEATURES-DESIGN §10: installers in the binary.** The
+  owner's rulings F7–F10:
+  - enabling a feature offers its install;
+  - hand installs are provided and left alone;
+  - llama.cpp is prebuilt where possible and built otherwise;
+  - an unpinned engine tag is trusted only when the owner confirms it at a
+    terminal.
+
+  It also corrected LLAMA-SERVER.md's rollback. The stub's RUNPATH is
+  `~/llama.cpp-next/build/bin`, so a rollback is chosen by whether that tree
+  has `build/bin.prev`.
+- **#520 (`3eeb4622`), step 6b.**
+  - `mecha-core/src/recommend.rs` is a registry by model slot, with pinned
+    sha256s.
+  - `mecha features --probe` reads the machine.
+  - `hardware.md`'s table is generated from the registry, held by
+    `the_hardware_page_holds_the_registry_table`.
+  - Live in mecha-1e's `c6f59b05`; mecha-a3 read 53.2 GiB resident, 83.1
+    loaded, of 121.7.
+
+**2026-10-02 — persona memory: dated by when it was said, a curation page,
+and the timescale rulings (#514, #519, #518; mecha-5d).** #514 and #519
+are live from mecha-5d's `c08f7f21` (2026-10-02 22:03Z). Three review
+passes each.
+- **#514 (`b44f0659`): a memory is dated by the chat it came from**, in
+  `[agent] timezone`, not by the night it was written. Before, the first
+  night showed a 30 September fever as that morning's news, and a UTC day
+  put the owner's late-evening chats a day ahead.
+  - `Source::chat_began` reads the date from the session id.
+  - `said_at` (on `Fact`, `SharedFact` and `Episode`) chooses `valid_from`,
+    else the episode's span, else the chat's start, else the write time.
+  - `recall::local_day` renders it in the owner's zone.
+  - `Memory::facts` and `Memory::episodes` sort by it.
+- **#519 (`9f7507f9`): the persona editor's Memories tab** (§9.8).
+  - `PersonaMemory.svelte`, over `PersonaChats::memory` and `memory_act`.
+  - The acts are the closed `MemoryAct` set.
+  - A locked persona answers 404.
+  - Only this persona's own shared copies can be shown or unshared.
+  - `shared_unreadable` and `shared_problem` are said on the page, never
+    shown as "not shared".
+- **Before the first night, a live run of the writer** on a copy of one
+  real chat (2026-10-01, the resident uncensored model, 24 turns) took
+  ~63 s and wrote 2 transient facts out of 8. That is the writer's cost
+  figure, and the baseline schema v4's prompt rewrite is to be A/B'd
+  against.
+- **#518 (`c0f47bf6`), docs only:** `PERSONA-MEMORY-TIMESCALES-RESEARCH.md`
+  and PERSONA-DESIGN §9.13, with the owner's rulings D26–D28.
+  - D26: four tiers, from momentary to lasting fact. States expire from
+    recall, never from the store, and a mood label about the owner is
+    allowed as a short-term state, amending §9.5.
+  - D27: a fact derived from several chats is rebuilt from the rest when
+    one is forgotten.
+  - D28: every memory access and curation act is logged, record-only, and
+    erased by `forget`.
+
 **2026-10-02 — modular installs, step 5: `[voice]` and `[personas]`
 (#503).** Everything voice is in one operator-only table, by the owner's
 ruling of 2026-10-01: "[voice] holds everything voice".
@@ -9004,6 +9103,23 @@ All found by pre-push review or by running it.
 
 ### Providers
 
+**A sampler penalty sees only its window, and the default window is 64
+tokens.** Qwen's model card recommends presence penalty 1.5 "to reduce
+endless repetitions", and a persona chat on that profile still sent an
+earlier reply word for word, 4 of 4. In llama-server the presence,
+frequency and repeat penalties share `repeat_last_n`, and DRY has
+`dry_penalty_last_n`. Both default to 64 tokens, and this build refuses
+`-1`. The card's knob is for a loop *inside* one reply; a reply thousands
+of tokens back is outside the window. Before trusting a penalty against
+cross-turn repetition, ask what the window covers (2026-10-02).
+
+**A fixed seed is a measuring tool, and in a conversation it is a copy
+machine.** `seed = 42` restarts the sampler's draws at the same state
+every request. A turn that adds little leaves the distributions nearly
+unchanged, so the same draws pick the same tokens, and a persona sent an
+earlier reply again, 7 of 7. Pin a seed where a run must repeat (evals,
+replays, a judge's verdict); never in a chat (2026-10-02, #517).
+
 **An unset key is the provider's default, not "off".** To test that `mecha
 eval` refuses a blind model, a session aimed it at `-p anthropic`, reading
 the config's missing `vision` as false. `vision_enabled` defaults it to true
@@ -10160,6 +10276,32 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A tool's error text can arrive at exit 0.** On this machine `nvidia-smi`
+prints `[Insufficient Permissions]` or `[Unknown Error]` in a memory field
+and still exits 0. Only a literal `[N/A]` means unified memory (the GB10),
+so a probe reading the field has to name each value it accepts, not trust
+the exit code (mecha-a3, #520).
+
+**A binary's `--version` names the commit it was compiled at, not the
+libraries it loads.** `llama-server.prev` reports `a4ce259` while loading
+`c841aeeb`'s libraries through its RUNPATH. Ask the loader instead:
+`readelf -d ~/.local/bin/llama-server.prev | grep RUNPATH` names
+`~/llama.cpp/build/bin`, and the main stub names `~/llama.cpp-next/build/bin`
+(mecha-a3; RUNPATHs re-read by mecha-1e, 2026-10-03).
+
+**`args_conflicts_with_subcommands` on a subcommand's args also refuses
+global flags.** With it set on `features`, `mecha features --yes enable
+graph` broke. Check: `mecha features --yes enable zzz` must answer "is not a
+feature", not a flag error. mecha-a3 ran it on the installed `c6f59b05`. No
+test holds it yet: `commands/features.rs` guards the regression with a
+comment and a hand-rolled `--probe` check, so `cargo test` would stay green
+if the attribute came back (#520).
+
+**A serve restart can strand the image model's memory.** `image_generate`'s
+ten-minute unload timer lives in the drawing process, so a restart inside
+that window left ~12 GiB held (2026-10-02). #515's `comfyui-idle-reset` is
+the lasting fix (mecha-a3).
 
 **A shared `CARGO_TARGET_DIR` keeps test binaries that point into removed
 worktrees.** Building several worktrees into one target directory reuses a
