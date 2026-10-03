@@ -149,16 +149,19 @@ pub const SIDECARS: &[Sidecar] = &[
         installer: "7d",
         models_in_hub: true,
     },
-    // The speech server and its OpenAI-shaped adapter, the default since
-    // 2026-10-03 (Chatterbox, a Docker image, before it).
+    // The speech server: Breeze and its OpenAI-shaped adapter, the default
+    // since 2026-10-03, or the Chatterbox container before it — either
+    // serves the `tts` slot, so a machine still on Chatterbox is provided,
+    // never offered Breeze over a working speech server (F8).
     Sidecar {
-        id: "breeze-tts",
-        label: "the speech server (Breeze)",
+        id: "speech",
+        label: "the speech server",
         needed_by: &[Feature::Voice],
         serves: &["tts"],
         evidence: &[
             Evidence::UserUnit("mecha-breeze-tts.service"),
             Evidence::UserUnit("mecha-breeze-adapter.service"),
+            Evidence::DockerImage("mecha/chatterbox"),
         ],
         installer: "7f",
         models_in_hub: true,
@@ -485,6 +488,9 @@ pub fn plan(
         // stale, and the machine is read as if it were not there.
         let state = match manifest.entry(s.id) {
             None => from_evidence(),
+            // Written before the first byte: nothing on disk yet, and
+            // resumable — the one state `incomplete` exists to name.
+            Some(e) if e.wrote.is_empty() && e.incomplete => SidecarState::Incomplete,
             Some(e) if e.wrote.is_empty() => SidecarState::Unknown {
                 why: format!("mecha's record for {} names nothing it wrote", s.id),
             },
@@ -825,6 +831,54 @@ mod tests {
             state("embed-server"),
             SidecarState::Unknown { .. }
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An install interrupted before its first byte has written nothing yet
+    /// and is resumable — the state the `incomplete` flag exists to name.
+    #[test]
+    fn an_install_stopped_before_its_first_byte_is_resumable() {
+        let root = scratch();
+        let m = machinery(&root);
+        let manifest = Manifest {
+            entries: vec![Entry {
+                sidecar: "layout".into(),
+                incomplete: true,
+                wrote: vec![],
+            }],
+        };
+        std::fs::create_dir_all(root.join("home/.mecha/sidecars")).unwrap();
+        std::fs::write(
+            Manifest::path(&m.mecha_home),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let p = plan(Feature::Documents, &m, &GB10, &root.join("hub"), false).unwrap();
+        let layout = p.sidecars.iter().find(|s| s.id == "layout").unwrap();
+        assert_eq!(layout.state, SidecarState::Incomplete);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A machine still on the Chatterbox container has a speech server: it
+    /// is provided, and Breeze is never offered over it.
+    #[test]
+    fn the_chatterbox_container_still_provides_speech() {
+        let root = scratch();
+        let mut m = machinery(&root);
+        m.docker = Box::new(|repo| {
+            if repo == "mecha/chatterbox" {
+                Lookup::Found("docker image mecha/chatterbox:serve".into(), None)
+            } else {
+                Lookup::Absent
+            }
+        });
+        let p = plan(Feature::Voice, &m, &GB10, &root.join("hub"), false).unwrap();
+        let speech = p.sidecars.iter().find(|s| s.id == "speech").unwrap();
+        assert!(
+            matches!(speech.state, SidecarState::Provided { .. }),
+            "{:?}",
+            speech.state
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
