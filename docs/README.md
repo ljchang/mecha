@@ -109,6 +109,7 @@ something shipped.
 | [`SPOKEN-OVERRIDE-DESIGN.md`](SPOKEN-OVERRIDE-DESIGN.md) | Changing a harness-supplied parameter by ear: state the default, accept an override, read the result back |
 | [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md) | The switchboard over the public surface |
 | [`TASK-AGENT-DESIGN.md`](TASK-AGENT-DESIGN.md) | The medium tier: delegated tasks, the resource model, and who holds the ball |
+| [`VOICE-BREEZE-DESIGN.md`](VOICE-BREEZE-DESIGN.md) | Breeze TTS 2 on a qwentts.cpp fork replaces Chatterbox: why this engine (measured against four alternatives), the adapter that keeps the worker's surface, the model-written delivery directions split from the reply, house voice and transcripts, and the gates before the switch. §6 holds the rulings |
 | [`VOICE-LINK-DESIGN.md`](VOICE-LINK-DESIGN.md) | Speech is captured and buffered on the phone and delivered over a reliable channel, so an unstable link delays the owner's words instead of losing them: input is never paused, output waits; two honest limits (the page dies, the outage outlasts the conversation) and the downlink as the mirror to build second |
 
 ## Where does this go?

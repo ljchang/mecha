@@ -1,0 +1,24 @@
+[Unit]
+Description=Breeze TTS 2 engine (qwentts.cpp fork, :8886)
+Documentation=https://github.com/ljchang/mecha/blob/main/docs/VOICE-BREEZE-DESIGN.md
+After=network.target
+
+[Service]
+# The fork and its ggml libraries live outside the repo (docs/VOICE-BREEZE-DESIGN.md §2):
+# a build directory that carries its own shared libraries.
+Environment=LD_LIBRARY_PATH=%h/models/breeze-qwentts/build
+# The owner's choice is 6-bit (Q6_K); 5-bit is the faster fallback. Switch with a
+# drop-in: Environment=BREEZE_GGUF=breeze-tts2-Q5_K_M.gguf
+Environment=BREEZE_GGUF=breeze-tts2-Q6_K.gguf
+ExecStart=%h/models/breeze-qwentts/build/tts-server \
+    --model %h/models/breeze-qwentts/gguf/${BREEZE_GGUF} \
+    --codec %h/models/breeze-qwentts/gguf/qwen-tokenizer-12hz-BF16.gguf \
+    --host 127.0.0.1 --port 8886 --alias breeze-tts2
+Restart=on-failure
+RestartSec=5
+# On unified memory the OOM killer picks the largest process, which is the chat
+# model; the voice engine goes first instead.
+OOMScoreAdjust=300
+
+[Install]
+WantedBy=default.target
