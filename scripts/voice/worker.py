@@ -11,7 +11,9 @@ browser needs HTTPS before it will open a microphone.
 The three legs are env-configurable base URLs (D6):
     MECHA_VOICE_LLM   the facade        (default http://127.0.0.1:8990/v1)
     MECHA_VOICE_STT   Parakeet          (default http://127.0.0.1:8992/v1)
-    MECHA_VOICE_TTS   Chatterbox Turbo  (default http://127.0.0.1:8881/v1)
+    MECHA_VOICE_TTS   Breeze TTS 2      (default http://127.0.0.1:8887/v1, the
+                      adapter in breeze_server.py; Chatterbox at :8881 is
+                      the rollback, docs/VOICE-BREEZE-DESIGN.md)
     MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
                       page can change it per session)
     MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
@@ -92,7 +94,7 @@ from pipecat.transports.smallwebrtc.transport import (
 
 FACADE_URL = os.environ.get("MECHA_VOICE_LLM", "http://127.0.0.1:8990/v1")
 STT_URL = os.environ.get("MECHA_VOICE_STT", "http://127.0.0.1:8992/v1")
-TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8881/v1")
+TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8887/v1")
 TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "default")
 TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
 # Bounds mirror the TTS server's own. Duplicated rather than fetched

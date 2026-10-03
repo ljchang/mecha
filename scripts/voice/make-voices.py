@@ -117,7 +117,7 @@ def main():
         n = synth(v, path)
         print(f"  {v:<12} {n/1024:7.0f} KiB  {path}")
     print(f"\n{len(wanted)} reference(s) in {VOICES_DIR}.")
-    print("Chatterbox reads this directory live - GET :8881/v1/voices to confirm.")
+    print("The TTS reads this directory live - GET :8887/v1/voices to confirm.")
 
 
 if __name__ == "__main__":
