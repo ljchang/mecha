@@ -180,6 +180,7 @@ mod tests {
             effort: None,
             thinking: false,
             cache_prompt: true,
+            think: None,
         }
     }
 

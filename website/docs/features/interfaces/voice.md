@@ -25,13 +25,13 @@ the *facade* — `mecha voice-serve`, and the `--voice-port` flag on
 `mecha serve` — which is the loopback endpoint the voice pipeline talks to.
 The pipeline itself is not packaged.
 
-Voice needs a **git checkout** and three local services:
+Voice needs a **git checkout** and three local services (the text-to-speech one is two processes):
 
 | What | Where | Why |
 |---|---|---|
 | A chat model | `llama-server`, `:8080` | answers the turn |
 | Speech to text | Parakeet TDT via `sherpa-onnx`, `:8992` | hears you |
-| Text to speech | Chatterbox Turbo (docker), `:8881` | speaks back |
+| Text to speech | Breeze TTS 2: the engine on `:8886`, its adapter on `:8887` | speaks back |
 
 mecha's side of these addresses is the [`[voice]`](/docs/reference/configuration#voice)
 table: `stt_url` for the web app's dictation, `offer_target` and `voice_port`
@@ -45,7 +45,10 @@ over to it automatically — a spare that needs a config edit and a restart is
 not a spare, it is a second service to keep alive.
 
 Plus the Python worker (`scripts/voice/worker.py`) that wires them together
-over WebRTC. One is a model download and one is a container image.
+over WebRTC. Parakeet is a model download. Breeze is a local build of a
+qwentts.cpp fork, behind a small adapter that runs from the checkout
+(`scripts/voice/breeze_server.py`); Chatterbox, the voice before it, still
+runs as a container image if you would rather use it.
 This is a build-it-yourself feature, and the honest summary is that setting it
 up takes an afternoon.
 
@@ -124,13 +127,16 @@ persona's reply in its voice, the assistant's in yours — with code, links
 and Markdown marks left out. It goes through the same worker, and keeps no
 trace of the text there.
 
-**Voice.** Six generated references plus Chatterbox's own built-in voice, and
-any you have cloned. **Library → Voices** lists them all: tap one to hear a
+**Voice.** Six generated references, `default`, and any you have cloned. **Library → Voices** lists them all: tap one to hear a
 short sentence spoken in it, record or upload a new one, and see which
-personas speak in each. Chatterbox conditions on a few seconds of reference audio,
-so a voice is a `.wav` on disk — the server reads the voices directory live, and
-dropping a clip in by hand works exactly as well as recording one through the
-page.
+personas speak in each. Breeze clones from a few seconds of reference audio and
+the exact words spoken in it, so a voice is a `.wav` on disk with its transcript
+beside it as a `.txt` — written by `make-voices.py`, or by Parakeet the first
+time the voice is spoken, and yours to correct. The server reads the voices
+directory live, and dropping a clip in by hand works exactly as well as
+recording one through the page. Breeze has no built-in voice: `default` is
+`default.wav`, which `make-voices.py` writes from one of its references when
+there is none yet, and which you can replace with any clip you like.
 
 The six shipped references were synthesised from Kokoro's presets by
 `scripts/voice/make-voices.py`, which is a licensing decision more than a
@@ -149,17 +155,17 @@ the clips if you share them. The script only adds files and never overwrites
 one, and it takes speaker ids, never a URL.
 
 **Cloning your own** happens in Library → Voices: record someone reading the
-passage there, or upload a WAV recorded elsewhere. It needs `[voice] voices_dir` pointed at the host directory the
-TTS container mounts as `/voices`; unset, the endpoint answers *not configured*
+passage there, or upload a WAV recorded elsewhere. It needs `[voice] voices_dir` pointed at the directory the
+TTS reads its voices from (`~/models/voices` unless you moved it); unset, the endpoint answers *not configured*
 rather than failing obscurely. A reference is **5 to 120 seconds** — under five
-Chatterbox has too little voice to condition on, and past two minutes the extra
+the engine has too little voice to condition on, and past two minutes the extra
 audio buys nothing while the file stores that much more of somebody's speech.
 Uploads are capped at 32 MB and refused on size before anything is parsed, must
 arrive as `content-type: audio/wav` (which forces any cross-origin caller
 through a preflight this server never answers), and a name is 1–40 characters of
 `a-z`, `0-9`, `-` or `_` — a closed alphabet rather than a denylist, because the
 string becomes a path on one side and a TTS field on the other. `default` is
-refused: it names the built-in voice and must stay unshadowable.
+refused: it names the default voice and must stay unshadowable.
 
 **Rate.** 0.5× to 2.0×, pitch-preserving — mecha speaks faster without
 sounding like a chipmunk.

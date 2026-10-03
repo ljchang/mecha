@@ -47,15 +47,18 @@ echo "$FAKE_QUEUE"
 [ -n "${FAKE_CONNECTED:-}" ] && echo "ESTAB 0 0 127.0.0.1:8188 127.0.0.1:51234"
 exit 0
 """,
+    # As the real one answers `-g`: a match prints it; no match exits 1 and
+    # says nothing; a failure exits 1 and says why on stderr.
     "journalctl": """#!/bin/bash
-[ -n "${FAKE_JOURNAL_BROKEN:-}" ] && exit 1
+echo "journalctl $*" >> "$CALLS"
+[ -n "${FAKE_JOURNAL_BROKEN:-}" ] && { echo "Failed to open journal" >&2; exit 1; }
 case "$*" in
   # This run of the unit: it has served a picture unless told it never has.
-  *_SYSTEMD_INVOCATION_ID=*) [ -z "${FAKE_NEVER_SERVED:-}" ] && echo "Prompt executed in 80 seconds";;
+  *_SYSTEMD_INVOCATION_ID=*) [ -z "${FAKE_NEVER_SERVED:-}" ] && { echo "Prompt executed in 80 seconds"; exit 0; };;
   # The idle window.
-  *--since*) [ -n "${FAKE_RECENT:-}" ] && echo "got prompt";;
+  *--since*) [ -n "${FAKE_RECENT:-}" ] && { echo "got prompt"; exit 0; };;
 esac
-exit 0
+exit 1
 """,
 }
 
@@ -73,7 +76,8 @@ class IdleReset(unittest.TestCase):
             (d / "proc" / PID).mkdir(parents=True)
             if rss_mib is not None:
                 (d / "proc" / PID / "status").write_text(f"Name:\tpython\nVmRSS:\t{rss_mib * 1024} kB\n")
-            (d / "meminfo").write_text(f"MemTotal: 127000000 kB\nMemFree: {memfree_mib * 1024} kB\n")
+            if memfree_mib is not None:
+                (d / "meminfo").write_text(f"MemTotal: 127000000 kB\nMemFree: {memfree_mib * 1024} kB\n")
             calls = d / "calls"
             calls.touch()
             env = {
@@ -104,6 +108,22 @@ class IdleReset(unittest.TestCase):
         calls = self.run_script()
         self.assertTrue(self.restarted(calls), calls)
         self.assertFalse(self.freed(calls))
+
+    def test_the_journal_is_read_bounded_never_whole(self):
+        # Every minute, the whole run's journal was read to find one line.
+        calls = self.run_script()
+        reads = [l for l in calls.splitlines() if l.startswith("journalctl")]
+        self.assertTrue(reads, calls)
+        for r in reads:
+            self.assertIn("-n 1", r, r)
+            self.assertIn("-g", r, r)
+
+    def test_unreadable_meminfo_fails_the_unit(self):
+        # Unknown free memory was read as zero: /free, exit 0, a decision.
+        calls = self.run_script(memfree_mib=None, rc=1)
+        self.assertFalse(self.restarted(calls), calls)
+        self.assertFalse(self.freed(calls), calls)
+        self.assertIn("cannot read MemFree", self.last_said)
 
     def test_a_server_mecha_already_freed_is_still_restarted(self):
         # /free leaves the weights in RSS on unified memory; a GPU-only check
