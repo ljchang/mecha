@@ -146,7 +146,7 @@ and every actor below is a consumer of that one file, exactly as
 
 ```jsonc
 "lifecycle": {
-  "account": "dartmouth",
+  "account": "campus",
   "message": "Can we find an hour before the grant deadline?",
   "deadline": "2026-09-08T21:00:00Z",
   "invites":  { "Priya": "2026-09-05T13:02:11Z", "Tal": null },   // sent_at per name
@@ -205,7 +205,7 @@ every two minutes. The poll lifecycle is three more idempotent verbs on the
 same line, each reading the record and writing only its own fields:
 
 ```
-factory-publish polls sweep; mecha-mail polls --account dartmouth; mecha polls sweep
+factory-publish polls sweep; mecha-mail polls --account <your mail account>; mecha polls sweep
 ```
 
 - **`factory-publish polls sweep`** — the box-facing half, no calendar.

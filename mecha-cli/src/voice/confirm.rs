@@ -1207,9 +1207,9 @@ mod echo_at_the_confirmation_door {
             status: "pending".into(),
             tool: "mail__mail_send".into(),
             kind: OutboxKind::Message,
-            args_before: json!({"to": "alice@example.com", "account": "dartmouth",
+            args_before: json!({"to": "alice@example.com", "account": "campus",
                                 "subject": "Reading group", "body_markdown": "Thursday works."}),
-            args: json!({"to": "alice@example.com", "account": "dartmouth",
+            args: json!({"to": "alice@example.com", "account": "campus",
                          "subject": "Reading group", "body_markdown": "Thursday works."}),
             summary: "a draft".into(),
             session_id: None,
@@ -1245,7 +1245,7 @@ mod echo_at_the_confirmation_door {
                     I have put a hold on the seminar room either way, and I will bring the \
                     printed copies along with the revised handout for the second half."
             .repeat(4);
-        item.args = json!({"to": "alice@example.com", "account": "dartmouth",
+        item.args = json!({"to": "alice@example.com", "account": "campus",
                            "subject": "Reading group", "body_markdown": body});
         item.args_before = item.args.clone();
         item
@@ -1288,7 +1288,7 @@ mod echo_at_the_confirmation_door {
             .rev()
             .collect();
         assert!(
-            tail.contains("dartmouth account"),
+            tail.contains("campus account"),
             "the last words are still the menu: {tail:?}"
         );
         // The precise failure: a clean truncation of the old tail parsed as
@@ -1372,7 +1372,7 @@ mod echo_at_the_confirmation_door {
     fn an_echo_that_is_not_an_answer_keeps_the_question() {
         let (_, pending) = offered();
         let item = draft();
-        match react("from your dartmouth account", &pending, Some(&item), None) {
+        match react("from your campus account", &pending, Some(&item), None) {
             Reaction::NotConvinced(_) => {}
             other => panic!("an echo dropped the open question: {other:?}"),
         }

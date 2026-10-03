@@ -38,7 +38,7 @@ t('safelinks unwrap to the destination', unwrapUrl(wrapped) === 'https://www.nat
 t('google redirector unwraps', unwrapUrl('https://www.google.com/url?q=https://example.org/x&sa=D') === 'https://example.org/x');
 t('a wrapper around javascript: stays the wrapper', unwrapUrl('https://nam12.safelinks.protection.outlook.com/?url=javascript%3Aalert(1)').startsWith('https://nam12'));
 t('a short URL is host and path', shortUrl('https://www.nature.com/articles/s41586') === 'nature.com/articles/s41586');
-t('a query is elided', shortUrl('https://dartmouth.zoom.us/j/95332509984?pwd=abc') === 'dartmouth.zoom.us/j/95332509984?…');
+t('a query is elided', shortUrl('https://campus.zoom.us/j/95332509984?pwd=abc') === 'campus.zoom.us/j/95332509984?…');
 
 {
   // The shape in the B4 announcement: the visible text is a URL and the
@@ -59,9 +59,9 @@ t('a query is elided', shortUrl('https://dartmouth.zoom.us/j/95332509984?pwd=abc
 
 {
   // Found on review: scheme-less address text over a different destination.
-  const nodes = parseInline('[mail.dartmouth.edu/login](https://evil.example/login)');
+  const nodes = parseInline('[mail.example.edu/login](https://evil.example/login)');
   t('host-shaped link text shows the real destination', textOf(nodes) === 'evil.example/login');
-  const mail = parseInline('[dean@dartmouth.edu](mailto:attacker@evil.example)');
+  const mail = parseInline('[dean@example.edu](mailto:attacker@evil.example)');
   t('an address as link text shows the real recipient', textOf(mail) === 'attacker@evil.example');
   t('ordinary words stay words', textOf(parseInline('[the programme](https://uct.example.org/p)')) === 'the programme');
 }

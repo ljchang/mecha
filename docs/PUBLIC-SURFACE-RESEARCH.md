@@ -1166,7 +1166,7 @@ policy nobody implements.
 The DOJ's ADA **Title II** rule requires WCAG 2.1 Level AA for public entities'
 web content, headline date 2026-04-24, with 📰 an interim final rule reported in
 April 2026 extending larger entities to 2027-04-26. **Title II covers public
-universities; Dartmouth is private**, so Title III applies instead — no
+universities; the owner's university is private**, so Title III applies instead — no
 codified technical standard, but a heavily litigated "public accommodation"
 obligation where WCAG 2.1 AA is the de facto benchmark. Either way the design
 target is the same, and a personal page taking requests from students ought to

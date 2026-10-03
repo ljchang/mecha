@@ -3378,11 +3378,11 @@ mod tests {
         let home = home("dead-auth");
         write_marker(&home, "personal", &valid_marker());
         // A healthy account: a directory with credentials and no marker.
-        std::fs::create_dir_all(home.join("mail").join("dartmouth")).unwrap();
+        std::fs::create_dir_all(home.join("mail").join("campus")).unwrap();
         std::fs::write(
             home.join("mail").join("accounts.toml"),
             "[[account]]\nname = \"personal\"\nprovider = \"google\"\n\
-             [[account]]\nname = \"dartmouth\"\nprovider = \"outlook\"\n",
+             [[account]]\nname = \"campus\"\nprovider = \"outlook\"\n",
         )
         .unwrap();
 

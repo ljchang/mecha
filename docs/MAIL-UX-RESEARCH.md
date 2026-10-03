@@ -340,7 +340,7 @@ rather than papered over — a fan-out read already reports a failed account
 beside the others' results rather than sinking the call, and the same
 convention applies here. What must not happen is a verb that silently does
 nothing on one account. `mecha doctor` should report an account whose scopes
-cannot support the triage verbs, so "why did archive not work on Dartmouth"
+cannot support the triage verbs, so "why did archive not work on campus"
 is answerable without reading source.
 
 #### Tags are internal, and that is the better design anyway
@@ -869,7 +869,7 @@ the rules above are not paranoia, and why mecha should ship the format with
    demand — the store is an index, not a cache.
 7. **Is `Mail.ReadWrite` worth an IT ticket?** The only genuinely blocked
    item (§5). The alternatives are Gmail-only triage verbs, or a personal
-   Microsoft app registration for the Dartmouth account — which trades the
+   Microsoft app registration for the campus account — which trades the
    admin-consent problem for a separate-registration problem and may violate
    policy anyway. This is a question for the user and their IT, not a design
    question, and it should be asked early because it decides whether phase 1

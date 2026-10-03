@@ -1991,7 +1991,7 @@ fn render(value: &Value) -> String {
 /// matches every calendar call in the session.
 ///
 /// `account` and the other headers are excluded on purpose, and it is the
-/// exclusion that makes the join worth anything: `{"account": "dartmouth"}`
+/// exclusion that makes the join worth anything: `{"account": "campus"}`
 /// is shared by every mail call in the session and would match all of them,
 /// which is a filter that filters nothing. Provider ids are high-entropy
 /// because they have to be.
@@ -3264,7 +3264,7 @@ mod tests {
             "to": ["a@x.org", "b@x.org"],
             "subject": "Tuesday?",
             "body_markdown": "Dear A,\n\nHello.\n\nRobin",
-            "account": "dartmouth",
+            "account": "campus",
             "importance": "high",
             "attachments": [{"name": "f.pdf"}],
         });
@@ -3304,18 +3304,12 @@ mod tests {
             "to": ["a@x.org", "b@x.org"],
             "subject": "Tuesday?",
             "body_markdown": "Dear A,\n\nHello.\n\nRobin",
-            "account": "dartmouth",
+            "account": "campus",
             "importance": "high",
         });
         let spoken = DraftView::of(&args).spoken(&[]).text();
         for audible in [
-            "a@x.org",
-            "b@x.org",
-            "Tuesday?",
-            "Dear A,",
-            "Robin",
-            "dartmouth",
-            "high",
+            "a@x.org", "b@x.org", "Tuesday?", "Dear A,", "Robin", "campus", "high",
         ] {
             assert!(
                 spoken.contains(audible),

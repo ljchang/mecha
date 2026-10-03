@@ -47,8 +47,8 @@ tools = [
 `accounts.toml` in `~/.mecha/mail/` maps short names to providers:
 
 ```toml
-default = "dartmouth"
-# default_mail = "dartmouth"      # optional: where new mail goes from
+default = "campus"
+# default_mail = "campus"      # optional: where new mail goes from
 # default_calendar = "personal"   # optional: where new events go
 
 [[account]]
@@ -57,7 +57,7 @@ provider = "google"
 # grant_lifetime_days = 7         # optional: see below
 
 [[account]]
-name = "dartmouth"
+name = "campus"
 provider = "outlook"
 ```
 
@@ -75,11 +75,11 @@ Set `$MECHA_MAIL_DIR` to keep the registry somewhere other than
 `~/.mecha/mail/`.
 
 ```bash
-mecha-mail auth dartmouth --provider outlook --tenant <tenant-id>
+mecha-mail auth campus --provider outlook --tenant <tenant-id>
 mecha-mail auth personal  --provider google
 mecha-mail import personal --provider google    # copy a mecha-google / mecha-outlook login in
 mecha-mail accounts                              # names, providers, addresses, the default
-mecha-mail default dartmouth                     # set the standing default
+mecha-mail default campus                     # set the standing default
 mecha-mail default personal --calendar           # …or one surface's (--mail / --calendar)
 mecha-mail serve                                 # the MCP server (also the no-subcommand default)
 ```
@@ -100,7 +100,7 @@ Names are lowercase letters, digits, `-` and `_`; duplicates and a default
 
 **The account names are baked into every tool schema as an enum at startup.**
 `accounts.toml` is read once, and every tool's `account` property is emitted as
-`{"type": "string", "enum": ["dartmouth", "personal"]}`, plus a sentence naming
+`{"type": "string", "enum": ["campus", "personal"]}`, plus a sentence naming
 the default where one exists. The model picks from real names instead of
 guessing at them, and the schemas are built once rather than per request.
 
@@ -108,7 +108,7 @@ A configured account whose credentials will not load **fails startup** with the
 command that fixes it, rather than being quietly skipped:
 
 ```
-account `dartmouth`: run `mecha-mail auth dartmouth --provider outlook`
+account `campus`: run `mecha-mail auth campus --provider outlook`
 ```
 
 ## Resolution: the rule that shapes the surface
@@ -164,7 +164,7 @@ the account it came from:
 
 ```json
 [
-  {"account": "dartmouth", "thread_id": "AAQk...", "message_id": "AAMk...",
+  {"account": "campus", "thread_id": "AAQk...", "message_id": "AAMk...",
    "from": "Priya Nair <priya@example.edu>", "subject": "Retreat agenda",
    "date": "2026-08-04T09:12:00Z", "snippet": "…", "unread": true,
    "has_attachments": false}
@@ -190,7 +190,7 @@ and `calendar_list_events` with a `calendar_id` other than `primary` require
 `account` when more than one is configured, and say where to find it:
 
 ```
-several accounts are configured (dartmouth, personal) and this id is
+several accounts are configured (campus, personal) and this id is
 account-scoped — pass `account` (every search and list row carries it)
 ```
 
@@ -204,7 +204,7 @@ mode resolves to it.
 several accounts and no default, the error says to **ask the user**:
 
 ```
-several accounts are configured (dartmouth, personal) and no default is set —
+several accounts are configured (campus, personal) and no default is set —
 ask the user which account to use, then pass it as `account`.
 (They can set a standing default with `mecha-mail default <name>`, or one for
 this surface alone with `mecha-mail default <name> --mail`.)
@@ -362,7 +362,7 @@ could send from.
 exists because an inbox is not a thing you read once — it is a queue you work.
 
 ```bash
-mecha mail classify --account dartmouth   # read recent mail, decide what each thread is
+mecha mail classify --account campus   # read recent mail, decide what each thread is
 mecha mail list                           # what needs you, newest first
 mecha mail list --aged                    # day two: what you meant to answer
 mecha mail show <thread_id>               # read one, in full
@@ -585,7 +585,7 @@ either subsystem.
 ### Bulk reading is an operator verb, never a tool
 
 ```bash
-mecha-mail corpus --since 2026-07-01 --account dartmouth
+mecha-mail corpus --since 2026-07-01 --account campus
 ```
 
 `corpus` downloads a span of mail for analysis into
@@ -615,7 +615,7 @@ different questions:
 
 ```bash
 mecha mail score                  # the live store, against what actually happened
-mecha mail eval --account dartmouth --out graded.jsonl   # the classifier, against a known corpus
+mecha mail eval --account campus --out graded.jsonl   # the classifier, against a known corpus
 ```
 
 **`score`** grades the live triage store. Behaviour (did a reply actually go
@@ -755,7 +755,7 @@ failure is next tried.
 ### Microsoft: device code
 
 ```bash
-mecha-mail auth dartmouth --provider outlook --tenant <tenant-id>
+mecha-mail auth campus --provider outlook --tenant <tenant-id>
 ```
 
 ```

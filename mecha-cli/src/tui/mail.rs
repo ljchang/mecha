@@ -732,7 +732,7 @@ mod tests {
         MailRow {
             thread_id: "AAQkADFiNjVjOWI1LTlkNGEtNDcxMi00ZDVmLWM3ZWI=".into(),
             handle: handle("AAQkADFiNjVjOWI1LTlkNGEtNDcxMi00ZDVmLWM3ZWI="),
-            account: "dartmouth".into(),
+            account: "campus".into(),
             urgency: "week".into(),
             tags: "#research".into(),
             summary: summary.into(),
