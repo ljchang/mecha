@@ -72,28 +72,25 @@ voice worker ──/v1/audio/speech, /v1/voices──▶ breeze_server.py (:8887
   Unit: `scripts/voice/mecha-breeze-adapter.service`, which runs from the shared checkout as the worker does. Tests: `scripts/voice/test_breeze_server.py`, with stand-ins for the engine and the STT.
 - **The switch.** A drop-in on `mecha-voice-worker.service` sets `MECHA_VOICE_TTS=http://127.0.0.1:8887/v1`. Chatterbox keeps running, so rolling back means removing the drop-in and restarting the worker.
 
-## 3. Delivery instructions (the "dual stream")
+## 3. Delivery: the director, and the prompt on a streaming engine
 
 Breeze takes, beside the text of a sentence, a free-text **voice direction**: `instructions`, rendered as `<ins_bos>…<ins_eos>` in its prompt.
 
-**Ruling D1:** the chat model writes it, on spoken turns only. One stream leaves the model; the worker splits it:
+**Ruling D1, as refined (2026-10-03):** a separate model call, the **director**, writes a detailed direction for every spoken sentence. The chat model writes only the words. The first plan, where the chat model wrote inline `[[…]]` directions that the worker split out, was set aside after a pros-and-cons comparison: the director gives every sentence its own direction at a consistent level of detail, and nothing reaches the transcript that the page and derived readers would then have to hide. The code is `mecha_core::voice_direction` (prompt, one-shot call, record) and `mecha-cli`'s `voice::direct` (`POST /v1/mecha-direct`); `docs/ARCHITECTURE.md` § The voice director holds the invariants.
 
-1. **The syntax.** A direction in double square brackets, placed before the words it shapes: `[[softly, with a smile]] I'm sorry to hear that.`
-   - It holds until the next one, within a turn.
-   - It is never spoken.
-   - An unclosed `[[` at a sentence cut is held until it closes.
-2. **The worker.**
-   - It takes the latest direction in each sentence and strips every `[[…]]` from the text.
-   - It sends `instructions` only when the TTS lists that control. On Chatterbox the directions are stripped and dropped, so the same prompt works on either engine.
-   - The echo filter is given the stripped text, since that is what the room hears.
-3. **The prompt.** The spoken-turn block (`VOICE_BLOCK`, and `persona::call::note`) gains one sentence offering the syntax, **only when the TTS honours `instructions`.** The worker tells the facade so with a request header.
-4. **The display.** The chat transcript keeps the model's text as written (the record is append-only). The page and the derived readers hide `[[…]]`: titles, memory, appraisal and the echo text.
+1. **When it runs.** The worker asks the facade once per sentence, only when the TTS lists `instructions` in its `controls`. On Chatterbox no call is made.
+2. **On which model.** Whichever the session already has loaded (owner: "so we don't incur a model switching cost or run out of RAM"). The router is held without waiting and followed per call, never named from a cached binding; a model switch in flight skips the direction rather than waiting. Thinking is off for the call (`CompletionRequest::think`), since a reasoning pass would spend seconds per sentence.
+3. **Latency.** Measured on the router (`qwen3.6-35b-a3b`, thinking off): about 0.3–0.7 s to the first token and 1.9–3.6 s for a 30-word direction, barely slower while a reply streams in parallel. So:
+   - sentences after the first are directed while the one before plays, under a 1.5 s deadline;
+   - the first sentence's direction (the *opening*) starts from the owner's words as the turn begins, overlapping the chat model's own time to its first sentence, and the first sentence waits at most 2.5 s for it;
+   - directions are asked for at 12–25 words;
+   - any failure, refusal or timeout speaks the sentence undirected.
+4. **Harness speech is not directed.** Offers, draft read-backs, failure lines and the persona safe message are skipped with reason `harness`.
+5. **Every direction is recorded** in the conversation's transcript as a `spoken_direction` record: the sentence, the direction, the model, the latency, the outcome and a prompt digest, joined by turn and sentence rather than by file position. In an incognito chat the director runs and nothing is kept, in the file or in any journal (owner ruling, 2026-10-03).
 
-**Mitigations that leave D1 as ruled:**
-- the adapter caps a direction at 300 characters and flattens it to one printable line;
-- a direction can change only how a sentence sounds, never what is said or sent.
+**Mitigations:** the adapter caps a direction at 300 characters and flattens it to one printable line, and a direction can change only how a sentence sounds, never what is said or sent.
 
-The injection concern stays recorded: a reply that quotes third-party text could carry a `[[…]]`. The fixed menu of cues is the named fallback if this proves a problem.
+**The prompt on a streaming engine (owner ruling, 2026-10-03: "breeze streams… now we don't need things short").** The spoken-turn rules about length ("short sentences", "the first one short", "keep replies brief") were a latency control for an engine that speaks a sentence only once all of it is synthesised. The adapter lists `"streams": true`, the worker passes `X-Voice-TTS-Streams: 1`, and the facade opens the turn with `VOICE_BLOCK_STREAMING` and the persona call note without its length rule. Every other voice rule is kept. Without the header, the prompt is byte-for-byte what it was.
 
 ## 4. Voices
 
@@ -113,7 +110,8 @@ The injection concern stays recorded: a reply that quotes third-party text could
 
 ## 6. Rulings (owner, 2026-10-03)
 
-- **D1.** The model writes delivery instructions (free text), sent as `instructions`. It may change to cues plus a menu.
+- **D1.** The model writes delivery instructions (free text), sent as `instructions`. It may change to cues plus a menu. **Refined:** a director pass writes them per sentence, on the loaded model, recorded in the session (§3); in incognito it runs and nothing is kept.
+- **Brevity.** On a streaming engine the spoken-turn prompt drops its length rules (§3).
 - **D2.** `default` is a Breeze house voice.
 - **D3.** Parakeet auto-transcribes each reference clip once, into an editable `.txt` sidecar.
 - **D4.** Speed other than 1.0 is applied by stretching the buffered sentence.
@@ -121,7 +119,6 @@ The injection concern stays recorded: a reply that quotes third-party text could
 
 ## 7. Phases
 
-1. **This PR:** the adapter, the shared stretch module, the units (not installed) and this document.
-2. **The worker:** split out the `[[…]]` directions, send `instructions` when it is listed, and give the echo filter the stripped text. Python tests.
-3. **mecha:** the voice block and call note gain the direction sentence when the worker's header says the TTS honours it; the page and the derived readers hide `[[…]]`.
-4. **The gates in §5, then the switch.**
+1. **The adapter** (#523, merged): the adapter, the shared stretch module, the units and this document.
+2. **The director and the streaming prompt** (the PR after #523, replacing the `[[…]]` plan): §3.
+3. **The gates in §5, then the switch.** The owner switched the worker to Breeze for testing on 2026-10-03 at 03:30Z, ahead of gates 1–5, with `vctk_p297` trimmed to one reading as the stand-in house voice; Chatterbox kept running for rollback.
