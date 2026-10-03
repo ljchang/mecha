@@ -40,6 +40,7 @@ class Engine:
         self.forget_once = False
         self.silent = False
         self.refused = 0
+        self.registry_readable = True
         engine = self
 
         class H(BaseHTTPRequestHandler):
@@ -59,6 +60,8 @@ class Engine:
 
             def do_GET(self):
                 if self.path == "/v1/audio/voices":
+                    if not engine.registry_readable:
+                        return self._send(404, b"{}")
                     names = [{"name": n, "kind": "registered"} for n in engine.registered]
                     return self._send(200, json.dumps({"voices": names}).encode())
                 self._send(200, b'{"status":"ok"}')
@@ -208,6 +211,33 @@ class Adapter(unittest.TestCase):
         r = TestClient(self.mod.app).post("/v1/audio/speech", json={"input": "Hi."})
         self.assertEqual(r.status_code, 503)
         self.assertIn("cannot read the voices directory", r.json()["detail"])
+
+    def test_an_unreadable_registry_still_recovers_a_forgotten_voice(self):
+        self.speak(voice="vctk_p297")
+        self.engine.registry_readable = False
+        self.engine.forget_once = True
+        r = self.speak(voice="vctk_p297")
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_an_unreachable_stt_is_named(self):
+        os.environ["MECHA_VOICE_STT"] = "http://127.0.0.1:9/v1"
+        self.mod = importlib.reload(self.mod)
+        from fastapi.testclient import TestClient
+
+        r = TestClient(self.mod.app).post("/v1/audio/speech", json={"input": "Hi.", "voice": "vctk_p297"})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("STT unreachable", r.json()["detail"])
+
+    def test_an_unreachable_engine_is_named(self):
+        with open(os.path.join(self.voices, "house.txt"), "w") as f:
+            f.write("Words.\n")
+        os.environ["BREEZE_TTS_URL"] = "http://127.0.0.1:9"
+        self.mod = importlib.reload(self.mod)
+        from fastapi.testclient import TestClient
+
+        r = TestClient(self.mod.app).post("/v1/audio/speech", json={"input": "Hi."})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("unreachable", r.json()["detail"])
 
     def test_a_clip_replaced_after_its_sidecar_is_transcribed_again(self):
         txt = os.path.join(self.voices, "vctk_p297.txt")
