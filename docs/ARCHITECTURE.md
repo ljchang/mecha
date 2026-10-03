@@ -675,16 +675,20 @@ conversation, so the capabilities do not change. Three rules:
   instead told a second successful recolour to stop (review of #408). The
   record holds a salted hash of each path, never the path, and is swept on
   every edit, since an incognito room's path must not outlive the room.
-- **The call that just drew a picture is answered, not drawn again.** An
-  input identical to the last one that drew in the same workspace, within 15
-  minutes (`REPEAT_WINDOW`), gets `REPEAT_REFUSED` — the picture is already
-  in the chat; change the prompt or the seed for another — and no GPU time.
-  On a call on 2026-10-03 a persona re-sent the call that had just drawn,
-  word for word, four times in one run; ComfyUI ran each in 0.00 s as a
-  duplicate of a finished prompt, kept no new output, and `/view` answered
-  404, which the run read as a failure. Only a call that drew is recorded,
-  so a failed or cancelled one can be tried again as it was. The record is
-  salted hashes, as for the strikes.
+- **The seeded call that just drew a picture is answered, not drawn again.**
+  A new picture with an explicit `seed` whose input is identical to the last
+  call that drew in the same workspace, within 15 minutes (`REPEAT_WINDOW`),
+  gets `REPEAT_REFUSED` through `refused` — an error, since the page counts a
+  turn's pictures by `is_error` (`turnsWithoutPicture`) — and no GPU time.
+  Only that case: without a seed, and on every edit, the tool draws a fresh
+  seed, so the same input is another picture — "another one", or the retry a
+  near-copy notice describes (review of #543). On a call on 2026-10-03 a
+  persona re-sent the seeded call that had just drawn, word for word, four
+  times in one run; ComfyUI ran each in 0.00 s as a duplicate of a finished
+  prompt, kept no new output, and `/view` answered 404, which the run read
+  as a failure. Only a call that drew is recorded, so a failed or cancelled
+  one can be tried again as it was. The record is salted hashes, as for the
+  strikes.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
