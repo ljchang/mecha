@@ -287,6 +287,32 @@ export function wireBacklogMs(pendingMs, bufferedAmount) {
 export function shouldPump(pendingMs, bufferedAmount) {
   return pendingMs >= UPLINK_BATCH_MS && (bufferedAmount || 0) < UPLINK_SCTP_HIGH_BYTES;
 }
+/* Whether this browser taps encoded frames only on a connection created with
+   `encodedInsertableStreams: true` - Chromium. Without the flag Chromium hands
+   an `RTCRtpScriptTransform` no frames at all while RTP flows normally, so the
+   page declared a buffered uplink that never carried a word and the worker fell
+   back every call; and with the flag, a receiver plays nothing unless its own
+   frames are piped through (`passThrough`). Measured in Chromium 149 on
+   2026-10-03, a loopback with a fake microphone: no flag, 0 frames to the tap
+   against 150 RTP packets; flag alone, the tap saw 150 and the far side decoded
+   0 samples; flag and pass-through, 150 frames and 142,560 samples. Told apart
+   by the legacy API Chromium alone carries on both ends; Safari and Firefox
+   deliver to a script transform without it and get the connection as before. */
+export function needsInsertableStreams(g = globalThis) {
+  const has = (C) => typeof C === "function" && !!C.prototype && "createEncodedStreams" in C.prototype;
+  return has(g.RTCRtpSender) && has(g.RTCRtpReceiver);
+}
+/* A receiver on an insertable-streams connection plays only what is piped
+   through it. True when it was; false leaves the caller to know the far
+   side may be silent. */
+export function passThrough(receiver) {
+  try {
+    const { readable, writable } = receiver.createEncodedStreams();
+    readable.pipeTo(writable).catch(() => { /* the call ended */ });
+    return true;
+  } catch { return false; }
+}
+
 /* Opus at 48 kHz; the transform reports RTP timestamps at the codec clock. */
 const RTP_CLOCK_HZ = 48000;
 const RTP_TS_WRAP = 2 ** 32;
@@ -492,6 +518,8 @@ export function createVoiceSession(opts = {}) {
      the link was down is delivered at the head of the next connection. */
   const ring = ringFor(cfg.sessionKey);
   let uplinkWorker = null, uplinkMode = "rtp", pumpTimer = 0, pumping = false, lastFrameAt = 0;
+  // Whether this call's connection was made with `encodedInsertableStreams`.
+  let insertable = false;
   /* The channel's proof of life for the worker's deafness watch: sent
      every `UPLINK_HEARTBEAT_MS` while the channel is in use, so a channel
      that is merely head-of-line blocked (heartbeats stop too) is never
@@ -845,7 +873,16 @@ export function createVoiceSession(opts = {}) {
       t.onunmute = () => resume("mic");
       t.onended = () => end("microphone lost — tap to reconnect");
     });
-    pc = new RTCPeerConnection();
+    // Chromium taps encoded frames only on a connection made for it
+    // (`needsInsertableStreams`). If the flag is refused, the call runs as
+    // before - RTP, no buffered uplink - rather than not at all.
+    insertable = needsInsertableStreams();
+    try {
+      pc = new RTCPeerConnection(insertable ? { encodedInsertableStreams: true } : undefined);
+    } catch {
+      insertable = false;
+      pc = new RTCPeerConnection();
+    }
     // After `pc` exists: the post-await guard in `holdScreen` reads it.
     holdScreen();
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
@@ -854,7 +891,12 @@ export function createVoiceSession(opts = {}) {
     if (!pc) return; // ended while the worker was loading
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
-    pc.ontrack = (e) => { speaker.srcObject = e.streams[0]; };
+    // On an insertable-streams connection the far side is silent unless its
+    // frames are piped through, before anything plays them.
+    pc.ontrack = (e) => {
+      if (insertable) passThrough(e.receiver);
+      speaker.srcObject = e.streams[0];
+    };
 
     dc = pc.createDataChannel("rtvi");
     dc.onopen = () => {
@@ -995,6 +1037,9 @@ export function createVoiceSession(opts = {}) {
   async function attachUplinkTap() {
     const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
     if (!sender) return false;
+    // Chromium without the flag would attach and deliver nothing: the
+    // buffered uplink is not offered at all, rather than declared and dead.
+    if (needsInsertableStreams() && !insertable) return false;
     // Guarded on the mode: on the `createEncodedStreams` path there is no
     // worker to terminate, so without this the tap would keep filling the
     // ring after a fallback and the next connection would replay, as a
