@@ -1258,7 +1258,7 @@ export const script = [
           ['to', 'tomas.lindqvist@example.org'],
           ['subject', 'Re: Review request — manuscript 2026-0413'],
         ],
-        body: 'Dear Tomas,\n\nYes — I can take this one. Three weeks from today puts my report with you on the 25th.\n\nBest,\nLuke',
+        body: 'Dear Tomas,\n\nYes — I can take this one. Three weeks from today puts my report with you on the 25th.\n\nBest,\nDana',
         other: [['account', 'personal']],
       },
       args: '{\n  "account": "personal",\n  "to": "tomas.lindqvist@example.org",\n  "subject": "Re: Review request — manuscript 2026-0413",\n  "body": "Dear Tomas,\\n\\nYes — I can take this one. …"\n}',

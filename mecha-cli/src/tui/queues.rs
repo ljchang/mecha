@@ -1798,9 +1798,9 @@ mod tests {
         }
         m.groups = groups_from_json(
             r#"{"v":1,"threshold":0.83,"groups":[
-                {"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
+                {"leader_id":9281,"leader_statement":"Dana has a child named Marek",
                  "members":[[9302,0.91],[9310,0.88]],
-                 "sample":["Luke has a child named Sage"]}]}"#,
+                 "sample":["Dana has a child named Rhea"]}]}"#,
         )
         .unwrap()
         .1;
@@ -1856,9 +1856,9 @@ mod tests {
     fn a_group_parses_and_names_its_ids_leader_first() {
         let (threshold, rows) = groups_from_json(
             r#"{"v":1,"threshold":0.83,"groups":[
-                {"leader_id":9281,"leader_statement":"Luke has a child named Emmy",
+                {"leader_id":9281,"leader_statement":"Dana has a child named Marek",
                  "members":[[9302,0.91],[9310,0.88]],
-                 "sample":["Luke has a child named Sage"]}]}"#,
+                 "sample":["Dana has a child named Rhea"]}]}"#,
         )
         .unwrap();
         assert!(
@@ -1868,7 +1868,7 @@ mod tests {
         assert_eq!(rows[0].size(), 3);
         assert_eq!(rows[0].member_ids, vec![9302, 9310]);
         assert_eq!(rows[0].all_ids_csv(), "9281,9302,9310");
-        assert_eq!(rows[0].sample, vec!["Luke has a child named Sage"]);
+        assert_eq!(rows[0].sample, vec!["Dana has a child named Rhea"]);
     }
     /// The global envelope's `classes` object becomes the spans line, and
     /// its absence (a class grouping) parses to an empty blast radius —
