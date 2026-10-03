@@ -5064,6 +5064,41 @@ mod tests {
         assert!(recorded.contains("PRIOR-PLAN"), "the transcript keeps it");
     }
 
+    /// A persona chat is built with `PriorTails::Trim`: a reply that stopped
+    /// mid-sentence goes back cut to its last whole sentence, and the
+    /// transcript keeps it as it was. Without `persona_agent`'s line the
+    /// dangling word rides back and the persona learns to end on one.
+    #[tokio::test]
+    async fn a_persona_sends_an_earlier_reply_without_its_dangling_word() {
+        let w = world_with(Mode::Say("Hello from Mara. Glad you came. \n\nI".into()));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello, Mara").await;
+        turn(&w, &key, "mm").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        let earlier: Vec<String> = seen
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .filter(|m| m.role == mecha_core::message::Role::Assistant)
+            .map(Message::text)
+            .collect();
+        assert_eq!(earlier, vec!["Hello from Mara. Glad you came.".to_string()]);
+        let id = opened["session"].as_str().unwrap();
+        let file = w.store().join(format!("mara/sessions/{id}.jsonl"));
+        let recorded = std::fs::read_to_string(file).unwrap();
+        assert!(
+            recorded.contains(r"Glad you came. \n\nI"),
+            "the transcript keeps the reply as written"
+        );
+    }
+
     #[tokio::test]
     async fn a_persona_turn_runs_on_its_own_prompt_and_tools_and_is_recorded_apart() {
         let w = world();
