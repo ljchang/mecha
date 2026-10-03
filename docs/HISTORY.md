@@ -60,8 +60,9 @@ asks the director once per reply through `voice::ask_director_on` with
 `instructions`. It reuses an earlier tap's line (turn prefix
 `voice_direction::LISTEN_TURN`) or a call turn's first line
 (`Session::spoken_directions`), and records one `spoken_direction` per reply
-(incognito: none). The worker answers `GET /mecha/directs`
-(`worker_directs`).
+(incognito: none). Serve asks the worker `GET /mecha/directs`
+(`worker_directs`) once per reply, and a worker without the route speaks
+undirected.
 
 **2026-10-03 — Chrome calls keep the buffered microphone path (#534,
 mecha-69).** Merged as `6c9e9169`. The web dist went live at about 14:55Z

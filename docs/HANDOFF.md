@@ -31,8 +31,8 @@ state.
   - a first by-ear listen: the cue's wording, and the wait before the first
     sentence;
   - review pass-3 minors: no end-to-end test in the assistant's chat;
-    recall re-reads the transcript on every tap; `ARCHITECTURE.md` omits
-    the 4-word floor.
+    recall re-reads the whole transcript on each tap's first piece;
+    `ARCHITECTURE.md` omits the 4-word floor.
 - **#534 is live in the web dist, untried on Chrome by ear.** Probe: a
   Chrome call shows no "buffered microphone path failed", and the worker
   logs `batches=` climbing.
@@ -53,7 +53,9 @@ state.
 - **Sentences reach Breeze in odd pieces.** The aggregator cuts on
   ellipses, so "A little bit.." becomes one sentence and a lone "." the
   next. #531 (mecha-1e, merged) stops a bare "." reaching the engine; the
-  splitting itself is untouched. It is not rare: one Maya reply on
+  splitting itself is untouched. This is calls only (pipecat's splitter);
+  Listen's page splitter (`speechSentences`, #539) never sends a lone ".".
+  It is not rare: one persona reply on
   2026-10-03 (05:36Z) had 42 lone dots, and half its "sentences" were 4
   characters or fewer. Each piece is its own TTS request and its own
   direction, so a run of trailing-off phrases is performed as separate
