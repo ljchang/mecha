@@ -432,8 +432,8 @@ authorization code for a real token (held in memory, never stored).
   `scope: https://www.googleapis.com/auth/drive.file` — so the picker
   flow yields a durable grant, not a one-shot.
 - **Picked items are readable through the Drive API**, across kinds: a
-  folder (`UndergradCommittee`, `Writing`), a document (`Py-FEAT v2.0
-  Manuscript`) and a **spreadsheet** (`PsychUndergradCourses`) all
+  folder, a document and a **spreadsheet** (the owner's own items, unnamed
+  here because the repository is public) all
   resolved by `files.get`. The picker is not Docs-only, which matters
   given the ask spans Docs, Sheets and Slides.
 - **Re-picking a file returns the same id**, so a pick is idempotent and
