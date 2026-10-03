@@ -38,6 +38,7 @@ class Engine:
         self.spoken = []
         self.transcribed = 0
         self.forget_once = False
+        self.silent = False
         engine = self
 
         class H(BaseHTTPRequestHandler):
@@ -75,7 +76,7 @@ class Engine:
                     if req["voice"] not in engine.registered:
                         return self._send(400, b'{"error":"unknown voice"}')
                     engine.spoken.append(req)
-                    return self._send(200, PCM, "audio/pcm")
+                    return self._send(200, b"" if engine.silent else PCM, "audio/pcm")
                 self._send(404, b"{}")
 
         self.httpd = HTTPServer(("127.0.0.1", 0), H)
@@ -90,6 +91,8 @@ class Adapter(unittest.TestCase):
         self.voices = tempfile.mkdtemp()
         for name in ("house", "vctk_p297"):
             wav_file(os.path.join(self.voices, f"{name}.wav"))
+        saved = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
         os.environ.update({
             "BREEZE_TTS_URL": self.engine.url,
             "MECHA_VOICE_STT": self.engine.url + "/v1",
@@ -142,6 +145,43 @@ class Adapter(unittest.TestCase):
         self.speak(voice="vctk_p297")
         self.assertEqual(self.engine.transcribed, 0)
         self.assertEqual(self.engine.registered["vctk_p297"]["ref_text"], "Corrected words.")
+
+    def test_a_sidecar_edited_after_registration_is_registered_again(self):
+        self.speak(voice="vctk_p297")
+        txt = os.path.join(self.voices, "vctk_p297.txt")
+        with open(txt, "w") as f:
+            f.write("Corrected words.\n")
+        st = os.stat(txt)
+        os.utime(txt, (st.st_atime, st.st_mtime + 5))  # a later edit, not the same tick
+        self.speak(voice="vctk_p297")
+        self.assertEqual(self.engine.registered["vctk_p297"]["ref_text"], "Corrected words.")
+
+    def test_a_warm_voice_does_not_wait_on_a_cold_ones_lock(self):
+        self.speak(voice="vctk_p297")
+        import asyncio
+
+        async def warm_while_locked():
+            async with self.mod._lock:
+                import httpx
+                async with httpx.AsyncClient() as c:
+                    await asyncio.wait_for(self.mod.ensure_registered(c, "vctk_p297"), 1)
+
+        asyncio.run(warm_while_locked())
+
+    def test_an_empty_answer_is_an_error_not_silence(self):
+        self.engine.silent = True
+        r = self.client.post("/v1/audio/speech", json={"input": "Hi.", "response_format": "wav"})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("no audio", r.json()["detail"])
+
+    def test_an_unreadable_voices_directory_is_said(self):
+        os.environ["VOICES_DIR"] = os.path.join(self.voices, "missing")
+        self.mod = importlib.reload(self.mod)
+        from fastapi.testclient import TestClient
+
+        r = TestClient(self.mod.app).post("/v1/audio/speech", json={"input": "Hi."})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("cannot read the voices directory", r.json()["detail"])
 
     def test_an_engine_that_forgot_its_voices_is_taught_again(self):
         self.speak(voice="vctk_p297")
