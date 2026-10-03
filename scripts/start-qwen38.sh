@@ -25,7 +25,7 @@
 # the withdrawn Q4_K_M only where the UD-Q4_K_XL is absent. A rollback that
 # served a different file under the same alias would not reproduce what it
 # rolls back (found on review).
-HUB="${HF_HUB:-$HOME/.cache/huggingface/hub}"
+HUB="${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}"
 newest() { local f; while IFS= read -r f; do [ -f "$f" ] && { echo "$f"; return 0; }; done < <(ls -t "$HUB"/models--unsloth--Qwen3.8-27B-GGUF/snapshots/*/"$1" 2>/dev/null); return 1; }
 M=$(newest Qwen3.8-27B-UD-Q4_K_XL.gguf || newest Qwen3.8-27B-Q4_K_M.gguf) || {
   echo "$(basename "$0"): no Qwen3.8-27B weights on disk — hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q4_K_XL.gguf" >&2
