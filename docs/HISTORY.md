@@ -4963,8 +4963,7 @@ What made all of this reviewable in the first place is the fifth change:
 **a group can be opened and its members verdicted one at a time** on the web
 (`GET /api/queue/items`, "Review each of the N"), which the TUI has had and
 the phone had not. The case for it is one real group — seventeen near-repeats
-naming Emmy, Sage, Katie, Joseph, Eni, Justin and Jesse as the owner's
-children, mostly Bee mishearing two names. Similarity is the grouping key, not
+naming the owner's children, mostly Bee mishearing two names. Similarity is the grouping key, not
 agreement, so "Accept all 17" would have asserted every one of them. A verdict
 inside a group is deliberately plain — no cascade — because telling the
 members apart is the reason for being in there.
