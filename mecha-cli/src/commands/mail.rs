@@ -519,9 +519,9 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 }
 
 /// The account a mail measurement reads when none is named: the one
-/// `mecha-mail` sends from — `default_mail` in its `accounts.toml`, else
-/// `default`, `AccountsFile::mail_default`'s rule, read here rather than
-/// imported. A name compiled in as the default was one owner's account, and
+/// `mecha-mail` sends from — the only account when there is one (as
+/// `unified::resolve` answers before any default), else `default_mail`, else
+/// `default` — read here from its `accounts.toml` rather than imported. A name compiled in as the default was one owner's account, and
 /// answered nobody else's (2026-10-03).
 fn measured_account(named: Option<String>) -> Result<String> {
     if let Some(name) = named {
@@ -3708,18 +3708,20 @@ mod measured_account_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let restore = std::env::var("MECHA_MAIL_DIR").ok();
         std::env::set_var("MECHA_MAIL_DIR", &dir);
-        let missing = measured_account(None).unwrap_err().to_string();
+        // Results, not unwraps: a panic here would leak the moved variable
+        // into every sibling test (review of #537).
+        let missing = measured_account(None).map_err(|e| e.to_string());
         std::fs::write(dir.join("accounts.toml"), "default_mail = \"campus\"\n").unwrap();
         let read = measured_account(None).map_err(|e| e.to_string());
         std::fs::write(dir.join("accounts.toml"), "not toml =").unwrap();
-        let broken = measured_account(None).unwrap_err().to_string();
+        let broken = measured_account(None).map_err(|e| e.to_string());
         match restore {
             Some(v) => std::env::set_var("MECHA_MAIL_DIR", v),
             None => std::env::remove_var("MECHA_MAIL_DIR"),
         }
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(missing.contains("does not exist"), "{missing}");
+        assert!(missing.unwrap_err().contains("does not exist"));
         assert_eq!(read.as_deref(), Ok("campus"));
-        assert!(broken.contains("cannot parse"), "{broken}");
+        assert!(broken.unwrap_err().contains("cannot parse"));
     }
 }
