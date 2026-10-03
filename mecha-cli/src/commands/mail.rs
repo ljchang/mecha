@@ -306,8 +306,8 @@ pub enum Cmd {
     /// Refresh it first:
     ///
     /// ```text
-    /// mecha-mail corpus --since $(date -d '30 days ago' +%F) --account work
-    /// mecha mail score
+    /// mecha-mail corpus --since $(date -d '30 days ago' +%F) --account campus
+    /// mecha mail score --account campus
     /// ```
     Score {
         /// The account whose corpus to score. Defaults to the one `mecha-mail`
@@ -527,28 +527,45 @@ fn measured_account(named: Option<String>) -> Result<String> {
     if let Some(name) = named {
         return Ok(name);
     }
-    let file = mecha_core::onboarding::mail_store_dir().map(|d| d.join("accounts.toml"));
-    let configured = file
-        .as_ref()
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .and_then(|text| mail_default_of(&text));
-    configured.ok_or_else(|| {
-        anyhow::anyhow!(
+    let Some(file) = mecha_core::onboarding::mail_store_dir().map(|d| d.join("accounts.toml"))
+    else {
+        bail!("name an account with --account: mecha-mail's store cannot be found");
+    };
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "name an account with --account: {} does not exist",
+                file.display()
+            )
+        }
+        Err(e) => bail!(
+            "cannot read {} ({e}); name an account with --account",
+            file.display()
+        ),
+    };
+    // Unreadable is not "nothing configured": said as what it is.
+    match mail_default_of(&text) {
+        Ok(Some(name)) => Ok(name),
+        Ok(None) => bail!(
             "name an account with --account: no default_mail or default in {}",
-            file.map_or("mecha-mail's accounts.toml".into(), |f| f
-                .display()
-                .to_string())
-        )
-    })
+            file.display()
+        ),
+        Err(e) => bail!(
+            "cannot parse {} ({e}); name an account with --account",
+            file.display()
+        ),
+    }
 }
 
-/// `default_mail`, else `default`, from an `accounts.toml`'s text.
-fn mail_default_of(text: &str) -> Option<String> {
-    let v: toml::Value = toml::from_str(text).ok()?;
-    ["default_mail", "default"]
+/// `default_mail`, else `default`, from an `accounts.toml`'s text; an error
+/// for text that is not TOML at all.
+fn mail_default_of(text: &str) -> Result<Option<String>> {
+    let v: toml::Value = toml::from_str(text)?;
+    Ok(["default_mail", "default"]
         .iter()
         .find_map(|k| v.get(*k).and_then(toml::Value::as_str))
-        .map(str::to_owned)
+        .map(str::to_owned))
 }
 
 fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) -> Result<()> {
@@ -3642,12 +3659,44 @@ mod measured_account_tests {
     #[test]
     fn a_measurement_reads_the_account_mail_is_sent_from() {
         let both = "default = \"personal\"\ndefault_mail = \"campus\"\n";
-        assert_eq!(mail_default_of(both).as_deref(), Some("campus"));
+        assert_eq!(mail_default_of(both).unwrap().as_deref(), Some("campus"));
         let only = "default = \"personal\"\n";
-        assert_eq!(mail_default_of(only).as_deref(), Some("personal"));
-        assert_eq!(mail_default_of("[[account]]\nname = \"x\"\n"), None);
-        assert_eq!(mail_default_of("not toml ="), None);
+        assert_eq!(mail_default_of(only).unwrap().as_deref(), Some("personal"));
+        assert_eq!(
+            mail_default_of("[[account]]\nname = \"x\"\n").unwrap(),
+            None
+        );
+        assert!(
+            mail_default_of("not toml =").is_err(),
+            "unparseable is not unconfigured"
+        );
         // A named account always wins, whatever is configured.
         assert_eq!(measured_account(Some("named".into())).unwrap(), "named");
+    }
+
+    /// The default is read where mecha-mail keeps its registry
+    /// (`$MECHA_MAIL_DIR` first, `onboarding::mail_store_dir`), and a missing
+    /// or unparseable registry refuses by name rather than guessing.
+    #[test]
+    fn an_unnamed_measurement_reads_the_mail_registry_or_refuses() {
+        let _env = crate::testenv::lock();
+        let dir = std::env::temp_dir().join(format!("mecha-measured-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let restore = std::env::var("MECHA_MAIL_DIR").ok();
+        std::env::set_var("MECHA_MAIL_DIR", &dir);
+        let missing = measured_account(None).unwrap_err().to_string();
+        std::fs::write(dir.join("accounts.toml"), "default_mail = \"campus\"\n").unwrap();
+        let read = measured_account(None).map_err(|e| e.to_string());
+        std::fs::write(dir.join("accounts.toml"), "not toml =").unwrap();
+        let broken = measured_account(None).unwrap_err().to_string();
+        match restore {
+            Some(v) => std::env::set_var("MECHA_MAIL_DIR", v),
+            None => std::env::remove_var("MECHA_MAIL_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(missing.contains("does not exist"), "{missing}");
+        assert_eq!(read.as_deref(), Ok("campus"));
+        assert!(broken.contains("cannot parse"), "{broken}");
     }
 }

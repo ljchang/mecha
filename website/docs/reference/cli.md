@@ -843,7 +843,7 @@ mecha mail reply 3f2a1b7c --note "decline politely"
 mecha mail correct 3f2a1b7c --bucket respond --urgency today
 mecha mail task 3f2a1b7c --due +3d
 mecha mail reflect --dry-run
-mecha-mail corpus --since 2026-07-01 --account campus && mecha mail score
+mecha-mail corpus --since 2026-07-01 --account campus && mecha mail score --account campus
 ```
 
 See [Mail and calendar](/docs/features/tools/mail#triage-the-queue-over-the-mailbox).
