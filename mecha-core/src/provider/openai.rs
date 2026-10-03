@@ -40,6 +40,10 @@ pub struct OpenAiCompatible {
     vision: bool,
     structured_output: crate::config::StructuredOutput,
     retry: crate::provider::retry::RetryPolicy,
+    /// A server on this machine (`imagegen::is_loopback`, the one definition):
+    /// here, llama-server. Gates the llama.cpp-only request fields, which a
+    /// strict endpoint such as OpenAI's own refuses with a 400.
+    local: bool,
 }
 
 impl OpenAiCompatible {
@@ -64,6 +68,11 @@ impl OpenAiCompatible {
             vision: cfg.vision_enabled(),
             structured_output: cfg.structured_output,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
+            local: cfg
+                .base_url
+                .as_deref()
+                .and_then(|u| reqwest::Url::parse(u).ok())
+                .is_some_and(|u| crate::imagegen::is_loopback(&u)),
         })
     }
 
@@ -116,8 +125,13 @@ impl OpenAiCompatible {
         // with thinking tags (`server-common.cpp`); measured honoured on
         // 2026-10-03 (a 128-token cap cut a looping persona's reasoning to
         // ~490 characters). Only when asked, so every other request's bytes
-        // are unchanged.
-        if let Some(budget) = req.think_budget {
+        // are unchanged, and only to a server on this machine: unlike
+        // `enable_thinking` above, whose one caller (the director) degrades to
+        // an undirected sentence, this rides a persona's spoken reply, and a
+        // 400 from a strict endpoint is `Invalid`, never retried or failed
+        // over, so the caller would hear nothing (review of #541). Elsewhere
+        // the server keeps its own budget.
+        if let (Some(budget), true) = (req.think_budget, self.local) {
             obj.insert("reasoning_budget_tokens".into(), json!(budget));
         }
         if stream {
@@ -865,24 +879,33 @@ mod tests {
     }
 
     #[test]
-    fn a_reasoning_budget_is_sent_only_when_a_request_sets_one() {
-        let p = provider(None, None);
-        assert!(p
+    fn a_reasoning_budget_is_sent_only_when_set_and_only_to_a_local_server() {
+        let local = OpenAiCompatible::from_config(&ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(local
             .body(&plain_req(), false)
             .get("reasoning_budget_tokens")
             .is_none());
-        let capped = p.body(
-            &CompletionRequest {
-                think_budget: Some(1024),
-                ..plain_req()
-            },
-            false,
-        );
-        assert_eq!(capped["reasoning_budget_tokens"], json!(1024));
+        let capped = CompletionRequest {
+            think_budget: Some(1024),
+            ..plain_req()
+        };
+        let body = local.body(&capped, false);
+        assert_eq!(body["reasoning_budget_tokens"], json!(1024));
         assert!(
-            capped.get("chat_template_kwargs").is_none(),
+            body.get("chat_template_kwargs").is_none(),
             "a cap is not a request to think or not"
         );
+        // The default endpoint is OpenAI's own, which 400s on the field: a
+        // spoken persona turn there must keep the server's budget, not fail.
+        assert!(provider(None, None)
+            .body(&capped, false)
+            .get("reasoning_budget_tokens")
+            .is_none());
     }
 
     #[test]
