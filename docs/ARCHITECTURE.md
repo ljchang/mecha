@@ -645,9 +645,14 @@ conversation, so the capabilities do not change. Three rules:
   made, so a retry in the same chat repeated the edit. Each edit's
   `layout_similarity` to its first reference (grayscale 32² thumbnails,
   correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.78) the result
-  says the layout did not change and how to retry: edit the original with the
-  prompt rewritten as the parts to keep, named, then an instruction naming the
+  says the layout did not change, that a move or pose may not have taken, and
+  how to retry *if the owner asks*: edit the original with the prompt
+  rewritten as the parts to keep, named, then an instruction naming the
   change, or redraw from the library by the names in the original's manifest.
+  It never says "call again now" (`NO_RETRY_UNASKED`): on 2026-10-03, in a
+  chat where it had, a persona retried 12 of 13 near-copies unasked — detail
+  edits included — and then redrew after edits that had worked, reasoning
+  that the result said they had not taken.
   It gives the names only, each checked against the library, since the
   manifest is a workspace file. The threshold was measured on one scene and
   on same-shape edits only: every copy, and every edit that left her
@@ -670,6 +675,29 @@ conversation, so the capabilities do not change. Three rules:
   instead told a second successful recolour to stop (review of #408). The
   record holds a salted hash of each path, never the path, and is swept on
   every edit, since an incognito room's path must not outlive the room.
+- **The request that just drew a picture is answered, not drawn again.**
+  The guard keys on the request as it goes to the server — prompt, seed,
+  size, steps and every reference, after the tool has filled them in — not
+  on what the model typed, so a default spelled out or a stray space is the
+  same request (`ImageGenerate::claim`). The same request in the same
+  workspace within 15 minutes (`REPEAT_WINDOW`) gets `REPEAT_REFUSED` through
+  `refused` — an error, since the page counts a turn's pictures by
+  `is_error` (`turnsWithoutPicture`) — and no GPU time. A call with no seed,
+  every edit, and a cast call at a portrait's seed get a fresh seed, so the
+  same input is never the same request: "another one", and the retry a
+  near-copy notice describes, always draw (review of #543). The claim is
+  taken before the render, because a turn's calls run concurrently, and
+  lapses unless the request drew, so a failed or cancelled one can be sent
+  again. While the first is still drawing, an identical one is told so
+  (`REPEAT_IN_FLIGHT`), never that the picture exists — the render may yet
+  fail. A new conversation forgets the record
+  (`forget_conversation_state`): a workspace can outlive its chat — a
+  batch's shared one, the TUI's `/new` — and the refusal points at a picture
+  in this chat. On a call on 2026-10-03 a persona re-sent the seeded call that had
+  just drawn, word for word, four times in one run; ComfyUI ran each in
+  0.00 s as a duplicate of a finished prompt, kept no new output, and
+  `/view` answered 404, which the run read as a failure. The record is
+  salted hashes, as for the strikes.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
