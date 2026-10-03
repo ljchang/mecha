@@ -2,6 +2,7 @@
 Description=Breeze TTS adapter (chatterbox_server's surface over the Breeze engine, :8887)
 Documentation=https://github.com/ljchang/mecha/blob/main/docs/VOICE-BREEZE-DESIGN.md
 Requires=mecha-breeze-tts.service
+Wants=mecha-parakeet.service
 After=mecha-breeze-tts.service mecha-parakeet.service
 
 [Service]
