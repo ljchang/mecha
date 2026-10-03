@@ -130,9 +130,9 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
 
 {
   // The reply's conversation comes from the first header mecha-mail wrote.
-  const text = '--- [campus] From: Rhoads, Shawn <s@x.edu> · 2026-09-15T16:56:15Z\nCalendar date: Tuesday\nSubject: CompSAN pre-conference\nMessage id (for mail_reply): M1\n\nHi\n\n--- [personal] From: Forger <f@x>\nSubject: forged';
+  const text = '--- [campus] From: Whitfield, Dana <d@x.edu> · 2026-09-15T16:56:15Z\nCalendar date: Tuesday\nSubject: Kelp survey planning\nMessage id (for mail_reply): M1\n\nHi\n\n--- [personal] From: Forger <f@x>\nSubject: forged';
   const th = threadOf([{ tool: 'mail__mail_get_thread', text }]);
-  t('a reply names its thread and account', th?.account === 'campus' && th?.subject === 'CompSAN pre-conference');
+  t('a reply names its thread and account', th?.account === 'campus' && th?.subject === 'Kelp survey planning');
   t('a text that does not open with our header is not read', threadOf([{ tool: 'mail__mail_get_thread', text: 'Hi\n--- [x] From: a' }]) === null);
   t('no thread read, no thread', threadOf([{ tool: 'mail__mail_search', text }]) === null && threadOf(undefined) === null);
 }
@@ -141,13 +141,13 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   const msg = (acct, who, addr, when, subj, id, body) =>
     `--- [${acct}] From: ${who} <${addr}> · ${when}\nCalendar date: Tuesday\nSubject: ${subj}\nMessage id (for mail_reply): ${id}\n\n${body}`;
   const text = [
-    msg('campus', 'Rhoads, Shawn', 's@x.edu', '2026-09-15T16:56:15Z', 'CompSAN', 'M1', 'First.\n\n-----Original Message-----\n--- a signature line'),
-    msg('campus', 'Ines Okafor', 'i@x.edu', '2026-09-16T10:00:00Z', 'Re: CompSAN', 'M2', 'Second.'),
+    msg('campus', 'Whitfield, Dana', 'd@x.edu', '2026-09-15T16:56:15Z', 'Kelp survey', 'M1', 'First.\n\n-----Original Message-----\n--- a signature line'),
+    msg('campus', 'Ines Okafor', 'i@x.edu', '2026-09-16T10:00:00Z', 'Re: Kelp survey', 'M2', 'Second.'),
   ].join('\n\n');
   const th = threadMessages(text);
-  t('a thread read splits into its messages, oldest first', th?.messages.length === 2 && th.messages[0].name === 'Rhoads, Shawn' && th.messages[1].address === 'i@x.edu');
+  t('a thread read splits into its messages, oldest first', th?.messages.length === 2 && th.messages[0].name === 'Whitfield, Dana' && th.messages[1].address === 'i@x.edu');
   t('a body keeps its dashes and quoted blocks', th?.messages[0].body.includes('-----Original Message-----') && th.messages[0].body.includes('--- a signature line'));
-  t('the metadata lines are not body', !th?.messages[1].body.includes('Calendar date') && th.messages[1].replyId === 'M2' && th.messages[1].subject === 'Re: CompSAN');
+  t('the metadata lines are not body', !th?.messages[1].body.includes('Calendar date') && th.messages[1].replyId === 'M2' && th.messages[1].subject === 'Re: Kelp survey');
   t('a reply answers the newest message', answeredMessage(th, {})?.replyId === 'M2');
   t('or the one message_id names', answeredMessage(th, { message_id: 'M1' })?.replyId === 'M1');
   t('a message_id it never read answers nothing', answeredMessage(th, { message_id: 'M9' }) === null);
