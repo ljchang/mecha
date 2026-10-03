@@ -66,7 +66,7 @@ pub fn merge(intervals: Vec<Interval>) -> Vec<Interval> {
 /// the human is already alerted through the `auth_error.json` marker,
 /// `mecha doctor` and exit 77. And the previous answer — scoping the read to
 /// the one account the event lands on — silently dropped cross-account
-/// collision detection: a slot free on `dartmouth` but busy on `personal`
+/// collision detection: a slot free on `campus` but busy on `personal`
 /// double-booked with no record. Classification is the resolution: keep the
 /// full fan-out, skip a permanently dead account loudly, defer over anything
 /// that might recover.
@@ -226,7 +226,7 @@ mod tests {
             "account `personal`: {}: invalid_grant",
             crate::types::AUTH_REVOKED
         );
-        let transient = "account `dartmouth`: HTTP request failed: timeout".to_string();
+        let transient = "account `campus`: HTTP request failed: timeout".to_string();
 
         assert_eq!(
             classify_partial(true, std::slice::from_ref(&revoked)),

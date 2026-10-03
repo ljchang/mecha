@@ -204,12 +204,12 @@ mod tests {
     #[test]
     fn round_trips_through_toml() {
         let original = AccountsFile {
-            default: Some("dartmouth".into()),
+            default: Some("campus".into()),
             default_mail: None,
             default_calendar: None,
             accounts: vec![
                 AccountEntry {
-                    name: "dartmouth".into(),
+                    name: "campus".into(),
                     provider: Provider::Outlook,
                     grant_lifetime_days: None,
                 },
@@ -224,7 +224,7 @@ mod tests {
         };
         let text = toml::to_string_pretty(&original).unwrap();
         let parsed: AccountsFile = toml::from_str(&text).unwrap();
-        assert_eq!(parsed.default.as_deref(), Some("dartmouth"));
+        assert_eq!(parsed.default.as_deref(), Some("campus"));
         assert_eq!(parsed.accounts.len(), 2);
         assert_eq!(parsed.accounts[0].provider, Provider::Outlook);
     }
@@ -240,7 +240,7 @@ mod tests {
         assert!(validate(&file(&["a", "a"], None)).is_err());
         assert!(validate(&file(&["Has Spaces"], None)).is_err());
         assert!(validate(&file(&[""], None)).is_err());
-        assert!(validate(&file(&["dartmouth", "personal-2"], None)).is_ok());
+        assert!(validate(&file(&["campus", "personal-2"], None)).is_ok());
     }
 
     #[test]

@@ -815,7 +815,7 @@ error, never a guess.
 | `correct` | `--bucket` / `--urgency` / `--proposed` / `--request-type` / `--deadline` | field-level; `none` clears a field |
 | `reflect` | `--dry-run` | turn corrections into `triage`-domain reflections |
 | `score` | `--min-age-hours <N>` | exclude threads younger than this. Default `48` |
-| `score`, `eval` | `--account <NAME>` | which account's corpus. Default `dartmouth` |
+| `score`, `eval` | `--account <NAME>` | which account's corpus. Default: the one mecha-mail sends from (`default_mail`, else `default`) |
 | `eval` | `--sample` / `--seed` / `--prefilter-only` / `--out <PATH>` | grade the classifier against a corpus whose outcome is known |
 
 Every subcommand except `list` takes `--account <NAME>`; `list` reads the
@@ -835,7 +835,7 @@ measurement keyed on a display format breaks silently the day the format
 changes.
 
 ```bash
-mecha mail classify --account dartmouth
+mecha mail classify --account campus
 mecha mail list
 mecha mail list --aged --surface                  # what the morning briefing runs
 mecha mail show 3f2a1b7c
@@ -843,7 +843,7 @@ mecha mail reply 3f2a1b7c --note "decline politely"
 mecha mail correct 3f2a1b7c --bucket respond --urgency today
 mecha mail task 3f2a1b7c --due +3d
 mecha mail reflect --dry-run
-mecha-mail corpus --since 2026-07-01 --account dartmouth && mecha mail score
+mecha-mail corpus --since 2026-07-01 --account campus && mecha mail score --account campus
 ```
 
 See [Mail and calendar](/docs/features/tools/mail#triage-the-queue-over-the-mailbox).

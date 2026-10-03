@@ -543,7 +543,7 @@ mod tests {
             &LedgerEntry {
                 booking_id: "abc123".into(),
                 event_id: "ev9".into(),
-                account: "dartmouth".into(),
+                account: "campus".into(),
                 seq: 21,
                 created_at: "2026-08-08T12:00:00Z".into(),
                 action: "created".into(),

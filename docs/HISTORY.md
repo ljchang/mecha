@@ -4049,8 +4049,8 @@ account fails at the one job tags have, and a mecha tag costs no scope at all.
 The scopes moved with it — `gmail.modify` (stopping short of
 `https://mail.google.com/`, whose only addition over it is irreversible
 deletion) and `Mail.ReadWrite` — and both accounts re-consented the same day.
-The expectation going in was that Dartmouth would be blocked on IT and Google
-would be easy; it was the exact reverse. Dartmouth's Entra registration
+The expectation going in was that the university account would be blocked on IT and Google
+would be easy; it was the exact reverse. The university's Entra registration
 already had `Mail.ReadWrite` Delegated granted tenant-wide, while the Google
 client turned out to be in Testing publishing status, which caps its refresh
 tokens at seven days and needs a CASA security assessment to escape.
@@ -4074,7 +4074,7 @@ thread — and `Record::for_privileged_run` is a function with no argument that
 returns the prose. `one_line` stays behind it, which is the judgement call:
 short, exactly what a summary wants, and model prose derived from attacker
 prose, which is the laundering path the front door withholds `reading` to
-close. Verified on 51 real Dartmouth threads. The documents work merged the
+close. Verified on 51 real campus-account threads. The documents work merged the
 same day from a parallel session, and Luke then held 0.1.7 until the mail
 feature is complete through phase 6.
 
@@ -7451,8 +7451,8 @@ showing what the decision was about.
 
 *Mail actions on the personal account had never worked.* Every button on a
 personal thread failed with "no thread in the triage store matches" — the
-store held 192 records, all dartmouth, none personal, because the nightly
-named `--account dartmouth`. The flag was defensible and the requirement
+store held 192 records, all from the campus account, none personal, because the nightly
+named `--account <the campus account>`. The flag was defensible and the requirement
 behind the failure was not: `mail_triage` reaches nobody, mutates only the
 user's own mailbox, and is documented as the third quadrant precisely so it
 can be the cheap way to act, yet it was the one verb that could not run. The
@@ -9937,7 +9937,7 @@ and is what finally exercised the path.)
   protect was the only thing that could not use it, and a revoked credential
   on *any* single mailbox failed the sweep for **all** of them, including the
   mailboxes that answered fine. The nightly had been pinned to
-  `--account dartmouth` for a year to avoid it, which made the workaround look
+  `--account <the campus account>` for a year to avoid it, which made the workaround look
   like a decision about Google's token lifetime rather than a bug. The general
   lesson is about where the contract lived: `unified.rs`'s module header states
   *"A failed account never sinks a fan-out"* in prose, and prose in a producer
