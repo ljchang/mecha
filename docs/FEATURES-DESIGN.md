@@ -169,7 +169,7 @@ machine runs*, never as advice:
 | OCR | PaddleOCR-VL 1.6 (GGUF + mmproj) | a comment in `scripts/llama/install.sh`, `DOCUMENT-EXTRACTION-DESIGN.md` §5–6 |
 | Layout | `PP-DocLayoutV3.onnx` | `scripts/layout/install.sh` |
 | Image generation | Qwen-Image 2.1 Q4, `qwen3vl_8b_w4a8`, the 2.1 VAE | `ImageConfig` defaults, `features/tools/image-generation.md` (~15 GB peak, measured) |
-| Voice | Parakeet TDT 0.6B v3 int8, Chatterbox Turbo, Silero VAD, smart-turn v3 | `features/interfaces/voice.md`, `VOICE-RESEARCH.md` |
+| Voice | Parakeet TDT 0.6B v3 int8, Breeze TTS 2 Q6_K (Chatterbox Turbo before 2026-10-03), Silero VAD, smart-turn v3 | `features/interfaces/voice.md`, `VOICE-RESEARCH.md` |
 | Vision | the chat model's own `mmproj` | `LLAMA-SERVER.md` §Vision |
 | Personas | the chat model; the judge model is open | `PERSONA-DESIGN.md` §12.2 (R19) |
 

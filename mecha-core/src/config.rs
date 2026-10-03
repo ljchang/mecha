@@ -1809,12 +1809,13 @@ pub struct VoiceConfig {
     /// `mecha serve --voice-port` overrides it per run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice_port: Option<u16>,
-    /// Where the TTS server's voice references live — the host side of the
-    /// directory the Chatterbox container mounts read-only as `/voices`
+    /// Where the TTS server's voice references live — the directory the
+    /// Breeze adapter reads (`VOICES_DIR`, `~/models/voices` in its unit), or
+    /// the host side of the one the Chatterbox container mounts as `/voices`
     /// (each `<name>.wav` is a cloning reference; the file *is* the voice).
     /// Unset disables voice cloning, which is the honest default: nothing
-    /// here can guess where a container's mount points, and writing WAVs
-    /// into a wrong directory would litter it silently.
+    /// here can guess where the TTS reads its voices, and writing WAVs into
+    /// a wrong directory would litter it silently.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voices_dir: Option<PathBuf>,
 }

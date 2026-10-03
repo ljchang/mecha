@@ -4751,7 +4751,7 @@ mod boundary_tests {
                 chat.clone(),
                 library::state_for_tests(std::path::PathBuf::new())
             )
-            .speak("new", "too late", false, false)
+            .speak("new", "too late", false, false, false)
             .await,
             crate::voice::Hosted::Failed(_)
         ));

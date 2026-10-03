@@ -34,13 +34,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a provided program. It installs nothing and asks no server; `--verify`
   hashes model files placed by hand.
 
+- **A voice that takes direction is told how to say each sentence.** When
+  the speech engine honours `instructions` (Breeze TTS 2), the worker asks
+  the voice facade's new director for each sentence — one line on emotion,
+  energy, pace and pitch, written by the model already loaded, with thinking
+  off — and sends it with the words. The first sentence's direction starts
+  from your words as the turn begins. Every direction is recorded in the
+  conversation's transcript as a `spoken_direction` record, except in an
+  incognito chat, where it is directed and nothing is kept. On a voice that
+  does not take direction, nothing changes and no extra call is made.
+
+- **A streaming voice is no longer told to keep it short.** When the speech
+  engine streams audio as it synthesises (Breeze lists `"streams": true`),
+  the worker says so (`X-Voice-TTS-Streams: 1`) and a spoken turn opens with
+  a block that keeps every voice rule but the length ones, and a persona's
+  call note drops "short sentences, the first one short". Those rules were a
+  latency control for an engine that speaks a sentence only once all of it is
+  made; on Chatterbox the prompt is byte-for-byte what it was.
+
 - **A Breeze TTS adapter, ready but not switched on.** `scripts/voice/breeze_server.py`
   serves the same speech interface as the Chatterbox server, in front of Breeze TTS 2
   on a qwentts.cpp fork. It transcribes each voice clip once with Parakeet (an editable
   `.txt` beside the WAV), registers voices with the engine, speaks the default voice
-  as a house voice, passes delivery instructions through, and stretches when speed is
-  not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are not
-  installed; `docs/VOICE-BREEZE-DESIGN.md` says what is left before the switch.
+  as the clip `default.wav`, passes delivery instructions through, and stretches when speed is
+  not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are installed
+  by hand; `docs/VOICE-BREEZE-DESIGN.md` §5 says which gates the switch left open.
 
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
@@ -626,6 +644,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   qwentts.cpp): 4.1 GiB at its peak while speaking, read on the GB10, where
   Chatterbox was 7.8 GiB. The machine-wide sums fall by the difference,
   about 4 GiB.
+
+- **Breeze TTS 2 is the default voice.** The voice worker's `MECHA_VOICE_TTS`
+  now defaults to the Breeze adapter on `:8887` (engine on `:8886`) instead of
+  Chatterbox on `:8881`, which stays available as the rollback by setting the
+  variable back. The update skill says when the adapter needs a restart.
+
 - **The model launchers find the Hugging Face cache the way `hf` does.**
   The router, the embeddings and OCR servers and the other start scripts
   looked only at `HF_HUB`, then `~/.cache/huggingface/hub`; they now also
@@ -724,6 +748,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **The ComfyUI idle reset reads only what it needs, and fails when it cannot
+  see free memory.** Its two journal checks now ask for the newest matching
+  line (`journalctl -g … -n 1`) instead of reading the whole run's journal every
+  minute, and tell "no match" from "unreadable" by what journalctl says on
+  stderr. An unreadable `MemFree` fails the unit, where it used to be read as
+  zero and answered with `/free` and a clean exit.
 
 - **A picture asked for while the image server restarts waits for it.** The
   first request of a job now waits for a server that is not answering yet:

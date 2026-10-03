@@ -15,9 +15,8 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=BREEZE_TTS_URL=http://127.0.0.1:8886
 Environment=VOICES_DIR=%h/models/voices
 Environment=MECHA_VOICE_STT=http://127.0.0.1:8992/v1
-# What `voice: "default"` speaks as (ruling D2). A missing house voice is a 503
-# that says so, never another voice.
-Environment=BREEZE_HOUSE_VOICE=house
+# `voice: "default"` speaks as default.wav in VOICES_DIR (ruling D2). A
+# missing one is a 503 that says so, never another voice.
 Environment=BREEZE_MODEL_NAME=breeze-tts2-q6_k
 ExecStart=%h/models/voice-worker-venv/bin/python breeze_server.py
 Restart=on-failure

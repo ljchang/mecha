@@ -586,7 +586,7 @@ so set only what differs on your machine.
 | `stt_url` | string | `http://127.0.0.1:8992/v1` | The OpenAI-compatible speech-to-text server dictation sends audio to, up to its `/v1`. |
 | `offer_target` | string | `http://127.0.0.1:7860/api/offer` | Where the voice worker accepts calls, and its address for everything else `mecha serve` sends it: the call relay, Listen, and voice previews. Empty means `mecha serve` doesn't reach the worker at all, so those three stop; a browser can still call the worker's own door. `mecha serve --offer-target` overrides it for one run. |
 | `voice_port` | integer | `8990` | The loopback port `mecha serve` mounts the voice facade on, for the voice worker to call. `0` doesn't mount it. `mecha serve --voice-port` overrides it for one run. |
-| `voices_dir` | path | unset | Host directory of the TTS server's voice references (the directory its container mounts as `/voices`). Unset disables recording and cloning voices. |
+| `voices_dir` | path | unset | Directory of the TTS server's voice references: the one the Breeze adapter reads (`~/models/voices` by default), or the host side of Chatterbox's `/voices` mount. Unset disables recording and cloning voices. |
 
 ## `[personas]`
 
