@@ -123,12 +123,15 @@ async def transcript_for(client: httpx.AsyncClient, name: str, wav_path: str) ->
             return text
     with open(wav_path, "rb") as f:
         audio = f.read()
-    r = await client.post(
-        f"{STT_URL}/audio/transcriptions",
-        files={"file": (os.path.basename(wav_path), audio, "audio/wav")},
-        data={"model": "parakeet"},
-        timeout=120,
-    )
+    try:
+        r = await client.post(
+            f"{STT_URL}/audio/transcriptions",
+            files={"file": (os.path.basename(wav_path), audio, "audio/wav")},
+            data={"model": "parakeet"},
+            timeout=120,
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(503, f"could not transcribe voice {name}: STT unreachable ({type(e).__name__})")
     if r.status_code != 200:
         raise HTTPException(503, f"could not transcribe voice {name}: STT answered {r.status_code}")
     text = (r.json().get("text") or "").strip()
@@ -240,7 +243,7 @@ async def speech(req: SpeechRequest):
             # every voice. Ask its registry rather than parse the error's
             # wording: absent means teach it again and ask once more; present
             # means the refusal was about something else, said as it was.
-            if await _engine_knows(client, voice):
+            if await _engine_knows(client, voice) is True:
                 raise HTTPException(502, f"the Breeze engine answered {upstream.status_code}: {detail}")
             await ensure_registered(client, voice, force=True)
             upstream = await _open(client, body)
@@ -248,6 +251,12 @@ async def speech(req: SpeechRequest):
                 detail = (await upstream.aread()).decode(errors="replace")[:200]
                 await upstream.aclose()
                 raise HTTPException(502, f"the Breeze engine answered {upstream.status_code}: {detail}")
+    except httpx.HTTPError as e:
+        # Down or still loading (the engine has no readiness signal, so the
+        # adapter can start first): said by name, as /health says it, not a
+        # bare 500 with the reason only in the journal.
+        await client.aclose()
+        raise HTTPException(503, f"the Breeze engine is unreachable ({type(e).__name__}); loading or down")
     except BaseException:
         await client.aclose()
         raise
@@ -302,16 +311,20 @@ async def speech(req: SpeechRequest):
     return Response(content=wav_bytes(pcm), media_type="audio/wav")
 
 
-async def _engine_knows(client: httpx.AsyncClient, name: str) -> bool:
-    """Whether the engine's registry holds `name`. An unreadable registry
-    answers yes, so the refusal is reported rather than retried blind."""
+async def _engine_knows(client: httpx.AsyncClient, name: str) -> bool | None:
+    """Whether the engine's registry holds `name`: None when the registry
+    cannot be read, which the caller treats as "teach it again" - one
+    re-upload and one retry, bounded, rather than a voice that 502s until the
+    adapter restarts. The shape is the fork's `tts_handle_voices`, measured
+    against the real engine on 2026-10-03:
+    `{"voices": [{"name": "vctk_p297", "kind": "registered"}]}`."""
     try:
         r = await client.get(f"{BREEZE_URL}/v1/audio/voices", timeout=5)
-        voices = r.json().get("voices", []) if r.status_code == 200 else None
-    except (httpx.HTTPError, ValueError):
+        voices = r.json().get("voices") if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError):
         voices = None
-    if voices is None:
-        return True
+    if not isinstance(voices, list):
+        return None
     return any(v.get("name") == name for v in voices if isinstance(v, dict))
 
 
