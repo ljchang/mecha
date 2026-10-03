@@ -100,6 +100,9 @@ pub fn cached(
     file: &HubFile,
     hash: bool,
 ) -> Result<Cached> {
+    if !plain_relative(file.path) || !plain_relative(repo) || !plain_relative(revision) {
+        bail!("refusing to look up a pin whose repository, revision or path is not a plain relative name");
+    }
     let snap = snapshot_path(hub, repo, revision, file);
     let meta = match std::fs::metadata(&snap) {
         Ok(m) => m,
