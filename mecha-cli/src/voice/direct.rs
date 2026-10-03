@@ -203,7 +203,6 @@ impl Directions {
     ) {
         let scene = Scene {
             character: seed.character,
-            voice: None,
             last_reply: seed.last_reply,
             utterance: utterance.to_string(),
         };
