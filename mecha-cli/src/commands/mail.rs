@@ -558,10 +558,24 @@ fn measured_account(named: Option<String>) -> Result<String> {
     }
 }
 
-/// `default_mail`, else `default`, from an `accounts.toml`'s text; an error
-/// for text that is not TOML at all.
+/// The account mecha-mail sends from, from an `accounts.toml`'s text: the
+/// only account when there is one (`unified::resolve` answers that before any
+/// default), else `default_mail`, else `default`; an error for text that is
+/// not TOML at all. `None` is several accounts and no default.
 fn mail_default_of(text: &str) -> Result<Option<String>> {
     let v: toml::Value = toml::from_str(text)?;
+    let named = |e: &toml::Value| {
+        e.get("name")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
+    if let Some([only]) = v
+        .get("account")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+    {
+        return Ok(named(only));
+    }
     Ok(["default_mail", "default"]
         .iter()
         .find_map(|k| v.get(*k).and_then(toml::Value::as_str))
@@ -3662,9 +3676,18 @@ mod measured_account_tests {
         assert_eq!(mail_default_of(both).unwrap().as_deref(), Some("campus"));
         let only = "default = \"personal\"\n";
         assert_eq!(mail_default_of(only).unwrap().as_deref(), Some("personal"));
+        // One account answers before any default, as mecha-mail sends.
         assert_eq!(
-            mail_default_of("[[account]]\nname = \"x\"\n").unwrap(),
-            None
+            mail_default_of("[[account]]\nname = \"x\"\n")
+                .unwrap()
+                .as_deref(),
+            Some("x")
+        );
+        let two = "[[account]]\nname = \"x\"\n[[account]]\nname = \"y\"\n";
+        assert_eq!(
+            mail_default_of(two).unwrap(),
+            None,
+            "several and no default: name one"
         );
         assert!(
             mail_default_of("not toml =").is_err(),
