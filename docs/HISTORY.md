@@ -98,6 +98,11 @@ passes each.
   - Only this persona's own shared copies can be shown or unshared.
   - `shared_unreadable` and `shared_problem` are said on the page, never
     shown as "not shared".
+- **Before the first night, a live run of the writer** on a copy of one
+  real chat (2026-10-01, the resident uncensored model, 24 turns) took
+  ~63 s and wrote 2 transient facts out of 8. That is the writer's cost
+  figure, and the baseline schema v4's prompt rewrite is to be A/B'd
+  against.
 - **#518 (`c0f47bf6`), docs only:** `PERSONA-MEMORY-TIMESCALES-RESEARCH.md`
   and PERSONA-DESIGN §9.13, with the owner's rulings D26–D28.
   - D26: four tiers, from momentary to lasting fact. States expire from
@@ -10288,7 +10293,10 @@ libraries it loads.** `llama-server.prev` reports `a4ce259` while loading
 **`args_conflicts_with_subcommands` on a subcommand's args also refuses
 global flags.** With it set on `features`, `mecha features --yes enable
 graph` broke. Check: `mecha features --yes enable zzz` must answer "is not a
-feature", not a flag error (mecha-a3, #520).
+feature", not a flag error. mecha-a3 ran it on the installed `c6f59b05`. No
+test holds it yet: `commands/features.rs` guards the regression with a
+comment and a hand-rolled `--probe` check, so `cargo test` would stay green
+if the attribute came back (#520).
 
 **A serve restart can strand the image model's memory.** `image_generate`'s
 ten-minute unload timer lives in the drawing process, so a restart inside

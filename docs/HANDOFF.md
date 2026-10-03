@@ -28,9 +28,12 @@ at `c6f59b05` (02:36Z). The owner's rulings are in `PERSONA-DESIGN.md`
 §12.7.
 
 - **Watch the reading, then decide.** `mecha persona show <name>` reports
-  how many replies in the last week's chats repeated an earlier one. Before
-  the fix, Stella read 8 of 92. Let the numbers show whether repetition is
-  gone across personas before tuning anything else.
+  how many replies in the last week's chats repeated an earlier one. The
+  first reading was 8 of 92 across 6 Stella chats, mostly but not all from
+  before the fix. The 7-day window (`echo::SHOWN_DAYS`, chats by last
+  write) straddles the 02:36Z deploy until 2026-10-10, so before then a
+  repeat can be either side of it. Let the numbers show whether repetition
+  is gone across personas before tuning anything else.
 - **Held on purpose, waiting on those readings:**
   - The call note's "the first one short" (`persona::call::note`) makes
     nearly every spoken reply open with "Good." or "Perfect.". Reword it
@@ -112,7 +115,7 @@ against `a51e1c01`:
   feature's embedder, and with Documents off recall is by words alone. It
   also stays words-only until the nightly has embedded at least half the
   pool (`recall_search`'s `embedded * 2 >= pool.len()`).
-- **Still unbuilt in §9** (the curation page, §9.8, is built: #519):
+- **Still unbuilt in §9:**
   - an after-chat writer (D3's "after a session"), which needs an idle
     signal from serve;
   - candidates in `/queues` and `backlog.rs`: today they appear only in
@@ -355,7 +358,8 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-10-01/03 — modular installs: steps 0–6 shipped and live, 7–8 open.**
+**2026-10-01/03 — modular installs: steps 0–6 shipped and live, 7a-1
+merged, the rest of 7 and 8 open.**
 Step 5, #503 (`[voice]` and `[personas]`), went live in mecha-d7's deploy of
 `7663b9a8` (2026-10-02, machine state below); the last of step 4, #476, in
 mecha-69's deploy of `36ff7573`.
@@ -397,9 +401,11 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
   - **#520** (step 6b): `recommend.rs` and `mecha features --probe`. It went
     live in mecha-1e's `c6f59b05`, and mecha-a3 checked the installed
     `--help` and the probe.
-- **Step 7a-1 is #521, in review:** one Hugging Face hub resolver shared by
-  8 scripts, and a resumable sha256-checked downloader (`fetch.rs`).
-- **Steps 7–8 left:** per-feature installers with `--remove`, and the one
+- **Step 7a-1 is #521, merged (`d97d01a5`, 02:52Z) and not deployed.** It
+  is one Hugging Face hub resolver shared by 8 scripts, and a resumable
+  sha256-checked downloader (`mecha_core::fetch`). It is not in
+  `c6f59b05`, which is the install on this box.
+- **Left of 7, and 8:** per-feature installers with `--remove`, and the one
   `CLAUDE.md` bullet pointing at `ARCHITECTURE.md` §Features (the checklist
   there is already written).
 - **Owed: a measured memory reading for the production chat file** (unsloth
