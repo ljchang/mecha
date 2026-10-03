@@ -90,6 +90,11 @@ drops that API while still gating delivery on the flag, the predicate goes false
 the page takes the plain connection, and the call falls back again - so the
 owner's "buffered microphone path failed" reappearing in Chrome is the signal to
 recheck this predicate first.
+On that connection every outgoing frame passes through the tap's worker, so
+a fallback to RTP keeps the worker running and only stops its copies (a
+`stop` message); terminating it, or setting `sender.transform = null`, left
+1 packet reaching the far end in 2.5 s against 125 with the worker kept
+(review of #534). Only `end()` terminates it, with the connection.
 
 ### 2.2 Delivery over a reliable channel — RTVI messages, not a second channel
 
