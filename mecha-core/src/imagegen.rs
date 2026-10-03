@@ -2698,6 +2698,16 @@ impl Tool for ImageGenerate {
         "image_generate"
     }
 
+    /// A new conversation starts with no picture to repeat: the workspace can
+    /// outlive the chat (a batch's shared one, the TUI's `/new`), and
+    /// [`REPEAT_REFUSED`] points at a picture in *this* chat (review of #543).
+    fn forget_conversation_state(&self) {
+        self.last_drawn
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
+
     /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): its request goes only
     /// to the loopback image server `[image]` names, and it reads no owner store.
     /// Eligible, in a form that keeps refusing a cast name the library does
@@ -7095,7 +7105,7 @@ mod tests {
     #[tokio::test]
     async fn the_call_that_just_drew_is_not_drawn_again() {
         let (url, seen) = fake_with(Fake {
-            history: vec![done(), done(), done(), done(), done()],
+            history: vec![done(), done(), done(), done(), done(), done(), done()],
             ..Fake::default()
         })
         .await;
@@ -7162,6 +7172,15 @@ mod tests {
             assert!(out.content.starts_with("image: "), "{}", out.content);
         }
         assert_eq!(drawn(&seen), 5);
+
+        // A new conversation in the same workspace has nothing to repeat.
+        let nine = json!({"prompt": "a fox", "seed": 9});
+        let out = t.call(nine.clone(), &ctx(&dir)).await.unwrap();
+        assert!(out.content.starts_with("image: "), "{}", out.content);
+        t.forget_conversation_state();
+        let fresh = t.call(nine, &ctx(&dir)).await.unwrap();
+        assert!(fresh.content.starts_with("image: "), "{}", fresh.content);
+        assert_eq!(drawn(&seen), 7);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(other).ok();
     }
