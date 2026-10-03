@@ -383,6 +383,9 @@ pub enum FileState {
     Unverified,
     /// No model is recommended for this machine's tier.
     NoRow,
+    /// Kept outside the hub by a sidecar that could not be checked: not
+    /// priced, never offered over.
+    KeeperUnknown { sidecar: &'static str },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -536,25 +539,37 @@ pub fn plan(
         };
         // A model kept outside the hub by a provided sidecar is that
         // install's: named, not priced.
+        // A model kept outside the hub by a sidecar is that sidecar's: held
+        // when it is here (provided or installed), fetched by its own
+        // installer when that install is incomplete, and — when it could
+        // not be checked — not priced at all, since nothing is offered over
+        // an unknown.
         let keeper = SIDECARS
             .iter()
             .find(|sc| !sc.models_in_hub && sc.serves.contains(&slot.id))
-            .filter(|sc| {
-                sidecars.iter().any(|p| {
-                    p.id == sc.id
-                        && matches!(
-                            p.state,
-                            SidecarState::Provided { .. } | SidecarState::Installed
-                        )
-                })
+            .and_then(|sc| {
+                sidecars
+                    .iter()
+                    .find(|p| p.id == sc.id)
+                    .map(|p| (sc, &p.state))
             });
-        if let Some(sc) = keeper {
+        let held = match keeper {
+            Some((sc, SidecarState::Provided { .. } | SidecarState::Installed)) => {
+                Some(FileState::HeldBy { sidecar: sc.label })
+            }
+            Some((_, SidecarState::Incomplete)) => Some(FileState::WithSidecar),
+            Some((sc, SidecarState::Unknown { .. })) => {
+                Some(FileState::KeeperUnknown { sidecar: sc.label })
+            }
+            Some((_, SidecarState::Missing { .. })) | None => None,
+        };
+        if let Some(state) = held {
             files.push(PlannedFile {
                 slot: slot.id,
                 model: row.model,
                 repo: None,
                 path: "",
-                state: FileState::HeldBy { sidecar: sc.label },
+                state,
             });
             continue;
         }
@@ -956,6 +971,42 @@ mod tests {
         assert_eq!(image.len(), 1);
         assert_eq!(image[0].state, FileState::HeldBy { sidecar: "ComfyUI" });
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A ComfyUI that could not be checked: its models are neither held nor
+    /// priced as a download over it.
+    #[test]
+    fn an_unknown_comfyui_s_models_are_not_priced() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if unsafe { libc::geteuid() } == 0 {
+                return; // root reads anything; the negative would be vacuous.
+            }
+            let root = scratch();
+            let mut m = machinery(&root);
+            // ComfyUI's `Home("ComfyUI")` evidence lives under a home that
+            // cannot be read; mecha's own tree stays readable.
+            m.home = root.join("closed");
+            std::fs::create_dir_all(&m.home).unwrap();
+            std::fs::set_permissions(&m.home, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let p = plan(Feature::Image, &m, &GB10, &root.join("hub"), false);
+            std::fs::set_permissions(&m.home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let p = p.unwrap();
+            let comfy = p.sidecars.iter().find(|s| s.id == "comfyui").unwrap();
+            assert!(
+                matches!(comfy.state, SidecarState::Unknown { .. }),
+                "{:?}",
+                comfy.state
+            );
+            let image: Vec<_> = p.files.iter().filter(|f| f.slot == "image").collect();
+            assert_eq!(image.len(), 1);
+            assert_eq!(
+                image[0].state,
+                FileState::KeeperUnknown { sidecar: "ComfyUI" }
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     /// The chat model has no 16 GB row: the plan names that, and never says

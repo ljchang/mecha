@@ -181,7 +181,7 @@ the server gives it back (below), and **per request** holds it only while
 working.
 It describes how each is installed here: the embeddings and OCR servers sit
 behind a systemd socket, and started by hand instead they are resident,
-which puts the resident sum near 59 GiB rather than 49.
+which puts the resident sum near 59 GiB rather than 50.
 
 | Feature | Model | Runs on | How it holds memory | Cost on the GB10 (GiB) | What it counts | Evidence |
 |---|---|---|---|---|---|---|
@@ -195,7 +195,7 @@ which puts the resident sum near 59 GiB rather than 49.
 | turn detection — `voice` | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | the worker's process memory | Measured 2026-10-02 |
 
 Added up — which is *arithmetic*, since nobody has seen every row loaded at
-the same moment — the resident models hold about 49 GiB (51 with image
+the same moment — the resident models hold about 50 GiB (51 with image
 generation's ~1.1 GiB between pictures), and everything
 loaded at once with an image generating from cold about 79, of the GB10's
 121.7 GiB (`MemTotal` in `/proc/meminfo`), before the operating system.
