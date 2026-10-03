@@ -3157,7 +3157,7 @@ impl crate::voice::SessionHost for VoiceHost {
                             spoken: true,
                             approve_all,
                             unlogged,
-                            tts_streams: false,
+                            tts_streams,
                             images: Vec::new(),
                         },
                     ) {
@@ -3811,6 +3811,26 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hosted_spoken_turn_carries_the_streams_flag_to_its_prompt() {
+        // Reads the source: the flag is one field among the turn's options,
+        // and a literal `false` there keeps the whole-sentence brevity rules
+        // on the owner's own chat while every behavioural test stays green —
+        // the persona path and the facade's own slots are wired separately
+        // (review of #527).
+        let src = include_str!("chat.rs");
+        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
+        let speak = code
+            .split("async fn speak(")
+            .nth(1)
+            .and_then(|s| s.split("Hosted::Started(").next())
+            .expect("the host's speak builds a turn");
+        assert!(
+            speak.contains("tts_streams,") && !speak.contains("tts_streams: false"),
+            "the assistant's spoken turn drops the worker's X-Voice-TTS-Streams"
+        );
+    }
+
     #[test]
     fn an_incognito_turn_registers_its_shells_in_the_room() {
         // Reads the source, like the test below: the assignment is one field
