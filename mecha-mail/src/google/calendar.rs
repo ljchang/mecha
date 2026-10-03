@@ -490,8 +490,8 @@ mod tests {
             "id": "e1", "summary": "Lab meeting", "status": "confirmed",
             "start": {"dateTime": "2026-08-06T15:00:00Z"},
             "end": {"dateTime": "2026-08-06T16:00:00Z"},
-            "attendees": [{"email": "priya@example.edu"}, {"email": "luke@example.edu"}],
-            "organizer": {"email": "luke@example.edu"}
+            "attendees": [{"email": "priya@example.edu"}, {"email": "robin@example.edu"}],
+            "organizer": {"email": "robin@example.edu"}
         });
         let e = parse_event(&timed, "primary");
         assert_eq!(e.title, "Lab meeting");

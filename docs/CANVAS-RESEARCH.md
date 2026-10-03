@@ -2,10 +2,10 @@
 
 *2026-08-21. The survey behind "wire mecha into Canvas so it can post
 announcements, maintain course pages, and help with grading". Six web-research
-passes over Instructure's API docs, Dartmouth's own service catalogue, three
+passes over Instructure's API docs, the university's own service catalogue, three
 third-party MCP servers, and the empirical literature on grading injection.
 Claims carry their sources. The conclusion changed twice during the pass — once
-on reading what Dartmouth did in June 2025, and once on reading the Wharton
+on reading what the university did in June 2025, and once on reading the Wharton
 grading-injection numbers, which are the reason §6.2 exists.*
 
 ## 0. The short answer
@@ -139,9 +139,9 @@ Instructure's policy on the first is explicit: manual tokens are *for testing*,
 and "asking any other user to manually generate a token and enter it into your
 application is a violation of Canvas' API Policy."
 
-### 3.2 What Dartmouth did
+### 3.2 What the university did
 
-**On 2025-06-18 Dartmouth decommissioned self-service manual token generation.**
+**On 2025-06-18 the university decommissioned self-service manual token generation.**
 Tokens are now issued by an approved Canvas administrator through a service
 request form, roughly five business days, and:
 
@@ -151,7 +151,7 @@ Their stated reasoning is FERPA-covered educational records and IP, and they say
 plainly that they would rather vendors use LTI than collect user tokens.
 
 **Probe, 2026-08-21.** Checked against the live account rather than taken from
-the announcement: on `canvas.dartmouth.edu/profile/settings`, under *Approved
+the announcement: on `canvas.example.edu/profile/settings`, under *Approved
 Integrations*, the **`+ New Access Token` button is greyed out** for a faculty
 account. So the decommission was not students-only — there is no self-service
 path for anyone, and the service request form is the sole door. Worth having
@@ -163,8 +163,8 @@ Two consequences, and the second is the useful one:
 - The frictionless path is closed, so *some* institutional conversation is
   happening either way. Given that, it should be the conversation that produces
   the better credential.
-- Dartmouth says it wants to support "internal development and customization"
-  and will "partner with Dartmouth to do that securely." A single professor
+- The university says it wants to support "internal development and customization"
+  and will "partner with [the university] to do that securely." A single professor
   asking for a scoped developer key for a tool that touches only his own courses
   is the case they describe wanting. Asking for the *narrower* thing is also
   the easier ask.
@@ -217,9 +217,9 @@ self-issued:
 Root account admin or Instructure — being teacher of record on every affected
 course does not reach it. Keys are bound to the issuing institution too, so a key
 from a free `canvas.instructure.com` teacher account cannot authorize against
-`canvas.dartmouth.edu`.
+`canvas.example.edu`.
 
-So "just use OAuth instead of asking Dartmouth" is not a door. There are exactly
+So "just use OAuth instead of asking the university" is not a door. There are exactly
 two, and both go through the same request:
 
 | | The ask | Enforcement | Cost to them |
@@ -229,7 +229,7 @@ two, and both go through the same request:
 
 **Ask for both in one submission**, leading with the scoped key and naming the
 manual token as an acceptable fallback. The key is the better credential but a
-bespoke request against a process Dartmouth may not have, and a five-day wait
+bespoke request against a process the university may not have, and a five-day wait
 that returns "no" leaves nothing. One form, one wait, no empty-handed outcome.
 
 **Ask for "Allow Include Parameters" to be enabled on the key.** A scoped token
@@ -242,7 +242,7 @@ for up front, invisible and confusing to diagnose later.
 Note for that conversation: Instructure's "manual tokens are for testing only"
 line targets **multi-user applications collecting other people's tokens** — that
 is the stated API-policy violation. One person holding their own token for their
-own courses is not that, and Dartmouth's own page describes wanting to support
+own courses is not that, and the university's own page describes wanting to support
 exactly it. The fallback is legitimate rather than a workaround; the developer
 key's advantage is narrower and specific — Canvas enforces the scopes, so §7's
 surface restrictions stop being the *only* boundary.
@@ -284,7 +284,7 @@ Two Canvas-specific notes worth writing down before they cost something:
   to `mecha`, so a professor auditing their own authorizations can see what this
   is. Cheap, and it is the kind of thing nobody adds later.
 
-**Fallback if Dartmouth will only issue a manual token:** take it, and store it
+**Fallback if the university will only issue a manual token:** take it, and store it
 through the same `StoredCredentials` path with `expires_at: None`, so the client
 is written once against both. But treat the surface restrictions in §7 as
 load-bearing rather than tidy, because in that configuration they are the only
@@ -298,7 +298,7 @@ each `oauth.json` *as a mail grant*, so a Canvas credential parked there gets
 reported as a broken mail account. Share the type, never the namespace.
 
 `accounts.toml` maps a short name to a Canvas host, because a professor with a
-Dartmouth course site and a workshop on `*.instructure.com` is one person with
+university course site and a workshop on `*.instructure.com` is one person with
 two institutions, and a developer key is scoped to the institution that issued
 it. Same design as mail: **the model names an account, never a host**, and the
 account names are baked into the tool schemas as an enum at startup.
@@ -405,7 +405,7 @@ acknowledges for `mecha-docs`.
 The pattern from `mecha-docs` and `mail_triage` transfers cleanly.
 
 **Reads → `untrusted_input` forced, `readOnlyHint`, never `openWorldHint`.**
-A query travels only to `canvas.dartmouth.edu`, which already custodies every
+A query travels only to `canvas.example.edu`, which already custodies every
 byte it returns, so it is not an exfiltration channel — the same distinction
 that separates mail search from `http_fetch`. But the content is other people's
 words in the strongest sense available, so config forces `untrusted_input` the
@@ -535,7 +535,7 @@ Two further rules:
 
 ### 6.3 FERPA
 
-Dartmouth names it as the reason the token door closed, and it is not
+The university names it as the reason the token door closed, and it is not
 decoration. Student submissions, grades and rosters are protected educational
 records; the roster is arguably the most sensitive single object here, since
 `/enrollments` returns names and SIS ids for every enrolled student at once.
@@ -635,7 +635,7 @@ Decisions behind that table, each a bug if undone:
 
 ## 8. Open questions
 
-1. **What will Dartmouth actually issue?** A scoped developer key is the ask; a
+1. **What will the university actually issue?** A scoped developer key is the ask; a
    manual token the likely counter-offer. §3.4's dual ask covers it, but note
    that a manual token **loses enforcement 3 in §6.2** — an unscoped token can
    reach GraphQL and therefore can post grades. In that configuration the
@@ -681,8 +681,7 @@ Decisions behind that table, each a bug if undone:
   [Pagination](https://canvas.instructure.com/doc/api/file.pagination.html) ·
   [File uploads](https://canvas.instructure.com/doc/api/file.file_uploads.html) ·
   [GraphQL](https://canvas.instructure.com/doc/api/file.graphql.html)
-- Dartmouth — [Request a Canvas Access Token](https://services.dartmouth.edu/TDClient/1806/Portal/Requests/ServiceDet?ID=55689) ·
-  [Canvas service catalogue](https://services.dartmouth.edu/TDClient/1806/Portal/Requests/ServiceCatalog/Category/11213/Learning-Management-Systems-Canvas)
+- The university's IT service catalogue: the Canvas access-token request and the LMS category (links withheld; the repository is public)
 - Prior art — [DMontgomery40/mcp-canvas-lms](https://github.com/DMontgomery40/mcp-canvas-lms) ·
   [r-huijts/canvas-mcp](https://github.com/r-huijts/canvas-mcp) ·
   [plyght/canvas-mcp](https://github.com/plyght/canvas-mcp)

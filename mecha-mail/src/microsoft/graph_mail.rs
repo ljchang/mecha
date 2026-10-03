@@ -576,11 +576,11 @@ mod tests {
     fn a_graph_message_parses_into_the_portable_shape() {
         let msg = json!({
             "id": "AAMk123", "conversationId": "conv-1",
-            "internetMessageId": "<mid@dartmouth.edu>",
+            "internetMessageId": "<mid@example.edu>",
             "subject": "Grant deadline", "bodyPreview": "quick note",
             "body": {"contentType": "html", "content": "<p>quick note</p>"},
-            "from": {"emailAddress": {"name": "Priya Nair", "address": "priya@dartmouth.edu"}},
-            "toRecipients": [{"emailAddress": {"address": "luke@dartmouth.edu"}}],
+            "from": {"emailAddress": {"name": "Priya Nair", "address": "priya@example.edu"}},
+            "toRecipients": [{"emailAddress": {"address": "robin@example.edu"}}],
             "receivedDateTime": "2026-08-04T15:30:00Z",
             "isRead": false, "hasAttachments": true,
             "flag": {"flagStatus": "flagged"}
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(e.id, "outlook-AAMk123");
         assert_eq!(e.thread_id.as_deref(), Some("conv-1"));
         assert_eq!(e.from_name, "Priya Nair");
-        assert_eq!(e.to_addresses, vec!["luke@dartmouth.edu"]);
+        assert_eq!(e.to_addresses, vec!["robin@example.edu"]);
         assert_eq!(e.date_received, "2026-08-04T15:30:00Z");
         assert!(!e.is_read && e.is_starred && e.has_attachments);
         // An HTML body must land in body_html so text::clean_body converts it

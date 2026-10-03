@@ -285,11 +285,11 @@ polling the store rather than the child.
 
 ```
  ┌ mail ───────────────────────────── 22 need you · 3 drafted · 2 parked ─┐
- │ ● today  dartmouth  #admin       JOCN review — accept or decline       │
- │ ● week   dartmouth  #lab-app     PhD applicant asks about openings     │
- │   week   dartmouth  #rec-letter  Endorsement letter, due Sep 1         │
- │   none   dartmouth  #expense     Amazon receipt, $412                  │
- │ ✎ drafted dartmouth #lab-app     reply staged → /outbox                │
+ │ ● today  campus     #admin       JOCN review — accept or decline       │
+ │ ● week   campus     #lab-app     PhD applicant asks about openings     │
+ │   week   campus     #rec-letter  Endorsement letter, due Sep 1         │
+ │   none   campus     #expense     Amazon receipt, $412                  │
+ │ ✎ drafted campus    #lab-app     reply staged → /outbox                │
  └ r reply · a archive · s spam · e schedule · t task · f route · ! wrong ┘
 ```
 

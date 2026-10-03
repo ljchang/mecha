@@ -46,7 +46,7 @@ something shipped.
 | [`ARMED-READING-RESEARCH.md`](ARMED-READING-RESEARCH.md) | What an armed conversation can still read, which refusals protect something, and how to open a search result without a destination |
 | [`AUDIT-RESEARCH.md`](AUDIT-RESEARCH.md) | Where the harness was weakest on 2026-09-02, what was fixed that day, and what to build next — ranked |
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
-| [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what Dartmouth's token policy makes impossible |
+| [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what the university's token policy makes impossible |
 | [`CLASSIFIER-RESEARCH.md`](CLASSIFIER-RESEARCH.md) | Whether a learned classifier (a detector, a monitor, Jev or Laya) can decide when the interlock's restriction is unnecessary — and the roles it may and may not play |
 | [`CLOUD-HOSTING-RESEARCH.md`](CLOUD-HOSTING-RESEARCH.md) | What it would cost to run the model somewhere other than this box |
 | [`CODE-MODE-RESEARCH.md`](CODE-MODE-RESEARCH.md) | Which embeddable interpreter should run the model's tool-calling programs, and what contract the model sees |

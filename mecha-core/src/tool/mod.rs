@@ -2294,13 +2294,13 @@ mod cap_tests {
             "type": "object",
             "properties": {
                 "to": {"type": "string"},
-                "account": {"type": "string", "default": "dartmouth"},
+                "account": {"type": "string", "default": "campus"},
                 "reply_all": {"type": "boolean", "default": false},
             },
         });
         let (filled, keys) =
             with_schema_defaults(&schema, &serde_json::json!({"to": "ada@example.com"}));
-        assert_eq!(filled["account"], serde_json::json!("dartmouth"));
+        assert_eq!(filled["account"], serde_json::json!("campus"));
         assert_eq!(filled["reply_all"], serde_json::json!(false));
         assert_eq!(filled["to"], serde_json::json!("ada@example.com"));
         // Which keys, not only what they became: a value this harness wrote is
@@ -2332,7 +2332,7 @@ mod cap_tests {
             "properties": {
                 "to": {"type": "string"},
                 "thread_ts": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null},
-                "account": {"type": "string", "default": "dartmouth"},
+                "account": {"type": "string", "default": "campus"},
             },
         });
         let (filled, keys) = with_schema_defaults(&schema, &serde_json::json!({"to": "ada"}));

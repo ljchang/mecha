@@ -2587,7 +2587,7 @@ provider-neutral surface (`unified.rs`), so no mecha-core or mecha-cli code
 knows Google or Microsoft exists, and neither does the model.
 
 **The model names an account, never a provider.** `accounts.toml` maps short
-names (`dartmouth`, `personal`) to providers, `mecha-mail auth <name>
+names (`campus`, `personal`) to providers, `mecha-mail auth <name>
 --provider ...` adds one (`import` copies a legacy per-provider login in),
 and the account names are baked into every tool schema as an enum at startup
 — the model picks from real names instead of guessing. Resolution is the
@@ -2603,7 +2603,7 @@ models invent). **The schema declares a `default` key exactly where omitting
 the verb.** The key is what lets the outbox pin the account into a draft so
 the reviewer can see who a message is from (see *The outbox*), so declaring
 one anywhere else is a promise `resolve` does not keep: a `Mode::Read` fans
-out, and "The default account is `dartmouth`" on `mail_search` described
+out, and "The default account is `campus`" on `mail_search` described
 behaviour that does not exist, one clause after a sentence saying the
 opposite. So a **create** declares the configured default (`mail_default` /
 `calendar_default`, per surface). An **item op** declares nothing when several

@@ -683,7 +683,7 @@ mod tests {
                 "headers": [
                     {"name": "Subject", "value": "Greetings"},
                     {"name": "From", "value": "Priya Nair <priya@example.edu>"},
-                    {"name": "To", "value": "luke@example.edu, Bob <bob@example.com>"},
+                    {"name": "To", "value": "robin@example.edu, Bob <bob@example.com>"},
                     {"name": "Message-ID", "value": "<mid@x>"}
                 ],
                 "parts": [
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(email.from_address, "priya@example.edu");
         assert_eq!(
             email.to_addresses,
-            vec!["luke@example.edu", "bob@example.com"]
+            vec!["robin@example.edu", "bob@example.com"]
         );
         assert_eq!(email.body_text, "hello there");
         assert!(!email.is_read);

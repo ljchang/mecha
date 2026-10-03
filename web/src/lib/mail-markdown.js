@@ -140,7 +140,7 @@ const MAX_DEPTH = 6;
 // Link text that reads as an address — with a scheme, `www.`, a bare
 // `host.tld/path`, or an email address. Such text is replaced by the real
 // destination, because a reader takes it as the destination: the words
-// `mail.dartmouth.edu/login` over `https://evil.example/login` is the phish
+// `mail.example.edu/login` over `https://evil.example/login` is the phish
 // the unwrapping rule exists against, and a phone has no hover to catch it.
 const URLISH = /^\s*<?(?:[a-z][a-z0-9+.-]*:\/\/\S+|www\.\S+|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:[/:?#]\S*)?)>?\s*$/i;
 const EMAILISH = /^\s*(?:mailto:)?[^\s@]+@[^\s@]+\.[a-z]{2,}\s*$/i;

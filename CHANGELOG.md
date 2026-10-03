@@ -3651,7 +3651,7 @@ remedy. Nothing else in this release requires action.
   on that would escalate everything.
 
 - **A nightly sweep**, `scripts/mecha-mail-classify.{service,timer}`, 05:30
-  UTC and Dartmouth-only. A timer rather than a `mecha trigger`, because a
+  UTC and campus-only. A timer rather than a `mecha trigger`, because a
   trigger's action is a prompt on purpose and this is a deterministic command.
 
 - **Google Docs, Sheets and Slides**, as a fourth binary on `mecha-mail`.
