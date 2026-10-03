@@ -36,7 +36,7 @@ VOICES_DIR = os.environ.get("VOICES_DIR", "/voices")
 
 # Speed is applied here rather than on the client because the browser's
 # only cheap knob is playbackRate, which resamples - it moves pitch with
-# tempo and turns the assistant into a chipmunk. `stretch` below keeps
+# tempo and turns the assistant into a chipmunk. `stretch` (audio_stretch.py) keeps
 # pitch fixed. The bounds are taste, not safety: past 2x any time-domain
 # method smears consonants, and below 0.5x it sounds drugged.
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
@@ -89,7 +89,7 @@ class SpeechRequest(BaseModel):
     temperature: float = 0.8
     # OpenAI's own speech API spells speed this way, so a generic client
     # gets it for free. Chatterbox itself has no speed parameter - see
-    # `stretch` below for what actually happens.
+    # `stretch` in audio_stretch.py for what actually happens.
     speed: float = 1.0
 
 

@@ -63,6 +63,9 @@ INSTRUCTIONS_MAX = 300
 # rather than spoken as if it had landed.
 CONTROLS = ("temperature", "instructions")
 REFUSED = ("exaggeration", "cfg_weight")
+# Refused outside, never clamped (chatterbox_server's rule). Zero is greedy
+# decoding in the engine, so it is in range.
+BOUNDS = {"temperature": (0.0, 2.0)}
 
 app = FastAPI()
 # voice name -> the (wav, txt) mtimes it was registered at: editing either
@@ -173,10 +176,14 @@ async def health():
 def voices():
     """Read off the directory, as chatterbox_server does: adding a voice is
     dropping a wav in. `default` is the house voice."""
-    names = [n for n in voice_names() if n != HOUSE_VOICE]
+    on_disk = voice_names()
+    names = [n for n in on_disk if n != HOUSE_VOICE]
+    # `default` is the house voice, not a built-in: listed only when it can
+    # be spoken, so the picker never offers a voice that 503s every sentence.
+    house = ["default"] if HOUSE_VOICE in on_disk else []
     return {
         "default": "default",
-        "voices": ["default"] + names,
+        "voices": house + names,
         "speed": {"min": MIN_SPEED, "max": MAX_SPEED, "default": 1.0},
         "model": MODEL_NAME,
         "controls": list(CONTROLS),
@@ -202,6 +209,10 @@ async def speech(req: SpeechRequest):
     for name in REFUSED:
         if getattr(req, name) is not None:
             raise HTTPException(400, f"{name} is not honoured by {MODEL_NAME}; refused, not ignored")
+    for name, (lo, hi) in BOUNDS.items():
+        value = getattr(req, name)
+        if value is not None and not (lo <= value <= hi):
+            raise HTTPException(400, f"{name} must be in [{lo}, {hi}]")
     voice = HOUSE_VOICE if req.voice in ("default", "") else req.voice
     if voice not in voice_names():
         if req.voice in ("default", ""):
@@ -220,9 +231,13 @@ async def speech(req: SpeechRequest):
         await ensure_registered(client, voice)
         upstream = await _open(client, body)
         if upstream.status_code != 200:
-            # The engine restarted and forgot its voices, most likely: ask
-            # once more after registering again, then say what it said.
+            detail = (await upstream.aread()).decode(errors="replace")[:200]
             await upstream.aclose()
+            # Only the engine's own "unknown voice" means it restarted and
+            # forgot its registry (tts-server keeps it in memory): teach it
+            # once more and ask again. Any other refusal is said as it was.
+            if "unknown voice" not in detail:
+                raise HTTPException(502, f"the Breeze engine answered {upstream.status_code}: {detail}")
             await ensure_registered(client, voice, force=True)
             upstream = await _open(client, body)
             if upstream.status_code != 200:
