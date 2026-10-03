@@ -37,7 +37,8 @@ pub enum Peak {
     /// From `hardware.md`'s formula, or measured figures added up or carried
     /// to a machine they were not measured on.
     Arithmetic { mb: u32 },
-    /// No number at all — reported as null, never 0.
+    /// No number at all — never 0: `--json` carries no `mb` for it, and every
+    /// sum it is in is `null`.
     Unmeasured,
 }
 
@@ -282,7 +283,7 @@ pub const SLOTS: &[Slot] = &[
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
-                counts: "the GB10's measured GPU figure, carried to a card",
+                counts: "the pinned files and four 262k slots' cache, on the card",
                 sources: QWEN36,
                 excludes: Some("the router's prompt cache (`cache-ram`, up to 16 GiB)"),
             },
@@ -537,13 +538,9 @@ pub const SLOTS: &[Slot] = &[
     },
 ];
 
-pub fn slot(id: &str) -> Option<&'static Slot> {
-    SLOTS.iter().find(|s| s.id == id)
-}
-
 const TIERS: [u32; 4] = [16, 32, 64, 128];
 
-fn gib(mb: u32) -> String {
+fn gib_figure(mb: u32) -> String {
     format!("{:.1}", mb as f64 / 1024.0)
 }
 
@@ -576,8 +573,8 @@ pub fn beside_table() -> String {
                 .join(", ")
         };
         let (cost, evidence) = match peak {
-            Peak::Measured { mb, date, .. } => (gib(mb), format!("Measured {date}")),
-            Peak::Arithmetic { mb } => (format!("~{}", gib(mb)), "Arithmetic".to_string()),
+            Peak::Measured { mb, date, .. } => (gib_figure(mb), format!("Measured {date}")),
+            Peak::Arithmetic { mb } => (format!("~{}", gib_figure(mb)), "Arithmetic".to_string()),
             Peak::Unmeasured => ("—".to_string(), "Unmeasured".to_string()),
         };
         let counts = match r.excludes {
@@ -602,12 +599,13 @@ pub enum Machine {
     /// One pool (a GB10, a Mac, or a computer with no card the probe can
     /// read). `gpu_unread` says the last case: a card may exist that only
     /// `nvidia-smi` could have described.
-    Unified {
-        total_mb: u64,
-        gpu_unread: bool,
-    },
+    Unified { total_mb: u64, gpu_unread: bool },
+    /// `gpu_mb` is the **largest single card**, not the cards' sum: a model
+    /// that must sit on one device (ComfyUI, the embeddings and OCR servers)
+    /// cannot split across two, so two 24 GiB cards are not a 48 GiB tier.
     Discrete {
         gpu_mb: u64,
+        cards: u32,
         host_mb: u64,
     },
 }
@@ -639,8 +637,9 @@ impl Machine {
         let host_mb = host_total_mb()?;
         let gpu = nvidia_total_mb();
         Ok(match gpu {
-            GpuRead::Cards(mb) => Machine::Discrete {
-                gpu_mb: mb,
+            GpuRead::Cards(cards) => Machine::Discrete {
+                gpu_mb: cards.iter().copied().max().unwrap_or(0),
+                cards: cards.len() as u32,
                 host_mb,
             },
             GpuRead::Unified => Machine::Unified {
@@ -656,7 +655,8 @@ impl Machine {
 }
 
 enum GpuRead {
-    Cards(u64),
+    /// Each card's memory, in MiB.
+    Cards(Vec<u64>),
     Unified,
     None,
 }
@@ -711,7 +711,7 @@ fn parse_nvidia_total(text: &str) -> GpuRead {
     // Error]`) is a reading not got, never a claim about the memory's shape.
     let cards: Vec<u64> = lines.iter().filter_map(|l| l.parse().ok()).collect();
     if !cards.is_empty() {
-        GpuRead::Cards(cards.iter().sum())
+        GpuRead::Cards(cards)
     } else if lines.iter().all(|l| *l == "[N/A]") {
         GpuRead::Unified
     } else {
@@ -965,7 +965,9 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
     };
     let (gpu, host) = match machine {
         Machine::Unified { total_mb, .. } => (sum(total_mb, &|l: &Line| Some(l.gpu)), None),
-        Machine::Discrete { gpu_mb, host_mb } => (
+        Machine::Discrete {
+            gpu_mb, host_mb, ..
+        } => (
             sum(gpu_mb, &|l: &Line| Some(l.gpu)),
             Some(sum(host_mb, &|l: &Line| l.host)),
         ),
@@ -1066,6 +1068,7 @@ mod tests {
         // A 24 GiB card takes the row below it.
         let card = Machine::Discrete {
             gpu_mb: 24_576,
+            cards: 1,
             host_mb: 65_536,
         };
         assert_eq!(card.tier_gb(), Some(16));
@@ -1089,11 +1092,11 @@ mod tests {
         ));
         assert!(matches!(
             parse_nvidia_total("[N/A]\n24576\n"),
-            GpuRead::Cards(24_576)
+            GpuRead::Cards(ref c) if c == &[24_576]
         ));
         assert!(matches!(
             parse_nvidia_total("24576\n24576\n"),
-            GpuRead::Cards(49_152)
+            GpuRead::Cards(ref c) if c == &[24_576, 24_576]
         ));
         assert!(matches!(parse_nvidia_total(""), GpuRead::None));
         assert_eq!(
@@ -1161,6 +1164,7 @@ mod tests {
     fn on_a_card_an_unmeasured_host_nulls_only_the_host_sum() {
         let m = Machine::Discrete {
             gpu_mb: 32_768,
+            cards: 1,
             host_mb: 65_536,
         };
         let b = budget(m, &[Feature::Ocr]);
@@ -1190,6 +1194,7 @@ mod tests {
     fn without_a_split_the_other_pool_is_unmeasured_not_zero() {
         let m = Machine::Discrete {
             gpu_mb: 65_536,
+            cards: 1,
             host_mb: 131_072,
         };
         let b = budget(m, &[Feature::Image, Feature::Layout]);
@@ -1229,6 +1234,7 @@ mod tests {
     fn a_null_sum_still_reports_what_is_known() {
         let m = Machine::Discrete {
             gpu_mb: 24_576,
+            cards: 1,
             host_mb: 65_536,
         };
         let b = budget(m, &[Feature::Graph, Feature::Image]);
@@ -1291,6 +1297,19 @@ mod tests {
         for id in ["stt", "tts", "turn"] {
             assert!(ids.contains(&id), "{id} missing from {ids:?}");
         }
+    }
+
+    /// Two 24 GiB cards are two 24 GiB cards: the tier is read from the
+    /// largest one, never their sum, so nothing is called fitting that no
+    /// single card can hold.
+    #[test]
+    fn two_cards_are_read_by_the_largest_not_the_sum() {
+        let m = Machine::Discrete {
+            gpu_mb: 24_576,
+            cards: 2,
+            host_mb: 65_536,
+        };
+        assert_eq!(m.tier_gb(), Some(16));
     }
 
     #[test]
