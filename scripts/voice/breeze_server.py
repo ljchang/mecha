@@ -252,9 +252,11 @@ async def speech(req: SpeechRequest):
                 await upstream.aclose()
                 raise HTTPException(502, f"the Breeze engine answered {upstream.status_code}: {detail}")
     except httpx.HTTPError as e:
-        # Down or still loading (the engine has no readiness signal, so the
-        # adapter can start first): said by name, as /health says it, not a
-        # bare 500 with the reason only in the journal.
+        # Down or still loading: the engine answers its own `/health` only
+        # once it is listening (measured on the real fork, 2026-10-03) and
+        # gives systemd no readiness notice, so the adapter can be up first.
+        # Said by name, as /health says it, not a bare 500 with the reason
+        # only in the journal.
         await client.aclose()
         raise HTTPException(503, f"the Breeze engine is unreachable ({type(e).__name__}); loading or down")
     except BaseException:

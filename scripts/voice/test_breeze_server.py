@@ -228,6 +228,14 @@ class Adapter(unittest.TestCase):
         self.assertEqual(r.status_code, 503)
         self.assertIn("STT unreachable", r.json()["detail"])
 
+    def test_health_reads_the_engine(self):
+        self.assertEqual(self.client.get("/health").json(), {"status": "ok"})
+        os.environ["BREEZE_TTS_URL"] = "http://127.0.0.1:9"
+        self.mod = importlib.reload(self.mod)
+        from fastapi.testclient import TestClient
+
+        self.assertEqual(TestClient(self.mod.app).get("/health").json(), {"status": "loading"})
+
     def test_an_unreachable_engine_is_named(self):
         with open(os.path.join(self.voices, "house.txt"), "w") as f:
             f.write("Words.\n")
