@@ -1953,11 +1953,10 @@ fn build_for(
     cfg: &mecha_core::config::ProviderConfig,
     for_use: PersonaUse,
 ) -> Result<Box<dyn mecha_core::provider::Provider>> {
-    let as_configured = mecha_core::provider::build(cfg)?;
-    match for_use {
-        PersonaUse::Judge => Ok(as_configured),
-        PersonaUse::Converse => mecha_core::provider::build(&persona_provider_config(cfg, for_use)),
-    }
+    // The verdict on the config as written, for every use; what each use
+    // then gets is `persona_provider_config`'s alone to say.
+    mecha_core::provider::build(cfg)?;
+    mecha_core::provider::build(&persona_provider_config(cfg, for_use))
 }
 
 /// What a persona chat asks a provider for.
