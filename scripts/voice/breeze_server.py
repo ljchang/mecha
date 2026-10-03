@@ -250,7 +250,8 @@ async def speech(req: SpeechRequest):
             raise HTTPException(503, f"the default voice is missing: no default.wav in {VOICES_DIR}")
         raise HTTPException(400, f"unknown voice: {req.voice}")
     if not speakable(req.input):
-        pause = b"\x00\x00" * int(RATE * PAUSE_SECONDS)
+        # Speed applies here too: a beat at 1.5x is shorter, as speech is.
+        pause = b"\x00\x00" * int(RATE * PAUSE_SECONDS / req.speed)
         if req.response_format == "pcm":
             return Response(content=pause, media_type="audio/pcm")
         return Response(content=wav_bytes(pause), media_type="audio/wav")

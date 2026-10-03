@@ -209,7 +209,9 @@ class Adapter(unittest.TestCase):
             r = self.client.post("/v1/audio/speech", json={"input": text, "response_format": "pcm"})
             self.assertEqual(r.status_code, 200, text)
             self.assertEqual(r.content, b"\x00" * pause, text)
-        r = self.client.post("/v1/audio/speech", json={"input": ".", "response_format": "wav", "speed": 1.5})
+        r = self.client.post("/v1/audio/speech", json={"input": ".", "response_format": "pcm", "speed": 1.5})
+        self.assertEqual(len(r.content), int(RATE * self.mod.PAUSE_SECONDS / 1.5) * 2, "speed was ignored")
+        r = self.client.post("/v1/audio/speech", json={"input": ".", "response_format": "wav"})
         self.assertTrue(r.content.startswith(b"RIFF"))
         self.assertEqual(self.engine.spoken, [], "the engine was given nothing to say, and it invents")
         for text in ("Mm.", "Hmm...", "3.", "好。"):
