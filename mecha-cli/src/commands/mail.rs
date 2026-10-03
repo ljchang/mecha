@@ -306,12 +306,14 @@ pub enum Cmd {
     /// Refresh it first:
     ///
     /// ```text
-    /// mecha-mail corpus --since $(date -d '30 days ago' +%F) --account dartmouth
+    /// mecha-mail corpus --since $(date -d '30 days ago' +%F) --account work
     /// mecha mail score
     /// ```
     Score {
-        #[arg(long, default_value = "dartmouth")]
-        account: String,
+        /// The account whose corpus to score. Defaults to the one `mecha-mail`
+        /// sends mail from (`default_mail` in `accounts.toml`, else `default`).
+        #[arg(long)]
+        account: Option<String>,
         /// Only score threads at least this many hours old.
         ///
         /// **A thread younger than this has no outcome yet, and counting it as
@@ -341,9 +343,9 @@ pub enum Cmd {
     /// triaging it, and a scorecard that mutates the queue it measures would
     /// be unrepeatable.
     Eval {
-        /// Which corpus file to grade.
-        #[arg(long, default_value = "dartmouth")]
-        account: String,
+        /// Which corpus file to grade. Defaults as `score` does.
+        #[arg(long)]
+        account: Option<String>,
         /// How many threads to sample from each stratum. Answered threads are
         /// rare, so both strata are sampled to this size rather than the
         /// corpus being sampled uniformly — otherwise a run of 200 would hold
@@ -501,7 +503,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             account,
             min_age_hours,
             json,
-        } => score(&account, min_age_hours, json),
+        } => score(&measured_account(account)?, min_age_hours, json),
         Cmd::Eval {
             account,
             sample,
@@ -509,8 +511,44 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             prefilter_only,
             json,
             out,
-        } => eval(global, &account, sample, seed, prefilter_only, json, out).await,
+        } => {
+            let account = measured_account(account)?;
+            eval(global, &account, sample, seed, prefilter_only, json, out).await
+        }
     }
+}
+
+/// The account a mail measurement reads when none is named: the one
+/// `mecha-mail` sends from — `default_mail` in its `accounts.toml`, else
+/// `default`, `AccountsFile::mail_default`'s rule, read here rather than
+/// imported. A name compiled in as the default was one owner's account, and
+/// answered nobody else's (2026-10-03).
+fn measured_account(named: Option<String>) -> Result<String> {
+    if let Some(name) = named {
+        return Ok(name);
+    }
+    let file = mecha_core::onboarding::mail_store_dir().map(|d| d.join("accounts.toml"));
+    let configured = file
+        .as_ref()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|text| mail_default_of(&text));
+    configured.ok_or_else(|| {
+        anyhow::anyhow!(
+            "name an account with --account: no default_mail or default in {}",
+            file.map_or("mecha-mail's accounts.toml".into(), |f| f
+                .display()
+                .to_string())
+        )
+    })
+}
+
+/// `default_mail`, else `default`, from an `accounts.toml`'s text.
+fn mail_default_of(text: &str) -> Option<String> {
+    let v: toml::Value = toml::from_str(text).ok()?;
+    ["default_mail", "default"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(toml::Value::as_str))
+        .map(str::to_owned)
 }
 
 fn list(all: bool, aged: bool, aged_hours: i64, surface: bool, as_json: bool) -> Result<()> {
@@ -3411,7 +3449,7 @@ mod classify_exit_tests {
     /// A clean fan-out is plain JSON and must stay exactly as it was.
     #[test]
     fn recent_rows_parse_without_a_note() {
-        let (rows, note) = parse_recent(r#"[{"account":"dartmouth"}]"#).unwrap();
+        let (rows, note) = parse_recent(r#"[{"account":"campus"}]"#).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(note.is_none());
     }
@@ -3422,7 +3460,7 @@ mod classify_exit_tests {
     /// account because one account was out. Fails on the old behaviour.
     #[test]
     fn a_lost_account_costs_that_account_only() {
-        let body = "[{\"account\":\"dartmouth\",\"thread_id\":\"x\"}]\n\n\
+        let body = "[{\"account\":\"campus\",\"thread_id\":\"x\"}]\n\n\
                     note — some accounts could not be read:\n\
                     account `personal`: refresh token expired";
         // The old spelling, kept here so the test states what it is guarding.
@@ -3430,7 +3468,7 @@ mod classify_exit_tests {
 
         let (rows, note) = parse_recent(body).expect("surviving rows still parse");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["account"], "dartmouth");
+        assert_eq!(rows[0]["account"], "campus");
         let note = note.expect("the lost account must be reported, never swallowed");
         assert!(
             note.contains("personal"),
@@ -3522,7 +3560,7 @@ mod draft_prompt_tests {
 
     fn rec() -> Record {
         serde_json::from_value(serde_json::json!({
-            "thread_id": "t1", "account": "dartmouth", "state": "classified"
+            "thread_id": "t1", "account": "campus", "state": "classified"
         }))
         .unwrap()
     }
@@ -3534,7 +3572,7 @@ mod draft_prompt_tests {
     /// announcement is everyone who wrote it.
     #[test]
     fn adding_to_the_calendar_invites_nobody_the_owner_did_not_name() {
-        let p = draft_prompt(&rec(), "t1", "dartmouth", &Draft::Schedule, None);
+        let p = draft_prompt(&rec(), "t1", "campus", &Draft::Schedule, None);
         assert!(!p.contains("attendees the thread"), "{p}");
         assert!(p.contains("owner's own"), "{p}");
         // The common case is a hold, made directly; an invitation only when
@@ -3557,7 +3595,7 @@ mod draft_prompt_tests {
         let p = draft_prompt(
             &rec(),
             "t1",
-            "dartmouth",
+            "campus",
             &Draft::Schedule,
             Some("invite priya@example.edu"),
         );
@@ -3578,11 +3616,11 @@ mod calendars_tests {
     #[test]
     fn a_partial_answer_splits_into_rows_and_note() {
         let (rows, note) = split_json_note(
-            "[{\"account\":\"dartmouth\",\"calendars\":[]}]\n\nnote — some accounts could not be read:\npersonal: 401",
+            "[{\"account\":\"campus\",\"calendars\":[]}]\n\nnote — some accounts could not be read:\npersonal: 401",
         );
         assert_eq!(
             rows.as_deref(),
-            Some("[{\"account\":\"dartmouth\",\"calendars\":[]}]")
+            Some("[{\"account\":\"campus\",\"calendars\":[]}]")
         );
         assert!(note.unwrap().contains("personal: 401"));
 
@@ -3591,5 +3629,25 @@ mod calendars_tests {
         assert!(note.is_none());
 
         assert_eq!(split_json_note("no calendars configured"), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod measured_account_tests {
+    use super::{mail_default_of, measured_account};
+
+    /// `score` and `eval` read the account mecha-mail sends from when none is
+    /// named — `default_mail`, else `default` — rather than one owner's name
+    /// compiled in as the default (2026-10-03).
+    #[test]
+    fn a_measurement_reads_the_account_mail_is_sent_from() {
+        let both = "default = \"personal\"\ndefault_mail = \"campus\"\n";
+        assert_eq!(mail_default_of(both).as_deref(), Some("campus"));
+        let only = "default = \"personal\"\n";
+        assert_eq!(mail_default_of(only).as_deref(), Some("personal"));
+        assert_eq!(mail_default_of("[[account]]\nname = \"x\"\n"), None);
+        assert_eq!(mail_default_of("not toml ="), None);
+        // A named account always wins, whatever is configured.
+        assert_eq!(measured_account(Some("named".into())).unwrap(), "named");
     }
 }

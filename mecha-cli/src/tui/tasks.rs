@@ -940,7 +940,7 @@ mod tests {
             captured_from: Some(Captured {
                 kind: "mail".into(),
                 id: "thread-19a2f".into(),
-                account: Some("dartmouth".into()),
+                account: Some("campus".into()),
                 label: Some("Your Microsoft 365 renewal".into()),
                 at: Some("2026-08-11T14:02:00Z".into()),
             }),
@@ -1188,7 +1188,7 @@ mod tests {
 
         let with_source = r#"{"v":1,"today":"2026-08-20","items":[
             {"id":"task-1","name":"Decide on the nominations","status":"inbox",
-             "captured_from":{"kind":"mail","account":"dartmouth","id":"thread-19a2f",
+             "captured_from":{"kind":"mail","account":"campus","id":"thread-19a2f",
                               "label":"SAS 2027 award nominations","at":"2026-08-11T14:02:00Z"}},
             {"id":"task-2","name":"buy milk","status":"inbox"},
             {"id":"task-3","name":"half a pointer","status":"inbox",
@@ -1198,7 +1198,7 @@ mod tests {
         let captured = rows[0].captured_from.as_ref().unwrap();
         assert_eq!(captured.word(), "email");
         assert!(captured.line().contains("thread-19a2f"));
-        assert!(captured.line().contains("dartmouth"));
+        assert!(captured.line().contains("campus"));
         assert!(captured.line().contains("SAS 2027 award nominations"));
 
         assert!(rows[1].captured_from.is_none(), "typed on the board");

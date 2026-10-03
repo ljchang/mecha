@@ -760,7 +760,7 @@ mod tests {
         let event = DraftView::of(&json!({
             "title": "Coffee with Thea",
             "when": "Thursday August 27, 3:00pm to 3:30pm",
-            "account": "dartmouth",
+            "account": "campus",
         }))
         .spoken(&[]);
         assert!(

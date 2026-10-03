@@ -481,15 +481,15 @@ mod tests {
             "id": "ev1", "subject": "Lab meeting",
             "start": {"dateTime": "2026-08-06T15:00:00.0000000", "timeZone": "UTC"},
             "end": {"dateTime": "2026-08-06T16:00:00.0000000", "timeZone": "UTC"},
-            "attendees": [{"emailAddress": {"address": "priya@dartmouth.edu"}}],
-            "organizer": {"emailAddress": {"address": "luke@dartmouth.edu"}},
+            "attendees": [{"emailAddress": {"address": "priya@example.edu"}}],
+            "organizer": {"emailAddress": {"address": "robin@example.edu"}},
             "isAllDay": false, "showAs": "busy",
             "webLink": "https://outlook.office.com/x"
         });
         let e = parse_event(&item, "primary");
         assert_eq!(e.title, "Lab meeting");
         assert!(e.start_time.ends_with('Z'));
-        assert_eq!(e.attendees, vec!["priya@dartmouth.edu"]);
+        assert_eq!(e.attendees, vec!["priya@example.edu"]);
         assert_eq!(e.status, "busy");
 
         let cancelled = json!({"id": "e2", "subject": "", "isCancelled": true});
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn schedule_items_yield_busy_pairs_and_skip_free() {
         let body = json!({"value": [{
-            "scheduleId": "me@dartmouth.edu",
+            "scheduleId": "me@example.edu",
             "scheduleItems": [
                 {"status": "busy",
                  "start": {"dateTime": "2026-08-10T14:00:00.0000000", "timeZone": "UTC"},
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn schedule_errors_and_foreign_zones_are_errors_not_free_time() {
         let errored = json!({"value": [{
-            "scheduleId": "me@dartmouth.edu",
+            "scheduleId": "me@example.edu",
             "error": {"message": "mailbox not found", "responseCode": "ErrorMailRecipientNotFound"}
         }]});
         let err = parse_schedule_items(&errored).unwrap_err();

@@ -503,7 +503,7 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Step 7a-2 is #526, in review (mecha-a3).** `sidecar.rs` (a registry of
+- **Step 7a-2 is #526, merged (`57424b7f`, 2026-10-03, 5 review passes) and not deployed (mecha-a3); `mecha features plan` exists only on main. Next in the lane: 7a-3, the first real install (layout, via the manifest).** `sidecar.rs` (a registry of
   the programs features run, provided-detection by user unit, PATH,
   directory, or a docker image with no socket, and a manifest reader) and a
   read-only `mecha features plan <id> [--verify]`. It re-pins the `tts` slot
@@ -1782,7 +1782,7 @@ binary is absent |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit (`--body-file` for surfaces with no `$EDITOR`)/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's. Release policy is `review_policy.rs` — one encoding for every surface: `now` (the default) puts a finished run's drafts in front of you, `later` leaves them, `auto` releases only untainted drafts of a run that finished clean. Scope is `staged_since`, an id-diff, so no mode touches items another run staged. Since 2026-08-25 `now` reaches `mecha serve` too — a card on the page, a spoken offer in a call |
 | Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
 | Workspaces | `~/.mecha/work/<producer>/` is a run's workspace and its output directory; `mecha work list/path/clean`, retention nightly. A workspace containing the mecha home is refused |
-| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`dartmouth`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but no egress, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
+| Mail | `mecha-mail` crate: Gmail + Google Calendar and Outlook + Graph calendar; **`mecha-mail` is the binary deployments wire** — one account-based surface (`campus`, `personal`) over every mailbox in `~/.mecha/mail/`, reads fanning out, item ops account-scoped; the per-provider `mecha-google`/`mecha-outlook` binaries remain; all sends and calendar writes outbox-routed. **`mail_triage`** (2026-08-18) adds archive/read/unread/spam/trash as a closed `TriageAction` enum, thread-level, in a third capability quadrant — `destructive` but no egress, so it never routes through the outbox and a read-only run cannot reach it. Tagging is deliberately absent: a tag is mecha's own, on the triage record, not a Gmail label or a Graph category |
 | Tasks | `mecha tasks` list/add/set and the `/tasks` modal onto the graph's GTD board, reached only over `kg_task_*` — no dependency on mecha-graph and no second reader of its schema. Status letters match `mecha-graph tui` screen 6; nothing confirms (the board reaches nobody and has no delete); a reload re-finds the cursor by id because a status change reorders the board. **2026-08-26**: `tasks work <id>` seeds an agent run from a board item (own session titled `task: …`, outbox-bound, `--unattended` for the trigger posture a detached caller gets) and `tasks stop <id>` asks it to stop through a sentinel it polls — keeping the partial turn, never a kill. The harness moves `waiting_on` to `mecha` for the life of the run and to `@owner` when it ends, so "is work happening" is answered by the board rather than by the run; `kg_task_update` is withheld from the model for the same reason `kg_accept` does not exist, and `setup::subagents_holding` refuses to start when a profile would hand it back. `tasks set --waiting-on` is the hand-driven half. **D16 (2026-08-26, second pass)**: the card's state is derived from three sources and none of them is the run's account of itself — the board says who holds the ball, the question store says whether it is blocked, and the transcript's `Record::Outcome` says how the last run stopped. Seven states, no two rendering alike: `working` (with the `[~]` item as its subtitle), `planning`, `answer needed`, `ready for review` (with its evidence — turns, calls, staged, refused), `the run failed`, `outcome unknown`, and quiet. `unknown` is the honest seventh rather than a hedge: a transcript with no outcome record is a run that never got as far as saying how it went, and calling it either `failed` or `ready` invents the one fact the card is about. `Interrupted` reads as ready, never failed — a person stopping a run is the system working. **Provenance** (2026-08-26, a second lane): a task carries `captured_from` — a *pointer*, kind from a closed set of `mail | frontdoor | session` with unknown keys refused, so it can never become a copy of an email body. `mail task` writes it at capture, `mecha tasks source <id>` follows it with one reader per kind, `POST /api/tasks/source` and the card's `read the …` control do the same from the web, and the TUI offers `o` from the detail pane only — off the key strip, because it is inert on any task somebody typed. **B1/B2 (2026-08-26 evening, both amended before building)**: `✓` is a tap on the collapsed row rather than a chip in the strip (Things: complete is "a tap on the circle only"), and the expanded card *groups* under `hand it over` / `move it` instead of hiding four chips behind a `…` — the survey it cites is about swipe actions on a *collapsed* row, and this card only exists once tapped, so it already is the sheet. Capture is **one box**: `capture::find_when` parses a `when` out of the sentence in Rust, shows it as a dismissable chip, and sends the name **verbatim** (Things, not Todoist), with due/context behind `more`. It detects and never resolves — the span goes to the graph's `parse_due`, so one date parser lives where `+3d` means something; weekdays are deliberately undetected because `parse_due` cannot take one and a chip that lies is worse than none. There is no time of day anywhere in the store, so "at 3" stays in the name |
 | Questions | `mecha_core::questions` + `mecha questions list/show/answer/abandon` — the outbox's inbound twin. A delegated run that needs a decision **ends**: `ParkingAsker` stores the question and cancels the run's own token, so the partial work survives and no slot is held waiting. Answering *is* resuming — the answer becomes the next user turn of the session that asked, in the jail it asked from, with its plan restored. Taint is recorded at park time and unknown reads as untrusted, because a question is an inbound request for information composed by a model that may have been reading third-party text. Sixth row in `/queues`; doctor flags one unanswered past 24h. **2026-08-26 (second pass)**: the phone can answer one — `GET /api/questions` is a direct store read (mecha's own store, so `review.rs`'s pattern rather than `board.rs`'s CLI child), the card lands on its task in `/tasks` because D13's own argument is that the Waiting view *becomes* the queue of blocked delegations with no new noun, options are one tap and the free-text box is there because the tool's contract says they are never exhaustive, the taint marker travels (stderr's `⚠` is invisible in a browser), a question whose task is off the board still gets a card, and answering spawns `questions answer --unattended` detached because answering *is* a whole agent run |
 | Graph reads | `mecha kg search\|entity\|note` (2026-08-23) — the graph for the person at the keyboard, over the same `kg_search`/`kg_entity`/`kg_upsert` surface the model uses. `/find` is the modal (entities open their full record, facts/episodes open in place, `/` re-edits the query); `/note` (or `/notes`) captures an episode with entities linked on landing, identically to `mecha-graph note`. All fetches off the event loop through watches |
@@ -2597,7 +2597,7 @@ scopes widened, and both are recorded in each account's `oauth.json` under
 | Account | Provider | Grant | Expiry |
 |---|---|---|---|
 | `personal` | Google | `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` | none observed: `granted_at` 2026-09-17T02:10:19Z, after the 2026-09-16 publish; still refreshing on 2026-09-30, day 13 (a Testing grant dies on day 7) |
-| `dartmouth` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
+| `campus` | Outlook | `Mail.ReadWrite`, `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` | none — permanent |
 
 All of this is settled. The publish is in
 [`HISTORY.md`](HISTORY.md)'s 2026-09-16 prose — In production, branding
@@ -2613,7 +2613,7 @@ not have it. It no longer carries `grant_lifetime_days` on `personal`, and a
 re-auth will not put it back: `mecha-mail auth` never sets the field. The
 backup from before the line came out is `accounts.toml.bak-2026-09-30`.
 
-Dartmouth's Entra registration (also named FlowMail, client
+The university's Entra registration (also named FlowMail, client
 `bc6a1e19-…`) already had `Mail.ReadWrite` **Delegated** granted tenant-wide,
 so no ITC request was needed — the opposite of what was expected.
 
@@ -3051,8 +3051,8 @@ lost `factory__poll_create` and `factory__poll_meeting_create` from
 a letter; backup `config.toml.bak-2026-09-05-polls`), and
 `~/.config/systemd/user/mecha-slots.service`'s second `ExecStart` is now
 the five-verb line — `factory-publish drain; mecha-mail bookings --account
-dartmouth; factory-publish polls sweep; mecha-mail polls --account
-dartmouth; mecha polls sweep` — daemon-reloaded, with the old unit beside
+<your mail account>; factory-publish polls sweep; mecha-mail polls --account
+<your mail account>; mecha polls sweep` — daemon-reloaded, with the old unit beside
 it as `.bak-2026-09-05-polls`. Verified from the timer's next firing, not
 the unit file — the timer is `OnCalendar=*:0/2` with
 `RandomizedDelaySec=15s`, so the firing was the 01:54Z one and the stamps
@@ -4505,7 +4505,7 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   `~/.mecha/instruments/book-policy.toml` and the `[availability]` section
   of `mecha-manifest/types/book.toml` (then re-`type push`). The page must
   not be handed to anyone before this edit.
-- **Booking events land on `dartmouth` (Outlook), named in
+- **Booking events land on the campus account (Outlook), named in
   `mecha-slots.service`** because a timer cannot ask the account question.
   First live confusion already happened: the self-test event was "missing"
   from Google Calendar because it was never there. Switch the flag if the
@@ -6655,7 +6655,7 @@ the authority** — restated here only far enough to be choosable:
 **Local state in no repository**, and the next session will want it:
 
 - The classify timer is installed at `~/.config/systemd/user/`.
-- `~/.mecha/mail-triage/` holds **264 records — 222 dartmouth, 42 personal**
+- `~/.mecha/mail-triage/` holds **264 records — 222 from the campus account, 42 personal**
   (2026-08-25; personal was 0 until that date), classified across several
   binary generations, so `request_type` is not consistent across the store and
   the taxonomy changed again on 2026-08-19. It wants one `mecha mail classify
@@ -6663,7 +6663,7 @@ the authority** — restated here only far enough to be choosable:
   flag no longer names an account, and `--limit` is **per account**, so the
   sweep is twice the size it used to be. Five of those records carried
   `proposed: frontdoor` and now read as `none` — by design, not by damage.
-- **The corpus is at `~/.mecha/mail-corpus/{dartmouth,personal}.jsonl`**,
+- **The corpus is at `~/.mecha/mail-corpus/<account>.jsonl` (one per account)**,
   owner-only, outside the repo, `*.jsonl` gitignored so it cannot be staged.
   both accounts complete as of 2026-08-19. Do not re-fetch to re-run an
   analysis; do re-fetch if the window needs extending. The personal half was
@@ -6931,7 +6931,7 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   `urn:ietf:wg:oauth:2.0:oob`, ~16 tools, credentials at
   `~/.mecha/canvas/<account>/oauth.json` on its own root.
 
-  **Nothing can start until Dartmouth issues a credential.** Self-service
+  **Nothing can start until the university issues a credential.** Self-service
   tokens were decommissioned 2025-06-18 and the probe on 2026-08-21 confirmed
   the `+ New Access Token` button is greyed out for faculty, not just students —
   so the service request form is the only door, at roughly five business days.

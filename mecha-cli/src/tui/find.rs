@@ -371,10 +371,10 @@ mod tests {
     /// rule of every modal, the assertion IS the draw.
     #[test]
     fn it_draws_at_tiny_sizes() {
-        let mut m = FindModal::new(Some("dartmouth".into()));
+        let mut m = FindModal::new(Some("campus".into()));
         m.status = Some("searching…".into());
         m.rows = rows_from_pack(
-            r#"{"entities":["Dartmouth"],
+            r#"{"entities":["Fairhaven"],
                 "items":[{"kind":"fact","occurred_at":null,"text":"a fact"}]}"#,
         )
         .unwrap();
@@ -386,7 +386,7 @@ mod tests {
             }
         }
         m.typing = false;
-        m.detail = Some(("Dartmouth".into(), vec!["org · org-1".into(); 12]));
+        m.detail = Some(("Fairhaven".into(), vec!["org · org-1".into(); 12]));
         for h in 1..=8u16 {
             let backend = ratatui::backend::TestBackend::new(40, h);
             let mut term = Terminal::new(backend).unwrap();

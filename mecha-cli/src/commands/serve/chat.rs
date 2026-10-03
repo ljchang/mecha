@@ -4642,7 +4642,7 @@ mod wire_tests {
             "title": "B4 brown bag",
             "start_time": "2026-08-28T12:00:00-04:00",
             "end_time": "2026-08-28T13:30:00-04:00",
-            "account": "dartmouth",
+            "account": "campus",
             "attendees": ["menghan@example.edu"],
         });
         let draft = super::WireDraft::of(&event).expect("a calendar call has a shape");

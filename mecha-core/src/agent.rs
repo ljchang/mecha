@@ -8455,7 +8455,7 @@ mod tests {
             fn input_schema(&self) -> Value {
                 json!({
                     "type": "object",
-                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                    "properties": {"account": {"type": "string", "default": "campus"}},
                 })
             }
             fn read_only(&self) -> bool {
@@ -8479,7 +8479,7 @@ mod tests {
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "the escalation happened");
-        assert_eq!(seen[0]["account"], json!("dartmouth"));
+        assert_eq!(seen[0]["account"], json!("campus"));
     }
 
     #[tokio::test]
@@ -13541,7 +13541,7 @@ mod tests {
                 "properties": {
                     "to": {"type": "string"},
                     "body": {"type": "string"},
-                    "account": {"type": "string", "default": "dartmouth"},
+                    "account": {"type": "string", "default": "campus"},
                 },
             })
         }
@@ -14042,7 +14042,7 @@ mod tests {
             fn input_schema(&self) -> Value {
                 json!({
                     "type": "object",
-                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                    "properties": {"account": {"type": "string", "default": "campus"}},
                 })
             }
             fn read_only(&self) -> bool {
@@ -14067,7 +14067,7 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         // Shown filled…
-        assert_eq!(seen[0]["account"], json!("dartmouth"));
+        assert_eq!(seen[0]["account"], json!("campus"));
         // …and run with the bytes the model actually sent. This half is the
         // design, not an accident of the implementation: there is no time gap
         // between approval and execution to pin, so filling here would put
@@ -14096,7 +14096,7 @@ mod tests {
         agent.run(&mut convo, None).await.unwrap();
 
         let items = route.store.items().unwrap();
-        assert_eq!(items[0].args["account"], json!("dartmouth"));
+        assert_eq!(items[0].args["account"], json!("campus"));
         // What the model did send is untouched — filling is not editing.
         assert_eq!(items[0].args["to"], json!("x@example.com"));
         // The provenance the loop recorded, and not only the arguments.
@@ -14115,7 +14115,7 @@ mod tests {
         assert!(
             view.headers
                 .iter()
-                .any(|(k, v)| k == "account" && v == "dartmouth"),
+                .any(|(k, v)| k == "account" && v == "campus"),
             "{:?}",
             view.headers
         );
@@ -14168,7 +14168,7 @@ mod tests {
         let (route, root) = outbox_route("hook-sees-fill");
         agent.set_outbox(Arc::clone(&route));
         agent.set_hooks(hooked(
-            "grep -q dartmouth && echo 'the draft would send from dartmouth' && exit 2; exit 0",
+            "grep -q campus && echo 'the draft would send from campus' && exit 2; exit 0",
             vec!["send_data".into()],
         ));
 
@@ -14177,7 +14177,7 @@ mod tests {
 
         match &convo.messages[2].content[0] {
             Block::ToolResult { content, .. } => assert_eq!(
-                content, "Blocked by a hook: the draft would send from dartmouth",
+                content, "Blocked by a hook: the draft would send from campus",
                 "the hook judged the model's bytes, not the ones a release runs"
             ),
             other => panic!("expected the hook's denial, got {other:?}"),
@@ -15274,7 +15274,7 @@ match = ["ls -la"]
             fn input_schema(&self) -> Value {
                 json!({
                     "type": "object",
-                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                    "properties": {"account": {"type": "string", "default": "campus"}},
                 })
             }
             fn read_only(&self) -> bool {
@@ -15350,8 +15350,8 @@ match = ["waved"]
         let permitted = approver.permitted.lock().unwrap();
         assert_eq!(consulted.len(), 1, "the prompt rule consulted once");
         assert_eq!(permitted.len(), 1, "the allow rule permitted once");
-        assert_eq!(consulted[0]["account"], json!("dartmouth"));
-        assert_eq!(permitted[0]["account"], json!("dartmouth"));
+        assert_eq!(consulted[0]["account"], json!("campus"));
+        assert_eq!(permitted[0]["account"], json!("campus"));
         // And the model's own argument is untouched by the fill.
         assert_eq!(consulted[0]["to"], json!("ada@example.com"));
     }

@@ -1450,13 +1450,13 @@ mod tests {
     /// The 2026-08-14 review finding: the re-verify had been scoped to the
     /// account the event lands on (to stop one dead token from blocking
     /// every booking), which silently dropped cross-account collision
-    /// detection — a slot free on `dartmouth` but busy on `personal`
+    /// detection — a slot free on `campus` but busy on `personal`
     /// double-booked with no record anywhere. The scope must stay the full
     /// fan-out; the dead-token case is `classify_partial`'s job now.
     #[test]
     fn the_booking_reverify_fans_out_over_every_account() {
         assert_eq!(
-            reverify_scope(Some("dartmouth")),
+            reverify_scope(Some("campus")),
             None,
             "a slot free on the event's account but busy on another must still collide"
         );
