@@ -155,7 +155,7 @@ Two details protect that property:
 ## Repetition is reviewable as repetition
 
 The queue's bulk is the same fact said many ways. An extractor proposes
-*"Dana plays with her children"* a hundred slightly different ways, and the
+*"Robin plays with their children"* a hundred slightly different ways, and the
 graph's own dedup only removes the near-identical — everything between
 *similar* and *duplicate* queues for review one item at a time. That is how
 a queue reaches seven thousand items.

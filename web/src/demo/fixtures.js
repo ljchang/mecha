@@ -20,6 +20,7 @@
 //   Wen Li           a second-year graduate student
 //   Hollis Barnett   the department's administrator
 //   Fairhaven        the university; the Ostrander Prize is its award
+//   Robin            the owner, who signs drafts (they/them)
 
 export const OWNER = 'demo@example.com';
 
@@ -1258,7 +1259,7 @@ export const script = [
           ['to', 'tomas.lindqvist@example.org'],
           ['subject', 'Re: Review request — manuscript 2026-0413'],
         ],
-        body: 'Dear Tomas,\n\nYes — I can take this one. Three weeks from today puts my report with you on the 25th.\n\nBest,\nDana',
+        body: 'Dear Tomas,\n\nYes — I can take this one. Three weeks from today puts my report with you on the 25th.\n\nBest,\nRobin',
         other: [['account', 'personal']],
       },
       args: '{\n  "account": "personal",\n  "to": "tomas.lindqvist@example.org",\n  "subject": "Re: Review request — manuscript 2026-0413",\n  "body": "Dear Tomas,\\n\\nYes — I can take this one. …"\n}',
