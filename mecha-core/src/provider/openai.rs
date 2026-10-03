@@ -99,6 +99,16 @@ impl OpenAiCompatible {
         if let Some(s) = self.seed {
             obj.insert("seed".into(), json!(s));
         }
+        // Only an explicit "no": llama-server's Jinja chat templates (Qwen,
+        // Gemma) read `enable_thinking` from here, and a server that does not
+        // know the key ignores it. `None` adds nothing, so every request that
+        // never asked sends exactly the bytes it always did.
+        if let Some(think) = req.think {
+            obj.insert(
+                "chat_template_kwargs".into(),
+                json!({"enable_thinking": think}),
+            );
+        }
         if stream {
             obj.insert("stream".into(), json!(true));
             obj.insert("stream_options".into(), json!({"include_usage": true}));
@@ -825,6 +835,7 @@ mod tests {
             effort: None,
             thinking: false,
             cache_prompt: false,
+            think: None,
         }
     }
 
@@ -839,6 +850,29 @@ mod tests {
         let body = provider(None, None).body(&plain_req(), false);
         assert!(body.get("temperature").is_none());
         assert!(body.get("seed").is_none());
+    }
+
+    #[test]
+    fn enable_thinking_is_sent_only_when_a_request_declines_it() {
+        let p = provider(None, None);
+        // `None` is today's request, byte for byte: no key at all.
+        let plain = p.body(&plain_req(), false);
+        assert!(plain.get("chat_template_kwargs").is_none());
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"max_tokens":64,"messages":[{"content":"hi","role":"user"}],"model":"m"}"#
+        );
+        let declined = p.body(
+            &CompletionRequest {
+                think: Some(false),
+                ..plain_req()
+            },
+            false,
+        );
+        assert_eq!(
+            declined["chat_template_kwargs"],
+            json!({"enable_thinking": false})
+        );
     }
 
     fn sink() -> (

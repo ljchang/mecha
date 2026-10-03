@@ -52,6 +52,12 @@
 //!   summary of the model's reasoning, which exists for a human watching a
 //!   run. Nothing watches these. Every one of the eight sites set it false.
 //!
+//! One knob is offered on top: [`no_thinking`](QuarantinedPass::no_thinking)
+//! asks a reasoning model not to reason at all (`think: Some(false)`), for a
+//! one-shot on a latency path — the voice director — where a thinking pass
+//! would cost seconds per sentence. Unset, nothing is sent and the server's
+//! default stands, exactly as before.
+//!
 //! [`ask`]: QuarantinedPass::ask
 //! [`follow_up`]: QuarantinedPass::follow_up
 
@@ -70,6 +76,7 @@ pub struct QuarantinedPass {
     effort: Option<Effort>,
     cache_prompt: bool,
     response_schema: Option<serde_json::Value>,
+    think: Option<bool>,
 }
 
 impl QuarantinedPass {
@@ -87,6 +94,7 @@ impl QuarantinedPass {
             effort: None,
             cache_prompt: false,
             response_schema: None,
+            think: None,
         }
     }
 
@@ -115,6 +123,13 @@ impl QuarantinedPass {
         self
     }
 
+    /// Ask the model not to reason before answering. Only for a short pass
+    /// on a latency path; the default leaves the server's choice alone.
+    pub fn no_thinking(mut self) -> Self {
+        self.think = Some(false);
+        self
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -135,6 +150,7 @@ impl QuarantinedPass {
             effort: self.effort,
             thinking: false,
             cache_prompt: self.cache_prompt,
+            think: self.think,
         }
     }
 
@@ -177,6 +193,15 @@ mod tests {
         assert_eq!(req.messages[0].role, crate::message::Role::User);
         assert_eq!(req.messages[0].text(), "what is this?");
         assert!(!req.thinking);
+    }
+
+    #[test]
+    fn thinking_is_left_to_the_server_unless_a_pass_declines_it() {
+        assert_eq!(QuarantinedPass::new("m", 64).ask("q").think, None);
+        assert_eq!(
+            QuarantinedPass::new("m", 64).no_thinking().ask("q").think,
+            Some(false)
+        );
     }
 
     #[test]
