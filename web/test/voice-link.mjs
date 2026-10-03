@@ -251,7 +251,11 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   // incoming track is passed through before the speaker plays it.
   const src = (await import('node:fs')).readFileSync(new URL('../../scripts/voice/voice-core.js', import.meta.url), 'utf8');
   assert.match(src, /new RTCPeerConnection\(insertable \? \{ encodedInsertableStreams: true \} : undefined\)/, 'the connection no longer asks for insertable streams');
-  const ontrack = src.slice(src.indexOf('pc.ontrack = (e) => {'), src.indexOf('speaker.srcObject = e.streams[0];'));
-  assert.match(ontrack, /if \(insertable\) passThrough\(e\.receiver\);/, 'an incoming track plays before it is piped through');
+  const at = src.indexOf('pc.ontrack = (e) => {');
+  assert.ok(at >= 0, 'no ontrack handler');
+  const ontrack = src.slice(at, src.indexOf('speaker.srcObject = e.streams[0];', at));
+  assert.ok(ontrack.length > 0, 'the speaker is no longer set inside ontrack');
+  assert.match(ontrack, /passThrough\(e\.receiver\)/, 'an incoming track plays before it is piped through');
+  assert.match(ontrack, /could not be piped through/, 'a receiver that could not be piped is not said');
   console.log('insertable streams: ok');
 }

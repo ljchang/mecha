@@ -892,9 +892,17 @@ export function createVoiceSession(opts = {}) {
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
     // On an insertable-streams connection the far side is silent unless its
-    // frames are piped through, before anything plays them.
+    // frames are piped through, before anything plays them. A receiver that
+    // could not be piped is said in the call, once - silence with the call
+    // reading "listening" is the failure nobody could name (review of #534).
+    // Once per receiver: a second `ontrack` for one already piped throws on
+    // `createEncodedStreams` and is not a failure.
+    const piped = new WeakSet();
     pc.ontrack = (e) => {
-      if (insertable) passThrough(e.receiver);
+      if (insertable && !piped.has(e.receiver)) {
+        if (passThrough(e.receiver)) piped.add(e.receiver);
+        else cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false });
+      }
       speaker.srcObject = e.streams[0];
     };
 

@@ -84,6 +84,12 @@ with a fake microphone: no flag, 0 frames against 150 RTP packets; flag alone,
 150 frames and 0 decoded samples at the far end; both, 150 frames and normal
 playback. Against the live worker, main's page fell back within 6 s and the fix
 delivered 119 batches in 12 s. Safari and Firefox get the connection as before.
+`needsInsertableStreams` is a proxy: it recognises Chromium by the legacy
+`createEncodedStreams`, the API `RTCRtpScriptTransform` replaces. If Chromium
+drops that API while still gating delivery on the flag, the predicate goes false,
+the page takes the plain connection, and the call falls back again - so the
+owner's "buffered microphone path failed" reappearing in Chrome is the signal to
+recheck this predicate first.
 
 ### 2.2 Delivery over a reliable channel — RTVI messages, not a second channel
 
