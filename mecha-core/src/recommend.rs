@@ -493,30 +493,37 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Voice],
         runs_on: RunsOn::Gpu,
         residency: Residency::Resident,
-        rows: &[Recommendation {
-            tier_gb: 128,
-            memory: Memory::Unified {
-                // 5,512 MiB GPU + 2,506 MiB process, read together.
-                peak: Peak::Measured { mb: 8_018, machine: GB10, date: "2026-10-02" },
+        rows: &[
+            Recommendation {
+                tier_gb: 128,
+                memory: Memory::Unified {
+                    // The peak while speaking one sentence through the
+                    // adapter: 3,994 MiB GPU (fixed from load) + 155 MiB
+                    // engine + 36 MiB adapter process, read together. At rest
+                    // it is 4,062. Chatterbox, the default before, was 8,018.
+                    peak: Peak::Measured { mb: 4_185, machine: GB10, date: "2026-10-03" },
+                },
+                model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
+                counts: "peak while speaking: GPU memory and the server's and adapter's process memory",
+                // Converted from BreezeBlue/Breeze-TTS-2 (non-commercial
+                // weights) into qwentts.cpp's GGUF: no published file to pin;
+                // its installer builds it (step 7f).
+                sources: &[],
+                excludes: None,
             },
-            model: "Chatterbox Turbo",
-            counts: "GPU and process memory",
-            // The chatterbox package fetches its own snapshot (step 7f).
-            sources: &[],
-            excludes: None,
-        },
-        // The GB10's two readings, kept apart for a card: arithmetic there.
-        Recommendation {
-            tier_gb: 128,
-            memory: Memory::Discrete {
-                gpu: Peak::Arithmetic { mb: 5_512 },
-                host: Peak::Arithmetic { mb: 2_506 },
+            // The GB10's readings, kept apart for a card: arithmetic there.
+            Recommendation {
+                tier_gb: 128,
+                memory: Memory::Discrete {
+                    gpu: Peak::Arithmetic { mb: 3_994 },
+                    host: Peak::Arithmetic { mb: 191 },
+                },
+                model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
+                counts: "the GB10's GPU and process readings, carried to a card",
+                sources: &[],
+                excludes: None,
             },
-            model: "Chatterbox Turbo",
-            counts: "the GB10's GPU and process readings, carried to a card",
-            sources: &[],
-            excludes: None,
-        }],
+        ],
     },
     Slot {
         id: "turn",
@@ -838,6 +845,13 @@ pub fn needed(shown: &[Feature]) -> Vec<&'static Slot> {
         .iter()
         .filter(|s| s.needed_by.is_empty() || s.needed_by.iter().any(|f| shown.contains(f)))
         .collect()
+}
+
+/// The row a slot uses on this machine — its own for the tier and shape, or
+/// the nearest one carried (`false`) — or none (the chat model below its
+/// smallest tier). The probe's choice, for the install plan to share.
+pub fn row_for(slot: &'static Slot, machine: &Machine) -> Option<(&'static Recommendation, bool)> {
+    pick(slot, machine, machine.tier_gb())
 }
 
 fn pick(
