@@ -117,7 +117,17 @@ pub(crate) struct TurnDirection {
     /// The opening's result, once it lands; `None` when none was started.
     opening: Option<watch::Receiver<Option<Asked>>>,
     state: StdMutex<TurnState>,
+    /// When this turn was last begun or asked about: the sweep drops an
+    /// entry idle past [`IDLE_LIMIT`].
+    used: StdMutex<tokio::time::Instant>,
 }
+
+/// How often the directing state is swept (`Directions::sweep`).
+pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(15);
+
+/// How long a reply's directing state outlives its last use. A reply's
+/// sentences are asked about while it plays; ten minutes is far past any.
+pub(crate) const IDLE_LIMIT: Duration = Duration::from_secs(600);
 
 #[derive(Default)]
 struct TurnState {
@@ -184,6 +194,7 @@ impl Directions {
             transcript: None,
             opening: None,
             state: StdMutex::default(),
+            used: StdMutex::new(tokio::time::Instant::now()),
         };
         self.lock().insert(key.to_string(), Arc::new(entry));
     }
@@ -224,6 +235,7 @@ impl Directions {
             transcript: seed.transcript,
             opening,
             state: StdMutex::default(),
+            used: StdMutex::new(tokio::time::Instant::now()),
         };
         self.lock().insert(key.to_string(), Arc::new(entry));
     }
@@ -242,7 +254,62 @@ impl Directions {
     }
 
     fn get(&self, key: &str) -> Option<Arc<TurnDirection>> {
-        self.lock().get(key).cloned()
+        let entry = self.lock().get(key).cloned()?;
+        *entry.used.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+        Some(entry)
+    }
+
+    /// Drop what no reply needs any more: an entry idle past
+    /// [`IDLE_LIMIT`], and a `chat:` entry whose conversation the host no
+    /// longer holds — an incognito chat that was ended keeps none of its
+    /// words here. Without a host (standalone `voice-serve`), idleness only.
+    ///
+    /// The map's lock is never held across the host's `.await`: the keys are
+    /// collected, the host asked, and only an entry that is still the one
+    /// collected is removed — a turn begun on the key in between is kept.
+    pub(crate) async fn sweep(&self, host: Option<&Arc<dyn super::SessionHost>>) -> usize {
+        self.sweep_at(tokio::time::Instant::now(), host).await
+    }
+
+    /// [`sweep`](Self::sweep) as of `now`, so idleness is testable without
+    /// waiting ten minutes.
+    async fn sweep_at(
+        &self,
+        now: tokio::time::Instant,
+        host: Option<&Arc<dyn super::SessionHost>>,
+    ) -> usize {
+        let mut dropped = 0;
+        let to_ask: Vec<(String, Arc<TurnDirection>)> = {
+            let mut turns = self.lock();
+            let before = turns.len();
+            turns.retain(|_, e| {
+                now.duration_since(*e.used.lock().unwrap_or_else(|p| p.into_inner())) < IDLE_LIMIT
+            });
+            dropped += before - turns.len();
+            turns
+                .iter()
+                .filter(|(k, _)| k.starts_with("chat:"))
+                .map(|(k, e)| (k.clone(), Arc::clone(e)))
+                .collect()
+        };
+        let Some(host) = host else {
+            return dropped;
+        };
+        let mut gone = Vec::new();
+        for (key, entry) in to_ask {
+            let chat = key.strip_prefix("chat:").unwrap_or(&key);
+            if !host.holds(chat).await {
+                gone.push((key, entry));
+            }
+        }
+        let mut turns = self.lock();
+        for (key, entry) in gone {
+            if turns.get(&key).is_some_and(|now| Arc::ptr_eq(now, &entry)) {
+                turns.remove(&key);
+                dropped += 1;
+            }
+        }
+        dropped
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<TurnDirection>>> {
@@ -253,14 +320,14 @@ impl Directions {
 /// One call to the director on the model the router has loaded: held for
 /// the call, followed for the call, bounded by `deadline` and by shutdown.
 ///
-/// TODO(single slot): on a preset served with `parallel = 1` this call
-/// queues behind the reply still being written, and can evict the chat's
-/// slot cache. Whether the loaded preset has one slot is not something the
-/// binding holds (`follow::Bound` carries the config, not the router's
-/// preset), and asking the router per sentence is the probe this module
-/// must not make, so nothing skips on it yet: a `single_slot` skip needs the
-/// follower to keep the preset's slot count when it observes the router.
+/// **Not on a single-slot server.** A preset served with `parallel = 1`
+/// would queue this call behind the reply still being written, and could
+/// evict the chat's slot cache, so it is a `single_slot` skip. The count is
+/// `follow::Bound::slots` — the router's own `/props`, read by the same
+/// observation `follow` makes to resolve the model, so this asks nothing
+/// extra. Unknown is not a skip: the sentence is directed as before.
 async fn ask(shared: &Arc<Shared>, user: &str, deadline: Duration) -> Asked {
+    let until = tokio::time::Instant::now() + deadline;
     // Held, never waited for: a switch in flight is a skip.
     let held = match shared.follower.try_hold("voice direction") {
         Ok(Ok(held)) => held,
@@ -272,28 +339,42 @@ async fn ask(shared: &Arc<Shared>, user: &str, deadline: Duration) -> Asked {
             }
         }
     };
-    let call = async {
-        let bound = shared.follower.follow().await?;
-        let model = bound.model.clone();
-        let directed = vd::direct(bound.agent.provider(), &model, user).await?;
-        anyhow::Ok((directed, model))
+    // The binding first, inside the same deadline: following can probe the
+    // router, and the time it takes is the sentence's time too.
+    let followed = tokio::select! {
+        r = tokio::time::timeout_at(until, shared.follower.follow()) => r,
+        _ = shared.stopping.cancelled() => return Asked::Skipped("shutdown"),
     };
+    let bound = match followed {
+        Err(_) => return Asked::Timeout { model: None },
+        Ok(Err(e)) => {
+            return Asked::Failed {
+                reason: first_line(&format!("{e:#}")),
+                model: None,
+            }
+        }
+        Ok(Ok(bound)) => bound,
+    };
+    if bound.slots == Some(1) {
+        return Asked::Skipped("single_slot");
+    }
+    // Captured before the call, so a timeout records the model it was
+    // asked of rather than whatever the binding is by then.
+    let model = bound.model.clone();
     let result = tokio::select! {
-        r = tokio::time::timeout(deadline, call) => r,
+        r = tokio::time::timeout_at(until, vd::direct(bound.agent.provider(), &model, user)) => r,
         _ = shared.stopping.cancelled() => return Asked::Skipped("shutdown"),
     };
     drop(held);
     match result {
-        Err(_) => Asked::Timeout {
-            model: Some(shared.follower.current().model.clone()),
-        },
+        Err(_) => Asked::Timeout { model: Some(model) },
         Ok(Err(e)) => Asked::Failed {
             reason: first_line(&format!("{e:#}")),
-            model: None,
+            model: Some(model),
         },
-        Ok(Ok((Directed::Line(line), model))) => Asked::Line { line, model },
-        Ok(Ok((Directed::Empty, model))) => Asked::Empty { model },
-        Ok(Ok((Directed::Refused, model))) => Asked::Refused { model },
+        Ok(Ok(Directed::Line(line))) => Asked::Line { line, model },
+        Ok(Ok(Directed::Empty)) => Asked::Empty { model },
+        Ok(Ok(Directed::Refused)) => Asked::Refused { model },
     }
 }
 
@@ -491,6 +572,7 @@ mod tests {
             transcript: None,
             opening: None,
             state: StdMutex::default(),
+            used: StdMutex::new(tokio::time::Instant::now()),
         };
         d.lock().insert("voice:b".into(), Arc::new(entry));
         d.note_harness("t2", " Shall I send the draft to Ada now?");
@@ -538,9 +620,19 @@ mod tests {
 
     fn facade(home: &crate::testenv::HomeGuard) -> (super::super::Facade, Seen) {
         let seen: Seen = Arc::default();
+        let f = facade_on(home, Box::new(Directs { seen: seen.clone() }), None);
+        (f, seen)
+    }
+
+    /// A facade around `provider`, on a server with `slots` slots.
+    fn facade_on(
+        home: &crate::testenv::HomeGuard,
+        provider: Box<dyn mecha_core::provider::Provider>,
+        slots: Option<u64>,
+    ) -> super::super::Facade {
         let config = mecha_core::config::Config::default();
         let agent = mecha_core::agent::Agent::new(
-            Box::new(Directs { seen: seen.clone() }),
+            provider,
             mecha_core::tool::Registry::new(),
             Arc::new(mecha_core::tool::ModeApprover {
                 mode: mecha_core::config::PermissionMode::ReadOnly,
@@ -550,15 +642,158 @@ mod tests {
             None,
         )
         .unwrap();
-        let follower = crate::follow::Follower::fixed(agent, "local", "loaded-model", config);
-        let facade = super::super::Facade::new(
+        let follower = crate::follow::Follower::fixed(agent, "local", "loaded-model", config)
+            .with_slots(slots);
+        super::super::Facade::new(
             Arc::new(follower),
             home.dir.join("outbox"),
             None,
             super::super::Mount::default(),
         )
-        .unwrap();
-        (facade, seen)
+        .unwrap()
+    }
+
+    /// A host that holds exactly the chats it is given.
+    struct Holding(Vec<&'static str>);
+
+    #[async_trait::async_trait]
+    impl crate::voice::SessionHost for Holding {
+        async fn speak(&self, _: &str, _: &str, _: bool, _: bool, _: bool) -> crate::voice::Hosted {
+            panic!("the sweep must never start a turn")
+        }
+        async fn holds(&self, key: &str) -> bool {
+            self.0.contains(&key)
+        }
+    }
+
+    fn opened(d: &Directions, key: &str) {
+        d.begin(key, "t", "hello");
+    }
+
+    #[tokio::test]
+    async fn a_closed_chat_is_swept_and_an_open_one_kept() {
+        let d = Directions::default();
+        let incognito = format!("chat:{}", crate::commands::serve::incognito::new_key());
+        opened(&d, &incognito);
+        opened(&d, "chat:main");
+        opened(&d, "voice:webrtc-1");
+        let host: Arc<dyn crate::voice::SessionHost> = Arc::new(Holding(vec!["main"]));
+        assert_eq!(d.sweep(Some(&host)).await, 1);
+        assert!(
+            d.get(&incognito).is_none(),
+            "an ended incognito chat's words stayed"
+        );
+        assert!(d.get("chat:main").is_some());
+        // A facade slot has no host to ask; only idleness ends it.
+        assert!(d.get("voice:webrtc-1").is_some());
+    }
+
+    #[tokio::test]
+    async fn an_idle_reply_is_swept_and_a_used_one_kept() {
+        let d = Directions::default();
+        opened(&d, "voice:idle");
+        opened(&d, "voice:used");
+        let start = tokio::time::Instant::now();
+        assert_eq!(d.sweep_at(start + IDLE_LIMIT / 2, None).await, 0);
+        // "used" was asked about near the end of the window.
+        *d.lock()["voice:used"].used.lock().unwrap() = start + IDLE_LIMIT - Duration::from_secs(60);
+        assert_eq!(
+            d.sweep_at(start + IDLE_LIMIT + Duration::from_secs(1), None)
+                .await,
+            1
+        );
+        assert!(d.lock().get("voice:idle").is_none());
+        assert!(
+            d.lock().get("voice:used").is_some(),
+            "asked about a minute ago"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_begun_while_the_host_was_asked_is_kept() {
+        // The sweep removes only the entry it collected: a newer turn on the
+        // same key is somebody's reply.
+        struct Reopens(Arc<Directions>);
+        #[async_trait::async_trait]
+        impl crate::voice::SessionHost for Reopens {
+            async fn speak(
+                &self,
+                _: &str,
+                _: &str,
+                _: bool,
+                _: bool,
+                _: bool,
+            ) -> crate::voice::Hosted {
+                unreachable!()
+            }
+            async fn holds(&self, _: &str) -> bool {
+                self.0.begin("chat:main", "t2", "again");
+                false
+            }
+        }
+        let d = Arc::new(Directions::default());
+        opened(&d, "chat:main");
+        let host: Arc<dyn crate::voice::SessionHost> = Arc::new(Reopens(Arc::clone(&d)));
+        assert_eq!(d.sweep(Some(&host)).await, 0);
+        assert_eq!(d.get("chat:main").unwrap().turn, "t2");
+    }
+
+    #[tokio::test]
+    async fn a_single_slot_server_is_not_directed() {
+        let home = crate::testenv::HomeGuard::new("director-one-slot");
+        for (slots, outcome, calls) in
+            [(Some(1), "skipped", 0), (Some(4), "ok", 1), (None, "ok", 1)]
+        {
+            let seen: Seen = Arc::default();
+            let facade = facade_on(&home, Box::new(Directs { seen: seen.clone() }), slots);
+            let shared = &facade.shared;
+            shared.directions.model_turn(
+                shared,
+                "voice:a",
+                "t",
+                "hi",
+                DirectorSeed::default(),
+                false,
+            );
+            let got = ask_over_socket(
+                shared,
+                json!({"session": "voice:a", "index": 1, "sentence": "Hello there."}),
+            )
+            .await;
+            assert_eq!(got["outcome"], outcome, "{slots:?}");
+            if slots == Some(1) {
+                assert_eq!(got["reason"], "single_slot");
+            }
+            assert_eq!(seen.lock().unwrap().len(), calls, "{slots:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_timeout_records_the_model_it_was_asked_of() {
+        struct Never;
+        #[async_trait::async_trait]
+        impl mecha_core::provider::Provider for Never {
+            fn id(&self) -> &str {
+                "local"
+            }
+            fn default_model(&self) -> &str {
+                "loaded-model"
+            }
+            async fn complete(
+                &self,
+                _: &mecha_core::message::CompletionRequest,
+                _: Option<&mecha_core::provider::StreamSink>,
+            ) -> anyhow::Result<mecha_core::message::CompletionResponse> {
+                std::future::pending().await
+            }
+        }
+        let home = crate::testenv::HomeGuard::new("director-timeout");
+        let facade = facade_on(&home, Box::new(Never), None);
+        let asked = ask(&facade.shared, "q", Duration::from_millis(50)).await;
+        match asked {
+            Asked::Timeout { model } => assert_eq!(model.as_deref(), Some("loaded-model")),
+            other => panic!("{other:?}"),
+        }
     }
 
     fn transcript(home: &crate::testenv::HomeGuard, id: &str) -> Arc<Session> {

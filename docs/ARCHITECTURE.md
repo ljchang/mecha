@@ -3730,7 +3730,10 @@ speaker; the chat model's prompt is untouched.
   followed per call; a pending switch is a `skipped` (`switching`), never a
   wait. Thinking is declined (`CompletionRequest::think`, sent to
   llama-server as `chat_template_kwargs.enable_thinking = false`), and the
-  facade's deadline — 1.5 s a sentence — is what bounds it.
+  facade's deadline — 2.5 s a sentence, above the 1.6 s median a detailed
+  direction measured — is what bounds it. A server with one slot
+  (`follow::Bound::slots`, the router's `/props` as `follow` observed it) is
+  a `single_slot` skip: the call would queue behind the reply.
 - **The first sentence starts early.** With `X-Voice-Directed: 1` on the
   completion, the facade starts an *opening* direction from the owner's words
   when the turn starts, so its wait overlaps the model writing the first
@@ -3742,9 +3745,13 @@ speaker; the chat model's prompt is untouched.
   the conversation's own transcript, and joined to its reply by `turn` and
   `sentence` — never by file position, since it lands while the sentence
   plays. Nothing that rebuilds a conversation reads it.
-- **Not yet:** a preset served with one slot (`parallel = 1`) queues the
-  director behind the reply; the binding does not know the preset's slot
-  count, so nothing skips on it (TODO in `voice::direct::ask`).
+- **Swept when its chat closes.** The facade's per-conversation directing
+  state is dropped after ten idle minutes, and every 15 s for any chat its
+  host no longer holds (`SessionHost::holds`) — so an ended incognito chat's
+  words do not outlive it in memory.
+- **Not yet: prefetch.** A sentence is asked about when the worker reaches
+  it, so a short sentence before it leaves little playback to hide the call
+  in; directing each sentence as its text streams would close that gap.
 
 ## Hooks
 

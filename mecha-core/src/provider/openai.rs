@@ -100,9 +100,12 @@ impl OpenAiCompatible {
             obj.insert("seed".into(), json!(s));
         }
         // Only an explicit "no": llama-server's Jinja chat templates (Qwen,
-        // Gemma) read `enable_thinking` from here, and a server that does not
-        // know the key ignores it. `None` adds nothing, so every request that
-        // never asked sends exactly the bytes it always did.
+        // Gemma) read `enable_thinking` from here, and llama-server ignores
+        // the key for a template that does not use it. OpenAI's own API
+        // 400s on a parameter it does not recognise — for the director that
+        // is an error outcome and the sentence is spoken undirected. `None`
+        // adds nothing, so every request that never asked sends exactly the
+        // bytes it always did.
         if let Some(think) = req.think {
             obj.insert(
                 "chat_template_kwargs".into(),
