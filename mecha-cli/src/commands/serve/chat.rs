@@ -3121,6 +3121,17 @@ impl crate::voice::SessionHost for VoiceHost {
                         }
                     }
                 } else if idle {
+                    // Read before the run takes the conversation: the
+                    // director's scene, and where its directions are kept —
+                    // nowhere, for an incognito chat (`Recording::kept`).
+                    let seed = sessions.get(key).map(|ws| crate::voice::DirectorSeed {
+                        transcript: ws.session.kept().cloned(),
+                        character: None,
+                        last_reply: ws
+                            .conversation
+                            .as_ref()
+                            .and_then(|c| crate::voice::last_reply(&c.messages)),
+                    });
                     match begin_turn(
                         &self.0,
                         &bound,
@@ -3141,6 +3152,7 @@ impl crate::voice::SessionHost for VoiceHost {
                                 events: started.events,
                                 done: started.done,
                                 cancel: started.cancel,
+                                seed: seed.unwrap_or_default(),
                             }))
                         }
                         // Held: a finished run still landing. Fall through
