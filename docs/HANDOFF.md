@@ -166,12 +166,12 @@ against `a51e1c01`:
     by the later model (#530 review, pass 3). A per-stretch pick is
     possible later, since the switches are on file.
 - **Open, owner's call: the writer files the persona's words as facts the
-  owner stated** (found by mecha-05, 2026-10-03). In a 2026-10-03 chat the
-  persona said a child's fever had broken; the owner never did. Writing
-  copies of that chat gave `user_facts` "…fever broke after eight days",
-  `kind = stated`, on every run, under both the old prompt and a revised
-  one. A role count over that transcript confirms it: owner 0, persona 1.
-  "About the owner: only what the owner said" lives only in
+  owner stated** (found by mecha-05, 2026-10-03). In one chat the persona
+  volunteered a health detail about the owner's child that the owner never
+  said. Writing copies of that chat stored it in `user_facts` with
+  `kind = stated` on every run, under both the old prompt and a revised one;
+  a role count over the transcript confirms the persona said it and the
+  owner did not. "About the owner: only what the owner said" lives only in
   `writer::SYSTEM`; nothing enforces it. mecha-05's proposal, which overlaps
   schema v4: each owner fact names the `[owner]` turn it came from, and the
   harness drops it unless that turn is the owner's. A prompt-only attempt
