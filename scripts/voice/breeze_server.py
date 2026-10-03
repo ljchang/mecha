@@ -110,10 +110,13 @@ def clean_instructions(text: str | None) -> str:
 
 
 async def transcript_for(client: httpx.AsyncClient, name: str, wav_path: str) -> str:
-    """The clip's text: the sidecar if there is one, else Parakeet's
-    transcript, written as the sidecar so it is done once and can be edited."""
+    """The clip's text: the sidecar if there is one and it is not older than
+    the clip, else Parakeet's transcript, written as the sidecar so it is done
+    once and can be edited. A clip replaced after its sidecar was written (a
+    re-cut, a voice deleted and re-added under the same name) would otherwise
+    be registered with the old clip's words."""
     txt = wav_path[:-4] + ".txt"
-    if os.path.exists(txt):
+    if os.path.exists(txt) and os.path.getmtime(txt) >= os.path.getmtime(wav_path):
         with open(txt, encoding="utf-8") as f:
             text = f.read().strip()
         if text:
@@ -233,10 +236,11 @@ async def speech(req: SpeechRequest):
         if upstream.status_code != 200:
             detail = (await upstream.aread()).decode(errors="replace")[:200]
             await upstream.aclose()
-            # Only the engine's own "unknown voice" means it restarted and
-            # forgot its registry (tts-server keeps it in memory): teach it
-            # once more and ask again. Any other refusal is said as it was.
-            if "unknown voice" not in detail:
+            # The engine keeps its registry in memory, so a restart forgets
+            # every voice. Ask its registry rather than parse the error's
+            # wording: absent means teach it again and ask once more; present
+            # means the refusal was about something else, said as it was.
+            if await _engine_knows(client, voice):
                 raise HTTPException(502, f"the Breeze engine answered {upstream.status_code}: {detail}")
             await ensure_registered(client, voice, force=True)
             upstream = await _open(client, body)
@@ -296,6 +300,19 @@ async def speech(req: SpeechRequest):
     if req.response_format == "pcm":
         return Response(content=pcm, media_type="audio/pcm")
     return Response(content=wav_bytes(pcm), media_type="audio/wav")
+
+
+async def _engine_knows(client: httpx.AsyncClient, name: str) -> bool:
+    """Whether the engine's registry holds `name`. An unreadable registry
+    answers yes, so the refusal is reported rather than retried blind."""
+    try:
+        r = await client.get(f"{BREEZE_URL}/v1/audio/voices", timeout=5)
+        voices = r.json().get("voices", []) if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        voices = None
+    if voices is None:
+        return True
+    return any(v.get("name") == name for v in voices if isinstance(v, dict))
 
 
 async def _open(client: httpx.AsyncClient, body: dict) -> httpx.Response:

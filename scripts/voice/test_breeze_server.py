@@ -58,6 +58,9 @@ class Engine:
                 self.wfile.write(data)
 
             def do_GET(self):
+                if self.path == "/v1/audio/voices":
+                    names = [{"name": n, "kind": "registered"} for n in engine.registered]
+                    return self._send(200, json.dumps({"voices": names}).encode())
                 self._send(200, b'{"status":"ok"}')
 
             def do_POST(self):
@@ -75,7 +78,9 @@ class Engine:
                         engine.forget_once = False
                         engine.registered.clear()
                     if req["voice"] not in engine.registered:
-                        return self._send(400, json.dumps({"error": f"unknown voice '{req['voice']}'"}).encode())
+                        # Worded unlike the real engine on purpose: the
+                        # adapter must ask the registry, not read the text.
+                        return self._send(400, b'{"error":{"message":"synthesis refused"}}')
                     if req["input"] == "refuse me":
                         engine.refused += 1
                         return self._send(400, b'{"error":"empty text after normalisation"}')
@@ -203,6 +208,17 @@ class Adapter(unittest.TestCase):
         r = TestClient(self.mod.app).post("/v1/audio/speech", json={"input": "Hi."})
         self.assertEqual(r.status_code, 503)
         self.assertIn("cannot read the voices directory", r.json()["detail"])
+
+    def test_a_clip_replaced_after_its_sidecar_is_transcribed_again(self):
+        txt = os.path.join(self.voices, "vctk_p297.txt")
+        with open(txt, "w") as f:
+            f.write("The old clip's words.\n")
+        wav = os.path.join(self.voices, "vctk_p297.wav")
+        st = os.stat(txt)
+        os.utime(wav, (st.st_atime, st.st_mtime + 5))  # the clip is newer
+        self.speak(voice="vctk_p297")
+        self.assertEqual(self.engine.transcribed, 1)
+        self.assertEqual(self.engine.registered["vctk_p297"]["ref_text"], "Please call Maya.")
 
     def test_an_engine_that_forgot_its_voices_is_taught_again(self):
         self.speak(voice="vctk_p297")
