@@ -49,8 +49,8 @@ owner's rulings (§6).
   note without its length rule. Without the header, `VOICE_BLOCK` is
   byte-identical, pinned by digest. Probe: `strings ~/.cargo/bin/mecha |
   grep -c "Speak the way you would out loud"` → at least 1, and 0 before.
-  The phrase is in `VOICE_BLOCK_STREAMING` only; this build printed 2
-  because two call sites inline the constant, which a linker may fold.
+  The phrase is in `VOICE_BLOCK_STREAMING` only; this build printed 2, and
+  what emitted the second copy was not run down.
 - **Breeze is the default (#528).** `worker.py`'s `MECHA_VOICE_TTS`
   defaults to :8887. `default` is the clip `default.wav`, a reserved name
   the library never offers to delete. `make-voices.py` and
@@ -2945,7 +2945,7 @@ the timing was not rerun.
 The old gossip quota observation used 10 candidates, three targets per night
 and a seven-day cooldown, requiring 21 distinct targets: nights under-filled
 with two on August 22, one on August 17 and two on August 16. It also recorded
-Frank Chang at 26 retrieval touches and suspected the probe's own reads.
+one contact at 26 retrieval touches and suspected the probe's own reads.
 The quota defect is superseded by the graph nightly's 25 candidates and
 least-recently-probed fallback when fresh candidates run out; those original
 figures remain historical observations. The proposed stranger-facing graph
@@ -4965,8 +4965,9 @@ What made all of this reviewable in the first place is the fifth change:
 **a group can be opened and its members verdicted one at a time** on the web
 (`GET /api/queue/items`, "Review each of the N"), which the TUI has had and
 the phone had not. The case for it is one real group — seventeen near-repeats
-naming the owner's children, mostly Bee mishearing two names. Similarity is the grouping key, not
-agreement, so "Accept all 17" would have asserted every one of them. A verdict
+naming the owner's children, mostly Bee mishearing two names. Similarity is
+the grouping key, not agreement, so "Accept all 17" would have asserted
+every one of them. A verdict
 inside a group is deliberately plain — no cascade — because telling the
 members apart is the reason for being in there.
 
