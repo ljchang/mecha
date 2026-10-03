@@ -1480,10 +1480,11 @@ already closed, and waiting for the verdict would hold every turn open for
 up to `JUDGE_WAIT` (90 s). The call does not wait (ARCHITECTURE §Personas).
 
 The voice stack already takes everything a profile needs. The worker's TTS
-leg is Chatterbox Turbo (`scripts/voice/worker.py`): voice name, speed,
-exaggeration and cfg_weight are start values, and the page can already change
-them per session. Chatterbox clones from a reference clip in `VOICES_DIR`, and
-`GET /v1/voices` lists the voices it can speak.
+leg is Breeze TTS 2 since 2026-10-03 (`docs/VOICE-BREEZE-DESIGN.md`; Chatterbox
+Turbo before it): voice name and speed are start values the page can change
+per session, and the worker sends only the controls the engine lists as
+honoured. Breeze clones from a reference clip in `VOICES_DIR` and its
+transcript, and `GET /v1/voices` lists the voices it can speak.
 
 - **A persona names a library voice** (owner ruling, 2026-10-01, which
   replaced the `voices/<name>/profile.toml` profiles this bullet first

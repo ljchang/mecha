@@ -464,6 +464,15 @@ an edit to either reaches nothing until the restart; `docker restart` keeps the
 container's environment, so changing `CHATTERBOX_MODEL` means recreating it
 (the `docker run` line is in `VOICE-RESEARCH.md`, beside the serving wrapper).
 
+**`mecha-breeze-adapter` is not in the list either, and it is the TTS the
+worker speaks through by default** (since 2026-10-03; `docs/VOICE-BREEZE-DESIGN.md`).
+It runs `scripts/voice/breeze_server.py` from the shared checkout, imported
+once at start, so restart it — after the worker, with no call live — when that
+file or `audio_stretch.py` changed. Never restart `mecha-breeze-tts` for a repo
+change: it runs a build outside the repo (`~/models/breeze-qwentts`), and a
+restart costs a model load and forgets every registered voice (the adapter
+teaches them again on the next sentence).
+
 **`mecha-parakeet` is deliberately not in the list.** It runs
 `scripts/voice/parakeet_server.py`, so restart it when *that* file changes —
 and only then, because coming back costs a model load and voice is deaf
