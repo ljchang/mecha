@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A voice that takes direction is told how to say each sentence.** When
+  the speech engine honours `instructions` (Breeze TTS 2), the worker asks
+  the voice facade's new director for each sentence — one line on emotion,
+  energy, pace and pitch, written by the model already loaded, with thinking
+  off — and sends it with the words. The first sentence's direction starts
+  from your words as the turn begins. Every direction is recorded in the
+  conversation's transcript as a `spoken_direction` record, except in an
+  incognito chat, where it is directed and nothing is kept. On a voice that
+  does not take direction, nothing changes and no extra call is made.
+
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
   OCR, layout, image generation, speech to text, speech and turn detection —
