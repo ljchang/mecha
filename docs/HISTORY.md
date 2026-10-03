@@ -14,6 +14,42 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-02/03 — a persona no longer sends an earlier reply again (#517,
+#522).** The owner's report: late in a long persona chat, short turns
+("mm") brought back an earlier reply word for word. A replay of that
+chat's prefix against the router found two causes and ruled out the usual
+fix (`PERSONA-DESIGN.md` §12.7 has the owner's rulings).
+- **The causes, measured.** With the provider's `seed = 42` and earlier
+  thinking sent back, the 4-character turn reproduced the earlier reply
+  7 of 7 times on the base model and 4 of 4 on the uncensored one. With
+  neither, 0 of 8 copied and 0 of 8 were damaged.
+- **Rejected options.** Qwen's "general" profile (presence penalty 1.5)
+  still copied 4 of 4: the penalty's window is 64 tokens (Traps →
+  Providers). DRY over the whole context ended the copies but damaged 2–5
+  replies in 8 at every setting tried.
+- **What shipped, persona chats only:**
+  - **No seed for the chat.** `setup::persona_provider` takes a
+    `PersonaUse`. `Converse` drops the seed, and `Judge` keeps it for the
+    crisis and steering judges, whose verdicts should be reproducible.
+    `build_for` checks the config as written first, so a config the
+    provider refuses stops chat and judge together (#522).
+  - **No earlier reply's thinking on the wire.** `message::PriorThinking`
+    is set to `Drop` by `persona_agent`. `drops_thinking` keeps the
+    thinking of any turn that called a tool, after review found stripping
+    it re-created the 2026-08-10 bare-`<tool_call>` failure. Every
+    pressure reading goes through `Agent::wire_bytes`. The assistant's
+    runs are unchanged.
+  - **An offline repetition score.** `persona::echo::session_echoes` reads
+    the transcripts and only `mecha persona show` asks for it, by the
+    owner's choice of offline over per-turn: nothing acts on it live, and
+    a better metric can recompute the history.
+- **Seven review passes on #517 and two on #522**, counted from the
+  reviewer's summary comments on each PR. Deployed by mecha-1e at `c6f59b05`, 2026-10-03 02:36Z, with
+  #520.
+- **First reading on the live store:** 8 of 92 replies in 6 Stella chats
+  over the week before repeated an earlier one, mostly from before the
+  fix.
+
 **2026-10-02 — modular installs, step 5: `[voice]` and `[personas]`
 (#503).** Everything voice is in one operator-only table, by the owner's
 ruling of 2026-10-01: "[voice] holds everything voice".
@@ -9003,6 +9039,23 @@ All found by pre-push review or by running it.
   session now.
 
 ### Providers
+
+**A sampler penalty sees only its window, and the default window is 64
+tokens.** Qwen's model card recommends presence penalty 1.5 "to reduce
+endless repetitions", and a persona chat on that profile still sent an
+earlier reply word for word, 4 of 4. In llama-server the presence,
+frequency and repeat penalties share `repeat_last_n`, and DRY has
+`dry_penalty_last_n`. Both default to 64 tokens, and this build refuses
+`-1`. The card's knob is for a loop *inside* one reply; a reply thousands
+of tokens back is outside the window. Before trusting a penalty against
+cross-turn repetition, ask what the window covers (2026-10-02).
+
+**A fixed seed is a measuring tool, and in a conversation it is a copy
+machine.** `seed = 42` restarts the sampler's draws at the same state
+every request. A turn that adds little leaves the distributions nearly
+unchanged, so the same draws pick the same tokens, and a persona sent an
+earlier reply again, 7 of 7. Pin a seed where a run must repeat (evals,
+replays, a judge's verdict); never in a chat (2026-10-02, #517).
 
 **An unset key is the provider's default, not "off".** To test that `mecha
 eval` refuses a blind model, a session aimed it at `-p anthropic`, reading

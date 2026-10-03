@@ -22,6 +22,31 @@ maps which document holds what.
 
 ## Where the work is
 
+**2026-10-03 — persona repetition: fixed and live; what is open
+(mecha-1e).** #517 and #522 are in HISTORY under 2026-10-02/03, deployed
+at `c6f59b05` (02:36Z). The owner's rulings are in `PERSONA-DESIGN.md`
+§12.7.
+
+- **Watch the reading, then decide.** `mecha persona show <name>` reports
+  how many replies in the last week's chats repeated an earlier one. Before
+  the fix, Stella read 8 of 92. Let the numbers show whether repetition is
+  gone across personas before tuning anything else.
+- **Held on purpose, waiting on those readings:**
+  - The call note's "the first one short" (`persona::call::note`) makes
+    nearly every spoken reply open with "Good." or "Perfect.". Reword it
+    only if the pattern shows beyond one persona.
+  - A harness nudge for variety.
+- **Unmeasured:** a live replay with a tool call in the history before the
+  cut. The replay that measured the fix had tool turns flattened out.
+  `drops_thinking` leaves those turns as they were, which is the shape that
+  measured 0 of 6 on 2026-08-10, but nobody has replayed it.
+- **Minors carried from review:**
+  - `build_for` builds the judge's config twice. The reviewer offered a
+    `match` that reuses the first build, and left it to the owner.
+  - `mecha persona show` reads every chat active in the window on each
+    call.
+  - Deleted chats drop out of the reading; archived ones stay.
+
 **2026-10-02 — calls, the voice library, typing in a call and Listen are
 live; what is open (mecha-d7).** #483, #490, #491, #492 and #497 are in
 HISTORY under 2026-10-01; #499 and #502 under 2026-10-02. All are live:
