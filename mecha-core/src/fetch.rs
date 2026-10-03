@@ -28,7 +28,8 @@ const HF_BASE: &str = "https://huggingface.co";
 /// The hub directory, resolved the one way the downloader, the unit
 /// templates and the launchers share (§10.2 item 6): `HF_HUB` (mecha's own),
 /// then the `hf` CLI's `HF_HUB_CACHE`, then `HF_HOME/hub`, then
-/// `~/.cache/huggingface/hub`.
+/// `XDG_CACHE_HOME/huggingface/hub` — `hf`'s own default for `HF_HOME` —
+/// then `~/.cache/huggingface/hub`.
 pub fn hub_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("no home directory to put the model cache under")?;
     Ok(hub_dir_from(
@@ -46,6 +47,9 @@ fn hub_dir_from(env: impl Fn(&str) -> Option<std::ffi::OsString>, home: &Path) -
     }
     if let Some(v) = env("HF_HOME") {
         return PathBuf::from(v).join("hub");
+    }
+    if let Some(v) = env("XDG_CACHE_HOME") {
+        return PathBuf::from(v).join("huggingface/hub");
     }
     home.join(".cache/huggingface/hub")
 }
@@ -279,8 +283,11 @@ async fn fetch_to(
     }
 
     if have < bytes {
+        // A server that accepts and then goes quiet ends as a resumable
+        // error, never a hang.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(60))
             .build()?;
         let mut req = client.get(url);
         if have > 0 {
@@ -291,7 +298,18 @@ async fn fetch_to(
             .await
             .with_context(|| format!("fetching {url}"))?;
         let status = resp.status();
-        let mut file = if have > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+        // A partial answer must start where the file stopped; one that does
+        // not is refused, rather than appended and later thrown away whole by
+        // the hash check.
+        let resumes_here = status == reqwest::StatusCode::PARTIAL_CONTENT
+            && content_range_start(resp.headers()) == Some(have);
+        if status == reqwest::StatusCode::PARTIAL_CONTENT && !resumes_here {
+            bail!(
+                "{url} answered a range that does not start at byte {have}; delete {} to start it again",
+                part.display()
+            );
+        }
+        let mut file = if have > 0 && resumes_here {
             tokio::fs::OpenOptions::new()
                 .append(true)
                 .open(&part)
@@ -345,6 +363,17 @@ async fn fetch_to(
     Ok(())
 }
 
+/// The first byte of a `Content-Range: bytes START-END/TOTAL`.
+fn content_range_start(h: &reqwest::header::HeaderMap) -> Option<u64> {
+    let v = h.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
+    v.strip_prefix("bytes ")?
+        .split('-')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +397,14 @@ mod tests {
             PathBuf::from("/home/u/.cache/huggingface/hub")
         );
         assert_eq!(
+            hub_dir_from(env(&[("XDG_CACHE_HOME", "/x")]), home),
+            PathBuf::from("/x/huggingface/hub")
+        );
+        assert_eq!(
+            hub_dir_from(env(&[("XDG_CACHE_HOME", "/x"), ("HF_HOME", "/h")]), home),
+            PathBuf::from("/h/hub")
+        );
+        assert_eq!(
             hub_dir_from(env(&[("HF_HOME", "/h")]), home),
             PathBuf::from("/h/hub")
         );
@@ -384,35 +421,40 @@ mod tests {
         );
     }
 
-    /// The launchers resolve the hub in the same order as `hub_dir`, so a
-    /// download and the server that loads it cannot look in different places.
+    /// Every script that resolves the hub resolves it in `hub_dir`'s order, so
+    /// a download and the server that loads it cannot look in different
+    /// places. Found by walking `scripts/`, never listed by hand, so a new
+    /// launcher with the old expression fails here.
     #[test]
     fn every_launcher_resolves_the_hub_in_the_same_order() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let line = r#"${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}}"#;
-        let mut checked = 0;
-        for rel in [
-            "scripts/start-router.sh",
-            "scripts/start-qwen38.sh",
-            "scripts/start-moe-mtp.sh",
-            "scripts/start-e4b.sh",
-            "scripts/start-gemma26.sh",
-            "scripts/llama/mecha-embed-server",
-            "scripts/llama/mecha-ocr-server",
-            "scripts/layout/install.sh",
-        ] {
-            let text = std::fs::read_to_string(root.join(rel)).unwrap();
-            assert!(
-                !text.contains("${HF_HUB:-$HOME/.cache/huggingface/hub}"),
-                "{rel} still skips HF_HUB_CACHE and HF_HOME"
-            );
-            assert!(
-                text.contains(line),
-                "{rel} does not resolve the hub as `{line}`"
-            );
-            checked += 1;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts");
+        let line = r#"${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}"#;
+        let mut found = Vec::new();
+        let mut dirs = vec![root.clone()];
+        while let Some(dir) = dirs.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap()) {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                // A shell default on HF_HUB is a hub resolver.
+                if !text.contains("${HF_HUB:-") {
+                    continue;
+                }
+                assert!(
+                    text.contains(line),
+                    "{} resolves the hub, but not as `{line}`",
+                    p.display()
+                );
+                found.push(p.strip_prefix(&root).unwrap().display().to_string());
+            }
         }
-        assert_eq!(checked, 8);
+        found.sort();
+        assert_eq!(found.len(), 8, "the hub resolvers found: {found:?}");
     }
 
     #[test]
@@ -497,8 +539,17 @@ mod tests {
                     } else {
                         "200 OK"
                     };
+                    let range = if start > 0 {
+                        format!(
+                            "Content-Range: bytes {start}-{}/{}\r\n",
+                            body.len() - 1,
+                            body.len()
+                        )
+                    } else {
+                        String::new()
+                    };
                     let head = format!(
-                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{range}Connection: close\r\n\r\n",
                         slice.len()
                     );
                     let _ = sock.write_all(head.as_bytes()).await;
@@ -650,6 +701,42 @@ mod tests {
         assert!(err.contains("not the pinned"), "{err}");
         assert!(!dest.exists());
         assert!(!dir.join("blob.part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A partial answer that does not start where the file stopped is refused,
+    /// never appended (and the partial file kept, to be resumed or deleted).
+    #[tokio::test]
+    async fn a_range_that_starts_elsewhere_is_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let body = b"0123456789";
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-9/20\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+        });
+        let dir = scratch();
+        let dest = dir.join("blob");
+        std::fs::write(dir.join("blob.part"), b"0123456789").unwrap();
+        let err = fetch_to(
+            &format!("{base}/f"),
+            &dest,
+            &sha(&[0u8; 20]),
+            20,
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("does not start at byte 10"), "{err}");
+        assert_eq!(std::fs::read(dir.join("blob.part")).unwrap(), b"0123456789");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

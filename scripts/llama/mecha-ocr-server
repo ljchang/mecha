@@ -29,7 +29,7 @@
 # The model is 0.9 GB + 0.9 GB of BF16, from the publisher's own GGUF repo
 # (PaddlePaddle/PaddleOCR-VL-1.6-GGUF); the snapshot directory is resolved
 # rather than pinned so a re-download does not strand the unit.
-D=$(ls -d ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}}/models--PaddlePaddle--PaddleOCR-VL-1.6-GGUF/snapshots/*/ | head -1)
+D=$(ls -d ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}/models--PaddlePaddle--PaddleOCR-VL-1.6-GGUF/snapshots/*/ | head -1)
 M="$D/PaddleOCR-VL-1.6-GGUF.gguf"
 P="$D/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
 for f in "$M" "$P"; do
