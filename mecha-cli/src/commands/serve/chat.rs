@@ -202,6 +202,9 @@ struct WebSession {
     /// so a transcript that crossed a switch says which model answered each
     /// run — `runlog` and `Transcript::config_covering` read it that way.
     recorded_generation: u64,
+    /// The reply being read aloud, while a Listen tap speaks it
+    /// (`listen::Reply`): here so it goes when this conversation does.
+    listen: Option<Arc<super::listen::Reply>>,
 }
 
 struct Live {
@@ -419,6 +422,7 @@ impl ChatState {
         sessions.insert(
             key.clone(),
             WebSession {
+                listen: None,
                 conversation: Some(Conversation::new()),
                 workspace: room.workspace.clone(),
                 session: Recording::Incognito(room),
@@ -585,6 +589,33 @@ impl ChatState {
     /// (docs/VOICE-RESEARCH.md, the serve unification entry).
     pub fn voice_parts(&self) -> (Arc<crate::follow::Follower>, PathBuf) {
         (Arc::clone(&self.follower), self.outbox_root.clone())
+    }
+
+    /// What a Listen tap on `key` speaks with (`listen::Seat`): the reply it
+    /// continues, or a new one with what the transcript saved for it, and where its
+    /// directions go — nowhere, for an incognito chat. `None` when no chat
+    /// is open on `key`: the sentence is spoken undirected.
+    pub(super) async fn listen_seat(
+        &self,
+        key: &str,
+        cue: &super::listen::ListenCue,
+    ) -> Option<super::listen::Seat> {
+        let (transcript, current) = {
+            let sessions = self.sessions.lock().await;
+            let ws = sessions.get(key)?;
+            (ws.session.kept().cloned(), ws.listen.clone())
+        };
+        if let Some(reply) = current.filter(|r| r.continues(cue)) {
+            return Some(super::listen::Seat { reply, transcript });
+        }
+        // Read with the map unlocked: a transcript can be long.
+        let saved = match &transcript {
+            Some(t) => super::listen::recall(t, cue).await,
+            None => None,
+        };
+        let reply = Arc::new(super::listen::Reply::new(cue, None, saved));
+        self.sessions.lock().await.get_mut(key)?.listen = Some(Arc::clone(&reply));
+        Some(super::listen::Seat { reply, transcript })
     }
 
     /// The binding a path that opens or configures a session — not a turn —
@@ -1553,6 +1584,7 @@ fn ensure_session_as<'a>(
         sessions.insert(
             key.to_string(),
             WebSession {
+                listen: None,
                 conversation: Some(conversation),
                 session: Recording::Kept(Arc::new(session)),
                 workspace,
@@ -3762,6 +3794,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     sessions.insert(
         key.clone(),
         WebSession {
+            listen: None,
             conversation: Some(conversation),
             // Resumed from its transcript, so recorded by definition.
             session: Recording::Kept(Arc::new(session)),
@@ -5255,6 +5288,7 @@ mod held_tests {
         let mut sessions = HashMap::from([(
             "k".to_string(),
             WebSession {
+                listen: None,
                 // Still held by a finished run landing: the `Held` return.
                 conversation: None,
                 session: Recording::Kept(Arc::new(session)),
@@ -5341,6 +5375,7 @@ mod held_tests {
         let mut sessions = HashMap::from([(
             key.clone(),
             WebSession {
+                listen: None,
                 conversation: None,
                 session: Recording::Incognito(Arc::new(room)),
                 workspace,
@@ -5465,6 +5500,7 @@ mod workflow_recording_tests {
             let mut sessions = HashMap::from([(
                 case.into(),
                 WebSession {
+                    listen: None,
                     conversation: Some(conversation),
                     session: Recording::Kept(Arc::new(session)),
                     workspace,

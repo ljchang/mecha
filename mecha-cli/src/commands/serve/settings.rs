@@ -834,6 +834,10 @@ pub struct SpeakBody {
     /// takes the listener's rate either.
     #[serde(default)]
     pub(super) speed: Option<f64>,
+    /// Which reply this piece is in, and where in it: what Listen's director
+    /// pass needs (`listen`). Absent, the piece is spoken undirected.
+    #[serde(default)]
+    pub(super) listen: Option<super::listen::ListenCue>,
 }
 
 /// The most a speak request carries, as the worker takes it
@@ -909,6 +913,35 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
                         .into_response();
                 }
                 request["speed"] = serde_json::json!(speed);
+            }
+        }
+    }
+    // Listen's director pass (`listen`): the reply's one delivery direction,
+    // settled by its first piece, when the tap says which reply it is in, a
+    // chat is open on its key, and the worker's engine takes one. Any miss
+    // speaks it as Listen always spoke it.
+    if let (Some(cue), Some(chat), Some(key)) = (
+        body.listen.as_ref().filter(|c| c.valid()),
+        state.chat.as_ref(),
+        body.chat.as_deref().filter(|k| !k.is_empty()),
+    ) {
+        let seat = if super::persona_chat::is_persona_key(key) {
+            chat.personas.listen_seat(key, cue).await
+        } else {
+            chat.listen_seat(key, cue).await
+        };
+        if let Some(seat) = seat {
+            let voice = request["voice"].as_str().map(str::to_string);
+            let line = super::listen::direct(
+                &chat.follower,
+                &chat.stopping,
+                target,
+                &seat,
+                voice.as_deref(),
+            )
+            .await;
+            if let Some(line) = line {
+                request["instructions"] = serde_json::json!(line);
             }
         }
     }
