@@ -40,7 +40,10 @@ ExecStart=-/bin/sh -c 'mecha-mail freebusy --days 60 --json | factory-publish sl
 # polls leg still names one; that is a separate decision, not an oversight.
 # The `-` prefix: a failed slot push must not also skip the sweep, nor vice versa.
 # `YOUR-MAIL-ACCOUNT` is a placeholder, as `mecha-voice-worker.service`'s
-# host is: set it to the account polls send from (`mecha-mail accounts`).
+# host is. It decides two things: the account a poll's invitations are sent
+# from AND the calendar a won poll's meeting is booked on (no record names
+# its own), so set it to the account whose calendar the owner actually reads
+# (`mecha-mail accounts`) — the bookings leg's incident above, otherwise.
 # Left as shipped, the polls leg fails by name rather than sending from the
 # wrong account. The installed copy carries the real name.
 ExecStart=-/bin/sh -c 'factory-publish drain; mecha-mail bookings; factory-publish polls sweep; mecha-mail polls --account YOUR-MAIL-ACCOUNT; mecha polls sweep'
