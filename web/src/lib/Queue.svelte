@@ -553,7 +553,7 @@
   //
   // A group verdict is one keystroke over every member, which is right when
   // they repeat and wrong when they merely *rhyme*: a real group of seven
-  // near-repeats named Sage, Joseph and Justin — a son and two daughters —
+  // near-repeats about three different children —
   // and one Accept would have asserted all seven as facts. Similarity is the
   // grouping key, not agreement, so the members have to be tellable apart by
   // hand. The TUI has had this depth since the level existed (`Enter items`);

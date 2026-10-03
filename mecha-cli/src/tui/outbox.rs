@@ -875,9 +875,9 @@ mod tests {
     #[test]
     fn the_body_keeps_its_newlines() {
         let mut item = item("aaa1", "pending", OutboxKind::Message);
-        item.args = json!({"to": "a@example.com", "body_markdown": "Dear A,\n\nHello.\n\nLuke"});
+        item.args = json!({"to": "a@example.com", "body_markdown": "Dear A,\n\nHello.\n\nDana"});
         let body = text(&detail_lines(&item, &[], None));
-        assert!(body.contains("\nDear A,\n\nHello.\n\nLuke\n"), "{body}");
+        assert!(body.contains("\nDear A,\n\nHello.\n\nDana\n"), "{body}");
     }
 
     #[test]
