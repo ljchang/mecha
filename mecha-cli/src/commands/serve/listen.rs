@@ -208,30 +208,32 @@ pub(crate) async fn recall(transcript: &Session, cue: &ListenCue) -> Option<Stri
     .flatten()
 }
 
-/// A reply's sentences, cut where the page cuts them: after a run of `.`,
-/// `!` or `?` that a space or the end follows.
+/// A reply's sentences, cut where the page cuts them (`speechSentences`):
+/// after a run of `.`, `!` or `?`, and any closing quote or bracket on it,
+/// that a space or the end follows.
 fn sentences(text: &str) -> impl Iterator<Item = &str> {
+    const END: [char; 3] = ['.', '!', '?'];
+    const CLOSE: [char; 6] = ['"', '\'', '\u{201d}', '\u{2019}', ')', ']'];
     let mut rest = text.trim();
     std::iter::from_fn(move || {
         if rest.is_empty() {
             return None;
         }
-        let bytes = rest.as_bytes();
         let mut end = rest.len();
-        let mut i = 0;
-        while i < bytes.len() {
-            if matches!(bytes[i], b'.' | b'!' | b'?') {
-                let mut j = i;
-                while j < bytes.len() && matches!(bytes[j], b'.' | b'!' | b'?') {
-                    j += 1;
-                }
-                if j == bytes.len() || bytes[j].is_ascii_whitespace() {
-                    end = j;
+        let mut chars = rest.char_indices().peekable();
+        while let Some((_, c)) = chars.next() {
+            if !END.contains(&c) {
+                continue;
+            }
+            while chars.next_if(|(_, c)| END.contains(c)).is_some() {}
+            while chars.next_if(|(_, c)| CLOSE.contains(c)).is_some() {}
+            match chars.peek() {
+                None => break,
+                Some(&(at, c)) if c.is_whitespace() => {
+                    end = at;
                     break;
                 }
-                i = j;
-            } else {
-                i += 1;
+                Some(_) => {}
             }
         }
         let (sentence, tail) = rest.split_at(end);
@@ -281,28 +283,36 @@ pub(crate) async fn worker_directs(target: &str) -> bool {
 
 /// The `instructions` the seat's reply is spoken with, or `None` to speak it
 /// undirected: settled by the first piece to ask, and the same for every
-/// piece after.
+/// piece after — the worker beside `target` included, asked once per reply
+/// rather than per piece, so a hiccup mid-reply cannot undirect its tail.
 pub(crate) async fn direct(
     follower: &crate::follow::Follower,
     stopping: &tokio_util::sync::CancellationToken,
+    target: &str,
     seat: &Seat,
     voice: Option<&str>,
 ) -> Option<String> {
     seat.reply
         .direction
-        .get_or_init(|| settle(follower, stopping, seat, voice))
+        .get_or_init(|| settle(follower, stopping, target, seat, voice))
         .await
         .clone()
 }
 
-/// The reply's one direction: saved, or asked for and recorded when the
-/// chat keeps a transcript. A saved line is not recorded again.
+/// The reply's one direction: none when the worker would drop it, else
+/// saved, else asked for — and recorded when the chat keeps a transcript.
+/// A saved line is not recorded again. An incognito chat's is asked for,
+/// spoken and kept nowhere.
 async fn settle(
     follower: &crate::follow::Follower,
     stopping: &tokio_util::sync::CancellationToken,
+    target: &str,
     seat: &Seat,
     voice: Option<&str>,
 ) -> Option<String> {
+    if !worker_directs(target).await {
+        return None;
+    }
     let reply = &seat.reply;
     if let Some(line) = &reply.saved {
         return Some(line.clone());
@@ -319,8 +329,11 @@ async fn settle(
     };
     let (outcome, line, model, reason) = answer.outcome();
     let direction = line.map(|l| vd::sent(&l));
-    // An incognito chat has no transcript, and nothing below it is reached.
-    let transcript = seat.transcript.as_ref()?;
+    // An incognito chat has no transcript: its line is spoken, and nothing
+    // below is reached.
+    let Some(transcript) = seat.transcript.as_ref() else {
+        return direction;
+    };
     let latency_ms = asked_at.elapsed().as_millis() as u64;
     let record = SpokenDirection {
         ts: Some(chrono::Utc::now()),
@@ -396,6 +409,19 @@ mod tests {
     fn sentences_are_cut_where_the_page_cuts_them() {
         let got: Vec<_> = sentences("It cost 3.5 million. Wow!! Fine... ok").collect();
         assert_eq!(got, ["It cost 3.5 million.", "Wow!!", "Fine...", "ok"]);
+        // A closing quote or bracket stays with its sentence, as on the page
+        // (`web/test/speech.mjs`).
+        let got: Vec<_> =
+            sentences("She said \"go!\" Then left. (Quietly.) Done\u{201d} ok").collect();
+        assert_eq!(
+            got,
+            [
+                "She said \"go!\"",
+                "Then left.",
+                "(Quietly.)",
+                "Done\u{201d} ok"
+            ]
+        );
         assert_eq!(sentences("  ").count(), 0);
         assert_eq!(
             normalise("It went **really** well — thanks!"),
@@ -469,7 +495,9 @@ mod tests {
             .next()
             .unwrap();
         let gate = handler
-            .find("seat.transcript.as_ref()?")
+            .find(
+                "let Some(transcript) = seat.transcript.as_ref() else {\n        return direction;",
+            )
             .expect("the incognito gate");
         let append = handler.find(".append(").expect("the record");
         let first_trace = handler.find("tracing::").expect("a journal line");

@@ -9688,4 +9688,45 @@ mod tests {
             .is_none());
         assert_eq!(asked(), before);
     }
+
+    /// An incognito chat's reply is still directed (owner ruling,
+    /// 2026-10-03: the director runs there, and nothing is kept) — the line
+    /// reaches the engine though there is no transcript to record it in
+    /// (review of #539: the record's gate once threw the line away too).
+    #[tokio::test]
+    async fn an_incognito_reply_is_directed_and_kept_nowhere() {
+        let w = world();
+        let app = axum::Router::new().route(
+            "/mecha/directs",
+            axum::routing::get(|| async { Json(serde_json::json!({"directs": true})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        let cue = super::super::listen::ListenCue {
+            reply: "r1".into(),
+            index: 0,
+            whole: Some("The dig went well.".into()),
+            asked: Some("How did the dig go?".into()),
+            last_reply: None,
+        };
+        let seat = super::super::listen::Seat {
+            reply: Arc::new(super::super::listen::Reply::new(&cue, None, None)),
+            transcript: None,
+        };
+        let line = super::super::listen::direct(
+            &w.chat.follower,
+            &w.chat.stopping,
+            &format!("http://{addr}/api/offer"),
+            &seat,
+            None,
+        )
+        .await;
+        assert_eq!(
+            line,
+            Some(mecha_core::voice_direction::sent("Hello from Mara.")),
+            "the director ran and its line is spoken"
+        );
+        assert_eq!(w.assistant_seen.lock().unwrap().len(), 1);
+    }
 }
