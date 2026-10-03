@@ -271,5 +271,13 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   // or the fallback is a silent call (0 packets measured, review of #534).
   const after = src.slice(src.indexOf('uplinkMode = (await attachUplinkTap()) ?'));
   assert.match(after.slice(0, 1500), /if \(uplinkMode !== "channel" && insertable\)[\s\S]*passThrough\(sender\)/, 'a failed tap on a flagged connection leaves the sender unpiped');
+  // Chromium without the flag never declares a buffered uplink it cannot fill.
+  const attach = src.slice(src.indexOf('async function attachUplinkTap('), src.indexOf('function uplinkFailed('));
+  assert.match(attach, /if \(needsInsertableStreams\(\) && !insertable\) return false;/, 'a flagless Chromium tap is declared and dead');
+  // The pass-through runs after the ended-while-loading guard, never on a null pc.
+  const guardAt = src.indexOf('if (!pc) return; // ended while the worker was loading');
+  assert.ok(guardAt >= 0 && guardAt < src.indexOf('if (uplinkMode !== "channel" && insertable)'), 'the sender pass-through runs before the ended-call guard');
+  // A dead tap on a flagged connection is not promised a direct path.
+  assert.match(failed, /tap to reconnect/, 'a dead tap is told it is on the direct path');
   console.log('insertable streams: ok');
 }

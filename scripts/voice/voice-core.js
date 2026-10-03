@@ -888,6 +888,7 @@ export function createVoiceSession(opts = {}) {
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
     uplinkMode = (await attachUplinkTap()) ? "channel" : "rtp";
+    if (!pc) return; // ended while the worker was loading
     // A flagged connection sends only what is piped through the sender, so a
     // tap that did not attach (a slow or missing worker script, a transform
     // that would not construct) must leave it piped straight through, or the
@@ -901,7 +902,6 @@ export function createVoiceSession(opts = {}) {
         cfg.onTranscript({ who: "bot", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false });
       }
     }
-    if (!pc) return; // ended while the worker was loading
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
     // On an insertable-streams connection the far side is silent unless its
@@ -1118,12 +1118,22 @@ export function createVoiceSession(opts = {}) {
     // terminates it with the connection.
     if (uplinkWorker) {
       uplinkWorker.onmessage = null;
+      uplinkWorker.onerror = null;
       try { uplinkWorker.postMessage({ stop: true }); } catch { /* gone */ }
     }
     behindShownS = 0; behind = { sounded: false };
     // Each end tells the other; the worker's reader stays parked otherwise.
     if (!fromWorker) sendClientMessage("uplink", { state: "rtp", why });
-    cfg.onTranscript({ who: "bot", text: `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
+    // When the witness is the tap itself (its worker erred, or no frame has
+    // reached the page), on a flagged connection the frames are not reaching
+    // RTP either, and nothing restores them in place: detaching the transform
+    // and piping the sender through measured 0 packets in 2.5 s, as did
+    // terminating (review of #534, pass 4). Only a new connection carries the
+    // voice, so the page says so rather than promise a direct path.
+    const tapDead = !fromWorker && insertable;
+    cfg.onTranscript({ who: "bot", text: tapDead
+      ? `voice: the microphone path stopped (${why}) - tap to reconnect`
+      : `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
     if (!pausedBy.any) cfg.onState(lastState.name, lastState.label);
   }
   /* Standing, not one-shot (review of #231): a tap that dies mid-call is
