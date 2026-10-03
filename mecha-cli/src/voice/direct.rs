@@ -189,6 +189,7 @@ impl Directions {
             incognito: names_incognito(key),
             scene: Scene {
                 utterance: utterance.to_string(),
+                last_direction: self.carried(key),
                 ..Default::default()
             },
             transcript: None,
@@ -216,6 +217,7 @@ impl Directions {
             character: seed.character,
             last_reply: seed.last_reply,
             utterance: utterance.to_string(),
+            last_direction: self.carried(key),
         };
         let opening = start_opening.then(|| {
             let (tx, rx) = watch::channel(None);
@@ -238,6 +240,25 @@ impl Directions {
             used: StdMutex::new(tokio::time::Instant::now()),
         };
         self.lock().insert(key.to_string(), Arc::new(entry));
+    }
+
+    /// How the last directed line on `key` was delivered, for the reply that
+    /// replaces it: its own last direction, or, when it directed nothing (a
+    /// harness turn, or [`begin`] before [`model_turn`]), what it carried
+    /// in. As the director wrote it, without [`vd::ANCHOR`].
+    ///
+    /// [`begin`]: Directions::begin
+    /// [`model_turn`]: Directions::model_turn
+    fn carried(&self, key: &str) -> Option<String> {
+        let entry = self.lock().get(key).cloned()?;
+        let last = entry
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .directed
+            .last()
+            .map(|(_, line)| line.clone());
+        last.or_else(|| entry.scene.last_direction.clone())
     }
 
     /// The harness is about to say `text` in turn `turn`.
@@ -466,6 +487,9 @@ pub(crate) async fn mecha_direct(
             .push((sentence.clone(), line.clone()));
     }
     let (outcome, direction, model, reason) = answer.outcome();
+    // Anchored on the way out: the engine and the record get what is sent,
+    // the director's own list above keeps what it wrote.
+    let direction = direction.map(|line| vd::sent(&line));
     let latency_ms = asked_at.elapsed().as_millis() as u64;
     let written = write_json(
         stream,
@@ -872,7 +896,7 @@ mod tests {
                    "sentence": "Oh, you did it!", "voice": "house"}),
         )
         .await;
-        assert_eq!(first["direction"], "Warm, unhurried, smiling.");
+        assert_eq!(first["direction"], vd::sent("Warm, unhurried, smiling."));
         assert_eq!(first["outcome"], "ok");
         let second = ask_over_socket(
             shared,
@@ -897,12 +921,21 @@ mod tests {
         assert!(seen[0].messages[0].text().contains("Now: the opening"));
         let later = seen[1].messages[0].text();
         assert!(later.contains("- \"Oh, you did it!\" -> Warm, unhurried, smiling."));
+        assert!(
+            !later.contains(vd::ANCHOR),
+            "the anchor is code's, never shown back to the director"
+        );
         assert!(later.ends_with("Now: \"Go rest.\""));
 
         let kept = directions_on_file(&session);
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert!(kept[0].opening && kept[0].index == 0);
         assert_eq!(kept[0].sentence, "Oh, you did it!");
+        assert_eq!(
+            kept[0].direction.as_deref(),
+            Some(vd::sent("Warm, unhurried, smiling.").as_str()),
+            "the record keeps what was sent"
+        );
         assert_eq!(kept[1].sentence, "Go rest.");
         for d in &kept {
             assert_eq!(d.turn, "chatcmpl-1");
@@ -911,6 +944,56 @@ mod tests {
             assert_eq!(d.model.as_deref(), Some("loaded-model"));
             assert!(d.prompt_digest.is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn the_next_reply_moves_on_from_the_last_line_delivered() {
+        let home = crate::testenv::HomeGuard::new("director-carried");
+        let (facade, seen) = facade(&home);
+        let shared = &facade.shared;
+        let seed = || DirectorSeed {
+            transcript: None,
+            character: None,
+            last_reply: None,
+        };
+        shared
+            .directions
+            .model_turn(shared, "chat:main", "chatcmpl-1", "Hi.", seed(), true);
+        ask_over_socket(
+            shared,
+            json!({"session": "chat:main", "index": 0, "sentence": "Oh, hello!"}),
+        )
+        .await;
+        // As a hosted turn does it: `begin` on the request, then the model.
+        shared
+            .directions
+            .begin("chat:main", "chatcmpl-2", "How are you?");
+        shared.directions.model_turn(
+            shared,
+            "chat:main",
+            "chatcmpl-2",
+            "How are you?",
+            seed(),
+            true,
+        );
+        ask_over_socket(
+            shared,
+            json!({"session": "chat:main", "index": 0, "sentence": "Good."}),
+        )
+        .await;
+
+        let seen = seen.lock().unwrap().clone();
+        let first = seen[0].messages[0].text();
+        assert!(
+            !first.contains("last line was delivered"),
+            "nothing to carry into the first reply"
+        );
+        let next = seen.last().unwrap().messages[0].text();
+        assert!(
+            next.contains("How the speaker's last line was delivered: Warm, unhurried, smiling.\n"),
+            "{next}"
+        );
+        assert!(!next.contains(vd::ANCHOR));
     }
 
     #[tokio::test]

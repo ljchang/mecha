@@ -95,6 +95,24 @@ Verified against `7663b9a8`.
   feature (image generation). It opens anyway from Settings → Voice's link
   (`OPENS_ANYWAY`), but has no tab of its own.
 
+**2026-10-03 — Breeze voice fixes in review, not merged (mecha-1e).** Both
+await the owner's merge, and both cut a live call, so restart only on zero
+holds.
+- **#531 (`fix/breeze-unspeakable`):** text with no letter or digit is never
+  sent to the engine: where `breeze_server.speakable` is false, `speech`
+  plays `PAUSE_SECONDS` (0.3 s / speed) of silence instead. The owner's report: "i'm getting occasional
+  intrusions completely unlreated to the story sometimes not the same
+  language and isn't in text transcript". Deploy: pull the shared checkout,
+  restart `mecha-breeze-adapter`. Probe: a `pcm` request for `"."` to :8887
+  returns 14400 bytes.
+- **#532 (`voice/director-continuity`):** `voice_direction::SYSTEM`
+  rewritten, with `ANCHOR`, `Scene::last_direction` and
+  `Directions::carried`, against the owner's "how variable the voice sounded
+  line to line"; steer: "I want texture words to stay but maybe removing
+  pitch or putting constraints could be useful". Deploy: reinstall `mecha`,
+  restart serve. Probe: new `spoken_direction` records start "In your own
+  natural voice: ". It renumbers VOICE-BREEZE-DESIGN §3 (a new item 4).
+
 **2026-10-01/02 — persona memory: written nightly, recalled at chat start
 and on every turn, and searchable by the persona, all live (mecha-5d).**
 #462, #463, #468, #477 and #481 are in HISTORY under 2026-10-01, #498 under
@@ -129,6 +147,43 @@ against `a51e1c01`:
 
   The owner's review of one persona found most "facts about the owner" were
   states or one-off events. That finding is #518 (D26, §9.13).
+- **#530 (`27156c9e`) is installed; prove it live.** Persona chats now
+  record a `config` on their first turn in a process and at every router
+  switch (`PersonaSession::recorded_generation`), and `writer::read_chat`
+  takes the latest one. Installed by mecha-5d at 13:35:54Z on 2026-10-03:
+  `cargo install` replaced `~/.cargo/bin/mecha` from the `27156c9e`
+  worktree, and the restart went through `serve_held` with no holds. #530
+  added no non-test string, so no `strings` probe exists; the checks are
+  behavioural:
+  - the next persona turn writes one `{"record":"config"…}` line into its
+    transcript (`grep -c '"record":"config"'` on the newest file under
+    `~/.mecha/personas/<name>/sessions/`);
+  - a chat the router moved mid-way is written by the nightly once its
+    *last* model is resident, not left waiting. Chats from before #530
+    carry no `config` and still read as their header's model.
+  - **Owner to confirm:** "written by the model it ran on" (2026-10-01) now
+    means the model it *last* ran on, so a switched chat is written whole
+    by the later model (#530 review, pass 3). A per-stretch pick is
+    possible later, since the switches are on file.
+- **Open, owner's call: the writer files the persona's words as facts the
+  owner stated** (found by mecha-05, 2026-10-03). In one chat the persona
+  volunteered a health detail about the owner's child that the owner never
+  said. Writing copies of that chat stored it in `user_facts` with
+  `kind = stated` on every run, under both the old prompt and a revised one;
+  a role count over the transcript confirms the persona said it and the
+  owner did not. "About the owner: only what the owner said" lives only in
+  `writer::SYSTEM`; nothing enforces it. mecha-05's proposal, which overlaps
+  schema v4: each owner fact names the `[owner]` turn it came from, and the
+  harness drops it unless that turn is the owner's. A prompt-only attempt
+  added the reverse error (the persona's own child filed as the owner's), so
+  only its recall heading change is kept.
+- **Open, owner's call: a near-copy notice makes the persona redraw**
+  (mecha-05, 2026-10-03). In one chat the persona called `image_generate`
+  again after 12 of 13 near-copy notices (similarity 0.90–1.00), including
+  detail edits where nothing was wrong; earlier chats show 0 retries in 15.
+  The notice's "call image_generate again now" is the trigger, and
+  `NEAR_COPY_LAYOUT` (0.78) was measured on one scene. The choice: drop the
+  instruction so the owner decides, or narrow it.
 - **Next in the lane: schema v4 (D26–D28), unbuilt.** It adds:
   - the tier field, and a validity bucket that sets `valid_to`;
   - the usage-access log;
@@ -359,8 +414,9 @@ is open:
   `81b74494`): 3,917 passed, 0 failed. Clippy with `RUSTFLAGS=-D warnings
   --all-features` and `fmt --check` were clean.
 
-**2026-10-01/03 — modular installs: steps 0–6 shipped and live, 7a-1
-merged, the rest of 7 and 8 open.**
+**2026-10-01/03 — modular installs: steps 0–6 and 7a-1 shipped and live,
+7a-2 in review, the rest of 7 and 8 open.**
+Step 7a-1 (#521) is installed; HISTORY has it under 2026-10-03.
 Step 6 (#512, #513, #520) went live in mecha-1e's deploy of `c6f59b05`
 (2026-10-03), and HISTORY has it under 2026-10-02/03. Step 5, #503
 (`[voice]` and `[personas]`), went live in mecha-d7's deploy of `7663b9a8`
@@ -397,10 +453,18 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Step 7a-1 is #521, merged (`d97d01a5`, 02:52Z) and not deployed.** It
-  is one Hugging Face hub resolver shared by 8 scripts, and a resumable
-  sha256-checked downloader (`mecha_core::fetch`). It is not in
-  `c6f59b05`, which is the install on this box.
+- **Step 7a-2 is #526, in review (mecha-a3).** `sidecar.rs` (a registry of
+  the programs features run, provided-detection by user unit, PATH,
+  directory, or a docker image with no socket, and a manifest reader) and a
+  read-only `mecha features plan <id> [--verify]`. It re-pins the `tts` slot
+  to Breeze, measured at 4,185 MiB peak on the GB10 on 2026-10-03 against
+  Chatterbox's 8,018, so `hardware.md`'s sums fall by about 4 GiB (3,833 MiB, as #526 puts it).
+  - Step 7f's installer must *build* the Breeze model: it is a local
+    conversion of BreezeBlue/Breeze-TTS-2 (non-commercial weights) into
+    qwentts.cpp's GGUF, with no published file to pin.
+  - The speech sidecar takes Breeze's units *or* the Chatterbox image as
+    evidence, so a machine still on Chatterbox is never offered Breeze over
+    a working server.
 - **Left of 7, and 8:** per-feature installers with `--remove`, and the one
   `CLAUDE.md` bullet pointing at `ARCHITECTURE.md` §Features (the checklist
   there is already written).
