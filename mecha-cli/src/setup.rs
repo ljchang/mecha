@@ -2131,7 +2131,10 @@ pub fn persona_agent(
     .with_clock(run_clock()?)
     // A persona answers the turn in front of it from what was said, not
     // from its own earlier plans, which it otherwise re-reads and re-sends.
-    .with_prior_thinking(mecha_core::message::PriorThinking::Drop);
+    .with_prior_thinking(mecha_core::message::PriorThinking::Drop)
+    // Nor from earlier replies cut off mid-sentence, which it otherwise
+    // learns to write: "…\n\nI", spoken as a dangling word.
+    .with_prior_tails(mecha_core::message::PriorTails::Trim);
     Ok((agent, tools.refused))
 }
 

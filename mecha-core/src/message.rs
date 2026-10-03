@@ -506,6 +506,136 @@ impl PriorThinking {
     }
 }
 
+/// What happens to an earlier reply that stops mid-sentence when the history
+/// goes back to the model. The transcript keeps every reply as it was
+/// written or heard either way; this decides only what is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PriorTails {
+    /// Sent as recorded: the assistant's runs.
+    #[default]
+    Keep,
+    /// Cut back to the last complete sentence ([`dangling_tail`]): a persona
+    /// chat. A reply interrupted mid-sentence is stored as heard, and a model
+    /// shown its own replies ending "…\n\nI" writes more of them: on
+    /// 2026-10-03, 41 of a persona's 75 earlier replies ended mid-sentence
+    /// and were spoken that way. Replayed with that history, 4 of 4 replies
+    /// stopped mid-sentence; with the same history cut back, 0 of 4.
+    Trim,
+}
+
+/// Where `text` is cut so it ends on a complete sentence, when it stops
+/// mid-sentence: `Some(len)` to keep `text[..len]`, `None` to leave it.
+///
+/// **Mid-sentence is narrow on purpose:** the last character continues a
+/// clause — a letter, a digit, or `, ; : - – —`. A reply ending on a
+/// sentence mark, an ellipsis, a closing quote or an emoji is whole, and a
+/// reply with no complete sentence before the break ("Mmm, I") is left
+/// alone rather than emptied.
+pub fn dangling_tail(text: &str) -> Option<usize> {
+    let body = text.trim_end();
+    let last = body.chars().next_back()?;
+    if !(last.is_alphanumeric() || matches!(last, ',' | ';' | ':' | '-' | '–' | '—')) {
+        return None;
+    }
+    // The end of the last sentence mark (with any closing quote, bracket or
+    // emphasis after it) that whitespace follows.
+    let chars: Vec<(usize, char)> = body.char_indices().collect();
+    let mut cut = None;
+    let mut i = 0;
+    while i < chars.len() {
+        if matches!(chars[i].1, '.' | '!' | '?' | '…') {
+            let mut j = i + 1;
+            while j < chars.len() && matches!(chars[j].1, '.' | '!' | '?' | '…') {
+                j += 1;
+            }
+            while j < chars.len()
+                && matches!(
+                    chars[j].1,
+                    '"' | '\'' | '”' | '’' | ')' | ']' | '*' | '_' | '~'
+                )
+            {
+                j += 1;
+            }
+            if j < chars.len() && chars[j].1.is_whitespace() {
+                cut = Some(chars[j].0);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    cut
+}
+
+/// The text block a trim applies to: the last one of an earlier plain reply.
+fn tail_block(message: &Message, index: usize, cut: usize) -> Option<usize> {
+    if index >= cut
+        || message.role != Role::Assistant
+        || message
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { .. }))
+    {
+        return None;
+    }
+    message
+        .content
+        .iter()
+        .rposition(|b| matches!(b, Block::Text { .. }))
+}
+
+impl PriorTails {
+    /// `messages` with every earlier reply that stops mid-sentence cut back.
+    pub fn wire<'a>(
+        self,
+        messages: std::borrow::Cow<'a, [Message]>,
+    ) -> std::borrow::Cow<'a, [Message]> {
+        let cut = match (self, answering(&messages)) {
+            (PriorTails::Trim, Some(cut)) => cut,
+            _ => return messages,
+        };
+        let trims: Vec<(usize, usize, usize)> = messages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| {
+                let b = tail_block(m, i, cut)?;
+                let Block::Text { text } = &m.content[b] else {
+                    return None;
+                };
+                Some((i, b, dangling_tail(text)?))
+            })
+            .collect();
+        if trims.is_empty() {
+            return messages;
+        }
+        let mut owned = messages.into_owned();
+        for (i, b, len) in trims {
+            if let Block::Text { text } = &mut owned[i].content[b] {
+                text.truncate(len);
+            }
+        }
+        std::borrow::Cow::Owned(owned)
+    }
+
+    /// The bytes [`PriorTails::wire`] cuts, for `wire_bytes`.
+    pub fn dropped_bytes(self, messages: &[Message]) -> usize {
+        let cut = match (self, answering(messages)) {
+            (PriorTails::Trim, Some(cut)) => cut,
+            _ => return 0,
+        };
+        messages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| {
+                let Block::Text { text } = &m.content[tail_block(m, i, cut)?] else {
+                    return None;
+                };
+                Some(text.len() - dangling_tail(text)?)
+            })
+            .sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,5 +959,87 @@ mod tests {
         ] {
             assert_eq!(Effort::from_str(effort.as_str()).unwrap(), effort);
         }
+    }
+
+    #[test]
+    fn a_reply_that_stops_mid_sentence_is_cut_to_its_last_whole_sentence() {
+        let cut = |t: &str| dangling_tail(t).map(|n| t[..n].to_string());
+        // The endings the persona wrote and spoke on 2026-10-03.
+        assert_eq!(
+            cut("You love it, don't you? \n\nI").as_deref(),
+            Some("You love it, don't you?")
+        );
+        assert_eq!(
+            cut("Fuck me harder, baby.\"\n\nI").as_deref(),
+            Some("Fuck me harder, baby.\"")
+        );
+        assert_eq!(
+            cut("Are you almost done with your errands, or are").as_deref(),
+            None,
+            "no whole sentence before it: left alone, never emptied"
+        );
+        assert_eq!(
+            cut("Done already? Are you getting more tech").as_deref(),
+            Some("Done already?")
+        );
+        assert_eq!(cut("It's late… so").as_deref(), Some("It's late…"));
+        // Whole replies are untouched.
+        for whole in [
+            "Tell me what you're getting.",
+            "Shhh.. that's it..",
+            "Come here 😘",
+            "\"I need you.\"",
+            "Mmm, I",
+            "",
+        ] {
+            assert_eq!(dangling_tail(whole), None, "{whole:?}");
+        }
+        // A sentence mark inside a word is not a sentence end.
+        assert_eq!(cut("See v1.2 and then"), None);
+    }
+
+    #[test]
+    fn trimming_tails_cuts_earlier_plain_replies_only_and_counts_what_it_cut() {
+        let history = vec![
+            Message::user("hi"),
+            Message::assistant(vec![think("old"), Block::text("Hello there. \n\nI")]),
+            // A turn that called a tool is left as it was.
+            Message::assistant(vec![
+                Block::text("Let me look. Then"),
+                Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t0".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
+            Message::assistant(vec![Block::text("Found it. And")]),
+            Message::user("mm"),
+            // The turn being answered: never touched.
+            Message::assistant(vec![Block::text("Still going. So")]),
+        ];
+        let sent = PriorTails::Trim.wire(std::borrow::Cow::Borrowed(&history[..]));
+        let texts: Vec<String> = sent.iter().map(Message::text).collect();
+        assert_eq!(texts[1], "Hello there.");
+        assert_eq!(texts[2], "Let me look. Then", "a tool-calling turn");
+        assert_eq!(texts[4], "Found it.");
+        assert_eq!(texts[6], "Still going. So", "the reply being written");
+        assert_eq!(
+            sent[1].thinking(),
+            "old",
+            "thinking is PriorThinking's to drop"
+        );
+        assert_eq!(
+            PriorTails::Trim.dropped_bytes(&history),
+            crate::pressure::message_bytes(&history) - crate::pressure::message_bytes(&sent),
+            "wire_bytes must measure what is sent"
+        );
+        let kept = PriorTails::Keep.wire(std::borrow::Cow::Borrowed(&history[..]));
+        assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(PriorTails::Keep.dropped_bytes(&history), 0);
     }
 }
