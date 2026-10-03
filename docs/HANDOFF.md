@@ -136,16 +136,17 @@ Verified against `7663b9a8`.
   feature (image generation). It opens anyway from Settings → Voice's link
   (`OPENS_ANYWAY`), but has no tab of its own.
 
-**2026-10-03 — Breeze voice fixes: #532 live, #531 merged and not
-deployed (mecha-1e).** Both merged at 14:06Z (#531 `8a26e142`, #532
+**2026-10-03 — Breeze voice fixes: both live (mecha-1e).** Both merged at 14:06Z (#531 `8a26e142`, #532
 `ebcfcf19`).
 - **#532 is installed:** from a clean `ebcfcf19`, finished 14:08:53Z.
   `strings ~/.cargo/bin/mecha | grep -cF 'In your own natural voice: '` →
   1, and 0 before. Serve restarted at 14:09:26Z through `serve_held`. The
   worker was not restarted, since `worker.py` is unchanged.
-- **#531 waits on the shared checkout,** still at `27156c9e`. The owner has
-  a script that fast-forwards it and restarts only `mecha-breeze-adapter`.
-  Probe: a `pcm` request for `"."` to :8887 returns 14400 bytes.
+- **#531 is deployed:** the shared checkout was fast-forwarded `27156c9e` →
+  `57424b7f` on the owner's word, and `mecha-breeze-adapter` restarted at
+  16:31:27Z. Checked by mecha-5d: `grep -c 'def speakable'
+  scripts/voice/breeze_server.py` → 1, and a `pcm` request for `"."` to
+  :8887 returns 14400 bytes.
 
 Each deploy cuts a live call, so restart only on zero holds.
 - **#531 (`fix/breeze-unspeakable`):** text with no letter or digit is never
