@@ -734,6 +734,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Calls from Chrome buffer the microphone again.** Chrome now has
+  `RTCRtpScriptTransform`, and on a plain connection it hands the transform no
+  audio frames, so every Chrome call declared the buffered uplink and fell back
+  to the direct path ("the buffered microphone path failed"). The call page now
+  creates its connection with `encodedInsertableStreams` in Chromium and pipes
+  incoming audio through, which Chromium requires once that flag is on.
+
 - **A persona chat whose model changed partway through is still
   remembered.** If the router switched a chat to another model mid-way, the
   overnight memory writer kept waiting for the model the chat started on,
