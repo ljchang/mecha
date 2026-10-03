@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features plan <id>` says what a feature would install.** It
+  lists every program the feature runs beside mecha — llama.cpp, the router,
+  the embeddings and OCR servers, ComfyUI, the voice servers — and whether
+  this machine already has each (a unit, a binary, a directory or a Docker
+  image that shows it, which is then left alone). Then it lists every pinned
+  model file: in the cache and matching, to download at its size, or kept by
+  a provided program. It installs nothing and asks no server; `--verify`
+  hashes model files placed by hand.
+
 - **A voice that takes direction is told how to say each sentence.** When
   the speech engine honours `instructions` (Breeze TTS 2), the worker asks
   the voice facade's new director for each sentence — one line on emotion,
@@ -629,6 +638,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **The memory figures count speech as Breeze, the new default voice.**
+  `mecha features --probe` and the hardware page now use Breeze TTS 2 (Q6_K,
+  qwentts.cpp): 4.1 GiB at its peak while speaking, read on the GB10, where
+  Chatterbox was 7.8 GiB. The machine-wide sums fall by the difference,
+  about 4 GiB.
 
 - **Breeze TTS 2 is the default voice.** The voice worker's `MECHA_VOICE_TTS`
   now defaults to the Breeze adapter on `:8887` (engine on `:8886`) instead of

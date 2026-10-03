@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::feature::{self, Feature, Row, State, Switch};
 use mecha_core::recommend::{self, Budget, Floor, Machine, Peak, Sum};
+use mecha_core::sidecar;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -46,6 +47,20 @@ pub enum Cmd {
         #[arg(required = true)]
         ids: Vec<String>,
     },
+    /// What a feature runs beside mecha, whether this machine already has
+    /// it, and every model file it would download. Read-only: nothing is
+    /// installed, and no server is asked (a part plans as its parent).
+    Plan {
+        id: String,
+        /// Machine output: the plan as one object.
+        #[arg(long)]
+        json: bool,
+        /// Hash every model file that is not a blob named by its sha256 —
+        /// a hand-placed one — instead of reporting it unverified. Reads
+        /// the whole file (seconds for the 22 GB chat model).
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 pub fn execute(args: Args) -> Result<()> {
@@ -57,6 +72,7 @@ pub fn execute(args: Args) -> Result<()> {
     match args.cmd {
         Some(Cmd::Enable { ids }) => return set(&ids, true),
         Some(Cmd::Disable { ids }) => return set(&ids, false),
+        Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         None => {}
     }
     let home = mecha_core::work::mecha_home()?;
@@ -248,6 +264,131 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
         parts.join("; "),
         ids.join(" ")
     ))
+}
+
+fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
+    let f = Feature::parse(id)
+        .with_context(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
+    let p = sidecar::plan(
+        f,
+        &sidecar::Machinery::real()?,
+        &recommend::Machine::read()?,
+        &mecha_core::fetch::hub_dir()?,
+        verify,
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&p)?);
+    } else {
+        print!("{}", render_plan(&p));
+    }
+    Ok(())
+}
+
+fn bytes_text(b: u64) -> String {
+    if b >= 1 << 30 {
+        format!("{:.1} GiB", b as f64 / (1u64 << 30) as f64)
+    } else {
+        format!("{:.0} MiB", b as f64 / (1u64 << 20) as f64)
+    }
+}
+
+/// `mecha features plan`: each sidecar and each pinned file, what this
+/// machine already has, and what an install would fetch.
+fn render_plan(p: &sidecar::Plan) -> String {
+    use sidecar::{FileState, SidecarState};
+    let mut out = format!("What `{}` runs beside mecha:\n", p.feature.id());
+    for s in &p.sidecars {
+        let state = match &s.state {
+            SidecarState::Provided { by } => format!("provided — {by}; left alone"),
+            SidecarState::Installed => "installed by mecha".to_string(),
+            SidecarState::Incomplete => {
+                "an install mecha began and did not finish — resumable".to_string()
+            }
+            SidecarState::Missing { step } => {
+                format!("not here — its installer arrives in step {step}")
+            }
+            SidecarState::Unknown { why } => format!("unknown — {why}; nothing is offered over it"),
+        };
+        out.push_str(&format!("  {:<32} {state}\n", s.label));
+    }
+    out.push_str("\nThe models it loads:\n");
+    for f in &p.files {
+        let what = match (f.repo, f.path) {
+            (Some(repo), path) => format!("{repo}/{path}"),
+            (None, "") if f.model.is_empty() => "no recommended model".to_string(),
+            (None, "") => f.model.to_string(),
+            (None, path) => path.to_string(),
+        };
+        let state = match &f.state {
+            FileState::Cached => "in the cache, matching its pin".to_string(),
+            FileState::Download { bytes } => format!("to download, {}", bytes_text(*bytes)),
+            FileState::Mismatch => {
+                "a different file is at its path — not replaced, and not used".to_string()
+            }
+            FileState::WithSidecar => "comes with its sidecar's install".to_string(),
+            FileState::HeldBy { sidecar } => format!("kept by the provided {sidecar}; not read"),
+            FileState::Unverified => {
+                "a file of the pinned size, placed by hand — not hashed by the plan".to_string()
+            }
+            FileState::NoRow => "no model is recommended for this machine's tier".to_string(),
+            FileState::KeeperUnknown { sidecar } => {
+                format!("kept by {sidecar}, which could not be checked — not priced")
+            }
+        };
+        out.push_str(&format!(
+            "  {:<16} {what}\n  {:<16}   {state}\n",
+            f.slot, ""
+        ));
+    }
+    out.push('\n');
+    if p.nothing_to_do {
+        out.push_str("Nothing to install: this machine has all of it.\n");
+        return out;
+    }
+    let unknown = p
+        .sidecars
+        .iter()
+        .filter(|s| matches!(s.state, SidecarState::Unknown { .. }))
+        .count();
+    if unknown > 0 {
+        out.push_str(&format!(
+            "{unknown} could not be checked — nothing is offered over them until they can be.\n"
+        ));
+    }
+    let unverified = p
+        .files
+        .iter()
+        .filter(|f| matches!(f.state, FileState::Unverified))
+        .count();
+    if unverified > 0 {
+        out.push_str(&format!(
+            "{unverified} model file(s) placed by hand are not hashed — `mecha features plan {} --verify` reads them.\n",
+            p.feature.id()
+        ));
+    }
+    let mismatched = p
+        .files
+        .iter()
+        .filter(|f| matches!(f.state, FileState::Mismatch))
+        .count();
+    if mismatched > 0 {
+        out.push_str(&format!(
+            "{mismatched} model file(s) at their path do not match their pins — move them aside for the pinned ones.\n"
+        ));
+    }
+    if p.files.iter().any(|f| matches!(f.state, FileState::NoRow)) {
+        out.push_str("No model is recommended at this machine's tier — see the hardware page.\n");
+    }
+    if p.download_bytes > 0 {
+        out.push_str(&format!("To download: {}.\n", bytes_text(p.download_bytes)));
+    }
+    if p.sidecars
+        .iter()
+        .any(|s| matches!(s.state, SidecarState::Missing { .. }))
+    {
+        out.push_str("Installing is not built yet — each missing line names its step.\n");
+    }
+    out
 }
 
 fn gib(mb: u64) -> String {
@@ -558,5 +699,76 @@ mod tests {
         assert!(text.starts_with("2 GPUs, the largest 24.0 GiB"), "{text}");
         assert!(text.contains("the 16 GB tier"), "{text}");
         assert!(!text.contains("48.0 GiB"), "{text}");
+    }
+
+    /// The plan in words: every state a person can meet, each with what to
+    /// do — and never "nothing to install" beside a gap.
+    #[test]
+    fn the_plan_says_each_state_and_what_to_do() {
+        use mecha_core::sidecar::{FileState, Plan, PlannedFile, PlannedSidecar, SidecarState};
+        let p = Plan {
+            feature: Feature::Documents,
+            sidecars: vec![
+                PlannedSidecar {
+                    id: "llama",
+                    label: "llama.cpp",
+                    state: SidecarState::Provided {
+                        by: "x on PATH".into(),
+                    },
+                },
+                PlannedSidecar {
+                    id: "ocr-server",
+                    label: "the OCR server",
+                    state: SidecarState::Missing { step: "7c" },
+                },
+                PlannedSidecar {
+                    id: "layout",
+                    label: "layout",
+                    state: SidecarState::Unknown {
+                        why: "denied".into(),
+                    },
+                },
+            ],
+            files: vec![
+                PlannedFile {
+                    slot: "chat",
+                    model: "",
+                    repo: None,
+                    path: "",
+                    state: FileState::NoRow,
+                },
+                PlannedFile {
+                    slot: "ocr",
+                    model: "m",
+                    repo: Some("org/r"),
+                    path: "a.gguf",
+                    state: FileState::Mismatch,
+                },
+                PlannedFile {
+                    slot: "ocr",
+                    model: "m",
+                    repo: Some("org/r"),
+                    path: "b.gguf",
+                    state: FileState::Download { bytes: 2 << 30 },
+                },
+            ],
+            download_bytes: 2 << 30,
+            nothing_to_do: false,
+        };
+        let text = render_plan(&p);
+        for want in [
+            "provided — x on PATH; left alone",
+            "not here — its installer arrives in step 7c",
+            "unknown — denied; nothing is offered over it",
+            "no recommended model",
+            "no model is recommended for this machine's tier",
+            "1 could not be checked",
+            "1 model file(s) at their path do not match their pins",
+            "To download: 2.0 GiB.",
+            "Installing is not built yet",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        assert!(!text.contains("Nothing to install"), "{text}");
     }
 }
