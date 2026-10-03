@@ -31,7 +31,7 @@ use mecha_core::persona::agent::{self as persona_agent, Pinned, Refused};
 use mecha_core::persona::files::{readiness, Readiness};
 use mecha_core::persona::{judge, safety};
 use mecha_core::persona::{Persona, Store};
-use mecha_core::session::{Record, Session, SessionMeta};
+use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -148,6 +148,13 @@ const BARGE_IN_TRIES: usize = 200;
 struct PersonaSession {
     pinned: Arc<Pinned>,
     session: Arc<Session>,
+    /// The router binding the transcript last recorded a `Config` for. A
+    /// persona chat follows the router turn by turn, so a chat can run on two
+    /// models; the header names only the first, and the memory writer writes
+    /// a chat with the model it ran on (`writer::read_chat`). `None` until
+    /// this process records one: once per attach, as every door does, and
+    /// again at each switch.
+    recorded_generation: Option<u64>,
     /// `None` while a run holds it.
     conversation: Option<Conversation>,
     workspace: PathBuf,
@@ -1271,6 +1278,7 @@ impl PersonaChats {
         self.sessions.lock().await.insert(
             key.clone(),
             PersonaSession {
+                recorded_generation: None,
                 pinned: Arc::new(pinned),
                 session: Arc::new(session),
                 conversation: Some(Conversation::new()),
@@ -1632,6 +1640,7 @@ impl PersonaChats {
         sessions.insert(
             key.clone(),
             PersonaSession {
+                recorded_generation: None,
                 pinned: Arc::new(pinned),
                 session: Arc::new(session),
                 conversation: Some(conversation),
@@ -2876,6 +2885,36 @@ impl PersonaChats {
             let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let bound = chat.follower.current();
             return self.steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
+        }
+        // A turn on a binding the transcript has not named says so in its
+        // own record, ahead of the turn it governs: `serve/chat.rs`'s rule for
+        // the assistant's chats, which persona chats lacked — so a chat the
+        // router moved mid-way stayed credited to its first model, and the
+        // writer waited for that model for good (2026-10-03). Before the
+        // conversation is taken, so this append's own failure leaves the chat
+        // as it was; and before the owner's message, so the record covers the
+        // turn it governs. A turn the crisis layer then pauses is still
+        // recorded under it: the message ran on no model, but is the chat's.
+        if let Some((bound, agent)) = &ready {
+            if ps.recorded_generation != Some(bound.generation) {
+                // What this persona agent ran under, not the install's
+                // assistant (review of #530): its own levers; a read-only
+                // approver whatever `[tools] permission_mode` says
+                // (`setup::persona_agent`); and no learned rules rendered,
+                // which is an answer, not unknown.
+                let mut recorded = RunConfig::of(
+                    agent,
+                    &bound.config,
+                    &bound.provider_name,
+                    &mecha_core::persona::agent::levers_off(&bound.levers_off, agent.config()),
+                    Some(&mecha_core::learning::RulesCarried::none()),
+                );
+                recorded.permission_mode = mecha_core::config::PermissionMode::ReadOnly;
+                ps.session
+                    .append(&Record::Config(recorded))
+                    .map_err(|e| Refusal::Failed(format!("recording: {e:#}")))?;
+                ps.recorded_generation = Some(bound.generation);
+            }
         }
         let Some(mut conversation) = ps.conversation.take() else {
             if spoken.is_some() {
@@ -4888,6 +4927,85 @@ mod tests {
                 other => panic!("no Done event: {other:?}"),
             }
         }
+    }
+
+    /// A persona chat says which model each stretch ran on: a `config` on its
+    /// first turn in this process, none while the binding holds, and another
+    /// when the router moves it — so the memory writer reads the model the
+    /// chat last ran on, not the one it started on (2026-10-03: a stella chat
+    /// moved to the uncensored model at 02:50Z mid-chat, and the writer would
+    /// have waited for the base model for good).
+    #[tokio::test]
+    async fn a_persona_chat_records_the_model_it_runs_on_and_each_switch() {
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let file = |w: &World| {
+            let dir = Store::load(&w.store()).sessions_dir("mara");
+            let path = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .find(|p| p.extension().is_some_and(|x| x == "jsonl"))
+                .unwrap();
+            std::fs::read_to_string(path).unwrap()
+        };
+        let configs = |text: &str| {
+            text.lines()
+                .filter(|l| l.contains("\"record\":\"config\""))
+                .count()
+        };
+        turn(&w, &key, "Hello there.").await;
+        assert_eq!(configs(&file(&w)), 1, "the first turn names its model");
+        // The levers the persona agent ran without, not the assistant's: no
+        // persona prompt carries learned rules (review of #530).
+        let text = file(&w);
+        let recorded: serde_json::Value = text
+            .lines()
+            .find(|l| l.contains("\"record\":\"config\""))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .unwrap();
+        let off = recorded["levers_off"].to_string();
+        assert!(off.contains("learned_rules"), "{off}");
+        assert!(
+            !w.chat
+                .follower
+                .current()
+                .levers_off
+                .contains(&mecha_core::harness::Lever::LearnedRules),
+            "the assistant's own set must not already say it, or this proves nothing"
+        );
+        turn(&w, &key, "And again.").await;
+        assert_eq!(configs(&file(&w)), 1, "the same binding names nothing new");
+
+        // The router moved the chat: the binding the transcript last named
+        // is not the one this turn runs on.
+        w.personas()
+            .sessions
+            .lock()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .recorded_generation = Some(u64::MAX);
+        turn(&w, &key, "Still there?").await;
+        let text = file(&w);
+        assert_eq!(configs(&text), 2, "a switch is recorded ahead of its turn");
+        // The writer reads the model from the `config` this door wrote, not
+        // the header: with the header naming another model, the record's
+        // still wins.
+        let bound = w.chat.follower.current();
+        let header = format!("\"model\":\"{}\"", bound.model);
+        assert!(
+            text.lines().next().unwrap().contains(&header),
+            "the header names it"
+        );
+        let started_elsewhere = text.replacen(&header, "\"model\":\"started-elsewhere\"", 1);
+        let chat = mecha_core::persona::writer::read_chat(&started_elsewhere);
+        assert_eq!(chat.model.as_deref(), Some(bound.model.as_str()));
+        assert_eq!(recorded["permission_mode"], "read-only", "{recorded}");
     }
 
     /// The echo is read from transcripts (`persona::echo`), so what a persona

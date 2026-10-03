@@ -892,3 +892,19 @@ fn a_live_chats_unchecked_tail_waits_and_an_extension_must_name_its_turn() {
         .text()
         .contains("folded"));
 }
+
+/// The model a chat last ran on: a `config` after the header names it from
+/// there on, and a blank one names nothing (2026-10-03).
+#[test]
+fn a_chat_is_credited_to_the_model_it_last_ran_on() {
+    let meta = r#"{"record":"meta","id":"c1","created_at":"2026-10-03T02:39:24Z","provider":"local","model":"base","workspace":"/tmp"}"#;
+    let config = |m: &str| format!(r#"{{"record":"config","provider":"local","model":"{m}"}}"#);
+    let said = r#"{"record":"message","role":"user","content":[{"type":"text","text":"hi"}]}"#;
+    assert_eq!(read_chat(meta).model.as_deref(), Some("base"));
+    let moved = [meta, said, &config("uncensored"), said].join("\n");
+    assert_eq!(read_chat(&moved).model.as_deref(), Some("uncensored"));
+    let blank = [meta, &config("uncensored"), &config(" ")].join("\n");
+    assert_eq!(read_chat(&blank).model.as_deref(), Some("uncensored"));
+    let back = [meta, &config("uncensored"), &config("base")].join("\n");
+    assert_eq!(read_chat(&back).model.as_deref(), Some("base"));
+}
