@@ -289,9 +289,11 @@ pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaT
 
 /// The levers a persona agent ran without, for its `config` record
 /// (`RunConfig::of`): `install_off` (the binding's, from the install and its
-/// flags) for the switches a persona shares with the assistant, the agent's
-/// own config for the ones it carries, and the prompt blocks a persona's
-/// system prompt replaces always off. Recording the assistant's set instead
+/// flags) for the two switches a persona shares with the assistant, the
+/// agent's own config for the ones it carries, and always off what a persona
+/// agent is built without — the prompt blocks its system prompt replaces, and
+/// the hooks, approval rules, outbox, mailbox and fallback
+/// `setup::persona_agent` never gives it. Recording the assistant's set instead
 /// claimed goal guidance and the situation brief were on for runs that
 /// structurally had neither (review of #530).
 pub fn levers_off(
@@ -305,6 +307,14 @@ pub fn levers_off(
             // The persona's own prompt (`system_prompt`) stands in for the
             // assistant's, so nothing the assistant's prompt carries rides.
             Lever::Charter | Lever::LearnedRules | Lever::Skills => true,
+            // `setup::persona_agent` gives a persona agent no hooks, approval
+            // policy, outbox or mailbox, and `persona_provider` no fallback,
+            // whatever the install says (review of #530, pass 2).
+            Lever::Hooks
+            | Lever::ApprovalRules
+            | Lever::Outbox
+            | Lever::Messages
+            | Lever::Fallback => true,
             Lever::StepEscalation => !cfg.step_escalation,
             Lever::StepChecks => !cfg.step_checks,
             Lever::GoalGuidance => !cfg.goal_guidance,
@@ -315,13 +325,7 @@ pub fn levers_off(
             Lever::SituationBrief => !cfg.situation_brief,
             Lever::PastAppraisals => !cfg.past_appraisals,
             Lever::SuccessExamples => !cfg.success_examples,
-            Lever::Mcp
-            | Lever::Hooks
-            | Lever::Outbox
-            | Lever::Fallback
-            | Lever::Messages
-            | Lever::CompactTool
-            | Lever::ApprovalRules => install_off.contains(lever),
+            Lever::Mcp | Lever::CompactTool => install_off.contains(lever),
         })
         .collect()
 }
@@ -996,16 +1000,28 @@ mod tests {
                 "{forced:?} ran in no persona chat: {off:?}"
             );
         }
+        for never in [
+            Lever::Hooks,
+            Lever::ApprovalRules,
+            Lever::Outbox,
+            Lever::Messages,
+            Lever::Fallback,
+        ] {
+            assert!(
+                off.contains(&never),
+                "{never:?} is never a persona's: {off:?}"
+            );
+        }
         for kept in [
             Lever::Boredom,
             Lever::Mcp,
-            Lever::Hooks,
+            Lever::CompactTool,
             Lever::CarriedState,
         ] {
             assert!(!off.contains(&kept), "{kept:?} was on: {off:?}");
         }
         // The install's switches pass through.
-        assert!(levers_off(&[Lever::Mcp, Lever::Outbox], &persona).contains(&Lever::Outbox));
+        assert!(levers_off(&[Lever::Mcp], &persona).contains(&Lever::Mcp));
     }
 
     #[test]
