@@ -2052,9 +2052,9 @@ impl ImageGenerate {
             let notice = if again {
                 format!(
                     "{expected} If the user asked to move someone or change a pose, the painted \
-                     area has now kept its layout through two edits in a row: tell the user the \
-                     change may not have taken, and offer a plain edit without the mask, or a \
-                     redraw from the library."
+                     area has now kept its layout through two edits in a row: stop, tell the user \
+                     the change may not have taken, and offer a plain edit without the mask, or a \
+                     redraw from the library. {NO_RETRY_UNASKED}"
                 )
             } else {
                 format!(
@@ -3336,7 +3336,12 @@ impl Tool for ImageGenerate {
         }
         text.push_str(&manifest_note);
         text.push_str(&left);
-        self.drew(ctx, &input);
+        // Not when the asked seed was replaced: a cast generation at a
+        // portrait's seed is reseeded above, so the same input is another
+        // picture and must still draw (review of #543).
+        if portrait_seed.is_none() {
+            self.drew(ctx, &input);
+        }
         Ok(ToolOutput::ok(text))
     }
 }
@@ -5920,7 +5925,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_seed_that_drew_a_portrait_is_never_sampled_for_its_scene() {
-        let (url, _) = fake(vec![done()], "200 OK").await;
+        let (url, _) = fake(vec![done(), done()], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
         let t = tool(&url).with_library_dir(lib.clone());
@@ -5939,6 +5944,16 @@ mod tests {
             out.content
         );
         assert!(!out.content.contains("(seed 901,"), "{}", out.content);
+        // Reseeded, so the same call again is another picture, not a repeat
+        // of this one (review of #543).
+        let again = t
+            .call(
+                json!({"prompt": "a park", "seed": 901, "cast": two_people()}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(again.content.starts_with("image: "), "{}", again.content);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
@@ -6956,7 +6971,7 @@ mod tests {
         // whole-picture retry or library redraw (review of #429).
         let original = picture(8, [240, 220, 40]);
         let (url, _) = fake_with(Fake {
-            history: vec![done()],
+            history: vec![done(), done()],
             views: vec![original.clone()],
             ..Fake::default()
         })
@@ -6970,7 +6985,8 @@ mod tests {
             mask_png(64, 64, (0, 16, 16, 56)),
         )
         .unwrap();
-        let out = tool(&url)
+        let t = tool(&url);
+        let out = t
             .call(
                 json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
                        "mask": "inbox/mask.png"}),
@@ -6995,6 +7011,22 @@ mod tests {
         assert!(
             out.content.contains(NO_RETRY_UNASKED) && !out.content.contains("again now"),
             "the retry is the owner's to ask for: {}",
+            out.content
+        );
+        // The same masked edit holds its layout again: the second in a row
+        // says stop, and still leaves the retry to the owner.
+        let out = t
+            .call(
+                json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
+                       "mask": "inbox/mask.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("two edits in a row: stop,")
+                && out.content.contains(NO_RETRY_UNASKED),
+            "{}",
             out.content
         );
         std::fs::remove_dir_all(dir).ok();
