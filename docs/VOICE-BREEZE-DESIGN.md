@@ -105,7 +105,8 @@ The injection concern stays recorded: a reply that quotes third-party text could
 1. The house voice exists and the owner has chosen it.
 2. A call measured while ComfyUI renders a picture. Q6_K runs at 0.76 under steady chat load and image generation is a heavier co-tenant. If it is too tight: a larger pre-buffer when the GPU is busy, Q5_K_M, or the fork's fused depth layer.
 3. The VCTK clips re-cut.
-4. The units installed and `mecha doctor` clean. Then the worker drop-in, restarted by the update skill's order: worker first.
+4. The `tts` slot's measured peak in `recommend.rs` (Chatterbox Turbo, 8,018 MiB) re-measured for Breeze, or `mecha features --probe` sums a model the box no longer holds.
+5. The units installed and `mecha doctor` clean. Then the worker drop-in, restarted by the update skill's order: worker first.
 
 ## 6. Rulings (owner, 2026-10-03)
 

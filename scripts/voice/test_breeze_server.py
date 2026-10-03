@@ -170,9 +170,10 @@ class Adapter(unittest.TestCase):
 
     def test_an_empty_answer_is_an_error_not_silence(self):
         self.engine.silent = True
-        r = self.client.post("/v1/audio/speech", json={"input": "Hi.", "response_format": "wav"})
-        self.assertEqual(r.status_code, 502)
-        self.assertIn("no audio", r.json()["detail"])
+        for r in (self.speak(), self.speak(speed=1.5),
+                  self.client.post("/v1/audio/speech", json={"input": "Hi.", "response_format": "wav"})):
+            self.assertEqual(r.status_code, 502)
+            self.assertIn("no audio", r.json()["detail"])
 
     def test_an_unreadable_voices_directory_is_said(self):
         os.environ["VOICES_DIR"] = os.path.join(self.voices, "missing")
