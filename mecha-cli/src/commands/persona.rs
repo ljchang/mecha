@@ -579,7 +579,39 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
         "sessions": store.sessions_dir(&p.name),
         "notes": p.notes,
         "problems": store.problems(p, lib),
+        // `null` when unreadable — never an empty reading.
+        "echo": recent_echoes(store, p).ok(),
     })
+}
+
+/// How much `p`'s replies repeated earlier ones, read from its chats active
+/// over the window `mecha persona show` reads (`persona::echo`).
+fn recent_echoes(store: &Store, p: &Persona) -> anyhow::Result<persona::echo::Echoes> {
+    let window = std::time::Duration::from_secs(persona::echo::SHOWN_DAYS as u64 * 86_400);
+    let since = std::time::SystemTime::now()
+        .checked_sub(window)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    persona::echo::echoes(&store.sessions_dir(&p.name), since)
+}
+
+/// One line for `describe`: the echo reading in words.
+fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
+    let days = persona::echo::SHOWN_DAYS;
+    let e = match echoes {
+        Err(e) => return format!("unreadable — {e:#}"),
+        Ok(e) => e,
+    };
+    let unreadable = match e.unreadable {
+        0 => String::new(),
+        n => format!(" ({n} chat(s) could not be read)"),
+    };
+    match e.max {
+        None => format!("no replies to compare in chats from the last {days} days{unreadable}"),
+        Some(max) => format!(
+            "{} of {} replies in {} chat(s) from the last {days} days repeated an earlier one (highest {max:.2}){unreadable}",
+            e.repeated, e.replies, e.chats
+        ),
+    }
 }
 
 fn describe(store: &Store, lib: &Library, p: &Persona) {
@@ -633,6 +665,7 @@ fn describe(store: &Store, lib: &Library, p: &Persona) {
         ),
         _ => {}
     }
+    println!("  echo:         {}", echo_line(&recent_echoes(store, p)));
     for n in &p.notes {
         println!("  note:         {n}");
     }

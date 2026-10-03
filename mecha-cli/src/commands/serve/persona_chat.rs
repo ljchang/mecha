@@ -39,6 +39,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use super::chat::{self, ChatState, WireEvent};
 use super::library::LibraryState;
+use crate::setup::PersonaUse;
 
 /// Every persona chat's key starts with this; nothing else's does.
 pub const KEY_PREFIX: &str = "p-";
@@ -60,10 +61,13 @@ fn valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// How a persona agent's provider is made — the router's, in `serve`; a
-/// scripted one in tests.
+/// How a persona chat's providers are made — the router's, in `serve`; a
+/// scripted one in tests — and what each is for: the conversation goes
+/// unseeded, the crisis judge keeps the seed (`setup::persona_provider`).
 type ProviderFactory = Arc<
-    dyn Fn(&crate::follow::Bound) -> Result<Box<dyn mecha_core::provider::Provider>> + Send + Sync,
+    dyn Fn(&crate::follow::Bound, PersonaUse) -> Result<Box<dyn mecha_core::provider::Provider>>
+        + Send
+        + Sync,
 >;
 
 /// A built persona agent, the binding it was built on, and what it refused.
@@ -515,7 +519,7 @@ impl PersonaChats {
         Self::with(
             root.join("personas"),
             root.join("work"),
-            Arc::new(|_| anyhow::bail!("this test opens no persona chat")),
+            Arc::new(|_, _| anyhow::bail!("this test opens no persona chat")),
         )
     }
 
@@ -544,8 +548,12 @@ impl PersonaChats {
         {
             return Ok((Arc::clone(&b.agent), b.refused.clone()));
         }
-        let (agent, refused) =
-            crate::setup::persona_agent(bound, pinned, (self.provider)(bound)?, &self.store)?;
+        let (agent, refused) = crate::setup::persona_agent(
+            bound,
+            pinned,
+            (self.provider)(bound, PersonaUse::Converse)?,
+            &self.store,
+        )?;
         let agent = Arc::new(agent);
         agents.retain(|_, b| b.generation == bound.generation);
         agents.insert(
@@ -3050,7 +3058,7 @@ impl PersonaChats {
         // run and pauses it, as a keyword hit does. Not inside the cooldown,
         // which a pause would not break anyway.
         let judge_job: Option<JudgeJob> = (switches.crisis && !hit && !cooling).then(|| {
-            (self.provider)(&bound)
+            (self.provider)(&bound, PersonaUse::Judge)
                 .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
                 .map_err(|e| format!("the judge could not be reached: {e:#}"))
         });
@@ -3534,7 +3542,7 @@ impl PersonaChats {
             let words = text.clone();
             // Its words and receipt, so a concern can hold them back.
             let steered = Some((text.clone(), request_id.clone()));
-            match (self.provider)(bound) {
+            match (self.provider)(bound, PersonaUse::Judge) {
                 Ok(provider) => {
                     let model = bound.model.clone();
                     let stopping = chat.stopping.clone();
@@ -4594,6 +4602,8 @@ mod tests {
         Fail,
         /// Answers with this text.
         Say(String),
+        /// Answers after reasoning this plan, as a thinking model does.
+        Think(String),
     }
 
     /// What the crisis judge answers in a test world.
@@ -4681,14 +4691,24 @@ mod tests {
                 Mode::Hang => std::future::pending::<()>().await,
                 Mode::Gate(open) => open.notified().await,
                 Mode::Fail => anyhow::bail!("the model is not loaded"),
-                Mode::Say(_) => {}
+                Mode::Say(_) | Mode::Think(_) => {}
             }
             let text = match &self.1 {
                 Mode::Say(text) => text.clone(),
                 _ => "Hello from Mara.".into(),
             };
+            let mut content = vec![Block::Text { text }];
+            if let Mode::Think(plan) = &self.1 {
+                content.insert(
+                    0,
+                    Block::Thinking {
+                        text: plan.clone(),
+                        signature: None,
+                    },
+                );
+            }
             Ok(CompletionResponse {
-                message: Message::assistant(vec![Block::Text { text }]),
+                message: Message::assistant(content),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage::default(),
                 refusal: None,
@@ -4775,7 +4795,7 @@ mod tests {
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
-            Arc::new(move |_| {
+            Arc::new(move |_, _| {
                 Ok(Box::new(Capture(
                     Arc::clone(&for_persona),
                     mode.clone(),
@@ -4833,6 +4853,62 @@ mod tests {
                 other => panic!("no Done event: {other:?}"),
             }
         }
+    }
+
+    /// The echo is read from transcripts (`persona::echo`), so what a persona
+    /// chat records has to be enough: each reply, and an outcome saying the
+    /// run completed. A first reply has nothing to compare; a second that
+    /// repeats it reads 1.0.
+    #[tokio::test]
+    async fn a_persona_chats_transcript_is_enough_to_read_its_echo() {
+        let w = world_with(Mode::Say(
+            "The kelp line runs north of the second buoy today".into(),
+        ));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let sessions = w.store().join("mara/sessions");
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let read = || mecha_core::persona::echo::echoes(&sessions, since).unwrap();
+
+        turn(&w, &key, "Where is the kelp?").await;
+        assert_eq!(read().replies, 0, "a first reply has nothing to echo");
+
+        turn(&w, &key, "mm").await;
+        let e = read();
+        assert_eq!(
+            (e.chats, e.replies, e.repeated, e.max, e.unreadable),
+            (1, 1, 1, Some(1.0), 0)
+        );
+    }
+
+    /// A persona chat is built with `PriorThinking::Drop`: the second turn's
+    /// request carries the first reply but not the reasoning behind it, while
+    /// the transcript keeps both. Without `persona_agent`'s line, the plan
+    /// rides back and the persona re-reads it (§12.7).
+    #[tokio::test]
+    async fn a_persona_sends_no_earlier_replys_reasoning() {
+        let w = world_with(Mode::Think("PRIOR-PLAN".into()));
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello, Mara").await;
+        turn(&w, &key, "mm").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        let second = serde_json::to_string(&seen.last().unwrap().messages).unwrap();
+        assert!(second.contains("Hello from Mara."), "the reply is sent");
+        assert!(!second.contains("PRIOR-PLAN"), "its reasoning is not");
+        let id = opened["session"].as_str().unwrap();
+        let file = w.store().join(format!("mara/sessions/{id}.jsonl"));
+        let recorded = std::fs::read_to_string(file).unwrap();
+        assert!(recorded.contains("PRIOR-PLAN"), "the transcript keeps it");
     }
 
     #[tokio::test]
