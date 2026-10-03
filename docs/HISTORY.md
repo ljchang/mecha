@@ -50,6 +50,64 @@ fix (`PERSONA-DESIGN.md` §12.7 has the owner's rulings).
   over the week before repeated an earlier one, mostly from before the
   fix.
 
+**2026-10-02/03 — modular installs, step 6: recommendations as data, and
+installers designed (#512, #513, #520; mecha-a3).**
+- **#512 (`5587bded`), step 6a.**
+  - `hardware.md` has two columns per tier (unified memory, and a separate
+    GPU) and a "Beside the chat model" table.
+  - The graph page names harrier on `:8081`, not ollama.
+  - FEATURES-DESIGN §6 had said image generation "borrows ~15 GB for its
+    duration"; it now says on demand, with a leak.
+- **#513 (`7c3eb2c2`), FEATURES-DESIGN §10: installers in the binary.** The
+  owner's rulings F7–F10:
+  - enabling a feature offers its install;
+  - hand installs are provided and left alone;
+  - llama.cpp is prebuilt where possible and built otherwise;
+  - an unpinned engine tag is trusted only when the owner confirms it at a
+    terminal.
+
+  It also corrected LLAMA-SERVER.md's rollback. The stub's RUNPATH is
+  `~/llama.cpp-next/build/bin`, so a rollback is chosen by whether that tree
+  has `build/bin.prev`.
+- **#520 (`3eeb4622`), step 6b.**
+  - `mecha-core/src/recommend.rs` is a registry by model slot, with pinned
+    sha256s.
+  - `mecha features --probe` reads the machine.
+  - `hardware.md`'s table is generated from the registry, held by
+    `the_hardware_page_holds_the_registry_table`.
+  - Live in mecha-1e's `c6f59b05`; mecha-a3 read 53.2 GiB resident, 83.1
+    loaded, of 121.7.
+
+**2026-10-02 — persona memory: dated by when it was said, a curation page,
+and the timescale rulings (#514, #519, #518; mecha-5d).** #514 and #519
+are live from mecha-5d's `c08f7f21` (2026-10-02 22:03Z). Three review
+passes each.
+- **#514 (`b44f0659`): a memory is dated by the chat it came from**, in
+  `[agent] timezone`, not by the night it was written. Before, the first
+  night showed a 30 September fever as that morning's news, and a UTC day
+  put the owner's late-evening chats a day ahead.
+  - `Source::chat_began` reads the date from the session id.
+  - `said_at` (on `Fact`, `SharedFact` and `Episode`) chooses `valid_from`,
+    else the episode's span, else the chat's start, else the write time.
+  - `recall::local_day` renders it in the owner's zone.
+  - `Memory::facts` and `Memory::episodes` sort by it.
+- **#519 (`9f7507f9`): the persona editor's Memories tab** (§9.8).
+  - `PersonaMemory.svelte`, over `PersonaChats::memory` and `memory_act`.
+  - The acts are the closed `MemoryAct` set.
+  - A locked persona answers 404.
+  - Only this persona's own shared copies can be shown or unshared.
+  - `shared_unreadable` and `shared_problem` are said on the page, never
+    shown as "not shared".
+- **#518 (`c0f47bf6`), docs only:** `PERSONA-MEMORY-TIMESCALES-RESEARCH.md`
+  and PERSONA-DESIGN §9.13, with the owner's rulings D26–D28.
+  - D26: four tiers, from momentary to lasting fact. States expire from
+    recall, never from the store, and a mood label about the owner is
+    allowed as a short-term state, amending §9.5.
+  - D27: a fact derived from several chats is rebuilt from the rest when
+    one is forgotten.
+  - D28: every memory access and curation act is logged, record-only, and
+    erased by `forget`.
+
 **2026-10-02 — modular installs, step 5: `[voice]` and `[personas]`
 (#503).** Everything voice is in one operator-only table, by the owner's
 ruling of 2026-10-01: "[voice] holds everything voice".
@@ -10213,6 +10271,29 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A tool's error text can arrive at exit 0.** On this machine `nvidia-smi`
+prints `[Insufficient Permissions]` or `[Unknown Error]` in a memory field
+and still exits 0. Only a literal `[N/A]` means unified memory (the GB10),
+so a probe reading the field has to name each value it accepts, not trust
+the exit code (mecha-a3, #520).
+
+**A binary's `--version` names the commit it was compiled at, not the
+libraries it loads.** `llama-server.prev` reports `a4ce259` while loading
+`c841aeeb`'s libraries through its RUNPATH. Ask the loader instead:
+`readelf -d ~/.local/bin/llama-server.prev | grep RUNPATH` names
+`~/llama.cpp/build/bin`, and the main stub names `~/llama.cpp-next/build/bin`
+(mecha-a3; RUNPATHs re-read by mecha-1e, 2026-10-03).
+
+**`args_conflicts_with_subcommands` on a subcommand's args also refuses
+global flags.** With it set on `features`, `mecha features --yes enable
+graph` broke. Check: `mecha features --yes enable zzz` must answer "is not a
+feature", not a flag error (mecha-a3, #520).
+
+**A serve restart can strand the image model's memory.** `image_generate`'s
+ten-minute unload timer lives in the drawing process, so a restart inside
+that window left ~12 GiB held (2026-10-02). #515's `comfyui-idle-reset` is
+the lasting fix (mecha-a3).
 
 **A shared `CARGO_TARGET_DIR` keeps test binaries that point into removed
 worktrees.** Building several worktrees into one target directory reuses a
