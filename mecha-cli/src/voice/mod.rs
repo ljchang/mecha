@@ -64,22 +64,13 @@ const LISTEN_HOST: &str = "127.0.0.1";
 /// never size an allocation on its own say-so.
 const MAX_BODY_BYTES: usize = 8 << 20;
 
-/// D10: the one load-bearing prompt. Static byte-for-byte across sessions,
-/// because it rides in the cached prefix and TTFT is the latency budget.
-///
-/// The first-sentence rule is a latency control, not a style note.
-/// Pipecat's TTS service aggregates by sentence, so time-to-first-sound is
-/// the synthesis cost of sentence one alone -- measured on Chatterbox
-/// Turbo at ~3.9x realtime: "Sure." is 0.33 s, a full clause is 1.08 s.
-/// It pays twice, because a short opener is also fewer tokens to generate
-/// before speech can start at all. Every other line here shapes the whole
-/// reply; this one is the only one on the critical path.
-pub(crate) const VOICE_BLOCK: &str = "\
-Voice mode: everything you write is spoken aloud by a text-to-speech voice, \
-and the user is listening, not reading. Answer in short conversational \
-sentences. Make the first sentence a short one, a handful of words: \
-speaking begins as soon as that sentence is finished, so a long opener \
-is silence the listener sits through. Never use markdown, bullet lists, \
+/// The rules every spoken turn carries, whatever the engine: no markdown,
+/// numbers as spoken, the gist of long tool output, a line before a slow
+/// step, and the staged-draft protocol. One copy, so the two blocks below
+/// cannot drift apart on any of them.
+macro_rules! voice_rules {
+    () => {
+        "Never use markdown, bullet lists, \
 headings, tables or code blocks; write numbers, dates and times as they \
 are spoken. When a tool \
 returns something long, say the gist in a sentence or two instead of \
@@ -92,8 +83,48 @@ it, so anything you add is the same thing said twice. Do not end a reply \
 that staged something with a question of your own: the harness is about \
 to ask one. If the user asks how to send, approve or release a draft, \
 tell them to say yes once it has been read back; never send them to a \
-command, a page or an outbox. Keep replies brief \
-unless the user asks you to go deep.";
+command, a page or an outbox."
+    };
+}
+
+/// D10: the one load-bearing prompt, for a speech engine that speaks a
+/// sentence only once the whole of it is synthesised (Chatterbox Turbo).
+/// Static byte-for-byte across sessions, because it rides in the cached
+/// prefix and TTFT is the latency budget; pinned by digest
+/// (`the_whole_sentence_block_is_byte_identical_to_before`).
+///
+/// The first-sentence rule is a latency control, not a style note — on
+/// *this* kind of engine. Pipecat's TTS service aggregates by sentence, so
+/// time-to-first-sound is the synthesis cost of sentence one alone --
+/// measured on Chatterbox Turbo at ~3.9x realtime: "Sure." is 0.33 s, a
+/// full clause is 1.08 s. It pays twice, because a short opener is also
+/// fewer tokens to generate before speech can start at all. An engine that
+/// streams audio as it synthesises (Breeze) starts speaking in a fraction
+/// of a second whatever the sentence's length, so it is sent
+/// [`VOICE_BLOCK_STREAMING`] instead, without the length rules.
+pub(crate) const VOICE_BLOCK: &str = concat!(
+    "Voice mode: everything you write is spoken aloud by a text-to-speech voice, \
+and the user is listening, not reading. Answer in short conversational \
+sentences. Make the first sentence a short one, a handful of words: \
+speaking begins as soon as that sentence is finished, so a long opener \
+is silence the listener sits through. ",
+    voice_rules!(),
+    " Keep replies brief unless the user asks you to go deep."
+);
+
+/// [`VOICE_BLOCK`] for an engine that streams (the worker's
+/// `X-Voice-TTS-Streams: 1`): the same rules without the length ones. The
+/// owner's ruling (2026-10-03): "breeze streams, which changes the nature of
+/// how we want to prompt voice responses. now we don't need things short."
+/// A second static text rather than one assembled per turn, so each is a
+/// stable prefix of its own.
+pub(crate) const VOICE_BLOCK_STREAMING: &str = concat!(
+    "Voice mode: everything you write is spoken aloud by a text-to-speech voice, \
+and the user is listening, not reading. Speak the way you would out loud: \
+sentences as long as the thought needs, and as much as the conversation \
+calls for. ",
+    voice_rules!(),
+);
 
 /// Appended to the staged-draft tool result on a spoken turn
 /// (`ToolCtx::review_hint`), in place of the sentence naming `mecha outbox`.
@@ -169,7 +200,18 @@ pub trait SessionHost: Send + Sync {
     /// `unlogged` is the worker's `X-Voice-Unlogged`: it keeps no text of
     /// this call. The host alone decides what that admits — today, a spoken
     /// turn into an incognito chat, which is refused without it.
-    async fn speak(&self, key: &str, utterance: &str, approve_all: bool, unlogged: bool) -> Hosted;
+    ///
+    /// `tts_streams` is the worker's `X-Voice-TTS-Streams`: its speech
+    /// engine streams, so the spoken-turn prompt drops its length rules
+    /// ([`VOICE_BLOCK_STREAMING`], `persona::call::note`).
+    async fn speak(
+        &self,
+        key: &str,
+        utterance: &str,
+        approve_all: bool,
+        unlogged: bool,
+        tts_streams: bool,
+    ) -> Hosted;
 }
 
 /// Open a spoken turn with the D10 block when the conversation has not just
@@ -181,9 +223,18 @@ pub trait SessionHost: Send + Sync {
 /// conversation carries the flag because typed and spoken turns share it.
 /// Prepending costs nothing in cache terms — the transcript is append-only,
 /// so the block lands at the end and every earlier byte still matches.
-pub(crate) fn open_spoken_turn(text: &str, previous_turn_was_spoken: bool) -> String {
+///
+/// `tts_streams` picks the block: [`VOICE_BLOCK_STREAMING`] for an engine
+/// that streams, [`VOICE_BLOCK`] otherwise.
+pub(crate) fn open_spoken_turn(
+    text: &str,
+    previous_turn_was_spoken: bool,
+    tts_streams: bool,
+) -> String {
     if previous_turn_was_spoken {
         text.to_string()
+    } else if tts_streams {
+        format!("{VOICE_BLOCK_STREAMING}\n\n{text}")
     } else {
         format!("{VOICE_BLOCK}\n\n{text}")
     }
@@ -678,6 +729,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     // A daemon must not take its tool surface from whatever repository it
     // was started in — the trigger runner's rule, for the same reason.
     opts.global_config_only = true;
+    // The whole-sentence block, always: standalone voice-serve carries it in
+    // the system prompt, fixed when the process starts, and a per-call
+    // engine choice there would change the system prompt's bytes from call
+    // to call — the whole cached prefix. The mounted facade, which is what
+    // runs, chooses per call in the spoken turn instead (`open_spoken_turn`).
     opts.system_extra = Some(VOICE_BLOCK.to_string());
     if opts.workspace.is_none() {
         // The stable producer dir (D9): Tuesday's sketch is an ordinary
@@ -771,6 +827,10 @@ struct Head {
     /// the reply's first sentence exists. Absent, nothing is started early;
     /// a direction asked for anyway is still answered.
     directed: bool,
+    /// `X-Voice-TTS-Streams: 1`: the worker's speech engine streams audio as
+    /// it synthesises, so a spoken turn is sent the block without length
+    /// rules. Anything but exactly `1` is absent, as for `unlogged`.
+    tts_streams: bool,
     body_start: usize,
 }
 
@@ -786,6 +846,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
             let mut chat = None;
             let mut unlogged = false;
             let mut directed = false;
+            let mut tts_streams = false;
             for h in req.headers.iter() {
                 if h.name.eq_ignore_ascii_case("content-length") {
                     content_length = std::str::from_utf8(h.value)?.trim().parse()?;
@@ -799,6 +860,8 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                     unlogged = h.value == b"1";
                 } else if h.name.eq_ignore_ascii_case("x-voice-directed") {
                     directed = h.value == b"1";
+                } else if h.name.eq_ignore_ascii_case("x-voice-tts-streams") {
+                    tts_streams = h.value == b"1";
                 }
             }
             Ok(Some(Head {
@@ -810,6 +873,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                 chat,
                 unlogged,
                 directed,
+                tts_streams,
                 body_start,
             }))
         }
@@ -1948,7 +2012,13 @@ async fn completion(
     if let (Some(chat_key), Some(host)) = (&head.chat, &shared.mount.host) {
         if !chat_key.is_empty() {
             match host
-                .speak(chat_key, &text, shared.mount.approve_all, head.unlogged)
+                .speak(
+                    chat_key,
+                    &text,
+                    shared.mount.approve_all,
+                    head.unlogged,
+                    head.tts_streams,
+                )
                 .await
             {
                 Hosted::Started(turn) => {
@@ -2170,7 +2240,7 @@ async fn completion(
     // spoken stretch opens with it. A facade slot is spoken-only, so "the
     // previous turn was spoken" is exactly "this conversation is not new".
     let text = if shared.mount.inject_voice_block {
-        open_spoken_turn(&text, !slot.convo.is_empty())
+        open_spoken_turn(&text, !slot.convo.is_empty(), head.tts_streams)
     } else {
         text
     };
@@ -2574,11 +2644,66 @@ mod tests {
         // D10: the block teaches ear-shaped output; it had better practice
         // what it preaches, because it rides in every voice prompt.
         for banned in ["```", "\n- ", "# ", "**"] {
+            for block in [VOICE_BLOCK, VOICE_BLOCK_STREAMING] {
+                assert!(!block.contains(banned), "voice block contains {banned:?}");
+            }
+        }
+    }
+
+    /// The owner's ruling: on a streaming engine nothing asks for short.
+    /// Everything else the whole-sentence block says, the streaming one
+    /// says word for word.
+    #[test]
+    fn the_streaming_block_drops_the_length_rules_and_keeps_the_rest() {
+        for gone in [
+            "short conversational",
+            "first sentence",
+            "handful of words",
+            "long opener",
+            "brief",
+        ] {
+            assert!(VOICE_BLOCK.contains(gone), "{gone}: the pin is vacuous");
+            assert!(!VOICE_BLOCK_STREAMING.contains(gone), "still says {gone:?}");
+        }
+        assert!(VOICE_BLOCK_STREAMING.starts_with("Voice mode:"));
+        assert!(VOICE_BLOCK_STREAMING.contains(voice_rules!()));
+        assert!(VOICE_BLOCK.contains(voice_rules!()));
+        for kept in [
+            "Never use markdown",
+            "as they are spoken",
+            "say the gist",
+            "Before a slow step",
+            "\"That is drafted.\"",
+            "say yes once it has been read back",
+        ] {
+            assert!(VOICE_BLOCK_STREAMING.contains(kept), "dropped {kept:?}");
+        }
+    }
+
+    #[test]
+    fn a_spoken_stretch_opens_with_the_block_its_engine_needs() {
+        let whole = open_spoken_turn("hello", false, false);
+        let streaming = open_spoken_turn("hello", false, true);
+        assert_eq!(whole, format!("{VOICE_BLOCK}\n\nhello"));
+        assert_eq!(streaming, format!("{VOICE_BLOCK_STREAMING}\n\nhello"));
+        assert_eq!(open_spoken_turn("hello", true, true), "hello");
+    }
+
+    #[test]
+    fn the_streams_header_is_read_strictly() {
+        let yes = b"POST /v1/chat/completions HTTP/1.1\r\nX-Voice-TTS-Streams: 1\r\n\r\n";
+        assert!(parse_head(yes).unwrap().unwrap().tts_streams);
+        for other in ["true", "yes", "0", " 1x"] {
+            let raw = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nX-Voice-TTS-Streams: {other}\r\n\r\n"
+            );
             assert!(
-                !VOICE_BLOCK.contains(banned),
-                "voice block contains {banned:?}"
+                !parse_head(raw.as_bytes()).unwrap().unwrap().tts_streams,
+                "{other}"
             );
         }
+        let none = b"POST /v1/chat/completions HTTP/1.1\r\n\r\n";
+        assert!(!parse_head(none).unwrap().unwrap().tts_streams);
     }
 
     #[test]
@@ -2796,14 +2921,33 @@ mod tests {
         // the start of a call, again after any typed turn, and never on the
         // second consecutive spoken turn — where it would be pure repetition
         // in a prompt that already carries it.
-        let opened = open_spoken_turn("what is on my calendar", false);
+        let opened = open_spoken_turn("what is on my calendar", false, false);
         assert!(opened.starts_with(VOICE_BLOCK));
         assert!(opened.ends_with("what is on my calendar"));
         assert_eq!(
-            open_spoken_turn("and tomorrow?", true),
+            open_spoken_turn("and tomorrow?", true, false),
             "and tomorrow?",
             "a spoken turn following a spoken turn must not re-send the block"
         );
+    }
+
+    /// FNV-1a: a digest that is the same on every toolchain, which
+    /// `DefaultHasher` does not promise.
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// The block a whole-sentence engine is sent is the one every cached
+    /// prefix already holds: a change here re-pays every conversation's
+    /// prefix, so it is pinned by digest and changed on purpose or not at
+    /// all. (Pinned 2026-10-03, when the streaming variant was added beside
+    /// it.)
+    #[test]
+    fn the_whole_sentence_block_is_byte_identical_to_before() {
+        assert_eq!(VOICE_BLOCK.len(), 1245);
+        assert_eq!(fnv1a(VOICE_BLOCK.as_bytes()), 0x77ae_959e_f59c_0a75);
     }
 
     #[test]
