@@ -458,7 +458,9 @@ It serves `scripts/voice/chatterbox_server.py` from the same shared checkout,
 and a new server refuses a control its model drops while an old worker sends
 `exaggeration` / `cfg_weight` on every sentence, so a new server under an old
 worker is a whole-voice outage that reads as a TTS failure (#511). Restart it
-only when that file changed, with no call live; `docker restart` keeps the
+only when that file or a module it imports from there (`audio_stretch.py`)
+changed, with no call live: the read-only mount is imported once at start, so
+an edit to either reaches nothing until the restart; `docker restart` keeps the
 container's environment, so changing `CHATTERBOX_MODEL` means recreating it
 (the `docker run` line is in `VOICE-RESEARCH.md`, beside the serving wrapper).
 

@@ -1,0 +1,28 @@
+[Unit]
+Description=Breeze TTS adapter (chatterbox_server's surface over the Breeze engine, :8887)
+Documentation=https://github.com/ljchang/mecha/blob/main/docs/VOICE-BREEZE-DESIGN.md
+# Wants=, not Requires=: an engine that fails to start (gate 4 in the design
+# doc) must leave the adapter up to answer a 503 that names it, rather than a
+# refused connection.
+Wants=mecha-breeze-tts.service mecha-parakeet.service
+After=mecha-breeze-tts.service mecha-parakeet.service
+
+[Service]
+# Runs from the shared checkout, as the voice worker does: restart it with the
+# worker when scripts/voice/ changes (the update skill's restart order).
+WorkingDirectory=%h/Github/mecha/scripts/voice
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=BREEZE_TTS_URL=http://127.0.0.1:8886
+Environment=VOICES_DIR=%h/models/voices
+Environment=MECHA_VOICE_STT=http://127.0.0.1:8992/v1
+# What `voice: "default"` speaks as (ruling D2). A missing house voice is a 503
+# that says so, never another voice.
+Environment=BREEZE_HOUSE_VOICE=house
+Environment=BREEZE_MODEL_NAME=breeze-tts2-q6_k
+ExecStart=%h/models/voice-worker-venv/bin/python breeze_server.py
+Restart=on-failure
+RestartSec=5
+OOMScoreAdjust=300
+
+[Install]
+WantedBy=default.target
