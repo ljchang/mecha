@@ -1,7 +1,7 @@
 // A reply tidied for speech, and cut into pieces the player can ask for one
 // at a time (`speech.js`; the owner's ask, 2026-10-01).
 import assert from 'node:assert/strict';
-import { speakable, speechChunks } from '../src/lib/speech.js';
+import { replyContext, replyKey, speakable, speechPieces, speechSentences } from '../src/lib/speech.js';
 
 // Marks go, words stay.
 assert.equal(speakable('## Plan\n\n- **first**, check the *traps*\n- then `count` them'), 'Plan. first, check the traps. then count them.');
@@ -19,16 +19,54 @@ assert.equal(speakable('As noted [@kelp/field_guide.md: "low tide"].'), 'As note
 assert.equal(speakable(''), '');
 assert.equal(speakable('---'), '');
 
-// Pieces: whole sentences, in order, none over the cap, nothing lost.
+// Pieces: one sentence each, in order, none over the cap, nothing lost.
 const long = 'One short. ' + 'A much longer sentence that goes on for a while. '.repeat(12) + 'Last.';
-const pieces = speechChunks(long, 120);
-assert.ok(pieces.length > 1);
+const pieces = speechSentences(long, 120);
+assert.equal(pieces.length, 14);
+assert.equal(pieces[0], 'One short.');
 assert.ok(pieces.every((p) => p.length <= 120), JSON.stringify(pieces));
-assert.equal(pieces.join(' ').replace(/\s+/g, ' '), long.replace(/\s+/g, ' ').trim());
+assert.equal(pieces.join(' '), long.replace(/\s+/g, ' ').trim());
 // A sentence over the cap is cut at a word, never mid-word.
 const run = 'word '.repeat(60).trim() + '.';
-const cut = speechChunks(run, 50);
+const cut = speechSentences(run, 50);
 assert.ok(cut.every((p) => p.length <= 50 && p.split(' ').every((w) => w === 'word' || w === 'word.')), JSON.stringify(cut));
-assert.deepEqual(speechChunks(''), []);
+assert.deepEqual(speechSentences(''), []);
+// A number, an initialism and a closing quote stay with their sentence.
+assert.deepEqual(speechSentences('It cost 3.5 million, i.e.a lot. She said "go!" Then left.'), [
+  'It cost 3.5 million, i.e.a lot.',
+  'She said "go!"',
+  'Then left.',
+]);
+// Ellipses end a sentence without leaving a lone dot to speak.
+assert.deepEqual(speechSentences('Well... maybe. Fine...'), ['Well...', 'maybe.', 'Fine...']);
+assert.deepEqual(speechSentences('Hm. ... !'), ['Hm.']);
+
+// The player's pieces: the first sentence alone, then the rest grouped up
+// to the cap, nothing lost.
+const grouped = speechPieces(long, 120);
+assert.equal(grouped[0], 'One short.');
+assert.ok(grouped.length > 2 && grouped.length < pieces.length, JSON.stringify(grouped));
+assert.ok(grouped.every((p) => p.length <= 120), JSON.stringify(grouped));
+assert.equal(grouped.join(' '), long.replace(/\s+/g, ' ').trim());
+assert.deepEqual(speechPieces('Just one.'), ['Just one.']);
+assert.deepEqual(speechPieces(''), []);
+
+// A reply's key: stable, plain, and different for different text.
+assert.equal(replyKey('The dig went well.'), replyKey('The dig went well.'));
+assert.notEqual(replyKey('The dig went well.'), replyKey('The dig went well!'));
+assert.match(replyKey(''), /^r[0-9a-f]{16}$/);
+
+// The moment a reply was said in: the owner's words before it, and the
+// speaker's reply before those.
+const entries = [
+  { kind: 'user', text: 'Hi' },
+  { kind: 'assistant', text: 'Hello!' },
+  { kind: 'user', text: 'How did the dig go?' },
+  { kind: 'tool', text: 'kg_search' },
+  { kind: 'assistant', text: 'Well.' },
+];
+assert.deepEqual(replyContext(entries, 4), { asked: 'How did the dig go?', lastReply: 'Hello!' });
+assert.deepEqual(replyContext(entries, 1), { asked: 'Hi', lastReply: null });
+assert.deepEqual(replyContext(entries, 0), { asked: null, lastReply: null });
 
 console.log('speech: ok');

@@ -8,7 +8,7 @@
 // tap started, and a piece fetched after an await is no longer that tap's —
 // so the element is played (silence) in the tap and every piece reuses it.
 import { apiFetch as fetch } from './api.js';
-import { speakable, speechChunks } from './speech.js';
+import { replyKey, speakable, speechPieces } from './speech.js';
 
 // Which reply is playing, by the id its ChatProse gave it; and why one could
 // not, shown on that reply's button.
@@ -47,11 +47,18 @@ export function stopPlaying() {
  * Speak `text` (a reply's Markdown) as `id`'s — or stop it, if it is the one
  * playing. `chat` is the chat the reply is in: a persona chat is spoken in
  * the persona's voice and rate, which serve decides; `voice` and `speed` are
- * the owner's own choice for the assistant's replies. Called from the tap
- * itself. A reply whose read failed is retried by the same tap, not stopped:
+ * the owner's own choice for the assistant's replies. `asked` and
+ * `lastReply` are the moment the reply was said in (`replyContext`), which
+ * serve's director reads, with the reply itself, to settle the one
+ * direction every piece is spoken with (Listen's director pass).
+ * Called from the tap itself. A reply whose read failed is retried by the same tap, not stopped:
  * there is nothing playing to stop (review of #502).
  */
-export async function playReply(id, text, { chat = null, unlock = null, voice = null, speed = null } = {}) {
+export async function playReply(
+  id,
+  text,
+  { chat = null, unlock = null, voice = null, speed = null, asked = null, lastReply = null } = {},
+) {
   if (player.id === id && player.state !== 'error') return stopPlaying();
   stopPlaying();
   const mine = gen;
@@ -59,12 +66,14 @@ export async function playReply(id, text, { chat = null, unlock = null, voice = 
   // Inside the tap, before any await: this is what lets the pieces play.
   audio.src = SILENCE;
   audio.play().catch(() => {});
-  const pieces = speechChunks(speakable(text));
+  const said = speakable(text);
+  const pieces = speechPieces(said);
+  const reply = replyKey(said);
   if (!pieces.length) return;
   player.id = id;
   player.state = 'loading';
   player.error = null;
-  const piece = async (t) => {
+  const piece = async (t, index) => {
     const res = await fetch('/api/speak', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -74,6 +83,13 @@ export async function playReply(id, text, { chat = null, unlock = null, voice = 
         unlock: unlock ?? undefined,
         voice: voice ?? undefined,
         speed: speed ?? undefined,
+        listen: {
+          reply,
+          index,
+          whole: said.slice(0, 2000),
+          asked: asked ?? undefined,
+          last_reply: lastReply ?? undefined,
+        },
       }),
     });
     if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
@@ -82,11 +98,11 @@ export async function playReply(id, text, { chat = null, unlock = null, voice = 
     return url;
   };
   try {
-    let next = piece(pieces[0]);
+    let next = piece(pieces[0], 0);
     for (let i = 0; i < pieces.length; i += 1) {
       const url = await next;
       if (mine !== gen) return;
-      next = i + 1 < pieces.length ? piece(pieces[i + 1]) : null;
+      next = i + 1 < pieces.length ? piece(pieces[i + 1], i + 1) : null;
       // A failure ahead is met when its turn comes, not as an unhandled one.
       next?.catch(() => {});
       audio.src = url;
