@@ -1666,7 +1666,15 @@ impl Session {
             .append(true)
             .open(&self.path)
             .with_context(|| format!("opening {}", self.path.display()))?;
-        writeln!(file, "{}", serde_json::to_string(record)?)?;
+        // One write, record and newline together. `writeln!` issues the body
+        // and the "\n" as separate writes, and O_APPEND makes each write
+        // atomic, not the pair: two writers on one session (a turn and the
+        // titler, or a spoken direction) could interleave `{A}{B}\n\n`, and
+        // both records would be lost to the parser.
+        let mut line = serde_json::to_string(record)?;
+        line.push('\n');
+        file.write_all(line.as_bytes())
+            .with_context(|| format!("writing {}", self.path.display()))?;
         Ok(())
     }
 
@@ -3031,6 +3039,42 @@ mod tests {
             Record::SpokenDirection(d) => assert_eq!(d, direction),
             other => panic!("read back as {other:?}"),
         }
+    }
+
+    #[test]
+    fn concurrent_writers_never_merge_two_records_into_one_line() {
+        let dir = tmpdir();
+        let session = std::sync::Arc::new(
+            Session::create(&dir, meta_with_id("20260101T000000-race")).unwrap(),
+        );
+        let writers: Vec<_> = (0..8)
+            .map(|w| {
+                let session = session.clone();
+                std::thread::spawn(move || {
+                    for i in 0..300 {
+                        let text = format!("writer {w} record {i} {}", "x".repeat(200));
+                        session
+                            .append(&Record::Message(Message::user(text)))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        let raw = std::fs::read_to_string(&session.path).unwrap();
+        let mut records = 0;
+        for line in raw.lines() {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|e| panic!("a merged or torn line ({e}): {:.120}", line));
+            records += 1;
+        }
+        assert_eq!(
+            records,
+            1 + 8 * 300,
+            "the header plus every record, one per line"
+        );
     }
 
     #[test]
