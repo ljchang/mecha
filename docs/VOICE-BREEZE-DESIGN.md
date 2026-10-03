@@ -70,7 +70,7 @@ voice worker ──/v1/audio/speech, /v1/voices──▶ breeze_server.py (:8887
   The engine's registry lives in memory, so a restarted engine has forgotten every voice. Measured against the real engine (2026-10-03): `GET /v1/audio/voices` answers `{"voices": [{"name": …, "kind": "registered"}]}`, and speaking an unregistered voice is HTTP 400 `unknown voice '<name>'`. The adapter asks the registry before retrying, and re-registers when the registry cannot be read.
 
   Unit: `scripts/voice/mecha-breeze-adapter.service`, which runs from the shared checkout as the worker does. Tests: `scripts/voice/test_breeze_server.py`, with stand-ins for the engine and the STT.
-- **The switch.** Breeze is the worker's default TTS: `MECHA_VOICE_TTS` defaults to `http://127.0.0.1:8887/v1`. **Rolling back** to Chatterbox means setting `MECHA_VOICE_TTS=http://127.0.0.1:8881/v1` in a drop-in on `mecha-voice-worker.service`, starting the `chatterbox` container (its restart policy is `no` since 2026-10-03, so it is down after a reboot), and restarting the worker.
+- **The switch.** Breeze is the worker's default TTS: `MECHA_VOICE_TTS` defaults to `http://127.0.0.1:8887/v1`. **Rolling back** to Chatterbox means setting `MECHA_VOICE_TTS=http://127.0.0.1:8881/v1` in a drop-in on `mecha-voice-worker.service`, starting the `chatterbox` container (its restart policy is `no` since 2026-10-03, so it is down after a reboot), and restarting the worker. Chatterbox ignores `default.wav`: its `default` is its own built-in voice, so on the rollback the library's `default` is Chatterbox's, not the clip.
 
 ## 3. Delivery instructions (the "dual stream")
 
@@ -102,7 +102,10 @@ The injection concern stays recorded: a reply that quotes third-party text could
 - **VCTK clips say their sentences twice** (the dataset carries each utterance once per microphone, `mic1` and `mic2`, with identical text), and Breeze copies that delivery. `add-vctk-voices.py` now skips a row whose text repeats the one before and writes the corpus text as the clip's `.txt`. Clips added before that still say everything twice: delete `vctk_<id>.wav` and its `.txt` and run the script again to re-cut one.
 - **Speed (ruling D4).** At 1.0 the PCM streams through. At any other speed the adapter buffers the sentence and applies the WSOLA stretch shared with Chatterbox (`scripts/voice/audio_stretch.py`), so that sentence waits for its synthesis.
 
-## 5. Before the switch (gates)
+## 5. Gates
+
+The switch was made on 2026-10-03 (§7) with these not all met. As of that day: **1** met (the owner chose `vctk_p297`, trimmed to one reading, as `default.wav`); **3** met for clips added from then on (`add-vctk-voices.py` dedupes), older VCTK clips still say everything twice until re-cut; **5** measured by mecha-a3 (4,185 MiB peak, #526); **2**, **4** and **6** open. Gate 4 is the operational risk: the Chatterbox container no longer restarts at boot, so a boot where `tts-server` loses the CUDA-init race leaves voice with no TTS until a person starts one (its unit retries every 5 s).
+
 
 1. The default voice (`default.wav`) exists and the owner has chosen it.
 2. A call measured while ComfyUI renders a picture. Q6_K runs at 0.76 under steady chat load and image generation is a heavier co-tenant. If it is too tight: a larger pre-buffer when the GPU is busy, Q5_K_M, or the fork's fused depth layer.
