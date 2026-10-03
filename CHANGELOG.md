@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency control for an engine that speaks a sentence only once all of it is
   made; on Chatterbox the prompt is byte-for-byte what it was.
 
+- **A Breeze TTS adapter, ready but not switched on.** `scripts/voice/breeze_server.py`
+  serves the same speech interface as the Chatterbox server, in front of Breeze TTS 2
+  on a qwentts.cpp fork. It transcribes each voice clip once with Parakeet (an editable
+  `.txt` beside the WAV), registers voices with the engine, speaks the default voice
+  as a house voice, passes delivery instructions through, and stretches when speed is
+  not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are not
+  installed; `docs/VOICE-BREEZE-DESIGN.md` says what is left before the switch.
+
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
   OCR, layout, image generation, speech to text, speech and turn detection —
