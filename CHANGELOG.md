@@ -711,6 +711,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The ComfyUI idle reset reads only what it needs, and fails when it cannot
+  see free memory.** Its two journal checks now ask for the newest matching
+  line (`journalctl -g … -n 1`) instead of reading the whole run's journal every
+  minute, and tell "no match" from "unreadable" by what journalctl says on
+  stderr. An unreadable `MemFree` fails the unit, where it used to be read as
+  zero and answered with `/free` and a clean exit.
+
 - **A picture asked for while the image server restarts waits for it.** The
   first request of a job now waits for a server that is not answering yet:
   up to 90 seconds when this process has reached it before (it is
