@@ -682,7 +682,8 @@ conversation, so the capabilities do not change. Three rules:
   turn's pictures by `is_error` (`turnsWithoutPicture`) — and no GPU time.
   Only that case: without a seed, and on every edit, the tool draws a fresh
   seed, so the same input is another picture — "another one", or the retry a
-  near-copy notice describes (review of #543). On a call on 2026-10-03 a
+  near-copy notice describes — and a cast call at a portrait's seed is
+  reseeded too, so it is not recorded (review of #543). On a call on 2026-10-03 a
   persona re-sent the seeded call that had just drawn, word for word, four
   times in one run; ComfyUI ran each in 0.00 s as a duplicate of a finished
   prompt, kept no new output, and `/view` answered 404, which the run read
