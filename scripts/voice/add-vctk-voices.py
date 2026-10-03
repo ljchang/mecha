@@ -147,7 +147,10 @@ def reference_wav(speaker, entry):
         r = row["row"]
         if r["speaker_id"] != speaker:
             continue
-        text = (r.get("text") or "").strip()
+        # Read like every other column: a corpus without `text` fails here,
+        # loudly, rather than quietly turning off the dedupe and the
+        # transcript both - an output that would read like a clean run.
+        text = (r["text"] or "").strip()
         # The dataset carries each utterance twice in a row (VCTK's two
         # microphones), and a clip of every sentence said twice teaches the
         # clone to repeat itself - Breeze copies that delivery.
@@ -206,6 +209,9 @@ def main():
             sys.stderr.write(f"{name}: exists, left alone\n")
             continue
         data, secs, words = reference_wav(sid, index[sid])
+        if not words:
+            sys.stderr.write(f"{name}: a corpus row had no text, so no transcript was written "
+                             "(the adapter will transcribe the clip once)\n")
         # Temp-sibling-and-rename: a half-written reference is a voice
         # the server will happily offer and fail to clone from.
         tmp = path + ".tmp"

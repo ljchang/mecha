@@ -25,7 +25,7 @@ the *facade* — `mecha voice-serve`, and the `--voice-port` flag on
 `mecha serve` — which is the loopback endpoint the voice pipeline talks to.
 The pipeline itself is not packaged.
 
-Voice needs a **git checkout** and three local services (the speech one is two processes):
+Voice needs a **git checkout** and three local services (the text-to-speech one is two processes):
 
 | What | Where | Why |
 |---|---|---|

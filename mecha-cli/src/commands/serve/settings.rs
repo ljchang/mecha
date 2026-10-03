@@ -704,6 +704,16 @@ pub async fn library_voices(
             names.insert(n.to_string());
         }
     }
+    // The default voice is a file on Breeze, never a clone (`cloned_voices`
+    // skips it): on the list from disk too, so an unreachable worker does not
+    // leave the one voice that must exist without a row.
+    if state
+        .voices_dir
+        .as_ref()
+        .is_some_and(|d| d.join("default.wav").is_file())
+    {
+        names.insert("default".to_string());
+    }
     // And every voice a persona names: one that is in neither list is
     // exactly what this page is placed to say, rather than leaving the first
     // sign of a typo to a refused call (review of #490). Behind the lock, as
@@ -1066,7 +1076,7 @@ pub const MAX_CLONE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct CloneQuery {
-    name: String,
+    pub(super) name: String,
 }
 
 /// POST /api/settings/voice/clone?name=x — body is the WAV itself.
@@ -1262,6 +1272,23 @@ pub async fn voice_clone_delete(State(state): St, Json(q): Json<CloneQuery>) -> 
             ),
         )
             .into_response();
+    }
+    // On Breeze a voice is a pair: the TTS writes `<name>.txt`, a verbatim
+    // transcript of the same recording, the first time the voice is spoken.
+    // Removing the voice removes what was said in it too, or the delete
+    // leaves the words behind where nothing lists them.
+    let transcript = path.with_extension("txt");
+    if let Err(e) = std::fs::remove_file(&transcript) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "the recording was deleted, but its transcript {} was not: {e:#}\n",
+                    transcript.display()
+                ),
+            )
+                .into_response();
+        }
     }
     voice(State(state)).await.into_response()
 }

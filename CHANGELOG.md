@@ -48,8 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a qwentts.cpp fork. It transcribes each voice clip once with Parakeet (an editable
   `.txt` beside the WAV), registers voices with the engine, speaks the default voice
   as the clip `default.wav`, passes delivery instructions through, and stretches when speed is
-  not 1.0. Units for the engine and the adapter ship in `scripts/voice/`;
-  `docs/VOICE-BREEZE-DESIGN.md` §5 says which gates the switch left open.
+  not 1.0. Units for the engine and the adapter ship in `scripts/voice/` and are installed
+  by hand; `docs/VOICE-BREEZE-DESIGN.md` §5 says which gates the switch left open.
 
 - **`mecha features --probe` adds up what your models would hold.** Every
   model the features you have on would load — the chat model, embeddings,
