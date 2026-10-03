@@ -28,33 +28,28 @@ the default `warn` filter and every line the confirmation path writes is
 `info`, so serve's journal for this window is `-- No entries --`.
 
 ```
-19:36:08  heard   "Can you add [removed] two [removed]."
-19:36:32  said    "[removed]."
-19:36:37  said    "Let me [removed] this Wednesday, September 16th."
-19:36:38  said    "That's drafted."                                    ← item 20260913T193636 (lab calendar)
-19:36:47  heard   "Um yeah, I [removed] my [owner's name] Chang Gmail calendar."
-19:36:55  said    "[removed] draft [removed] calendar instead."
-19:36:57  said    "That's drafted on your Gmail [removed] to two."  ← item 20260913T193654
-19:37:02  said    "Want [removed] too?"
-19:37:03  offer   "Here it is, in full. Title: Lab Meeting. [removed] 12 PM.
-                   [removed] 2 PM. Account: personal.
-                   Defaults: all day false, calendar id primary.
-                   I had read outside content when I wrote this, so listen to the addressing.
-                   Say yes to send it, or later to leave it in your outbox.
-                   That [removed]."
-19:37:44  heard   "Go ahead and send it."          (rms 0.0357, over_speaker=True)
-19:37:45  said    "I don't have the [removed] call.
-                   You'll need to review [removed]`."
-19:37:51  heard   "I agree."
-19:37:53  said    "Go [removed] ready through your outbox."
-19:37:59  heard   "Why [removed]?"
-19:38:02  said    "I can stage drafts, [removed] yours — it's a
-                   safety [removed] your review. I [removed] that."
-19:38:17  heard   "[removed] inline approvals."
-19:38:22  said    "You're right, [removed] that. I genuinely can't release
-                   [removed]. I [removed] to review."
-19:40:33  outbox  20260913T193654 released from a screen — 2 min 49 s after the spoken yes.
-          outbox  20260913T193636 (the lab-calendar draft the model "scrapped") is still pending.
+19:36:08  heard   the owner asks for a recurring calendar event
+19:36:32  said    the model says it will check the calendars
+19:36:37  said    it drafts the first occurrence
+19:36:38  said    it reports the draft made                        ← item A (one account)
+19:36:47  heard   the owner asks for a different account instead
+19:36:55  said    the model says it will discard the first draft and redraft
+19:36:57  said    it reports the redraft made, on the other account  ← item B
+19:37:02  said    the model ends on a question of its own
+19:37:03  offer   the full readback of item B: title, start, end, account, the
+                   defaults clause, the taint line, "Say yes to send it, or
+                   later to leave it in your outbox.", and the account tail
+19:37:44  heard   a spoken yes                    (rms 0.0357, over_speaker=True)
+19:37:45  said    the model says it cannot release drafts and points at
+                   `mecha outbox`
+19:37:51  heard   a short agreement
+19:37:53  said    the model repeats that release is the owner's step
+19:37:59  heard   the owner asks why it cannot release through the call
+19:38:02  said    the model explains the release step is a safety gate
+19:38:17  heard   the owner points out inline approvals exist
+19:38:22  said    the model apologises and repeats that it has no release tool
+19:40:33  outbox  item B released from a screen — 2 min 49 s after the spoken yes.
+          outbox  item A (the draft the model said it would discard) is still pending.
 ```
 
 Three facts to hold onto:

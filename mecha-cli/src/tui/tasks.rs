@@ -741,7 +741,7 @@ fn draw_form(frame: &mut Frame, form: &Form) {
     body.push(Line::raw(""));
     match &form.error {
         // The refusal is the graph's own words. A form that reported "invalid"
-        // where the tool said "project 'py-feat' is not a node" would send
+        // where the tool said "project 'kelp-survey' is not a node" would send
         // somebody hunting for a date bug.
         Some(e) => body.push(Line::styled(format!("  {e}"), Style::new().fg(Color::Red))),
         None => body.push(Line::styled(
