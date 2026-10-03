@@ -645,9 +645,14 @@ conversation, so the capabilities do not change. Three rules:
   made, so a retry in the same chat repeated the edit. Each edit's
   `layout_similarity` to its first reference (grayscale 32² thumbnails,
   correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.78) the result
-  says the layout did not change and how to retry: edit the original with the
-  prompt rewritten as the parts to keep, named, then an instruction naming the
+  says the layout did not change, that a move or pose may not have taken, and
+  how to retry *if the owner asks*: edit the original with the prompt
+  rewritten as the parts to keep, named, then an instruction naming the
   change, or redraw from the library by the names in the original's manifest.
+  It never says "call again now" (`NO_RETRY_UNASKED`): on 2026-10-03, in a
+  chat where it had, a persona retried 12 of 13 near-copies unasked — detail
+  edits included — and then redrew after edits that had worked, reasoning
+  that the result said they had not taken.
   It gives the names only, each checked against the library, since the
   manifest is a workspace file. The threshold was measured on one scene and
   on same-shape edits only: every copy, and every edit that left her
@@ -670,6 +675,16 @@ conversation, so the capabilities do not change. Three rules:
   instead told a second successful recolour to stop (review of #408). The
   record holds a salted hash of each path, never the path, and is swept on
   every edit, since an incognito room's path must not outlive the room.
+- **The call that just drew a picture is answered, not drawn again.** An
+  input identical to the last one that drew in the same workspace, within 15
+  minutes (`REPEAT_WINDOW`), gets `REPEAT_REFUSED` — the picture is already
+  in the chat; change the prompt or the seed for another — and no GPU time.
+  On a call on 2026-10-03 a persona re-sent the call that had just drawn,
+  word for word, four times in one run; ComfyUI ran each in 0.00 s as a
+  duplicate of a finished prompt, kept no new output, and `/view` answered
+  404, which the run read as a failure. Only a call that drew is recorded,
+  so a failed or cancelled one can be tried again as it was. The record is
+  salted hashes, as for the strikes.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
