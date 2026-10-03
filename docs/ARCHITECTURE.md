@@ -3668,6 +3668,12 @@ brief (which reads the board through the graph server) do not run.
   affect latch, the facade's refusal path), and the voice stamp
   `brief::VoicePresence` is skipped for one (`stamp_presence`) — it outlives
   the chat and lands in other runs' briefs.
+- **The voice director runs, and keeps nothing** (owner ruling, 2026-10-03).
+  An incognito call's sentences are directed like any other, on the local
+  model, but no `spoken_direction` record is written — the chat has no
+  transcript by type (`Recording::kept`), and `voice::direct` gates on the
+  key besides — and neither the facade nor the worker writes a journal line
+  for the call (`an_incognito_direction_is_neither_recorded_nor_traced`).
 - **Closing** — End, 30 minutes with no turn and no ping from an open page
   (the reaper, once a minute; the owner's ruling is that an open page is
   use), or `serve` stopping — cancels a run in flight, forgets the todo plan, and removes the
@@ -3709,6 +3715,50 @@ module-private `readPrefs` / `writePrefs` read and write the same key; the pre-m
 and never written. The chat page once kept a second copy of this machinery
 under a different key while claiming to share the first, so a voice picked
 mid-call was saved where nothing else looked.
+
+## The voice director
+
+**Every spoken sentence is directed by a separate one-shot call, and every
+direction is recorded** (`mecha_core::voice_direction`, `voice::direct`;
+`docs/VOICE-BREEZE-DESIGN.md`). A speech engine that takes a free-text voice
+direction (Breeze TTS 2's `instructions`) is told how to say each sentence by
+a quarantined pass that reads the sentence, the owner's words and the
+speaker; the chat model's prompt is untouched.
+
+- **Asked per sentence, by the worker, only when it would be sent.**
+  `LocalTTS.direction_for` posts `{session, context, index, sentence, voice}`
+  to `POST /v1/mecha-direct` when the TTS lists `instructions` in its
+  `controls`, and speaks undirected on anything but a line — a refusal, a
+  timeout, a dead facade. It never journals the words or the direction.
+- **It never touches the reply.** No slot, no slot lock, no host `speak`
+  (`the_director_never_barges_in`): each barges in, and a direction is asked
+  while its reply is still streaming.
+- **On the loaded model, never a named one.** Held with `try_hold` and
+  followed per call; a pending switch is a `skipped` (`switching`), never a
+  wait. Thinking is declined (`CompletionRequest::think`, sent to
+  llama-server as `chat_template_kwargs.enable_thinking = false`), and the
+  facade's deadline — 2.5 s a sentence, above the 1.6 s median a detailed
+  direction measured — is what bounds it. A server with one slot
+  (`follow::Bound::slots`, the router's `/props` as `follow` observed it) is
+  a `single_slot` skip: the call would queue behind the reply.
+- **The first sentence starts early.** With `X-Voice-Directed: 1` on the
+  completion, the facade starts an *opening* direction from the owner's words
+  when the turn starts, so its wait overlaps the model writing the first
+  sentence; index 0 takes that result under a 2.5 s deadline.
+- **Harness speech is not directed**: offers and read-backs (`say`), the
+  failure line, a turn answered without a model, and the persona crisis
+  pause are `skipped` (`harness`).
+- **Recorded after the answer has gone**, as `Record::SpokenDirection` in
+  the conversation's own transcript, and joined to its reply by `turn` and
+  `sentence` — never by file position, since it lands while the sentence
+  plays. Nothing that rebuilds a conversation reads it.
+- **Swept when its chat closes.** The facade's per-conversation directing
+  state is dropped after ten idle minutes, and every 15 s for any chat its
+  host no longer holds (`SessionHost::holds`) — so an ended incognito chat's
+  words do not outlive it in memory.
+- **Not yet: prefetch.** A sentence is asked about when the worker reaches
+  it, so a short sentence before it leaves little playback to hide the call
+  in; directing each sentence as its text streams would close that gap.
 
 ## Hooks
 
@@ -5023,6 +5073,11 @@ non-blocking flock, so a hand edit never contends with a fire.
   it was pinned: `temperature`/`seed` of `None` means the server chose, and
   replay against such a run is pass@k-shaped, not exact-match. `clock` is per
   run, because one `mecha serve` session held runs on both sides of midnight.
+- **A `spoken_direction` record is for the corpus, not the conversation**
+  (`voice_direction::SpokenDirection`): written by the voice facade while
+  its sentence plays, so it is joined by `turn` and `sentence`, never by
+  position, and `Session::read` passes over it. An older build skips the
+  line as one it cannot parse and loses nothing it needs.
 - **One `config` record per attach, never a header field.** A resumed session
   may run under different flags; within one process the config cannot change,
   so per attach is exactly the granularity that can differ.

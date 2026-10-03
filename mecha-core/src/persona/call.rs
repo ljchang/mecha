@@ -19,7 +19,21 @@ pub const CALL_STEM: &str = "(From the harness: the owner is now speaking to you
 /// The persona's own voice says who it is; this says only how a reply is
 /// heard. Citations are named in words because a bracketed quotation read
 /// aloud is noise, and the check still runs on whatever the reply says.
-pub fn note() -> String {
+///
+/// `streams`: the speech engine streams audio as it synthesises (Breeze), so
+/// the length rule goes — it was a latency control for an engine that
+/// speaks a sentence only once all of it is made (owner ruling, 2026-10-03:
+/// "now we don't need things short"). Two fixed texts, each a stable block.
+pub fn note(streams: bool) -> String {
+    if streams {
+        return format!(
+            "{CALL_STEM}. What you write is spoken aloud by a text-to-speech voice, \
+and the owner is listening, not reading. Answer as you would out loud, in \
+your own manner. No markdown, lists, headings or bracketed citations; if a \
+file says something, say which file in words. Write numbers, dates and \
+times as they are spoken.)"
+        );
+    }
     format!(
         "{CALL_STEM}. What you write is spoken aloud by a text-to-speech voice, \
 and the owner is listening, not reading. Answer as you would out loud, in \
@@ -41,11 +55,28 @@ mod tests {
 
     #[test]
     fn the_note_is_the_harness_speaking_never_the_owner() {
-        let note = note();
-        assert!(is_note(&note));
-        assert!(crate::agent::is_harness_voice(&note));
-        let mut m = crate::message::Message::user("how was the dig");
-        m.content.push(crate::message::Block::Text { text: note });
-        assert_eq!(crate::agent::owner_text(&m), "how was the dig");
+        for streams in [false, true] {
+            let note = note(streams);
+            assert!(is_note(&note));
+            assert!(crate::agent::is_harness_voice(&note));
+            let mut m = crate::message::Message::user("how was the dig");
+            m.content.push(crate::message::Block::Text { text: note });
+            assert_eq!(crate::agent::owner_text(&m), "how was the dig");
+        }
+    }
+
+    #[test]
+    fn a_streaming_call_drops_the_length_rule_and_keeps_the_rest() {
+        let streaming = note(true);
+        assert!(!streaming.contains("short"), "{streaming}");
+        assert!(!streaming.contains("speaking starts"));
+        for kept in [
+            "No markdown",
+            "say which file in words",
+            "as they are spoken",
+        ] {
+            assert!(streaming.contains(kept), "{kept}");
+        }
+        assert!(note(false).contains("the first one short"));
     }
 }
