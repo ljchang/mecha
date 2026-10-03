@@ -70,6 +70,21 @@ since the session object was created, continuing across reconnects. Five
 minutes of Opus is about a megabyte; the design's 16 kHz PCM would have
 been ten times that for the same words, and would have touched the track.
 
+**Chromium taps only on a connection made for it (2026-10-03).** Once Chrome
+shipped `RTCRtpScriptTransform`, the page took that branch on a plain
+connection, and Chromium handed the transform no frames at all while RTP flowed:
+the offer declared a buffered uplink that never carried a word, and the worker
+fell back on every call ("RTP is arriving and no batch has"). Chromium delivers
+only on a connection created with `encodedInsertableStreams: true`, and on such
+a connection a receiver plays nothing unless its own frames are piped through.
+So `connect` asks for the flag when `needsInsertableStreams()` (the legacy API on
+both ends, which is Chromium alone) and passes every incoming track through
+(`passThrough`) before the speaker plays it. Measured in Chromium 149, loopback
+with a fake microphone: no flag, 0 frames against 150 RTP packets; flag alone,
+150 frames and 0 decoded samples at the far end; both, 150 frames and normal
+playback. Against the live worker, main's page fell back within 6 s and the fix
+delivered 119 batches in 12 s. Safari and Firefox get the connection as before.
+
 ### 2.2 Delivery over a reliable channel — RTVI messages, not a second channel
 
 As designed, a second binary data channel. As built, **base64 batches inside

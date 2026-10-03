@@ -228,3 +228,30 @@ import { UplinkRing, behindVerdict, BEHIND_TONE_MS, CAUGHT_UP_MS } from '../../s
   assert.equal(refusesAnswer(sdp, {}), null);
   console.log('incognito answer gate: ok');
 }
+
+// ---- Chromium taps only on an insertable-streams connection ----------------
+{
+  const { needsInsertableStreams, passThrough } = await import('../../scripts/voice/voice-core.js');
+  const withApi = function () {}; withApi.prototype = { createEncodedStreams() {} };
+  const without = function () {}; without.prototype = {};
+  assert.equal(needsInsertableStreams({ RTCRtpSender: withApi, RTCRtpReceiver: withApi }), true, 'Chromium was not told apart');
+  assert.equal(needsInsertableStreams({ RTCRtpSender: without, RTCRtpReceiver: without }), false, 'Safari/Firefox would get the flag');
+  assert.equal(needsInsertableStreams({ RTCRtpSender: withApi, RTCRtpReceiver: without }), false, 'a half API would leave the far side unpiped');
+  assert.equal(needsInsertableStreams({}), false, 'no WebRTC at all is not Chromium');
+
+  // The receiver's frames are piped straight through, or the far side is silent.
+  let piped = null;
+  const readable = { pipeTo: (w) => { piped = w; return Promise.resolve(); } };
+  const writable = {};
+  assert.equal(passThrough({ createEncodedStreams: () => ({ readable, writable }) }), true);
+  assert.equal(piped, writable, 'the receiver was not piped into its own writable');
+  assert.equal(passThrough({ createEncodedStreams: () => { throw new Error('already taken'); } }), false);
+
+  // The connection is made with the flag when it is needed, and every
+  // incoming track is passed through before the speaker plays it.
+  const src = (await import('node:fs')).readFileSync(new URL('../../scripts/voice/voice-core.js', import.meta.url), 'utf8');
+  assert.match(src, /new RTCPeerConnection\(insertable \? \{ encodedInsertableStreams: true \} : undefined\)/, 'the connection no longer asks for insertable streams');
+  const ontrack = src.slice(src.indexOf('pc.ontrack = (e) => {'), src.indexOf('speaker.srcObject = e.streams[0];'));
+  assert.match(ontrack, /if \(insertable\) passThrough\(e\.receiver\);/, 'an incoming track plays before it is piped through');
+  console.log('insertable streams: ok');
+}
