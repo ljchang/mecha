@@ -234,17 +234,31 @@ async def speech(req: SpeechRequest):
         raise
 
     if req.response_format == "pcm" and abs(req.speed - 1.0) < 0.01:
+        # The first chunk is read before the headers are committed, so a 200
+        # with no audio is still a 502 on the path calls use, not an empty
+        # stream that plays as silence.
+        chunks = upstream.aiter_bytes()
+        first = b""
+        try:
+            async for chunk in chunks:
+                if chunk:
+                    first = chunk
+                    break
+        except BaseException:
+            await upstream.aclose()
+            await client.aclose()
+            raise
+        if not first:
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(502, "the Breeze engine answered 200 with no audio")
+
         async def relay():
             try:
-                sent = 0
-                async for chunk in upstream.aiter_bytes():
+                yield first
+                async for chunk in chunks:
                     if chunk:
-                        sent += len(chunk)
                         yield chunk
-                if not sent:
-                    # Headers are gone, so the most this can do is say so: a
-                    # 200 with no audio is a silent sentence, never a success.
-                    print(f"breeze: the engine answered 200 with no audio for voice {voice}", flush=True)
             finally:
                 await upstream.aclose()
                 await client.aclose()
