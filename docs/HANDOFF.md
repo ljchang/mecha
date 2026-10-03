@@ -26,11 +26,16 @@ maps which document holds what.
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live
 with `ed72a382`. `docs/VOICE-BREEZE-DESIGN.md` §5 records each gate's
 state.
-- **#534 (`fix/voice-uplink-chrome`), in review:** Chrome calls fall back
-  to the direct microphone path on every call (trap in HISTORY). Deploy:
-  rebuild `web/dist` and rsync it, with no restart. Probe: a Chrome call
-  shows no "buffered microphone path failed", and the worker logs
-  `batches=` climbing.
+- **#539 (Listen directed once per reply) is live** (HISTORY, 2026-10-03).
+  Owed:
+  - a first by-ear listen: the cue's wording, and the wait before the first
+    sentence;
+  - review pass-3 minors: no end-to-end test in the assistant's chat;
+    recall re-reads the transcript on every tap; `ARCHITECTURE.md` omits
+    the 4-word floor.
+- **#534 is live in the web dist, untried on Chrome by ear.** Probe: a
+  Chrome call shows no "buffered microphone path failed", and the worker
+  logs `batches=` climbing.
 - **Gates still open:**
   - **2:** a call measured while ComfyUI renders.
   - **4:** a failed CUDA init at boot leaves voice with no TTS. The
@@ -48,7 +53,12 @@ state.
 - **Sentences reach Breeze in odd pieces.** The aggregator cuts on
   ellipses, so "A little bit.." becomes one sentence and a lone "." the
   next. #531 (mecha-1e, merged) stops a bare "." reaching the engine; the
-  splitting itself is untouched.
+  splitting itself is untouched. It is not rare: one Maya reply on
+  2026-10-03 (05:36Z) had 42 lone dots, and half its "sentences" were 4
+  characters or fewer. Each piece is its own TTS request and its own
+  direction, so a run of trailing-off phrases is performed as separate
+  fragments. The fix is in the worker: keep an ellipsis inside a sentence,
+  and join tiny fragments to the next one.
 - **Old VCTK clips still say everything twice.** Re-cut one by deleting
   `vctk_<id>.wav` and its `.txt` and running `add-vctk-voices.py`.
 - **Minors from review:**
@@ -136,33 +146,56 @@ Verified against `7663b9a8`.
   feature (image generation). It opens anyway from Settings → Voice's link
   (`OPENS_ANYWAY`), but has no tab of its own.
 
-**2026-10-03 — Breeze voice fixes: both live (mecha-1e).** Both merged at 14:06Z (#531 `8a26e142`, #532
-`ebcfcf19`).
-- **#532 is installed:** from a clean `ebcfcf19`, finished 14:08:53Z.
-  `strings ~/.cargo/bin/mecha | grep -cF 'In your own natural voice: '` →
-  1, and 0 before. Serve restarted at 14:09:26Z through `serve_held`. The
-  worker was not restarted, since `worker.py` is unchanged.
-- **#531 is deployed:** the shared checkout was fast-forwarded `27156c9e` →
-  `57424b7f` on the owner's word, and `mecha-breeze-adapter` restarted at
-  16:31:27Z. Checked by mecha-5d: `grep -c 'def speakable'
-  scripts/voice/breeze_server.py` → 1, and a `pcm` request for `"."` to
-  :8887 returns 14400 bytes.
+**2026-10-03 — persona calls: what is open (mecha-1e).** #531, #532, #538
+and #541 are in HISTORY under 2026-10-03, all live with mecha-69's
+`6816c2bd` (23:51Z). The analysis behind them read two Maya calls
+(their session ids are in the owner's local notes, not here).
 
-Each deploy cuts a live call, so restart only on zero holds.
-- **#531 (`fix/breeze-unspeakable`):** text with no letter or digit is never
-  sent to the engine: where `breeze_server.speakable` is false, `speech`
-  plays `PAUSE_SECONDS` (0.3 s / speed) of silence instead. The owner's report: "i'm getting occasional
-  intrusions completely unlreated to the story sometimes not the same
-  language and isn't in text transcript". Deploy: pull the shared checkout,
-  restart `mecha-breeze-adapter`. Probe: a `pcm` request for `"."` to :8887
-  returns 14400 bytes.
-- **#532 (`voice/director-continuity`):** `voice_direction::SYSTEM`
-  rewritten, with `ANCHOR`, `Scene::last_direction` and
-  `Directions::carried`, against the owner's "how variable the voice sounded
-  line to line"; steer: "I want texture words to stay but maybe removing
-  pitch or putting constraints could be useful". Deploy: reinstall `mecha`,
-  restart serve. Probe: new `spoken_direction` records start "In your own
-  natural voice: ". It renumbers VOICE-BREEZE-DESIGN §3 (a new item 4).
+- **Read the first call after the 23:51Z install.** Three numbers say
+  whether #538 and #541 held up live:
+  - the start lag: a `spoken_direction` record's `ts` against its turn id
+    (`chatcmpl-<time>`);
+  - replies that end mid-sentence;
+  - each call turn's thinking, which should stop near 4,000 characters.
+
+  An older llama.cpp build silently ignored a per-request
+  `reasoning_budget` (the note in `scripts/start-moe-mtp.sh`). The running
+  build was measured honouring `reasoning_budget_tokens`, but after a
+  llama.cpp update the 40-second starts coming back would be the only sign
+  that it no longer does.
+- **Typed persona turns keep the full 4096 budget.** The owner: "start with
+  call turns first and then consider it later". The same stall (thinking
+  that re-drafts the reply) applies there.
+- **The nightly mail sweep ran during a call.** `mecha-mail-classify`
+  started at 05:31:51Z mid-call, shared the model for 72 s, and every one of
+  that call's 13 direction timeouts fell inside it. The night unit has no
+  `ExecCondition=`. The day unit's `mecha-model-idle` checks only for a busy
+  slot, and a call between sentences holds none. A live call should count as
+  busy, and the night sweep should stand down while one is. Unruled.
+- **The phone's audio link stalls.** In the afternoon session the worker
+  logged 56 `voice link paused … resumed after` pairs: 259 s in all, 27 of
+  2 s or more, the longest 23.8 s. While paused, audio waits in both
+  directions. The network path (cellular or Wi-Fi, a direct tailnet route or
+  a relay) has not been looked at.
+- **Typed call turns go to the journal.** The worker logs the first 80
+  characters (`voice typed turn:` through `spoken_words`) for every
+  non-incognito call, persona chats included. That is by design. Whether
+  intimate persona calls should be logged that way is the owner's call.
+- **Repetition the trim does not touch.** In the afternoon chat, 37 of 62
+  completed replies opened "Mmm", and closing questions repeated (one six
+  times). The persona repetition block above says to wait for its readings
+  before tuning.
+- **Unverified:** each director call re-reads about 550 prompt tokens
+  (router log, 05:32Z), so the per-turn prefix is only about half cached.
+  The cause has not been run down.
+- **Minors from review:**
+  - #538: a complete reply with no final mark (a question with no question mark)
+    loses its last clause on the wire. None occurred in the chat that
+    measured the fix.
+  - #538: no test composes `PriorThinking` and `PriorTails` through
+    `Agent::wire_bytes`.
+  - #541: `persona::judge::screen` could take a per-request budget too (its
+    comment on a judge that "spends it all and answers empty").
 
 **2026-10-01/02 — persona memory: written nightly, recalled at chat start
 and on every turn, and searchable by the persona, all live (mecha-5d).**

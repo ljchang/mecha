@@ -14,6 +14,101 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-10-03 — a persona on a call: no dangling last word, and thinking
+capped at one draft (#538, #541; mecha-1e).** After an afternoon of persona
+calls the owner reported replies "ending on 'I' or talking too long or too
+short", and asked "why is it so slow to start talking sometimes and fast at
+other times?". Merged as `eb37184c` and `2b3a633e`, installed from
+`2b3a633e` at 23:41:43Z (serve 23:41:50Z through `serve_held`), then carried
+by mecha-69's `6816c2bd` install at 23:51Z. Probe: `strings
+~/.cargo/bin/mecha | grep -c reasoning_budget_tokens` → 1, and 0 before.
+- **A persona copied its own cut-off replies (#538).** An interrupted reply
+  is stored as heard, mid-sentence. The model then ended replies "…\n\nI"
+  on its own, and each one was another example: 41 of 75 earlier replies by
+  the end of one chat (17:14–19:20Z), every one recorded
+  `stop_cause: completed`. Replayed against the loaded model, the same turn
+  stopped mid-sentence 4 of 4 times with the history as stored and 0 of 4
+  with it cut back. `message::PriorTails::Trim`, set in
+  `setup::persona_agent` beside `PriorThinking::Drop`, cuts an earlier
+  plain reply that ends mid-clause back to its last whole sentence
+  (`dangling_tail`; `abbreviation` keeps "Dr." and "e.g." from counting as
+  sentence ends). It changes what is sent; the transcript keeps every reply.
+- **The long thinking was the reply, re-drafted (#541).** A spoken reply
+  waited 47–50 s whenever thinking ran to the router's `--reasoning-budget`
+  4096: one sentence of the draft repeated up to 23 times, with the fresh
+  material ending 11–16% of the way in. Otherwise replies started in a
+  median 1.9 s. Replayed on 9 turns and judged blind by the same model
+  (each pair twice, order swapped): thinking off lost to the full budget
+  12–17; a 512-token cap lost 10–20 and stopped replies mid-sentence three
+  times as often; a 1024-token cap won 24–10, slowest 12.5 s against
+  41.3 s. `CompletionRequest::think_budget` is sent as llama-server's
+  `reasoning_budget_tokens`, only to `OpenAiCompatible::local` (`kind =
+  "local"` with a base URL: the dialect, not the address).
+  `RunContext::think_budget` is set to `SPOKEN_THINK_BUDGET` (1024) on a
+  spoken persona turn and reaches the forced final turn. Typed turns keep
+  4096; the owner: "start with call turns first and then consider it
+  later".
+- Review passes: #538 two (an abbreviation was taken for a sentence end),
+  #541 four (the forced final turn dropped the cap; the field reached any
+  OpenAI-compatible endpoint, where it is a 400; the first gate tested the
+  address).
+
+**2026-10-03 — Listen is directed once per reply (#539, mecha-69).** Merged
+as `6816c2bd`, deployed 23:52Z. A Listen tap (`commands/serve/listen.rs`)
+asks the director once per reply through `voice::ask_director_on` with
+`Cue::Reply`, and the line rides every piece of the reply as
+`instructions`. It reuses an earlier tap's line (turn prefix
+`voice_direction::LISTEN_TURN`) or a call turn's first line
+(`Session::spoken_directions`), and records one `spoken_direction` per reply
+(incognito: none). The worker answers `GET /mecha/directs`
+(`worker_directs`).
+
+**2026-10-03 — Chrome calls keep the buffered microphone path (#534,
+mecha-69).** Merged as `6c9e9169`. The web dist went live at about 14:55Z
+with no restart, and again inside #539's dist at 23:52Z. The cause is the
+Chromium trap under Environment.
+
+**2026-10-03 — Breeze: no speech invented from punctuation, and a director
+that keeps one voice (#531, #532; mecha-1e).** The owner's reports: "i'm
+getting occasional intrusions completely unlreated to the story sometimes
+not the same language and isn't in text transcript", and the expressiveness
+"often sounding like a different person" line to line.
+- **#531 (`8a26e142`):** where `breeze_server.speakable` is false (no
+  letter or digit), `speech` plays `PAUSE_SECONDS` / speed of silence and
+  never asks the engine. Deployed 16:31:27Z, when the shared checkout moved
+  `27156c9e` → `57424b7f` on the owner's word and `mecha-breeze-adapter`
+  restarted. Probe: a `pcm` request for `"."` to :8887 returns 14400 bytes.
+- **#532 (`ebcfcf19`):** `voice_direction::SYSTEM` directs emotion, energy,
+  pace, emphasis and a balanced choice of texture; pitch may move within a
+  line, never a level, register, age or accent; change by degrees.
+  `voice_direction::ANCHOR` ("In your own natural voice: ") is added in code
+  and never shown back to the director, and `Directions::carried` seeds a
+  reply with the last one's direction. With the real director over three
+  logged replies: pitch levels named 9 of 24 → 0 of 24, and the mean pitch
+  move between lines 2.8 → 1.6 semitones (max 18.0 → 5.3). Installed
+  14:08:53Z, serve restarted 14:09:26Z.
+
+**2026-10-03 — real names out of the tree (#536, #537, #540; mecha-5d).**
+On the owner's rulings to scrub real people, the institution and the
+owner's addresses.
+- **#536 (`9a2b2ccd`):** the owner's family's names, the owner's own name
+  as fixture data, the lab and its package, a handle, and two graph contacts
+  with full names, from the TUI, outbox, gossip and corroborate fixtures,
+  the docs demo and a published docs page. The owner fixture is now Robin
+  (they/them), in `web/src/demo/fixtures.js`'s cast block.
+- **#537 (`c7be1610`):** the institution and the owner's addresses. The mail
+  account is `campus` in fixtures and docs, and addresses use example.edu.
+  `mecha mail score`/`eval` default to the account mecha-mail sends from
+  (`commands::mail::measured_account`) rather than a compiled-in name.
+  `scripts/mecha-slots.service` ships `--account YOUR-MAIL-ACCOUNT`, so it
+  must never be copied over the installed unit, which, with the live
+  account, tokens and stores, keeps the real name.
+- **#540 (`58c4bf28`):** a real correspondent and a real event in
+  `web/test/outbox-view.mjs`.
+- **Not finished:** on `6816c2bd` the package name is still in
+  `docs/DOCS-RESEARCH.md` and a `tui/docs.rs` fixture (reported to
+  mecha-5d). The names stay in git history and in crates.io tarballs.
+
 **2026-10-03 — Breeze TTS 2 is the voice: an adapter, a director per
 sentence, no brevity rules on a streaming engine, and `default.wav`
 (#523, #525, #527, #528, #529; mecha-69).** Live with mecha-69's
@@ -9213,6 +9308,19 @@ refuse: "." came back as "Um", "Yeah", or the reference clip's own sentence;
 emits a lone "." after "...", so it reached the engine in live calls. Guard
 the input (#531), because the engine will not.
 
+**A model reads its own earlier replies as examples of how to end one**
+(mecha-1e, 2026-10-03). A persona's interrupted replies were stored as
+heard, mid-sentence, and the model began stopping its own replies after
+"\n\nI", each one another example: 41 of 75 by the end of one chat, all
+recorded as completed. Whatever shape the history has, the next reply
+learns it. Trim what goes back to the model (#538), never what is recorded.
+
+**A reasoning cap below one draft is worse than none** (mecha-1e,
+2026-10-03). A persona's long thinking was its reply drafted and then
+redrafted. A 512-token cap stopped the draft half-written and lost 10–20,
+blind, to the full budget; 1024 won 24–10, with a third of the worst wait.
+Read what the thinking is doing before choosing its budget.
+
 **A one-sided example list in a prompt is copied as a menu** (mecha-1e,
 2026-10-03). The voice director, shown texture words, used "husky" in 21 of
 24 directions, and one draw collapsed into the same ten adjectives over 19
@@ -10394,6 +10502,15 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**A sweep pattern proves nothing about what it cannot express** (mecha-5d,
+2026-10-03). A grep for first names came back empty over a tree that still
+held the surname and the lab. A word-boundary pattern for a name misses it
+after a `\n` escape in source, because the escape's `n` is a word
+character. The brief handed to a subagent is fixture text too: real stored
+persona facts reached a research doc that way (fixed in #533). The names
+had come back five weeks after the 2026-08-26 cleanup. Before trusting an
+empty sweep, list what the pattern could not have matched.
 
 **Chromium taps encoded audio only on a connection made for it.** Once
 Chrome shipped `RTCRtpScriptTransform`, the call page took that branch on a
