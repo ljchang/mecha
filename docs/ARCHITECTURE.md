@@ -675,21 +675,24 @@ conversation, so the capabilities do not change. Three rules:
   instead told a second successful recolour to stop (review of #408). The
   record holds a salted hash of each path, never the path, and is swept on
   every edit, since an incognito room's path must not outlive the room.
-- **The seeded call that just drew a picture is answered, not drawn again.**
-  A new picture with an explicit `seed` whose input is identical to the last
-  call that drew in the same workspace, within 15 minutes (`REPEAT_WINDOW`),
-  gets `REPEAT_REFUSED` through `refused` — an error, since the page counts a
-  turn's pictures by `is_error` (`turnsWithoutPicture`) — and no GPU time.
-  Only that case: without a seed, and on every edit, the tool draws a fresh
-  seed, so the same input is another picture — "another one", or the retry a
-  near-copy notice describes — and a cast call at a portrait's seed is
-  reseeded too, so it is not recorded (review of #543). On a call on 2026-10-03 a
-  persona re-sent the seeded call that had just drawn, word for word, four
-  times in one run; ComfyUI ran each in 0.00 s as a duplicate of a finished
-  prompt, kept no new output, and `/view` answered 404, which the run read
-  as a failure. Only a call that drew is recorded, so a failed or cancelled
-  one can be tried again as it was. The record is salted hashes, as for the
-  strikes.
+- **The request that just drew a picture is answered, not drawn again.**
+  The guard keys on the request as it goes to the server — prompt, seed,
+  size, steps and every reference, after the tool has filled them in — not
+  on what the model typed, so a default spelled out or a stray space is the
+  same request (`ImageGenerate::claim`). The same request in the same
+  workspace within 15 minutes (`REPEAT_WINDOW`) gets `REPEAT_REFUSED` through
+  `refused` — an error, since the page counts a turn's pictures by
+  `is_error` (`turnsWithoutPicture`) — and no GPU time. A call with no seed,
+  every edit, and a cast call at a portrait's seed get a fresh seed, so the
+  same input is never the same request: "another one", and the retry a
+  near-copy notice describes, always draw (review of #543). The claim is
+  taken before the render, because a turn's calls run concurrently, and
+  lapses unless the request drew, so a failed or cancelled one can be sent
+  again. On a call on 2026-10-03 a persona re-sent the seeded call that had
+  just drawn, word for word, four times in one run; ComfyUI ran each in
+  0.00 s as a duplicate of a finished prompt, kept no new output, and
+  `/view` answered 404, which the run read as a failure. The record is
+  salted hashes, as for the strikes.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
