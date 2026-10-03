@@ -70,6 +70,35 @@ since the session object was created, continuing across reconnects. Five
 minutes of Opus is about a megabyte; the design's 16 kHz PCM would have
 been ten times that for the same words, and would have touched the track.
 
+**Chromium taps only on a connection made for it (2026-10-03).** Once Chrome
+shipped `RTCRtpScriptTransform`, the page took that branch on a plain
+connection, and Chromium handed the transform no frames at all while RTP flowed:
+the offer declared a buffered uplink that never carried a word, and the worker
+fell back on every call ("RTP is arriving and no batch has"). Chromium delivers
+only on a connection created with `encodedInsertableStreams: true`, and on such
+a connection a receiver plays nothing unless its own frames are piped through.
+So `connect` asks for the flag when `needsInsertableStreams()` (the legacy API on
+both ends, which is Chromium alone) and passes every incoming track through
+(`passThrough`) before the speaker plays it. Measured in Chromium 149, loopback
+with a fake microphone: no flag, 0 frames against 150 RTP packets; flag alone,
+150 frames and 0 decoded samples at the far end; both, 150 frames and normal
+playback. Against the live worker, main's page fell back within 6 s and the fix
+delivered 119 batches in 12 s. Safari and Firefox get the connection as before.
+`needsInsertableStreams` is a proxy: it recognises Chromium by the legacy
+`createEncodedStreams`, the API `RTCRtpScriptTransform` replaces. If Chromium
+drops that API while still gating delivery on the flag, the predicate goes false,
+the page takes the plain connection, and the call falls back again - so the
+owner's "buffered microphone path failed" reappearing in Chrome is the signal to
+recheck this predicate first.
+On that connection every outgoing frame passes through the tap's worker, so
+a fallback to RTP keeps the worker running and only stops its copies (a
+`stop` message); terminating it, or setting `sender.transform = null`, left
+1 packet reaching the far end in 2.5 s against 125 with the worker kept
+(review of #534). Only `end()` terminates it, with the connection. And a
+tap that fails to attach on that connection leaves the sender piped straight
+through: a bare sender on a flagged connection sent 0 packets in 3 s, and the
+real page with its tap script missing went from 0 packets to 434 once piped.
+
 ### 2.2 Delivery over a reliable channel — RTVI messages, not a second channel
 
 As designed, a second binary data channel. As built, **base64 batches inside

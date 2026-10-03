@@ -287,6 +287,34 @@ export function wireBacklogMs(pendingMs, bufferedAmount) {
 export function shouldPump(pendingMs, bufferedAmount) {
   return pendingMs >= UPLINK_BATCH_MS && (bufferedAmount || 0) < UPLINK_SCTP_HIGH_BYTES;
 }
+/* Whether this browser taps encoded frames only on a connection created with
+   `encodedInsertableStreams: true` - Chromium. Without the flag Chromium hands
+   an `RTCRtpScriptTransform` no frames at all while RTP flows normally, so the
+   page declared a buffered uplink that never carried a word and the worker fell
+   back every call; and with the flag, a receiver plays nothing unless its own
+   frames are piped through (`passThrough`). Measured in Chromium 149 on
+   2026-10-03, a loopback with a fake microphone: no flag, 0 frames to the tap
+   against 150 RTP packets; flag alone, the tap saw 150 and the far side decoded
+   0 samples; flag and pass-through, 150 frames and 142,560 samples. Told apart
+   by the legacy API Chromium alone carries on both ends; Safari and Firefox
+   deliver to a script transform without it and get the connection as before. */
+export function needsInsertableStreams(g = globalThis) {
+  const has = (C) => typeof C === "function" && !!C.prototype && "createEncodedStreams" in C.prototype;
+  return has(g.RTCRtpSender) && has(g.RTCRtpReceiver);
+}
+/* A sender or receiver on an insertable-streams connection carries only what
+   is piped through it. False when the pipe could not be made; `onBroken` when
+   one that was made rejects - construction is not delivery (the #231 lesson,
+   review of #534). The caller guards `onBroken` against a call that ended,
+   since closing the connection rejects every pipe too. */
+export function passThrough(target, onBroken = () => {}) {
+  try {
+    const { readable, writable } = target.createEncodedStreams();
+    readable.pipeTo(writable).catch(() => onBroken());
+    return true;
+  } catch { return false; }
+}
+
 /* Opus at 48 kHz; the transform reports RTP timestamps at the codec clock. */
 const RTP_CLOCK_HZ = 48000;
 const RTP_TS_WRAP = 2 ** 32;
@@ -492,6 +520,8 @@ export function createVoiceSession(opts = {}) {
      the link was down is delivered at the head of the next connection. */
   const ring = ringFor(cfg.sessionKey);
   let uplinkWorker = null, uplinkMode = "rtp", pumpTimer = 0, pumping = false, lastFrameAt = 0;
+  // Whether this call's connection was made with `encodedInsertableStreams`.
+  let insertable = false;
   /* The channel's proof of life for the worker's deafness watch: sent
      every `UPLINK_HEARTBEAT_MS` while the channel is in use, so a channel
      that is merely head-of-line blocked (heartbeats stop too) is never
@@ -845,16 +875,51 @@ export function createVoiceSession(opts = {}) {
       t.onunmute = () => resume("mic");
       t.onended = () => end("microphone lost — tap to reconnect");
     });
-    pc = new RTCPeerConnection();
+    // Chromium taps encoded frames only on a connection made for it
+    // (`needsInsertableStreams`). If the flag is refused, the call runs as
+    // before - RTP, no buffered uplink - rather than not at all.
+    insertable = needsInsertableStreams();
+    try {
+      pc = new RTCPeerConnection(insertable ? { encodedInsertableStreams: true } : undefined);
+    } catch {
+      insertable = false;
+      pc = new RTCPeerConnection();
+    }
     // After `pc` exists: the post-await guard in `holdScreen` reads it.
     holdScreen();
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
     uplinkMode = (await attachUplinkTap()) ? "channel" : "rtp";
     if (!pc) return; // ended while the worker was loading
+    // A flagged connection sends only what is piped through the sender, so a
+    // tap that did not attach (a slow or missing worker script, a transform
+    // that would not construct) must leave it piped straight through, or the
+    // "direct path" carries nothing. Measured in Chromium 149: a bare sender
+    // on a flagged connection sent 0 packets in 3 s; piped through, 149
+    // (review of #534, pass 3). If even that fails the call cannot be heard,
+    // and it says so.
+    if (uplinkMode !== "channel" && insertable) {
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
+      const deaf = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false }); };
+      if (sender && !passThrough(sender, deaf)) deaf();
+    }
     ring.restart();
     const speaker = new Audio(); speaker.autoplay = true;
-    pc.ontrack = (e) => { speaker.srcObject = e.streams[0]; };
+    // On an insertable-streams connection the far side is silent unless its
+    // frames are piped through, before anything plays them. A receiver that
+    // could not be piped is said in the call, once - silence with the call
+    // reading "listening" is the failure nobody could name (review of #534).
+    // Once per receiver, piped or not: a second `ontrack` for one already
+    // piped throws on `createEncodedStreams` and is not a failure.
+    const seen = new WeakSet();
+    pc.ontrack = (e) => {
+      if (insertable && !seen.has(e.receiver)) {
+        seen.add(e.receiver);
+        const mute = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false }); };
+        if (!passThrough(e.receiver, mute)) mute();
+      }
+      speaker.srcObject = e.streams[0];
+    };
 
     dc = pc.createDataChannel("rtvi");
     dc.onopen = () => {
@@ -995,6 +1060,9 @@ export function createVoiceSession(opts = {}) {
   async function attachUplinkTap() {
     const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
     if (!sender) return false;
+    // Chromium without the flag would attach and deliver nothing: the
+    // buffered uplink is not offered at all, rather than declared and dead.
+    if (needsInsertableStreams() && !insertable) return false;
     // Guarded on the mode: on the `createEncodedStreams` path there is no
     // worker to terminate, so without this the tap would keep filling the
     // ring after a fallback and the next connection would replay, as a
@@ -1042,11 +1110,37 @@ export function createVoiceSession(opts = {}) {
     if (uplinkMode !== "channel") return;
     uplinkMode = "rtp";
     clearTimeout(pumpTimer); pumpTimer = 0;
-    if (uplinkWorker) { try { uplinkWorker.terminate(); } catch { /* gone */ } uplinkWorker = null; }
+    // The tap stays attached and its worker alive: every outgoing frame
+    // passes through that worker, so ending it (or detaching the transform)
+    // stops the RTP this fallback is about to rely on. Measured in Chromium
+    // 149 on a flagged connection: after `terminate()`, 1 packet reached the
+    // far end in 2.5 s, likewise after `sender.transform = null`; with the
+    // worker kept and only its copies ignored, 125 (review of #534). So the
+    // page stops listening and tells the worker to stop copying; `end()`
+    // terminates it with the connection.
+    if (uplinkWorker) {
+      uplinkWorker.onmessage = null;
+      // Kept, not dropped: every outgoing frame passes through this worker
+      // now, so its death is the call going silent and must be said.
+      uplinkWorker.onerror = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: the microphone path stopped - tap to reconnect", interim: false }); };
+      try { uplinkWorker.postMessage({ stop: true }); } catch { /* gone */ }
+    }
     behindShownS = 0; behind = { sounded: false };
     // Each end tells the other; the worker's reader stays parked otherwise.
     if (!fromWorker) sendClientMessage("uplink", { state: "rtp", why });
-    cfg.onTranscript({ who: "bot", text: `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
+    // When the witness is the tap itself (its worker erred, or no frame has
+    // reached the page), on a flagged connection the frames are not reaching
+    // RTP either, and nothing restores them in place: detaching the transform
+    // and piping the sender through measured 0 packets in 2.5 s, as did
+    // terminating (review of #534, pass 4). Only a new connection carries the
+    // voice, so the page says so rather than promise a direct path.
+    // The witness is the worker transform, not the flag: on the main-thread
+    // `createEncodedStreams` tap (Chromium before `RTCRtpScriptTransform`)
+    // the pipe ends in an unconditional enqueue and the direct path works.
+    const tapDead = !fromWorker && insertable && !!uplinkWorker;
+    cfg.onTranscript({ who: "bot", text: tapDead
+      ? `voice: the microphone path stopped (${why}) - tap to reconnect`
+      : `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
     if (!pausedBy.any) cfg.onState(lastState.name, lastState.label);
   }
   /* Standing, not one-shot (review of #231): a tap that dies mid-call is
