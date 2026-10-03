@@ -65,7 +65,8 @@ voice worker ──/v1/audio/speech, /v1/voices──▶ breeze_server.py (:8887
   - a transcript sidecar per voice;
   - registration with the engine, renewed if the engine has forgotten it;
   - `default` as a clip like any other (`default.wav`);
-  - speed by stretch.
+  - speed by stretch;
+  - a short pause for text with no letter or digit, never sent to the engine, which invents speech when given nothing to say (`breeze_server.py` module docstring, measured).
 
   The engine's registry lives in memory, so a restarted engine has forgotten every voice. Measured against the real engine (2026-10-03): `GET /v1/audio/voices` answers `{"voices": [{"name": …, "kind": "registered"}]}`, and speaking an unregistered voice is HTTP 400 `unknown voice '<name>'`. The adapter asks the registry before retrying, and re-registers when the registry cannot be read.
 
