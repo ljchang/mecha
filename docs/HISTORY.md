@@ -114,7 +114,7 @@ are live from mecha-5d's `c08f7f21` (2026-10-02 22:03Z). Three review
 passes each.
 - **#514 (`b44f0659`): a memory is dated by the chat it came from**, in
   `[agent] timezone`, not by the night it was written. Before, the first
-  night showed a 30 September fever as that morning's news, and a UTC day
+  night showed a passing state from 30 September as that morning's news, and a UTC day
   put the owner's late-evening chats a day ahead.
   - `Source::chat_began` reads the date from the session id.
   - `said_at` (on `Fact`, `SharedFact` and `Episode`) chooses `valid_from`,
