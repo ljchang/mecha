@@ -132,15 +132,18 @@ export function replyKey(text) {
  * What the director is told about the moment a reply was said in: the
  * owner's words it answers (`asked`) and what the speaker said before it
  * (`lastReply`) — read from the page's entries, nearest first, as a call's
- * scene is built from the conversation.
+ * scene is built from the conversation. `words` is how the page shows the
+ * owner's text — a persona chat's strips its goal preamble (`ownWords`) —
+ * so the director reads what the owner said, not the harness's framing.
  */
-export function replyContext(entries, i) {
+export function replyContext(entries, i, words = (t) => t) {
   let asked = null;
   let lastReply = null;
   for (let j = i - 1; j >= 0; j -= 1) {
     const e = entries[j];
     if (asked === null) {
-      if (e?.kind === 'user' && e.text?.trim()) asked = e.text;
+      const said = e?.kind === 'user' ? words(e.text ?? '') : '';
+      if (said?.trim()) asked = said;
     } else if (e?.kind === 'assistant' && e.text?.trim()) {
       lastReply = e.text;
       break;

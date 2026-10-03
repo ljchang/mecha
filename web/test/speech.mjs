@@ -1,6 +1,7 @@
 // A reply tidied for speech, and cut into pieces the player can ask for one
 // at a time (`speech.js`; the owner's ask, 2026-10-01).
 import assert from 'node:assert/strict';
+import { ownWords } from '../src/lib/persona.js';
 import { replyContext, replyKey, speakable, speechPieces, speechSentences } from '../src/lib/speech.js';
 
 // Marks go, words stay.
@@ -68,5 +69,8 @@ const entries = [
 assert.deepEqual(replyContext(entries, 4), { asked: 'How did the dig go?', lastReply: 'Hello!' });
 assert.deepEqual(replyContext(entries, 1), { asked: 'Hi', lastReply: null });
 assert.deepEqual(replyContext(entries, 0), { asked: null, lastReply: null });
+// The owner's words as the page shows them: a persona chat's preamble goes.
+const framed = [{ kind: 'user', text: '(What I want from this conversation: rest)\n\nHow did the dig go?' }];
+assert.equal(replyContext([...framed, { kind: 'assistant', text: 'Well.' }], 1, ownWords).asked, 'How did the dig go?');
 
 console.log('speech: ok');

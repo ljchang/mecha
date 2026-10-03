@@ -158,8 +158,9 @@ pub(crate) fn saved(records: &[SpokenDirection], key: &str, whole: &str) -> Opti
         .filter(|d| !d.turn.starts_with(vd::LISTEN_TURN))
     {
         let t = turns.entry(d.turn.as_str()).or_default();
-        if wanted.contains(&normalise(&d.sentence)) {
-            t.spoke += 1;
+        let said = normalise(&d.sentence);
+        if wanted.contains(&said) {
+            t.spoke.insert(said);
         }
     }
     for (d, line) in lines() {
@@ -169,11 +170,11 @@ pub(crate) fn saved(records: &[SpokenDirection], key: &str, whole: &str) -> Opti
             }
         }
     }
-    let best = turns.values().map(|t| t.spoke).max()?;
+    let best = turns.values().map(|t| t.spoke.len()).max()?;
     if best == 0 || best * 2 < wanted.len() {
         return None;
     }
-    let mut top = turns.values().filter(|t| t.spoke == best);
+    let mut top = turns.values().filter(|t| t.spoke.len() == best);
     let (Some(chosen), None) = (top.next(), top.next()) else {
         return None;
     };
@@ -183,8 +184,9 @@ pub(crate) fn saved(records: &[SpokenDirection], key: &str, whole: &str) -> Opti
 /// One call turn, as `saved` weighs it.
 #[derive(Default)]
 struct CallTurn<'a> {
-    /// How many of the reply's sentences it spoke.
-    spoke: usize,
+    /// Which of the reply's sentences it spoke — a set, so a sentence said
+    /// twice counts once.
+    spoke: HashSet<String>,
     /// Its earliest directed line, with that sentence's index.
     first: Option<(u32, &'a String)>,
 }
@@ -358,9 +360,14 @@ async fn settle(
 }
 
 /// Words the harness says in a persona's place — the crisis pause's fixed
-/// message, which a call does not direct either.
+/// message, which a call does not direct either. The whole reply is
+/// compared, not a fragment of it: the call path's substring test exists
+/// because it directs the message a sentence at a time, and here it would
+/// swallow any short reply inside it ("Hi" in "this", "Ready?" in "when
+/// you're ready") and record a model's words as the harness's (review of
+/// #539, pass 2).
 fn is_harness(reply: &str) -> bool {
-    normalise(mecha_core::persona::safety::SAFE_MESSAGE).contains(reply)
+    normalise(mecha_core::persona::safety::SAFE_MESSAGE) == reply
 }
 
 #[cfg(test)]
@@ -470,6 +477,25 @@ mod tests {
         // Less than half the reply was spoken there: not this reply.
         let other = "The grant went in this morning. Then lunch. Then a walk. Then bed.";
         assert_eq!(saved(&records, "abc", other), None);
+    }
+
+    #[test]
+    fn a_sentence_said_twice_in_a_call_counts_once() {
+        let whole = "Yes. The grant went in. Then lunch. Then bed.";
+        let records = [
+            line("chatcmpl-1", 0, "Yes.", "plain"),
+            line("chatcmpl-1", 1, "Yes.", "plain"),
+        ];
+        assert_eq!(saved(&records, "abc", whole), None);
+    }
+
+    #[test]
+    fn only_the_whole_safe_message_is_harness_speech() {
+        let pause = mecha_core::persona::safety::SAFE_MESSAGE;
+        assert!(is_harness(&normalise(pause)));
+        for reply in ["Hi", "Go!", "Ready?", "Right now.", "Any time!"] {
+            assert!(!is_harness(&normalise(reply)), "{reply}");
+        }
     }
 
     #[test]

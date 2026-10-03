@@ -9639,6 +9639,19 @@ mod tests {
             !user.contains("a warm, capable personal assistant"),
             "the persona speaks: {user}"
         );
+        let identity = {
+            let personas = w.personas();
+            let sessions = personas.sessions.lock().await;
+            mecha_core::persona::strip_comments(&sessions[&key].pinned.identity).0
+        };
+        assert!(
+            // As the prompt bounds it: one line.
+            user.contains(&format!(
+                "Speaker: {}",
+                identity.split_whitespace().collect::<Vec<_>>().join(" ")
+            )),
+            "the persona's identity is the scene's speaker: {user}"
+        );
         let recorded = directions();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].turn, "listen:r1");
