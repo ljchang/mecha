@@ -302,6 +302,15 @@ pub enum Record {
     Title {
         title: String,
     },
+    /// How one spoken sentence was directed (`voice_direction`): the
+    /// director's line, or why there was none. Written by the voice facade
+    /// while the sentence is about to play, so it lands wherever the clock
+    /// put it — joined to its reply by `turn`, never by position. Read by
+    /// nothing that rebuilds a conversation; it is there to be studied.
+    ///
+    /// A build from before this record skips the line as one it cannot
+    /// parse, and loses nothing it needs.
+    SpokenDirection(crate::voice_direction::SpokenDirection),
 }
 
 /// What a run was configured with, recorded so it can be replayed.
@@ -2047,6 +2056,8 @@ impl Session {
                     goal_anchor = goal;
                 }
                 Ok(Record::Summary { .. }) => {}
+                // For the corpus, not the conversation: nothing to rebuild.
+                Ok(Record::SpokenDirection(_)) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
@@ -2981,6 +2992,44 @@ mod tests {
             workspace: PathBuf::from("/tmp"),
             title: None,
             kind: None,
+        }
+    }
+
+    #[test]
+    fn a_spoken_direction_is_kept_on_file_and_changes_nothing_the_conversation_reads() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-directed")).unwrap();
+        session
+            .append_messages(&[
+                Message::user("I finished the grant"),
+                Message::assistant(vec![Block::text("Oh, you did it! Go rest.")]),
+            ])
+            .unwrap();
+        let direction = crate::voice_direction::SpokenDirection {
+            turn: "chatcmpl-1".into(),
+            index: 1,
+            sentence: "Go rest.".into(),
+            direction: Some("soft and firm".into()),
+            outcome: crate::voice_direction::Outcome::Ok,
+            ..Default::default()
+        };
+        // Late, as they land live: after the reply, before the next turn.
+        session
+            .append(&Record::SpokenDirection(direction.clone()))
+            .unwrap();
+        session.append_messages(&[Message::user("thanks")]).unwrap();
+
+        let (_, convo) = Session::load(&session.path).unwrap();
+        assert_eq!(convo.messages.len(), 3, "a direction is not a message");
+        assert_eq!(convo.messages[2].text(), "thanks");
+        let raw = std::fs::read_to_string(&session.path).unwrap();
+        let line = raw
+            .lines()
+            .find(|l| l.contains("\"record\":\"spoken_direction\""))
+            .expect("the record is on file under its wire name");
+        match serde_json::from_str::<Record>(line).unwrap() {
+            Record::SpokenDirection(d) => assert_eq!(d, direction),
+            other => panic!("read back as {other:?}"),
         }
     }
 
