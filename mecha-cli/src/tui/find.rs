@@ -315,14 +315,14 @@ mod tests {
     #[test]
     fn a_pack_becomes_rows_entities_first_and_one_line_each() {
         let rows = rows_from_pack(
-            r#"{"entities":["Courtney Rogers"],
+            r#"{"entities":["Priya Nair"],
                 "items":[{"kind":"episode","occurred_at":"2026-08-03 18:55:21",
                           "text":"line one\nline two\nline three"}]}"#,
         )
         .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].kind, "entity");
-        assert_eq!(rows[0].entity.as_deref(), Some("Courtney Rogers"));
+        assert_eq!(rows[0].entity.as_deref(), Some("Priya Nair"));
         assert_eq!(rows[1].line, "line one line two line three");
         assert!(rows[1].full.contains('\n'), "the detail keeps the shape");
     }
@@ -333,13 +333,13 @@ mod tests {
     fn an_ambiguous_entity_lists_its_candidates() {
         let (title, lines) = entity_detail(
             r#"{"found":true,"ambiguous":[
-                {"name":"Courtney Rogers","type":"person","last_seen":"2026-08-21"},
-                {"name":"Courtney A. Jimenez","type":"person","last_seen":"2021-06-30"}]}"#,
+                {"name":"Priya Nair","type":"person","last_seen":"2026-08-21"},
+                {"name":"Priya A. Narang","type":"person","last_seen":"2021-06-30"}]}"#,
         )
         .unwrap();
         assert!(title.contains("ambiguous"));
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("Courtney Rogers"));
+        assert!(lines[0].contains("Priya Nair"));
     }
 
     /// The detail says which facts nobody vetted (◌) and which were denied
