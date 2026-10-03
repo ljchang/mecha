@@ -173,10 +173,10 @@ The shape of the record:
 
 ```toml
 enabled      = true                 # default false
-display_name = "Luke Chang"
-tagline      = "Computational social neuroscience · Dartmouth"
+display_name = "Robin Example"
+tagline      = "Research lab · Fairhaven"
 bio          = "Two or three sentences. Plain text."
-location     = "Hanover, NH"
+location     = "Fairhaven"
 timezone     = "America/New_York"   # rendered beside a booking line
 theme        = "slate"
 accent       = "#5d5294"            # optional, validated

@@ -1463,7 +1463,7 @@ mod tests {
         assert!(!valid_voice_name("default"));
         assert!(!valid_voice_name(""));
         assert!(!valid_voice_name("../escape"));
-        assert!(!valid_voice_name("Luke"));
+        assert!(!valid_voice_name("Theo"));
         assert!(!valid_voice_name("a b"));
         assert!(!valid_voice_name(&"x".repeat(41)));
     }
