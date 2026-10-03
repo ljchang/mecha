@@ -42,8 +42,8 @@ state.
   `spoken_direction` record's `latency_ms` against the previous sentence's
   playback. If short sentences leave gaps, prefetch is the fix: direct
   each sentence when its text streams, before the worker asks. #532
-  (mecha-1e, merged, not yet deployed) rewrites the director's prompt for
-  continuity, so records written before and after its deploy are not one
+  (mecha-1e) rewrote the director's prompt for continuity, live from serve's
+  14:09:26Z restart. Records written before and after that are not one
   population.
 - **Sentences reach Breeze in odd pieces.** The aggregator cuts on
   ellipses, so "A little bit.." becomes one sentence and a lone "." the
@@ -136,11 +136,18 @@ Verified against `7663b9a8`.
   feature (image generation). It opens anyway from Settings → Voice's link
   (`OPENS_ANYWAY`), but has no tab of its own.
 
-**2026-10-03 — Breeze voice fixes merged, not deployed (mecha-1e).** Both
-merged at 14:06Z (#531 `8a26e142`, #532 `ebcfcf19`); at 14:1xZ the installed
-`mecha` (13:35Z) lacked #532's "In your own natural voice" and the shared
-checkout sat at `27156c9e`, before #531. Both deploys cut a live call, so
-restart only on zero holds.
+**2026-10-03 — Breeze voice fixes: #532 live, #531 merged and not
+deployed (mecha-1e).** Both merged at 14:06Z (#531 `8a26e142`, #532
+`ebcfcf19`).
+- **#532 is installed:** from a clean `ebcfcf19`, finished 14:08:53Z.
+  `strings ~/.cargo/bin/mecha | grep -cF 'In your own natural voice: '` →
+  1, and 0 before. Serve restarted at 14:09:26Z through `serve_held`. The
+  worker was not restarted, since `worker.py` is unchanged.
+- **#531 waits on the shared checkout,** still at `27156c9e`. The owner has
+  a script that fast-forwards it and restarts only `mecha-breeze-adapter`.
+  Probe: a `pcm` request for `"."` to :8887 returns 14400 bytes.
+
+Each deploy cuts a live call, so restart only on zero holds.
 - **#531 (`fix/breeze-unspeakable`):** text with no letter or digit is never
   sent to the engine: where `breeze_server.speakable` is false, `speech`
   plays `PAUSE_SECONDS` (0.3 s / speed) of silence instead. The owner's report: "i'm getting occasional
