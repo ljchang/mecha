@@ -752,7 +752,7 @@ rewriting, and it was right.
 
 - **Domain-wide delegation.** It impersonates any user in a tenant,
   Google's own guidance is to avoid it where a normal grant will do, and
-  The university's tenant is not the user's to widen.
+  the university's tenant is not the user's to widen.
 - **The `drive` scope.** $540/yr and an annual audit to gain "documents
   you did not pick", which is the access this design is deliberately
   refusing.

@@ -206,6 +206,9 @@ done
 #   (mecha-serve ships from scripts/voice/, not scripts/)
 # and the fix, when the repo copy is right and the installed one drifted:
 #   cp scripts[/voice]/<unit>.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   EXCEPT mecha-slots.service: its repo copy ships `--account YOUR-MAIL-ACCOUNT`,
+#   a placeholder, so it always diffs; copying it over would replace the live
+#   polls account. Edit the installed unit's lines by hand instead.
 #   then restart a long-running unit; a timer-fired oneshot picks it up at its next firing.
 # not a unit, but installed the same way and drifting the same way: the
 # daytime mail sweep's ExecCondition= runs a *copy* of scripts/model-idle.sh,
