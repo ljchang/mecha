@@ -10980,23 +10980,23 @@ mod tests {
     fn a_group_verdict_says_what_it_does_not_know() {
         // Read, and complete.
         assert_eq!(
-            group_verdict_status("reject", "Sage plays cello", 6, Some((6, 0))),
-            "rejected ×7 — Sage plays cello"
+            group_verdict_status("reject", "Rhea plays cello", 6, Some((6, 0))),
+            "rejected ×7 — Rhea plays cello"
         );
         // Read, and partial: the members the graph could not sweep are named.
         assert!(
-            group_verdict_status("accept", "Sage plays cello", 6, Some((4, 2)))
+            group_verdict_status("accept", "Rhea plays cello", 6, Some((4, 2)))
                 .contains("2 similar left pending")
         );
         // Nothing was asked to fan out, so nothing is unaccounted for.
         assert_eq!(
-            group_verdict_status("reject", "Sage plays cello", 0, None),
-            "rejected ×1 — Sage plays cello"
+            group_verdict_status("reject", "Rhea plays cello", 0, None),
+            "rejected ×1 — Rhea plays cello"
         );
         // Asked, and unreported. The old line said exactly the same thing as
         // the singleton above, which is the bug.
-        let unknown = group_verdict_status("reject", "Sage plays cello", 6, None);
-        assert_ne!(unknown, "rejected ×1 — Sage plays cello");
+        let unknown = group_verdict_status("reject", "Rhea plays cello", 6, None);
+        assert_ne!(unknown, "rejected ×1 — Rhea plays cello");
         assert!(
             unknown.contains("unreported") && unknown.contains("still pending"),
             "an unreadable tally must say so, and say what is unaccounted for: {unknown}"
@@ -11012,7 +11012,7 @@ mod tests {
     ///
     /// The first fix put its caveat *after* the forty-eight-character
     /// statement head, which pushed it past that budget: on a normal terminal
-    /// the reader saw `rejected the seed — Sage plays…` and no warning at all.
+    /// the reader saw `rejected the seed — Rhea plays…` and no warning at all.
     /// That is the bug this pair of tests exists for, one layer down — the
     /// note absent, and its absence read as nothing to report.
     ///
@@ -11034,7 +11034,7 @@ mod tests {
     #[test]
     fn a_verdict_that_landed_on_nothing_keeps_its_group() {
         use crate::commands::review::{cascade_tally, tally_report, why_nothing_landed};
-        let failed = "#9281 FAILED: cannot resolve subject 'Sage'\n";
+        let failed = "#9281 FAILED: cannot resolve subject 'Rhea'\n";
 
         let (landed, _) = tally_report(failed);
         assert_eq!(landed, 0, "a FAILED line must not read as a landed verdict");
@@ -11047,7 +11047,7 @@ mod tests {
         // guard is standing in front of: no `cascade:` line, so this would
         // announce a seed that never landed.
         assert!(
-            group_verdict_status("reject", "Sage plays cello", 6, cascade_tally(failed))
+            group_verdict_status("reject", "Rhea plays cello", 6, cascade_tally(failed))
                 .contains("the seed only"),
             "the formatter cannot see this case — the caller must"
         );

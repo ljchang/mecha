@@ -875,9 +875,9 @@ mod tests {
     #[test]
     fn the_body_keeps_its_newlines() {
         let mut item = item("aaa1", "pending", OutboxKind::Message);
-        item.args = json!({"to": "a@example.com", "body_markdown": "Dear A,\n\nHello.\n\nLuke"});
+        item.args = json!({"to": "a@example.com", "body_markdown": "Dear A,\n\nHello.\n\nRobin"});
         let body = text(&detail_lines(&item, &[], None));
-        assert!(body.contains("\nDear A,\n\nHello.\n\nLuke\n"), "{body}");
+        assert!(body.contains("\nDear A,\n\nHello.\n\nRobin\n"), "{body}");
     }
 
     #[test]
@@ -905,7 +905,7 @@ mod tests {
             tool: "mail__mail_get_thread".into(),
             keys: vec!["thread_id".into()],
             join: mecha_core::outbox_source::Join::Asked,
-            text: "Dear Dr. Chang,\n\nI am an incoming freshman.".into(),
+            text: "Dear Dr. Example,\n\nI am an incoming freshman.".into(),
         };
         let body = text(&detail_lines(
             &item("aaa1", "pending", OutboxKind::Message),
@@ -924,10 +924,13 @@ mod tests {
         );
         // Gutter-marked, so a reader scrolling past cannot mistake a
         // stranger's paragraph for the assistant's.
-        assert!(source.contains("│ Dear Dr. Chang,"), "{body}");
+        assert!(source.contains("│ Dear Dr. Example,"), "{body}");
         // And below the letter rather than above it: a reviewer's question is
         // "would I send this?", which is answered by the draft.
-        assert!(body.find("\nhi\n") < body.find("Dear Dr. Chang,"), "{body}");
+        assert!(
+            body.find("\nhi\n") < body.find("Dear Dr. Example,"),
+            "{body}"
+        );
     }
 
     #[test]

@@ -132,7 +132,7 @@ read different halves:
 id = "book"
 kind = "booking"
 version = 1
-title = "Book a meeting with Luke"
+title = "Book a meeting with Robin"
 
 [availability]            # home reads this; the box ignores it entirely
 timezone = "America/New_York"
