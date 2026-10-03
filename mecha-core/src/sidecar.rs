@@ -11,7 +11,7 @@
 //! machine shows it — a systemd unit of its name that mecha did not write, a
 //! binary on `PATH`, a directory, a Docker image — outside
 //! `~/.mecha/sidecars/`, which is mecha's own tree. Every check here is a
-//! file's existence, a `PATH` lookup or `docker image inspect`: none opens a
+//! file's existence, a `PATH` lookup or `docker image ls`: none opens a
 //! socket, so none can start a socket-activated server (§4.3), and an
 //! idle-stopped server whose unit exists reads provided, never absent (the
 //! llama-embed incident of 2026-08-19).
@@ -281,13 +281,22 @@ impl Machinery {
                 unknown.map_or(Lookup::Absent, Lookup::Unknown)
             }
             Evidence::OnPath(bin) => {
+                // An entry that cannot be read is unknown, never absent: a
+                // machine that may well have the binary must not be offered
+                // an install over it.
+                let mut unknown = None;
                 for d in &self.path {
                     let p = d.join(bin);
-                    if p.is_file() {
-                        return Lookup::Found(format!("{} on PATH", p.display()), Some(p));
+                    match std::fs::metadata(&p) {
+                        Ok(m) if m.is_file() => {
+                            return Lookup::Found(format!("{} on PATH", p.display()), Some(p));
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => unknown = Some(format!("{}: {e}", p.display())),
                     }
                 }
-                Lookup::Absent
+                unknown.map_or(Lookup::Absent, Lookup::Unknown)
             }
             Evidence::Home(rel) => self.exists(&self.home.join(rel)),
             Evidence::MechaHome(rel) => self.exists(&self.mecha_home.join(rel)),
@@ -354,6 +363,8 @@ pub enum FileState {
     /// A plain file of the pinned size at its path, put there by hand and not
     /// hashed by the plan.
     Unverified,
+    /// No model is recommended for this machine's tier.
+    NoRow,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -381,6 +392,30 @@ pub struct Plan {
     pub download_bytes: u64,
     /// Every piece is provided, installed or cached: nothing to do.
     pub nothing_to_do: bool,
+}
+
+/// One pinned hub file's state. Only what the cheap check cannot vouch for
+/// is read, and only with `verify`: a blob named by its sha256 is that hash.
+fn file_state(
+    hub: &Path,
+    repo: &str,
+    revision: &str,
+    f: &crate::recommend::HubFile,
+    verify: bool,
+) -> Result<FileState> {
+    use crate::fetch::{cached, Cached};
+    let quick = cached(hub, repo, revision, f, false)?;
+    let found = if verify && quick == Cached::Unverified {
+        cached(hub, repo, revision, f, true)?
+    } else {
+        quick
+    };
+    Ok(match found {
+        Cached::Verified => FileState::Cached,
+        Cached::Mismatch => FileState::Mismatch,
+        Cached::Unverified => FileState::Unverified,
+        Cached::Absent => FileState::Download { bytes: f.bytes },
+    })
 }
 
 /// Whether `f` is the feature named or one of its parts.
@@ -442,6 +477,16 @@ pub fn plan(
     let mut files = Vec::new();
     for slot in recommend::SLOTS.iter().filter(|s| needs(s.needed_by)) {
         let Some((row, _)) = recommend::row_for(slot, machine) else {
+            // No model is recommended at this tier (the chat model below its
+            // smallest): named, never skipped — a slot with no row is a
+            // finding, not an empty queue.
+            files.push(PlannedFile {
+                slot: slot.id,
+                model: "",
+                repo: None,
+                path: "",
+                state: FileState::NoRow,
+            });
             continue;
         };
         // A model kept outside the hub by a provided sidecar is that
@@ -450,9 +495,13 @@ pub fn plan(
             .iter()
             .find(|sc| !sc.models_in_hub && sc.serves.contains(&slot.id))
             .filter(|sc| {
-                sidecars
-                    .iter()
-                    .any(|p| p.id == sc.id && matches!(p.state, SidecarState::Provided { .. }))
+                sidecars.iter().any(|p| {
+                    p.id == sc.id
+                        && matches!(
+                            p.state,
+                            SidecarState::Provided { .. } | SidecarState::Installed
+                        )
+                })
             });
         if let Some(sc) = keeper {
             files.push(PlannedFile {
@@ -481,20 +530,7 @@ pub fn plan(
                     files: fs,
                 } => {
                     for f in *fs {
-                        // Only what the cheap check cannot vouch for is read:
-                        // a blob named by its sha256 is that hash.
-                        let quick = crate::fetch::cached(hub, repo, revision, f, false)?;
-                        let found = if verify && quick == crate::fetch::Cached::Unverified {
-                            crate::fetch::cached(hub, repo, revision, f, true)?
-                        } else {
-                            quick
-                        };
-                        let state = match found {
-                            crate::fetch::Cached::Verified => FileState::Cached,
-                            crate::fetch::Cached::Mismatch => FileState::Mismatch,
-                            crate::fetch::Cached::Unverified => FileState::Unverified,
-                            crate::fetch::Cached::Absent => FileState::Download { bytes: f.bytes },
-                        };
+                        let state = file_state(hub, repo, revision, f, verify)?;
                         files.push(PlannedFile {
                             slot: slot.id,
                             model: row.model,
@@ -742,6 +778,121 @@ mod tests {
         let image: Vec<_> = held.files.iter().filter(|f| f.slot == "image").collect();
         assert_eq!(image.len(), 1);
         assert_eq!(image[0].state, FileState::HeldBy { sidecar: "ComfyUI" });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The chat model has no 16 GB row: the plan names that, and never says
+    /// there is nothing to do.
+    #[test]
+    fn a_slot_with_no_row_is_named_and_blocks_nothing_to_do() {
+        let root = scratch();
+        let mut m = machinery(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/llama-server"), "").unwrap();
+        std::fs::create_dir_all(root.join("home/.config/systemd/user")).unwrap();
+        std::fs::write(
+            root.join("home/.config/systemd/user/llama-local.service"),
+            "",
+        )
+        .unwrap();
+        m.docker = Box::new(|_| Lookup::Absent);
+        let small = Machine::Unified {
+            total_mb: 16_384,
+            gpu_unread: false,
+        };
+        let p = plan(Feature::Web, &m, &small, &root.join("hub"), false).unwrap();
+        let chat = p.files.iter().find(|f| f.slot == "chat").unwrap();
+        assert_eq!(chat.state, FileState::NoRow);
+        assert!(!p.nothing_to_do);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A ComfyUI mecha installed keeps its models in its own tree too: held,
+    /// never priced as a hub download.
+    #[test]
+    fn an_installed_comfyui_holds_its_own_models_too() {
+        let root = scratch();
+        let m = machinery(&root);
+        let manifest = Manifest {
+            entries: vec![Entry {
+                sidecar: "comfyui".into(),
+                incomplete: false,
+                wrote: vec![],
+            }],
+        };
+        std::fs::create_dir_all(root.join("home/.mecha/sidecars")).unwrap();
+        std::fs::write(
+            Manifest::path(&m.mecha_home),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let p = plan(Feature::Image, &m, &GB10, &root.join("hub"), false).unwrap();
+        let image: Vec<_> = p.files.iter().filter(|f| f.slot == "image").collect();
+        assert_eq!(image.len(), 1);
+        assert_eq!(image[0].state, FileState::HeldBy { sidecar: "ComfyUI" });
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `PATH` entry that cannot be read is unknown, never absent — `llama`
+    /// is in every plan, and its installer must not be offered over a
+    /// binary that may well be there.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_path_entry_is_unknown_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root reads anything; the negative would be vacuous.
+        }
+        let root = scratch();
+        let m = machinery(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::set_permissions(root.join("bin"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let p = plan(Feature::Graph, &m, &GB10, &root.join("hub"), false);
+        std::fs::set_permissions(root.join("bin"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let p = p.unwrap();
+        let llama = p.sidecars.iter().find(|s| s.id == "llama").unwrap();
+        assert!(
+            matches!(llama.state, SidecarState::Unknown { .. }),
+            "{:?}",
+            llama.state
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `verify` hashes a hand-placed file the cheap check cannot vouch for:
+    /// unverified without it, cached with it when it is the pin, a mismatch
+    /// when it is not.
+    #[test]
+    fn verify_hashes_only_what_the_cheap_check_cannot_vouch_for() {
+        use sha2::{Digest, Sha256};
+        let root = scratch();
+        let hub = root.join("hub");
+        let body = b"the pinned bytes";
+        let sum: String = Sha256::digest(body)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let f = crate::recommend::HubFile {
+            path: "m.gguf",
+            sha256: Box::leak(sum.into_boxed_str()),
+            bytes: body.len() as u64,
+        };
+        let snap = crate::fetch::snapshot_path(&hub, "org/name", "r", &f);
+        std::fs::create_dir_all(snap.parent().unwrap()).unwrap();
+        std::fs::write(&snap, body).unwrap();
+        assert_eq!(
+            file_state(&hub, "org/name", "r", &f, false).unwrap(),
+            FileState::Unverified
+        );
+        assert_eq!(
+            file_state(&hub, "org/name", "r", &f, true).unwrap(),
+            FileState::Cached
+        );
+        std::fs::write(&snap, &b"other bytes, sam"[..body.len()]).unwrap();
+        assert_eq!(
+            file_state(&hub, "org/name", "r", &f, true).unwrap(),
+            FileState::Mismatch
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
