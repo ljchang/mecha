@@ -1536,7 +1536,10 @@ module.
     every request reuse the same sampler draws, and a turn that adds little
     comes back as an earlier reply. With no `seed` sent, llama-server draws
     a fresh one per request. All three come from one `ProviderFactory`, so
-    the use is named at each call site, never assumed.
+    the use is named at each call site, never assumed. `build_for` builds
+    the config as written before it unseeds, so a config the provider
+    refuses (Anthropic refuses any `seed`) is refused for the chat and the
+    judge alike. A chat whose crisis judge cannot be built must not open.
   - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
     the newest user message that carries no tool result, which is the cut
     Qwen's own templates use. A tool result is a user message too, so "the
@@ -1579,7 +1582,9 @@ module.
       is not counted.
     - `mecha persona show` reads chats active in the last `SHOWN_DAYS` days
       (by file modification time) and counts unreadable session files,
-      never reading them as empty.
+      never reading them as empty. Only `show` reads it. `list --json` and
+      the approve and remove confirmations stay plain store reads, because
+      reading a week of transcripts is no longer free.
     - Deleted chats drop out of the history; archived ones stay.
 
 ## Security model
