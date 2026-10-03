@@ -592,7 +592,7 @@ fn recent_echoes(store: &Store, p: &Persona) -> anyhow::Result<persona::echo::Ec
     persona::echo::echoes(&store.sessions_dir(&p.name), since)
 }
 
-/// One line for `describe`: the echo reading in words.
+/// One line for `mecha persona show`: the echo reading in words.
 fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
     let days = persona::echo::SHOWN_DAYS;
     let e = match echoes {
@@ -1253,6 +1253,21 @@ mod tests {
             locked: false,
             edit: false,
         }
+    }
+
+    /// The echo reads a week of transcripts, so only `show` asks for it: the
+    /// summary `list --json` prints once per persona must not carry it.
+    #[test]
+    fn the_summary_list_prints_reads_no_transcripts() {
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib_dir, new("ada")).unwrap();
+        let loaded = Store::load(&store);
+        let (lib, _) = Library::load(&lib_dir);
+        let summary = summary_json(&loaded, &lib, loaded.get("ada").unwrap());
+        assert!(summary.get("echo").is_none(), "{summary}");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
