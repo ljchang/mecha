@@ -3074,6 +3074,18 @@ pub struct VoiceHost(pub Arc<ChatState>, pub Arc<super::library::LibraryState>);
 
 #[async_trait::async_trait]
 impl crate::voice::SessionHost for VoiceHost {
+    async fn holds(&self, key: &str) -> bool {
+        // Resolved as `speak` resolves it: a key that is not valid names
+        // nothing here, and a persona key is the persona door's.
+        if !valid_key(key) {
+            return false;
+        }
+        if super::persona_chat::is_persona_key(key) {
+            return self.0.personas.holds(key).await;
+        }
+        self.0.sessions.lock().await.contains_key(key)
+    }
+
     async fn speak(
         &self,
         key: &str,
