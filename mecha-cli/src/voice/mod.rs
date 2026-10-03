@@ -51,6 +51,10 @@ use crate::commands::voice_serve::Args;
 use crate::GlobalOpts;
 
 pub mod confirm;
+mod direct;
+
+pub(crate) use direct::last_reply;
+pub use direct::DirectorSeed;
 
 /// Loopback, by design rather than default — see the module docs.
 const LISTEN_HOST: &str = "127.0.0.1";
@@ -122,6 +126,9 @@ pub struct HostedTurn {
     pub events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     pub done: tokio::sync::oneshot::Receiver<Result<HostedAnswer, String>>,
     pub cancel: mecha_core::agent::CancelHandle,
+    /// Where this turn's spoken directions are recorded, and who is speaking
+    /// (`direct`). The host fills it because only the host knows either.
+    pub seed: DirectorSeed,
 }
 
 /// A hosted run's outcome, in the currency this facade answers in.
@@ -566,6 +573,9 @@ struct Shared {
     /// that fall-through rather than left to answer with an earlier
     /// hosted turn's mood.
     affects: Mutex<HashMap<String, String>>,
+    /// Each conversation's current reply, as the voice director sees it
+    /// (`direct`): its scene, what has been directed, what the harness said.
+    directions: direct::Directions,
 }
 
 /// The facade as a mountable component: `mecha voice-serve` builds its own
@@ -596,6 +606,7 @@ impl Facade {
                 token,
                 confirmations: confirm::Confirmations::default(),
                 affects: Mutex::new(HashMap::new()),
+                directions: direct::Directions::default(),
             }),
         })
     }
@@ -755,6 +766,11 @@ struct Head {
     /// (`INCOGNITO-DESIGN.md` §6.4). Anything but exactly `1` is absent — a
     /// claim that loosens a refusal is read strictly or not at all.
     unlogged: bool,
+    /// `X-Voice-Directed: 1`: the worker's speech engine takes a voice
+    /// direction, so the turn's opening direction is worth starting before
+    /// the reply's first sentence exists. Absent, nothing is started early;
+    /// a direction asked for anyway is still answered.
+    directed: bool,
     body_start: usize,
 }
 
@@ -769,6 +785,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
             let mut session = None;
             let mut chat = None;
             let mut unlogged = false;
+            let mut directed = false;
             for h in req.headers.iter() {
                 if h.name.eq_ignore_ascii_case("content-length") {
                     content_length = std::str::from_utf8(h.value)?.trim().parse()?;
@@ -780,6 +797,8 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                     chat = Some(String::from_utf8_lossy(h.value).trim().to_string());
                 } else if h.name.eq_ignore_ascii_case("x-voice-unlogged") {
                     unlogged = h.value == b"1";
+                } else if h.name.eq_ignore_ascii_case("x-voice-directed") {
+                    directed = h.value == b"1";
                 }
             }
             Ok(Some(Head {
@@ -790,6 +809,7 @@ fn parse_head(buf: &[u8]) -> Result<Option<Head>> {
                 session,
                 chat,
                 unlogged,
+                directed,
                 body_start,
             }))
         }
@@ -912,6 +932,7 @@ async fn handle(stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
         ("GET", "/health") => write_json(&mut stream, 200, &json!({"status": "ok"})).await,
         ("POST", "/v1/chat/completions") => completion(&mut stream, &shared, &head, &body).await,
         ("GET", "/v1/mecha-affect") => affect_status(&mut stream, &shared, &head).await,
+        ("POST", "/v1/mecha-direct") => direct::mecha_direct(&mut stream, &shared, &body).await,
         _ => write_json(&mut stream, 404, &json!({"error": "not found"})).await,
     }
 }
@@ -1369,12 +1390,7 @@ async fn pump(
 /// log is the one place a voice user will never look.
 async fn finish_stream(stream: &mut VoiceStream, id: &str, model: &str, error: Option<&str>) {
     if let Some(e) = error {
-        let spoken = sse_chunk(
-            id,
-            model,
-            json!({"content": format!("I hit a problem and could not answer: {e}")}),
-            None,
-        );
+        let spoken = sse_chunk(id, model, json!({"content": failure_speech(e)}), None);
         let _ = write_chunk(stream, spoken.as_bytes()).await;
     }
     let done = sse_chunk(id, model, json!({}), Some("stop"));
@@ -1466,6 +1482,9 @@ async fn hosted_completion(
                 if say(stream, shared, id, &format!(" {}", offer.speech)).await {
                     arm_confirmation(shared, confirm_key, offer.pending.clone()).await;
                 }
+            }
+            if let Err(e) = &answer {
+                shared.directions.note_harness(id, &failure_speech(e));
             }
             finish_stream(
                 stream,
@@ -1617,7 +1636,16 @@ async fn open_sse(stream: &mut VoiceStream, id: &str, model: &str) -> bool {
 /// wanted. One utterance, one place, so the streaming and blocking paths
 /// cannot word the same fact differently.
 async fn say(stream: &mut VoiceStream, shared: &Arc<Shared>, id: &str, text: &str) -> bool {
+    // Noted before it is written, so the sentence is known as the harness's
+    // own by the time the worker asks how to say it: never directed.
+    shared.directions.note_harness(id, text);
     say_on(stream, id, &shared.model(), text).await
+}
+
+/// What a failed turn says out loud. One wording, so the director can know
+/// it for harness speech.
+fn failure_speech(error: &str) -> String {
+    format!("I hit a problem and could not answer: {error}")
 }
 
 /// The same, without a `Shared` — so the wire format can be tested against a
@@ -1864,6 +1892,10 @@ async fn completion(
         Some(chat) => format!("chat:{chat}"),
         None => format!("voice:{key}"),
     };
+    // A new reply on this conversation, whatever answers it: the director's
+    // state for the last one is done with, and until a model is answering,
+    // everything said here is the harness's own.
+    shared.directions.begin(&confirm_key, &id, &text);
 
     // **Before the model sees a word**: is this an answer to a question the
     // harness asked out loud? Release policy must not be decidable by
@@ -1920,16 +1952,25 @@ async fn completion(
                 .await
             {
                 Hosted::Started(turn) => {
+                    let mut turn = *turn;
+                    shared.directions.model_turn(
+                        shared,
+                        &confirm_key,
+                        &id,
+                        &text,
+                        std::mem::take(&mut turn.seed),
+                        head.directed,
+                    );
                     return hosted_completion(
                         stream,
                         shared,
                         &id,
                         want_stream,
-                        *turn,
+                        turn,
                         &confirm_key,
                         &outbox_baseline,
                     )
-                    .await
+                    .await;
                 }
                 Hosted::Busy => return write_json(
                     stream,
@@ -1999,6 +2040,25 @@ async fn completion(
         let c = cancel.clone();
         h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
     }
+
+    // The facade's own conversation: its transcript is the slot's, and the
+    // assistant is speaking. A copy of the handle rather than the slot's own,
+    // which moves into the run.
+    shared.directions.model_turn(
+        shared,
+        &confirm_key,
+        &id,
+        &text,
+        DirectorSeed {
+            transcript: Some(Arc::new(Session {
+                meta: slot.session.meta.clone(),
+                path: slot.session.path.clone(),
+            })),
+            character: None,
+            last_reply: direct::last_reply(&slot.convo.messages),
+        },
+        head.directed,
+    );
 
     // From here the slot must always find its way back into the map, so
     // nothing below uses `?` until it has.
@@ -2240,6 +2300,9 @@ async fn completion(
                 }
             }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
+            if let Some(e) = &failed {
+                shared.directions.note_harness(&id, &failure_speech(e));
+            }
             finish_stream(stream, &id, &shared.model(), failed.as_deref()).await;
         }
     } else {
@@ -2741,6 +2804,16 @@ mod tests {
             "and tomorrow?",
             "a spoken turn following a spoken turn must not re-send the block"
         );
+    }
+
+    #[test]
+    fn the_directed_header_is_read_strictly() {
+        let yes = b"POST /v1/chat/completions HTTP/1.1\r\nX-Voice-Directed: 1\r\n\r\n";
+        assert!(parse_head(yes).unwrap().unwrap().directed);
+        let other = b"POST /v1/chat/completions HTTP/1.1\r\nX-Voice-Directed: yes\r\n\r\n";
+        assert!(!parse_head(other).unwrap().unwrap().directed);
+        let none = b"POST /v1/chat/completions HTTP/1.1\r\n\r\n";
+        assert!(!parse_head(none).unwrap().unwrap().directed);
     }
 
     #[test]
