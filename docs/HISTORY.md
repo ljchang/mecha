@@ -48,7 +48,9 @@ owner's rulings (§6).
   the facade opens the turn with `VOICE_BLOCK_STREAMING` and the persona
   note without its length rule. Without the header, `VOICE_BLOCK` is
   byte-identical, pinned by digest. Probe: `strings ~/.cargo/bin/mecha |
-  grep -c "Speak the way you would out loud"` → 2.
+  grep -c "Speak the way you would out loud"` → at least 1, and 0 before.
+  The phrase is in `VOICE_BLOCK_STREAMING` only; this build printed 2
+  because two call sites inline the constant, which a linker may fold.
 - **Breeze is the default (#528).** `worker.py`'s `MECHA_VOICE_TTS`
   defaults to :8887. `default` is the clip `default.wav`, a reserved name
   the library never offers to delete. `make-voices.py` and
@@ -7993,10 +7995,16 @@ matters is the general shape.
 **A scripted provider cannot see a deadline set below the real cost.** The
 director shipped its first push with a 1.5 s per-sentence deadline. Every
 Rust test answered through a provider that returns instantly, so all of
-them passed. Measured on the loaded model, a 12–25-word direction took a
-median 1.61 s and a p90 of 1.77 s, so most sentences would have gone out
-undirected (review of #527, pass 2). A timeout's value is a claim about a
-real server: time it on one before setting it.
+them passed. A bench on the router (`qwen3.6-35b-a3b-uncensored`, 3 rounds
+of 6 sentences, each prompt carrying the turn's growing "already directed"
+list) took a median 1.61 s and a p90 of 1.77 s, above that deadline (review
+of #527, pass 2), so it went to 2.5 s. The first live call then came in far
+lower: median 723 ms, max 1,269 ms, on `qwen3.6-35b-a3b` with the shorter
+prompts of a real turn's early sentences. Those are two measurements, on
+different models and prompt lengths, not one, and the live one is the
+population to size the deadline and any prefetch from. The trap is the
+tests: a timeout's value is a claim about a real server, and only a run
+against one can check it.
 
 **An activity sensor must listen to the person, not to what the page does.**
 The persona autolock first counted `scroll` as use. The chat pins itself to
