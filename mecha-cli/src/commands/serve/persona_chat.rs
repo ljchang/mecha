@@ -117,6 +117,9 @@ pub(super) struct Spoken {
     tap: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     done: tokio::sync::oneshot::Sender<Result<crate::voice::HostedAnswer, String>>,
     cancel: mecha_core::agent::CancelHandle,
+    /// The worker's speech engine streams: the call note drops its length
+    /// rule (`persona::call::note`).
+    streams: bool,
 }
 
 /// Which personas speak in each library voice, and why that list may be
@@ -2534,6 +2537,11 @@ impl PersonaChats {
         Ok(())
     }
 
+    /// Whether a chat is open on `key` (`voice::SessionHost::holds`).
+    pub async fn holds(&self, key: &str) -> bool {
+        self.sessions.lock().await.contains_key(key)
+    }
+
     /// A spoken turn on `key`, barging in on any run in flight — the
     /// assistant's contract (`chat::VoiceHost`). Never `Hosted::Unknown`:
     /// that sends the words to the facade's own slot, where the assistant
@@ -2544,6 +2552,7 @@ impl PersonaChats {
         library: &LibraryState,
         key: &str,
         utterance: &str,
+        tts_streams: bool,
     ) -> crate::voice::Hosted {
         use crate::voice::{Hosted, HostedTurn};
         // No call was placed through the offer: nothing vouches for the lock.
@@ -2572,6 +2581,9 @@ impl PersonaChats {
             }
         }
         for _ in 0..BARGE_IN_TRIES {
+            // The last reply, read while the conversation is still here: the
+            // run about to start takes it.
+            let last_reply;
             {
                 let sessions = self.sessions.lock().await;
                 if let Some(live) = sessions.get(key).and_then(|ps| ps.live.as_ref()) {
@@ -2579,6 +2591,10 @@ impl PersonaChats {
                     // next try finds the conversation back.
                     live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                 }
+                last_reply = sessions
+                    .get(key)
+                    .and_then(|ps| ps.conversation.as_ref())
+                    .and_then(|c| crate::voice::last_reply(&c.messages));
             }
             let (tap, events) = tokio::sync::mpsc::unbounded_channel();
             let (done_tx, done) = tokio::sync::oneshot::channel();
@@ -2587,6 +2603,7 @@ impl PersonaChats {
                 tap,
                 done: done_tx,
                 cancel: cancel.clone(),
+                streams: tts_streams,
             };
             match self
                 .start(
@@ -2602,11 +2619,25 @@ impl PersonaChats {
                 .await
             {
                 Ok(_) => {
+                    // After `start`, which creates a first chat's session:
+                    // the transcript the director records in, and who speaks.
+                    let seed = {
+                        let sessions = self.sessions.lock().await;
+                        sessions.get(key).map(|ps| crate::voice::DirectorSeed {
+                            transcript: Some(Arc::clone(&ps.session)),
+                            character: Some(
+                                mecha_core::persona::strip_comments(&ps.pinned.identity).0,
+                            )
+                            .filter(|c| !c.trim().is_empty()),
+                            last_reply: last_reply.clone(),
+                        })
+                    };
                     return Hosted::Started(Box::new(HostedTurn {
                         events,
                         done,
                         cancel,
-                    }))
+                        seed: seed.unwrap_or_default(),
+                    }));
                 }
                 Err(Refusal::Busy) => {}
                 Err(r) => return Hosted::Failed(r.said()),
@@ -2854,8 +2885,10 @@ impl PersonaChats {
         };
         // The call note (§11), in the harness's voice beside the owner's
         // words: on the first spoken turn of a stretch, never on a typed one.
-        let call_note =
-            (spoken.is_some() && !ps.last_turn_spoken).then(mecha_core::persona::call::note);
+        let call_note = spoken
+            .as_ref()
+            .filter(|_| !ps.last_turn_spoken)
+            .map(|s| mecha_core::persona::call::note(s.streams));
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -3074,7 +3107,9 @@ impl PersonaChats {
         // A spoken turn's handle is the facade's, made before the turn was
         // asked for, so a hang-up stops exactly this run.
         let (cancel, hosted) = match spoken {
-            Some(Spoken { tap, done, cancel }) => (cancel, Some((tap, done))),
+            Some(Spoken {
+                tap, done, cancel, ..
+            }) => (cancel, Some((tap, done))),
             None => (mecha_core::agent::CancelHandle::new(), None),
         };
         let (tap, hosted_done) = hosted.unzip();
@@ -8259,7 +8294,11 @@ mod tests {
 
     /// A spoken turn, started: its answer, waited for.
     async fn spoken(w: &World, key: &str, words: &str) -> crate::voice::HostedAnswer {
-        match w.personas().speak(&w.chat, &w.library, key, words).await {
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, key, words, false)
+            .await
+        {
             crate::voice::Hosted::Started(turn) => {
                 tokio::time::timeout(std::time::Duration::from_secs(10), turn.done)
                     .await
@@ -8294,7 +8333,11 @@ mod tests {
         let w = world_with(Mode::Say("The dig went well.".into()));
         let key = open_chat(&w).await;
         // Nothing vouched for the lock: no call was placed through the offer.
-        match w.personas().speak(&w.chat, &w.library, &key, "hello").await {
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, "hello", false)
+            .await
+        {
             crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
             _ => panic!("a call nobody placed was answered"),
         }
@@ -8351,6 +8394,51 @@ mod tests {
         );
     }
 
+    /// A call on a streaming speech engine gets the note without its length
+    /// rule; the note is still the harness's, never the owner's words.
+    #[tokio::test]
+    async fn a_streaming_call_is_noted_without_the_length_rule() {
+        let w = world_with(Mode::Say("The dig went well.".into()));
+        let key = open_chat(&w).await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, "how was the dig", true)
+            .await
+        {
+            crate::voice::Hosted::Started(turn) => {
+                tokio::time::timeout(std::time::Duration::from_secs(10), turn.done)
+                    .await
+                    .expect("the call was never answered")
+                    .expect("the answer was dropped")
+                    .expect("the turn failed");
+            }
+            _ => panic!("the call did not start"),
+        }
+        let seen = w.seen.lock().unwrap().clone();
+        let user = seen[0]
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == mecha_core::message::Role::User)
+            .unwrap();
+        let notes: Vec<&str> = user
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } if mecha_core::persona::call::is_note(text) => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, [mecha_core::persona::call::note(true).as_str()]);
+        assert_eq!(mecha_core::agent::owner_text(user), "how was the dig");
+    }
+
     /// A call is behind the persona's lock: placed only with an unlock that
     /// shows it, and a relock mid-call ends it on the next word.
     #[tokio::test]
@@ -8378,7 +8466,7 @@ mod tests {
         store::set_locked(&w.store(), "mara", true).unwrap();
         match w
             .personas()
-            .speak(&w.chat, &w.library, &key, "still there?")
+            .speak(&w.chat, &w.library, &key, "still there?", false)
             .await
         {
             crate::voice::Hosted::Failed(why) => assert_eq!(why, "no such persona chat"),
@@ -8412,8 +8500,10 @@ mod tests {
         key: &str,
         words: &str,
     ) -> (String, Result<crate::voice::HostedAnswer, String>) {
-        let crate::voice::Hosted::Started(mut turn) =
-            w.personas().speak(&w.chat, &w.library, key, words).await
+        let crate::voice::Hosted::Started(mut turn) = w
+            .personas()
+            .speak(&w.chat, &w.library, key, words, false)
+            .await
         else {
             panic!("the call did not start");
         };
@@ -8473,7 +8563,7 @@ mod tests {
         store::set_locked(&w.store(), "mara", true).unwrap();
         match w
             .personas()
-            .speak(&w.chat, &w.library, &key, "stop that")
+            .speak(&w.chat, &w.library, &key, "stop that", false)
             .await
         {
             crate::voice::Hosted::Failed(why) => assert_eq!(why, "no such persona chat"),
@@ -8522,7 +8612,7 @@ mod tests {
             .unwrap();
         let crate::voice::Hosted::Started(first) = w
             .personas()
-            .speak(&w.chat, &w.library, &key, "tell me a long story")
+            .speak(&w.chat, &w.library, &key, "tell me a long story", false)
             .await
         else {
             panic!("the first turn did not start");
@@ -8535,7 +8625,7 @@ mod tests {
         }
         let crate::voice::Hosted::Started(second) = w
             .personas()
-            .speak(&w.chat, &w.library, &key, "actually, stop")
+            .speak(&w.chat, &w.library, &key, "actually, stop", false)
             .await
         else {
             panic!("the barge-in did not start a turn");
@@ -8566,11 +8656,14 @@ mod tests {
             Arc::clone(&w.chat),
             Arc::new(LibraryState::new(w.root.join("imagelib"))),
         );
-        match host.speak(&key, "hello", false, false).await {
+        match host.speak(&key, "hello", false, false, false).await {
             crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
             _ => panic!("a persona key fell through"),
         }
-        match host.speak("p-000000000000", "hello", false, false).await {
+        match host
+            .speak("p-000000000000", "hello", false, false, false)
+            .await
+        {
             crate::voice::Hosted::Failed(_) => {}
             _ => panic!("an unknown persona key fell through to the assistant"),
         }
@@ -8876,7 +8969,7 @@ mod tests {
         // Spoken through the library that granted the token.
         match w
             .personas()
-            .speak(&w.chat, &library, &key, "still there?")
+            .speak(&w.chat, &library, &key, "still there?", false)
             .await
         {
             crate::voice::Hosted::Started(turn) => {
@@ -8909,7 +9002,11 @@ mod tests {
         w.personas().release_offer(&key, first);
         spoken(&w, &key, "the later call stands").await;
         w.personas().release_offer(&key, second);
-        match w.personas().speak(&w.chat, &w.library, &key, "gone?").await {
+        match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, "gone?", false)
+            .await
+        {
             crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),
             _ => panic!("the offer's own binding was not released"),
         }
@@ -8949,7 +9046,7 @@ mod tests {
         );
         match w
             .personas()
-            .speak(&w.chat, &w.library, &key, "hello?")
+            .speak(&w.chat, &w.library, &key, "hello?", false)
             .await
         {
             crate::voice::Hosted::Failed(why) => assert!(why.contains("no call"), "{why}"),

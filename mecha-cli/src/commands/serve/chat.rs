@@ -1049,7 +1049,11 @@ fn result_preview(content: &str) -> String {
 /// constant, with a paragraph-cut fallback for transcripts recorded under
 /// an earlier revision of the block. Display only: the record keeps it.
 fn strip_voice_preamble(text: &str) -> &str {
-    match text.strip_prefix(crate::voice::VOICE_BLOCK) {
+    let known = [
+        crate::voice::VOICE_BLOCK,
+        crate::voice::VOICE_BLOCK_STREAMING,
+    ];
+    match known.iter().find_map(|block| text.strip_prefix(block)) {
         Some(rest) => rest.trim_start(),
         None if text.starts_with("Voice mode:") => text
             .split_once("\n\n")
@@ -1294,6 +1298,7 @@ pub(super) async fn open_task_conversation(
                 spoken: false,
                 approve_all: false,
                 unlogged: false,
+                tts_streams: false,
                 images: Vec::new(),
             },
         );
@@ -1979,6 +1984,7 @@ pub async fn send(
             spoken: false,
             approve_all: false,
             unlogged: false,
+            tts_streams: false,
             request_id: Some(request_id),
             images,
         },
@@ -2063,6 +2069,9 @@ struct TurnOpts {
     /// worker makes only once its log silence is held, so a worker that
     /// predates the silence never makes it and the chat stays text-only.
     unlogged: bool,
+    /// The worker's speech engine streams (`X-Voice-TTS-Streams`): a spoken
+    /// stretch opens with `VOICE_BLOCK_STREAMING`, without length rules.
+    tts_streams: bool,
     /// Pictures the owner attached (`attached_images`), put on the turn
     /// after its text. Arming `private_data` needs nothing here: the loop
     /// reads any image off the messages at the run's start
@@ -2138,6 +2147,7 @@ mod narrowing_tests {
             spoken: true,
             approve_all: true,
             unlogged: false,
+            tts_streams: false,
             images: Vec::new(),
         }
     }
@@ -2166,6 +2176,7 @@ mod narrowing_tests {
             spoken: false,
             approve_all: true,
             unlogged: false,
+            tts_streams: false,
             images: Vec::new(),
         };
         assert!(narrow_for_echo(typed, Some(OFFER), "delete it").approve_all);
@@ -2178,6 +2189,7 @@ mod narrowing_tests {
             spoken: true,
             approve_all: false,
             unlogged: false,
+            tts_streams: false,
             images: Vec::new(),
         };
         assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
@@ -2310,7 +2322,7 @@ fn begin_turn(
     );
 
     let text = if opts.spoken {
-        crate::voice::open_spoken_turn(text, ws.last_turn_spoken)
+        crate::voice::open_spoken_turn(text, ws.last_turn_spoken, opts.tts_streams)
     } else {
         text.to_string()
     };
@@ -3062,12 +3074,25 @@ pub struct VoiceHost(pub Arc<ChatState>, pub Arc<super::library::LibraryState>);
 
 #[async_trait::async_trait]
 impl crate::voice::SessionHost for VoiceHost {
+    async fn holds(&self, key: &str) -> bool {
+        // Resolved as `speak` resolves it: a key that is not valid names
+        // nothing here, and a persona key is the persona door's.
+        if !valid_key(key) {
+            return false;
+        }
+        if super::persona_chat::is_persona_key(key) {
+            return self.0.personas.holds(key).await;
+        }
+        self.0.sessions.lock().await.contains_key(key)
+    }
+
     async fn speak(
         &self,
         key: &str,
         utterance: &str,
         approve_all: bool,
         unlogged: bool,
+        tts_streams: bool,
     ) -> crate::voice::Hosted {
         use crate::voice::Hosted;
         // Containment stays with the side that owns the filesystem: a
@@ -3082,7 +3107,7 @@ impl crate::voice::SessionHost for VoiceHost {
             return self
                 .0
                 .personas
-                .speak(&self.0, &self.1, key, utterance)
+                .speak(&self.0, &self.1, key, utterance, tts_streams)
                 .await;
         }
         // Ahead of the barge-in below, which cancels the run in flight before
@@ -3121,6 +3146,17 @@ impl crate::voice::SessionHost for VoiceHost {
                         }
                     }
                 } else if idle {
+                    // Read before the run takes the conversation: the
+                    // director's scene, and where its directions are kept —
+                    // nowhere, for an incognito chat (`Recording::kept`).
+                    let seed = sessions.get(key).map(|ws| crate::voice::DirectorSeed {
+                        transcript: ws.session.kept().cloned(),
+                        character: None,
+                        last_reply: ws
+                            .conversation
+                            .as_ref()
+                            .and_then(|c| crate::voice::last_reply(&c.messages)),
+                    });
                     match begin_turn(
                         &self.0,
                         &bound,
@@ -3133,6 +3169,7 @@ impl crate::voice::SessionHost for VoiceHost {
                             spoken: true,
                             approve_all,
                             unlogged,
+                            tts_streams,
                             images: Vec::new(),
                         },
                     ) {
@@ -3141,6 +3178,7 @@ impl crate::voice::SessionHost for VoiceHost {
                                 events: started.events,
                                 done: started.done,
                                 cancel: started.cancel,
+                                seed: seed.unwrap_or_default(),
                             }))
                         }
                         // Held: a finished run still landing. Fall through
@@ -3786,6 +3824,26 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_hosted_spoken_turn_carries_the_streams_flag_to_its_prompt() {
+        // Reads the source: the flag is one field among the turn's options,
+        // and a literal `false` there keeps the whole-sentence brevity rules
+        // on the owner's own chat while every behavioural test stays green —
+        // the persona path and the facade's own slots are wired separately
+        // (review of #527).
+        let src = include_str!("chat.rs");
+        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
+        let speak = code
+            .split("async fn speak(")
+            .nth(1)
+            .and_then(|s| s.split("Hosted::Started(").next())
+            .expect("the host's speak builds a turn");
+        assert!(
+            speak.contains("tts_streams,") && !speak.contains("tts_streams: false"),
+            "the assistant's spoken turn drops the worker's X-Voice-TTS-Streams"
+        );
+    }
+
+    #[test]
     fn an_incognito_turn_registers_its_shells_in_the_room() {
         // Reads the source, like the test below: the assignment is one field
         // in front of a `..match` base, the easiest line in the turn to lose
@@ -3949,7 +4007,7 @@ mod tests {
 
     #[test]
     fn a_spoken_turn_reaches_the_titler_as_what_was_said() {
-        let spoken = crate::voice::open_spoken_turn("what did I promise Hollis?", false);
+        let spoken = crate::voice::open_spoken_turn("what did I promise Hollis?", false, false);
         assert!(
             spoken.starts_with(crate::voice::VOICE_BLOCK),
             "fixture is not decorated"
@@ -4391,11 +4449,14 @@ mod wire_tests {
         // meet in one conversation, so a drift between them would render
         // harness plumbing to the owner as their own words — or, worse,
         // eat the first paragraph of what they actually said.
-        let opened = crate::voice::open_spoken_turn("what is on my calendar", false);
+        let opened = crate::voice::open_spoken_turn("what is on my calendar", false, false);
         assert_eq!(strip_voice_preamble(&opened), "what is on my calendar");
         // And a turn that carries no preamble is passed through untouched.
-        let plain = crate::voice::open_spoken_turn("and tomorrow?", true);
+        let plain = crate::voice::open_spoken_turn("and tomorrow?", true, false);
         assert_eq!(strip_voice_preamble(&plain), "and tomorrow?");
+        // The streaming engine's block is stripped exactly as well.
+        let streamed = crate::voice::open_spoken_turn("what is on my calendar", false, true);
+        assert_eq!(strip_voice_preamble(&streamed), "what is on my calendar");
     }
 
     #[test]
@@ -4406,7 +4467,7 @@ mod wire_tests {
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::Text {
-                text: crate::voice::open_spoken_turn("book the room", false),
+                text: crate::voice::open_spoken_turn("book the room", false, false),
             }],
         }];
         assert_eq!(
@@ -5225,6 +5286,7 @@ mod held_tests {
                 spoken: true,
                 approve_all: false,
                 unlogged: false,
+                tts_streams: false,
                 images: Vec::new(),
             },
         );
@@ -5249,11 +5311,11 @@ mod held_tests {
             super::super::library::state_for_tests(std::path::PathBuf::new()),
         );
         let key = super::super::incognito::new_key();
-        match host.speak(&key, "hello", false, false).await {
+        match host.speak(&key, "hello", false, false, false).await {
             Hosted::Failed(why) => assert_eq!(why, UNVOUCHED_CALL),
             _ => panic!("an unvouched call into an incognito chat got past the door"),
         }
-        match host.speak(&key, "hello", false, true).await {
+        match host.speak(&key, "hello", false, true, false).await {
             Hosted::Failed(why) => assert_ne!(
                 why, UNVOUCHED_CALL,
                 "a vouched call was refused as unvouched"
@@ -5307,6 +5369,7 @@ mod held_tests {
                     spoken,
                     approve_all: false,
                     unlogged,
+                    tts_streams: false,
                     images: Vec::new(),
                 },
             )
@@ -5429,6 +5492,7 @@ mod workflow_recording_tests {
                     spoken: true,
                     approve_all: false,
                     unlogged: false,
+                    tts_streams: false,
                     images: Vec::new(),
                 },
             );

@@ -2587,6 +2587,7 @@ impl Agent {
                 effort: self.cfg.effort,
                 thinking: self.cfg.thinking,
                 cache_prompt: self.cfg.cache_prompt,
+                think: None,
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -3591,6 +3592,7 @@ impl Agent {
             effort: self.cfg.effort,
             thinking: self.cfg.thinking,
             cache_prompt: self.cfg.cache_prompt,
+            think: None,
         };
 
         let response = match self.complete(cx, &request, events).await? {

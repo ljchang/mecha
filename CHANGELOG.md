@@ -25,6 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A voice that takes direction is told how to say each sentence.** When
+  the speech engine honours `instructions` (Breeze TTS 2), the worker asks
+  the voice facade's new director for each sentence — one line on emotion,
+  energy, pace and pitch, written by the model already loaded, with thinking
+  off — and sends it with the words. The first sentence's direction starts
+  from your words as the turn begins. Every direction is recorded in the
+  conversation's transcript as a `spoken_direction` record, except in an
+  incognito chat, where it is directed and nothing is kept. On a voice that
+  does not take direction, nothing changes and no extra call is made.
+
+- **A streaming voice is no longer told to keep it short.** When the speech
+  engine streams audio as it synthesises (Breeze lists `"streams": true`),
+  the worker says so (`X-Voice-TTS-Streams: 1`) and a spoken turn opens with
+  a block that keeps every voice rule but the length ones, and a persona's
+  call note drops "short sentences, the first one short". Those rules were a
+  latency control for an engine that speaks a sentence only once all of it is
+  made; on Chatterbox the prompt is byte-for-byte what it was.
+
 - **A Breeze TTS adapter, ready but not switched on.** `scripts/voice/breeze_server.py`
   serves the same speech interface as the Chatterbox server, in front of Breeze TTS 2
   on a qwentts.cpp fork. It transcribes each voice clip once with Parakeet (an editable
@@ -715,6 +733,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The owner's amendment to `INCOGNITO-DESIGN.md` §6.1 (2026-09-28).
 
 ### Fixed
+
+- **The ComfyUI idle reset reads only what it needs, and fails when it cannot
+  see free memory.** Its two journal checks now ask for the newest matching
+  line (`journalctl -g … -n 1`) instead of reading the whole run's journal every
+  minute, and tell "no match" from "unreadable" by what journalctl says on
+  stderr. An unreadable `MemFree` fails the unit, where it used to be read as
+  zero and answered with `/free` and a clean exit.
 
 - **A picture asked for while the image server restarts waits for it.** The
   first request of a job now waits for a server that is not answering yet:
