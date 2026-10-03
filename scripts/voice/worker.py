@@ -2371,10 +2371,11 @@ SAMPLE_LINE = (
 )
 
 
-async def tts_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
+async def tts_wav(text: str, voice: str, speed: float = 1.0, instructions: str | None = None) -> bytes:
     """`text` in `voice`, as a WAV, from the TTS server - the expressiveness a
     call opens with, so what is heard here is the voice as a call sounds:
-    the same honoured-only controls a call sends (`optional_controls`).
+    the same honoured-only controls a call sends (`optional_controls`),
+    `instructions` among them when Listen's director gave a line.
     Raises on any failure; the route says which."""
     body = {
         "input": text,
@@ -2387,6 +2388,7 @@ async def tts_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
         await asyncio.to_thread(tts_controls),
         exaggeration=TTS_EXAGGERATION,
         cfg_weight=TTS_CFG_WEIGHT,
+        instructions=instructions,
     )
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(f"{TTS_URL}/audio/speech", json=body)
@@ -2406,10 +2408,18 @@ async def tts_sample(voice: str) -> bytes:
 # cuts at sentences (`speech.js`), not a document.
 MAX_SPEAK_CHARS = 1200
 
+# The longest delivery direction a speak request carries - serve's director
+# bounds its lines to this (`voice_direction::MAX_CHARS` in mecha-core).
+MAX_INSTRUCTIONS_CHARS = 300
+
 
 def speak_request(body, known, default_voice=TTS_VOICE, default_speed=TTS_SPEED):
     """A play button's request (`POST /mecha/speak`), checked: `(text, voice,
-    speed)`, or `(None, status, why)` refused. The voice must be one the TTS
+    speed, instructions)`, or `(None, status, why, None)` refused.
+    `instructions` is the delivery direction serve's director wrote for the
+    piece (Listen's director pass, docs/VOICE-BREEZE-DESIGN.md S3.1), or
+    None to speak it undirected; it reaches the TTS only when its model
+    honours one (`tts_wav`). The voice must be one the TTS
     lists when named; none named is this worker's own, and so is a speed
     left unset - `MECHA_VOICE_TTS_SPEED`, the rate a call opens at
     (`run_bot`'s `bound.get("speed", TTS_SPEED)`), never a hardcoded 1.0.
@@ -2418,28 +2428,36 @@ def speak_request(body, known, default_voice=TTS_VOICE, default_speed=TTS_SPEED)
     for the assistant's replies (review of #502). Pure, so it is tested
     without a server (`test_speak.py`)."""
     if not isinstance(body, dict):
-        return None, 400, "not a request"
+        return None, 400, "not a request", None
     text = body.get("text")
     if not isinstance(text, str) or not text.strip():
-        return None, 400, "nothing to say"
+        return None, 400, "nothing to say", None
     text = text.strip()
     if len(text) > MAX_SPEAK_CHARS:
-        return None, 400, f"more than {MAX_SPEAK_CHARS} characters at once"
+        return None, 400, f"more than {MAX_SPEAK_CHARS} characters at once", None
     voice = body.get("voice")
     if voice is None:
         voice = default_voice
     elif not isinstance(voice, str):
-        return None, 400, "a voice is a name"
+        return None, 400, "a voice is a name", None
     elif known is None:
-        return None, 503, "the TTS server could not say which voices it has"
+        return None, 503, "the TTS server could not say which voices it has", None
     elif voice not in known:
-        return None, 404, f"no voice named {voice!r}"
+        return None, 404, f"no voice named {voice!r}", None
     speed = body.get("speed")
     if speed is None:
         speed = default_speed
     if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
-        return None, 400, f"speed is {MIN_SPEED}-{MAX_SPEED}"
-    return text, voice, float(speed)
+        return None, 400, f"speed is {MIN_SPEED}-{MAX_SPEED}", None
+    instructions = body.get("instructions")
+    if instructions is not None:
+        if not isinstance(instructions, str):
+            return None, 400, "a direction is text", None
+        instructions = instructions.strip()
+        if len(instructions) > MAX_INSTRUCTIONS_CHARS:
+            return None, 400, f"a direction is at most {MAX_INSTRUCTIONS_CHARS} characters", None
+        instructions = instructions or None
+    return text, voice, float(speed), instructions
 
 
 def install(app) -> None:
@@ -2482,10 +2500,20 @@ def install(app) -> None:
             return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
         return Response(content=wav, media_type="audio/wav")
 
+    # Whether this worker speaks a play button's piece with a direction:
+    # its TTS's model honours `instructions`. Serve asks before it asks the
+    # director for one (Listen's director pass), so no model writes a line
+    # an engine would drop; a worker older than this route 404s, which serve
+    # reads as no. Unknown (the TTS could not be asked) is no, too.
+    @app.get("/mecha/directs")
+    async def directs():
+        controls = await asyncio.to_thread(tts_controls)
+        return {"directs": bool(controls and "instructions" in controls)}
+
     # A play button on a reply (the owner's ask, 2026-10-01): a piece of a
-    # reply spoken in a voice. Nothing of the text is logged - not even its
-    # length beside the voice - so an incognito chat's reply leaves no trace
-    # here; the TTS server logs none either.
+    # reply spoken in a voice. Nothing of the text or its direction is
+    # logged - not even a length beside the voice - so an incognito chat's
+    # reply leaves no trace here; the TTS server logs none either.
     from fastapi import Request
 
     @app.post("/mecha/speak")
@@ -2503,12 +2531,12 @@ def install(app) -> None:
             known = available_voices(refresh=True)
         checked = speak_request(body, known)
         if checked[0] is None:
-            # A refusal is `(None, status, why)`.
-            _, status, why = checked
+            # A refusal is `(None, status, why, None)`.
+            _, status, why, _ = checked
             return JSONResponse({"error": why}, status)
-        text, voice, speed = checked
+        text, voice, speed, instructions = checked
         try:
-            wav = await tts_wav(text, voice, speed)
+            wav = await tts_wav(text, voice, speed, instructions)
         except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
             return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
         return Response(content=wav, media_type="audio/wav")

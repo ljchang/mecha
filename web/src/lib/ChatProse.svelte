@@ -28,9 +28,11 @@
   import { player, playReply, stopPlaying } from './reply-player.svelte.js';
 
   // `listen`: speak this reply aloud (the owner's ask, 2026-10-01) — `{ chat,
-  // unlock, voice }`, or null where the call site does not offer it. The
-  // voice is the chat's: serve speaks a persona chat's reply in the
-  // persona's voice whatever is sent here (`settings::speak`).
+  // unlock, voice, asked, lastReply }`, or null where the call site does not
+  // offer it. The voice is the chat's: serve speaks a persona chat's reply in
+  // the persona's voice whatever is sent here (`settings::speak`). `asked`
+  // and `lastReply` are the moment it was said in (`replyContext`), for the
+  // director serve asks for the reply's delivery.
   let { text = '', cites = null, onCite = null, actions = null, listen = null, download = false } = $props();
   // This reply, to the one player: which button says Stop. A string, never
   // an object: the player's state is deep `$state`, which would store a

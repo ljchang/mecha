@@ -3760,7 +3760,8 @@ speaker; the chat model's prompt is untouched.
 - **Recorded after the answer has gone**, as `Record::SpokenDirection` in
   the conversation's own transcript, and joined to its reply by `turn` and
   `sentence` — never by file position, since it lands while the sentence
-  plays. Nothing that rebuilds a conversation reads it.
+  plays. Nothing that rebuilds a conversation reads it; Listen reads it back
+  (below).
 - **Swept when its chat closes.** The facade's per-conversation directing
   state is dropped after ten idle minutes, and every 15 s for any chat its
   host no longer holds (`SessionHost::holds`) — so an ended incognito chat's
@@ -3768,6 +3769,26 @@ speaker; the chat model's prompt is untouched.
 - **Not yet: prefetch.** A sentence is asked about when the worker reaches
   it, so a short sentence before it leaves little playback to hide the call
   in; directing each sentence as its text streams would close that gap.
+- **Listen is directed once per reply, by serve, under the same rules**
+  (`serve::listen`). The page asks `/api/speak` a piece at a time with
+  `listen: {reply, index, whole, asked, last_reply}`; on the first piece
+  serve asks the worker whether its engine takes a direction
+  (`GET /mecha/directs` — a worker without the route is a no), then asks the
+  director once with the whole reply (`Cue::Reply`) through
+  `voice::ask_director_on`, the call `ask` makes, on the chat's own
+  follower. The line is settled in a `OnceCell` on the reply and sent with
+  every piece as `instructions`, so speech never waits on the director after
+  it starts. Any miss speaks the reply as Listen always did.
+- **A direction already given is given again** (`listen::saved`, over
+  `Session::spoken_directions`): an earlier tap's, recorded under
+  `listen:<reply key>` (`voice_direction::LISTEN_TURN`), else the first line
+  of the one call turn that spoke at least half the reply's sentences. A
+  saved line is not recorded again; a new one is one record per reply —
+  except in an incognito chat, which has no transcript by type and gets no
+  journal line (`an_incognito_direction_is_neither_recorded_nor_traced`).
+- **Listen's state lives on its chat**, `WebSession::listen` /
+  `PersonaSession::listen`, one reply per chat: it goes when the chat does,
+  an incognito chat's words with it, so there is no sweep to forget.
 
 ## Hooks
 

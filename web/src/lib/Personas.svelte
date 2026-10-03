@@ -7,6 +7,7 @@
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
   import ChatProse from './ChatProse.svelte';
+  import { replyContext } from './speech.js';
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
@@ -1757,7 +1758,7 @@
             <!-- Each citation as the harness checked it (§10.4): "quoted" is
                  all a check can say — a real quote may support the wrong claim.
                  One that was found opens its page. -->
-            <div class="answer"><ChatProse text={entry.text} cites={cites.get(i)} onCite={openCited} actions={chosen.display} listen={isShown(features.rows, 'calls') ? { chat: key, unlock: chosen.locked ? token : null } : null} download /></div>
+            <div class="answer"><ChatProse text={entry.text} cites={cites.get(i)} onCite={openCited} actions={chosen.display} listen={isShown(features.rows, 'calls') ? { chat: key, unlock: chosen.locked ? token : null, ...replyContext(run.entries, i) } : null} download /></div>
             {#if !run.running && entry.text?.trim()}
               {#if savedReplies[entry.text]}
                 <span class="savednote">saved to files as {savedReplies[entry.text]}</span>

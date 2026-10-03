@@ -74,6 +74,10 @@ const MAX_CHARACTER_CHARS: usize = 1_200;
 /// How much of the last reply and the owner's words the director is shown.
 const MAX_CONTEXT_CHARS: usize = 600;
 
+/// The most of a whole reply a Listen tap's director reads ([`Cue::Reply`]):
+/// enough to hear where a long reply goes, and still one short prompt.
+const MAX_REPLY_CHARS: usize = 1_500;
+
 /// The director's frame. Static, so it is the cached prefix of every call.
 ///
 /// **Delivery, never identity.** Breeze's direction mode is defined as
@@ -132,6 +136,20 @@ pub fn sent(line: &str) -> String {
     format!("{ANCHOR}{line}")
 }
 
+/// The director's own line inside a recorded `direction`, as [`sent`] was
+/// given it — what goes back into a prompt's "already directed" list, which
+/// never shows the director the anchor. A line recorded without one is
+/// returned whole.
+pub fn unsent(direction: &str) -> &str {
+    direction.strip_prefix(ANCHOR).unwrap_or(direction)
+}
+
+/// What a Listen tap's directions are recorded under in
+/// [`SpokenDirection::turn`]: `listen:` and the page's key for the reply, so
+/// a second tap on the same reply finds them and a study tells them from a
+/// call's, whose turn is the facade's completion id.
+pub const LISTEN_TURN: &str = "listen:";
+
 /// What the director knows about the turn it is directing. Built once per
 /// turn by the caller; the per-sentence part is passed to [`prompt`].
 #[derive(Debug, Clone, Default)]
@@ -149,11 +167,15 @@ pub struct Scene {
 }
 
 /// What a call is directing: the reply's opening before its words exist, or
-/// one sentence of it.
+/// one sentence of it — or, for Listen, the whole reply at once.
 #[derive(Debug, Clone, Copy)]
 pub enum Cue<'a> {
     Opening,
     Sentence(&'a str),
+    /// A whole reply read aloud with Listen, directed once: one line for
+    /// every sentence of it (owner, 2026-10-03: "just do it for the entire
+    /// turn"), so speech never waits on the director after it starts.
+    Reply(&'a str),
 }
 
 /// The user turn for one call, stable to volatile: the scene first, then
@@ -201,6 +223,13 @@ pub fn prompt(scene: &Scene, directed: &[(String, String)], cue: Cue<'_>) -> Str
         Cue::Sentence(s) => {
             p.push_str("Now: \"");
             p.push_str(&bounded(s, MAX_CONTEXT_CHARS));
+            p.push('"');
+        }
+        Cue::Reply(r) => {
+            p.push_str(
+                "Now: the whole reply, spoken in one steady delivery; direct all of it with one line: \"",
+            );
+            p.push_str(&bounded(r, MAX_REPLY_CHARS));
             p.push('"');
         }
     }
@@ -341,14 +370,16 @@ pub enum Outcome {
 #[serde(default)]
 pub struct SpokenDirection {
     pub ts: Option<DateTime<Utc>>,
-    /// The facade's id for the reply this sentence belongs to.
+    /// The reply this sentence belongs to: the facade's completion id in a
+    /// call, or [`LISTEN_TURN`] and the page's reply key for a Listen tap.
     pub turn: String,
     /// The worker's id for the same answer (pipecat's TTS context), when it
     /// sent one: a second key for joining against the worker's own journal.
     pub context: Option<String>,
     /// The sentence's position in the reply, from 0.
     pub index: u32,
-    /// The sentence as the speech engine received it.
+    /// The sentence as the speech engine received it — for a Listen tap,
+    /// the whole reply its one direction covers.
     pub sentence: String,
     /// Directed from the owner's words before the sentence existed: the
     /// first sentence's direction, started when the turn began.
@@ -440,6 +471,12 @@ mod tests {
         ));
         assert!(later.starts_with(head));
         assert!(!prompt(&scene(), &[], Cue::Opening).contains("last line was delivered"));
+        // Listen's cue: the whole reply, directed with one line.
+        let whole = prompt(&scene(), &[], Cue::Reply("It went well. Go rest."));
+        assert!(
+            whole.ends_with("one line: \"It went well. Go rest.\""),
+            "{whole}"
+        );
     }
 
     #[test]

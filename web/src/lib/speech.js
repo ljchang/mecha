@@ -55,29 +55,96 @@ export function speakable(text) {
 }
 
 /**
- * Sentence-sized pieces of `text`, each at most `max` characters, in order:
- * the player asks for one while the last plays, so speech starts after the
- * first sentence rather than the whole reply. A sentence longer than `max`
- * is cut at a word.
+ * The sentences of `text`, each at most `max` characters, in order
+ * (`speechPieces` groups them for the player). A sentence ends at `.`,
+ * `!` or `?` before a space or the end — so "3.5" and "e.g." inside a word
+ * stay whole — with any closing quote or bracket kept on it. A sentence
+ * longer than `max` is cut at a word. A piece with no letter or digit in it
+ * (a trailing "...") is dropped: the speech engine invents words for one.
  */
-export function speechChunks(text, max = 400) {
-  const sentences = String(text ?? '').match(/[^.!?]+(?:[.!?]+|$)\s*/g) ?? [];
-  const out = [];
-  let cur = '';
-  const push = () => {
-    if (cur.trim()) out.push(cur.trim());
-    cur = '';
-  };
-  for (let s of sentences) {
-    while (s.length > max) {
-      const cut = s.lastIndexOf(' ', max) > 0 ? s.lastIndexOf(' ', max) : max;
-      push();
-      out.push(s.slice(0, cut).trim());
-      s = s.slice(cut);
-    }
-    if (cur.length + s.length > max) push();
-    cur += s;
+export function speechSentences(text, max = 400) {
+  const s = String(text ?? '').trim();
+  const ends = /[.!?]+["'”’)\]]*(?=\s|$)/g;
+  const sentences = [];
+  let start = 0;
+  for (let m = ends.exec(s); m; m = ends.exec(s)) {
+    const end = m.index + m[0].length;
+    sentences.push(s.slice(start, end).trim());
+    start = end;
   }
-  push();
-  return out.filter(Boolean);
+  if (start < s.length) sentences.push(s.slice(start).trim());
+  const out = [];
+  for (let rest of sentences) {
+    while (rest.length > max) {
+      const at = rest.lastIndexOf(' ', max);
+      const cut = at > 0 ? at : max;
+      out.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    out.push(rest);
+  }
+  return out.filter((p) => /[\p{L}\p{N}]/u.test(p));
+}
+
+/**
+ * The pieces the player asks for, in order: the first sentence alone, so
+ * speech starts as soon as one sentence is spoken, then the rest grouped up
+ * to `max` characters, so each piece is made while the one before plays and
+ * the voice does not stop between sentences. Every piece of a reply is
+ * spoken with the one direction serve settles for it (Listen's director
+ * pass), so grouping changes nothing about how it sounds.
+ */
+export function speechPieces(text, max = 400) {
+  const [first, ...rest] = speechSentences(text, max);
+  if (first === undefined) return [];
+  const out = [first];
+  let cur = '';
+  for (const s of rest) {
+    if (cur && cur.length + 1 + s.length > max) {
+      out.push(cur);
+      cur = '';
+    }
+    cur = cur ? `${cur} ${s}` : s;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * A reply's key for Listen: the same text, the same key, so a second tap on
+ * a reply is spoken with the direction the first was given (serve records
+ * it under the key). Two 32-bit FNV-1a hashes over the text — a join key within
+ * one chat, not a secret.
+ */
+export function replyKey(text) {
+  const t = String(text ?? '');
+  let a = 0x811c9dc5;
+  let b = 0x01000193 ^ 0x5bd1e995;
+  for (let i = 0; i < t.length; i += 1) {
+    const c = t.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x01000193) >>> 0;
+  }
+  return 'r' + a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');
+}
+
+/**
+ * What the director is told about the moment a reply was said in: the
+ * owner's words it answers (`asked`) and what the speaker said before it
+ * (`lastReply`) — read from the page's entries, nearest first, as a call's
+ * scene is built from the conversation.
+ */
+export function replyContext(entries, i) {
+  let asked = null;
+  let lastReply = null;
+  for (let j = i - 1; j >= 0; j -= 1) {
+    const e = entries[j];
+    if (asked === null) {
+      if (e?.kind === 'user' && e.text?.trim()) asked = e.text;
+    } else if (e?.kind === 'assistant' && e.text?.trim()) {
+      lastReply = e.text;
+      break;
+    }
+  }
+  return { asked, lastReply };
 }
