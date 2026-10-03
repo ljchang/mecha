@@ -75,12 +75,62 @@ const MAX_CHARACTER_CHARS: usize = 1_200;
 const MAX_CONTEXT_CHARS: usize = 600;
 
 /// The director's frame. Static, so it is the cached prefix of every call.
+///
+/// **Delivery, never identity.** Breeze's direction mode is defined as
+/// steering "tone, emotion, pace, and delivery" while keeping the reference
+/// speaker's identity; a pitch *level* belongs to its voice-design mode,
+/// which makes a new voice. Measured on the engine (2026-10-03, one logged
+/// turn's directions over 8 sentences × 3): directions naming "low/high/
+/// medium pitch" moved the median pitch 5.5 semitones between adjacent
+/// lines, up to 14.5 — the owner heard "a different person" — against 2.2
+/// with only those words removed and texture kept. Texture and pitch
+/// *movement* within a line are what the vendor's own direction benchmark
+/// grades, and stay.
+///
+/// **The texture list is balanced, and that is load-bearing.** The real
+/// director, asked over three logged replies (24 sentences a draw):
+///
+/// - a list of only breathy/husky/trembling textures was copied as a menu
+///   ("husky" in 21 of 24 directions, for the assistant's scene too), and one
+///   draw collapsed into the same ten adjectives on 19 lines;
+/// - no list at all wandered into gestures, gaze and vocal events ("a sharp
+///   intake of air", "a low, dangerous purr"), a 2.2-semitone mean move and
+///   one of 17.6;
+/// - this frame — plain textures beside the expressive ones, "or none", the
+///   voice only — named no pitch level in 24, moved 1.6 semitones on
+///   average and 5.3 at most, against 2.8 and 18.0 for the frame before it.
 pub const SYSTEM: &str = "\
 You direct a voice actor who is about to speak one sentence of a reply \
-aloud. Given who is speaking, the moment in the conversation and the \
-sentence, answer with one line of delivery direction, 12 to 25 words: the \
-emotion, the energy, the pace and the pitch. Never repeat, quote or rewrite \
-the words, and never add new ones. No preamble, no quotes, no markdown.";
+aloud, always in their own voice. Given who is speaking, the moment in the \
+conversation and the sentence, answer with one line of delivery direction, \
+12 to 25 words: the emotion, the energy, the pace, the emphasis and the \
+texture of the voice when the moment calls for one (clear, bright, soft, \
+warm, breathy, hushed, husky, tight, trembling, or none). Pitch may move \
+within the line - rising, falling, lifting at the end - but never name a \
+pitch level, register, age or accent, not even inside a texture: no high, \
+low, deep or mid. Direct only the voice: never gestures, gaze, actions or \
+the scene. Stay close to how the previous line was delivered and change by \
+degrees; change sharply only when the moment turns. Never repeat, quote or \
+rewrite the words, and never add new ones. No preamble, no quotes, no \
+markdown.";
+
+/// Put in front of every direction sent, by code rather than asked of the
+/// director: the steadiest form measured (2026-10-03, hand-written lines), a
+/// 1.5-semitone mean pitch move between lines against 2.2 for the same
+/// directions without it. Measured as "In her own…"; "your" so that no
+/// speaker's pronouns are assumed, and it addresses the voice actor the
+/// frame does. Never shown back to the director, so it cannot learn to copy
+/// it.
+pub const ANCHOR: &str = "In your own natural voice: ";
+
+/// The longest line the director's answer is cut to, leaving room for
+/// [`ANCHOR`] inside [`MAX_CHARS`].
+const LINE_MAX: usize = MAX_CHARS - ANCHOR.len();
+
+/// What is sent as `instructions` for a direction the director wrote.
+pub fn sent(line: &str) -> String {
+    format!("{ANCHOR}{line}")
+}
 
 /// What the director knows about the turn it is directing. Built once per
 /// turn by the caller; the per-sentence part is passed to [`prompt`].
@@ -92,6 +142,10 @@ pub struct Scene {
     pub last_reply: Option<String>,
     /// What the owner just said: the words this turn answers.
     pub utterance: String,
+    /// How the speaker's last directed line was delivered, carried from the
+    /// reply before, so a new reply moves on from it rather than starting
+    /// cold.
+    pub last_direction: Option<String>,
 }
 
 /// What a call is directing: the reply's opening before its words exist, or
@@ -119,6 +173,11 @@ pub fn prompt(scene: &Scene, directed: &[(String, String)], cue: Cue<'_>) -> Str
     if let Some(r) = &scene.last_reply {
         p.push_str("What the speaker said last: ");
         p.push_str(&bounded(r, MAX_CONTEXT_CHARS));
+        p.push('\n');
+    }
+    if let Some(d) = &scene.last_direction {
+        p.push_str("How the speaker's last line was delivered: ");
+        p.push_str(&bounded(d, MAX_CONTEXT_CHARS));
         p.push('\n');
     }
     p.push_str("They just said: ");
@@ -202,8 +261,9 @@ pub async fn direct(provider: &dyn Provider, model: &str, user: &str) -> Result<
 }
 
 /// Bound a model's answer into something a speech engine can take: one
-/// line, no control or format characters, at most [`MAX_CHARS`], cut on a
-/// word where one is in reach. `None` when nothing is left.
+/// line, no control or format characters, short enough that [`sent`] stays
+/// within [`MAX_CHARS`], cut on a word where one is in reach. `None` when
+/// nothing is left.
 pub fn tidy(raw: &str) -> Option<String> {
     let mut cleaned = String::new();
     let mut space = false;
@@ -230,11 +290,11 @@ pub fn tidy(raw: &str) -> Option<String> {
     if cleaned.is_empty() {
         return None;
     }
-    if cleaned.chars().count() <= MAX_CHARS {
+    if cleaned.chars().count() <= LINE_MAX {
         return Some(cleaned.to_string());
     }
-    let cut: String = cleaned.chars().take(MAX_CHARS).collect();
-    let at = cut.rfind(' ').filter(|&i| i > MAX_CHARS / 2);
+    let cut: String = cleaned.chars().take(LINE_MAX).collect();
+    let at = cut.rfind(' ').filter(|&i| i > LINE_MAX / 2);
     Some(at.map_or(cut.clone(), |i| cut[..i].to_string()))
 }
 
@@ -317,6 +377,7 @@ mod tests {
             character: Some("Stella, a wry friend who teases gently.".into()),
             last_reply: Some("Good luck with the grant!".into()),
             utterance: "I finally finished it, but I'm wiped out.".into(),
+            last_direction: None,
         }
     }
 
@@ -360,8 +421,39 @@ mod tests {
         assert_eq!(tidy("\u{202e}"), None);
         let long = "word ".repeat(200);
         let t = tidy(&long).unwrap();
-        assert!(t.chars().count() <= MAX_CHARS);
+        assert!(
+            sent(&t).chars().count() <= MAX_CHARS,
+            "the anchor pushed it past the engine's cap"
+        );
         assert!(!t.ends_with(' '));
+    }
+
+    #[test]
+    fn a_carried_direction_is_part_of_the_scene_every_call_shares() {
+        let mut s = scene();
+        s.last_direction = Some("Soft, a little tired, slowing.".into());
+        let opening = prompt(&s, &[], Cue::Opening);
+        let later = prompt(&s, &[], Cue::Sentence("Go rest."));
+        let head = opening.rsplit_once("\n\nNow:").unwrap().0;
+        assert!(head.contains(
+            "How the speaker's last line was delivered: Soft, a little tired, slowing.\n"
+        ));
+        assert!(later.starts_with(head));
+        assert!(!prompt(&scene(), &[], Cue::Opening).contains("last line was delivered"));
+    }
+
+    #[test]
+    fn the_director_is_asked_for_delivery_never_a_pitch_level() {
+        // The words that made a different person of the same voice (§SYSTEM).
+        assert!(!SYSTEM.contains("and the pitch"));
+        assert!(SYSTEM.contains("never name a pitch level"));
+        assert!(SYSTEM.contains("texture of the voice"));
+        assert!(SYSTEM.contains("change by degrees"));
+        assert!(SYSTEM.contains("Direct only the voice"));
+        // A one-sided list is copied as a menu (§SYSTEM): plain textures and
+        // "none" stand beside the expressive ones.
+        assert!(SYSTEM.contains("clear, bright, soft") && SYSTEM.contains("or none"));
+        assert_eq!(sent("Warm."), "In your own natural voice: Warm.");
     }
 
     #[test]
