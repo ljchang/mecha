@@ -163,6 +163,9 @@ impl Anthropic {
             obj.insert("system".into(), json!([block]));
         }
 
+        // `req.think` needs nothing here: every request that asks it not to
+        // think also leaves `thinking` false (a quarantined pass always
+        // does), and that already sends `{"type": "disabled"}` below.
         if req.thinking {
             obj.insert(
                 "thinking".into(),
@@ -868,6 +871,7 @@ mod tests {
             effort: None,
             thinking: true,
             cache_prompt: false,
+            think: None,
         }
     }
 
@@ -1257,6 +1261,7 @@ mod retry_tests {
             effort: None,
             thinking: false,
             cache_prompt: false,
+            think: None,
         }
     }
 
@@ -2841,6 +2846,7 @@ text = "Leave work better than you found it."
                 effort: None,
                 thinking: false,
                 cache_prompt: false,
+                think: None,
             }
         };
         let plain_result = "1. [>] Draft a reply".to_string();
