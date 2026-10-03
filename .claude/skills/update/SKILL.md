@@ -206,6 +206,9 @@ done
 #   (mecha-serve ships from scripts/voice/, not scripts/)
 # and the fix, when the repo copy is right and the installed one drifted:
 #   cp scripts[/voice]/<unit>.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   EXCEPT mecha-slots.service: its repo copy ships `--account YOUR-MAIL-ACCOUNT`,
+#   a placeholder, so it always diffs; copying it over would replace the live
+#   polls account. Edit the installed unit's lines by hand instead.
 #   then restart a long-running unit; a timer-fired oneshot picks it up at its next firing.
 # not a unit, but installed the same way and drifting the same way: the
 # daytime mail sweep's ExecCondition= runs a *copy* of scripts/model-idle.sh,
@@ -507,9 +510,10 @@ ComfyUI for it.
 
 **One exception in kind, not in restart:** `mecha-slots.service`'s second
 `ExecStart` is the poll lifecycle's timer line and must read
-`factory-publish drain; mecha-mail bookings --account dartmouth;
-factory-publish polls sweep; mecha-mail polls --account dartmouth; mecha polls
-sweep` — a unit still on the two-verb line silently leaves every meeting poll
+`factory-publish drain; mecha-mail bookings; factory-publish polls sweep;
+mecha-mail polls --account <your mail account>; mecha polls sweep` — the
+bookings leg names no account on purpose (the unit's comment says why), and
+the polls leg names the one polls send from — a unit still on the two-verb line silently leaves every meeting poll
 at "invites 0/N" forever, with nothing in the repo to say why. And a pick card
 is a `calendar_create_event` draft: `mail__calendar_create_event` must be in
 `[outbox] tools` (it is, by the documented default) or `mecha polls sweep`

@@ -47,7 +47,7 @@ Three consequences, and the second is the one to design against.
 exists so that a real `"yes"` survives the echo gate: one word is where an echo
 and the plainest possible answer are the same string, so the gate declines to
 judge there. `"personal"` is also one word. So an echo of the question's own
-tail — *"…dartmouth or personal?"* — is immune **by the same rule that makes
+tail — *"…campus or personal?"* — is immune **by the same rule that makes
 the confirmation usable**, and would be taken as a choice. With yes/no this is
 a stated residual (`VOICE-RESEARCH`, the timing layer's justification); with a
 parameter ask it is the ordinary case rather than the edge.
@@ -78,7 +78,7 @@ It needs the *result* to be audible before anything acts on it.
 
 > **Do not ask a question. State the default, and accept an override.**
 
-The offer already ends *"That one is from your dartmouth account."* An override
+The offer already ends *"That one is from your campus account."* An override
 switches the value, rewrites the staged args, and **re-offers** — and the
 re-offer's tail names the new account. A spurious switch therefore costs one
 repetition and is **heard**. A silent wrong send is the failure this avoids,

@@ -1799,7 +1799,7 @@ mod tests {
                     fact_uid: None,
                 },
                 Correction {
-                    wrong: "Marek worked at Dartmouth".into(),
+                    wrong: "Marek worked at Fairhaven".into(),
                     right: None, // a rejection: the graph writes a negation
                     about: Some("Marek".into()),
                     fact_uid: Some("abc-123".into()),

@@ -185,7 +185,7 @@ fn resolve(
 pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) -> Vec<Value> {
     // The note has to be the default that *this* tool would actually use. A
     // schema saying "the default account is `personal`" on `mail_send` while
-    // sends resolve to `dartmouth` is worse than saying nothing: the model
+    // sends resolve to `campus` is worse than saying nothing: the model
     // omits `account` believing it knows where the message goes.
     //
     // Which is why a default is declared only where omitting `account` really
@@ -222,10 +222,10 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         //
         // What it would cost is the failure this whole surface exists to
         // prevent. `default: "old-work"` beside `enum: ["personal",
-        // "dartmouth"]` gets pinned into the staged arguments, and the
+        // "campus"]` gets pinned into the staged arguments, and the
         // reviewer reads a draft whose sender does not exist. It would also
         // degrade the error: unresolvable-as-a-default says "default account
-        // `old-work` is not configured (personal, dartmouth)", which names the
+        // `old-work` is not configured (personal, campus)", which names the
         // fix, while unresolvable-as-an-argument says "unknown account", as
         // though the model had chosen it.
         let Some(d) = default.filter(|d| names.iter().any(|n| n == d)) else {
@@ -1977,12 +1977,12 @@ mod tests {
         };
 
         let rows = super::calendar_rows(vec![
-            ("dartmouth".into(), Provider::Outlook, ok()),
+            ("campus".into(), Provider::Outlook, ok()),
             ("personal".into(), Provider::Google, bad()),
         ])
         .unwrap();
         assert_eq!(rows.len(), 2, "both accounts are listed: {rows:?}");
-        assert_eq!(rows[0]["account"], "dartmouth");
+        assert_eq!(rows[0]["account"], "campus");
         assert!(rows[0].get("error").is_none());
         assert_eq!(rows[1]["account"], "personal");
         assert_eq!(rows[1]["calendars"], serde_json::json!([]));
@@ -1992,7 +1992,7 @@ mod tests {
         );
 
         let all_bad = super::calendar_rows(vec![
-            ("dartmouth".into(), Provider::Outlook, bad()),
+            ("campus".into(), Provider::Outlook, bad()),
             ("personal".into(), Provider::Google, bad()),
         ]);
         assert!(
@@ -2070,8 +2070,8 @@ mod tests {
     fn the_tool_surface_is_labelled_correctly() {
         crate::mcp::assert_tool_surface(
             &tool_definitions(
-                &names(&["dartmouth", "personal"]),
-                &conf(Some("dartmouth"), None, None),
+                &names(&["campus", "personal"]),
+                &conf(Some("campus"), None, None),
             ),
             &[
                 "mail_search",
@@ -2092,8 +2092,8 @@ mod tests {
         );
         crate::mcp::assert_private_writes(
             &tool_definitions(
-                &names(&["dartmouth", "personal"]),
-                &conf(Some("dartmouth"), None, None),
+                &names(&["campus", "personal"]),
+                &conf(Some("campus"), None, None),
             ),
             &["calendar_hold"],
         );
@@ -2194,13 +2194,13 @@ mod tests {
     /// model picks from the real names instead of guessing.
     #[test]
     fn every_tool_offers_the_real_account_names() {
-        let defs = tool_definitions(&names(&["dartmouth", "personal"]), &conf(None, None, None));
+        let defs = tool_definitions(&names(&["campus", "personal"]), &conf(None, None, None));
         for tool in &defs {
             let name = tool["name"].as_str().unwrap();
             let enum_values = &tool["inputSchema"]["properties"]["account"]["enum"];
             assert_eq!(
                 enum_values,
-                &json!(["dartmouth", "personal"]),
+                &json!(["campus", "personal"]),
                 "{name} must enumerate the accounts"
             );
         }
@@ -2256,7 +2256,7 @@ mod tests {
                 "personal",
                 Err("API error (400): Invalid id value".to_string()),
             ),
-            ("dartmouth", Ok(3)),
+            ("campus", Ok(3)),
         ];
         assert_eq!(thread_home("T", &answers).unwrap(), 1);
     }
@@ -2275,15 +2275,15 @@ mod tests {
         // 200 with no messages. A Gmail thread, with an Outlook account
         // beside it, must still resolve to Gmail — and with the Gmail read
         // failing, must not fall to the Outlook account.
-        let gmail_thread = [("personal", Ok(2)), ("dartmouth", Ok(0))];
+        let gmail_thread = [("personal", Ok(2)), ("campus", Ok(0))];
         assert_eq!(thread_home("T", &gmail_thread).unwrap(), 0);
         let gmail_down = [
             ("personal", Err("HTTP request failed: timeout".to_string())),
-            ("dartmouth", Ok(0)),
+            ("campus", Ok(0)),
         ];
         let err = thread_home("T", &gmail_down).unwrap_err();
         assert!(
-            err.contains("dartmouth: no such thread") && err.contains("personal: HTTP"),
+            err.contains("campus: no such thread") && err.contains("personal: HTTP"),
             "{err}"
         );
     }
@@ -2378,7 +2378,7 @@ mod tests {
     /// check by hand. Every case here fails before a request: no network.
     #[tokio::test]
     async fn a_send_refused_before_any_request_says_nothing_was_dispatched() {
-        let tools = tools_over(&["personal", "dartmouth"], None);
+        let tools = tools_over(&["personal", "campus"], None);
         let refused = |r: Option<Reply>| {
             let r = r.expect("a known tool answers");
             assert!(r.is_error && r.not_dispatched, "{r:?}");
@@ -2458,12 +2458,12 @@ mod tests {
         // The case this exists for, in the owner's words: mail out from the
         // work address, events on the personal calendar. One `default` made
         // that a single choice, so setting either moved both.
-        let mut tools = tools_over(&["personal", "dartmouth"], None);
-        tools.default_mail = Some("dartmouth".into());
+        let mut tools = tools_over(&["personal", "campus"], None);
+        tools.default_mail = Some("campus".into());
         tools.default_calendar = Some("personal".into());
 
         let send = tools.pick(None, Mode::Create(Surface::Mail)).unwrap();
-        assert_eq!(send[0].name, "dartmouth");
+        assert_eq!(send[0].name, "campus");
         let event = tools.pick(None, Mode::Create(Surface::Calendar)).unwrap();
         assert_eq!(event[0].name, "personal");
 
@@ -2479,11 +2479,11 @@ mod tests {
         // The upgrade path: a file that predates the split has only
         // `default`, and both creates must keep resolving exactly as they
         // did. Setting one surface must not orphan the other.
-        let mut tools = tools_over(&["personal", "dartmouth"], Some("personal"));
+        let mut tools = tools_over(&["personal", "campus"], Some("personal"));
         for mode in [Mode::Create(Surface::Mail), Mode::Create(Surface::Calendar)] {
             assert_eq!(tools.pick(None, mode).unwrap()[0].name, "personal");
         }
-        tools.default_mail = Some("dartmouth".into());
+        tools.default_mail = Some("campus".into());
         assert_eq!(
             tools.pick(None, Mode::Create(Surface::Calendar)).unwrap()[0].name,
             "personal",
@@ -2497,8 +2497,8 @@ mod tests {
         // thing goes, so a note naming the wrong surface's default is worse
         // than no note: it is confidently wrong at the moment of sending.
         let defs = tool_definitions(
-            &names(&["personal", "dartmouth"]),
-            &conf(None, Some("dartmouth"), Some("personal")),
+            &names(&["personal", "campus"]),
+            &conf(None, Some("campus"), Some("personal")),
         );
         let note = |tool: &str| -> String {
             defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]["properties"]["account"]
@@ -2508,7 +2508,7 @@ mod tests {
                 .to_string()
         };
         assert!(
-            note("mail_send").contains("`dartmouth`"),
+            note("mail_send").contains("`campus`"),
             "{}",
             note("mail_send")
         );
@@ -2526,7 +2526,7 @@ mod tests {
     /// which mailbox it would leave from, because the account was resolved
     /// here long after the draft was written and no caller can look it up
     /// (`mecha-core` does not depend on this crate). And a *read* or an *item*
-    /// op carried the note "The default account is `dartmouth`" while
+    /// op carried the note "The default account is `campus`" while
     /// `resolve` consults a default in `Mode::Create` alone — a promise the
     /// code does not keep, next to a sentence saying the opposite.
     ///
@@ -2540,14 +2540,14 @@ mod tests {
     #[test]
     fn with_several_accounts_only_a_create_declares_a_default() {
         let defs = tool_definitions(
-            &names(&["personal", "dartmouth"]),
-            &conf(None, Some("dartmouth"), Some("personal")),
+            &names(&["personal", "campus"]),
+            &conf(None, Some("campus"), Some("personal")),
         );
         let account = |tool: &str| -> Value {
             defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]["properties"]["account"]
                 .clone()
         };
-        assert_eq!(account("mail_send")["default"], json!("dartmouth"));
+        assert_eq!(account("mail_send")["default"], json!("campus"));
         assert_eq!(
             account("calendar_create_event")["default"],
             json!("personal")
@@ -2625,8 +2625,8 @@ mod tests {
         // promise `resolve` does not keep, which is this function's whole
         // subject. Note the file below *has* defaults; they are a create's.
         let several = tool_definitions(
-            &names(&["personal", "dartmouth"]),
-            &conf(Some("personal"), Some("dartmouth"), None),
+            &names(&["personal", "campus"]),
+            &conf(Some("personal"), Some("campus"), None),
         );
         for tool in ITEM_OPS {
             let s = spec(&several, tool);
@@ -2653,7 +2653,7 @@ mod tests {
     #[test]
     fn a_default_naming_no_configured_account_declares_nothing() {
         let defs = tool_definitions(
-            &names(&["personal", "dartmouth"]),
+            &names(&["personal", "campus"]),
             &conf(Some("old-work"), None, None),
         );
         for tool in ["mail_send", "calendar_create_event"] {
@@ -2674,7 +2674,7 @@ mod tests {
     /// somewhere else — or errors, having told the reviewer otherwise.
     #[test]
     fn a_create_with_no_default_declares_none() {
-        let defs = tool_definitions(&names(&["personal", "dartmouth"]), &conf(None, None, None));
+        let defs = tool_definitions(&names(&["personal", "campus"]), &conf(None, None, None));
         let send = defs.iter().find(|d| d["name"] == "mail_send").unwrap();
         let spec = &send["inputSchema"]["properties"]["account"];
         assert!(spec.get("default").is_none(), "{spec}");
@@ -2689,8 +2689,8 @@ mod tests {
     /// scoping it here silently dropped cross-account collision detection.
     #[test]
     fn the_booking_event_account_resolves_like_the_create() {
-        let tools = tools_over(&["dartmouth", "personal"], Some("dartmouth"));
-        assert_eq!(tools.create_account_name(None).unwrap(), "dartmouth");
+        let tools = tools_over(&["campus", "personal"], Some("campus"));
+        assert_eq!(tools.create_account_name(None).unwrap(), "campus");
         assert_eq!(
             tools.create_account_name(Some("personal")).unwrap(),
             "personal"
@@ -2733,11 +2733,11 @@ mod tests {
     fn a_plain_reply_answers_the_sender_only() {
         let e = email(
             "priya@x.edu",
-            &["me@dartmouth.edu", "bob@y.com"],
+            &["me@example.edu", "bob@y.com"],
             &[],
             "Plans",
         );
-        let (to, cc, subject) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), false);
+        let (to, cc, subject) = gmail_reply_fields(&e, Some("me@example.edu"), false);
         assert_eq!(to, "priya@x.edu");
         assert_eq!(cc, None);
         assert_eq!(subject, "Re: Plans");
@@ -2747,11 +2747,11 @@ mod tests {
     fn reply_all_keeps_everyone_except_the_user() {
         let e = email(
             "priya@x.edu",
-            &["me@dartmouth.edu", "bob@y.com"],
-            &["carol@z.org", "ME@dartmouth.edu"],
+            &["me@example.edu", "bob@y.com"],
+            &["carol@z.org", "ME@example.edu"],
             "Re: Plans",
         );
-        let (to, cc, subject) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), true);
+        let (to, cc, subject) = gmail_reply_fields(&e, Some("me@example.edu"), true);
         assert_eq!(to, "priya@x.edu, bob@y.com");
         assert_eq!(cc.as_deref(), Some("carol@z.org"));
         // Already "Re:" — not "Re: Re:".
@@ -2764,11 +2764,11 @@ mod tests {
     fn reply_all_never_addresses_anyone_in_both_to_and_cc() {
         let e = email(
             "priya@x.edu",
-            &["me@dartmouth.edu", "bob@y.com"],
+            &["me@example.edu", "bob@y.com"],
             &["Bob@y.com", "carol@z.org"],
             "Plans",
         );
-        let (to, cc, _) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), true);
+        let (to, cc, _) = gmail_reply_fields(&e, Some("me@example.edu"), true);
         assert_eq!(to, "priya@x.edu, bob@y.com");
         assert_eq!(cc.as_deref(), Some("carol@z.org"));
     }
@@ -2778,20 +2778,20 @@ mod tests {
     #[test]
     fn replying_to_your_own_message_addresses_its_recipients() {
         let e = email(
-            "me@dartmouth.edu",
+            "me@example.edu",
             &["priya@x.edu", "bob@y.com"],
             &[],
             "Plans",
         );
-        let (to, _, _) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), false);
+        let (to, _, _) = gmail_reply_fields(&e, Some("me@example.edu"), false);
         assert_eq!(to, "priya@x.edu, bob@y.com");
     }
 
     #[test]
     fn a_note_to_self_still_has_a_recipient() {
-        let e = email("me@dartmouth.edu", &["me@dartmouth.edu"], &[], "todo");
-        let (to, _, _) = gmail_reply_fields(&e, Some("me@dartmouth.edu"), false);
-        assert_eq!(to, "me@dartmouth.edu");
+        let e = email("me@example.edu", &["me@example.edu"], &[], "todo");
+        let (to, _, _) = gmail_reply_fields(&e, Some("me@example.edu"), false);
+        assert_eq!(to, "me@example.edu");
     }
 
     // ---- merge order ----
@@ -2836,11 +2836,11 @@ mod tests {
         newer.date_received = "2026-08-04T00:00:00Z".into();
         let out = render_rows(vec![
             (Provider::Google, "personal".into(), older),
-            (Provider::Outlook, "dartmouth".into(), newer),
+            (Provider::Outlook, "campus".into(), newer),
         ]);
         let rows: Vec<Value> = serde_json::from_str(&out).unwrap();
         assert_eq!(rows[0]["subject"], "new");
-        assert_eq!(rows[0]["account"], "dartmouth");
+        assert_eq!(rows[0]["account"], "campus");
         assert_eq!(rows[1]["account"], "personal");
     }
 

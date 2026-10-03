@@ -28,7 +28,7 @@
 # decisions in the driver. Asking a model to call a tool to do what a CLI does
 # exactly would be re-answering a settled question badly.
 #
-# **Both accounts, since 2026-08-25.** This swept `dartmouth` only, because
+# **Both accounts, since 2026-08-25.** This swept `campus` only, because
 # the Google client is pinned in Testing publishing status and `personal`'s
 # refresh credential dies 7 days after consent. The stated cost was a sweep
 # "failing on a dead grant"; the real cost was worse and is now fixed.
