@@ -84,18 +84,40 @@ pub struct Bound {
     /// is not the one its next turn runs on — so a transcript that crossed a
     /// switch says which model answered each run, not only the first.
     pub generation: u64,
+    /// How many slots (`-np`) the server this binding's model is served
+    /// from had when the binding was built — `router::Seen::slots`, read off
+    /// the router's own `/props` by the observation that resolved it. `None`
+    /// is unknown: no router, or one that did not say. Taken at build time,
+    /// and a binding is rebuilt when the resident model moves, so it is stale
+    /// only if a preset's `parallel` is edited under the same model — until
+    /// the next switch.
+    pub slots: Option<u64>,
     /// Dropping an MCP client kills its server; held as long as any run holds
     /// this binding.
     _mcp: Vec<Arc<mecha_core::mcp::McpClient>>,
 }
 
 impl Bound {
-    fn from_prepared(p: Prepared, generation: u64) -> Self {
+    fn from_prepared(
+        p: Prepared,
+        generation: u64,
+        seen: &[mecha_core::provider::router::Seen],
+    ) -> Self {
         let context_window = p
             .config
             .providers
             .get(&p.provider_name)
             .and_then(|c| c.context_window);
+        // The router serving the provider this build resolved — not the
+        // default's, which a pinned surface may not be on.
+        let slots = p
+            .config
+            .providers
+            .get(&p.provider_name)
+            .and_then(|c| c.base_url.as_deref())
+            .map(mecha_core::provider::router::base)
+            .and_then(|b| seen.iter().find(|s| s.base_url == b))
+            .and_then(|s| s.slots);
         Bound {
             agent: Arc::new(p.agent),
             provider_name: p.provider_name,
@@ -107,6 +129,7 @@ impl Bound {
             workspace: p.workspace,
             todo: p.todo,
             generation,
+            slots,
             _mcp: p._mcp,
         }
     }
@@ -159,6 +182,7 @@ impl Follower {
             &generations,
             resolve(&cfg, pinned, &seen),
             None,
+            &seen,
         )
         .await?;
         Ok(Follower {
@@ -294,6 +318,7 @@ impl Follower {
             &self.generations,
             Some(want.clone()),
             Some(&cur),
+            &seen,
         );
         let bound = built.await.with_context(|| {
             format!(
@@ -331,6 +356,7 @@ impl Follower {
             workspace: PathBuf::new(),
             todo: None,
             generation: 1,
+            slots: None,
             _mcp: Vec::new(),
         };
         Follower {
@@ -344,6 +370,16 @@ impl Follower {
             generations: AtomicU64::new(1),
             warned: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// [`fixed`](Self::fixed), on a server with `slots` slots — as the
+    /// router's observation would have recorded it.
+    pub fn with_slots(mut self, slots: Option<u64>) -> Self {
+        let current = self.current.get_mut().unwrap_or_else(|e| e.into_inner());
+        Arc::get_mut(current)
+            .expect("a fixed binding nothing else holds yet")
+            .slots = slots;
+        self
     }
 
     /// [`fixed`](Self::fixed), carrying a plan store the way
@@ -459,6 +495,7 @@ impl Follower {
             workspace: PathBuf::new(),
             todo: None,
             generation,
+            slots: None,
             _mcp: Vec::new(),
         };
         *self
@@ -480,6 +517,7 @@ impl Follower {
             workspace: PathBuf::new(),
             todo: None,
             generation,
+            slots: None,
             _mcp: Vec::new(),
         };
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(bound);
@@ -569,6 +607,7 @@ async fn build(
     generations: &AtomicU64,
     provider: Option<String>,
     carry: Option<&Bound>,
+    seen: &[mecha_core::provider::router::Seen],
 ) -> Result<Arc<Bound>> {
     let mut opts = opts.clone();
     if provider.is_some() {
@@ -581,7 +620,7 @@ async fn build(
         setup::prepare_carrying(&opts, false, carry.and_then(|b| b.todo.clone())).await?;
     finish(&mut prepared);
     let generation = generations.fetch_add(1, Ordering::Relaxed) + 1;
-    Ok(Arc::new(Bound::from_prepared(prepared, generation)))
+    Ok(Arc::new(Bound::from_prepared(prepared, generation, seen)))
 }
 
 fn load_config(opts: &GlobalOpts) -> Result<Config> {
