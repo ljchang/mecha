@@ -1,7 +1,7 @@
 """The Breeze adapter presents chatterbox_server's surface over qwentts.cpp's
 tts-server: voices with Parakeet-written transcripts, registration that
 survives the engine forgetting, honoured controls listed and the rest refused,
-the house voice behind `default`, and speed as a stretch. Against stand-ins for
+`default` as a clip like any other (default.wav), and speed as a stretch. Against stand-ins for
 the engine and the STT, so no GPU. Run in the worker's venv:
 `~/models/voice-worker-venv/bin/python scripts/voice/test_breeze_server.py`."""
 
@@ -101,7 +101,7 @@ class Adapter(unittest.TestCase):
         self.engine = Engine()
         self.addCleanup(self.engine.httpd.shutdown)
         self.voices = tempfile.mkdtemp()
-        for name in ("house", "vctk_p297"):
+        for name in ("default", "vctk_p297"):
             wav_file(os.path.join(self.voices, f"{name}.wav"))
         saved = dict(os.environ)
         self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
@@ -109,7 +109,6 @@ class Adapter(unittest.TestCase):
             "BREEZE_TTS_URL": self.engine.url,
             "MECHA_VOICE_STT": self.engine.url + "/v1",
             "VOICES_DIR": self.voices,
-            "BREEZE_HOUSE_VOICE": "house",
         })
         import breeze_server
 
@@ -123,12 +122,12 @@ class Adapter(unittest.TestCase):
 
     def test_voices_list_default_and_the_library_and_the_honoured_controls(self):
         v = self.client.get("/v1/voices").json()
-        self.assertEqual(v["voices"], ["default", "vctk_p297"])  # the house voice is `default`
+        self.assertEqual(v["voices"], ["default", "vctk_p297"])  # default.wav leads, once
         self.assertEqual(v["controls"], ["temperature", "instructions"])
         self.assertIs(v["streams"], True)
 
-    def test_default_is_not_offered_without_a_house_voice(self):
-        os.remove(os.path.join(self.voices, "house.wav"))
+    def test_default_is_not_offered_without_its_clip(self):
+        os.remove(os.path.join(self.voices, "default.wav"))
         self.assertEqual(self.client.get("/v1/voices").json()["voices"], ["vctk_p297"])
 
     def test_temperature_out_of_range_is_refused_not_clamped(self):
@@ -143,16 +142,16 @@ class Adapter(unittest.TestCase):
         self.assertIn("empty text", r.json()["detail"])
         self.assertEqual(self.engine.refused, 1, "a deterministic refusal was asked twice")
 
-    def test_default_speaks_as_the_house_voice(self):
+    def test_default_speaks_as_its_own_clip(self):
         r = self.speak()
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self.engine.spoken[-1]["voice"], "house")
+        self.assertEqual(self.engine.spoken[-1]["voice"], "default")
 
-    def test_a_missing_house_voice_is_said_not_substituted(self):
-        os.remove(os.path.join(self.voices, "house.wav"))
+    def test_a_missing_default_voice_is_said_not_substituted(self):
+        os.remove(os.path.join(self.voices, "default.wav"))
         r = self.speak()
         self.assertEqual(r.status_code, 503)
-        self.assertIn("house voice", r.json()["detail"])
+        self.assertIn("default voice is missing", r.json()["detail"])
         self.assertEqual(self.engine.spoken, [])
 
     def test_an_unknown_voice_is_refused(self):
@@ -238,7 +237,7 @@ class Adapter(unittest.TestCase):
         self.assertEqual(TestClient(self.mod.app).get("/health").json(), {"status": "loading"})
 
     def test_an_unreachable_engine_is_named(self):
-        with open(os.path.join(self.voices, "house.txt"), "w") as f:
+        with open(os.path.join(self.voices, "default.txt"), "w") as f:
             f.write("Words.\n")
         os.environ["BREEZE_TTS_URL"] = "http://127.0.0.1:9"
         self.mod = importlib.reload(self.mod)

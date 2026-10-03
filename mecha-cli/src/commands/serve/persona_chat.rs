@@ -8987,6 +8987,8 @@ mod tests {
         std::fs::create_dir_all(&clones).unwrap();
         std::fs::write(clones.join("ada.wav"), b"RIFF").unwrap();
         std::fs::write(clones.join("solo.wav"), b"RIFF").unwrap();
+        // Breeze's default voice is a clip in the same directory.
+        std::fs::write(clones.join("default.wav"), b"RIFF").unwrap();
         let (target, _) = voice_runner(&["ada", "default"]).await;
         let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
         let state = super::super::WebState {
@@ -9023,7 +9025,16 @@ mod tests {
         assert_eq!(ada["listed"], true);
         assert!(ada["cloned"].is_object(), "{ada}");
         assert_eq!(ada["used_by"], serde_json::json!(["Mara"]));
-        assert!(by_name(&got, "default")["cloned"].is_null());
+        // The default clip on disk is the default voice the TTS lists: one
+        // row, spoken, not a second "cloned here" voice beside it.
+        let defaults: Vec<_> = got["voices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["name"] == "default")
+            .collect();
+        assert_eq!(defaults.len(), 1, "{got}");
+        assert_eq!(defaults[0]["listed"], true, "{got}");
         // A clone the worker does not list yet: on the list, and said so.
         assert_eq!(by_name(&got, "solo")["listed"], false);
         assert!(got["list_error"].is_null(), "{got}");
