@@ -607,10 +607,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The model launchers find the Hugging Face cache the way `hf` does.**
   The router, the embeddings and OCR servers and the other start scripts
   looked only at `HF_HUB`, then `~/.cache/huggingface/hub`; they now also
-  honour `HF_HUB_CACHE` and `HF_HOME`, in the order mecha's downloader uses,
+  honour `HF_HUB_CACHE`, `HF_HOME` and `XDG_CACHE_HOME`, in the order `hf`
+  and mecha's downloader use,
   so a model `hf` put under `HF_HOME` is no longer reported missing. The
-  layout installer tells `hf` the same directory. With none of the three
-  set, nothing changes.
+  layout installer tells `hf` the same directory. With none of them set,
+  nothing changes.
 - **A persona names a library voice directly.** `voice = "ada"` in
   `persona.toml` is a voice from Library → Voices, with an optional
   `voice_speed` (0.5–2.0). The `voices/<name>/profile.toml` profiles are

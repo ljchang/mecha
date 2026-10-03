@@ -56,7 +56,7 @@ if ! command -v hf >/dev/null; then
 fi
 # The hub mecha's launchers and downloader read (mecha_core::fetch::hub_dir):
 # `hf` ignores mecha's HF_HUB, so it is told the directory outright.
-hub="${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}}"
+hub="${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}"
 path="$(hf download "$repo" inference.onnx --revision "$rev" --cache-dir "$hub" --quiet 2>/dev/null || hf download "$repo" inference.onnx --revision "$rev" --cache-dir "$hub")"
 path="$(echo "$path" | tail -1)"
 got="$(sha256sum "$path" | cut -d' ' -f1)"

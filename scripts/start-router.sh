@@ -21,7 +21,7 @@
 # The embedding server is NOT here and must never be: an embedding request
 # must not be able to evict the chat model, nor a chat pick the embedder.
 set -euo pipefail
-HUB="${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}}"
+HUB="${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}"
 source "$(dirname "$0")/mmproj.sh"
 PORT="${MECHA_ROUTER_PORT:-8080}"
 OUT="${XDG_RUNTIME_DIR:?no XDG_RUNTIME_DIR}/mecha-router/models.ini"
