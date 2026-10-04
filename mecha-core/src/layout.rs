@@ -781,8 +781,6 @@ impl LayoutChild {
     }
 }
 
-/// Whether making `root` readable would expose `/` or any `protected`
-/// directory (the mecha home, the user's home) to the confined worker.
 /// Every path the interpreter is reached by: the configured one, each
 /// symlink it passes through, the venv's `pyvenv.cfg` `home` interpreter,
 /// and the resolved file. Bounded, so a symlink loop ends.
@@ -857,6 +855,8 @@ fn admit_root(root: &Path, protected: &[PathBuf]) -> Result<PathBuf> {
     })
 }
 
+/// Whether making `root` readable would expose `/` or any `protected`
+/// directory (the mecha home, the user's home) to the confined worker.
 fn widens_the_jail(root: &Path, protected: &[PathBuf]) -> bool {
     root.parent().is_none() || protected.iter().any(|p| p.starts_with(root))
 }

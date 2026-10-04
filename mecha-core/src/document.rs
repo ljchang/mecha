@@ -267,8 +267,12 @@ fn layout_tree(mecha_home: &Path) -> PathBuf {
                 .any(|e| e.sidecar == "layout" && !e.incomplete)
         })
         .unwrap_or(false);
-    if finished {
-        mecha_home.join("sidecars/layout")
+    // The record says it finished; the disk must still hold it — the rule
+    // `sidecar::plan` keeps, so the plan and extraction never disagree about
+    // a tree removed by hand.
+    let ours = mecha_home.join("sidecars/layout");
+    if finished && ours.join("venv/bin/python").exists() {
+        ours
     } else {
         mecha_home.join("layout")
     }
@@ -2351,9 +2355,13 @@ mod tests {
         };
         m.write(&home).unwrap();
         assert_eq!(layout_tree(&home), home.join("layout"));
-        // Finished: mecha's own, for both paths.
+        // Finished, but its tree removed by hand: the hand install, as the
+        // plan says.
         m.entries[0].incomplete = false;
         m.write(&home).unwrap();
+        assert_eq!(layout_tree(&home), home.join("layout"));
+        // Finished and on disk: mecha's own, for both paths.
+        std::fs::write(home.join("sidecars/layout/venv/bin/python"), "").unwrap();
         assert_eq!(layout_tree(&home), home.join("sidecars/layout"));
         let _ = std::fs::remove_dir_all(&home);
     }

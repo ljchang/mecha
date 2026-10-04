@@ -105,10 +105,26 @@ pub type Say<'a> = &'a mut dyn FnMut(&str);
 /// unpacked into `~/.mecha/sidecars/uv/` on first use.
 pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     let sidecars = m.mecha_home.join("sidecars");
+    // A uv on PATH is used when it is new enough to honour what the install
+    // relies on (`UV_PYTHON_PREFERENCE`, `--require-hashes`): an older one
+    // would ignore the variable silently and build on a system Python, so it
+    // is passed over for the pinned copy rather than trusted.
     for d in &m.path {
         let p = d.join("uv");
         if p.is_file() && !p.starts_with(&sidecars) {
-            return Ok(p);
+            if uv_version(&p)
+                .and_then(|v| parse_version(&v))
+                .is_some_and(|v| v >= UV_FLOOR)
+            {
+                return Ok(p);
+            }
+            say(&format!(
+                "{} is older than uv {}.{}; using mecha's pinned copy",
+                p.display(),
+                UV_FLOOR.0,
+                UV_FLOOR.1
+            ));
+            break;
         }
     }
     let dir = sidecars.join("uv");
@@ -159,6 +175,17 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     let _ = std::fs::remove_dir_all(dir.join("download"));
     Manifest::finish(&m.mecha_home, "uv")?;
     Ok(bin)
+}
+
+/// The oldest `uv` taken from `PATH`: it must know `UV_PYTHON_PREFERENCE`
+/// and `--require-hashes` (both well before 0.5).
+const UV_FLOOR: (u32, u32, u32) = (0, 5, 0);
+
+/// `uv 0.11.7 (…)` → (0, 11, 7).
+fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let v = text.split_whitespace().nth(1)?;
+    let mut it = v.split('.').map(|n| n.parse::<u32>().ok());
+    Some((it.next()??, it.next()??, it.next().flatten().unwrap_or(0)))
 }
 
 /// `uv --version`, or `None` when it cannot be run.
@@ -307,6 +334,18 @@ mod tests {
             LAYOUT_LOCK.contains("--hash=sha256:"),
             "a lock without hashes is not a lock"
         );
+    }
+
+    #[test]
+    fn a_uv_version_is_read_and_held_to_the_floor() {
+        assert_eq!(
+            parse_version("uv 0.11.7 (aarch64-unknown-linux-gnu)"),
+            Some((0, 11, 7))
+        );
+        assert_eq!(parse_version("uv 0.12.23"), Some((0, 12, 23)));
+        assert!(parse_version("uv 0.4.30").unwrap() < UV_FLOOR);
+        assert!(parse_version("uv 0.11.7").unwrap() >= UV_FLOOR);
+        assert_eq!(parse_version("not uv"), None);
     }
 
     #[test]
