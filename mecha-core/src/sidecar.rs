@@ -227,10 +227,14 @@ impl Manifest {
     /// finished install run again — a repair — stays finished, because
     /// marking it incomplete would hand extraction to a tree that may not
     /// exist (`document::layout_tree`). Not every repair step is atomic: the
-    /// model link and the engine's `current` swap in one rename, but `uv pip
-    /// install` changes the venv in place and `uv venv --clear` rebuilds it —
-    /// the latter only when its interpreter already dangles, so extraction
-    /// was failing before the repair began.
+    /// layout model's link and the engine's `current` link swap in one
+    /// rename, but `uv pip install` changes the venv in place, `uv venv
+    /// --clear` rebuilds it (only when its interpreter already dangles, so
+    /// extraction was failing before the repair began), and the engine
+    /// replaces a build of the same tag by removing it and renaming the
+    /// checked one in — between the two, `current/llama-server` is absent.
+    /// The record recovers from either window on its own: a recorded path
+    /// that is gone reads the entry `Incomplete`, and `enable` resumes it.
     pub fn begin(mecha_home: &Path, id: &str) -> Result<()> {
         let mut m = Manifest::read(mecha_home)?;
         match m.entries.iter_mut().find(|e| e.sidecar == id) {

@@ -333,7 +333,11 @@ async fn install_target(m: &Machinery, target: Target, say: Say<'_>) -> Result<P
     Manifest::record(home, id, &link)?;
     std::fs::create_dir_all(&root)?;
 
-    if health(&dir, target).is_err() {
+    // The unpacked tree is this machine's build only when the record says
+    // it was unpacked for this target: a tree for another one (installed
+    // under an older driver) passes every check under the same tag, and
+    // recording it as the new target would make the record lie.
+    if unpacked_target(home)? != Some(target) || health(&dir, target).is_err() {
         // Unpacked into a scratch directory and renamed into place, so a
         // run interrupted mid-unpack leaves no tree that looks like a build.
         let part = root.join(format!("{}.part", PIN.tag));
@@ -407,6 +411,18 @@ async fn install_target(m: &Machinery, target: Target, say: Say<'_>) -> Result<P
     Ok(link.join("llama-server"))
 }
 
+/// The target the pinned tag was unpacked for, as the manifest records it;
+/// `None` when no build of the tag is recorded, or its target is one this
+/// mecha does not know.
+fn unpacked_target(home: &Path) -> Result<Option<Target>> {
+    Ok(Manifest::read(home)?
+        .entries
+        .iter()
+        .find(|e| e.sidecar == "llama")
+        .and_then(|e| e.builds.iter().find(|b| b.tag == PIN.tag))
+        .and_then(|b| b.target))
+}
+
 /// The three checks a build passes before it counts (module doc).
 fn health(dir: &Path, target: Target) -> Result<()> {
     let server = dir.join("llama-server");
@@ -426,13 +442,13 @@ fn health(dir: &Path, target: Target) -> Result<()> {
         );
     }
     let version = engine_output(&server, "--version")?;
-    let short = &PIN.commit[..9];
-    if !version.contains(&format!("build {}", PIN.build)) || !version.contains(short) {
+    if !reports_the_pin(&version) {
         bail!(
-            "{} reports `{}`, not build {} at {short}",
+            "{} reports `{}`, not build {} at {}",
             server.display(),
             version.lines().next().unwrap_or("").trim(),
-            PIN.build
+            PIN.build,
+            &PIN.commit[..9]
         );
     }
     if target.wants_gpu() {
@@ -470,16 +486,44 @@ fn engine_output(server: &Path, flag: &str) -> Result<String> {
 }
 
 fn run_within(server: &Path, flag: &str, limit: std::time::Duration) -> Result<String> {
-    let mut child = std::process::Command::new(server)
-        .arg(flag)
-        .env_remove("LD_LIBRARY_PATH")
-        .env_remove("DYLD_LIBRARY_PATH")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("starting {}", server.display()))?;
+    // `ExecutableFileBusy` is a file just written whose descriptor another
+    // thread's fork still holds for the instant before its exec; it clears
+    // on its own, so it is retried briefly rather than failing the check.
+    let mut tries = 0;
+    let mut child = loop {
+        match std::process::Command::new(server)
+            .arg(flag)
+            .env_remove("LD_LIBRARY_PATH")
+            .env_remove("DYLD_LIBRARY_PATH")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => break other.with_context(|| format!("starting {}", server.display()))?,
+        }
+    };
+    // Drained while it runs: a check that writes more than a pipe holds
+    // would otherwise block on the write and read as one that hung.
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out_t = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let err_t = drain(child.stderr.take().map(|p| Box::new(p) as _));
     let started = std::time::Instant::now();
-    while child.try_wait()?.is_none() {
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
         if started.elapsed() > limit {
             let _ = child.kill();
             let _ = child.wait();
@@ -491,23 +535,40 @@ fn run_within(server: &Path, flag: &str, limit: std::time::Duration) -> Result<S
             );
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let out = child.wait_with_output()?;
+    };
+    let stdout = out_t.join().unwrap_or_default();
+    let stderr = err_t.join().unwrap_or_default();
     // llama.cpp writes these to stderr; either stream will do.
     let text = format!(
         "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
     );
-    if !out.status.success() {
+    if !status.success() {
         bail!(
-            "`{} {flag}` failed ({}): {}",
+            "`{} {flag}` failed ({status}): {}",
             server.display(),
-            out.status,
             text.trim()
         );
     }
     Ok(text)
+}
+
+/// `--version`'s first line names the build and an abbreviated commit:
+/// `version: 0.5.0-dev (build 11391, commit 2bc563573)` from the pinned
+/// release, read on the GB10 on 2026-10-04. The abbreviation's length is the
+/// release builder's `git rev-parse --short`, so any prefix of the pinned
+/// commit of seven or more characters is the pin.
+fn reports_the_pin(text: &str) -> bool {
+    let Some(line) = text.lines().find(|l| l.contains("version:")) else {
+        return false;
+    };
+    let build = format!("build {},", PIN.build);
+    let Some(rest) = line.split_once("commit ").map(|(_, r)| r) else {
+        return false;
+    };
+    let commit: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+    line.contains(&build) && commit.len() >= 7 && PIN.commit.starts_with(&commit)
 }
 
 /// `--list-devices` names each backend device under `Available devices:` —
@@ -536,16 +597,16 @@ pub fn self_contained(dir: &Path) -> Result<()> {
         if !std::fs::symlink_metadata(&path)?.is_file() {
             continue;
         }
-        let bytes = std::fs::read(&path)?;
         // Not an ELF is skipped; an ELF this check could not read stops the
         // install — a check that could not run never passes.
-        let Some(dynamic) = elf_dynamic(&bytes)
+        let file = std::fs::File::open(&path)?;
+        let Some(dynamic) = elf_dynamic_in(&mut FileAt(file))
             .with_context(|| format!("reading {}'s dynamic section", path.display()))?
         else {
             continue;
         };
         for p in dynamic.search_paths() {
-            if !p.starts_with("$ORIGIN") {
+            if !within_origin(p) {
                 bail!(
                     "{} looks for libraries in `{p}`, outside its own directory — a build \
                      that would run another tree's libraries",
@@ -554,7 +615,7 @@ pub fn self_contained(dir: &Path) -> Result<()> {
             }
         }
         let needs_shipped = dynamic.needed.iter().any(|n| shipped.contains(n));
-        if needs_shipped && !dynamic.search_paths().any(|p| p.starts_with("$ORIGIN")) {
+        if needs_shipped && !dynamic.search_paths().any(within_origin) {
             bail!(
                 "{} needs a library shipped beside it but has no `$ORIGIN` RUNPATH to find it by",
                 path.display()
@@ -562,6 +623,20 @@ pub fn self_contained(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A search path that stays in the binary's own directory: `$ORIGIN`, or a
+/// directory under it — never one that climbs out with `..`, which would
+/// reach `sidecars/llama/` and survive neither a tag swap nor a rollback.
+fn within_origin(p: &str) -> bool {
+    let rest = p
+        .strip_prefix("${ORIGIN}")
+        .or_else(|| p.strip_prefix("$ORIGIN"));
+    match rest {
+        Some("") => true,
+        Some(sub) if sub.starts_with('/') => !sub.split('/').any(|c| c == ".."),
+        _ => false,
+    }
 }
 
 /// What an ELF's dynamic section says about finding its libraries.
@@ -583,48 +658,81 @@ impl Dynamic {
     }
 }
 
-/// Parse an ELF's dynamic section. A file that is not an ELF is `Ok(None)`;
-/// an ELF that is not 64-bit little-endian — the linux targets mecha installs
-/// are x86_64 and aarch64 — or one whose headers or dynamic section do not
-/// parse is an error, never a skip. One with no dynamic section (static) needs
-/// nothing and reads empty.
-pub fn elf_dynamic(b: &[u8]) -> Result<Option<Dynamic>> {
-    if b.len() < 4 || &b[..4] != b"\x7fELF" {
-        return Ok(None);
-    }
-    if b.len() < 64 || b[4] != 2 || b[5] != 1 {
-        bail!("an ELF this check cannot read: not 64-bit little-endian, or truncated");
-    }
-    parse_elf64le(b)
-        .map(Some)
-        .context("an ELF whose headers or dynamic section do not parse")
+/// Bytes at an offset — a slice in tests, a file at install — so the check
+/// reads a library's headers and strings and never the library: the CUDA
+/// runtime's `libcublasLt` alone is hundreds of MB.
+pub trait ReadAt {
+    fn read_at(&mut self, off: u64, len: usize) -> Option<Vec<u8>>;
 }
 
-fn parse_elf64le(b: &[u8]) -> Option<Dynamic> {
-    let u16_at = |o: usize| b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]));
-    let u64_at = |o: usize| {
-        b.get(o..o + 8)
-            .map(|s| u64::from_le_bytes(s.try_into().unwrap()))
-    };
-    let u32_at = |o: usize| {
-        b.get(o..o + 4)
-            .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
-    };
-    let phoff = u64_at(0x20)? as usize;
-    let phentsize = u16_at(0x36)? as usize;
-    let phnum = u16_at(0x38)? as usize;
+impl ReadAt for &[u8] {
+    fn read_at(&mut self, off: u64, len: usize) -> Option<Vec<u8>> {
+        let start = usize::try_from(off).ok()?;
+        self.get(start..start.checked_add(len)?).map(<[u8]>::to_vec)
+    }
+}
+
+/// A file read at offsets, short reads being `None`.
+pub struct FileAt(pub std::fs::File);
+
+impl ReadAt for FileAt {
+    fn read_at(&mut self, off: u64, len: usize) -> Option<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        self.0.seek(SeekFrom::Start(off)).ok()?;
+        let mut buf = vec![0u8; len];
+        self.0.read_exact(&mut buf).ok()?;
+        Some(buf)
+    }
+}
+
+/// Parse an ELF's dynamic section. A file that is not an ELF is `Ok(None)`;
+/// an ELF that is not 64-bit little-endian — the linux targets mecha installs
+/// are x86_64 and aarch64 — or one whose headers, dynamic section or strings
+/// do not parse is an error, never a skip. One with no dynamic section
+/// (static) needs nothing and reads empty.
+pub fn elf_dynamic(mut b: &[u8]) -> Result<Option<Dynamic>> {
+    elf_dynamic_in(&mut b)
+}
+
+fn elf_dynamic_in(r: &mut impl ReadAt) -> Result<Option<Dynamic>> {
+    match r.read_at(0, 4) {
+        Some(m) if m == b"\x7fELF" => {}
+        _ => return Ok(None),
+    }
+    match r.read_at(4, 2) {
+        Some(id) if id == [2, 1] => {}
+        _ => bail!("an ELF this check cannot read: not 64-bit little-endian, or truncated"),
+    }
+    parse_elf64le(r)
+        .map(Some)
+        .context("an ELF whose headers, dynamic section or strings do not parse")
+}
+
+/// The most a dynamic section, or one string in it, may be before the parse
+/// calls the file malformed rather than allocate for it.
+const MAX_DYNAMIC: u64 = 1 << 20;
+const MAX_STRING: usize = 4096;
+
+fn parse_elf64le(r: &mut impl ReadAt) -> Option<Dynamic> {
+    let le64 = |b: &[u8], o: usize| Some(u64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?));
+    let le32 = |b: &[u8], o: usize| Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
+    let le16 = |b: &[u8], o: usize| Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?));
+    let header = r.read_at(0, 64)?;
+    let phoff = le64(&header, 0x20)?;
+    let phentsize = u64::from(le16(&header, 0x36)?);
+    let phnum = u64::from(le16(&header, 0x38)?);
+    if phentsize < 56 {
+        return None;
+    }
     // (vaddr, offset, filesz) of each PT_LOAD, to map DT_STRTAB's address.
     let mut loads = Vec::new();
     let mut dynamic = None;
     for i in 0..phnum {
-        let h = phoff.checked_add(i.checked_mul(phentsize)?)?;
-        let p_type = u32_at(h)?;
-        let offset = u64_at(h + 8)?;
-        let vaddr = u64_at(h + 16)?;
-        let filesz = u64_at(h + 32)?;
-        match p_type {
+        let h = r.read_at(phoff.checked_add(i.checked_mul(phentsize)?)?, 56)?;
+        let (offset, vaddr, filesz) = (le64(&h, 8)?, le64(&h, 16)?, le64(&h, 32)?);
+        match le32(&h, 0)? {
             1 => loads.push((vaddr, offset, filesz)),
-            2 => dynamic = Some((offset as usize, filesz as usize)),
+            2 => dynamic = Some((offset, filesz)),
             _ => {}
         }
     }
@@ -632,14 +740,13 @@ fn parse_elf64le(b: &[u8]) -> Option<Dynamic> {
         // Statically linked: it loads no library, from anywhere.
         return Some(Dynamic::default());
     };
-    let mut strtab = None;
-    let mut needed = Vec::new();
-    let mut runpath = None;
-    let mut rpath = None;
-    let mut i = 0;
-    while i + 16 <= dyn_len {
-        let tag = u64_at(dyn_off + i)?;
-        let val = u64_at(dyn_off + i + 8)?;
+    if dyn_len > MAX_DYNAMIC {
+        return None;
+    }
+    let d = r.read_at(dyn_off, usize::try_from(dyn_len).ok()?)?;
+    let (mut strtab, mut needed, mut runpath, mut rpath) = (None, Vec::new(), None, None);
+    for entry in d.chunks_exact(16) {
+        let (tag, val) = (le64(entry, 0)?, le64(entry, 8)?);
         match tag {
             0 => break,
             1 => needed.push(val),
@@ -648,26 +755,49 @@ fn parse_elf64le(b: &[u8]) -> Option<Dynamic> {
             29 => runpath = Some(val),
             _ => {}
         }
-        i += 16;
     }
     if needed.is_empty() && runpath.is_none() && rpath.is_none() {
         return Some(Dynamic::default());
     }
     let addr = strtab?;
-    let (vaddr, offset, _) = loads
-        .iter()
-        .find(|(v, _, sz)| addr >= *v && addr < v + sz)?;
-    let base = (addr - vaddr + offset) as usize;
-    let string = |o: u64| -> Option<String> {
-        let start = base.checked_add(o as usize)?;
-        let rest = b.get(start..)?;
-        let end = rest.iter().position(|c| *c == 0)?;
-        Some(String::from_utf8_lossy(&rest[..end]).into_owned())
+    let base = loads.iter().find_map(|(v, off, sz)| {
+        let into = addr.checked_sub(*v)?;
+        (into < *sz).then(|| off.checked_add(into)).flatten()
+    })?;
+    // A string, read up to its NUL; one that never ends, or one past the
+    // file, fails the parse rather than reading as missing.
+    let mut string = |o: u64| -> Option<String> {
+        let start = base.checked_add(o)?;
+        let mut out = Vec::new();
+        while out.len() < MAX_STRING {
+            let step = 256.min(MAX_STRING - out.len());
+            let at = start.checked_add(out.len() as u64)?;
+            // Near the end of the file, a short tail still holds the NUL.
+            let chunk = (1..=step).rev().find_map(|n| r.read_at(at, n))?;
+            if let Some(end) = chunk.iter().position(|c| *c == 0) {
+                out.extend_from_slice(&chunk[..end]);
+                return Some(String::from_utf8_lossy(&out).into_owned());
+            }
+            out.extend_from_slice(&chunk);
+        }
+        None
+    };
+    let needed = needed
+        .into_iter()
+        .map(&mut string)
+        .collect::<Option<Vec<_>>>()?;
+    let runpath = match runpath {
+        Some(o) => Some(string(o)?),
+        None => None,
+    };
+    let rpath = match rpath {
+        Some(o) => Some(string(o)?),
+        None => None,
     };
     Some(Dynamic {
-        needed: needed.into_iter().filter_map(string).collect(),
-        runpath: runpath.and_then(string),
-        rpath: rpath.and_then(string),
+        needed,
+        runpath,
+        rpath,
     })
 }
 
@@ -796,6 +926,101 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("did not answer"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The version check over the text the pinned release printed on the
+    /// GB10 — the one check `health` makes that CI could not otherwise see,
+    /// since the end-to-end test is ignored there.
+    #[test]
+    fn the_pinned_release_s_version_reads_as_the_pin() {
+        let real = "version: 0.5.0-dev (build 11391, commit 2bc563573)\n\
+                    built with GNU 14.2.0 for Linux aarch64\n";
+        assert!(reports_the_pin(real));
+        // Another abbreviation length is the same commit.
+        assert!(reports_the_pin(
+            "version: 0.5.0-dev (build 11391, commit 2bc5635)"
+        ));
+        // This box's from-source engine, another build, another commit.
+        assert!(!reports_the_pin("version: 11205 (95887577)"));
+        assert!(!reports_the_pin(
+            "version: 0.5.0-dev (build 113910, commit 2bc563573)"
+        ));
+        assert!(!reports_the_pin(
+            "version: 0.5.0-dev (build 11391, commit 2bc56)"
+        ));
+        assert!(!reports_the_pin(
+            "version: 0.5.0-dev (build 11391, commit deadbeef0)"
+        ));
+        assert!(!reports_the_pin(""));
+    }
+
+    /// A tree unpacked for another target is not this machine's build, however
+    /// well it answers: a driver upgrade refetches rather than relabels.
+    #[test]
+    fn the_record_decides_which_target_is_unpacked() {
+        let home = std::env::temp_dir().join(format!("mecha-target-{}", uuid::Uuid::new_v4()));
+        assert_eq!(unpacked_target(&home).unwrap(), None);
+        Manifest::begin(&home, "llama").unwrap();
+        Manifest::record_build(
+            &home,
+            "llama",
+            Build {
+                tag: PIN.tag.into(),
+                commit: PIN.commit.into(),
+                target: Some(Target::LinuxX64Cuda12),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            unpacked_target(&home).unwrap(),
+            Some(Target::LinuxX64Cuda12)
+        );
+        assert_ne!(
+            unpacked_target(&home).unwrap(),
+            Some(Target::LinuxX64Cuda13)
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn only_paths_inside_origin_are_its_own() {
+        for ok in ["$ORIGIN", "${ORIGIN}", "$ORIGIN/lib", "$ORIGIN/./lib"] {
+            assert!(within_origin(ok), "{ok}");
+        }
+        for bad in [
+            "$ORIGIN/../lib",
+            "$ORIGIN/lib/../..",
+            "$ORIGINAL",
+            "/opt/cuda/lib64",
+            "lib",
+        ] {
+            assert!(!within_origin(bad), "{bad}");
+        }
+    }
+
+    /// A check that writes more than a pipe holds is read while it runs, not
+    /// after — otherwise it blocks on the write and reads as one that hung.
+    #[cfg(unix)]
+    #[test]
+    fn a_chatty_check_is_not_mistaken_for_a_hung_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mecha-chatty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = dir.join("llama-server");
+        std::fs::write(
+            &server,
+            "#!/bin/sh\nhead -c 300000 /dev/zero | tr '\\0' x\nhead -c 300000 /dev/zero | tr '\\0' y >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let text = run_within(
+            &server,
+            "--list-devices",
+            std::time::Duration::from_secs(20),
+        )
+        .unwrap();
+        assert_eq!(text.len(), 600_000);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
