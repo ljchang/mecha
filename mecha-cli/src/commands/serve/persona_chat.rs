@@ -9764,6 +9764,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().pop().unwrap()["stream"], true);
         assert_eq!(r.headers()["content-type"], "audio/pcm");
         assert_eq!(r.headers()["x-sample-rate"], "24000");
+        assert_eq!(r.headers()["cache-control"], "no-store");
         let mut body = r.into_body().into_data_stream();
         // The worker has sent one chunk and holds the rest: a serve that
         // collected the body would never return this.
@@ -9793,6 +9794,8 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(r.headers()["content-type"], "audio/wav");
         assert!(seen.lock().unwrap().pop().unwrap().get("stream").is_none());
+        // Both answers stay out of the browser's cache (review of #555).
+        assert_eq!(r.headers()["cache-control"], "no-store");
     }
 
     /// Listen's director pass (`listen`): a tap on a reply asks the
