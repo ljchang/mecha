@@ -513,19 +513,20 @@ async fn chat_smoke(base: &str, model: &str) -> Result<()> {
         serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": "Reply with the one word: ready"}],
-            "max_tokens": 256,
+            // Above the presets' reasoning budget, or the reply is a 200 with
+            // empty content (LLAMA-SERVER.md, the request contract).
+            "max_tokens": crate::provider::LOCAL_MAX_TOKENS,
             "chat_template_kwargs": {"enable_thinking": false},
         }),
     )
     .await?;
-    // Words in either channel are the engine answering: a template that
-    // thinks despite the switch puts them in `reasoning_content` first.
-    let said = |k: &str| {
-        v["choices"][0]["message"][k]
-            .as_str()
-            .is_some_and(|t| !t.trim().is_empty())
-    };
-    if !said("content") && !said("reasoning_content") {
+    // An answer, in `content`: with the allowance above the reasoning budget,
+    // thinking that ran to its end still ends in one, and reasoning alone is
+    // not the engine answering.
+    let answered = v["choices"][0]["message"]["content"]
+        .as_str()
+        .is_some_and(|t| !t.trim().is_empty());
+    if !answered {
         bail!("the chat turn came back empty: {v}");
     }
     Ok(())
@@ -1193,6 +1194,74 @@ fn not_measured(
     }
 }
 
+/// Every reason `--adopt` would refuse before it moves anything — asked by
+/// `adopt` itself and, before its prompt, by the CLI, so the owner is never
+/// asked to agree to a router stop that is then refused. The engine the
+/// router runs today, when it may go ahead.
+pub fn check_adoptable(
+    m: &crate::sidecar::Machinery,
+    servers: &Servers,
+    holds: &crate::hold::Holds,
+    base: &str,
+) -> Result<PathBuf> {
+    if servers.get(Role::Router).is_none() {
+        bail!(
+            "there is no llama-local.service to adopt — on a clean machine the units arrive \
+             with step 7c, and run the managed engine from the start"
+        );
+    }
+    if adopted(servers, &m.mecha_home) {
+        bail!("every llama.cpp unit here already runs mecha's engine — nothing to adopt");
+    }
+    // Part-adopted: the install repoints `current`, which an adopted unit's
+    // drop-in names, so its "old" leg would run the candidate and the
+    // measurement would compare the new engine with itself.
+    let some = adopted_units(servers, &m.mecha_home);
+    if some > 0 {
+        bail!(
+            "{some} of these units already run mecha's engine — `mecha setup engine \
+             --rollback` first, then `--adopt` measures every unit against the engine it ran \
+             before"
+        );
+    }
+    // A router whose engine cannot be found has nothing to measure against.
+    let old_engine = servers
+        .engine(Role::Router)
+        .context("the router's unit names no llama-server it can find")?;
+    preflight(holds, base)?;
+    Ok(old_engine)
+}
+
+/// The router's model list for the gate. A router that answers `/health` but
+/// not `/models` — a two-second read lost on a busy machine — is a finding,
+/// not "no router": falling through to the configured model would measure a
+/// model the owner does not have and then load it in place of theirs. Only a
+/// router that answers nothing at all reads as down.
+pub async fn listed_models(
+    base: &str,
+) -> Result<Option<Vec<crate::provider::router::RouterModel>>> {
+    for attempt in 0..3 {
+        if let Some(list) = crate::provider::router::models(base).await {
+            return Ok(Some(list));
+        }
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+    let up = http(Duration::from_secs(5))?
+        .get(format!("{base}/health"))
+        .send()
+        .await
+        .is_ok_and(|r| r.status().is_success());
+    if up {
+        bail!(
+            "the router at {base} answers /health but not /models, so which model is loaded is \
+             unknown — nothing was measured or moved"
+        );
+    }
+    Ok(None)
+}
+
 /// The command that finishes a promotion a step of which failed.
 const FINISH_ADOPT: &str = "systemctl --user daemon-reload && systemctl --user restart \
      llama-local.service (and `mecha setup engine --rollback` to undo)";
@@ -1216,32 +1285,7 @@ pub async fn adopt(
     say: &mut dyn FnMut(&str),
 ) -> Result<LedgerRow> {
     let base = crate::provider::router::base(base_url);
-    if servers.get(Role::Router).is_none() {
-        bail!(
-            "there is no llama-local.service to adopt — on a clean machine the units arrive \
-             with step 7c, and run the managed engine from the start"
-        );
-    }
-    if adopted(servers, &m.mecha_home) {
-        bail!("every llama.cpp unit here already runs mecha's engine — nothing to adopt");
-    }
-    // Part-adopted: the install below repoints `current`, which an adopted
-    // unit's drop-in names, so its "old" leg would run the candidate and the
-    // measurement would compare the new engine with itself.
-    let some = adopted_units(servers, &m.mecha_home);
-    if some > 0 {
-        bail!(
-            "{some} of these units already run mecha's engine — `mecha setup engine \
-             --rollback` first, then `--adopt` measures every unit against the engine it ran \
-             before"
-        );
-    }
-    // Before the download and the switch: a router whose engine cannot be
-    // found has nothing to measure against.
-    let old_engine = servers
-        .engine(Role::Router)
-        .context("the router's unit names no llama-server it can find")?;
-    preflight(holds, &base)?;
+    let old_engine = check_adoptable(m, servers, holds, &base)?;
     // The pin, side by side: nothing reads `current` until a drop-in names it.
     // Downloaded before the switch is taken — holding it through a download
     // would make every run that starts meanwhile wait on it.
@@ -1256,22 +1300,28 @@ pub async fn adopt(
     let switching = take_switch(holds, &base, &to)?;
     // What the owner is using is what gets measured, read before anything
     // stops: an answer that cannot be read declines here.
-    let listed = crate::provider::router::models(&base).await;
+    let listed = listed_models(&base).await?;
     let model = Some(measured_model(listed.as_deref(), fallback_model)?);
     say("stopping the router for the measurement");
     systemctl("stop", &["llama-local.service"])?;
     let logs = crate::engine::engine_root(&m.mecha_home).join("gate");
-    let measuring = async {
-        let (old, old_v) = measure(servers, None, model.as_deref(), &logs, "old", say).await?;
-        let new = measure(servers, Some(&managed), model.as_deref(), &logs, "new", say).await;
-        Ok::<_, anyhow::Error>((old, old_v, new))
+    // Each leg is interruptible on its own, so an interrupt after a good old
+    // leg is recorded as that — measured, then abandoned — never as an old
+    // engine that could not be measured. Dropping a leg drops its servers,
+    // whose guards stop each one's whole group.
+    let old_measured = tokio::select! {
+        r = measure(servers, None, model.as_deref(), &logs, "old", say) => r,
+        () = cancel.cancelled() => Err(anyhow::anyhow!("interrupted while measuring the engine the units run today")),
     };
-    // An interrupt drops the legs in flight — their guards stop each server's
-    // whole group — and then takes the same way back as a failed measurement:
-    // the router restarted on its engine, with the model it had.
-    let measured = tokio::select! {
-        r = measuring => r,
-        () = cancel.cancelled() => Err(anyhow::anyhow!("interrupted during the measurement")),
+    let measured = match old_measured {
+        Ok((old, old_v)) => {
+            let new = tokio::select! {
+                r = measure(servers, Some(&managed), model.as_deref(), &logs, "new", say) => r.map(Some),
+                () = cancel.cancelled() => Ok(None),
+            };
+            Ok((old, old_v, new))
+        }
+        Err(e) => Err(e),
     };
     let (old, old_v, new) = match measured {
         Ok(x) => x,
@@ -1305,11 +1355,24 @@ pub async fn adopt(
             }));
         }
     };
+    let interrupted = matches!(new, Ok(None));
     let new = match new {
-        Ok((mut leg, new_v)) => {
+        Ok(Some((mut leg, new_v))) => {
             compare_embeddings(&mut leg, old_v.as_deref(), new_v.as_deref());
             leg
         }
+        Ok(None) => Leg {
+            version: version_of(&managed),
+            engine: managed.clone(),
+            bench: None,
+            smoke: [(
+                "chat".to_string(),
+                Smoke::NotRun {
+                    why: "interrupted before the new engine was measured".into(),
+                },
+            )]
+            .into(),
+        },
         Err(e) => Leg {
             version: version_of(&managed),
             engine: managed.clone(),
@@ -1324,7 +1387,11 @@ pub async fn adopt(
         },
     };
 
-    let decision = verdict(&old, &new);
+    let decision = if interrupted {
+        Err("interrupted after the old engine was measured, before the new one was".to_string())
+    } else {
+        verdict(&old, &new)
+    };
     // `--force` overrides a measurement, never its absence: an engine that
     // produced no bench at all did not start well enough to be measured.
     let promote = decision.is_ok() || (force && new.bench.is_some());
@@ -1706,6 +1773,46 @@ mod tests {
         assert!(h.pending(ROUTER).is_none(), "no switch taken");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A router that answers `/health` but not `/models` is a finding — the
+    /// gate declines rather than measure (and load) the configured model —
+    /// while a router answering nothing reads as down.
+    #[tokio::test]
+    async fn a_router_that_will_not_list_its_models_declines() {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in l.incoming().flatten() {
+                let mut s = stream;
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let (status, body) = if req.starts_with("GET /health") {
+                    ("200 OK", "{\"status\":\"ok\"}")
+                } else {
+                    ("500 Internal Server Error", "{}")
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let err = listed_models(&format!("http://127.0.0.1:{port}"))
+            .await
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("answers /health but not /models"), "{err}");
+        // Nothing listening: down, and the configured model stands.
+        let free = free_port().unwrap();
+        assert!(listed_models(&format!("http://127.0.0.1:{free}"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     fn model(id: &str, status: &str) -> crate::provider::router::RouterModel {
