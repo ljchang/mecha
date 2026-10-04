@@ -838,11 +838,21 @@ pub struct SpeakBody {
     /// pass needs (`listen`). Absent, the piece is spoken undirected.
     #[serde(default)]
     pub(super) listen: Option<super::listen::ListenCue>,
+    /// The page plays the piece as it is made: the worker answers raw PCM
+    /// as its TTS streams it, and this passes it on unbuffered. Absent — a
+    /// page older than streaming — the piece is one WAV, as before.
+    #[serde(default)]
+    pub(super) stream: bool,
 }
 
 /// The most a speak request carries, as the worker takes it
 /// (`MAX_SPEAK_CHARS`): a piece of a reply, cut at sentences by the page.
 const MAX_SPEAK_CHARS: usize = 1200;
+
+/// The sample rates a streamed piece may name (`x-sample-rate`): what a
+/// browser's `AudioBuffer` takes. Anything else from the worker is refused
+/// rather than handed to the page to misplay.
+const PCM_RATES: std::ops::RangeInclusive<u32> = 8_000..=96_000;
 
 /// POST /api/speak — a piece of a reply spoken aloud (the owner's ask,
 /// 2026-10-01: a play button on each reply), as the worker's `/mecha/speak`
@@ -867,6 +877,9 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
             .into_response();
     }
     let mut request = serde_json::json!({ "text": text });
+    if body.stream {
+        request["stream"] = serde_json::json!(true);
+    }
     match body
         .chat
         .as_deref()
@@ -951,7 +964,9 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
     let resp = match reqwest::Client::new()
         .post(url)
         .json(&request)
-        // The TTS may be loading its model, and speaks the piece whole.
+        // The TTS may be loading its model; a streamed piece is still
+        // arriving under this bound, which a piece of `MAX_SPEAK_CHARS`
+        // spoken slower than real time stays inside.
         .timeout(std::time::Duration::from_secs(90))
         .send()
         .await
@@ -962,6 +977,36 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
         }
     };
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    if status.is_success() && header("content-type").is_some_and(|t| t.starts_with("audio/pcm")) {
+        // Passed on as it arrives, never collected: the first sentence is
+        // heard while the rest is still being made. A dropped page drops
+        // this body, which closes the worker's request and its TTS's.
+        let Some(rate) = header("x-sample-rate")
+            .and_then(|r| r.parse::<u32>().ok())
+            .filter(|r| PCM_RATES.contains(r))
+        else {
+            return (
+                StatusCode::BAD_GATEWAY,
+                "the voice worker streamed at no rate the page can play\n",
+            )
+                .into_response();
+        };
+        return (
+            [
+                ("content-type", "audio/pcm".to_string()),
+                ("x-sample-rate", rate.to_string()),
+                ("cache-control", "no-store".to_string()),
+            ],
+            axum::body::Body::from_stream(resp.bytes_stream()),
+        )
+            .into_response();
+    }
     let Ok(bytes) = resp.bytes().await else {
         return (StatusCode::BAD_GATEWAY, "reading the speech\n").into_response();
     };
