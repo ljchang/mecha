@@ -23,10 +23,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `stable` is what contributors use; the MSRV pin is what the manifest
-        # promises. Breaking either should be a deliberate act, not a surprise.
+        # `pinned` is `rust-toolchain.toml`'s version, the one a local cargo
+        # uses; the MSRV arm is what the manifest promises a `cargo install`
+        # user. Breaking either should be a deliberate act, not a surprise.
         # Keep the MSRV arm in step with `rust-version` in the workspace
-        # manifest.
+        # manifest (`mecha-core/tests/toolchain_pin.rs` holds both).
         #
         # **macOS is a full arm, not a build-only one.** It was added after
         # `mecha-cli` turned out not to compile there at all — `exe.rs`
@@ -38,18 +39,27 @@ jobs:
         # less kept.
         include:
           - os: ubuntu-latest
-            rust: stable
+            rust: pinned
           - os: ubuntu-latest
             rust: "1.89"
           - os: macos-latest
-            rust: stable
+            rust: pinned
     steps:
       - uses: actions/checkout@v7
 
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        if: matrix.rust == 'pinned'
+        run: rustup toolchain install && rustc --version
+
+      # The MSRV arm: the file would win over a default, so the version is
+      # named in RUSTUP_TOOLCHAIN, which wins over the file.
       - name: Install Rust ${{ matrix.rust }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
+        if: matrix.rust != 'pinned'
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal
+          echo "RUSTUP_TOOLCHAIN=${{ matrix.rust }}" >> "$GITHUB_ENV"
+          RUSTUP_TOOLCHAIN=${{ matrix.rust }} rustc --version
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -71,7 +81,7 @@ jobs:
       # exports it, stayed green. One leg is enough: the read is not
       # platform-shaped. Built already, so this costs only the run.
       - name: Test with MECHA_SESSION_KIND=test exported
-        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         env:
           MECHA_SESSION_KIND: test
         run: cargo test --workspace --locked
@@ -81,9 +91,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
       - run: cargo fmt --all --check
 
   clippy:
@@ -91,9 +101,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features
 
@@ -218,7 +228,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
 
       - name: Install bubblewrap
@@ -282,7 +294,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --locked --bin mecha -- tools
       - run: cargo run --locked --bin mecha -- tools --json
@@ -310,7 +324,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
 
       # The command the documentation tells people to run, against a prefix

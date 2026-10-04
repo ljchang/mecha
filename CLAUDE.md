@@ -48,6 +48,10 @@ cargo test                     # unit tests, incl. a scripted-provider loop test
 cargo clippy --all-targets
 ```
 
+**Rust is pinned in `rust-toolchain.toml`**, and CI installs from the same
+file, so a local clippy is CI's clippy; `rust-version` (the MSRV) is a
+separate promise with its own CI arm (`CONTRIBUTING.md`).
+
 `MECHA_LOG=debug` turns on internal tracing (goes to stderr).
 **Smoke-testing a binary against the real store: set `MECHA_SESSION_KIND=test`**
 so the session is recorded as a test and every corpus readout excludes it —
