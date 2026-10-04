@@ -548,20 +548,22 @@ workspace**. Six decisions, each a bug if undone:
   image generation keeps working in a conversation holding mail. `[image]` is
   stripped from project layers, loudly, like `[web]`: a cloned repository must
   not choose where model-written prompts go.
-- **Refuse to start without memory headroom** (`min_available_mb`, 19 GB). On
+- **Refuse to start without memory headroom** (`min_available_mb`, 20 GB). On
   the GB10 the GPU allocates from the one pool everything else uses; the first
   generation on this box, beside `llama-server` and a parallel link, was a
   global OOM that killed `llama-server` and took the machine down. An
   unreadable `/proc/meminfo` refuses rather than passes. The figure is the
   measured cost of a generation from a server holding no model: ~18.5 GB above
-  its idle footprint, where a footprint on this unified-memory box is GPU-used
-  **plus** RSS, which do not overlap (2026-10-02; the earlier 16 GB rested on a
-  "15 GB peak" that counted the GPU side alone). **What a job asks for follows
+  its idle footprint with the Q4 GGUF, where a footprint on this unified-memory
+  box is GPU-used **plus** RSS, which do not overlap (2026-10-02; the earlier
+  16 GB rested on a "15 GB peak" that counted the GPU side alone), and ~0.7 GB
+  more with the int8 file, which is why the default rose from 19 to 20 GB
+  when that became the default (2026-10-04). **What a job asks for follows
   what the server already holds** (`memory_need_mb`), because memory it holds
   is already gone from the available pool: a server that has loaded nothing
   since it started, or whose `/system_stats` cannot be read, is asked for the
   whole `min_available_mb`; one that has loaded the model is asked for that
-  figure less `LOAD_COST_MB` (~7 GB, what loading cost; 12 GB at the default),
+  figure less `LOAD_COST_MB` (~8 GB, what loading cost; 12 GB at the default),
   so an operator's added margin is kept. ComfyUI's `torch_vram_total` is 0 in a fresh
   process and stays above 0 through a `/free`, so it cannot tell a server
   still holding the model (~2 GB more) from a freed one (~9-12 GB more to
@@ -612,7 +614,22 @@ it — every mecha process, the cron triggers included.
 **Editing is the same tool with `reference_images`**: up to four workspace
 paths — a photo the owner attached (`inbox/`) or an earlier result
 (`images/`) — each resolved through the jail, capped at 25 MB, and sniffed by
-magic number (PNG, JPEG, WebP) before anything reaches the server. They are
+magic number (PNG, JPEG, WebP) before anything reaches the server. One over
+`MAX_REFERENCE_PIXELS` (4 Mpx) goes up scaled to it, upright, as a PNG
+(`fit_reference`): the encoder resizes every reference to about 1 Mpx
+itself, so the rest of a 24.5 Mpx phone photo cost ~2 s of server-side
+decoding and resizing an edit for nothing, where fitting it here takes
+~0.25 s (release build, 2026-10-04). It is turned by its
+EXIF orientation first (`image::decode_upright`), because the PNG carries no
+tag and a phone stores a photo sideways; and it happens before the mask is
+sized to it, the near-copy check reads it and the repeat guard hashes it, so
+all three see the picture that is sent, the way the page showed it. Under
+the cap it goes up byte for byte, tag included, and the server reads the tag;
+one that does not decode goes up as it is, for the server to judge as it
+always did. The mask path and the near-copy check decode a reference upright
+too, so a smaller tagged photo is read the way the page painted over it: read
+as stored, a portrait phone photo was the other shape from its mask and the
+masked edit was refused. They are
 uploaded to ComfyUI's *temp* directory, which it empties on start, so a
 private photo is not left in its `input/`; the encoder takes the VAE and splices
 them in as latents, and the canvas follows the first reference's shape unless
@@ -754,6 +771,29 @@ days into its Qwen-Image 2.1 support. Its API is the better long-term fit and
 it becomes the second adapter when a re-run closes the gap. mistral.rs (FLUX
 only, no quantized diffusion) and candle (no Qwen-Image) could not run the
 model at all.
+
+**The diffusion model is the int8 ConvRot file, not the Q4 GGUF** (default
+since 2026-10-04). Measured on a private ComfyUI beside the live one, with
+mecha's own graph, neutral prompts and fixed seeds, and every run's TTS and
+router activity logged so a contended run could be dropped: 28 s a picture
+against 64 s, and ~37 s an edit against ~80 s, at ~0.7 GB more peak; the
+same text encoder gives near-identical pictures seed for seed, and signs
+spelled right 8 of 8 on both. A GGUF re-quantises its weights on every step,
+a cost that buys nothing on a 128 GB box; the ConvRot file runs on native int8
+kernels. The loader follows the file name (`unet_loader`): `.gguf` keeps
+the ComfyUI-GGUF node, so an operator's `diffusion_model` alone switches back.
+Measured and not adopted, for the next session not to re-run: ComfyUI 0.38.2
+(identical pixels, same speed), SageAttention 2.2 built for sm_120 and
+dispatched on sm_121 (no change end to end, though its kernel alone was
+1.2–1.5× faster), and `QwenImage21Cache` on the GPU (no change). An 8-step
+distillation LoRA (Turbo8) ran 7.5 s a picture and 8–14 s an edit but spelled
+signs wrong a quarter of the time and edited with more contrast: a product
+choice, not taken.
+
+**A picture is slower when something else is on the GPU.** On 2026-10-04,
+edits ran 118–150 s while read-aloud was synthesising speech and 82–88 s
+when nothing else ran: Breeze TTS and the diffusion model share the GB10's
+compute and memory bandwidth, and nothing queues one behind the other.
 
 ## Image library
 
