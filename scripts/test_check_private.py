@@ -218,6 +218,33 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {SAID!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_a_call_into_a_web_chat_is_in_the_corpus(self):
+        # Calls speak into ordinary chats; the voice block marks the turn.
+        heard = "Can you move the dentist booking to the second week of May."
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions)
+        with open(os.path.join(sessions, "20990102T000000-1b2c3d4e.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "x", "kind": "web"}) + "\n")
+            f.write(json.dumps({"record": "message", "role": "user", "content": [{"type": "text",
+                    "text": "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + heard}]}) + "\n")
+        self.stage("fixture.py", f"X = {heard!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_the_guard_excuses_its_own_file_in_a_push(self):
+        base = git(self.repo, "rev-parse", "HEAD").strip()
+        os.makedirs(os.path.join(self.repo, "scripts"))
+        self.stage("scripts/check-private.py", f"# e.g. {SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "guard")
+        self.assertEqual(self.run_guard("--range", f"{base}..HEAD").returncode, 0)
+
+    def test_a_name_with_an_apostrophe_already_in_the_repo_is_excused(self):
+        persona = os.path.join(self.home, "personas", "quillon", "persona.toml")
+        open(persona, "w").write('name = "quillon"\ndisplay = "Ann O\'Hara"\n')
+        self.stage("a.md", "Written by Ann O'Hara.\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "already")
+        self.stage("b.md", "Ann O'Hara again.\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
         self.assertEqual(self.run_guard("--staged").returncode, 0)
