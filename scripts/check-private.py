@@ -61,6 +61,8 @@ QUOTE = re.compile(r'"([^"\n]{6,240})"|“([^”\n]{6,240})”|\'([^\'\n]{12,240
 # The opening of the voice block every spoken turn carries
 # (`voice::VOICE_BLOCK` / `VOICE_BLOCK_STREAMING`).
 VOICE_MARK = "Voice mode: everything you write is spoken aloud"
+# The header a compaction summary opens with (`compact::SUMMARY_HEADER`).
+SUMMARY_HEADER = "[Earlier turns were compacted to fit the context window. What happened in them:]"
 SESSION_ID = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
 
 
@@ -166,7 +168,9 @@ def spoken_turns(records):
       not what a tool returned, which is a file or a page, not speech;
     - each reply containing a directed sentence, and the owner's turn it
       answers — which is how a later turn of a call is found, since only the
-      first turn of a spoken stretch carries the block.
+      first turn of a spoken stretch carries the block;
+    - the session's title and any compaction summary, which are written
+      from what was said.
 
     What stays out of reach: the owner's own words in a later turn of a call
     whose reply was not directed (a TTS that takes no directions, or a
@@ -181,19 +185,36 @@ def spoken_turns(records):
         if r.get("record") == "spoken_direction" and r.get("sentence"):
             yield r["sentence"]
             directed.add(" ".join(words(r["sentence"])))
+    for r in records:
+        # A title is written from the owner's first words; a compaction
+        # summary paraphrases the turns it replaced (review of #559).
+        if r.get("record") in ("meta", "title") and isinstance(r.get("title"), str):
+            yield r["title"]
+        if r.get("record") == "rewrite":
+            for m in r.get("messages") or []:
+                for b in (m.get("content") if isinstance(m, dict) else None) or []:
+                    t = b.get("text", "") if isinstance(b, dict) else ""
+                    if SUMMARY_HEADER in t:
+                        yield t.split(SUMMARY_HEADER, 1)[1]
     messages = [r for r in records if r.get("record") == "message"]
     in_stretch = False
     last_user = None
     for r in messages:
         text = text_of(r)
         if r.get("role") == "user":
-            if text.strip():  # a tool-results turn has no text: the stretch goes on
+            # A tool-results turn goes on with the stretch: steering and a
+            # queued sentence are folded into it beside the results, since
+            # nothing can sit between a tool_use and its result
+            # (`agent::is_plain_user_text`, the same distinction). Its folded
+            # words were said; what the tool returned was not (a file or a
+            # page), so only the text blocks count.
+            results = any(isinstance(b, dict) and b.get("type") == "tool_result"
+                          for b in r.get("content") or [])
+            if not results and text.strip():
                 in_stretch = VOICE_MARK in text
                 last_user = r
-                if in_stretch:
-                    yield text
-            # What a tool returned is not what anyone said — often a file or
-            # a page the assistant read — so a tool-results turn adds nothing.
+            if in_stretch and text.strip():
+                yield text
         elif r.get("role") == "assistant":
             said = " ".join(words(text))
             if in_stretch:
