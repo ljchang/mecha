@@ -2351,6 +2351,7 @@ mod tests {
                 sidecar: "layout".into(),
                 incomplete: true,
                 wrote: vec![],
+                builds: vec![],
             }],
         };
         m.write(&home).unwrap();

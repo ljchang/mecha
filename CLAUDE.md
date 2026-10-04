@@ -238,6 +238,8 @@ sidecar.rs   what a feature runs beside mecha, whether this machine already has
              it (provided, never installed over), and the plan — no socket
 install.rs   the installers `features enable` offers: a pinned uv, layout first;
              the record leads the bytes, one tree per install
+engine.rs    llama.cpp from a pinned release, side by side behind a `current`
+             link: the build chosen from the driver, checked self-contained
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,

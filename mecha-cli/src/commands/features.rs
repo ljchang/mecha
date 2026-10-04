@@ -134,38 +134,23 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         let m = sidecar::Machinery::real()?;
         let machine = recommend::Machine::read()?;
         let hub = mecha_core::fetch::hub_dir()?;
+        let chat_here = install::chat_runs_here(&cfg);
         // (sidecar id, its label, the feature whose plan names it)
         let mut todo: Vec<(&'static str, &'static str, Feature)> = Vec::new();
         for f in &features {
             let p = sidecar::plan(*f, &m, &machine, &hub, false)?;
+            // A check that could not run is never installed over — and
+            // never passed over in silence either.
             for s in &p.sidecars {
-                // A check that could not run is never installed over — and
-                // never passed over in silence either.
                 if let SidecarState::Unknown { why } = &s.state {
                     eprintln!(
                         "mecha: {} could not be checked ({why}); nothing is installed over it",
                         s.label
                     );
                 }
-                // Missing or unfinished — or installed, but a model it
-                // serves is gone from the hub (a cleared cache leaves its
-                // link dangling): the install is idempotent, so running it
-                // again fetches only what is missing.
-                let serves = sidecar::SIDECARS
-                    .iter()
-                    .find(|sc| sc.id == s.id)
-                    .map(|sc| sc.serves)
-                    .unwrap_or(&[]);
-                let model_gone = p.files.iter().any(|f| {
-                    serves.contains(&f.slot)
-                        && matches!(f.state, sidecar::FileState::Download { .. })
-                });
-                let wanted = matches!(
-                    s.state,
-                    SidecarState::Missing { .. } | SidecarState::Incomplete
-                ) || (matches!(s.state, SidecarState::Installed) && model_gone);
-                if wanted && install::installable(s.id) && !todo.iter().any(|(id, ..)| *id == s.id)
-                {
+            }
+            for s in install::offered(&p, chat_here) {
+                if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature));
                 }
             }
@@ -397,7 +382,13 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
-        print!("{}", render_plan(&p));
+        print!(
+            "{}",
+            render_plan(
+                &p,
+                mecha_core::install::chat_runs_here(&Config::load_global()?)
+            )
+        );
     }
     Ok(())
 }
@@ -412,7 +403,7 @@ fn bytes_text(b: u64) -> String {
 
 /// `mecha features plan`: each sidecar and each pinned file, what this
 /// machine already has, and what an install would fetch.
-fn render_plan(p: &sidecar::Plan) -> String {
+fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
     use sidecar::{FileState, SidecarState};
     let mut out = format!("What `{}` runs beside mecha:\n", p.feature.id());
     for s in &p.sidecars {
@@ -423,6 +414,13 @@ fn render_plan(p: &sidecar::Plan) -> String {
                 "an install mecha began and did not finish — `mecha features enable {}` resumes it",
                 p.feature.id()
             ),
+            SidecarState::Missing { .. }
+                if mecha_core::install::not_needed(s.id, p, chat_here).is_some() =>
+            {
+                mecha_core::install::not_needed(s.id, p, chat_here)
+                    .unwrap_or_default()
+                    .to_string()
+            }
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -505,11 +503,12 @@ fn render_plan(p: &sidecar::Plan) -> String {
     if p.download_bytes > 0 {
         out.push_str(&format!("To download: {}.\n", bytes_text(p.download_bytes)));
     }
-    if p.sidecars
-        .iter()
-        .any(|s| matches!(s.state, SidecarState::Missing { .. }))
-    {
-        out.push_str("Installing is not built yet — each missing line names its step.\n");
+    if p.sidecars.iter().any(|s| {
+        matches!(s.state, SidecarState::Missing { .. })
+            && !mecha_core::install::installable(s.id)
+            && mecha_core::install::not_needed(s.id, p, chat_here).is_none()
+    }) {
+        out.push_str("Some installers are not built yet — each such line names its step.\n");
     }
     out
 }
@@ -878,7 +877,7 @@ mod tests {
             download_bytes: 2 << 30,
             nothing_to_do: false,
         };
-        let text = render_plan(&p);
+        let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
             "not here — its installer arrives in step 7c",
@@ -888,7 +887,7 @@ mod tests {
             "1 could not be checked",
             "1 model file(s) at their path do not match their pins",
             "To download: 2.0 GiB.",
-            "Installing is not built yet",
+            "Some installers are not built yet",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
