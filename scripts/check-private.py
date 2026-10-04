@@ -172,9 +172,9 @@ def spoken_turns(records):
     - the session's title and any compaction summary, which are written
       from what was said.
 
-    What stays out of reach: the owner's own words in a later turn of a call
-    whose reply was not directed (a TTS that takes no directions, or a
-    direction that failed). The worker journal held those until #547 stopped
+    What stays out of reach: a later turn of a call whose reply was not
+    directed (a TTS that takes no directions, or a direction that failed) —
+    the owner's words in it and the reply both. The worker journal held those until #547 stopped
     it carrying words; nothing does now."""
     def text_of(r):
         return " ".join(b.get("text", "") for b in r.get("content") or []
@@ -184,7 +184,12 @@ def spoken_turns(records):
     for r in records:
         if r.get("record") == "spoken_direction" and r.get("sentence"):
             yield r["sentence"]
-            directed.add(" ".join(words(r["sentence"])))
+            sentence = " ".join(words(r["sentence"]))
+            # Only a sentence long enough to tell replies apart marks one as
+            # spoken: "Sure." is in half of them (review of #559, pass 3).
+            if len(sentence.split()) >= 3:
+                directed.add(sentence)
+    seen = set()
     for r in records:
         # A title is written from the owner's first words; a compaction
         # summary paraphrases the turns it replaced (review of #559).
@@ -196,6 +201,20 @@ def spoken_turns(records):
                     t = b.get("text", "") if isinstance(b, dict) else ""
                     if SUMMARY_HEADER in t:
                         yield t.split(SUMMARY_HEADER, 1)[1]
+                    elif isinstance(m, dict) and m.get("role") == "user" and t.strip() and t not in seen:
+                        # Text that appears first in a rewrite was folded
+                        # into the tail there: a spoken barge-in, recorded
+                        # only in the rewritten list (serve::chat::begin_turn;
+                        # review of #559, pass 3).
+                        yield t
+            for m in r.get("messages") or []:
+                for b in (m.get("content") if isinstance(m, dict) else None) or []:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        seen.add(b.get("text", ""))
+        elif r.get("record") == "message":
+            for b in r.get("content") or []:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    seen.add(b.get("text", ""))
     messages = [r for r in records if r.get("record") == "message"]
     in_stretch = False
     last_user = None
@@ -219,7 +238,7 @@ def spoken_turns(records):
             said = " ".join(words(text))
             if in_stretch:
                 yield from spoken(r)
-            elif said and any(d and d in said for d in directed):
+            elif said and any(f" {d} " in f" {said} " for d in directed):
                 # A directed reply: it was spoken, and so was what it answers.
                 yield from spoken(r)
                 if last_user is not None:
@@ -267,6 +286,7 @@ def corpus():
         except (OSError, ValueError) as e:
             print(f"check-private: the session {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
+    whole_set = set(whole)
     for f in whole + partly:
         ids.add(os.path.basename(f)[: -len(".jsonl")])
         with open(f, errors="replace") as fh:
@@ -276,7 +296,7 @@ def corpus():
                     records.append(json.loads(line))
                 except ValueError:
                     continue
-        if f in whole:
+        if f in whole_set:
             for r in records:
                 said.extend(spoken(r))
         else:
