@@ -1794,8 +1794,8 @@ fn word_spans(text: &str) -> Vec<(usize, usize, String)> {
 /// What a persona wears and does, read from the words that follow its name
 /// where a prompt (or an extra) opens with it: the rest of that first clause
 /// is what it is doing, and a "wearing …" clause is what it wears. After
-/// "Maya", " [removed], wearing [removed], warm light"
-/// gives "[removed]" and "[removed]". Either is `None` when
+/// "Maya", " reading on a park bench, wearing a rain jacket, warm light"
+/// gives "reading on a park bench" and "a rain jacket". Either is `None` when
 /// the text does not say it that way. Handed the text *after* the name, so a
 /// name with punctuation in it ("Mara O'Brien", "J.R. Smith") is never
 /// miscounted into the clause (review of #444).
@@ -5827,7 +5827,7 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
-        assert_eq!(cast["name"], "maya", "{cast}");
+        assert_eq!(cast["name"], "priya", "{cast}");
         assert_eq!(cast["doing"], "on a beach at dusk", "{cast}");
 
         // `self` in the cast is the character, in the place it was given:
@@ -5845,7 +5845,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let cast = manifest_of(&dir, &out.content)["cast"].clone();
         assert_eq!(cast[0]["name"], "john", "{cast}");
-        assert_eq!(cast[1]["name"], "maya", "{cast}");
+        assert_eq!(cast[1]["name"], "priya", "{cast}");
         assert_eq!(cast[1]["wearing"], "a robe", "{cast}");
 
         // Named after someone the prompt names first: after them.

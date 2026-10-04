@@ -1184,7 +1184,7 @@ mod tests {
         for whole in [
             "Tell me how the walk went.",
             "Hmm.. let me see..",
-            "Come here 😘",
+            "See you soon 😊",
             "\"I need a minute.\"",
             "Mmm, I",
             "",

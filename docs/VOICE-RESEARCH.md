@@ -776,9 +776,9 @@ journal named the mechanism in two lines: `User started speaking (strategy:
 TranscriptionUserTurnStartStrategy)` followed **+0.80 s** later, every time,
 by `inference triggered (strategy: TurnAnalyzerUserTurnStopStrategy)` — with
 smart-turn having logged `INCOMPLETE` on that very segment a moment before.
-"[removed]", "[removed] need to" and "[removed]
-[removed]." each went to the model alone, and the model answered
-each fragment ("[removed]-do?").
+"put down a few", "The next thing is I have to" and "Okay. Just put it on the
+list." each went to the model alone, and the model answered
+each fragment by asking for the next item.
 
 The cause is the decision above meeting an assumption pipecat never states.
 Its stop strategy resets itself when a turn starts, on the premise that the
@@ -794,7 +794,7 @@ the window each time. Dictating to-dos, with a think between phrases, crossed
 it. The same premise had a second edge: the STT safety net is anchored to the
 *end of speech*, and warm Parakeet answers 0.5–0.9 s after it, so a
 `COMPLETE` could arrive with the deadline already spent and end the turn on
-the **previous** segment's text — "[removed]?" was dropped from
+the **previous** segment's text — "Grocery list?" was dropped from
 one request and then opened a new turn that barged in on the reply to it.
 
 Three changes, none a threshold on the owner's speech:
@@ -1162,10 +1162,13 @@ number was wrong:
 |---|---|---|
 | 0.0124 | `''` | silence |
 | 0.0141 | "The garden." | a real turn |
-| 0.0201 | "[removed]?" | a real turn |
-| **0.0257** | "The museum pass [removed]." | **echo** |
+| 0.0201 | "What's the weather like today?" | a real turn |
+| **0.0257** | "The museum pass costs one hundred forty nine dollars." | **echo** |
 | 0.0311 | "Yeah." | a real turn |
 | 0.0457–0.0774 | | real turns |
+
+The phrases are stand-ins (no call's words in the repository); the RMS values
+and the verdicts are the measured ones.
 
 **The echo sits inside the speech distribution, between two real barge-ins.**
 No threshold separates them. 0.030 buys that one echo and costs the 0.0201 and
@@ -1824,7 +1827,7 @@ to static color. The owner's earlier verdict on the stock UI ("the voice
 button is very subtle") is the brief this page answers.
 
 **First field bug, same night: the STT model spoke for the owner.** The
-phone screenshot showed "YOU" lines saying "[removed] a
+phone screenshot showed "YOU" lines in which the transcriber said it was an
 AI with no calendar — Voxtral is a chat model, and handed a VAD segment with no
 clear speech (speaker echo, room noise) it stops transcribing and starts
 *answering*; the answer was credited to the owner and sent into mecha as
@@ -1982,7 +1985,7 @@ client echo cancellation fails (the WebKit meter-tap trap, fixed on the
 page by metering a cloned track). Voxtral keeps :8082 for the
 audio-understanding turns it was always the right model for
 (`MECHA_VOICE_STT_KIND=voxtral` switches back). And the full loop is
-proven: a synthesized "[removed] today?" came back
+proven: a synthesized calendar question came back
 as the owner's actual day — a real `mail`/calendar tool call through the
 shared agent, times spoken as words per D10. The voice assistant works.
 
