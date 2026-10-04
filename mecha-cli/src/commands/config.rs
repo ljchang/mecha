@@ -205,6 +205,7 @@ mark_untrusted_output = true
 # cache_days = 30                       # ~/.mecha/documents, by content hash
 # layout = true                         # read OCR pages region by region (tables);
 #                                       # scripts/layout/install.sh installs it
+# (default: mecha's install in ~/.mecha/sidecars/layout/, once it finished, else ~/.mecha/layout/)
 # layout_python = "~/.mecha/layout/venv/bin/python"
 # layout_model = "~/.mecha/layout/PP-DocLayoutV3.onnx"
 
