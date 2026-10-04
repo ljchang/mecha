@@ -765,6 +765,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Listen no longer goes silent after the first sentence.** A reply read
+  aloud was spoken as its first sentence, then a ~400-character piece that
+  could only play once it had all been made — about 8 s of silence on an
+  idle machine and 16 s while a chat was generating. Each piece now streams
+  from the voice worker through serve to the page, which plays it as it
+  arrives and fetches the next piece while the last is still playing: speech
+  starts about 0.3 s after the tap and runs without gaps. A voice worker that
+  predates streaming still answers whole pieces.
+
 - **Calls from Chrome buffer the microphone again.** Chrome now has
   `RTCRtpScriptTransform`, and on a plain connection it hands the transform no
   audio frames, so every Chrome call declared the buffered uplink and fell back

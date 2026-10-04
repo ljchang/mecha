@@ -431,6 +431,19 @@ export function dropRing(key) {
   rings.delete(key || "");
 }
 
+/* The microphones calls hold open, across every session on the page. The
+   reply player asks before it sets the phone's audio session to playback:
+   on iOS that category does not capture, so a call's microphone would go
+   quiet with nothing to say so (review of #555). A track that ended without
+   a stop - taken by the OS - no longer counts. */
+const openMics = new Set();
+export function micOpen() {
+  for (const s of openMics) {
+    if (s.getAudioTracks().some(t => t.readyState === "live")) return true;
+  }
+  return false;
+}
+
 /* The cue policy over a behind-count, kept pure. `prev` is what was last
    decided; returns the next state and which sound, if any, to make. A
    "behind" cue is made once per episode, when the count first passes the
@@ -852,6 +865,11 @@ export function createVoiceSession(opts = {}) {
     document.addEventListener("visibilitychange", onVisible);
     await AC.resume();
     setState("connecting", "connecting…");
+    // A reply being read aloud may have set the session to playback, which
+    // does not capture: the call's microphone takes precedence (`micOpen`).
+    try {
+      if (navigator.audioSession?.type === "playback") navigator.audioSession.type = "auto";
+    } catch { /* no audio session API */ }
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         // Explicit, not default: every echo the browser cancels is a
@@ -862,6 +880,7 @@ export function createVoiceSession(opts = {}) {
       setState("idle", "microphone refused — tap to retry");
       return;
     }
+    openMics.add(micStream);
     /* The microphone can be taken away without the call ending. iOS mutes
        the track when the screen locks or another app takes the audio
        session (a navigation prompt, a phone call) and unmutes it after; the
@@ -1242,7 +1261,10 @@ export function createVoiceSession(opts = {}) {
     chimeEnd();
     stopMeter();
     cfg.onLevel(0);
-    if (micStream) micStream.getTracks().forEach(t => t.stop());
+    if (micStream) {
+      micStream.getTracks().forEach(t => t.stop());
+      openMics.delete(micStream);
+    }
     // The ring is deliberately kept: it is what the next connection
     // delivers first (§4.2). The tap and the pump are per call.
     clearTimeout(pumpTimer); pumpTimer = 0;
