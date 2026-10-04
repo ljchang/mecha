@@ -501,6 +501,15 @@ fn within(named: Feature, f: Feature) -> bool {
     f == named || f.switch_owner() == named
 }
 
+/// The sidecars a feature's plan reads: the ones it or its parts need, and
+/// the shared ones every feature needs. A part resolves to its parent.
+pub fn needed(named: Feature) -> impl Iterator<Item = &'static Sidecar> {
+    let named = named.switch_owner();
+    SIDECARS
+        .iter()
+        .filter(move |s| s.needed_by.is_empty() || s.needed_by.iter().any(|f| within(named, *f)))
+}
+
 /// The plan for a feature (a part resolves to its parent, as `mecha setup
 /// <part>` does): every sidecar it or its parts need, and every pinned model
 /// file the machine's rows name. The shared ones — the engine, the router,
@@ -519,7 +528,7 @@ pub fn plan(
         |needed_by: &[Feature]| needed_by.is_empty() || needed_by.iter().any(|f| within(named, *f));
 
     let mut sidecars = Vec::new();
-    for s in SIDECARS.iter().filter(|s| needs(s.needed_by)) {
+    for s in needed(named) {
         // What the machine shows, read only when mecha's record does not
         // settle it.
         let from_evidence = || {

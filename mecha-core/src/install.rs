@@ -132,6 +132,16 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     let bin = dir.join("uv");
     // Ask the cached binary, not the record: a later pin must replace it.
     if bin.is_file() && uv_version(&bin).is_some_and(|v| v.contains(UV_VERSION)) {
+        // An unpack interrupted before its `finish` left the binary whole
+        // and the record open; the version check is the health check, so
+        // the record catches up here rather than reading unfinished forever.
+        if Manifest::read(&m.mecha_home)?
+            .entries
+            .iter()
+            .any(|e| e.sidecar == "uv" && e.incomplete)
+        {
+            Manifest::finish(&m.mecha_home, "uv")?;
+        }
         return Ok(bin);
     }
     let target =
@@ -234,6 +244,11 @@ pub async fn install_layout(
     // Each piece on its own line in the record, so a partly deleted install
     // reads incomplete — resumable — rather than installed.
     Manifest::record(home, id, &venv)?;
+    // The managed Python the venv's interpreter links into: unrecorded,
+    // removing it would leave `venv/bin/python` dangling while the record
+    // read installed — `plan` does not follow the link, and
+    // `document::layout_tree` does, so they would disagree with no way out.
+    Manifest::record(home, id, &dir.join("python"))?;
     Manifest::record(home, id, &link)?;
     let uv_env = |c: &mut std::process::Command| {
         c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
@@ -246,8 +261,12 @@ pub async fn install_layout(
     };
     if !python.exists() {
         say(&format!("building a Python {LAYOUT_PYTHON} environment"));
+        // `--clear`: a venv whose interpreter dangles (its managed Python
+        // removed) is still a directory, and uv will not build over one
+        // without being told. It is mecha's own tree, and the install below
+        // runs every time, so nothing in it is lost.
         let mut c = std::process::Command::new(&uv);
-        c.args(["venv", "--quiet", "--python", LAYOUT_PYTHON])
+        c.args(["venv", "--quiet", "--clear", "--python", LAYOUT_PYTHON])
             .arg(&venv);
         uv_env(&mut c);
         run(&mut c, "uv venv")?;
@@ -474,6 +493,26 @@ mod tests {
         }
         // Again: everything is there, and it still passes its check.
         install_layout(&m, &GB10, &hub, &mut |_| {}).await.unwrap();
+        // The managed Python removed leaves the venv's interpreter dangling:
+        // the plan reads that resumable, and the install repairs it.
+        std::fs::remove_dir_all(dir.join("python")).unwrap();
+        let state = |m: &Machinery| {
+            crate::sidecar::plan(crate::feature::Feature::Documents, m, &GB10, &hub, false)
+                .unwrap()
+                .sidecars
+                .into_iter()
+                .find(|s| s.id == "layout")
+                .unwrap()
+                .state
+        };
+        assert!(
+            matches!(state(&m), crate::sidecar::SidecarState::Incomplete),
+            "{:?}",
+            state(&m)
+        );
+        install_layout(&m, &GB10, &hub, &mut |_| {}).await.unwrap();
+        assert!(dir.join("venv/bin/python").exists());
+        assert!(matches!(state(&m), crate::sidecar::SidecarState::Installed));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -124,7 +124,13 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
 
     let cfg = Config::load_global()?;
     let features = feature::plan_enable(&cfg, ids).map_err(anyhow::Error::msg)?;
-    if !no_install {
+    // The machine is read only when some sidecar these features need is one
+    // mecha installs: `enable messages` stays a switch write, with no GPU
+    // probe to wait on.
+    let can_install = features
+        .iter()
+        .any(|f| sidecar::needed(*f).any(|s| install::installable(s.id)));
+    if !no_install && can_install {
         let m = sidecar::Machinery::real()?;
         let machine = recommend::Machine::read()?;
         let hub = mecha_core::fetch::hub_dir()?;
@@ -182,6 +188,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 println!("  {label}");
             }
             let mut plans: Vec<&str> = todo.iter().map(|(.., f)| f.id()).collect();
+            plans.sort_unstable();
             plans.dedup();
             println!(
                 "(`mecha features plan {}` shows each piece and its size.)",
