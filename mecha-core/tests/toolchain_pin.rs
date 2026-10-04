@@ -51,15 +51,18 @@ fn every_workflow_installs_the_pinned_toolchain() {
         let path = wf.unwrap().path();
         let text = std::fs::read_to_string(&path).unwrap();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        for floating in [
-            "rust-toolchain@stable",
-            "rust-toolchain@nightly",
-            "rust-toolchain@beta",
-        ] {
+        // The setup actions at all, not only a floating tag of one:
+        // `dtolnay/rust-toolchain@master` with `toolchain: stable` is the
+        // spelling this repository had, and it floats without ever matching
+        // `@stable`. And no cargo line picks its own toolchain (`cargo +x`).
+        // Between them, a job added later cannot set Rust up some other way
+        // while the file's one `rustup toolchain install` satisfies the
+        // check below.
+        for floating in ["dtolnay/rust-toolchain", "actions-rs/toolchain", "cargo +"] {
             assert!(
                 !text.contains(floating),
-                "{name} installs `{floating}`; install the pinned toolchain with \
-                 `rustup toolchain install` (no arguments) instead"
+                "{name} sets Rust up with `{floating}`, which can float; install the \
+                 pinned toolchain with `rustup toolchain install` (no arguments) instead"
             );
         }
         // A workflow that builds Rust says where its toolchain came from.
@@ -84,5 +87,16 @@ fn the_msrv_arm_tests_the_promised_version() {
     assert!(
         ci.contains(&format!("rust: \"{promised}\"")),
         "Cargo.toml promises rust-version {promised}, and ci.yml's MSRV arm does not test it"
+    );
+    // And the arm must *select* it. With rust-toolchain.toml in the tree, an
+    // arm that names no toolchain does not fail — it builds on the pin while
+    // still labelled with the MSRV, the "testing one version twice" collapse
+    // CONTRIBUTING.md records as the objection to a toolchain file.
+    assert!(
+        // The export into the job's environment itself — the version line
+        // beside it names the variable too, and would satisfy a looser match.
+        ci.contains(r#"echo "RUSTUP_TOOLCHAIN=${{ matrix.rust }}" >> "$GITHUB_ENV""#),
+        "ci.yml's MSRV arm does not export RUSTUP_TOOLCHAIN, so rust-toolchain.toml \
+         wins and the arm tests the pin rather than rust-version {promised}"
     );
 }
