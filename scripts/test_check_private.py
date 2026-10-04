@@ -79,10 +79,28 @@ class Guard(unittest.TestCase):
 
     def test_a_persona_name_and_a_real_session_id_are_refused(self):
         self.stage("doc.md", "A note about Quillon.\n")
-        self.assertIn("persona", self.run_guard("--staged").stdout)
+        self.assertIn("of the owner's personas", self.run_guard("--staged").stdout)
         git(self.repo, "reset", "-q")
         self.stage("doc.md", f"see {SESSION}\n")
         self.assertIn("session id", self.run_guard("--staged").stdout)
+
+    def test_a_sentence_split_across_two_lines_is_not_excused(self):
+        # The repository "says" a run only on one line: words that meet only
+        # across a line break, or a file boundary, excuse nothing.
+        half = SAID.split()
+        self.stage("a.md", " ".join(half[:4]) + "\n" + " ".join(half[4:]) + "\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "split")
+        self.stage("b.py", f"Y = {SAID!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_a_commit_message_is_checked(self):
+        msg = os.path.join(self.tmp.name, "COMMIT_EDITMSG")
+        open(msg, "w").write(f"Fix the fixture\n\nIt said: {SAID}\n# a git comment\n")
+        r = self.run_guard("--message", msg)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("commit message:3", r.stdout)
+        open(msg, "w").write("Fix the fixture\n\nIt said something made up.\n")
+        self.assertEqual(self.run_guard("--message", msg).returncode, 0)
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
