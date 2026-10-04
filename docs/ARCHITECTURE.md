@@ -1591,9 +1591,10 @@ module.
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
-    - Only the turn being answered carries one on the wire
-      (`PriorNudges::Drop`, set in `persona_agent` beside the other two
-      views): each note names what is repeating now, and kept, forty turns in
+    - Only the newest note goes on the wire (`PriorNudges::Drop`, set in
+      `persona_agent` beside the other two views), wherever it sits: a turn
+      folded into an earlier message after a cancelled tool call can hold two.
+      Each note names what is repeating now, and kept, forty turns in
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
       subtracts the dropped ones.
