@@ -107,8 +107,22 @@ def corpus():
     ids = set()
     names = set()
     for d in glob.glob(f"{MECHA}/personas/*/"):
-        if os.path.exists(f"{d}persona.toml"):
+        toml = f"{d}persona.toml"
+        if os.path.exists(toml):
             names.add(os.path.basename(d.rstrip("/")).lower())
+            # How the persona is addressed and drawn, which is what a fixture
+            # or a doc would spell (review of #557): `display` and its words,
+            # and `character`.
+            try:
+                text = open(toml, errors="replace").read()
+            except OSError:
+                text = ""
+            for key in ("display", "character"):
+                m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
+                if m and m.group(1).strip():
+                    value = m.group(1).strip().lower()
+                    names.add(value)
+                    names.update(w for w in words(value) if len(w) >= 4)
     files = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
     for f in glob.glob(f"{MECHA}/sessions/*.jsonl"):
         try:
@@ -157,10 +171,28 @@ def run_git(cmd):
 
 
 def diff_lines(out, where=""):
-    """(path, line number, text) for every line a unified diff adds. A `+++`
-    header it cannot read is refused: only `/dev/null` means nothing added."""
-    path, num = None, 0
+    """(path, line number, text) for every line a unified diff adds. Header
+    lines are recognised only outside a hunk — inside one, an added line
+    whose own text starts "++ " is content, not a header (review of #557). A
+    `+++` header it cannot read is refused: only `/dev/null` means nothing
+    added."""
+    path, num, new_left, old_left = None, 0, 0, 0
     for line in out.splitlines():
+        if new_left or old_left:
+            if line.startswith("+"):
+                if path:
+                    yield path, num, line[1:]
+                num += 1
+                new_left -= 1
+            elif line.startswith("-"):
+                old_left -= 1
+            elif line.startswith("\\"):
+                pass  # "\ No newline at end of file"
+            else:
+                num += 1
+                new_left -= 1
+                old_left -= 1
+            continue
         if line.startswith("+++ "):
             target = line[4:]
             if target.startswith("b/"):
@@ -171,10 +203,13 @@ def diff_lines(out, where=""):
                 print(f"check-private: cannot read the diff header {target!r}{where}; refusing.")
                 sys.exit(2)
         elif line.startswith("@@"):
-            num = int(re.search(r"\+(\d+)", line).group(1))
-        elif line.startswith("+") and path:
-            yield path, num, line[1:]
-            num += 1
+            m = re.match(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            if not m:
+                print(f"check-private: cannot read the hunk header {line!r}{where}; refusing.")
+                sys.exit(2)
+            old_left = int(m.group(1)) if m.group(1) is not None else 1
+            num = int(m.group(2))
+            new_left = int(m.group(3)) if m.group(3) is not None else 1
 
 
 DIFF = ["git", "-c", "core.quotepath=false", "diff", "--unified=0", "--no-color"]
@@ -232,6 +267,13 @@ def main(args):
         BASE[0] = args[1].split("..")[0]
     shingles, phrases, ids, names, found = corpus()
     if not found:
+        # On the machine that holds the conversations, set
+        # CHECK_PRIVATE_REQUIRE=1: a mistyped MECHA_HOME or a hook run as
+        # another user then refuses instead of passing (review of #557), as
+        # MECHA_TEST_REQUIRE_BACKENDS does for skipped tests.
+        if os.environ.get("CHECK_PRIVATE_REQUIRE") == "1":
+            print(f"check-private: no conversations under {MECHA}, and CHECK_PRIVATE_REQUIRE=1; refusing.")
+            return 2
         print("check-private: no conversations on this machine to compare against; passing.")
         return 0
     findings = []
