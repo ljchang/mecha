@@ -77,7 +77,7 @@ fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
         out.push_str("  no llama.cpp units — they arrive with their features (step 7c)\n");
     }
     for (s, l) in &servers.present {
-        let line = match l.engine() {
+        let line = match l.engine(&servers.base_env) {
             Some(e) => format!(
                 "{} — {}{}",
                 e.display(),
@@ -244,6 +244,20 @@ async fn run_rollback(
              back from an upgrade arrives with `--upgrade`)"
         );
     }
+    // What the router runs once the drop-ins are gone, read before anything
+    // moves: a lookup that fails stops the rollback before it starts, never
+    // after it succeeded.
+    let provided = {
+        let (_, l) = servers
+            .get(Role::Router)
+            .context("there is no llama-local.service")?;
+        let mut bare = l.clone();
+        bare.env.retain(|(k, _)| k != "LLAMA_SERVER");
+        bare.engine(&servers.base_env).context(
+            "without mecha's drop-in the router's unit names no llama-server it can find — \
+             nothing was rolled back",
+        )?
+    };
     // A rollback waits for runs, as any switch does; `--now` asks them to
     // stop (hold.rs's ruling, which the measurement alone departs from).
     let holds = mecha_core::hold::Holds::open_default()?;
@@ -293,10 +307,6 @@ async fn run_rollback(
     }
     gate::systemctl("restart", &["llama-local.service"])
         .with_context(|| format!("finish with: {finish}"))?;
-    let provided = gate::Servers::read()?
-        .get(Role::Router)
-        .and_then(|(_, l)| l.engine())
-        .context("after the rollback the router's unit names no llama-server it can find")?;
     gate::router_back(&base, model, &provided)
         .await
         .with_context(|| {

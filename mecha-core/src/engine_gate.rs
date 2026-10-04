@@ -79,12 +79,22 @@ pub struct Launcher {
 
 impl Launcher {
     /// The engine this launcher runs when nothing overrides it: the unit's
-    /// `LLAMA_SERVER`, else `llama-server` on the unit's `PATH`.
-    pub fn engine(&self) -> Option<PathBuf> {
+    /// `LLAMA_SERVER`, else `llama-server` on its `PATH` — the unit's own, or,
+    /// when it names none, the manager's (`base`), which is what systemd
+    /// hands it. Read from the environment the launcher is run with, never a
+    /// narrower one: a unit without a `path.conf` drop-in starts fine on the
+    /// manager's `PATH`, and must not read as having no engine.
+    pub fn engine(&self, base: &[(String, String)]) -> Option<PathBuf> {
         if let Some((_, v)) = self.env.iter().find(|(k, _)| k == "LLAMA_SERVER") {
             return Some(PathBuf::from(expand_home(v)));
         }
-        let path = self.env.iter().find(|(k, _)| k == "PATH")?.1.clone();
+        let path = self
+            .env
+            .iter()
+            .chain(base)
+            .find(|(k, _)| k == "PATH")?
+            .1
+            .clone();
         std::env::split_paths(&path)
             .map(|d| d.join("llama-server"))
             .find(|p| p.is_file())
@@ -142,8 +152,8 @@ fn parse_show(text: &str) -> Option<Launcher> {
 }
 
 /// `{ path=/x ; argv[]=/x a b ; ignore_errors=no ; … }` → `["/x", "a", "b"]`.
-/// A drop-in that resets `ExecStart=` leaves only the effective one; with
-/// several, the first is the one this reads (the router's unit has one).
+/// A drop-in that resets `ExecStart=` leaves only the effective one, which is
+/// the one this reads (the units here have one each).
 fn parse_exec_start(v: &str) -> Option<Vec<String>> {
     let argv = v.split(" ; ").find_map(|f| {
         f.trim()
@@ -717,6 +727,11 @@ impl Servers {
     pub fn get(&self, role: Role) -> Option<&(Server, Launcher)> {
         self.present.iter().find(|(s, _)| s.role == role)
     }
+
+    /// The engine a server's unit runs today.
+    pub fn engine(&self, role: Role) -> Option<PathBuf> {
+        self.get(role).and_then(|(_, l)| l.engine(&self.base_env))
+    }
 }
 
 /// Measure one engine: the router's model (bench and chat smoke), then the
@@ -734,8 +749,7 @@ async fn measure(
     let binary = match engine {
         Some(e) => e.to_path_buf(),
         None => servers
-            .get(Role::Router)
-            .and_then(|(_, l)| l.engine())
+            .engine(Role::Router)
             .context("the router's unit names no llama-server it can find")?,
     };
     let mut leg = Leg {
@@ -762,7 +776,11 @@ async fn measure(
         leg.smoke.insert(
             "chat".into(),
             Smoke::NotRun {
-                why: "no router unit, or no model resident to measure".into(),
+                why: if servers.get(Role::Router).is_none() {
+                    "no router unit on this machine".into()
+                } else {
+                    "the router had no model loaded, and the provider names none".into()
+                },
             },
         );
     }
@@ -826,14 +844,19 @@ fn compare_embeddings(new: &mut Leg, old_v: Option<&[f64]>, new_v: Option<&[f64]
 
 /// The drop-in `--adopt` writes into each unit: its launcher runs mecha's
 /// managed engine through the `current` link.
-pub fn drop_in_text() -> String {
-    "# Written by `mecha setup engine --adopt` (FEATURES-DESIGN.md §10.3): this\n\
-     # unit's launcher runs mecha's managed llama.cpp engine through the\n\
-     # `current` link. Removing this file (`mecha setup engine --rollback`)\n\
-     # returns it to the llama-server on its PATH, which is left in place.\n\
-     [Service]\n\
-     Environment=LLAMA_SERVER=%h/.mecha/sidecars/llama/current/llama-server\n"
-        .to_string()
+/// The path is `managed` itself, absolute — the one `install_engine`
+/// wrote under this mecha home, `MECHA_HOME` honoured — never re-derived from
+/// `%h`, which would name another tree under a non-default home.
+pub fn drop_in_text(managed: &Path) -> String {
+    format!(
+        "# Written by `mecha setup engine --adopt` (FEATURES-DESIGN.md §10.3): this\n\
+         # unit's launcher runs mecha's managed llama.cpp engine through the\n\
+         # `current` link. Removing this file (`mecha setup engine --rollback`)\n\
+         # returns it to the llama-server on its PATH, which is left in place.\n\
+         [Service]\n\
+         Environment=\"LLAMA_SERVER={}\"\n",
+        managed.display()
+    )
 }
 
 /// Where a unit's adopt drop-in lives.
@@ -867,9 +890,16 @@ pub async fn router_runs(base: &str, model: &str, engine: &Path) -> Option<bool>
     let models = crate::provider::router::models(base).await?;
     let m = models.iter().find(|m| m.id == model && m.is_resident())?;
     let arg0 = m.status.args.first()?;
+    if Path::new(arg0) == engine {
+        return Some(true);
+    }
+    // Through the `current` link: the same file either way. A path that
+    // will not resolve is not this engine.
     Some(
-        Path::new(arg0) == engine
-            || std::fs::canonicalize(arg0).ok()? == std::fs::canonicalize(engine).ok()?,
+        match (std::fs::canonicalize(arg0), std::fs::canonicalize(engine)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        },
     )
 }
 
@@ -885,7 +915,7 @@ pub fn adopted(servers: &Servers, mecha_home: &Path) -> bool {
         && servers
             .present
             .iter()
-            .all(|(_, l)| l.engine().as_deref() == Some(managed.as_path()))
+            .all(|(_, l)| l.engine(&servers.base_env).as_deref() == Some(managed.as_path()))
 }
 
 /// Wait for the router at `base` to answer, then load `model` on it and
@@ -950,6 +980,11 @@ pub async fn adopt(
     if adopted(&servers, &m.mecha_home) {
         bail!("every llama.cpp unit here already runs mecha's engine — nothing to adopt");
     }
+    // Before the download and the switch: a router whose engine cannot be
+    // found has nothing to measure against.
+    let old_engine = servers
+        .engine(Role::Router)
+        .context("the router's unit names no llama-server it can find")?;
     // The pin, side by side: nothing reads `current` until a drop-in names it.
     let managed = managed_binary(&m.mecha_home);
     crate::engine::install_engine(m, &mut *say).await?;
@@ -984,11 +1019,6 @@ pub async fn adopt(
         .await
         .and_then(|ms| crate::provider::router::resident(&ms).map(str::to_owned))
         .or_else(|| fallback_model.map(str::to_owned));
-    let old_engine = servers
-        .get(Role::Router)
-        .and_then(|(_, l)| l.engine())
-        .context("the router's unit names no llama-server it can find")?;
-
     say("stopping the router for the measurement");
     systemctl("stop", &["llama-local.service"])?;
     let logs = crate::engine::engine_root(&m.mecha_home).join("gate");
@@ -1084,7 +1114,14 @@ pub async fn adopt(
         new,
         outcome,
     };
-    append_ledger(&m.mecha_home, &row)?;
+    // The units have already moved (or not) by now: a ledger that cannot be
+    // written is said, never returned as a failed adopt.
+    if let Err(e) = append_ledger(&m.mecha_home, &row) {
+        say(&format!(
+            "the measurement could not be written to {}: {e:#}",
+            ledger_path(&m.mecha_home).display()
+        ));
+    }
     // Held to here: no run started on either engine between the first load
     // and the router answering on the winner.
     drop(switching);
@@ -1111,7 +1148,7 @@ async fn promote_adopt(
         crate::sidecar::Manifest::record(&m.mecha_home, "llama", &path)
             .map_err(step("recording the drop-ins"))?;
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
-            .and_then(|()| std::fs::write(&path, drop_in_text()))
+            .and_then(|()| std::fs::write(&path, drop_in_text(managed)))
             .map_err(|e| (format!("writing {}", path.display()), e.into()))?;
     }
     systemctl("daemon-reload", &[]).map_err(step("systemctl daemon-reload"))?;
@@ -1176,7 +1213,15 @@ mod tests {
                 format!("/nowhere:{}", dir.join("bin").display()),
             )],
         };
-        assert_eq!(on_path.engine(), Some(dir.join("bin/llama-server")));
+        assert_eq!(on_path.engine(&[]), Some(dir.join("bin/llama-server")));
+        // A unit naming no PATH runs on the manager's, and reads that way.
+        let no_path = Launcher {
+            argv: vec!["/x".into()],
+            env: vec![("MECHA_EMBED_PORT".into(), "18081".into())],
+        };
+        assert_eq!(no_path.engine(&[]), None);
+        let manager = [("PATH".to_string(), dir.join("bin").display().to_string())];
+        assert_eq!(no_path.engine(&manager), Some(dir.join("bin/llama-server")));
         let adopted = Launcher {
             argv: vec!["/x".into()],
             env: vec![
@@ -1185,7 +1230,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            adopted.engine(),
+            adopted.engine(&[]),
             Some(PathBuf::from("/m/current/llama-server"))
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1307,13 +1352,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The drop-in names the engine `install_engine` put under *this* mecha
+    /// home — a non-default one included — so the units and the install can
+    /// never point at two trees.
     #[test]
-    fn the_drop_in_names_the_current_link() {
-        let t = drop_in_text();
+    fn the_drop_in_names_this_home_s_current_link() {
+        let t = drop_in_text(&managed_binary(Path::new("/srv/mecha")));
         assert!(t.contains("[Service]"));
         assert!(
-            t.contains("Environment=LLAMA_SERVER=%h/.mecha/sidecars/llama/current/llama-server")
+            t.contains(
+                "Environment=\"LLAMA_SERVER=/srv/mecha/sidecars/llama/current/llama-server\""
+            ),
+            "{t}"
         );
+        assert!(!t.contains("%h"), "{t}");
         assert_eq!(
             drop_in_path(Path::new("/h"), "llama-local.service"),
             PathBuf::from("/h/.config/systemd/user/llama-local.service.d/mecha-engine.conf")
@@ -1340,7 +1392,7 @@ mod tests {
         let logs = std::env::temp_dir().join(format!("mecha-gate-logs-{}", uuid::Uuid::new_v4()));
         let mut said = Vec::new();
         // The old leg needs an engine name for its record; the backends' own.
-        let old_engine = servers.present[0].1.engine().unwrap();
+        let old_engine = servers.present[0].1.engine(&servers.base_env).unwrap();
         let (mut old, old_v) = measure(&servers, Some(&old_engine), None, &logs, "old", &mut |s| {
             said.push(s.to_string())
         })
