@@ -486,7 +486,7 @@ fn ask_about(item: &OutboxItem) -> String {
 /// those lists is a hole in the gate by construction: `"So, send it."` is not
 /// a span of anything, normalises to `"send it"`, and releases. It needs the
 /// transcriber to insert a filler the offer did not contain, which Parakeet
-/// does — "[removed]" is in this project's own measurement table.
+/// does — "Um prices for" is in this project's own measurement table.
 ///
 /// So the span is tried against both forms. Checking only the raw one is the
 /// drift `Reread`'s comment warns about three functions down: two decision

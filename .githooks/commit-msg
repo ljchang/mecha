@@ -1,0 +1,10 @@
+#!/bin/bash
+# A commit message goes public with the commit: no persona chat's or voice
+# call's words in it either (owner's ruling, 2026-10-04; review of #557).
+# The same check as pre-commit, over the message git is about to record.
+if ! command -v python3 >/dev/null 2>&1 || [ ! -f scripts/check-private.py ]; then
+    # Required here, and it cannot run: refuse, never pass quietly.
+    [ "$CHECK_PRIVATE_REQUIRE" = 1 ] && { echo "check-private: CHECK_PRIVATE_REQUIRE=1 but the check cannot run; refusing."; exit 1; }
+    exit 0
+fi
+exec python3 scripts/check-private.py --message "$1"

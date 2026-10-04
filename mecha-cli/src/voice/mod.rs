@@ -130,9 +130,8 @@ calls for. ",
 /// (`ToolCtx::review_hint`), in place of the sentence naming `mecha outbox`.
 ///
 /// On 2026-09-13 the model answered the owner's spoken yes by pointing them
-/// with *"You'll need to review [removed]`"* — a
-/// faithful repetition of what its tool result had told it, on the one
-/// surface where it is untrue. The core composes that result without
+/// at `mecha outbox` to review and send it — a faithful repetition of what
+/// its tool result had told it, on the one surface where it is untrue. The core composes that result without
 /// knowing which surface is listening; this is the surface saying.
 pub(crate) const SPOKEN_REVIEW_HINT: &str = "The user will be asked aloud whether to send it, \
 right after this reply; they answer by saying yes or later.";

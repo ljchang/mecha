@@ -56,7 +56,7 @@ class TheJoin(unittest.TestCase):
     def test_a_trailing_off_run_is_one_phrase_not_forty(self):
         # The shape of the 2026-10-03 reply that came out as 84 pieces.
         pieces = ["Hmm..", ".", "let me see..", ".", "give me a second..", ".",
-                  "[removed].", "Okay..", ".", "so..", ".", "and then..", ".", "Good."]
+                  "The kettle is on.", "Okay..", ".", "so..", ".", "and then..", ".", "Good."]
         out = run(pieces)
         self.assertEqual(out, [
             "Hmm... let me see... give me a second... The kettle is on.",
