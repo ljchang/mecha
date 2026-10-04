@@ -9615,6 +9615,7 @@ mod tests {
                     voice,
                     speed,
                     listen: None,
+                    stream: false,
                 }),
             )
         };
@@ -9676,6 +9677,125 @@ mod tests {
             .await
             .unwrap();
         assert!(String::from_utf8_lossy(&why).contains("predates the play button"));
+    }
+
+    /// Listen streams (`SpeakBody::stream`): serve asks the worker for PCM
+    /// and passes each chunk on as it arrives, never collected — the first
+    /// is read through serve before the worker has sent the second — at the
+    /// rate the worker named; a stream at no playable rate is refused; and a
+    /// page that does not ask for a stream still gets one WAV.
+    #[tokio::test]
+    async fn a_streamed_piece_is_passed_on_as_it_arrives() {
+        use futures::StreamExt;
+
+        let w = world();
+        let seen = Arc::new(StdMutex::new(Vec::<serde_json::Value>::new()));
+        type Chunk = Result<axum::body::Bytes, std::io::Error>;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Chunk>(4);
+        let rx = Arc::new(tokio::sync::Mutex::new(Some(rx)));
+        let rate = Arc::new(StdMutex::new("24000"));
+        let (kept, chunks, named) = (Arc::clone(&seen), Arc::clone(&rx), Arc::clone(&rate));
+        let app = axum::Router::new().route(
+            "/mecha/speak",
+            axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                let (kept, chunks, named) =
+                    (Arc::clone(&kept), Arc::clone(&chunks), Arc::clone(&named));
+                async move {
+                    let streamed = body["stream"] == true;
+                    kept.lock().unwrap().push(body);
+                    if !streamed {
+                        return ([("content-type", "audio/wav")], "RIFF").into_response();
+                    }
+                    let rx = chunks.lock().await.take();
+                    let body = match rx {
+                        Some(rx) => axum::body::Body::from_stream(futures::stream::unfold(
+                            rx,
+                            |mut rx| async move { rx.recv().await.map(|c| (c, rx)) },
+                        )),
+                        None => axum::body::Body::empty(),
+                    };
+                    let rate = *named.lock().unwrap();
+                    (
+                        [("content-type", "audio/pcm"), ("x-sample-rate", rate)],
+                        body,
+                    )
+                        .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
+        let speak = |stream: bool| {
+            let state = super::super::WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+                chat: Some(Arc::clone(&w.chat)),
+                offer_target: Some(Arc::new(format!("http://{addr}/api/offer"))),
+                voices_dir: None,
+                stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
+                library: Arc::clone(&library),
+                features_at_start: Arc::default(),
+                gate: Arc::default(),
+                review: Arc::new(super::super::review::ReviewState {
+                    outbox_root: w.root.join("outbox"),
+                    sessions_dir: None,
+                }),
+            };
+            super::super::settings::speak(
+                State(state),
+                Json(super::super::settings::SpeakBody {
+                    text: "The dig went well.".into(),
+                    chat: Some("main".into()),
+                    unlock: None,
+                    voice: None,
+                    speed: None,
+                    listen: None,
+                    stream,
+                }),
+            )
+        };
+
+        tx.send(Ok(axum::body::Bytes::from_static(b"\x01\x00\x02")))
+            .await
+            .unwrap();
+        let r = speak(true).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(seen.lock().unwrap().pop().unwrap()["stream"], true);
+        assert_eq!(r.headers()["content-type"], "audio/pcm");
+        assert_eq!(r.headers()["x-sample-rate"], "24000");
+        assert_eq!(r.headers()["cache-control"], "no-store");
+        let mut body = r.into_body().into_data_stream();
+        // The worker has sent one chunk and holds the rest: a serve that
+        // collected the body would never return this.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+            .await
+            .expect("the first chunk arrived before the stream ended")
+            .unwrap()
+            .unwrap();
+        assert_eq!(&first[..], b"\x01\x00\x02");
+        tx.send(Ok(axum::body::Bytes::from_static(b"\x00")))
+            .await
+            .unwrap();
+        drop(tx);
+        let mut rest = Vec::new();
+        while let Some(chunk) = body.next().await {
+            rest.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(rest, b"\x00");
+
+        // A rate no browser plays is refused, never handed on.
+        *rate.lock().unwrap() = "4";
+        let r = speak(true).await;
+        assert_eq!(r.status(), StatusCode::BAD_GATEWAY);
+
+        // Not asked for, not streamed: the page older than streaming.
+        let r = speak(false).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["content-type"], "audio/wav");
+        assert!(seen.lock().unwrap().pop().unwrap().get("stream").is_none());
+        // Both answers stay out of the browser's cache (review of #555).
+        assert_eq!(r.headers()["cache-control"], "no-store");
     }
 
     /// Listen's director pass (`listen`): a tap on a reply asks the
@@ -9750,6 +9870,7 @@ mod tests {
                         asked: Some("How did the dig go?".into()),
                         last_reply: None,
                     }),
+                    stream: false,
                 }),
             )
         };

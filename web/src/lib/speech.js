@@ -87,19 +87,20 @@ export function speechSentences(text, max = 400) {
 }
 
 /**
- * The pieces the player asks for, in order: the first sentence alone, so
- * speech starts as soon as one sentence is spoken, then the rest grouped up
- * to `max` characters, so each piece is made while the one before plays and
- * the voice does not stop between sentences. Every piece of a reply is
- * spoken with the one direction serve settles for it (Listen's director
- * pass), so grouping changes nothing about how it sounds.
+ * The pieces the player asks for, in order: whole sentences grouped up to
+ * `max` characters. Each piece streams, heard from its first chunk, so a
+ * piece's length no longer decides how soon it is heard — the first is not
+ * cut short to start sooner, which left a one-word opener ("Oh.") to an
+ * engine that invents speech around too little text, and a long second
+ * piece made in silence behind it. The cap keeps a piece inside what the
+ * engine renders whole (a long passage can stop a sentence early). Every
+ * piece of a reply is spoken with the one direction serve settles for it
+ * (Listen's director pass), so grouping changes nothing about how it sounds.
  */
-export function speechPieces(text, max = 400) {
-  const [first, ...rest] = speechSentences(text, max);
-  if (first === undefined) return [];
-  const out = [first];
+export function speechPieces(text, max = 250) {
+  const out = [];
   let cur = '';
-  for (const s of rest) {
+  for (const s of speechSentences(text, max)) {
     if (cur && cur.length + 1 + s.length > max) {
       out.push(cur);
       cur = '';
