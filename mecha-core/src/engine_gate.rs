@@ -101,7 +101,7 @@ impl Launcher {
     }
 }
 
-/// `%h` in a unit, and `$HOME` in what a unit's environment hands a shell.
+/// `%h` in a value read from a unit, as systemd would expand it.
 fn expand_home(v: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     v.replace("%h", &home)
@@ -266,8 +266,12 @@ impl Running {
         while self.exited().is_none() && started.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(200));
         }
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
+        // Only a leader that outlived the grace is killed: once reaped, its
+        // pid — and so the group id — is free for another process to take.
+        if self.exited().is_none() {
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
         }
         let _ = self.child.wait();
         // A child of the group can outlive its leader by a moment.
@@ -545,8 +549,13 @@ async fn ocr_smoke(base: &str) -> Result<()> {
         .await?
         .json()
         .await?;
-    if v["choices"][0]["message"]["content"].as_str().is_none() {
-        bail!("the OCR server answered without a message: {v}");
+    // An empty reply is llama-server's 200-with-nothing, not an answer: a
+    // vision path that broke would otherwise read as passing on both engines.
+    if !v["choices"][0]["message"]["content"]
+        .as_str()
+        .is_some_and(|t| !t.trim().is_empty())
+    {
+        bail!("the OCR server answered without words: {v}");
     }
     Ok(())
 }
@@ -563,6 +572,9 @@ pub enum Smoke {
     NotRun {
         why: String,
     },
+    /// A variant from a newer mecha: read, never counted as passed.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Smoke {
@@ -654,6 +666,9 @@ pub enum Outcome {
         error: String,
         finish: String,
     },
+    /// A variant from a newer mecha: the row still reads.
+    #[serde(other)]
+    Unknown,
 }
 
 pub fn ledger_path(mecha_home: &Path) -> PathBuf {
@@ -672,14 +687,32 @@ pub fn append_ledger(mecha_home: &Path, row: &LedgerRow) -> Result<()> {
     Ok(())
 }
 
-/// The ledger's rows, oldest first; a line this build cannot read is skipped,
-/// as an append-only store's unknown rows are.
-pub fn read_ledger(mecha_home: &Path) -> Vec<LedgerRow> {
-    std::fs::read_to_string(ledger_path(mecha_home))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect()
+/// The ledger's rows, oldest first. Absent is empty; unreadable is an error —
+/// an unreadable record is a finding, never "never measured". A row this
+/// build cannot parse at all is counted in `skipped`, not dropped in silence;
+/// an unknown outcome or smoke variant reads as `Unknown` and keeps its row.
+pub fn read_ledger(mecha_home: &Path) -> Result<Ledger> {
+    let p = ledger_path(mecha_home);
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Ledger::default()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
+    };
+    let mut ledger = Ledger::default();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str(line) {
+            Ok(row) => ledger.rows.push(row),
+            Err(_) => ledger.skipped += 1,
+        }
+    }
+    Ok(ledger)
+}
+
+/// The ledger as read: its rows, and how many lines would not parse.
+#[derive(Debug, Default)]
+pub struct Ledger {
+    pub rows: Vec<LedgerRow>,
+    pub skipped: usize,
 }
 
 /// An engine's `--version` line, for the record.
@@ -859,11 +892,18 @@ pub fn drop_in_text(managed: &Path) -> String {
     )
 }
 
-/// Where a unit's adopt drop-in lives.
-pub fn drop_in_path(home: &Path, unit: &str) -> PathBuf {
-    home.join(".config/systemd/user")
-        .join(format!("{unit}.d"))
-        .join("mecha-engine.conf")
+/// Where a unit's adopt drop-in lives, under the user unit directory systemd
+/// reads — `Machinery::unit_dirs`' first, which honours `XDG_CONFIG_HOME`.
+pub fn drop_in_path(unit_dir: &Path, unit: &str) -> PathBuf {
+    unit_dir.join(format!("{unit}.d")).join("mecha-engine.conf")
+}
+
+/// The user unit directory drop-ins are written into.
+pub fn unit_dir(m: &crate::sidecar::Machinery) -> Result<&Path> {
+    m.unit_dirs
+        .first()
+        .map(PathBuf::as_path)
+        .context("no user unit directory (no XDG config directory) to write a drop-in into")
 }
 
 /// `systemctl --user <verb> <units…>`, named on failure.
@@ -1143,8 +1183,9 @@ async fn promote_adopt(
         let s = s.to_string();
         move |e: anyhow::Error| (s, e)
     };
+    let dir = unit_dir(m).map_err(step("finding the user unit directory"))?;
     for (s, _) in &servers.present {
-        let path = drop_in_path(&m.home, s.unit);
+        let path = drop_in_path(dir, s.unit);
         crate::sidecar::Manifest::record(&m.mecha_home, "llama", &path)
             .map_err(step("recording the drop-ins"))?;
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
@@ -1346,9 +1387,13 @@ mod tests {
             .open(ledger_path(&home))
             .and_then(|mut f| std::io::Write::write_all(&mut f, b"{\"from a newer mecha\": 1}\n"))
             .unwrap();
-        let rows = read_ledger(&home);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], row);
+        let ledger = read_ledger(&home).unwrap();
+        assert_eq!(ledger.rows.len(), 2);
+        assert_eq!(ledger.rows[0], row);
+        assert_eq!(
+            ledger.skipped, 1,
+            "the unparseable line is counted, not hidden"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1367,8 +1412,8 @@ mod tests {
         );
         assert!(!t.contains("%h"), "{t}");
         assert_eq!(
-            drop_in_path(Path::new("/h"), "llama-local.service"),
-            PathBuf::from("/h/.config/systemd/user/llama-local.service.d/mecha-engine.conf")
+            drop_in_path(Path::new("/cfg/systemd/user"), "llama-local.service"),
+            PathBuf::from("/cfg/systemd/user/llama-local.service.d/mecha-engine.conf")
         );
     }
 
@@ -1425,6 +1470,41 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&logs);
+    }
+
+    /// A row from a newer mecha — an outcome or smoke this build does not
+    /// know — still reads, its unknown parts as `Unknown`: the measurement
+    /// history is the record §10.3 accumulates.
+    #[test]
+    fn a_row_with_unknown_variants_still_reads() {
+        let mut v = serde_json::to_value(LedgerRow {
+            at: Utc::now(),
+            action: "upgrade".into(),
+            model: None,
+            old: leg([60.0; 3], [2000.0; 3], &[("chat", Smoke::Passed)]),
+            new: leg([60.0; 3], [2000.0; 3], &[("chat", Smoke::Passed)]),
+            outcome: Outcome::Promoted,
+        })
+        .unwrap();
+        v["outcome"] = serde_json::json!({"outcome": "measured_twice", "n": 2});
+        v["new"]["smoke"]["chat"] = serde_json::json!({"outcome": "flaky"});
+        let row: LedgerRow = serde_json::from_value(v).unwrap();
+        assert_eq!(row.outcome, Outcome::Unknown);
+        assert_eq!(row.new.smoke["chat"], Smoke::Unknown);
+        // An unknown smoke is never a pass.
+        assert!(verdict(&row.old, &row.new).is_err());
+    }
+
+    #[test]
+    fn an_unreadable_ledger_is_an_error_not_never() {
+        let home = std::env::temp_dir().join(format!("mecha-ledger-{}", uuid::Uuid::new_v4()));
+        assert_eq!(read_ledger(&home).unwrap().rows.len(), 0);
+        std::fs::create_dir_all(ledger_path(&home)).unwrap();
+        assert!(
+            read_ledger(&home).is_err(),
+            "a directory where the file should be"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

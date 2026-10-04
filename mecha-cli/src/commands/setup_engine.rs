@@ -35,14 +35,17 @@ fn router_of(cfg: &mecha_core::config::Config) -> (String, Option<String>) {
 
 pub async fn run(
     cfg: &mecha_core::config::Config,
+    json: bool,
     adopt: bool,
     rollback: bool,
     now: bool,
     force: bool,
 ) -> Result<()> {
+    anyhow::ensure!(!json, "`mecha setup engine` has no --json form yet");
     let m = mecha_core::sidecar::Machinery::real()?;
     let (base, model) = router_of(cfg);
     if adopt || rollback {
+        this_machine(&base)?;
         anyhow::ensure!(
             std::io::stdin().is_terminal(),
             "`mecha setup engine --{}` changes what every server runs, so it runs only at a \
@@ -57,6 +60,18 @@ pub async fn run(
         return run_rollback(&m, &base, model.as_deref(), now).await;
     }
     print!("{}", status(&m)?);
+    Ok(())
+}
+
+/// `kind = "local"` is a dialect, not a place: the gate stops and moves this
+/// machine's units, so the router it keys the switch on, reads the resident
+/// model of and asks about afterwards must be this machine's.
+fn this_machine(base: &str) -> Result<()> {
+    anyhow::ensure!(
+        mecha_core::provider::router::is_loopback(base),
+        "the local provider's router is {base}, not this machine — `mecha setup engine` moves \
+         this machine's llama.cpp units, so run it on the machine that serves the model"
+    );
     Ok(())
 }
 
@@ -113,14 +128,25 @@ fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
             ));
         }
     }
-    match gate::read_ledger(&m.mecha_home).last() {
-        Some(row) => out.push_str(&format!(
-            "last measured: {} {} — {}\n",
-            row.at.format("%Y-%m-%d %H:%MZ"),
-            row.action,
-            outcome_text(&row.outcome)
-        )),
-        None => out.push_str("last measured: never\n"),
+    match gate::read_ledger(&m.mecha_home) {
+        Ok(ledger) => {
+            match ledger.rows.last() {
+                Some(row) => out.push_str(&format!(
+                    "last measured: {} {} — {}\n",
+                    row.at.format("%Y-%m-%d %H:%MZ"),
+                    row.action,
+                    outcome_text(&row.outcome)
+                )),
+                None => out.push_str("last measured: never\n"),
+            }
+            if ledger.skipped > 0 {
+                out.push_str(&format!(
+                    "  ({} ledger line(s) this build cannot read)\n",
+                    ledger.skipped
+                ));
+            }
+        }
+        Err(e) => out.push_str(&format!("last measured: unknown — {e:#}\n")),
     }
     if !servers.present.is_empty() && !gate::adopted(&servers, &m.mecha_home) {
         out.push_str(&format!(
@@ -143,6 +169,7 @@ fn outcome_text(o: &Outcome) -> String {
             error,
             finish,
         } => format!("STOPPED PART WAY at {step}: {error} — finish with: {finish}"),
+        Outcome::Unknown => "an outcome this build does not know".into(),
     }
 }
 
@@ -170,6 +197,7 @@ fn render(row: &LedgerRow) -> String {
                 Smoke::Passed => "passed".to_string(),
                 Smoke::Failed { error } => format!("FAILED — {error}"),
                 Smoke::NotRun { why } => format!("not run — {why}"),
+                Smoke::Unknown => "a result this build does not know".into(),
             };
             out.push_str(&format!("  {smoke:<11} {r}\n"));
         }
@@ -232,11 +260,12 @@ async fn run_rollback(
 ) -> Result<()> {
     let base = mecha_core::provider::router::base(base);
     let servers = gate::Servers::read()?;
+    let dir = gate::unit_dir(m)?;
     let adopted: Vec<&'static str> = servers
         .present
         .iter()
         .map(|(s, _)| s.unit)
-        .filter(|u| gate::drop_in_path(&m.home, u).exists())
+        .filter(|u| gate::drop_in_path(dir, u).exists())
         .collect();
     if adopted.is_empty() {
         bail!(
@@ -291,7 +320,7 @@ async fn run_rollback(
     switching.past_the_wait()?;
 
     for unit in &adopted {
-        let path = gate::drop_in_path(&m.home, unit);
+        let path = gate::drop_in_path(dir, unit);
         std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
         mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
     }
@@ -348,6 +377,18 @@ mod tests {
             router_of(&cfg),
             ("http://127.0.0.1:9090/v1".into(), Some("qwen".into()))
         );
+    }
+
+    /// A `local` provider on another host is refused, never measured here
+    /// and moved there.
+    #[test]
+    fn only_this_machine_s_router_is_adopted() {
+        assert!(this_machine("http://127.0.0.1:8080").is_ok());
+        assert!(this_machine("http://localhost:8080/v1").is_ok());
+        let err = this_machine("http://100.64.0.7:8080")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not this machine"), "{err}");
     }
 
     #[test]

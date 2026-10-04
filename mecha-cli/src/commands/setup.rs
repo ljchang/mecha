@@ -81,8 +81,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // `engine` is a reserved noun here, never a feature id (§10.3): it owns
     // the engine's flags and needs no provider answering first.
     if args.feature.as_deref() == Some("engine") {
-        return super::setup_engine::run(&cfg, args.adopt, args.rollback, args.now, args.force)
-            .await;
+        return super::setup_engine::run(
+            &cfg,
+            args.json,
+            args.adopt,
+            args.rollback,
+            args.now,
+            args.force,
+        )
+        .await;
     }
     anyhow::ensure!(
         !args.adopt && !args.rollback,
