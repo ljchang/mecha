@@ -1509,7 +1509,8 @@ pointing it at mecha's engine, the on-demand servers are stopped so their next
 request starts on it, and the router restarts and is asked which engine it runs.
 Otherwise the router restarts on the old engine and nothing changes. Either way
 the result is a row in `~/.mecha/sidecars/llama/ledger.jsonl`. `--force` moves
-the servers whatever the measurement says.
+the servers whatever the measurement says — though not onto an engine that could
+not be measured at all.
 
 The router does not answer while it is measured — a few minutes — so `--adopt`
 asks first, and **declines without measuring** if any run holds the router or
