@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features enable` installs what the feature needs.** It shows the
+  plan, installs on one yes, and switches the feature on only after the
+  install has passed its check. The first installer is layout's: a pinned
+  `uv` (or one already on `PATH`), the Python 3.12 build it fetches, the
+  hash-locked onnxruntime and numpy, and the pinned PP-DocLayoutV3 model, all
+  under `~/.mecha/sidecars/layout/`, where document extraction now looks
+  first. Answering no writes nothing. `--no-install` writes the switch alone.
+  Without a terminal, an enable that would install refuses and says so.
+  Anything already on the machine is left alone.
 - **`mecha features plan <id>` says what a feature would install.** It
   lists every program the feature runs beside mecha — llama.cpp, the router,
   the embeddings and OCR servers, ComfyUI, the voice servers — and whether

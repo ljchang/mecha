@@ -9077,7 +9077,12 @@ the full checklist this grows into as each build step lands.
    no socket, so an idle-stopped server reads provided, never missing), the
    step whose installer brings it, and whether its models live in the hub.
    `mecha features plan <id>` is the read-only answer to what enabling it
-   would install.
+   would install. Its installer, when it has one, goes in `install.rs`: the
+   manifest entry before the first byte (`Manifest::begin`), every path
+   before it is written (`record`), complete only after its health check
+   (`finish`), everything under `~/.mecha/sidecars/<id>/`, and only pinned
+   sources — then `install::installable` names it, and `features enable`
+   offers it.
 
 ## Context, and knowing how much is left
 

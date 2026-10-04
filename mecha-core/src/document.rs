@@ -232,20 +232,39 @@ impl DocumentsConfig {
         self.max_file_mb.saturating_mul(1024 * 1024)
     }
 
-    /// The layout worker's interpreter, configured or defaulted.
+    /// The layout worker's interpreter, configured or defaulted: mecha's own
+    /// install (`sidecars/layout/`, step 7a-3) when it is there, else the one
+    /// `scripts/layout/install.sh` writes.
     pub fn layout_python_path(&self) -> Result<PathBuf> {
         match &self.layout_python {
             Some(p) => Ok(p.clone()),
-            None => Ok(crate::work::mecha_home()?.join("layout/venv/bin/python")),
+            None => Ok(installed_or_legacy(
+                &crate::work::mecha_home()?,
+                "venv/bin/python",
+            )),
         }
     }
 
-    /// The layout model file, configured or defaulted.
+    /// The layout model file, configured or defaulted, the same way.
     pub fn layout_model_path(&self) -> Result<PathBuf> {
         match &self.layout_model {
             Some(p) => Ok(p.clone()),
-            None => Ok(crate::work::mecha_home()?.join("layout/PP-DocLayoutV3.onnx")),
+            None => Ok(installed_or_legacy(
+                &crate::work::mecha_home()?,
+                "PP-DocLayoutV3.onnx",
+            )),
         }
+    }
+}
+
+/// `sidecars/layout/<rel>` when mecha installed layout there, else the
+/// hand-installed `layout/<rel>` — both under the mecha home.
+fn installed_or_legacy(mecha_home: &Path, rel: &str) -> PathBuf {
+    let ours = mecha_home.join("sidecars/layout").join(rel);
+    if std::fs::symlink_metadata(&ours).is_ok() {
+        ours
+    } else {
+        mecha_home.join("layout").join(rel)
     }
 }
 
@@ -2304,6 +2323,25 @@ async fn until_cancelled<F: std::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// mecha's own layout install is found first; the hand install, where
+    /// `scripts/layout/install.sh` puts it, otherwise.
+    #[test]
+    fn a_mecha_installed_layout_is_found_before_the_hand_installed_one() {
+        let home = std::env::temp_dir().join(format!("mecha-doc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join("layout/venv/bin")).unwrap();
+        assert_eq!(
+            installed_or_legacy(&home, "venv/bin/python"),
+            home.join("layout/venv/bin/python")
+        );
+        std::fs::create_dir_all(home.join("sidecars/layout/venv/bin")).unwrap();
+        std::fs::write(home.join("sidecars/layout/venv/bin/python"), "").unwrap();
+        assert_eq!(
+            installed_or_legacy(&home, "venv/bin/python"),
+            home.join("sidecars/layout/venv/bin/python")
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
     use std::sync::{Arc, Mutex};
 
     /// The sandbox's own refusal is ours; anything poppler said is the
