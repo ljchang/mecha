@@ -206,6 +206,63 @@ impl Manifest {
         }
     }
 
+    /// Write the manifest whole, through a temporary file and a rename, so a
+    /// crash leaves the old record or the new one, never half of either.
+    pub fn write(&self, mecha_home: &Path) -> Result<()> {
+        let p = Manifest::path(mecha_home);
+        let dir = p.parent().context("a manifest path with no parent")?;
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join("manifest.json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
+        std::fs::rename(&tmp, &p).with_context(|| format!("writing {}", p.display()))?;
+        Ok(())
+    }
+
+    /// Begin an install: the entry is written, marked incomplete, before the
+    /// first byte (§10.2 item 4), so an interruption reads resumable. A
+    /// finished install run again — a repair — stays finished: its steps
+    /// replace in one rename, so it is never less usable than it was, and
+    /// marking it incomplete would hand extraction to a tree that may not
+    /// exist (`document::layout_tree`).
+    pub fn begin(mecha_home: &Path, id: &str) -> Result<()> {
+        let mut m = Manifest::read(mecha_home)?;
+        match m.entries.iter_mut().find(|e| e.sidecar == id) {
+            Some(_) => {}
+            None => m.entries.push(Entry {
+                sidecar: id.to_string(),
+                incomplete: true,
+                wrote: vec![],
+            }),
+        }
+        m.write(mecha_home)
+    }
+
+    /// Record a path the install is about to write, before writing it.
+    pub fn record(mecha_home: &Path, id: &str, path: &Path) -> Result<()> {
+        let mut m = Manifest::read(mecha_home)?;
+        let e = m
+            .entries
+            .iter_mut()
+            .find(|e| e.sidecar == id)
+            .with_context(|| format!("recording {} before its install began", path.display()))?;
+        if !e.wrote.iter().any(|w| w == path) {
+            e.wrote.push(path.to_path_buf());
+        }
+        m.write(mecha_home)
+    }
+
+    /// The health check passed: the entry is complete.
+    pub fn finish(mecha_home: &Path, id: &str) -> Result<()> {
+        let mut m = Manifest::read(mecha_home)?;
+        let e = m
+            .entries
+            .iter_mut()
+            .find(|e| e.sidecar == id)
+            .with_context(|| format!("finishing {id} before its install began"))?;
+        e.incomplete = false;
+        m.write(mecha_home)
+    }
+
     fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.sidecar == id)
     }
@@ -444,6 +501,15 @@ fn within(named: Feature, f: Feature) -> bool {
     f == named || f.switch_owner() == named
 }
 
+/// The sidecars a feature's plan reads: the ones it or its parts need, and
+/// the shared ones every feature needs. A part resolves to its parent.
+pub fn needed(named: Feature) -> impl Iterator<Item = &'static Sidecar> {
+    let named = named.switch_owner();
+    SIDECARS
+        .iter()
+        .filter(move |s| s.needed_by.is_empty() || s.needed_by.iter().any(|f| within(named, *f)))
+}
+
 /// The plan for a feature (a part resolves to its parent, as `mecha setup
 /// <part>` does): every sidecar it or its parts need, and every pinned model
 /// file the machine's rows name. The shared ones — the engine, the router,
@@ -462,7 +528,7 @@ pub fn plan(
         |needed_by: &[Feature]| needed_by.is_empty() || needed_by.iter().any(|f| within(named, *f));
 
     let mut sidecars = Vec::new();
-    for s in SIDECARS.iter().filter(|s| needs(s.needed_by)) {
+    for s in needed(named) {
         // What the machine shows, read only when mecha's record does not
         // settle it.
         let from_evidence = || {
@@ -921,6 +987,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// begin, record, finish: the entry is written before the first byte,
+    /// each path before it is written, and complete only at the end.
+    #[test]
+    fn an_install_s_record_is_written_ahead_of_its_bytes() {
+        let root = scratch();
+        let home = root.join("home/.mecha");
+        Manifest::begin(&home, "layout").unwrap();
+        let m = Manifest::read(&home).unwrap();
+        assert_eq!(
+            m.entries,
+            vec![Entry {
+                sidecar: "layout".into(),
+                incomplete: true,
+                wrote: vec![]
+            }]
+        );
+        Manifest::record(&home, "layout", &home.join("sidecars/layout")).unwrap();
+        Manifest::record(&home, "layout", &home.join("sidecars/layout")).unwrap();
+        assert_eq!(
+            Manifest::read(&home).unwrap().entries[0].wrote.len(),
+            1,
+            "recorded once"
+        );
+        Manifest::finish(&home, "layout").unwrap();
+        assert!(!Manifest::read(&home).unwrap().entries[0].incomplete);
+        assert!(Manifest::record(&home, "never-begun", &home).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A manifest that cannot be read is an error — never an empty record

@@ -2,9 +2,12 @@
 //! on each of the rest, and `enable` / `disable` to answer the switches
 //! (`docs/FEATURES-DESIGN.md`).
 //!
-//! The human half of [`mecha_core::feature`]. **No network**: the core module
-//! reads the config and the disk, never a server, because several servers
-//! here start the moment they are asked. The switches are written in place
+//! The human half of [`mecha_core::feature`]. **No network for reading**:
+//! the listing, `--probe` and `plan` read the config and the disk, never a
+//! server, because several servers here start the moment they are asked.
+//! `enable` is the one verb that fetches — what a feature needs and this
+//! machine lacks, from pinned sources, on a yes (`mecha_core::install`).
+//! The switches are written in place
 //! into the global `config.toml` (`feature::write_switches`), never through
 //! a rewrite that would drop comments or a newer build's key.
 
@@ -40,6 +43,10 @@ pub enum Cmd {
     Enable {
         #[arg(required = true)]
         ids: Vec<String>,
+        /// Write the switch only: install nothing, even what the feature
+        /// needs and this machine lacks (`mecha features plan <id>` lists it).
+        #[arg(long)]
+        no_install: bool,
     },
     /// Switch features off in the global `config.toml`'s `[features]` table.
     /// Their settings stay, for when they are switched back on.
@@ -63,14 +70,14 @@ pub enum Cmd {
     },
 }
 
-pub fn execute(args: Args) -> Result<()> {
+pub async fn execute(args: Args) -> Result<()> {
     // Checked here, not with clap's `args_conflicts_with_subcommands`: that
     // also refuses the global flags (`mecha features --yes enable graph`).
     if args.probe && args.cmd.is_some() {
         anyhow::bail!("`--probe` reads the machine; it does not go with `enable` or `disable`");
     }
     match args.cmd {
-        Some(Cmd::Enable { ids }) => return set(&ids, true),
+        Some(Cmd::Enable { ids, no_install }) => return enable(&ids, no_install).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         None => {}
@@ -101,6 +108,117 @@ pub fn execute(args: Args) -> Result<()> {
     }
     print!("{}", render(&rows, &feature::announcements(&facts)));
     Ok(())
+}
+
+/// `mecha features enable` (F7, FEATURES-DESIGN.md §10.2 item 3): the plan
+/// for each feature named, and — when a sidecar it needs is missing here and
+/// mecha can install it — the install, on one yes, at a terminal. The switch
+/// is written only after every install and its check succeeded; answering no
+/// writes nothing. Without a terminal, an enable that would install refuses,
+/// naming `--no-install`; one with nothing to install writes the switch as
+/// before.
+async fn enable(ids: &[String], no_install: bool) -> Result<()> {
+    use mecha_core::install;
+    use mecha_core::sidecar::SidecarState;
+    use std::io::IsTerminal;
+
+    let cfg = Config::load_global()?;
+    let features = feature::plan_enable(&cfg, ids).map_err(anyhow::Error::msg)?;
+    // The machine is read only when some sidecar these features need is one
+    // mecha installs: `enable messages` stays a switch write, with no GPU
+    // probe to wait on.
+    let can_install = features
+        .iter()
+        .any(|f| sidecar::needed(*f).any(|s| install::installable(s.id)));
+    if !no_install && can_install {
+        let m = sidecar::Machinery::real()?;
+        let machine = recommend::Machine::read()?;
+        let hub = mecha_core::fetch::hub_dir()?;
+        // (sidecar id, its label, the feature whose plan names it)
+        let mut todo: Vec<(&'static str, &'static str, Feature)> = Vec::new();
+        for f in &features {
+            let p = sidecar::plan(*f, &m, &machine, &hub, false)?;
+            for s in &p.sidecars {
+                // A check that could not run is never installed over — and
+                // never passed over in silence either.
+                if let SidecarState::Unknown { why } = &s.state {
+                    eprintln!(
+                        "mecha: {} could not be checked ({why}); nothing is installed over it",
+                        s.label
+                    );
+                }
+                // Missing or unfinished — or installed, but a model it
+                // serves is gone from the hub (a cleared cache leaves its
+                // link dangling): the install is idempotent, so running it
+                // again fetches only what is missing.
+                let serves = sidecar::SIDECARS
+                    .iter()
+                    .find(|sc| sc.id == s.id)
+                    .map(|sc| sc.serves)
+                    .unwrap_or(&[]);
+                let model_gone = p.files.iter().any(|f| {
+                    serves.contains(&f.slot)
+                        && matches!(f.state, sidecar::FileState::Download { .. })
+                });
+                let wanted = matches!(
+                    s.state,
+                    SidecarState::Missing { .. } | SidecarState::Incomplete
+                ) || (matches!(s.state, SidecarState::Installed) && model_gone);
+                if wanted && install::installable(s.id) && !todo.iter().any(|(id, ..)| *id == s.id)
+                {
+                    todo.push((s.id, s.label, p.feature));
+                }
+            }
+        }
+        if !todo.is_empty() {
+            let names: Vec<&str> = todo.iter().map(|(_, label, _)| *label).collect();
+            let list = names.join(", ");
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!(
+                    "enabling {} would install {list}; run it at a terminal to answer, or pass \
+                     --no-install to write the switch only",
+                    ids.join(" ")
+                );
+            }
+            println!(
+                "Enabling {} installs, from pinned sources into ~/.mecha/sidecars/:",
+                ids.join(" ")
+            );
+            for (_, label, _) in &todo {
+                println!("  {label}");
+            }
+            let mut plans: Vec<&str> = todo.iter().map(|(.., f)| f.id()).collect();
+            plans.sort_unstable();
+            plans.dedup();
+            println!(
+                "(`mecha features plan {}` shows each piece and its size.)",
+                plans.join("` / `mecha features plan ")
+            );
+            print!("Install now? [y/N] ");
+            use std::io::Write;
+            std::io::stdout().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                println!(
+                    "Nothing written. `mecha features enable {} --no-install` writes the switch without installing.",
+                    ids.join(" ")
+                );
+                return Ok(());
+            }
+            for (id, label, _) in &todo {
+                println!("Installing {label}…");
+                install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "installing {label} — nothing was switched on; run the same command again to resume"
+                        )
+                    })?;
+            }
+        }
+    }
+    set(ids, true)
 }
 
 fn set(ids: &[String], on: bool) -> Result<()> {
@@ -301,9 +419,14 @@ fn render_plan(p: &sidecar::Plan) -> String {
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
             SidecarState::Installed => "installed by mecha".to_string(),
-            SidecarState::Incomplete => {
-                "an install mecha began and did not finish — resumable".to_string()
-            }
+            SidecarState::Incomplete => format!(
+                "an install mecha began and did not finish — `mecha features enable {}` resumes it",
+                p.feature.id()
+            ),
+            SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
+                "not here — `mecha features enable {}` installs it",
+                p.feature.id()
+            ),
             SidecarState::Missing { step } => {
                 format!("not here — its installer arrives in step {step}")
             }
