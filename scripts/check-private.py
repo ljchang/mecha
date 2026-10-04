@@ -14,6 +14,8 @@ phrases kept in the repository, which would itself be the leak:
   message's text, thinking, tool calls and tool results, and each spoken
   sentence;
 - every voice session (`~/.mecha/sessions/*.jsonl` with `kind = "voice"`);
+- every persona's memory (`memory.db`): the facts and episodes written from
+  its chats, which are paraphrases rather than quotations;
 - the voice worker's journal lines that carried words (until #547 stopped
   them).
 
@@ -120,6 +122,30 @@ def read_journal():
     return r.stdout
 
 
+def read_memory(db):
+    """Every recallable fact and episode a persona's memory holds
+    (`personas/<name>/memory.db`): model-written paraphrases of its chats,
+    which need not appear verbatim in any transcript (review of #557).
+    `recall_fts` indexes all of them; an older store without it is read
+    column by column. A store that exists and cannot be read is refused."""
+    import sqlite3
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        if "recall_fts" in tables:
+            return [r[0] for r in con.execute("SELECT text FROM recall_fts") if isinstance(r[0], str)]
+        out = []
+        for t in tables:
+            if t.startswith(("sqlite_", "recall_fts", "vectors")):
+                continue
+            for row in con.execute(f'SELECT * FROM "{t}"'):
+                out.extend(v for v in row if isinstance(v, str) and " " in v)
+        return out
+    except sqlite3.Error as e:
+        print(f"check-private: the persona memory {db} could not be read ({e}); refusing rather than passing unread.")
+        sys.exit(2)
+
+
 def corpus():
     """(shingles, short phrases, session ids, persona names) from ~/.mecha."""
     said = []
@@ -158,6 +184,8 @@ def corpus():
                     said.extend(spoken(json.loads(line)))
                 except ValueError:
                     continue
+    for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
+        said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets
     # CHECK_PRIVATE_JOURNAL=0 and reads only the store it built.
     if os.environ.get("CHECK_PRIVATE_JOURNAL", "1") == "0":

@@ -45,8 +45,12 @@ fi
 # No persona chat or voice call words in this public repository (owner's
 # ruling, 2026-10-04). Compared against the conversations in ~/.mecha, never a
 # phrase list kept here; passes on a machine with none. `scripts/check-private.py`
-# says why. Not skippable by intent: a WIP commit is still a commit that can
-# be pushed, and the pre-push hook runs the same check over what leaves.
+# says why. A --no-verify commit is still checked by the pre-push hook over
+# what leaves (which `git push --no-verify` would skip in turn).
 if command -v python3 >/dev/null 2>&1 && [ -f scripts/check-private.py ]; then
     python3 scripts/check-private.py --staged || exit 1
+elif [ "$CHECK_PRIVATE_REQUIRE" = 1 ]; then
+    # Required here, and it cannot run: refuse, never pass quietly.
+    echo "check-private: CHECK_PRIVATE_REQUIRE=1 but python3 or scripts/check-private.py is missing; refusing."
+    exit 1
 fi
