@@ -35,7 +35,8 @@ is written by the model on a spoken turn (ruling D1, 2026-10-03). It is capped
 in length and stripped of control characters here; it never becomes text that
 is spoken.
 
-**Text with no letter or digit in it is a pause, never sent to the engine.**
+**Text with nothing to say (no letter or digit outside a vocal-event tag)
+is a pause, never sent to the engine.**
 Given nothing to say, Breeze invents something: measured on the real engine
 (2026-10-03), "." came back as "Um", "Yeah", or the voice clip's own sentence
 read whole; "..." as fifteen seconds of babble or a phrase in Ukrainian; "?!"
