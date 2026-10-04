@@ -235,14 +235,34 @@ pub fn choose(os: &str, arch: &str, nvidia: Nvidia) -> std::result::Result<Targe
     }
 }
 
-/// Read the driver: `nvidia-smi` when it answers, else whether the kernel
-/// module shows a device at all.
+/// Read the driver: `nvidia-smi` when it answers, else whether the machine
+/// shows an NVIDIA GPU at all — the kernel module's `/proc/driver/nvidia`, or,
+/// with no module loaded, an NVIDIA display device on the PCI bus. Without
+/// the second, a card whose driver tools are missing would read as no card
+/// and be handed the CPU build.
 pub fn read_nvidia() -> Nvidia {
     match crate::recommend::nvidia_smi("driver_version") {
         Some(text) => parse_driver(&text).map_or(Nvidia::Unread, |(a, b)| Nvidia::Driver(a, b)),
-        None if Path::new("/proc/driver/nvidia").exists() => Nvidia::Unread,
+        None if Path::new("/proc/driver/nvidia").exists()
+            || pci_nvidia_display(Path::new("/sys/bus/pci/devices")) =>
+        {
+            Nvidia::Unread
+        }
         None => Nvidia::None,
     }
+}
+
+/// Whether any PCI device under `root` is NVIDIA's (vendor `0x10de`) and a
+/// display controller (class `0x03xxxx`) — a GPU, not one of the PCIe
+/// bridges NVIDIA also makes (`0x0604xx`, which a GB10 shows six of).
+fn pci_nvidia_display(root: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    entries.filter_map(|e| e.ok()).any(|e| {
+        let read = |f: &str| std::fs::read_to_string(e.path().join(f)).unwrap_or_default();
+        read("vendor").trim() == "0x10de" && read("class").trim().starts_with("0x03")
+    })
 }
 
 /// `580.173.02` → (580, 173). Several cards share one driver; the first line
@@ -253,6 +273,11 @@ fn parse_driver(text: &str) -> Option<(u32, u32)> {
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().unwrap_or("0").parse().ok()?;
     Some((major, minor))
+}
+
+/// What installing the pinned engine for a target downloads, in bytes.
+pub fn download_bytes(target: Target) -> u64 {
+    asset(target).map_or(0, |a| a.archives.iter().map(|(_, _, b)| b).sum())
 }
 
 /// The pinned asset for a target.
@@ -345,17 +370,20 @@ async fn install_target(m: &Machinery, target: Target, say: Say<'_>) -> Result<P
                 bail!("tar could not unpack {}", archive.display());
             }
         }
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
-        }
-        std::fs::rename(&part, &dir)?;
-        let _ = std::fs::remove_dir_all(&downloads);
+        // Checked where it was unpacked — `$ORIGIN` makes the checks the same
+        // under either name — so a build that fails them never replaces one
+        // that passed, and a repair is never less usable than what it repairs.
         say(&format!(
             "checking llama.cpp {} ({})",
             PIN.tag,
             target.label()
         ));
-        health(&dir, target)?;
+        health(&part, target)?;
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
+        }
+        std::fs::rename(&part, &dir)?;
+        let _ = std::fs::remove_dir_all(&downloads);
     }
 
     // The link names the build by its directory's name, relative, so the
@@ -388,6 +416,15 @@ fn health(dir: &Path, target: Target) -> Result<()> {
     if cfg!(target_os = "linux") {
         self_contained(dir)?;
     }
+    // The CUDA runtime is the second archive's whole contribution, and a
+    // machine with its own CUDA would load that one without a word — so its
+    // presence is checked, not inferred from the engine starting.
+    if target.label().starts_with("CUDA") && !ships_cudart(dir) {
+        bail!(
+            "{} has no libcudart beside the engine — the CUDA runtime archive did not land",
+            dir.display()
+        );
+    }
     let version = engine_output(&server, "--version")?;
     let short = &PIN.commit[..9];
     if !version.contains(&format!("build {}", PIN.build)) || !version.contains(short) {
@@ -413,15 +450,49 @@ fn health(dir: &Path, target: Target) -> Result<()> {
     Ok(())
 }
 
+fn ships_cudart(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("libcudart.so"))
+    })
+}
+
+/// How long one check may take. `--list-devices` brings up the GPU backend,
+/// which is what a wedged driver hangs on; past this it is a named failure,
+/// never a silent wait.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Run the engine with one flag and the library path cleared: the libraries
 /// beside it, found through `$ORIGIN`, are the ones it must load.
 fn engine_output(server: &Path, flag: &str) -> Result<String> {
-    let out = std::process::Command::new(server)
+    run_within(server, flag, CHECK_TIMEOUT)
+}
+
+fn run_within(server: &Path, flag: &str, limit: std::time::Duration) -> Result<String> {
+    let mut child = std::process::Command::new(server)
         .arg(flag)
         .env_remove("LD_LIBRARY_PATH")
         .env_remove("DYLD_LIBRARY_PATH")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .with_context(|| format!("starting {}", server.display()))?;
+    let started = std::time::Instant::now();
+    while child.try_wait()?.is_none() {
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "`{} {flag}` did not answer within {} s — a GPU driver that hangs when the \
+                 engine brings it up; nothing was switched on",
+                server.display(),
+                limit.as_secs_f32()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output()?;
     // llama.cpp writes these to stderr; either stream will do.
     let text = format!(
         "{}{}",
@@ -668,6 +739,73 @@ mod tests {
             let err = choose("linux", arch, Nvidia::Unread).unwrap_err();
             assert!(err.contains("nvidia-smi"), "{err}");
         }
+    }
+
+    /// A GPU with no driver tools is still a GPU: seen on the PCI bus as
+    /// NVIDIA's display class, never confused with NVIDIA's PCIe bridges.
+    #[test]
+    fn an_nvidia_display_device_is_seen_on_the_bus() {
+        let root = std::env::temp_dir().join(format!("mecha-pci-{}", uuid::Uuid::new_v4()));
+        let dev = |name: &str, vendor: &str, class: &str| {
+            let d = root.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("vendor"), format!("{vendor}\n")).unwrap();
+            std::fs::write(d.join("class"), format!("{class}\n")).unwrap();
+        };
+        dev("0000:00:00.0", "0x10de", "0x060400");
+        dev("0001:00:00.0", "0x8086", "0x030000");
+        assert!(!pci_nvidia_display(&root), "a bridge and an Intel GPU");
+        dev("000f:01:00.0", "0x10de", "0x030000");
+        assert!(pci_nvidia_display(&root));
+        assert!(!pci_nvidia_display(&root.join("absent")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A CUDA build without its runtime beside it is refused: on a machine
+    /// with its own CUDA it would start, loading a runtime nobody pinned.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cuda_build_without_its_runtime_is_refused() {
+        let dir = std::env::temp_dir().join(format!("mecha-cudart-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("llama-server"), "#!/bin/sh\n").unwrap();
+        let err = health(&dir, Target::LinuxArm64Cuda13)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("libcudart"), "{err}");
+        std::fs::write(dir.join("libcudart.so.13"), "").unwrap();
+        assert!(ships_cudart(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A check that never answers is a named failure, not a wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_check_that_hangs_is_cut_off() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mecha-hang-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let server = dir.join("llama-server");
+        std::fs::write(&server, "#!/bin/sh\nexec sleep 600\n").unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = run_within(
+            &server,
+            "--list-devices",
+            std::time::Duration::from_millis(300),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("did not answer"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_download_is_the_sum_of_the_target_s_archives() {
+        assert_eq!(
+            download_bytes(Target::LinuxArm64Cuda13),
+            147_596_012 + 552_521_398
+        );
+        assert_eq!(download_bytes(Target::LinuxX64Cpu), 17_637_234);
     }
 
     #[test]

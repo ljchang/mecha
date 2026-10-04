@@ -472,6 +472,10 @@ pub struct PlannedSidecar {
     pub id: &'static str,
     pub label: &'static str,
     pub state: SidecarState,
+    /// What installing it downloads, where that is known before the install
+    /// (`install::price`): the engine's pinned archives for this machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -615,6 +619,7 @@ pub fn plan(
             id: s.id,
             label: s.label,
             state,
+            bytes: None,
         });
     }
 

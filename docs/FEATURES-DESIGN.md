@@ -1379,7 +1379,12 @@ pin that sits:
   (a tag is a label; a rollback and an audit need the build), and the units
   name a `current` link, so an upgrade is a new directory and
   a link swap, and the previous one stays for `--rollback` (today's `.prev`
-  copy, made structural).
+  copy, made structural). **A plan does not run the engine**, so a build
+  directory emptied by hand still reads installed from the record, and the
+  engine's install — which fetches no model — is never re-offered for a
+  missing one; the build's own health check (`engine::health`) is what
+  would find it, and putting that check where an owner meets it is `doctor`'s
+  work in 7c.
 - **`mecha setup engine --upgrade [--to <tag>]`** fetches or builds the new
   engine (`engine` is a reserved noun in `setup`'s feature position, never a
   feature id), then **measures before it promotes**. The measurement loads

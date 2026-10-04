@@ -133,10 +133,12 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         let m = sidecar::Machinery::real()?;
         let machine = recommend::Machine::read()?;
         let hub = mecha_core::fetch::hub_dir()?;
-        // (sidecar id, its label, the feature whose plan names it)
-        let mut todo: Vec<(&'static str, &'static str, Feature)> = Vec::new();
+        // (sidecar id, its label, the feature whose plan names it, its
+        // download where known before installing)
+        let mut todo: Vec<(&'static str, &'static str, Feature, Option<u64>)> = Vec::new();
         for f in &features {
-            let p = sidecar::plan(*f, &m, &machine, &hub, false)?;
+            let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
+            install::price(&mut p, chat_here, mecha_core::engine::read_nvidia);
             // A check that could not run is never installed over — and
             // never passed over in silence either.
             for s in &p.sidecars {
@@ -149,12 +151,12 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
             for s in install::offered(&p, chat_here) {
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
-                    todo.push((s.id, s.label, p.feature));
+                    todo.push((s.id, s.label, p.feature, s.bytes));
                 }
             }
         }
         if !todo.is_empty() {
-            let names: Vec<&str> = todo.iter().map(|(_, label, _)| *label).collect();
+            let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
             if !std::io::stdin().is_terminal() {
                 anyhow::bail!(
@@ -167,14 +169,17 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 "Enabling {} installs, from pinned sources into ~/.mecha/sidecars/:",
                 ids.join(" ")
             );
-            for (_, label, _) in &todo {
-                println!("  {label}");
+            for (_, label, _, bytes) in &todo {
+                match bytes {
+                    Some(b) => println!("  {label} — {}", bytes_text(*b)),
+                    None => println!("  {label}"),
+                }
             }
-            let mut plans: Vec<&str> = todo.iter().map(|(.., f)| f.id()).collect();
+            let mut plans: Vec<&str> = todo.iter().map(|(_, _, f, _)| f.id()).collect();
             plans.sort_unstable();
             plans.dedup();
             println!(
-                "(`mecha features plan {}` shows each piece and its size.)",
+                "(`mecha features plan {}` shows each piece, and the models and engine to download.)",
                 plans.join("` / `mecha features plan ")
             );
             print!("Install now? [y/N] ");
@@ -189,7 +194,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 );
                 return Ok(());
             }
-            for (id, label, _) in &todo {
+            for (id, label, ..) in &todo {
                 println!("Installing {label}…");
                 install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
                     .await
@@ -370,23 +375,19 @@ fn notice_line(announced: &[feature::Announcement]) -> Option<String> {
 fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     let f = Feature::parse(id)
         .with_context(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
-    let p = sidecar::plan(
+    let mut p = sidecar::plan(
         f,
         &sidecar::Machinery::real()?,
         &recommend::Machine::read()?,
         &mecha_core::fetch::hub_dir()?,
         verify,
     )?;
+    let chat_here = mecha_core::install::chat_runs_here(&Config::load_global()?);
+    mecha_core::install::price(&mut p, chat_here, mecha_core::engine::read_nvidia);
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
-        print!(
-            "{}",
-            render_plan(
-                &p,
-                mecha_core::install::chat_runs_here(&Config::load_global()?)
-            )
-        );
+        print!("{}", render_plan(&p, chat_here));
     }
     Ok(())
 }
@@ -429,6 +430,10 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                 format!("not here — its installer arrives in step {step}")
             }
             SidecarState::Unknown { why } => format!("unknown — {why}; nothing is offered over it"),
+        };
+        let state = match s.bytes {
+            Some(b) => format!("{state} ({} to download)", bytes_text(b)),
+            None => state,
         };
         out.push_str(&format!("  {:<32} {state}\n", s.label));
     }
@@ -837,11 +842,13 @@ mod tests {
                     state: SidecarState::Provided {
                         by: "x on PATH".into(),
                     },
+                    bytes: None,
                 },
                 PlannedSidecar {
                     id: "ocr-server",
                     label: "the OCR server",
                     state: SidecarState::Missing { step: "7c" },
+                    bytes: None,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -849,6 +856,7 @@ mod tests {
                     state: SidecarState::Unknown {
                         why: "denied".into(),
                     },
+                    bytes: None,
                 },
             ],
             files: vec![
