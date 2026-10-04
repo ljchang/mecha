@@ -15,6 +15,11 @@
 //! check ([`Manifest::finish`]) — so an interrupted install reads resumable,
 //! and running it again carries on.
 //!
+//! **The lock, not the index, is the control.** `uv pip install` honours
+//! whatever package index the environment names (`UV_INDEX_URL`,
+//! `PIP_INDEX_URL`); `--require-hashes` makes that harmless, since a file
+//! whose sha256 is not in the lock is refused wherever it came from.
+//!
 //! **One tree per install.** Layout's environment, the Python under it and
 //! uv's cache all live in `~/.mecha/sidecars/layout/`, so removing it removes
 //! everything it put there, and the confined worker's readable roots (the
@@ -108,12 +113,8 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     }
     let dir = sidecars.join("uv");
     let bin = dir.join("uv");
-    if bin.is_file()
-        && Manifest::read(&m.mecha_home)?
-            .entries
-            .iter()
-            .any(|e| e.sidecar == "uv" && !e.incomplete)
-    {
+    // Ask the cached binary, not the record: a later pin must replace it.
+    if bin.is_file() && uv_version(&bin).is_some_and(|v| v.contains(UV_VERSION)) {
         return Ok(bin);
     }
     let target =
@@ -147,8 +148,7 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     if !status.success() {
         bail!("tar could not unpack {}", archive.display());
     }
-    let out = std::process::Command::new(&bin).arg("--version").output()?;
-    let version = String::from_utf8_lossy(&out.stdout);
+    let version = uv_version(&bin).unwrap_or_default();
     if !version.contains(UV_VERSION) {
         bail!(
             "the unpacked uv reports `{}`, not {UV_VERSION}",
@@ -159,6 +159,17 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     let _ = std::fs::remove_dir_all(dir.join("download"));
     Manifest::finish(&m.mecha_home, "uv")?;
     Ok(bin)
+}
+
+/// `uv --version`, or `None` when it cannot be run.
+fn uv_version(bin: &Path) -> Option<String> {
+    let out = std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Where mecha installs layout, and what `document.rs` finds there.
@@ -321,11 +332,23 @@ mod tests {
         }
     }
 
+    /// What `install` can install and what the registry says arrives in a
+    /// later step agree: an installable sidecar is a registered one whose step
+    /// is this one.
     #[test]
-    fn only_layout_is_installable_and_it_is_a_registered_sidecar() {
+    fn installable_and_the_registry_agree() {
         assert!(installable("layout"));
         assert!(!installable("comfyui"));
         assert!(crate::sidecar::SIDECARS.iter().any(|s| s.id == "layout"));
+        for s in crate::sidecar::SIDECARS {
+            if installable(s.id) {
+                assert_eq!(
+                    s.installer, "7a-3",
+                    "{} is installable but its step says {}",
+                    s.id, s.installer
+                );
+            }
+        }
     }
 
     fn which_bwrap() -> bool {

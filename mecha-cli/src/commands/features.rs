@@ -384,9 +384,10 @@ fn render_plan(p: &sidecar::Plan) -> String {
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
             SidecarState::Installed => "installed by mecha".to_string(),
-            SidecarState::Incomplete => {
-                "an install mecha began and did not finish — resumable".to_string()
-            }
+            SidecarState::Incomplete => format!(
+                "an install mecha began and did not finish — `mecha features enable {}` resumes it",
+                p.feature.id()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()

@@ -155,11 +155,13 @@ pub struct DocumentsConfig {
     /// §5). Off, every page is read whole — labelled so.
     pub layout: bool,
     /// The Python interpreter whose environment has `onnxruntime` and
-    /// `numpy`. Default `~/.mecha/layout/venv/bin/python`, which
+    /// `numpy`. Default: mecha's own install, `~/.mecha/sidecars/layout/venv/bin/python`,
+    /// when its record says it finished, else `~/.mecha/layout/venv/bin/python`, which
     /// `scripts/layout/install.sh` creates.
     pub layout_python: Option<PathBuf>,
-    /// PP-DocLayoutV3's ONNX export. Default
-    /// `~/.mecha/layout/PP-DocLayoutV3.onnx`.
+    /// PP-DocLayoutV3's ONNX export. Default: from the same tree as the
+    /// interpreter — `~/.mecha/sidecars/layout/` when mecha's install
+    /// finished, else `~/.mecha/layout/PP-DocLayoutV3.onnx`.
     pub layout_model: Option<PathBuf>,
     /// CPU threads for the layout model (it never touches the GPU).
     pub layout_threads: u32,
@@ -238,10 +240,7 @@ impl DocumentsConfig {
     pub fn layout_python_path(&self) -> Result<PathBuf> {
         match &self.layout_python {
             Some(p) => Ok(p.clone()),
-            None => Ok(installed_or_legacy(
-                &crate::work::mecha_home()?,
-                "venv/bin/python",
-            )),
+            None => Ok(layout_tree(&crate::work::mecha_home()?).join("venv/bin/python")),
         }
     }
 
@@ -249,22 +248,29 @@ impl DocumentsConfig {
     pub fn layout_model_path(&self) -> Result<PathBuf> {
         match &self.layout_model {
             Some(p) => Ok(p.clone()),
-            None => Ok(installed_or_legacy(
-                &crate::work::mecha_home()?,
-                "PP-DocLayoutV3.onnx",
-            )),
+            None => Ok(layout_tree(&crate::work::mecha_home()?).join("PP-DocLayoutV3.onnx")),
         }
     }
 }
 
-/// `sidecars/layout/<rel>` when mecha installed layout there, else the
-/// hand-installed `layout/<rel>` — both under the mecha home.
-fn installed_or_legacy(mecha_home: &Path, rel: &str) -> PathBuf {
-    let ours = mecha_home.join("sidecars/layout").join(rel);
-    if std::fs::symlink_metadata(&ours).is_ok() {
-        ours
+/// The one tree both layout paths come from: `sidecars/layout/` when mecha's
+/// record says its layout install *finished*, else the hand-installed
+/// `layout/`. Decided once, from the record rather than the disk — a
+/// half-finished install (its venv made, its packages not) must never shadow
+/// a working hand install, and the interpreter and the model must never come
+/// from two trees. An unreadable record is not a finished install.
+fn layout_tree(mecha_home: &Path) -> PathBuf {
+    let finished = crate::sidecar::Manifest::read(mecha_home)
+        .map(|m| {
+            m.entries
+                .iter()
+                .any(|e| e.sidecar == "layout" && !e.incomplete)
+        })
+        .unwrap_or(false);
+    if finished {
+        mecha_home.join("sidecars/layout")
     } else {
-        mecha_home.join("layout").join(rel)
+        mecha_home.join("layout")
     }
 }
 
@@ -2328,18 +2334,27 @@ mod tests {
     /// `scripts/layout/install.sh` puts it, otherwise.
     #[test]
     fn a_mecha_installed_layout_is_found_before_the_hand_installed_one() {
+        use crate::sidecar::{Entry, Manifest};
         let home = std::env::temp_dir().join(format!("mecha-doc-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(home.join("layout/venv/bin")).unwrap();
-        assert_eq!(
-            installed_or_legacy(&home, "venv/bin/python"),
-            home.join("layout/venv/bin/python")
-        );
         std::fs::create_dir_all(home.join("sidecars/layout/venv/bin")).unwrap();
-        std::fs::write(home.join("sidecars/layout/venv/bin/python"), "").unwrap();
-        assert_eq!(
-            installed_or_legacy(&home, "venv/bin/python"),
-            home.join("sidecars/layout/venv/bin/python")
-        );
+        // A tree on disk, but no record: the hand install.
+        assert_eq!(layout_tree(&home), home.join("layout"));
+        // Recorded and unfinished — interrupted mid-install: still the hand
+        // install, never the half-made tree.
+        let mut m = Manifest {
+            entries: vec![Entry {
+                sidecar: "layout".into(),
+                incomplete: true,
+                wrote: vec![],
+            }],
+        };
+        m.write(&home).unwrap();
+        assert_eq!(layout_tree(&home), home.join("layout"));
+        // Finished: mecha's own, for both paths.
+        m.entries[0].incomplete = false;
+        m.write(&home).unwrap();
+        assert_eq!(layout_tree(&home), home.join("sidecars/layout"));
         let _ = std::fs::remove_dir_all(&home);
     }
     use std::sync::{Arc, Mutex};
