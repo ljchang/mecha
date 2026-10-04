@@ -82,6 +82,9 @@ for (const pane of panes) {
   // once the track exists.
   const start = readOut(pane.start);
   is(/\.connect\(\)\s*\.then\(applyMic\)\s*\.catch\(/.test(start), true, `${pane.file}: a (re)connected session gets the mic the page shows`);
+  if (pane.hold) {
+    is(/\baway = false;/.test(start), true, `${pane.file}: a new call starts with no edit's hold on its mic`);
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -127,7 +127,9 @@ is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', '
   const fs = await import('node:fs');
   const call = fs.readFileSync(new URL('../src/lib/PersonaCall.svelte', import.meta.url), 'utf8');
   const markup = call.slice(call.indexOf('</script>'));
-  is(/target=["']_blank|window\.open\(/.test(markup), false, 'the call screen opens nothing outside its page');
+  // Any link, not only a new tab: a same-tab link navigates the call page away
+  // and drops the call just as dead (review of #552).
+  is(/target=["']_blank|window\.open\(|href=/.test(markup), false, 'the call screen opens nothing outside its page');
   is(/onclick=\{download\}/.test(markup) && /onclick=\{edit\}/.test(markup), true, 'the in-call viewer offers Download and Edit');
 }
 
