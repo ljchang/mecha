@@ -683,6 +683,8 @@ class LinkWatch(FrameProcessor):
 import time as _time
 
 from echo_filter import BotSpeech, echo_rms, overlapped
+import journal
+from journal import withheld
 
 
 # The energy floor while our own speaker is playing.
@@ -968,10 +970,10 @@ class ParakeetSTT(SegmentGatedSTT):
         logger.debug(
             f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
             f"over_speaker={echoey} segment_start={segment_started_at} "
-            f"text={spoken_words(text, 100)}"
+            f"text={withheld(text)}"
         )
         if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
-            logger.debug(f"parakeet echo filter: {spoken_words(text, 60)} over_speaker={echoey}")
+            logger.debug(f"parakeet echo filter: {withheld(text)} over_speaker={echoey}")
             return Transcription(text="")
         return Transcription(text=text)
 
@@ -1350,8 +1352,18 @@ class LocalTTS(OpenAITTSService):
         return direction
 
     async def run_tts(self, text: str, context_id: str):
+        from loguru import logger
         from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
+        # What pipecat's `Generating TTS [...]` line used to give a timing
+        # study, without the words: when each sentence went to the TTS, and
+        # how long it was (`journal`; review of #547). Paired with the kept
+        # `_bot_started_speaking`/`_bot_stopped_speaking` lines, it gives
+        # characters per second of real playback. Not for an incognito call,
+        # by this file's rule for per-sentence lines (`direction_for`); the
+        # timing study is taken from ordinary calls (review of #547).
+        if not names_incognito(self._affect_key):
+            logger.debug(f"tts: {withheld(text)}")
         try:
             # `on_turn_context_created` always fires before `run_tts` for a
             # given context per the base class's own contract, so the
@@ -2057,7 +2069,7 @@ class UplinkAudio:
             return
         prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
         logger.info(
-            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{spoken_words(text, 80)}"
+            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{withheld(text)}"
         )
         if self.deliver is not None:
             # Handed to the call's one consumer of turns, and awaited: the
@@ -2127,7 +2139,14 @@ class UplinkAudio:
 # logger's core, not on a sink, because `pipecat.runner.run` calls
 # `logger.remove()` and adds its own sink, and a filter on ours would be
 # thrown away with it, silently. This file's own lines that carry words keep
-# their measurements and lose the words (`spoken_words`).
+# their measurements and lose the words (`journal.withheld`).
+#
+# Every call, incognito or not, also runs with `journal.install`'s sink, which
+# drops pipecat's text-bearing DEBUG lines (the `services` family). That is a
+# sink filter, and it holds only because it is installed after the runner's
+# one reset in `main()`: at server start (`install`'s lifespan) and again at
+# the top of each `run_bot`. The incognito silence above stays at the core
+# regardless, so a call into an incognito chat never depends on the sink.
 #
 # Process-wide on purpose: an ordinary call running beside an incognito one
 # loses all of pipecat's lines for the overlap, warnings and errors included.
@@ -2466,7 +2485,16 @@ def install(app) -> None:
     `GET /mecha/unlogged` is the vouch `mecha serve` asks for before it
     forwards an offer naming an incognito chat: a worker that predates the
     silence has no such route, so it is never handed the offer - never the
-    chat's key, never a word (`serve::forward_offer`, review of #376)."""
+    chat's key, never a word (`serve::forward_offer`, review of #376).
+
+    It also puts the journal sink in place at server start (`journal`):
+    composed into the app's lifespan the way pipecat composes its own, so it
+    runs after `main()` has replaced loguru's handlers with an unfiltered
+    DEBUG one. `run_bot` installs it again per call, so a start that skipped
+    the lifespan still keeps words out of every call."""
+    from loguru import logger as _logger
+
+    app.router.lifespan_context = journal.lifespan(app.router.lifespan_context, _logger, sys.stderr)
 
     @app.get("/mecha/unlogged")
     async def unlogged():
@@ -2730,9 +2758,8 @@ class TypedTurns:
                 if await self._until(False, self._end_secs, yield_to_late=True, ahead=True) is None:
                     self._typed.appendleft(text)
                     continue
-                # The words go to the journal only through `spoken_words`, so
-                # an incognito call keeps none of them.
-                self._log(f"voice typed turn: {spoken_words(text, 80)}")
+                # Never the words: the journal keeps their length (`journal`).
+                self._log(f"voice typed turn: {withheld(text)}")
                 await self._push(text)
                 self._pushed()
                 await self._answered()
@@ -2745,20 +2772,15 @@ class TypedTurns:
                 self._log(f"voice typed turn failed: {e.__class__.__name__}")
 
 
-def spoken_words(text: str, limit: int) -> str:
-    """Words for a log line: the first `limit` characters, or a placeholder
-    while any incognito call is live. The rest of the line - durations, RMS,
-    over-speaker - is a measurement and stays."""
-    if UNLOGGED.active:
-        return "<withheld: an incognito call is live>"
-    return repr(text[:limit])
-
-
 # `named` is required, with no default: a second caller that forgot it would
 # silently lose the chat binding - and an incognito call its silence - rather
 # than fail.
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None,
                   bound: dict | None):
+    from loguru import logger as _logger
+
+    # Before anything in the call can log: words never reach the journal.
+    journal.install(_logger, sys.stderr)
     LoopSampler.start()
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     # A persona call's voice is bound here, at construction, so its first
