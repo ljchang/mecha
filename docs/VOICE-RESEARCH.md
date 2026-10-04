@@ -1163,7 +1163,7 @@ number was wrong:
 | 0.0124 | `''` | silence |
 | 0.0141 | "The garden." | a real turn |
 | 0.0201 | "What's the weather like today?" | a real turn |
-| **0.0257** | "The museum pass [removed]." | **echo** |
+| **0.0257** | "The museum pass costs one hundred forty nine dollars." | **echo** |
 | 0.0311 | "Yeah." | a real turn |
 | 0.0457–0.0774 | | real turns |
 
