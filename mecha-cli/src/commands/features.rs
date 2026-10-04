@@ -136,9 +136,13 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         // (sidecar id, its label, the feature whose plan names it, its
         // download where known before installing)
         let mut todo: Vec<(&'static str, &'static str, Feature, Option<u64>)> = Vec::new();
+        // The driver, read once for the whole command and only if some plan
+        // would install the engine.
+        let nvidia = std::cell::OnceCell::new();
+        let read_nvidia = || *nvidia.get_or_init(mecha_core::engine::read_nvidia);
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
-            install::price(&mut p, chat_here, mecha_core::engine::read_nvidia);
+            install::price(&mut p, chat_here, read_nvidia);
             // A check that could not run is never installed over — and
             // never passed over in silence either.
             for s in &p.sidecars {
@@ -154,6 +158,17 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
             }
+        }
+        // A machine no pinned build fits is told so before it is asked
+        // anything: the answer is to fix the driver, not to say yes.
+        if todo.iter().any(|(id, ..)| *id == "llama") {
+            mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())
+                .map_err(|why| {
+                    anyhow::anyhow!(
+                        "enabling {} needs the llama.cpp engine, and {why}",
+                        ids.join(" ")
+                    )
+                })?;
         }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
