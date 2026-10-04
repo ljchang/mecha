@@ -9189,7 +9189,14 @@ the full checklist this grows into as each build step lands.
    before it is written (`record`), complete only after its health check
    (`finish`), everything under `~/.mecha/sidecars/<id>/`, and only pinned
    sources — then `install::installable` names it, and `features enable`
-   offers it.
+   offers it (the engine's, larger, is `engine.rs`). A **shared** sidecar —
+   empty `needed_by`, in every plan because chat runs on it — is offered only
+   where `install::not_needed` says it runs something: the chat model here,
+   or the feature's own embeddings or OCR server; a machine that chats
+   through a hosted provider is never handed the engine for `enable
+   messages`. And an install that does not fetch its models is never
+   re-offered because one is missing (`install::fetches_models`), or it
+   would be offered, change nothing, and be offered again on every enable.
 
 ## Context, and knowing how much is left
 
