@@ -432,9 +432,9 @@ authorization code for a real token (held in memory, never stored).
   `scope: https://www.googleapis.com/auth/drive.file` — so the picker
   flow yields a durable grant, not a one-shot.
 - **Picked items are readable through the Drive API**, across kinds: a
-  folder, a document and a **spreadsheet** (the owner's own items, unnamed
-  here because the repository is public) all
-  resolved by `files.get`. The picker is not Docs-only, which matters
+  folder, a document and a **spreadsheet** (the owner's own items,
+  unnamed here because the repository is public) all resolved by
+  `files.get`. The picker is not Docs-only, which matters
   given the ask spans Docs, Sheets and Slides.
 - **Re-picking a file returns the same id**, so a pick is idempotent and
   a second grant does not fork the identity of a document.
@@ -442,7 +442,7 @@ authorization code for a real token (held in memory, never stored).
 **Probable, with a named residual doubt: a folder grant does not reach
 its contents.** Two runs, two folders, `files.list` with the folder as
 parent returned zero children. The second run closed the obvious
-confound — `Writing` is in **My Drive**, not a shared drive, and the
+confound — the second folder is in **My Drive**, not a shared drive, and the
 query carried `supportsAllDrives=true&includeItemsFromAllDrives=true`,
 so a shared-drive blind spot cannot explain it. (The first run's folder
 had a legacy `0B…` id, which is shared-drive shaped; that run alone
