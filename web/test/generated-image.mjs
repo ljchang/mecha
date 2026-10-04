@@ -119,5 +119,30 @@ is(
 is(since([done(b), viewed(b)], []), '["images/b.png"]', 'a look at the picture just made is one picture');
 is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', 'a failed or running call shows nothing');
 
+// The call screen never opens a picture in a new tab or window: on a phone
+// that sends the call page to the background, its microphone stream dies and
+// the call drops (three of seven drops on 2026-10-04). It opens in place,
+// with the chat's Download and Edit.
+{
+  const fs = await import('node:fs');
+  const call = fs.readFileSync(new URL('../src/lib/PersonaCall.svelte', import.meta.url), 'utf8');
+  const markup = call.slice(call.indexOf('</script>'));
+  // Any link, not only a new tab: a same-tab link navigates the call page away
+  // and drops the call just as dead (review of #552).
+  is(/target=["']_blank|window\.open\(|href=/.test(markup), false, 'the call screen opens nothing outside its page');
+  is(/onclick=\{download\}/.test(markup) && /onclick=\{edit\}/.test(markup), true, 'the in-call viewer offers Download and Edit');
+  // The hang-up stays reachable while a picture is open, and a dropped line
+  // closes the picture so the redial shows (review of #552).
+  const bar = markup.slice(markup.indexOf('class="viewbar"'));
+  is(/onclick=\{end\}/.test(bar.slice(0, bar.indexOf('</div>'))), true, 'the viewer has the hang-up');
+  const onLink = call.slice(call.indexOf('onLink: (live) => {'), call.indexOf('onBotTurnEnd'));
+  is(/viewing = null/.test(onLink), true, 'a dropped line closes the picture');
+  is(/onclick=\{edit\} disabled=\{!linked\}/.test(markup), true, 'Edit waits for a live line, as the typing box does');
+  // Modal for focus too: the typing box behind it is inert while it is open,
+  // so Tab cannot pause the mic under a hint the viewer hides (review of #552).
+  is(/class="viewer"[^>]*aria-modal="true"/.test(markup), true, 'the viewer is modal');
+  is(/<form class="typerow" inert=\{!!viewing\}/.test(markup), true, "the call's typing box is inert behind the viewer");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
