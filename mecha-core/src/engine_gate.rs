@@ -1149,6 +1149,50 @@ pub fn measured_model(
     )
 }
 
+/// The ledger row for an adopt whose old engine could not be measured — the
+/// router was stopped, so the attempt happened, and nothing moved.
+fn not_measured(
+    error: &anyhow::Error,
+    back: &Result<()>,
+    model: Option<String>,
+    old_engine: &Path,
+    managed: &Path,
+) -> LedgerRow {
+    let failed = |engine: &Path, smoke: Smoke| Leg {
+        version: version_of(engine),
+        engine: engine.to_path_buf(),
+        bench: None,
+        smoke: [("chat".to_string(), smoke)].into(),
+    };
+    LedgerRow {
+        at: Utc::now(),
+        action: "adopt".into(),
+        model,
+        old: failed(
+            old_engine,
+            Smoke::Failed {
+                error: format!("{error:#}"),
+            },
+        ),
+        new: failed(
+            managed,
+            Smoke::NotRun {
+                why: "not measured: the engine the units run today could not be".into(),
+            },
+        ),
+        outcome: match back {
+            Ok(()) => Outcome::Kept {
+                why: format!("the engine the units run today could not be measured: {error:#}"),
+            },
+            Err(b) => Outcome::Partial {
+                step: "restarting the router after the measurement failed".into(),
+                error: format!("{b:#}"),
+                finish: "systemctl --user start llama-local.service".into(),
+            },
+        },
+    }
+}
+
 /// The command that finishes a promotion a step of which failed.
 const FINISH_ADOPT: &str = "systemctl --user daemon-reload && systemctl --user restart \
      llama-local.service (and `mecha setup engine --rollback` to undo)";
@@ -1240,6 +1284,16 @@ pub async fn adopt(
                 Ok(()) => router_back(&base, model.as_deref(), &old_engine).await,
                 Err(e) => Err(e),
             };
+            // An attempt that stopped the router is recorded even when it
+            // measured nothing: "never measured" and "could not be measured"
+            // are different findings.
+            let row = not_measured(&e, &back, model.clone(), &old_engine, &managed);
+            if let Err(le) = append_ledger(&m.mecha_home, &row) {
+                say(&format!(
+                    "the attempt could not be written to {}: {le:#}",
+                    ledger_path(&m.mecha_home).display()
+                ));
+            }
             return Err(e.context(match back {
                 Ok(()) => "measuring the engine the units run today — the router was restarted \
                            on it, and nothing was changed"
@@ -1271,7 +1325,9 @@ pub async fn adopt(
     };
 
     let decision = verdict(&old, &new);
-    let promote = decision.is_ok() || force;
+    // `--force` overrides a measurement, never its absence: an engine that
+    // produced no bench at all did not start well enough to be measured.
+    let promote = decision.is_ok() || (force && new.bench.is_some());
     let outcome = if promote {
         say("promoting: pointing the units at mecha's engine");
         match promote_adopt(m, servers, &base, model.as_deref(), &managed).await {
@@ -1681,6 +1737,38 @@ mod tests {
         assert_eq!(unquote("'x y'"), "x y");
         assert_eq!(unquote("/usr/bin"), "/usr/bin");
         assert_eq!(unquote("\""), "\"");
+    }
+
+    /// An attempt whose old engine could not be measured is a row of its
+    /// own — kept, or partial when the router did not come back — never
+    /// "never measured".
+    #[test]
+    fn an_old_engine_that_could_not_be_measured_is_recorded() {
+        let e = anyhow::anyhow!("the router did not come up");
+        let kept = not_measured(
+            &e,
+            &Ok(()),
+            Some("q".into()),
+            Path::new("/old"),
+            Path::new("/new"),
+        );
+        assert!(matches!(&kept.outcome, Outcome::Kept { why } if why.contains("did not come up")));
+        assert!(matches!(kept.old.smoke["chat"], Smoke::Failed { .. }));
+        assert!(matches!(kept.new.smoke["chat"], Smoke::NotRun { .. }));
+        let stuck = not_measured(
+            &e,
+            &Err(anyhow::anyhow!("unit failed")),
+            None,
+            Path::new("/old"),
+            Path::new("/new"),
+        );
+        assert!(
+            matches!(&stuck.outcome, Outcome::Partial { finish, .. } if finish.contains("systemctl"))
+        );
+        let home = std::env::temp_dir().join(format!("mecha-nm-{}", uuid::Uuid::new_v4()));
+        append_ledger(&home, &kept).unwrap();
+        assert_eq!(read_ledger(&home).unwrap().rows.len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
