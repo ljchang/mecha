@@ -1453,6 +1453,40 @@ pub const NEAR_COPY_LAYOUT: f64 = 0.78;
 /// retry lands within a couple of minutes; a new request later starts over.
 const NEAR_COPY_WINDOW: Duration = Duration::from_secs(15 * 60);
 
+/// What a near-copy notice says instead of "call again": the retry is the
+/// owner's to ask for.
+const NO_RETRY_UNASKED: &str = "Do not call image_generate again for this unless the user asks.";
+
+/// How long the last picture drawn in a workspace answers an identical call
+/// that would draw it again. The repeats it is for arrive within seconds of
+/// the picture they copy.
+const REPEAT_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// What an identical request gets, after [`refused`]'s lead, instead of a
+/// second render. An error, as every "nothing was drawn" is: the page
+/// counts a turn's pictures by `is_error` (`turnsWithoutPicture`), and a
+/// reply over no new picture must still say so (review of #543).
+const REPEAT_REFUSED: &str = "This call would draw exactly the picture last drawn in this \
+     chat — the same prompt, seed and size — and it is already in the chat, where the user \
+     sees it. Do not call image_generate again for it. If the user asked for \
+     another version, change the prompt, or leave out the seed for a new picture.";
+
+/// What an identical request gets while the first is still drawing: it
+/// cannot say the picture exists, since that render may yet fail (review of
+/// #543).
+const REPEAT_IN_FLIGHT: &str = "Another call in this turn is drawing exactly this picture — the \
+     same prompt, seed and size — right now. Do not call image_generate again for it: use that \
+     call's result.";
+
+/// The request a workspace last claimed: its hash, when, and whether it drew
+/// or is still drawing.
+#[derive(Debug, Clone, Copy)]
+struct Drawn {
+    key: u64,
+    at: Instant,
+    done: bool,
+}
+
 /// How alike two pictures' layouts are, from -1 to 1: the correlation of
 /// their 32×32 grayscale thumbnails, so light and dark in the same places
 /// score high whatever the colours. `None` when either does not decode or is
@@ -1850,6 +1884,18 @@ pub struct ImageGenerate {
     /// held here, only a number and a time.
     near_copies: std::sync::Mutex<std::collections::HashMap<u64, Instant>>,
     near_copy_salt: std::collections::hash_map::RandomState,
+    /// The last request that drew a picture, per workspace: a salted hash of
+    /// the workspace, of the request as it went to the server — prompt,
+    /// seed, size, steps and every reference, after the tool filled them in
+    /// — and when. The same request again is the same picture, so it is
+    /// answered with [`REPEAT_REFUSED`] instead ([`ImageGenerate::claim`]).
+    /// A call with no seed, an edit, and a cast call at a portrait's seed
+    /// all get a fresh seed, so the same *input* is never the same request
+    /// (review of #543). On a call on 2026-10-03 a persona re-sent the call
+    /// that had just drawn, word for word, four times in one run; the image
+    /// server skipped each as a duplicate, returned nothing, and the run read
+    /// that as a failure. Hashes only, as for `near_copies`.
+    last_drawn: std::sync::Mutex<std::collections::HashMap<u64, Drawn>>,
     /// The persona form (`for_persona`): a cast name the library does not
     /// hold is refused, as before, rather than drawn as an extra.
     persona: bool,
@@ -1864,6 +1910,47 @@ pub struct ImageGenerate {
 struct NearCopy {
     original: String,
     notice: String,
+}
+
+/// A request claimed as the one a workspace is drawing ([`ImageGenerate::claim`]).
+/// Dropped without [`Claim::keep`], it lets go: the request drew nothing.
+struct Claim<'a> {
+    owner: &'a ImageGenerate,
+    place: u64,
+    key: u64,
+    kept: bool,
+}
+
+impl Claim<'_> {
+    /// The request drew: it stays the one an identical request repeats,
+    /// now as a picture that exists.
+    fn keep(mut self) {
+        self.kept = true;
+        let mut last = self
+            .owner
+            .last_drawn
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(d) = last.get_mut(&self.place).filter(|d| d.key == self.key) {
+            d.done = true;
+        }
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        let mut last = self
+            .owner
+            .last_drawn
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if last.get(&self.place).is_some_and(|d| d.key == self.key) {
+            last.remove(&self.place);
+        }
+    }
 }
 
 /// A call's input, validated: the request, the reference paths and the mask's
@@ -1896,6 +1983,7 @@ impl ImageGenerate {
             library_dir: crate::imagelib::Library::default_dir().ok(),
             near_copies: Default::default(),
             near_copy_salt: Default::default(),
+            last_drawn: Default::default(),
             persona: false,
             self_as: None,
         })
@@ -1915,6 +2003,53 @@ impl ImageGenerate {
         let mut seen = self.near_copies.lock().unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, at| at.elapsed() < NEAR_COPY_WINDOW);
         seen
+    }
+
+    /// The keys [`Self::last_drawn`] holds a request under: its workspace,
+    /// and the request as it goes to the server.
+    fn repeat_keys(&self, ctx: &ToolCtx, req: &Request) -> (u64, u64) {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut h = self.near_copy_salt.build_hasher();
+        (&req.prompt, &req.negative, req.size, req.steps, req.seed).hash(&mut h);
+        req.reference_size.hash(&mut h);
+        for r in req.references.iter().chain(req.mask.iter()) {
+            r.bytes.hash(&mut h);
+        }
+        req.mask.is_some().hash(&mut h);
+        (self.near_copy_salt.hash_one(&ctx.workspace), h.finish())
+    }
+
+    /// Claims `req` as the request this workspace draws next, or says why
+    /// not: it is the one that last drew there, inside [`REPEAT_WINDOW`]
+    /// ([`REPEAT_REFUSED`]), or the one drawing there now
+    /// ([`REPEAT_IN_FLIGHT`]). Claimed
+    /// before the render, so two identical calls in one turn — a turn's calls
+    /// run concurrently — are one picture, not two (review of #543); the
+    /// claim lapses unless [`Claim::keep`] is called, so a failed or
+    /// cancelled request can be sent again as it was.
+    fn claim(&self, ctx: &ToolCtx, req: &Request) -> Result<Claim<'_>, &'static str> {
+        let (place, key) = self.repeat_keys(ctx, req);
+        let mut last = self.last_drawn.lock().unwrap_or_else(|p| p.into_inner());
+        last.retain(|_, d| d.at.elapsed() < REPEAT_WINDOW);
+        match last.get(&place) {
+            Some(d) if d.key == key && d.done => return Err(REPEAT_REFUSED),
+            Some(d) if d.key == key => return Err(REPEAT_IN_FLIGHT),
+            _ => {}
+        }
+        last.insert(
+            place,
+            Drawn {
+                key,
+                at: Instant::now(),
+                done: false,
+            },
+        );
+        Ok(Claim {
+            owner: self,
+            place,
+            key,
+            kept: false,
+        })
     }
 
     /// The picture a retry of an edit of `edited` should go back to: the one
@@ -1943,6 +2078,12 @@ impl ImageGenerate {
     /// and "stop" is only ever for a move or a pose (review of #408: a
     /// second successful recolour was told it had not taken).
     ///
+    /// It never tells the model to call again: the owner decides
+    /// ([`NO_RETRY_UNASKED`]). Each picture is a minute of GPU, and in a
+    /// chat where an earlier notice had said "call image_generate again
+    /// now", a persona redrew after every later edit — the ones that worked
+    /// included — reasoning that the result said it had not taken.
+    ///
     /// A masked edit's notice keeps the mask: its retry passes the same mask
     /// again, and it offers no library redraw, which would redraw the whole
     /// frame the owner painted a region to protect (review of #429).
@@ -1970,18 +2111,17 @@ impl ImageGenerate {
             );
             let notice = if again {
                 format!(
-                    "{expected} But if the user asked to move someone or change a pose, the \
-                     painted area has now kept its layout through two edits in a row: stop, tell \
-                     the user it did not take, and suggest a plain edit without the mask, or a \
-                     redraw from the library."
+                    "{expected} If the user asked to move someone or change a pose, the painted \
+                     area has now kept its layout through two edits in a row: stop, tell the user \
+                     the change may not have taken, and offer a plain edit without the mask, or a \
+                     redraw from the library. {NO_RETRY_UNASKED}"
                 )
             } else {
                 format!(
-                    "{expected} But if the user asked to move someone or change a pose, the edit \
-                     did not take, so do not say it did: call image_generate again now with \
-                     {original} in reference_images and the same mask, {mask}, and the prompt \
-                     rewritten as an instruction naming the change. A pose under a mask often \
-                     keeps its layout; if it does again, tell the user so."
+                    "{expected} If the user asked to move someone or change a pose, the change \
+                     may not have taken: say so rather than that it did, and offer to try again. \
+                     {NO_RETRY_UNASKED} If they ask: {original} in reference_images, the same \
+                     mask, {mask}, and the prompt rewritten as an instruction naming the change."
                 )
             };
             return NearCopy { original, notice };
@@ -2001,9 +2141,10 @@ impl ImageGenerate {
                 })
                 .unwrap_or_default();
             format!(
-                "{expected} But if the user asked to move someone, change a pose or rearrange \
-                 the picture, {edited} has now kept its layout through two edits in a row: stop \
-                 editing it, and tell the user it did not take{offer}."
+                "{expected} If the user asked to move someone, change a pose or rearrange the \
+                 picture, {edited} has now kept its layout through two edits in a row: stop \
+                 editing it, and tell the user the change may not have taken{offer}. \
+                 {NO_RETRY_UNASKED}"
             )
         } else {
             let offer = redraw
@@ -2016,13 +2157,13 @@ impl ImageGenerate {
                 })
                 .unwrap_or_default();
             format!(
-                "{expected} But if the user asked to move someone, change a pose or rearrange \
-                 the picture, the edit did not take, so do not say it did: call image_generate \
-                 again now, editing {original} rather than this result, with the prompt \
-                 rewritten as the parts to keep, named, and an instruction naming the change — \
-                 e.g. \"Keep the style, the background and the man unchanged. Have Maya stand \
-                 up.\" A description of the scene, or keeping the whole picture unchanged, \
-                 returns it unchanged.{offer}"
+                "{expected} If the user asked to move someone, change a pose or rearrange the \
+                 picture, the change may not have taken: say so rather than that it did, and \
+                 offer to try again. {NO_RETRY_UNASKED} If they ask: edit {original} rather \
+                 than this result, with the prompt rewritten as the parts to keep, named, and \
+                 an instruction naming the change — e.g. \"Keep the style, the background and \
+                 the man unchanged. Have Maya stand up.\" A description of the scene, or \
+                 keeping the whole picture unchanged, returns it unchanged.{offer}"
             )
         };
         NearCopy { original, notice }
@@ -2085,6 +2226,7 @@ impl ImageGenerate {
             library_dir: self.library_dir.clone(),
             near_copies: Default::default(),
             near_copy_salt: Default::default(),
+            last_drawn: Default::default(),
             persona: true,
             self_as: who,
         }
@@ -2556,6 +2698,24 @@ impl Tool for ImageGenerate {
         "image_generate"
     }
 
+    /// A new conversation starts with no picture to repeat and no strikes:
+    /// the workspace can outlive the chat (a batch's shared one, `/clear` in
+    /// the TUI or the REPL), and [`REPEAT_REFUSED`] points at a picture in
+    /// *this* chat (review of #543). Not called for a voice slot: slots share
+    /// one agent, and clearing it would clear every live slot's tools.
+    fn forget_conversation_state(&self) {
+        self.last_drawn
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        // The strikes go with it, for the same reason: "two edits in a row"
+        // must mean two edits in this chat.
+        self.near_copies
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
+
     /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): its request goes only
     /// to the loopback image server `[image]` names, and it reads no owner store.
     /// Eligible, in a form that keeps refusing a cast name the library does
@@ -2989,6 +3149,12 @@ impl Tool for ImageGenerate {
                 req.seed = fresh_seed();
             }
         }
+        // The request is final here — seed, size and references as the server
+        // will get them — so an identical one is the same picture.
+        let claim = match self.claim(ctx, &req) {
+            Ok(claim) => claim,
+            Err(why) => return Ok(refused(why)),
+        };
         // A call that starts invalidates any idle timer already armed, so a
         // `/free` cannot land while this job is loading or running.
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -3252,6 +3418,7 @@ impl Tool for ImageGenerate {
         }
         text.push_str(&manifest_note);
         text.push_str(&left);
+        claim.keep();
         Ok(ToolOutput::ok(text))
     }
 }
@@ -5835,7 +6002,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_seed_that_drew_a_portrait_is_never_sampled_for_its_scene() {
-        let (url, _) = fake(vec![done()], "200 OK").await;
+        let (url, _) = fake(vec![done(), done()], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
         let t = tool(&url).with_library_dir(lib.clone());
@@ -5854,6 +6021,16 @@ mod tests {
             out.content
         );
         assert!(!out.content.contains("(seed 901,"), "{}", out.content);
+        // Reseeded, so the same call again is another picture, not a repeat
+        // of this one (review of #543).
+        let again = t
+            .call(
+                json!({"prompt": "a park", "seed": 901, "cast": two_people()}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(again.content.starts_with("image: "), "{}", again.content);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
@@ -6298,8 +6475,10 @@ mod tests {
                 .contains("Its layout came back nearly the same as images/orig.png's")
                 && out
                     .content
-                    .contains("editing images/orig.png rather than this result")
-                && out.content.contains("so do not say it did"),
+                    .contains("edit images/orig.png rather than this result")
+                && out.content.contains("say so rather than that it did")
+                && out.content.contains(NO_RETRY_UNASKED)
+                && !out.content.contains("again now"),
             "{}",
             out.content
         );
@@ -6325,7 +6504,7 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("editing images/orig.png rather than this result")
+                .contains("edit images/orig.png rather than this result")
                 && !out.content.contains("stop editing it"),
             "{}",
             out.content
@@ -6346,7 +6525,8 @@ mod tests {
         assert!(
             out.content
                 .contains("images/orig.png has now kept its layout through two edits in a row")
-                && out.content.contains("stop editing it"),
+                && out.content.contains("stop editing it")
+                && out.content.contains(NO_RETRY_UNASKED),
             "{}",
             out.content
         );
@@ -6506,6 +6686,8 @@ mod tests {
         std::fs::write(dir.join("images/orig.png"), &scene).unwrap();
         let t = tool(&url);
         let c = ctx(&dir);
+        // The same edit each time: an edit draws a fresh seed, so the same
+        // input is another picture, never a repeat (review of #543).
         let edit = || {
             t.call(
                 json!({"prompt": "Keep the background unchanged. Have her stand up.",
@@ -6513,16 +6695,11 @@ mod tests {
                 &c,
             )
         };
-        assert!(edit()
-            .await
-            .unwrap()
-            .content
-            .contains("call image_generate again now"));
+        assert!(edit().await.unwrap().content.contains("may not have taken"));
         assert!(!edit().await.unwrap().content.contains("nearly the same"));
         let out = edit().await.unwrap();
         assert!(
-            out.content.contains("call image_generate again now")
-                && !out.content.contains("in a row"),
+            out.content.contains("may not have taken") && !out.content.contains("in a row"),
             "{}",
             out.content
         );
@@ -6872,7 +7049,7 @@ mod tests {
         // whole-picture retry or library redraw (review of #429).
         let original = picture(8, [240, 220, 40]);
         let (url, _) = fake_with(Fake {
-            history: vec![done()],
+            history: vec![done(), done()],
             views: vec![original.clone()],
             ..Fake::default()
         })
@@ -6886,7 +7063,8 @@ mod tests {
             mask_png(64, 64, (0, 16, 16, 56)),
         )
         .unwrap();
-        let out = tool(&url)
+        let t = tool(&url);
+        let out = t
             .call(
                 json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
                        "mask": "inbox/mask.png"}),
@@ -6907,6 +7085,216 @@ mod tests {
                 && !out.content.contains("Or redraw it from the library"),
             "{}",
             out.content
+        );
+        assert!(
+            out.content.contains(NO_RETRY_UNASKED) && !out.content.contains("again now"),
+            "the retry is the owner's to ask for: {}",
+            out.content
+        );
+        // The same masked edit holds its layout again: the second in a row
+        // says stop, and still leaves the retry to the owner.
+        let out = t
+            .call(
+                json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
+                       "mask": "inbox/mask.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("two edits in a row: stop,")
+                && out.content.contains(NO_RETRY_UNASKED),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn the_call_that_just_drew_is_not_drawn_again() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(), done(), done(), done(), done(), done(), done()],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, other) = (tempdir(), tempdir());
+        let t = tool(&url);
+        let fox = json!({"prompt": "a fox", "seed": 7});
+        let first = t.call(fox.clone(), &ctx(&dir)).await.unwrap();
+        assert!(first.content.starts_with("image: "), "{}", first.content);
+        let drawn = |seen: &Arc<Mutex<Vec<String>>>| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+
+        // The same seeded call again: answered, not drawn, and as nothing
+        // drawn — the page counts a turn's pictures by `is_error`.
+        let again = t.call(fox.clone(), &ctx(&dir)).await.unwrap();
+        assert_eq!(
+            again.content,
+            format!("Nothing was drawn. {REPEAT_REFUSED}")
+        );
+        assert!(again.is_error);
+        // Keyed on the request the server gets, not on the typing: a default
+        // spelled out and a stray space are the same picture (review of #543).
+        let typed = t
+            .call(
+                json!({"prompt": "a fox ", "seed": 7, "size": "square", "negative_prompt": ""}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            typed.content,
+            format!("Nothing was drawn. {REPEAT_REFUSED}")
+        );
+        assert_eq!(drawn(&seen), 1);
+
+        // Another seed is another picture; the same call in another chat is
+        // that chat's first.
+        let other_seed = t
+            .call(json!({"prompt": "a fox", "seed": 8}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            other_seed.content.starts_with("image: "),
+            "{}",
+            other_seed.content
+        );
+        let elsewhere = t.call(fox, &ctx(&other)).await.unwrap();
+        assert!(
+            elsewhere.content.starts_with("image: "),
+            "{}",
+            elsewhere.content
+        );
+        assert_eq!(drawn(&seen), 3);
+
+        // Without a seed the tool draws a fresh one: "another one" sent as
+        // the same call is another picture.
+        let unseeded = json!({"prompt": "a fox"});
+        for _ in 0..2 {
+            let out = t.call(unseeded.clone(), &ctx(&dir)).await.unwrap();
+            assert!(out.content.starts_with("image: "), "{}", out.content);
+        }
+        assert_eq!(drawn(&seen), 5);
+
+        // A new conversation in the same workspace has nothing to repeat.
+        let nine = json!({"prompt": "a fox", "seed": 9});
+        let out = t.call(nine.clone(), &ctx(&dir)).await.unwrap();
+        assert!(out.content.starts_with("image: "), "{}", out.content);
+        t.forget_conversation_state();
+        let fresh = t.call(nine, &ctx(&dir)).await.unwrap();
+        assert!(fresh.content.starts_with("image: "), "{}", fresh.content);
+        assert_eq!(drawn(&seen), 7);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(other).ok();
+    }
+
+    #[tokio::test]
+    async fn a_new_conversation_starts_without_strikes() {
+        // "Two edits in a row" means two in this chat: a near-copy from the
+        // conversation before a clear is not this one's first (review of #543).
+        let scene = picture(8, [240, 220, 40]);
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done()],
+            views: vec![scene.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), &scene).unwrap();
+        let t = tool(&url);
+        let c = ctx(&dir);
+        let edit = || {
+            t.call(
+                json!({"prompt": "Keep the background unchanged. Have her stand up.",
+                       "reference_images": ["images/orig.png"]}),
+                &c,
+            )
+        };
+        assert!(edit().await.unwrap().content.contains("may not have taken"));
+        t.forget_conversation_state();
+        let out = edit().await.unwrap();
+        assert!(
+            out.content.contains("may not have taken") && !out.content.contains("in a row"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn two_identical_calls_in_one_turn_draw_once() {
+        // A turn's calls run concurrently: the second must see the first's
+        // claim before either has drawn (review of #543).
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(), done()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let t = tool(&url);
+        let c = ctx(&dir);
+        let fox = json!({"prompt": "a fox", "seed": 7});
+        let (a, b) = tokio::join!(t.call(fox.clone(), &c), t.call(fox.clone(), &c));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        let drew = [&a, &b]
+            .iter()
+            .filter(|o| o.content.starts_with("image: "))
+            .count();
+        assert_eq!(drew, 1, "{}\n---\n{}", a.content, b.content);
+        // The other is told the picture is being drawn, not that it exists:
+        // the render could still fail (review of #543).
+        let other = if a.content.starts_with("image: ") {
+            &b
+        } else {
+            &a
+        };
+        assert_eq!(
+            other.content,
+            format!("Nothing was drawn. {REPEAT_IN_FLIGHT}")
+        );
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_request_that_drew_nothing_can_be_sent_again() {
+        // The claim lapses when the request fails: the same call again is
+        // tried, not answered as a repeat of a picture that never existed.
+        let (url, _) = fake(vec![], "500 Internal Server Error").await;
+        let dir = tempdir();
+        let t = tool(&url);
+        let fox = json!({"prompt": "a fox", "seed": 7});
+        for _ in 0..2 {
+            let out = t.call(fox.clone(), &ctx(&dir)).await.unwrap();
+            assert!(out.is_error, "{}", out.content);
+            assert!(!out.content.contains(REPEAT_REFUSED), "{}", out.content);
+        }
+        // Two at once, the first failing: the second was told it was being
+        // drawn, never that it is in the chat, and the next is tried again.
+        let c = ctx(&dir);
+        let (a, b) = tokio::join!(t.call(fox.clone(), &c), t.call(fox.clone(), &c));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        for out in [&a, &b] {
+            assert!(!out.content.contains(REPEAT_REFUSED), "{}", out.content);
+        }
+        let next = t.call(fox.clone(), &c).await.unwrap();
+        assert!(
+            !next.content.contains("Nothing was drawn. "),
+            "{}",
+            next.content
         );
         std::fs::remove_dir_all(dir).ok();
     }
