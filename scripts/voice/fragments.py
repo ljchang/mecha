@@ -65,7 +65,7 @@ class Joiner:
 
     def push(self, piece: str) -> str | None:
         piece = piece.strip()
-        if self.held and not any(c.isalnum() for c in piece) and not TAG.search(piece):
+        if self.held and not any(c.isalnum() for c in piece):
             # Punctuation closes the held phrase where it stands: "Hmm.." and
             # "." are "Hmm...", not "Hmm.. .".
             combined = self.held + piece
@@ -79,7 +79,7 @@ class Joiner:
 
     def flush(self, rest: str = "") -> str | None:
         rest = rest.strip()
-        if self.held and rest and not any(c.isalnum() for c in rest) and not TAG.search(rest):
+        if self.held and rest and not any(c.isalnum() for c in rest):
             text = self.held + rest  # attached as in `push`: "Hmm.." + "." is "Hmm..."
         else:
             text = " ".join(t for t in (self.held, rest) if t)
