@@ -7,6 +7,10 @@
 #   PP-DocLayoutV3.onnx    -> the Hugging Face cache's copy, revision pinned,
 #                             sha256 checked
 #
+# `mecha features enable documents` installs the same thing, under
+# ~/.mecha/sidecars/layout/ (mecha_core::install), and is the way for a new
+# machine; this script stays for a hand install, and both are found.
+#
 # Nothing here runs as a service or stays resident: mecha starts the worker,
 # confined, for one extraction and kills it after. `[documents] layout_python`
 # and `layout_model` point elsewhere if you keep these elsewhere.

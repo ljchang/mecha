@@ -203,6 +203,52 @@ async fn fetch_hub_file_from(
     Ok(snap)
 }
 
+/// Where GitHub release assets are fetched from.
+const GITHUB_BASE: &str = "https://github.com";
+
+/// Fetch one pinned release asset into `dir`, by the pin's own name, checked
+/// against the sha256 a reviewer committed — never the `digest` GitHub
+/// serves beside it (that is how the pin was authored). Already there and
+/// matching: nothing is fetched. Interrupted: the next call resumes.
+pub async fn fetch_release_asset(
+    repo: &'static str,
+    tag: &'static str,
+    asset: &'static str,
+    sha256: &'static str,
+    bytes: u64,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    fetch_release_asset_from(GITHUB_BASE, repo, tag, asset, sha256, bytes, dir, progress).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_release_asset_from(
+    base: &str,
+    repo: &'static str,
+    tag: &'static str,
+    asset: &'static str,
+    sha256: &'static str,
+    bytes: u64,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    if !plain_relative(repo)
+        || !plain_relative(tag)
+        || !plain_relative(asset)
+        || asset.contains('/')
+    {
+        bail!("refusing a release pin whose repository, tag or asset is not a plain name: {repo} {tag} {asset}");
+    }
+    let dest = dir.join(asset);
+    if dest.exists() && std::fs::metadata(&dest)?.len() == bytes && sha256_file(&dest)? == sha256 {
+        return Ok(dest);
+    }
+    let url = format!("{base}/{repo}/releases/download/{tag}/{asset}");
+    fetch_to(&url, &dest, sha256, bytes, progress).await?;
+    Ok(dest)
+}
+
 /// Point the snapshot path at the blob with a relative link, as `hf` does,
 /// so the cache moves as a whole. A file already at the snapshot path is not
 /// mecha's to replace (§10.2 item 4: never overwrite what mecha did not
@@ -495,6 +541,48 @@ mod tests {
 
     fn sha(bytes: &[u8]) -> String {
         hex(&Sha256::digest(bytes))
+    }
+
+    /// A pinned release asset lands under its own name, at the release URL,
+    /// and a second call asks the server nothing.
+    #[tokio::test]
+    async fn a_release_asset_lands_by_its_pinned_name() {
+        let body: Vec<u8> = (0..30_000u32).map(|i| (i % 11) as u8).collect();
+        let s = serve(body.clone(), true, None).await;
+        let dir = scratch();
+        let sum: &'static str = Box::leak(sha(&body).into_boxed_str());
+        let got = fetch_release_asset_from(
+            &s.base,
+            "org/tool",
+            "1.0",
+            "tool.tar.gz",
+            sum,
+            body.len() as u64,
+            &dir,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, dir.join("tool.tar.gz"));
+        assert_eq!(std::fs::read(&got).unwrap(), body);
+        assert_eq!(
+            s.seen.lock().unwrap()[0],
+            "GET /org/tool/releases/download/1.0/tool.tar.gz HTTP/1.1"
+        );
+        fetch_release_asset_from(
+            &s.base,
+            "org/tool",
+            "1.0",
+            "tool.tar.gz",
+            sum,
+            body.len() as u64,
+            &dir,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.seen.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A one-file HTTP server that honours `Range` (or, with `ranges: false`,

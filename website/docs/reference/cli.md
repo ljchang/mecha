@@ -1650,7 +1650,7 @@ network, so a server that starts on demand is never woken to be asked.
 mecha features [--json]
 mecha features --probe [--json]
 mecha features plan <id> [--verify] [--json]
-mecha features enable <id>...
+mecha features enable <id>... [--no-install]
 mecha features disable <id>...
 ```
 
@@ -1697,6 +1697,15 @@ parent, so `plan ocr` is `plan documents`.
 
 It installs nothing and asks no server: an idle server whose unit is there
 reads provided, never missing.
+
+**`enable` installs what the feature needs and this machine lacks, when mecha
+can install it**. It shows the plan first, installs on one yes, and writes the
+switch only after every install has passed its check. So far that covers
+layout's environment: a pinned `uv`, a Python 3.12 it builds, the hash-locked
+packages and the pinned model, all under `~/.mecha/sidecars/layout/`.
+Answering no writes nothing. `--no-install` writes the switch without
+installing. Without a terminal, an `enable` that would install refuses and
+names `--no-install`. A program that is already on the machine is left alone.
 
 **`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
 comments, the order of the file and any key a newer build added are kept, and
