@@ -219,11 +219,15 @@ impl Manifest {
     }
 
     /// Begin an install: the entry is written, marked incomplete, before the
-    /// first byte (§10.2 item 4), so an interruption reads resumable.
+    /// first byte (§10.2 item 4), so an interruption reads resumable. A
+    /// finished install run again — a repair — stays finished: its steps
+    /// replace in one rename, so it is never less usable than it was, and
+    /// marking it incomplete would hand extraction to a tree that may not
+    /// exist (`document::layout_tree`).
     pub fn begin(mecha_home: &Path, id: &str) -> Result<()> {
         let mut m = Manifest::read(mecha_home)?;
         match m.entries.iter_mut().find(|e| e.sidecar == id) {
-            Some(e) => e.incomplete = true,
+            Some(_) => {}
             None => m.entries.push(Entry {
                 sidecar: id.to_string(),
                 incomplete: true,
