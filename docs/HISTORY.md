@@ -95,7 +95,7 @@ not the same language and isn't in text transcript", and the expressiveness
   move between lines 2.8 → 1.6 semitones (max 18.0 → 5.3). Installed
   14:08:53Z, serve restarted 14:09:26Z.
 
-**2026-10-03 — real names out of the tree (#536, #537, #540; mecha-5d).**
+**2026-10-03 — real names out of the tree (#536, #537, #540, #544; mecha-5d).**
 On the owner's rulings to scrub real people, the institution and the
 owner's addresses.
 - **#536 (`9a2b2ccd`):** the owner's family's names, the owner's own name
@@ -112,9 +112,13 @@ owner's addresses.
   account, tokens and stores, keeps the real name.
 - **#540 (`58c4bf28`):** a real correspondent and a real event in
   `web/test/outbox-view.mjs`.
-- **Not finished:** on `6816c2bd` the package name is still in
-  `docs/DOCS-RESEARCH.md` and a `tui/docs.rs` fixture (reported to
-  mecha-5d). The names stay in git history and in crates.io tarballs.
+- **#544 (`412cc3bf`):** the package name the first check missed (it was
+  case-sensitive), and the owner's real Drive items (a course, a committee
+  folder, a spreadsheet, a folder), from `docs/DOCS-RESEARCH.md` and a
+  `tui/docs.rs` fixture. After it, the scrub's case-insensitive check over
+  `main` is empty (run by mecha-5d and mecha-1e). The pattern is kept out of
+  this file on purpose: it spells the names, so written here it would match
+  itself. The names stay in git history and in crates.io tarballs.
 
 **2026-10-03 — Breeze TTS 2 is the voice: an adapter, a director per
 sentence, no brevity rules on a streaming engine, and `default.wav`
