@@ -2698,11 +2698,19 @@ impl Tool for ImageGenerate {
         "image_generate"
     }
 
-    /// A new conversation starts with no picture to repeat: the workspace can
-    /// outlive the chat (a batch's shared one, the TUI's `/new`), and
-    /// [`REPEAT_REFUSED`] points at a picture in *this* chat (review of #543).
+    /// A new conversation starts with no picture to repeat and no strikes:
+    /// the workspace can outlive the chat (a batch's shared one, `/clear` in
+    /// the TUI or the REPL), and [`REPEAT_REFUSED`] points at a picture in
+    /// *this* chat (review of #543). Not called for a voice slot: slots share
+    /// one agent, and clearing it would clear every live slot's tools.
     fn forget_conversation_state(&self) {
         self.last_drawn
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        // The strikes go with it, for the same reason: "two edits in a row"
+        // must mean two edits in this chat.
+        self.near_copies
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
@@ -7183,6 +7191,40 @@ mod tests {
         assert_eq!(drawn(&seen), 7);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(other).ok();
+    }
+
+    #[tokio::test]
+    async fn a_new_conversation_starts_without_strikes() {
+        // "Two edits in a row" means two in this chat: a near-copy from the
+        // conversation before a clear is not this one's first (review of #543).
+        let scene = picture(8, [240, 220, 40]);
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done()],
+            views: vec![scene.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), &scene).unwrap();
+        let t = tool(&url);
+        let c = ctx(&dir);
+        let edit = || {
+            t.call(
+                json!({"prompt": "Keep the background unchanged. Have her stand up.",
+                       "reference_images": ["images/orig.png"]}),
+                &c,
+            )
+        };
+        assert!(edit().await.unwrap().content.contains("may not have taken"));
+        t.forget_conversation_state();
+        let out = edit().await.unwrap();
+        assert!(
+            out.content.contains("may not have taken") && !out.content.contains("in a row"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]

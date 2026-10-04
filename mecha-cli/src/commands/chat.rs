@@ -324,6 +324,10 @@ fn handle_command(
             // A new conversation, taint included: nothing the old one read is
             // in context any more, so nothing it read should still apply.
             *convo = Conversation::new();
+            // And whatever the tools held for it, as the TUI's `/clear` does:
+            // a picture or a near-copy strike from the old conversation is
+            // not this one's (review of #543).
+            prepared.agent.registry().forget_conversation_state();
             println!("  conversation cleared");
         }
 
