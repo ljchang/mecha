@@ -27,7 +27,7 @@ from worker import (  # noqa: E402
     names_incognito,
     offers_incognito,
     session_line,
-    spoken_words,
+    withheld,
     UNLOGGED,
     install,
 )
@@ -123,11 +123,12 @@ class TheSilence(unittest.TestCase):
 
 
 class TheWorkersOwnLines(unittest.TestCase):
-    def test_words_are_withheld_while_an_incognito_call_is_live(self):
-        self.assertEqual(spoken_words(SECRET, 80), repr(SECRET))
+    def test_words_are_withheld_on_every_call_incognito_or_not(self):
+        # Since 2026-10-04 an ordinary call keeps no words either (`journal`).
+        self.assertNotIn(SECRET, withheld(SECRET))
         with UNLOGGED.held(True):
-            self.assertNotIn(SECRET, spoken_words(SECRET, 80))
-        self.assertEqual(spoken_words(SECRET, 8), repr(SECRET[:8]))
+            self.assertNotIn(SECRET, withheld(SECRET))
+        self.assertEqual(withheld(SECRET), f"<{len(SECRET)} chars>")
 
 
 class TheChatsName(unittest.TestCase):

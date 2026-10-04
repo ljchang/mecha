@@ -3702,6 +3702,18 @@ brief (which reads the board through the graph server) do not run.
   affect latch, the facade's refusal path), and the voice stamp
   `brief::VoicePresence` is skipped for one (`stamp_presence`) — it outlives
   the chat and lands in other runs' briefs.
+- **No call's words reach the journal, incognito or not** (owner, 2026-10-04:
+  "Let's definitely fix that"; `scripts/voice/journal.py`). Until then an
+  ordinary call wrote typed turns and transcripts (the worker's own lines),
+  every sentence handed to the TTS and the whole conversation sent to the
+  model (pipecat's `services` DEBUG lines) to a journal kept on disk. The
+  worker's lines carry `journal.withheld` (a length), and `journal.install`
+  makes the only loguru sink one that drops the `pipecat.services` family
+  below INFO, keeping its warnings and every other module's lines. It is a
+  sink filter, which the runner's one reset in `main()` would discard, so it
+  is installed after that reset: at server start (composed into the app's
+  lifespan by `worker.install`) and at the top of every `run_bot`. The
+  incognito silence above stays at the core and does not depend on it.
 - **The voice director runs, and keeps nothing** (owner ruling, 2026-10-03).
   An incognito call's sentences are directed like any other, on the local
   model, but no `spoken_direction` record is written — the chat has no

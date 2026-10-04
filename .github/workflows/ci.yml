@@ -145,6 +145,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/voice/test_echo_filter.py
+      # The journal rules (no words from any call); the sink half needs the
+      # worker's venv and skips here.
+      - run: python3 scripts/voice/test_journal.py
 
   # The Breeze adapter (scripts/voice/breeze_server.py) is where the voice's
   # fail-closed answers live: a 503 for an unreadable voices directory or a
