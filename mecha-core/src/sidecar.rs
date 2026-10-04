@@ -186,6 +186,10 @@ pub struct Entry {
     /// Every unit, file or directory the install wrote, by path.
     #[serde(default)]
     pub wrote: Vec<PathBuf>,
+    /// The engine's builds on disk, each by tag and resolved commit (§10.3);
+    /// empty for every other sidecar.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builds: Vec<crate::engine::Build>,
 }
 
 impl Manifest {
@@ -220,10 +224,13 @@ impl Manifest {
 
     /// Begin an install: the entry is written, marked incomplete, before the
     /// first byte (§10.2 item 4), so an interruption reads resumable. A
-    /// finished install run again — a repair — stays finished: its steps
-    /// replace in one rename, so it is never less usable than it was, and
+    /// finished install run again — a repair — stays finished, because
     /// marking it incomplete would hand extraction to a tree that may not
-    /// exist (`document::layout_tree`).
+    /// exist (`document::layout_tree`). Not every repair step is atomic: the
+    /// model link and the engine's `current` swap in one rename, but `uv pip
+    /// install` changes the venv in place and `uv venv --clear` rebuilds it —
+    /// the latter only when its interpreter already dangles, so extraction
+    /// was failing before the repair began.
     pub fn begin(mecha_home: &Path, id: &str) -> Result<()> {
         let mut m = Manifest::read(mecha_home)?;
         match m.entries.iter_mut().find(|e| e.sidecar == id) {
@@ -232,6 +239,7 @@ impl Manifest {
                 sidecar: id.to_string(),
                 incomplete: true,
                 wrote: vec![],
+                builds: vec![],
             }),
         }
         m.write(mecha_home)
@@ -248,6 +256,20 @@ impl Manifest {
         if !e.wrote.iter().any(|w| w == path) {
             e.wrote.push(path.to_path_buf());
         }
+        m.write(mecha_home)
+    }
+
+    /// Record a build the install unpacked and checked, replacing an earlier
+    /// record of the same tag.
+    pub fn record_build(mecha_home: &Path, id: &str, build: crate::engine::Build) -> Result<()> {
+        let mut m = Manifest::read(mecha_home)?;
+        let e = m
+            .entries
+            .iter_mut()
+            .find(|e| e.sidecar == id)
+            .with_context(|| format!("recording a build of {id} before its install began"))?;
+        e.builds.retain(|b| b.tag != build.tag);
+        e.builds.push(build);
         m.write(mecha_home)
     }
 
@@ -828,11 +850,13 @@ mod tests {
                     sidecar: "layout".into(),
                     incomplete: true,
                     wrote: vec![tree.join("layout")],
+                    builds: vec![],
                 },
                 Entry {
                     sidecar: "ocr-server".into(),
                     incomplete: false,
                     wrote: vec![tree.join("ocr")],
+                    builds: vec![],
                 },
             ],
         };
@@ -871,16 +895,19 @@ mod tests {
                     sidecar: "layout".into(),
                     incomplete: false,
                     wrote: vec![tree.join("layout")],
+                    builds: vec![],
                 },
                 Entry {
                     sidecar: "ocr-server".into(),
                     incomplete: false,
                     wrote: vec![tree.join("ocr/a"), tree.join("ocr/b")],
+                    builds: vec![],
                 },
                 Entry {
                     sidecar: "embed-server".into(),
                     incomplete: false,
                     wrote: vec![],
+                    builds: vec![],
                 },
             ],
         };
@@ -926,6 +953,7 @@ mod tests {
                 sidecar: "layout".into(),
                 incomplete: true,
                 wrote: vec![],
+                builds: vec![],
             }],
         };
         std::fs::create_dir_all(root.join("home/.mecha/sidecars")).unwrap();
@@ -1002,7 +1030,8 @@ mod tests {
             vec![Entry {
                 sidecar: "layout".into(),
                 incomplete: true,
-                wrote: vec![]
+                wrote: vec![],
+                builds: vec![],
             }]
         );
         Manifest::record(&home, "layout", &home.join("sidecars/layout")).unwrap();
@@ -1143,6 +1172,7 @@ mod tests {
                 sidecar: "comfyui".into(),
                 incomplete: false,
                 wrote: vec![tree],
+                builds: vec![],
             }],
         };
         std::fs::create_dir_all(root.join("home/.mecha/sidecars")).unwrap();

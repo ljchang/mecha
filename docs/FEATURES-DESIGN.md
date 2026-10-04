@@ -49,7 +49,12 @@
 > a pinned `uv` (owner's choice, 2026-10-03: uv now, not at 7d), layout
 > installed through the manifest, and `mecha features enable` offering the
 > plan and installing on one yes (`--no-install`, and a refusal without a
-> terminal). 7b–7f and step 8 are unbuilt (step 7 redesigned in §10). The
+> terminal). **7b is split in three** (§10.6): 7b-1 — `engine.rs`, the
+> pinned release installed side by side behind a `current` link, the asset
+> chosen from the driver, offered by `features enable` where the engine runs
+> something — is built; 7b-2 (the build fallback) and 7b-3 (`setup engine
+> --upgrade|--rollback|--adopt`), 7c–7f and step 8 are unbuilt (step 7
+> redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1350,9 +1355,17 @@ pin that sits:
   `-x64`, `macos-arm64`, Vulkan and CPU builds — verified by its sha256;
   otherwise a build from the pinned commit, after a toolchain check (cmake,
   a compiler, `nvcc` and the GPU's compute capability from `nvidia-smi`)
-  that names what is missing. **Whether the arm64 CUDA asset runs on the
-  GB10's sm_121 is unmeasured** — 7b's first measurement; this box was
-  built from source because nothing else was known to.
+  that names what is missing. **The arm64 CUDA asset runs on the GB10**
+  (measured 2026-10-04, `b11391`): its `libggml-cuda.so` carries `sm_121a`
+  kernels, CUDA 13.4's runtime runs on the 580 driver (CUDA 13.0) by
+  minor-version compatibility, and the embeddings model loaded on the GPU
+  answered with a cosine of 1.000000 against this box's from-source
+  `b11205` on two inputs. A CUDA asset's runtime comes in a second archive
+  (`cudart-llama-…`, 527 MiB on arm64), pinned beside the first and
+  unpacked into the same directory. The per-merge `bNNNNN` releases are
+  now marked *prerelease*, and `releases/latest` names a semver release
+  (`v0.5.0`) that carries no binaries — so "the newest release" for
+  `--upgrade` (7b-3) is the newest `b` tag, never the API's `latest`.
 - **Self-contained, so a link can move it.** A build from source bakes the
   build tree's absolute path into the binary's RUNPATH (§10.1's stub, and
   `-next` after it), so copying `build/bin` somewhere and swapping a link
@@ -1535,6 +1548,9 @@ Step 7 becomes these, each a PR that leaves every feature working:
   **7a-3** layout installed through them.
 - **7b.** The engine: release-asset fetch, the build fallback, side-by-side
   directories, `--upgrade` with its measurement, `--rollback`, and `--adopt` for a provided engine.
+  Built in three PRs: **7b-1** the pinned release, side by side, offered by
+  `features enable`; **7b-2** the build fallback; **7b-3** `setup engine`'s
+  `--upgrade`, `--rollback` and `--adopt`, with the gate and its ledger.
 - **7c.** The router unit and chat model choice; the embeddings and OCR
   servers on demand from nothing.
 - **7d.** `uv` and the voice venv, Parakeet and the voice worker.
