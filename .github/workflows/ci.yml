@@ -102,6 +102,10 @@ jobs:
             echo "$bad" | sed 's/^/  /'
             exit 1
           fi
+      - name: The conversation-text guard refuses what it must and passes what it may
+        # The guard itself cannot see conversations here, so its own test
+        # builds a made-up store and measures it both ways (review of #557).
+        run: python3 scripts/test_check_private.py
 
   fmt:
     name: rustfmt
