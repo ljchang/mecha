@@ -37,6 +37,11 @@ class WhatWaits(unittest.TestCase):
     def test_a_long_run_is_spoken_anyway(self):
         self.assertFalse(holds("word.. " * (MAX_HOLD // 7 + 1)))
 
+    def test_a_real_aside_in_parentheses_is_words_not_a_tag(self):
+        # Only a tag-shaped parenthetical counts as nothing to say (review of #548).
+        for piece in ("(It was enormous.)", "(See you at 5.)", "(Honestly? Yes.)"):
+            self.assertFalse(holds(piece), piece)
+
 
 class TheJoin(unittest.TestCase):
     def test_a_whispered_run_is_one_phrase_not_forty(self):
@@ -55,6 +60,19 @@ class TheJoin(unittest.TestCase):
 
     def test_a_tag_at_the_very_end_is_flushed_with_what_was_held(self):
         self.assertEqual(run(["You did it.", "(laugh)"]), ["You did it.", "(laugh)"])
+
+    def test_the_cap_releases_a_long_run_through_the_joiner(self):
+        pieces = ["and slowly.."] * 40 + ["Done."]
+        out = run(pieces)
+        self.assertGreater(len(out), 2, "the run was held whole")
+        self.assertTrue(all(len(s) <= MAX_HOLD + len("and slowly..") + 1 for s in out), out)
+
+    def test_flush_attaches_punctuation_as_push_does(self):
+        from fragments import Joiner as J
+
+        j = J()
+        self.assertIsNone(j.push("Shhh.."))
+        self.assertEqual(j.flush("."), "Shhh...")
 
     def test_ordinary_sentences_pass_through_unchanged(self):
         pieces = ["I'm feeling pretty good.", "How was your day?", "Tell me everything."]

@@ -27,8 +27,11 @@ import re
 # for long.
 MAX_HOLD = 200
 
-# A parenthesised stage tag ("(laugh)", "(clears throat)").
-TAG = re.compile(r"\([^()]*\)")
+# A parenthesised stage tag ("(laugh)", "(clears throat)"): one to three
+# lowercase words and nothing else. Narrow on purpose: a real aside in
+# parentheses ("(It was enormous.)") is words to speak, and only a tag alone
+# made Breeze invent speech (review of #548).
+TAG = re.compile(r"\([a-z]+(?: [a-z]+){0,2}\)")
 
 # A trailing ellipsis, with any closing quote or bracket after it.
 TRAILING_ELLIPSIS = re.compile(r"(?:(?:\.\s*){2,}|…\s*)(?:[\"'”’)\]*_~]\s*)*$")
@@ -71,9 +74,13 @@ class Joiner:
         return combined or None
 
     def flush(self, rest: str = "") -> str | None:
-        text = " ".join(t for t in (self.held, rest.strip()) if t).strip()
+        rest = rest.strip()
+        if self.held and rest and not any(c.isalnum() for c in rest) and not TAG.search(rest):
+            text = self.held + rest  # attached as in `push`: "Shhh.." + "." is "Shhh..."
+        else:
+            text = " ".join(t for t in (self.held, rest) if t)
         self.held = ""
-        return text or None
+        return text.strip() or None
 
     def clear(self):
         self.held = ""
