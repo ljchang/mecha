@@ -155,6 +155,8 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
             version.trim()
         );
     }
+    // The archive is verified and unpacked; it is no use kept.
+    let _ = std::fs::remove_dir_all(dir.join("download"));
     Manifest::finish(&m.mecha_home, "uv")?;
     Ok(bin)
 }
@@ -184,6 +186,11 @@ pub async fn install_layout(m: &Machinery, hub: &Path, say: Say<'_>) -> Result<(
     let uv = ensure_uv(m, say).await?;
     let venv = dir.join("venv");
     let python = venv.join("bin/python");
+    let link = dir.join("PP-DocLayoutV3.onnx");
+    // Each piece on its own line in the record, so a partly deleted install
+    // reads incomplete — resumable — rather than installed.
+    Manifest::record(home, id, &venv)?;
+    Manifest::record(home, id, &link)?;
     let uv_env = |c: &mut std::process::Command| {
         c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
             .env("UV_CACHE_DIR", dir.join(".uv-cache"))
@@ -227,7 +234,6 @@ pub async fn install_layout(m: &Machinery, hub: &Path, say: Say<'_>) -> Result<(
         file.bytes as f64 / 1_048_576.0
     ));
     let snap = crate::fetch::fetch_hub_file(hub, repo, revision, file, &mut |_| {}).await?;
-    let link = dir.join("PP-DocLayoutV3.onnx");
     match std::fs::symlink_metadata(&link) {
         Ok(_) => std::fs::remove_file(&link)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
