@@ -33,6 +33,25 @@ fn router_of(cfg: &mecha_core::config::Config) -> (String, Option<String>) {
     }
 }
 
+/// The moves `mecha setup engine` makes: a closed set, so a fourth is a
+/// compile error at every match rather than a fall-through into one of these.
+#[derive(Clone, Copy)]
+enum Verb {
+    Adopt,
+    Upgrade,
+    Rollback,
+}
+
+impl Verb {
+    fn flag(self) -> &'static str {
+        match self {
+            Verb::Adopt => "adopt",
+            Verb::Upgrade => "upgrade",
+            Verb::Rollback => "rollback",
+        }
+    }
+}
+
 /// The flags `mecha setup engine` takes, from `setup`'s arguments.
 pub struct Flags {
     pub json: bool,
@@ -53,11 +72,11 @@ pub async fn run(cfg: &mecha_core::config::Config, f: Flags) -> Result<()> {
     let m = mecha_core::sidecar::Machinery::real()?;
     let (base, model) = router_of(cfg);
     let verb = if f.adopt {
-        Some("adopt")
+        Some(Verb::Adopt)
     } else if f.upgrade {
-        Some("upgrade")
+        Some(Verb::Upgrade)
     } else if f.rollback {
-        Some("rollback")
+        Some(Verb::Rollback)
     } else {
         None
     };
@@ -65,14 +84,17 @@ pub async fn run(cfg: &mecha_core::config::Config, f: Flags) -> Result<()> {
         this_machine(&base)?;
         anyhow::ensure!(
             std::io::stdin().is_terminal(),
-            "`mecha setup engine --{verb}` changes what every server runs, so it runs only at a \
-             terminal"
+            "`mecha setup engine --{}` changes what every server runs, so it runs only at a \
+             terminal",
+            verb.flag()
         );
     }
     match verb {
-        Some("adopt") => run_adopt(&m, &base, model.as_deref(), f.force).await,
-        Some("upgrade") => run_upgrade(&m, &base, model.as_deref(), f.to.as_deref(), f.force).await,
-        Some(_) => run_rollback(&m, &base, model.as_deref(), f.now).await,
+        Some(Verb::Adopt) => run_adopt(&m, &base, model.as_deref(), f.force).await,
+        Some(Verb::Upgrade) => {
+            run_upgrade(&m, &base, model.as_deref(), f.to.as_deref(), f.force).await
+        }
+        Some(Verb::Rollback) => run_rollback(&m, &base, model.as_deref(), f.now).await,
         None => {
             print!("{}", status(&m)?);
             Ok(())
@@ -580,26 +602,43 @@ async fn run_rollback(
     } else {
         to_engine.clone()
     };
-    match &check {
-        Some(model) => gate::restart_on(&servers, &base, model, &router_engine)
-            .await
-            .map_err(|(step, e)| anyhow::anyhow!("{step}: {e:#} — finish with: {finish}"))?,
-        None => {
-            gate::systemctl("restart", &["llama-local.service"])
-                .with_context(|| format!("finish with: {finish}"))?;
-            gate::router_back(&base, None, &router_engine)
+    // From here the move has happened, so it is recorded whatever follows:
+    // a restart or a check that fails is a partial rollback naming the
+    // command that finishes it, never a ledger that still says "promoted".
+    let finished: Result<()> = async {
+        match &check {
+            Some(model) => gate::restart_on(&servers, &base, model, &router_engine)
                 .await
-                .with_context(|| format!("finish with: {finish}"))?;
+                .map_err(|(step, e)| anyhow::anyhow!("{step}: {e:#}"))?,
+            None => {
+                gate::systemctl("restart", &["llama-local.service"])?;
+                gate::router_back(&base, None, &router_engine).await?;
+            }
         }
+        if let (Some(model), Some((tag, n, commit))) = (&check, &back_build) {
+            gate::verify_build(&base, model, *n, commit)
+                .await
+                .with_context(|| format!("after moving back to {tag}"))?;
+        }
+        Ok(())
     }
-    if let (Some(model), Some((tag, n, commit))) = (&check, &back_build) {
-        gate::verify_build(&base, model, *n, commit)
-            .await
-            .with_context(|| format!("after moving back to {tag} — finish with: {finish}"))?;
+    .await;
+    let mut row = gate::rollback_row(&from_engine, &to_engine, check.clone());
+    if let Err(e) = &finished {
+        row.outcome = Outcome::Partial {
+            step: "restarting the servers on the build rolled back to".into(),
+            error: format!("{e:#}"),
+            finish: finish.into(),
+        };
     }
-    let row = gate::rollback_row(&from_engine, &to_engine, check.clone());
     if let Err(e) = gate::append_ledger(&m.mecha_home, &row) {
         eprintln!("the rollback could not be written to the ledger: {e:#}");
+    }
+    if let Err(e) = finished {
+        drop(switching);
+        return Err(e.context(format!(
+            "the rollback moved but did not finish — finish with: {finish}"
+        )));
     }
     if back_build.is_some() {
         if let Err(e) = engine::prune_builds(&m.mecha_home) {
