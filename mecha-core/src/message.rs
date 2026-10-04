@@ -675,6 +675,79 @@ impl PriorTails {
     }
 }
 
+/// What happens to a one-turn harness nudge folded into an earlier owner turn
+/// when the history goes back to the model. The transcript keeps every one;
+/// this decides only what is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PriorNudges {
+    /// Sent as recorded.
+    #[default]
+    Keep,
+    /// Left out of every owner turn before the one being answered: a persona
+    /// chat. `persona::variety`'s note is folded each turn and names what is
+    /// repeating *now*; kept, forty turns in the prefix would be forty stale,
+    /// contradictory "don't end on X" lines, which is not the condition the
+    /// note was measured in (one note, a clean history; review of #550).
+    Drop,
+}
+
+/// Whether `block` is a nudge that lives one turn.
+fn is_one_turn_nudge(block: &Block) -> bool {
+    matches!(block, Block::Text { text } if crate::persona::variety::is_note(text))
+}
+
+/// Whether the owner turn at `index` loses its one-turn nudges: before the
+/// turn being answered, and only if words of its own would remain.
+fn drops_nudges(message: &Message, index: usize, cut: usize) -> bool {
+    index < cut
+        && message.role == Role::User
+        && message.content.iter().any(is_one_turn_nudge)
+        && message.content.iter().any(|b| !is_one_turn_nudge(b))
+}
+
+impl PriorNudges {
+    /// `messages` with earlier owner turns' one-turn nudges left out.
+    pub fn wire<'a>(
+        self,
+        messages: std::borrow::Cow<'a, [Message]>,
+    ) -> std::borrow::Cow<'a, [Message]> {
+        let cut = match (self, answering(&messages)) {
+            (PriorNudges::Drop, Some(cut)) => cut,
+            _ => return messages,
+        };
+        if !messages
+            .iter()
+            .enumerate()
+            .any(|(i, m)| drops_nudges(m, i, cut))
+        {
+            return messages;
+        }
+        let mut owned = messages.into_owned();
+        for (i, m) in owned.iter_mut().enumerate() {
+            if drops_nudges(m, i, cut) {
+                m.content.retain(|b| !is_one_turn_nudge(b));
+            }
+        }
+        std::borrow::Cow::Owned(owned)
+    }
+
+    /// The bytes [`PriorNudges::wire`] leaves out, for `wire_bytes`.
+    pub fn dropped_bytes(self, messages: &[Message]) -> usize {
+        let cut = match (self, answering(messages)) {
+            (PriorNudges::Drop, Some(cut)) => cut,
+            _ => return 0,
+        };
+        messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| drops_nudges(m, *i, cut))
+            .flat_map(|(_, m)| &m.content)
+            .filter(|b| is_one_turn_nudge(b))
+            .map(crate::pressure::block_bytes)
+            .sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,5 +1164,53 @@ mod tests {
         let kept = PriorTails::Keep.wire(std::borrow::Cow::Borrowed(&history[..]));
         assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
         assert_eq!(PriorTails::Keep.dropped_bytes(&history), 0);
+    }
+
+    #[test]
+    fn only_the_turn_being_answered_keeps_its_one_turn_nudge() {
+        let note = |closer: &str| {
+            Block::text(format!(
+                "{} (\"{closer}\").)",
+                crate::persona::variety::CLOSING_STEM
+            ))
+        };
+        let owner = |said: &str, closer: &str| {
+            let mut m = Message::user(said);
+            m.content.push(note(closer));
+            m
+        };
+        let history = vec![
+            owner("hi", "Old one."),
+            Message::assistant(vec![Block::text("Hello.")]),
+            owner("and now", "Older two."),
+            Message::assistant(vec![Block::text("Sure.")]),
+            owner("again", "Current."),
+        ];
+        let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&history[..]));
+        let notes: Vec<usize> = sent
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.iter().any(is_one_turn_nudge))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            notes,
+            vec![4],
+            "only the turn being answered keeps its note"
+        );
+        assert_eq!(sent[0].text(), "hi", "the owner's words stay");
+        assert_eq!(
+            PriorNudges::Drop.dropped_bytes(&history),
+            crate::pressure::message_bytes(&history) - crate::pressure::message_bytes(&sent),
+            "wire_bytes must measure what is sent"
+        );
+        let kept = PriorNudges::Keep.wire(std::borrow::Cow::Borrowed(&history[..]));
+        assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
+        // A message that is only a nudge is never emptied.
+        let mut lone = Message::user("");
+        lone.content = vec![note("Lone.")];
+        let alone = vec![lone, Message::user("now")];
+        let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&alone[..]));
+        assert!(!sent[0].content.is_empty());
     }
 }
