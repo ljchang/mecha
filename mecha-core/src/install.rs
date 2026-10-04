@@ -29,6 +29,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::feature::Feature;
 use crate::recommend::{self, Source};
 use crate::sidecar::{FileState, Machinery, Manifest, Plan, PlannedSidecar, SidecarState};
 
@@ -107,9 +108,10 @@ fn fetches_models(id: &str) -> bool {
 }
 
 /// Whether the chat model is served from this machine: the default provider
-/// is `local` and names no address, or a loopback one. A machine that chats
-/// through a hosted provider, or a llama-server elsewhere, needs no engine
-/// for chat.
+/// is `local` and names no address, or a loopback one — the same reading of
+/// "this machine" the router's follow uses (`provider::router::is_loopback`).
+/// A machine that chats through a hosted provider, or a llama-server
+/// elsewhere, needs no engine for chat.
 pub fn chat_runs_here(cfg: &crate::config::Config) -> bool {
     let Some(p) = cfg.providers.get(&cfg.default_provider) else {
         return false;
@@ -119,19 +121,18 @@ pub fn chat_runs_here(cfg: &crate::config::Config) -> bool {
     }
     match p.base_url.as_deref() {
         None => true,
-        Some(url) => reqwest::Url::parse(url)
-            .ok()
-            .and_then(|u| u.host_str().map(str::to_owned))
-            .is_some_and(|h| matches!(h.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1")),
+        Some(url) => crate::provider::router::is_loopback(url),
     }
 }
 
-/// Why a sidecar in a plan is not needed on this machine, or `None` when it
-/// is. Only a shared sidecar can be unneeded — the engine and the router are
-/// in every plan because the chat model runs on them — so where chat runs
+/// Why a sidecar is not needed for a feature on this machine, or `None` when
+/// it is. Only a shared sidecar can be unneeded — the engine and the router
+/// are in every plan because the chat model runs on them — so where chat runs
 /// elsewhere, one is needed only by a feature whose embeddings or OCR server
-/// it runs. The router serves chat alone, so it is never needed then.
-pub fn not_needed(id: &str, plan: &Plan, chat_here: bool) -> Option<&'static str> {
+/// it runs. The router serves chat alone, so it is never needed then. A
+/// function of the feature's slots, not of a plan, so `enable` can ask it
+/// before reading the machine.
+pub fn not_needed(id: &str, feature: Feature, chat_here: bool) -> Option<&'static str> {
     if chat_here {
         return None;
     }
@@ -139,14 +140,20 @@ pub fn not_needed(id: &str, plan: &Plan, chat_here: bool) -> Option<&'static str
     if !s.needed_by.is_empty() {
         return None;
     }
-    let other_server = plan
-        .files
-        .iter()
-        .any(|f| f.slot != "chat" && s.serves.contains(&f.slot));
+    let other_server = crate::sidecar::needed_slots(feature)
+        .any(|slot| slot.id != "chat" && s.serves.contains(&slot.id));
     (!other_server).then_some(
         "not needed here — the chat model is served from elsewhere, and this feature runs \
          nothing else on it",
     )
+}
+
+/// Whether `enable` could offer anything for a feature — asked before the
+/// machine is read, so a switch that installs nothing (`enable messages` on
+/// a machine chatting through a hosted provider) probes no GPU.
+pub fn may_offer(feature: Feature, chat_here: bool) -> bool {
+    crate::sidecar::needed(feature)
+        .any(|s| installable(s.id) && not_needed(s.id, feature, chat_here).is_none())
 }
 
 /// What `mecha features enable` offers to install for one plan: each
@@ -171,7 +178,7 @@ pub fn offered(plan: &Plan, chat_here: bool) -> Vec<&PlannedSidecar> {
                 s.state,
                 SidecarState::Missing { .. } | SidecarState::Incomplete
             ) || (matches!(s.state, SidecarState::Installed) && model_gone);
-            wanted && installable(s.id) && not_needed(s.id, plan, chat_here).is_none()
+            wanted && installable(s.id) && not_needed(s.id, plan.feature, chat_here).is_none()
         })
         .collect()
 }
@@ -450,48 +457,43 @@ pub async fn install(
 mod tests {
     use super::*;
 
-    fn plan_of(llama: SidecarState, slots: &[&'static str]) -> Plan {
-        use crate::sidecar::PlannedFile;
+    fn plan_of(feature: Feature, llama: SidecarState) -> Plan {
         Plan {
-            feature: crate::feature::Feature::Documents,
+            feature,
             sidecars: vec![PlannedSidecar {
                 id: "llama",
                 label: "llama.cpp (llama-server)",
                 state: llama,
             }],
-            files: slots
-                .iter()
-                .map(|slot| PlannedFile {
-                    slot,
-                    model: "m",
-                    repo: Some("org/r"),
-                    path: "f.gguf",
-                    state: FileState::Download { bytes: 1 },
-                })
-                .collect(),
-            download_bytes: 1,
+            files: vec![],
+            download_bytes: 0,
             nothing_to_do: false,
         }
     }
 
-    /// The engine is offered where it will run something: the chat model
-    /// here, or a feature's embeddings or OCR server. A machine chatting
-    /// through a hosted provider is not handed 700 MB for `enable messages`.
+    /// The engine is offered where it runs something: the chat model here,
+    /// or a feature's embeddings or OCR server. A machine chatting through a
+    /// hosted provider is not handed 700 MB for `enable messages` — nor made
+    /// to wait on a GPU probe for it.
     #[test]
     fn the_engine_is_offered_only_where_it_runs_something() {
         let missing = || SidecarState::Missing { step: "7b" };
-        let chat_only = plan_of(missing(), &["chat"]);
-        assert_eq!(install_ids(&chat_only, true), vec!["llama"]);
-        assert!(install_ids(&chat_only, false).is_empty());
-        assert!(not_needed("llama", &chat_only, false).is_some());
-        let with_ocr = plan_of(missing(), &["chat", "ocr"]);
-        assert_eq!(install_ids(&with_ocr, false), vec!["llama"]);
-        assert!(not_needed("llama", &with_ocr, false).is_none());
+        let messages = plan_of(Feature::Messages, missing());
+        assert_eq!(install_ids(&messages, true), vec!["llama"]);
+        assert!(install_ids(&messages, false).is_empty());
+        assert!(not_needed("llama", Feature::Messages, false).is_some());
+        assert!(!may_offer(Feature::Messages, false));
+        assert!(may_offer(Feature::Messages, true));
+        // Documents runs an OCR server on the engine; graph an embeddings one.
+        let documents = plan_of(Feature::Documents, missing());
+        assert_eq!(install_ids(&documents, false), vec!["llama"]);
+        assert!(not_needed("llama", Feature::Graph, false).is_none());
+        assert!(may_offer(Feature::Graph, false));
         // The router serves chat alone: never needed where chat is elsewhere,
         // whatever else the feature runs. A feature's own sidecar always is.
-        assert!(not_needed("router", &with_ocr, false).is_some());
-        assert!(not_needed("router", &with_ocr, true).is_none());
-        assert!(not_needed("layout", &chat_only, false).is_none());
+        assert!(not_needed("router", Feature::Documents, false).is_some());
+        assert!(not_needed("router", Feature::Documents, true).is_none());
+        assert!(not_needed("layout", Feature::Messages, false).is_none());
     }
 
     /// The engine's install fetches no model, so a model missing from the hub
@@ -499,9 +501,16 @@ mod tests {
     /// new, and offer again on every enable.
     #[test]
     fn a_missing_model_does_not_re_offer_the_engine() {
-        let installed = plan_of(SidecarState::Installed, &["chat", "ocr"]);
+        let mut installed = plan_of(Feature::Documents, SidecarState::Installed);
+        installed.files.push(crate::sidecar::PlannedFile {
+            slot: "ocr",
+            model: "m",
+            repo: Some("org/r"),
+            path: "f.gguf",
+            state: FileState::Download { bytes: 1 },
+        });
         assert!(install_ids(&installed, true).is_empty());
-        let unfinished = plan_of(SidecarState::Incomplete, &["chat"]);
+        let unfinished = plan_of(Feature::Messages, SidecarState::Incomplete);
         assert_eq!(install_ids(&unfinished, true), vec!["llama"]);
     }
 
@@ -524,6 +533,9 @@ mod tests {
         assert!(with("local", None));
         assert!(with("local", Some("http://127.0.0.1:8080/v1")));
         assert!(with("local", Some("http://localhost:8080/v1")));
+        // All of 127/8 is this machine: Debian names its hostname 127.0.1.1.
+        assert!(with("local", Some("http://127.0.1.1:8080/v1")));
+        assert!(with("local", Some("http://[::1]:8080/v1")));
         assert!(!with("local", Some("http://gpu-box.tailnet:8080/v1")));
         assert!(!with("anthropic", None));
         assert!(!with("openai", Some("http://127.0.0.1:8080/v1")));
