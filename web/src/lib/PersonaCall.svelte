@@ -107,8 +107,10 @@
       typing = false;
       viewing = null;
     }
-    // An edit modal left open over the last call does not hold this one's
-    // mic: whoever paused it says so again.
+    // No hold outlives the call that took it. Unreachable today — the edit
+    // modal's scrim covers the call button, and leaving the chat closes the
+    // modal — but a fresh call never starts with its mic paused behind a
+    // modal nobody can see (review of #552).
     away = false;
     // Read at the tap, never bound: a chat switched mid-call must not have
     // the words being spoken redirected into it.
@@ -386,8 +388,17 @@
     /* Not stretched: the picture keeps its own shape, and its border with it. */
     align-items: center;
   }
+  /* A real box, not `display: contents`: browsers do not agree on unboxing a
+     button, and an unboxed one leaves the accessibility tree (review of #552). */
   .shotbtn {
-    display: contents;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
     cursor: zoom-in;
   }
   .viewer {
