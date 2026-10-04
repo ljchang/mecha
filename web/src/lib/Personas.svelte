@@ -12,7 +12,7 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures, turnsWithoutPicture, downloadPicture } from './picture.js';
+  import { pictureOf, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -40,6 +40,9 @@
 
   // The call with the open chat's persona (§11), started from the header.
   let caller = $state(null);
+  // The pictures already in the chat when the call was placed: the call
+  // screen covers the chat, so it shows the ones made since (`picturesSince`).
+  let callBefore = $state(null);
 
   let data = $state(null);
   let error = $state('');
@@ -144,6 +147,11 @@
   // Each answer's citations with the check made of each (§10.4).
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
+  const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
+  function placeCall() {
+    callBefore = new Set(picturesIn(run.entries));
+    caller?.start();
+  }
 
   // Download a generated picture: read and saved from a blob, so a locked
   // persona's picture leaves no address (with its unlock token) in the
@@ -1872,7 +1880,7 @@
         {#if isShown(features.rows, 'calls')}
           <!-- A call speaks into this chat, in the persona's voice (§11) —
                beside send, where the assistant's chat keeps its own. -->
-          <button class="attachbtn" title={`call ${chosen.display}`} aria-label={`call ${chosen.display}`} onclick={() => caller?.start()}>
+          <button class="attachbtn" title={`call ${chosen.display}`} aria-label={`call ${chosen.display}`} onclick={placeCall}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
           </button>
         {/if}
@@ -1996,6 +2004,9 @@
       token={chosen.locked ? token : null}
       display={chosen.display}
       face={callFace}
+      pictures={callPictures}
+      {pictureUrl}
+      openable={!chosen.locked}
     />
   {/if}
 </div>
