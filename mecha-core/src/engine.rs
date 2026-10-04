@@ -31,6 +31,18 @@
 //!
 //! macOS assets are Mach-O and resolve through `@loader_path`; the RUNPATH
 //! check is ELF-only, and the version and device checks still run there.
+//!
+//! The RUNPATH check reads the build directory's top level only, because the
+//! release is flat — every binary and library side by side. A future pin
+//! that nested libraries would fail closed rather than pass: `llama-server`
+//! would need a RUNPATH that climbs (`$ORIGIN/../lib`), which
+//! `within_origin` refuses, and the CUDA runtime would not be found beside
+//! it. Widening the walk belongs with such a pin.
+//!
+//! `~/.mecha/sidecars/llama/` holds more than builds — the `download/`
+//! cache, a `<tag>.part` being checked, `current.new` mid-swap — so the
+//! builds on disk are listed from the manifest's record (`Entry::builds`),
+//! never from the directory: 7b-3's upgrade and rollback read them there.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -745,7 +757,7 @@ fn parse_elf64le(r: &mut impl ReadAt) -> Option<Dynamic> {
     }
     let d = r.read_at(dyn_off, usize::try_from(dyn_len).ok()?)?;
     let (mut strtab, mut needed, mut runpath, mut rpath) = (None, Vec::new(), None, None);
-    for entry in d.chunks_exact(16) {
+    for entry in d.as_chunks::<16>().0 {
         let (tag, val) = (le64(entry, 0)?, le64(entry, 8)?);
         match tag {
             0 => break,
