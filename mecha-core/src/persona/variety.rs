@@ -21,7 +21,7 @@
 //! their correction. Measured on call turns; typed turns carry it too,
 //! unmeasured.
 
-use crate::message::{dangling_tail, Block, Message, Role};
+use crate::message::{dangling_tail, ends_mid_clause, Block, Message, Role};
 
 /// The two ways the note can open; both are fixed text, so the voice is
 /// recognised whole.
@@ -88,6 +88,11 @@ pub fn note(messages: &[Message]) -> Option<String> {
     let closers: Vec<String> = replies
         .iter()
         .rev()
+        // A reply that still stops mid-clause after the trim had no whole
+        // sentence in it ("Mmm, I was just", barged in on): it has no closer,
+        // and quoting the fragment back would show the model the very shape
+        // #538 measured as causal (review of #550).
+        .filter(|r| !ends_mid_clause(r))
         .take(CLOSERS_NAMED)
         .filter_map(|r| last_sentence(r))
         .collect::<Vec<_>>()
@@ -217,6 +222,26 @@ mod tests {
         // never quotes a dangling "I" back as a line to avoid.
         let n = note(&[said("You love it, don't you? \n\nI")]).expect("a note");
         assert!(n.contains("(\"You love it, don't you?\")"), "{n}");
+    }
+
+    #[test]
+    fn a_reply_with_no_whole_sentence_has_no_closer() {
+        // Barged in on before its first sentence mark: nothing to trim back
+        // to, so it is not quoted, but its opening still counts.
+        let history = vec![
+            said("Mmm, there you are. How was it?"),
+            said("Mmm, I was just"),
+        ];
+        let n = note(&history).expect("a note");
+        assert!(!n.contains("I was just"), "a fragment quoted back: {n}");
+        assert!(n.contains("(\"How was it?\")"), "{n}");
+        assert!(n.contains("opened with \"Mm\""), "{n}");
+        // Only fragments: the opening is named, no closer list.
+        let n = note(&[said("Mm, so"), said("Mm, well I")]).expect("a note");
+        assert!(
+            n.starts_with(OPENING_STEM) && !n.contains("don't end on"),
+            "{n}"
+        );
     }
 
     #[test]
