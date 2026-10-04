@@ -244,6 +244,8 @@ install.rs   the installers `features enable` offers: a pinned uv, layout first;
              the record leads the bytes, one tree per install
 engine.rs    llama.cpp from a pinned release, side by side behind a `current`
              link: the build chosen from the driver, checked self-contained
+engine_gate.rs measure before promote: each unit's own launcher on a private
+             port, both engines in turn under a held switch; the ledger, --adopt
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,
