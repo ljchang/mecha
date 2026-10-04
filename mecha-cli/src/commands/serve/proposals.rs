@@ -119,8 +119,9 @@ fn graph_bin() -> String {
 /// Boxed for the same reason [`source_of`] is, and this one is why the rule
 /// is written down: an `async fn` hides the `Result` inside a future, so the
 /// 1.97 clippy on this box saw nothing while CI's 1.98 failed the build on
-/// it. Reach for `cargo +1.98.0 clippy --workspace --all-targets
-/// --all-features` before believing a green local lint.
+/// it. That drift is closed — `rust-toolchain.toml` pins the one Rust both
+/// build with — so a local `RUSTFLAGS="-D warnings" cargo clippy --workspace
+/// --all-targets --all-features` is CI's lint.
 async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Box<Response>> {
     let bin = if src.graph {
         std::path::PathBuf::from(graph_bin())
