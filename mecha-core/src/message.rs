@@ -543,8 +543,18 @@ pub fn dangling_tail(text: &str) -> Option<usize> {
     if !(last.is_alphanumeric() || matches!(last, ',' | ';' | ':' | '-' | '–' | '—')) {
         return None;
     }
-    // The end of the last sentence mark (with any closing quote, bracket or
-    // emphasis after it) that whitespace follows.
+    last_sentence_end(body)
+}
+
+/// Where the last complete sentence of `text` ends: just past its last
+/// sentence mark (with any closing quote, bracket or emphasis after it) that
+/// whitespace follows, skipping a lone period that ends an abbreviation or an
+/// initial. `None` when no sentence ends before the end of the text. The one
+/// sentence boundary the persona's history views share: [`dangling_tail`]
+/// cuts there, and `persona::variety` quotes what follows as a closing line
+/// (review of #550).
+pub fn last_sentence_end(text: &str) -> Option<usize> {
+    let body = text.trim_end();
     let chars: Vec<(usize, char)> = body.char_indices().collect();
     let mut cut = None;
     let mut i = 0;
@@ -683,8 +693,8 @@ pub enum PriorNudges {
     /// Sent as recorded.
     #[default]
     Keep,
-    /// Left out of every owner turn before the one being answered: a persona
-    /// chat. `persona::variety`'s note is folded each turn and names what is
+    /// Every one but the newest left out: a persona chat.
+    /// `persona::variety`'s note is folded each turn and names what is
     /// repeating *now*; kept, forty turns in the prefix would be forty stale,
     /// contradictory "don't end on X" lines, which is not the condition the
     /// note was measured in (one note, a clean history; review of #550).
@@ -696,54 +706,65 @@ fn is_one_turn_nudge(block: &Block) -> bool {
     matches!(block, Block::Text { text } if crate::persona::variety::is_note(text))
 }
 
-/// Whether the owner turn at `index` loses its one-turn nudges: before the
-/// turn being answered, and only if words of its own would remain.
-fn drops_nudges(message: &Message, index: usize, cut: usize) -> bool {
-    index < cut
-        && message.role == Role::User
-        && message.content.iter().any(is_one_turn_nudge)
-        && message.content.iter().any(|b| !is_one_turn_nudge(b))
+/// The one-turn nudges [`PriorNudges::Drop`] leaves out, as (message, block)
+/// positions: every one but the newest in the history, wherever each sits.
+/// "Newest", not "the turn being answered": a turn folded into an earlier
+/// owner message (after a cancelled tool call, or a turn that died before a
+/// reply) can put two notes in one message, or a note beside a tool result
+/// the answering cut does not see (review of #550). A block whose removal
+/// would leave its message empty stays.
+fn stale_nudges(messages: &[Message]) -> Vec<(usize, usize)> {
+    let all: Vec<(usize, usize)> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == Role::User)
+        .flat_map(|(i, m)| {
+            m.content
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| is_one_turn_nudge(b))
+                .map(move |(j, _)| (i, j))
+        })
+        .collect();
+    let Some((_, older)) = all.split_last() else {
+        return Vec::new();
+    };
+    older
+        .iter()
+        .copied()
+        .filter(|&(i, _)| messages[i].content.iter().any(|b| !is_one_turn_nudge(b)))
+        .collect()
 }
 
 impl PriorNudges {
-    /// `messages` with earlier owner turns' one-turn nudges left out.
+    /// `messages` with every one-turn nudge but the newest left out.
     pub fn wire<'a>(
         self,
         messages: std::borrow::Cow<'a, [Message]>,
     ) -> std::borrow::Cow<'a, [Message]> {
-        let cut = match (self, answering(&messages)) {
-            (PriorNudges::Drop, Some(cut)) => cut,
-            _ => return messages,
-        };
-        if !messages
-            .iter()
-            .enumerate()
-            .any(|(i, m)| drops_nudges(m, i, cut))
-        {
+        if self == PriorNudges::Keep {
+            return messages;
+        }
+        let stale = stale_nudges(&messages);
+        if stale.is_empty() {
             return messages;
         }
         let mut owned = messages.into_owned();
-        for (i, m) in owned.iter_mut().enumerate() {
-            if drops_nudges(m, i, cut) {
-                m.content.retain(|b| !is_one_turn_nudge(b));
-            }
+        // From the back, so earlier block indices stay valid.
+        for &(i, j) in stale.iter().rev() {
+            owned[i].content.remove(j);
         }
         std::borrow::Cow::Owned(owned)
     }
 
     /// The bytes [`PriorNudges::wire`] leaves out, for `wire_bytes`.
     pub fn dropped_bytes(self, messages: &[Message]) -> usize {
-        let cut = match (self, answering(messages)) {
-            (PriorNudges::Drop, Some(cut)) => cut,
-            _ => return 0,
-        };
-        messages
-            .iter()
-            .enumerate()
-            .filter(|(i, m)| drops_nudges(m, *i, cut))
-            .flat_map(|(_, m)| &m.content)
-            .filter(|b| is_one_turn_nudge(b))
-            .map(crate::pressure::block_bytes)
+        if self == PriorNudges::Keep {
+            return 0;
+        }
+        stale_nudges(messages)
+            .into_iter()
+            .map(|(i, j)| crate::pressure::block_bytes(&messages[i].content[j]))
             .sum()
     }
 }
@@ -1210,11 +1231,62 @@ mod tests {
         );
         let kept = PriorNudges::Keep.wire(std::borrow::Cow::Borrowed(&history[..]));
         assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
-        // A message that is only a nudge is never emptied.
+        // A message that is only a (stale) nudge is never emptied.
         let mut lone = Message::user("");
         lone.content = vec![note("Lone.")];
-        let alone = [lone, Message::user("now")];
+        let alone = [lone, owner("now", "Newer.")];
         let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&alone[..]));
         assert!(!sent[0].content.is_empty());
+
+        // The fold path (review of #550): a turn that died before a reply
+        // leaves the next turn's note folded into the same owner message, so
+        // one message carries two. Only the newer goes out.
+        let mut folded = owner("hello, and hello again", "Older.");
+        folded.content.push(note("Newest."));
+        let sent =
+            PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(std::slice::from_ref(&folded)));
+        let left: Vec<String> = sent[0]
+            .content
+            .iter()
+            .filter(|b| is_one_turn_nudge(b))
+            .map(|b| match b {
+                Block::Text { text } => text.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(left.len(), 1);
+        assert!(left[0].contains("Newest."), "{left:?}");
+
+        // And a turn cancelled after a tool ran folds the next note beside
+        // the tool result, after the answering cut: the earlier note at the
+        // cut is still stale.
+        let mut results = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "t0".into(),
+            content: "ok".into(),
+            is_error: false,
+        }]);
+        results.content.push(Block::text("and now?"));
+        results.content.push(note("Newest."));
+        let history = [
+            owner("look it up", "Older."),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t0".into(),
+                name: "echo".into(),
+                input: serde_json::json!({}),
+            }]),
+            results,
+        ];
+        let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&history[..]));
+        let with_note: Vec<usize> = sent
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.iter().any(is_one_turn_nudge))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            with_note,
+            vec![2],
+            "the stale note at the answering cut went out"
+        );
     }
 }
