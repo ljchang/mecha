@@ -1597,9 +1597,15 @@ module.
       Each note names what is repeating now, and kept, forty turns in
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
-      subtracts the dropped ones.
+      subtracts the dropped ones. So the persona's wire is not append-only:
+      last turn's note leaves a message the model already saw, which moves
+      the cache's divergence point back by one owner message, the cost
+      `PriorThinking::Drop` already pays at the previous reply.
     - A turn that called a tool is not a reply: its text is a preamble
       ("Let me look that up."), the turns `PriorTails` leaves alone too.
+    - A closer is quoted on one line with its own double quotes removed, so
+      a reply's words can never close the harness's quote and read on as a
+      harness clause.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,
