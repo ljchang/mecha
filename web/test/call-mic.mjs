@@ -33,7 +33,9 @@ function is(actual, expected, what) {
 // Each pane's names for the same three things.
 const panes = [
   { file: 'Chat.svelte', session: 'vSession', muted: 'vMuted', typing: 'vTyping', start: '  function startVoice(' },
-  { file: 'PersonaCall.svelte', session: 'session', muted: 'muted', typing: 'typing', start: '  export function start(' },
+  // `hold`: the persona call's mic also pauses while the chat's edit modal
+  // is open over it (`holdMic`, 2026-10-04).
+  { file: 'PersonaCall.svelte', session: 'session', muted: 'muted', typing: 'typing', start: '  export function start(', hold: '  export function holdMic(on) {' },
 ];
 
 for (const pane of panes) {
@@ -44,15 +46,17 @@ for (const pane of panes) {
     return src.slice(start, src.indexOf('\n  }\n', start) + 4);
   };
   const fns = ['  function applyMic() {', '  function toggleMute() {', '  function typingStart() {', '  function typingEnd() {']
+    .concat(pane.hold ? [pane.hold] : [])
     .map(readOut)
-    .join('\n');
+    .join('\n')
+    .replace('export function holdMic', 'function holdMic');
   const call = new Function(
     `'use strict';
      const mic = [];
      let ${pane.session} = { setMicEnabled: (on) => mic.push(on) };
-     let ${pane.muted} = false, ${pane.typing} = false;
+     let ${pane.muted} = false, ${pane.typing} = false, away = false;
      ${fns}
-     return { toggleMute, typingStart, typingEnd, applyMic, live: () => mic.at(-1) };`,
+     return { toggleMute, typingStart, typingEnd, applyMic, ${pane.hold ? 'holdMic, ' : ''}live: () => mic.at(-1) };`,
   )();
   const steps = (...fns) => fns.map((f) => (f(), call.live()));
 
@@ -66,10 +70,21 @@ for (const pane of panes) {
   );
   is(steps(call.toggleMute, call.typingStart, call.typingEnd, call.toggleMute), [false, false, false, true], `${pane.file}: typing while muted leaves it muted`);
 
+  if (pane.hold) {
+    const hold = () => call.holdMic(true);
+    const release = () => call.holdMic(false);
+    is(steps(hold, release), [false, true], `${pane.file}: the edit modal pauses the mic and gives it back`);
+    is(steps(call.toggleMute, hold, release, call.toggleMute), [false, false, false, true], `${pane.file}: an edit while muted leaves it muted`);
+    is(steps(hold, call.typingStart, call.typingEnd, release), [false, false, false, true], `${pane.file}: the call's own box inside an edit leaves the mic paused`);
+  }
+
   // A new session's mic starts live: the connect chain re-applies both flags
   // once the track exists.
   const start = readOut(pane.start);
   is(/\.connect\(\)\s*\.then\(applyMic\)\s*\.catch\(/.test(start), true, `${pane.file}: a (re)connected session gets the mic the page shows`);
+  if (pane.hold) {
+    is(/\baway = false;/.test(start), true, `${pane.file}: a new call starts with no edit's hold on its mic`);
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
