@@ -200,6 +200,19 @@ const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 /// [`MAX_DECODE_PIXELS`] — said as too large, not as a failed decode, since
 /// the two lead to different fixes. `what` names it in either error.
 pub(crate) fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+    decode_with(bytes, what, false)
+}
+
+/// [`decode`], turned the way the file's EXIF orientation says — the way a
+/// browser shows it. A phone photo is stored sideways with a tag saying so,
+/// and re-encoding it drops the tag, so anything that re-encodes a photo
+/// must decode it this way or hand on a sideways picture.
+pub(crate) fn decode_upright(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+    decode_with(bytes, what, true)
+}
+
+fn decode_with(bytes: &[u8], what: &str, upright: bool) -> Result<image::DynamicImage> {
+    use image::ImageDecoder;
     let reader = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
     if let Ok((w, h)) = reader()
         .map_err(anyhow::Error::from)
@@ -216,9 +229,18 @@ pub(crate) fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
-    reader
-        .decode()
-        .with_context(|| format!("{what} is named as an image but did not decode"))
+    let failed = || format!("{what} is named as an image but did not decode");
+    if !upright {
+        return reader.decode().with_context(failed);
+    }
+    let mut decoder = reader.into_decoder().with_context(failed)?;
+    // An unreadable tag is no tag: the picture as stored, as before.
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).with_context(failed)?;
+    img.apply_orientation(orientation);
+    Ok(img)
 }
 
 /// The media type both backends read for a sniffed format, or `None` for
