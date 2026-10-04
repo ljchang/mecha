@@ -1278,7 +1278,10 @@ person who waited for the question. That still looks right, and it is still not
 what shipped — because the constant it needs cannot be derived. Estimating
 playback from the journal gives ~33 chars/s (≈400 wpm) because TTS *generation*
 runs ahead of playback and the `Generating TTS` intervals measure buffering,
-not speech. Setting a voice constant off the wrong population is the mistake
+not speech. (Since #547 the worker's journal keeps no words, and those lines
+are not written; pipecat's `_bot_started_speaking`/`_bot_stopped_speaking`
+lines are kept, and they bound playback rather than generation.) Setting a
+voice constant off the wrong population is the mistake
 this same document already records against the echo floor, so the timing layer
 waits for a real call to measure the tail against.
 
@@ -1396,7 +1399,10 @@ The direction was safe (the bounded re-ask keeps the draft), but the listener
 was never actually asked again. It had gone unnoticed because the path has
 never run: `journalctl --user -u mecha-voice-worker | grep "Say yes to send
 it"` returns nothing over thirty days, so no offer has yet played in a real
-call. The whole confirmation flow is deployed and unexercised, which is worth
+call. (It has played since, once: `VOICE-APPROVAL-RESEARCH.md`. And that
+grep is retired by #547, which keeps words out of the worker's journal;
+serve's `voice: confirmation offered for draft …` line is the evidence
+since.) The whole confirmation flow is deployed and unexercised, which is worth
 knowing before trusting any of it — and it is what the first voice call after
 the next deploy should exercise deliberately.
 

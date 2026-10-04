@@ -273,7 +273,9 @@ readback names the new value.
 measurement: `VOICE-RESEARCH` records why the playback constant cannot be
 derived from the existing journal (TTS generation runs ahead of playback, so
 `Generating TTS` intervals measure buffering — ~33 chars/s, ≈400 wpm, plainly
-wrong) and that it wants a real call made after the 2026-09-03 mic-meter
+wrong; since #547 those lines are not written at all, and pipecat's
+`_bot_started_speaking`/`_bot_stopped_speaking` lines, which are kept, bound
+real playback) and that it wants a real call made after the 2026-09-03 mic-meter
 repair. That call is owed regardless; it is the same call that re-derives
 `ECHO_SEGMENT_RMS`.
 
