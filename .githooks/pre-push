@@ -4,8 +4,10 @@
 # so a `--no-verify` commit is still caught before it is public.
 # `scripts/check-private.py` holds the reasoning.
 #
-# Fails closed (review of #557): a range that cannot be worked out is
+# The range fails closed (review of #557): one that cannot be worked out is
 # refused, never skipped — a skipped push reads exactly like a passed one.
+# A clone with no python3, or none of this script, is not checked at all:
+# there is nothing here to run.
 command -v python3 >/dev/null 2>&1 || exit 0
 [ -f scripts/check-private.py ] || exit 0
 zero=0000000000000000000000000000000000000000

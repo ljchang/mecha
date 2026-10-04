@@ -18,7 +18,8 @@ phrases kept in the repository, which would itself be the leak:
   them).
 
 Then it looks at the lines being added — the staged diff (`--staged`, the
-pre-commit hook) or a commit range (`--range A..B`, the pre-push hook) — for:
+pre-commit hook), a commit range (`--range A..B`, the pre-push hook) or a
+commit message (`--message FILE`, the commit-msg hook) — for:
 
 1. a run of `SHINGLE` words that was said in a conversation;
 2. a quoted phrase of three or more words that was said in one;
@@ -144,7 +145,15 @@ def corpus():
 
 
 def added_lines(args):
-    """(path, line number, text) for every line the change adds."""
+    """(path, line number, text) for every line the change adds — or, with
+    `--message FILE` (the commit-msg hook), every line of a commit message,
+    which is text that goes public as surely as a diff (review of #557)."""
+    if args and args[0] == "--message":
+        with open(args[1], errors="replace") as fh:
+            for num, line in enumerate(fh, 1):
+                if not line.startswith("#"):  # git's own instructions
+                    yield "commit message", num, line.rstrip("\n")
+        return
     if args and args[0] == "--range":
         diff = ["git", "diff", "--unified=0", "--no-color", args[1]]
     else:
@@ -175,11 +184,16 @@ BASE = ["HEAD"]
 def in_head(normalised, head_cache=[]):
     """Whether the repository already says this before the change — the
     harness's own words. `HEAD` for a commit; the range's base for a push,
-    whose `HEAD` is the change itself."""
+    whose `HEAD` is the change itself. Lines are kept apart by a separator
+    no word can match: a run of words that exists only by straddling two
+    lines, or two files, is not something the repository says (review of
+    #557). The added side is read per line too, so the coverage is per line:
+    a private phrase rewrapped across lines is caught where six of its words
+    share one line, or by the quoted-phrase check."""
     if not head_cache:
         out = subprocess.run(["git", "grep", "-I", "-h", "-e", "", BASE[0], "--"],
                              capture_output=True, text=True, errors="replace").stdout
-        head_cache.append(" ".join(words(out)))
+        head_cache.append(" | ".join(" ".join(words(line)) for line in out.splitlines()))
     return f" {normalised} " in f" {head_cache[0]} "
 
 
