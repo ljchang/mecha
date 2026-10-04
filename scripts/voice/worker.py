@@ -157,7 +157,7 @@ DIRECT_FIRST_TIMEOUT_SECONDS = 2.8
 # reply to droppable fragments instead of chat).
 # Segments quieter than this never reach the model. The gate was measured
 # against a chat-model transcriber, which handed silence or echo residue
-# stopped transcribing and started *answering* ("[removed]
+# stopped transcribing and started *answering* (saying it was an AI
 # with no calendar) - and that answer rode into mecha as the owner's words, the
 # observed 2026-08-24 bug. A transducer cannot do that, so the gate is now
 # about cost and false turns rather than about fabrication; it stays
@@ -175,7 +175,7 @@ MIN_SEGMENT_SECONDS = 0.3
 # spend it, and warm Parakeet answers 0.5-0.9s after speech ends (2.5s cold,
 # 2026-09-04 12:55 UTC). When it expired first, smart-turn's COMPLETE fired
 # the turn on the *previous* segment's text and this segment's transcript
-# arrived as a new turn - which is how "[removed]?" was dropped from
+# arrived as a new turn - which is how "Grocery list?" was dropped from
 # one request and then barged in on the reply to it. Two seconds covers the
 # warm tail with room; every transcript here is finalized (`run_stt`), so on
 # the ordinary path the turn ends the moment the text lands and this only

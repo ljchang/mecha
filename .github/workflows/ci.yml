@@ -86,6 +86,23 @@ jobs:
           MECHA_SESSION_KIND: test
         run: cargo test --workspace --locked
 
+  no-logs:
+    # No logs, recordings or run output in a public repository (owner's
+    # ruling, 2026-10-04). The pre-commit and pre-push hooks compare added text
+    # against the conversations on the owner's machine; CI cannot see those,
+    # so it holds the file-level line, which nothing local can skip.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No logs, recordings or run output are tracked
+        run: |
+          bad=$(git ls-files | grep -E '(\.log(\.|$)|\.pid$|\.(pcm|wav|mp3|ogg|m4a|webm)$|(^|/)journal[^/]*\.txt$|^results/)' || true)
+          if [ -n "$bad" ]; then
+            echo "Tracked files that must not be in this repository:"
+            echo "$bad" | sed 's/^/  /'
+            exit 1
+          fi
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
