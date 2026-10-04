@@ -153,7 +153,9 @@ jobs:
       - run: pip install loguru
       - run: python3 scripts/voice/test_journal.py
         env:
-          # A missing loguru fails the step rather than skipping the sink.
+          # A missing loguru fails the step rather than skipping the sink. The
+          # layer asserting pipecat's real logger names (TheRealModules) needs
+          # the worker's venv and still skips here, by name.
           MECHA_TEST_REQUIRE_BACKENDS: "1"
 
   # The Breeze adapter (scripts/voice/breeze_server.py) is where the voice's

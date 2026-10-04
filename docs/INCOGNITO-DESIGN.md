@@ -381,8 +381,8 @@ conversation has no `Session` to record into, and a closed key comes back
   DEBUG lines; `scripts/voice/journal.py`). Since then a line keeps the
   length of what was said (`<N chars>`) where it used to say
   `<withheld: an incognito call is live>`. That was a constant, and it
-  announced the very fact this section promises no line says. No line says an incognito chat was
-  spoken into, redacted or not: the worker's call-start line reads as a
+  announced the very fact this section promises no line says. No line says
+  an incognito chat was spoken into, redacted or not: the worker's call-start line reads as a
   call that named no chat (`session_line`), its affect latch — once per
   answer, `worker.py`'s own record and so outside the silence — is not
   written for such a call, and the facade's refusal path logs nothing for

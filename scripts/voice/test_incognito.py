@@ -126,9 +126,13 @@ class TheWorkersOwnLines(unittest.TestCase):
     def test_words_are_withheld_on_every_call_incognito_or_not(self):
         # Since 2026-10-04 an ordinary call keeps no words either (`journal`).
         self.assertNotIn(SECRET, withheld(SECRET))
+        ordinary = withheld(SECRET)
         with UNLOGGED.held(True):
-            self.assertNotIn(SECRET, withheld(SECRET))
-        self.assertEqual(withheld(SECRET), f"<{len(SECRET)} chars>")
+            # Identical to an ordinary call's line, deliberately: the old
+            # `<withheld: an incognito call is live>` announced the very fact
+            # §6.4 promises no line says (review of #547).
+            self.assertEqual(withheld(SECRET), ordinary)
+        self.assertEqual(withheld(SECRET), withheld("x" * len(SECRET)))
 
 
 class TheChatsName(unittest.TestCase):

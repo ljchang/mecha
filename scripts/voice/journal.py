@@ -21,8 +21,17 @@ tests with loguru installed and nothing else.
   listed had none in ~6,800. An allowlist, not a cut-list of the text-bearing
   families: a family a pipecat upgrade adds or renames is unmeasured, and
   unmeasured is not clean, so its DEBUG lines are dropped until someone
-  measures it (review of #547). Warnings and errors from every family stay,
-  as does everything outside `pipecat`.
+  measures it (review of #547). The measurement is of the modules this
+  pipeline ran that week, not of everything a family can log, so re-measure
+  after a pipecat upgrade **or a pipeline change** that adds a processor.
+
+  Warnings and errors from every family stay, as does everything outside
+  `pipecat`. That is the residual: the same week's pipecat lines at INFO and
+  above (111 INFO, 320 WARNING, no ERROR) held no phrase, but a warning that
+  interpolates a frame (`f"{self}: … {frame}"`) would carry a
+  `TranscriptionFrame`'s text in its message, which `diagnose=False` does not
+  reach. Incognito calls are unaffected: their silence disables all of
+  `pipecat` at the core, at every level.
 
   The price: `services` lines that carried no words go too, among them
   `base_llm`'s function-call lines and `tts_service`'s interruption handling,

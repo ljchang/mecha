@@ -3712,8 +3712,11 @@ brief (which reads the board through the graph server) do not run.
   only from a family measured to carry no words (`WORDLESS_FAMILIES`). It is
   an allowlist, so a family a pipecat upgrade adds or renames is dropped
   until someone measures it. Warnings and errors stay, as does everything
-  outside `pipecat`; `LocalTTS.run_tts` logs each sentence's length (no
-  words) for timing studies. It is a
+  outside `pipecat`, and that is the residual: a week of pipecat warnings
+  held no words, but one that interpolates a frame would carry its text (an
+  incognito call is silenced at every level regardless). `LocalTTS.run_tts`
+  logs each sentence's length (no words; not for an incognito call) for
+  timing studies. It is a
   sink filter, which the runner's one reset in `main()` would discard, so it
   is installed after that reset: at server start (composed into the app's
   lifespan by `journal.lifespan`, after the inner one has started) and at
