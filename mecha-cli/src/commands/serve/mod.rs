@@ -4279,6 +4279,7 @@ mod boundary_tests {
                         serde_json::json!({ node.clone(): {"input": {"required": {input: [[name], {}]}}}})
                     };
                     axum::Json(match node.as_str() {
+                        "UNETLoader" => files("unet_name", "qwen_image_2.1_int8_convrot.safetensors"),
                         "UnetLoaderGGUF" => files("unet_name", "Qwen-Image-2.1-Q4.gguf"),
                         "CLIPLoader" => files("clip_name", "qwen3vl_8b_w4a8.safetensors"),
                         "VAELoader" => files("vae_name", "qwen_image_2.1_vae_bf16.safetensors"),
