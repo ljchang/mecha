@@ -55,9 +55,13 @@
 > something — is built; so is 7b-3a: `engine_gate.rs`, the measurement
 > gate (each unit's own launcher on a private port, both engines in turn,
 > under a held switch that declines rather than waits), its ledger, and
-> `mecha setup engine` with `--adopt` and `--rollback`. 7b-2 (the build
-> fallback), 7b-3b (`--upgrade` and an upgrade's rollback), 7c–7f and step
-> 8 are unbuilt (step 7 redesigned in §10). The
+> `mecha setup engine` with `--adopt` and `--rollback`; and so is 7b-3b:
+> `--upgrade [--to <tag>]` (F10 — the newest `b` release with a build for
+> the machine, its tag confirmed at a terminal, its archives checked against
+> the release API's digests), `install_build` beside `current`, the
+> promotion moving `current` and keeping `previous`, the router asked for
+> its `build_info`, and `--rollback` one build back. 7b-2 (the build
+> fallback), 7c–7f and step 8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1560,7 +1564,14 @@ Step 7 becomes these, each a PR that leaves every feature working:
   `features enable`; **7b-2** the build fallback; **7b-3** `setup engine`'s
   `--upgrade`, `--rollback` and `--adopt`, with the gate and its ledger —
   itself two: **7b-3a** the gate, the ledger, `--adopt` and its
-  `--rollback`; **7b-3b** `--upgrade` (F10) and an upgrade's rollback. The
+  `--rollback`; **7b-3b** `--upgrade` (F10) and an upgrade's rollback —
+  measured 2026-10-05: the release API's digests and commit for `b11391`
+  equal the reviewed pin on all seven targets, and today's newest (`b11399`)
+  installs beside `current` through the F10 path and reports its tag's
+  commit. A promotion is confirmed by the router's own `/props`
+  `build_info` (`autoload=false`, so the question loads nothing), since an
+  upgraded unit still names `current/llama-server` and a path comparison
+  would pass whichever build ran. The
   gate measures each server **as its unit runs it**: the unit's own
   launcher and environment (read from `systemctl --user show`), with
   `LLAMA_SERVER` and the launcher's port variable overridden, so the
