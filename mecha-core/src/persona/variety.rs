@@ -28,7 +28,8 @@ use crate::message::{dangling_tail, ends_mid_clause, Block, Message, Role};
 pub const OPENING_STEM: &str = "(From the harness: your last replies opened with";
 pub const CLOSING_STEM: &str = "(From the harness: don't end on a line you've used lately";
 
-/// How many earlier replies' closing lines are named: the last three.
+/// How many earlier replies' closing lines are named: the last three that
+/// have one (a reply with no whole sentence is passed over).
 const CLOSERS_NAMED: usize = 3;
 /// The most of one closing line quoted back.
 const CLOSER_CHARS: usize = 80;
@@ -157,14 +158,21 @@ fn last_sentence(text: &str) -> Option<String> {
 /// and read on as a harness clause (review of #550), and capped at
 /// [`CLOSER_CHARS`].
 fn quotable(closer: &str) -> String {
-    closer
+    let line: String = closer
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
         .filter(|c| !matches!(c, '"' | '“' | '”'))
-        .take(CLOSER_CHARS)
-        .collect()
+        .collect();
+    if line.chars().count() <= CLOSER_CHARS {
+        return line;
+    }
+    // Cut at a word and say so: a mid-word fragment is the half-finished
+    // line the rest of this module keeps out of the note.
+    let head: String = line.chars().take(CLOSER_CHARS - 1).collect();
+    let head = head.rsplit_once(' ').map_or(head.as_str(), |(h, _)| h);
+    format!("{}…", head.trim_end())
 }
 
 #[cfg(test)]
@@ -303,5 +311,7 @@ mod tests {
         let n = note(&[said(&long)]).expect("a note");
         let quoted = n.split('"').nth(1).unwrap();
         assert!(quoted.chars().count() <= CLOSER_CHARS, "{quoted}");
+        // At a word, and marked as cut.
+        assert!(quoted.ends_with("word…"), "{quoted}");
     }
 }

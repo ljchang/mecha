@@ -702,7 +702,8 @@ pub enum PriorNudges {
     /// Sent as recorded.
     #[default]
     Keep,
-    /// Every one but the newest left out: a persona chat.
+    /// Every one but the newest left out, where that costs the cache nothing
+    /// (`stale_nudges`): a persona chat.
     /// `persona::variety`'s note is folded each turn and names what is
     /// repeating *now*; kept, forty turns in the prefix would be forty stale,
     /// contradictory "don't end on X" lines, which is not the condition the
@@ -716,12 +717,22 @@ fn is_one_turn_nudge(block: &Block) -> bool {
 }
 
 /// The one-turn nudges [`PriorNudges::Drop`] leaves out, as (message, block)
-/// positions: every one but the newest in the history, wherever each sits.
-/// "Newest", not "the turn being answered": a turn folded into an earlier
-/// owner message (after a cancelled tool call, or a turn that died before a
-/// reply) can put two notes in one message, or a note beside a tool result
-/// the answering cut does not see (review of #550). A block whose removal
-/// would leave its message empty stays.
+/// positions: every one but the newest in the history, wherever each sits,
+/// when leaving it out is free. "Newest", not "the turn being answered": a
+/// turn folded into an earlier owner message (a turn that died before a
+/// reply) can put two notes in one message (review of #550).
+///
+/// **Free** means the server would re-read what follows the note anyway.
+/// Removing it rewrites a request already sent, so the slot's cache diverges
+/// at the note: costless when the note's message is the last one, or when a
+/// plain reply follows it, whose thinking `PriorThinking::Drop` strips (the
+/// slot holds it as generated, *with* its thinking). A turn that called a
+/// tool keeps its thinking and goes back byte-identical under the router's
+/// `reasoning-preserve`, so dropping a note ahead of one would re-read the
+/// whole round trip, tool results included, on a spoken turn's latency path
+/// (review of #550): that note stays. Structural, so it reads the same on the
+/// recorded history (`dropped_bytes`) and on the thinking-stripped one
+/// (`wire`). A block whose removal would leave its message empty stays too.
 fn stale_nudges(messages: &[Message]) -> Vec<(usize, usize)> {
     let all: Vec<(usize, usize)> = messages
         .iter()
@@ -742,6 +753,16 @@ fn stale_nudges(messages: &[Message]) -> Vec<(usize, usize)> {
         .iter()
         .copied()
         .filter(|&(i, _)| messages[i].content.iter().any(|b| !is_one_turn_nudge(b)))
+        .filter(|&(i, _)| match messages.get(i + 1) {
+            None => true,
+            Some(next) => {
+                next.role == Role::Assistant
+                    && !next
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, Block::ToolUse { .. }))
+            }
+        })
         .collect()
 }
 
@@ -1239,7 +1260,11 @@ mod tests {
         // A message that is only a (stale) nudge is never emptied.
         let mut lone = Message::user("");
         lone.content = vec![note("Lone.")];
-        let alone = [lone, owner("now", "Newer.")];
+        let alone = [
+            lone,
+            Message::assistant(vec![Block::text("Hm?")]),
+            owner("now", "Newer."),
+        ];
         let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&alone[..]));
         assert!(!sent[0].content.is_empty());
 
@@ -1262,9 +1287,11 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert!(left[0].contains("Newest."), "{left:?}");
 
-        // And a turn cancelled after a tool ran folds the next note beside
-        // the tool result, after the answering cut: the earlier note at the
-        // cut is still stale.
+        // A note ahead of a tool round trip stays: the tool turn goes back
+        // with its thinking, byte-identical to what the slot holds, so
+        // removing the note would re-read the call and its results (review
+        // of #550). Here a turn cancelled after a tool ran folds the next
+        // note beside the tool result: two notes go out, the cheaper harm.
         let mut results = Message::tool_results(vec![Block::ToolResult {
             tool_use_id: "t0".into(),
             content: "ok".into(),
@@ -1290,8 +1317,41 @@ mod tests {
             .collect();
         assert_eq!(
             with_note,
-            vec![2],
-            "the stale note at the answering cut went out"
+            vec![0, 2],
+            "a note ahead of a tool turn was dropped, re-reading the round trip"
+        );
+        assert_eq!(PriorNudges::Drop.dropped_bytes(&history), 0);
+
+        // The ordinary tool turn: the stale note before the call stays, the
+        // one before a plain reply goes.
+        let history = [
+            owner("hi", "Before a plain reply."),
+            Message::assistant(vec![Block::text("Hello.")]),
+            owner("look it up", "Before a tool."),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "echo".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "a long result".into(),
+                is_error: false,
+            }]),
+            Message::assistant(vec![Block::text("Found it.")]),
+            owner("thanks", "Current."),
+        ];
+        let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&history[..]));
+        let with_note: Vec<usize> = sent
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.iter().any(is_one_turn_nudge))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(with_note, vec![2, 6]);
+        assert_eq!(
+            PriorNudges::Drop.dropped_bytes(&history),
+            crate::pressure::message_bytes(&history) - crate::pressure::message_bytes(&sent),
         );
     }
 }
