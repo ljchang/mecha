@@ -1598,12 +1598,13 @@ module.
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
       subtracts the dropped ones. **This is the first view that rewrites
-      bytes already sent**: `PriorThinking` and `PriorTails` change only
-      replies that no earlier request carried, so their wire stays
-      append-only, while last turn's note leaves a message the model already
-      saw. The cost is small (the note is folded last, so the divergence is
-      its own tokens with nothing after them), but it is new, not a
-      precedent.
+      a request already sent**: last turn's note leaves a message an earlier
+      prompt carried. The cache cost is the note's own tokens, because the
+      slot was already going to diverge right after them: it holds the reply
+      it generated *with* its thinking, and `PriorThinking::Drop` sends that
+      reply back without, so the reply is reprocessed either way. That is a
+      property of the order (note last in its message, reply next), so a
+      later view that rewrites earlier text pays from its own position on.
     - A turn that called a tool is not a reply: its text is a preamble
       ("Let me look that up."), the turns `PriorTails` leaves alone too. A
       reply with no whole sentence ("Mmm, I was just", barged in on) has no
