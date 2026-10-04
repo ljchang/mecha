@@ -278,6 +278,35 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, 1, text)
 
+    def test_a_barge_in_folded_into_a_rewrite_counts_and_one_word_directions_bind_nothing(self):
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        typed = "Rebase the branch onto main and rerun the whole test suite."
+        heard = "Book the boiler service for the morning of the twelfth."
+        barge = "Wait, make that the afternoon of the twelfth instead please."
+        t = lambda x: {"type": "text", "text": x}
+        msg = lambda role, *b: {"role": role, "content": list(b)}
+        typed_reply = "Sure. I rebased onto main and the suite is green again."
+        with open(os.path.join(sessions, "20990106T000000-5f6a7b8c.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "v", "kind": "web"}) + "\n")
+            for m in (msg("user", t(typed)), msg("assistant", t(typed_reply)),
+                      msg("user", t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + heard)),
+                      msg("assistant", {"type": "tool_use", "id": "t1", "name": "cal", "input": {}}),
+                      msg("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"})):
+                f.write(json.dumps({"record": "message", **m}) + "\n")
+            # The barge-in, as the recorder writes it: folded into the tail,
+            # and present only in the rewritten list.
+            f.write(json.dumps({"record": "rewrite", "messages": [
+                msg("user", t(typed)), msg("assistant", t(typed_reply)),
+                msg("user", t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + heard)),
+                msg("assistant", {"type": "tool_use", "id": "t1", "name": "cal", "input": {}}),
+                msg("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}, t(barge))]}) + "\n")
+            f.write(json.dumps({"record": "spoken_direction", "turn": "x", "sentence": "Sure."}) + "\n")
+        for text, want in ((barge, 1), (typed, 0), (typed_reply, 0)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
     def test_a_chat_title_and_a_compaction_summary_count(self):
         sessions = os.path.join(self.home, "sessions")
         os.makedirs(sessions, exist_ok=True)
