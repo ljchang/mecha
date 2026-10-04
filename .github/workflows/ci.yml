@@ -136,9 +136,10 @@ jobs:
   # tested without a GPU box and a WebRTC stack. Nothing kept that argument
   # true past the branch that made it.
   #
-  # Stdlib only and no venv, deliberately: the module imports nothing, so this
-  # job needs nothing, and a dependency here would be the first excuse to skip
-  # it on a runner that lacks one.
+  # No venv, deliberately, and as little installed as each test needs: the echo
+  # filter imports nothing, and the journal test needs only loguru, installed
+  # below rather than skipped. A test that skips for a missing dependency
+  # reads exactly like one that passed.
   voice:
     name: voice filter
     runs-on: ubuntu-latest
