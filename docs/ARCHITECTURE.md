@@ -3712,8 +3712,14 @@ brief (which reads the board through the graph server) do not run.
   below INFO, keeping its warnings and every other module's lines. It is a
   sink filter, which the runner's one reset in `main()` would discard, so it
   is installed after that reset: at server start (composed into the app's
-  lifespan by `worker.install`) and at the top of every `run_bot`. The
-  incognito silence above stays at the core and does not depend on it.
+  lifespan by `journal.lifespan`, after the inner one has started) and at
+  the top of every `run_bot`. loguru's `diagnose` and `backtrace` are off,
+  because a diagnosed traceback prints the values of locals, such as the frame
+  pipecat was processing. The incognito silence above stays at the core
+  and does not depend on it. It retired a probe: the worker's journal held
+  the spoken outbox offer's text, the only evidence one had played, so
+  `voice::offer_note` now prints `voice: confirmation offered for draft …`
+  to serve's journal when an offer is armed (none for an incognito chat).
 - **The voice director runs, and keeps nothing** (owner ruling, 2026-10-03).
   An incognito call's sentences are directed like any other, on the local
   model, but no `spoken_direction` record is written — the chat has no

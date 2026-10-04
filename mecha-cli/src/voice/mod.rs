@@ -1697,7 +1697,28 @@ async fn offer_for_turn(
 ///
 /// So: composing is free, arming is a promise that a question was asked.
 async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, pending: confirm::Pending) {
+    if let Some(note) = offer_note(confirm_key, &pending) {
+        eprintln!("{note}");
+    }
     shared.confirmations.set(confirm_key, pending).await;
+}
+
+/// The journal's record that a spoken confirmation was offered: the fact and
+/// the draft, never the words. Until #547 the worker's journal held the
+/// offer's text through pipecat's TTS lines, and that was the only evidence
+/// an offer had ever played (`grep "Say yes to send it"`); with words kept out
+/// of the journal, this line is the evidence. Serve's tracing is `warn` by
+/// default, so it is printed rather than traced. Nothing for an incognito
+/// chat: no journal line says one was spoken into.
+fn offer_note(confirm_key: &str, pending: &confirm::Pending) -> Option<String> {
+    if direct::names_incognito(confirm_key) {
+        return None;
+    }
+    Some(format!(
+        "voice: confirmation offered for draft {} ({} queued)",
+        pending.queue.front().map(String::as_str).unwrap_or("?"),
+        pending.queue.len()
+    ))
 }
 
 /// The response head plus the opening `role` chunk, for an SSE reply.
@@ -2446,6 +2467,30 @@ async fn completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spoken confirmation leaves one journal line: the draft it asked
+    /// about, never the question it spoke, and nothing at all for an
+    /// incognito chat. With words kept out of the worker's journal (#547) it
+    /// is the only evidence an offer played.
+    #[test]
+    fn an_offer_is_noted_by_its_draft_and_never_by_its_words() {
+        let pending = confirm::Pending {
+            queue: ["draft-7".to_string(), "draft-8".to_string()].into(),
+            asked: "Send the note to Dana about Thursday? Say yes to send it.".into(),
+            ..Default::default()
+        };
+        let note = offer_note("chat:main", &pending).expect("an ordinary chat is noted");
+        assert!(
+            note.contains("draft-7") && note.contains("2 queued"),
+            "{note}"
+        );
+        assert!(
+            !note.contains("Say yes") && !note.contains("Dana") && !note.contains("Thursday"),
+            "{note}"
+        );
+        let incognito = format!("chat:{}", crate::commands::serve::incognito::new_key());
+        assert_eq!(offer_note(&incognito, &pending), None);
+    }
 
     /// The fifth pop site's regression, pinned at the predicate: the old
     /// guard was `role == User`, which is true of the message carrying tool
