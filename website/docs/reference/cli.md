@@ -1513,7 +1513,11 @@ the servers whatever the measurement says.
 
 The router does not answer while it is measured — a few minutes — so `--adopt`
 asks first, and **declines without measuring** if any run holds the router or
-another switch is waiting. Your own llama.cpp is left where it is.
+another switch is waiting. Your own llama.cpp is left where it is. **Ctrl-C** during
+the download or the measurement stops what it started and puts the router back
+on its engine with the model you had; once the servers are being moved it
+finishes that first. A machine where only some units run mecha's engine is
+refused: `--rollback` first, so every unit is measured against what it ran.
 
 **`--rollback`** removes the drop-ins, so the units run your llama.cpp again,
 and restarts the router on it. It waits for running work, as any model switch

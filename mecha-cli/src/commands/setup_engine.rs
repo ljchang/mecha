@@ -256,11 +256,26 @@ async fn run_adopt(
     // The holds under this machinery's home, the one the manifest, the
     // ledger and the managed engine are under.
     let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
-    let row = gate::adopt(m, &servers, &holds, base, model, force, &mut |s| {
+    // From here an interrupt is the owner's "stop": during the download or
+    // the measurement it unwinds (the servers it started stopped, the router
+    // restarted on its engine); during the promotion it is held until the
+    // promotion has finished, never leaving the drop-ins half written.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .context("installing the interrupt handler for the adopt")?;
+    let on_interrupt = cancel.clone();
+    let listener = tokio::spawn(async move {
+        while interrupt.recv().await.is_some() {
+            eprintln!("\ninterrupted — stopping what is running and putting the router back");
+            on_interrupt.cancel();
+        }
+    });
+    let row = gate::adopt(m, &servers, &holds, base, model, force, &cancel, &mut |s| {
         println!("  {s}")
     })
-    .await
-    .context("adopting the engine")?;
+    .await;
+    listener.abort();
+    let row = row.context("adopting the engine")?;
     print!("\n{}", render(&row));
     if let Outcome::Partial { .. } = row.outcome {
         bail!(
@@ -340,7 +355,10 @@ async fn run_rollback(
     // router is asked about afterwards — and loaded again — is the one the
     // owner had, not only the configured one.
     let listed = mecha_core::provider::router::models(&base).await;
-    let check = gate::measured_model(listed.as_deref(), model).ok();
+    let (check, unchecked) = match gate::measured_model(listed.as_deref(), model) {
+        Ok(m) => (Some(m), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
 
     for unit in &adopted {
         let path = gate::drop_in_path(dir, unit);
@@ -376,9 +394,10 @@ async fn run_rollback(
             provided.display()
         ),
         None => println!(
-            "rolled back: the drop-ins are gone and the router answers, but no model was loaded \
-             to ask which engine runs it — `mecha setup engine` shows what each unit names; \
-             mecha's engine stays installed for another `--adopt`"
+            "rolled back: the drop-ins are gone and the router answers, but which engine runs \
+             it was not asked ({}) — `mecha setup engine` shows what each unit names; mecha's \
+             engine stays installed for another `--adopt`",
+            unchecked.as_deref().unwrap_or("no model to ask about")
         ),
     }
     Ok(())

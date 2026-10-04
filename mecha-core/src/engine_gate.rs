@@ -1021,12 +1021,17 @@ pub fn managed_binary(mecha_home: &Path) -> PathBuf {
 
 /// Whether every present unit already runs the managed engine.
 pub fn adopted(servers: &Servers, mecha_home: &Path) -> bool {
+    !servers.present.is_empty() && servers.present.len() == adopted_units(servers, mecha_home)
+}
+
+/// How many present units run the managed engine.
+pub fn adopted_units(servers: &Servers, mecha_home: &Path) -> usize {
     let managed = managed_binary(mecha_home);
-    !servers.present.is_empty()
-        && servers
-            .present
-            .iter()
-            .all(|(_, l)| l.engine(&servers.base_env).as_deref() == Some(managed.as_path()))
+    servers
+        .present
+        .iter()
+        .filter(|(_, l)| l.engine(&servers.base_env).as_deref() == Some(managed.as_path()))
+        .count()
 }
 
 /// Wait for the router at `base` to answer, then load `model` on it and
@@ -1129,6 +1134,8 @@ pub fn measured_model(
     fallback: Option<&str>,
 ) -> Result<String> {
     let resident = match list {
+        // An empty list is a router with no presets answering: nothing loaded.
+        Some([]) => None,
         Some(l) if !crate::provider::router::readable(l) => bail!(
             "the router's model list has a status this build does not know, so which model is \
              loaded is unknown — nothing was measured or moved"
@@ -1153,6 +1160,7 @@ const FINISH_ADOPT: &str = "systemctl --user daemon-reload && systemctl --user r
 /// as the first rollback. Runs under the router's switch from before the
 /// first measurement to after the router answers on the winner; declines,
 /// moving nothing, when a switch is pending or a run holds the router.
+#[allow(clippy::too_many_arguments)]
 pub async fn adopt(
     m: &crate::sidecar::Machinery,
     servers: &Servers,
@@ -1160,6 +1168,7 @@ pub async fn adopt(
     base_url: &str,
     fallback_model: Option<&str>,
     force: bool,
+    cancel: &tokio_util::sync::CancellationToken,
     say: &mut dyn FnMut(&str),
 ) -> Result<LedgerRow> {
     let base = crate::provider::router::base(base_url);
@@ -1172,6 +1181,17 @@ pub async fn adopt(
     if adopted(servers, &m.mecha_home) {
         bail!("every llama.cpp unit here already runs mecha's engine — nothing to adopt");
     }
+    // Part-adopted: the install below repoints `current`, which an adopted
+    // unit's drop-in names, so its "old" leg would run the candidate and the
+    // measurement would compare the new engine with itself.
+    let some = adopted_units(servers, &m.mecha_home);
+    if some > 0 {
+        bail!(
+            "{some} of these units already run mecha's engine — `mecha setup engine \
+             --rollback` first, then `--adopt` measures every unit against the engine it ran \
+             before"
+        );
+    }
     // Before the download and the switch: a router whose engine cannot be
     // found has nothing to measure against.
     let old_engine = servers
@@ -1182,7 +1202,12 @@ pub async fn adopt(
     // Downloaded before the switch is taken — holding it through a download
     // would make every run that starts meanwhile wait on it.
     let managed = managed_binary(&m.mecha_home);
-    crate::engine::install_engine(m, &mut *say).await?;
+    tokio::select! {
+        r = crate::engine::install_engine(m, &mut *say) => { r?; }
+        () = cancel.cancelled() => bail!(
+            "interrupted while fetching — nothing was moved, and the download resumes next time"
+        ),
+    }
     let to = format!("llama.cpp {}", crate::engine::PIN.tag);
     let switching = take_switch(holds, &base, &to)?;
     // What the owner is using is what gets measured, read before anything
@@ -1192,12 +1217,18 @@ pub async fn adopt(
     say("stopping the router for the measurement");
     systemctl("stop", &["llama-local.service"])?;
     let logs = crate::engine::engine_root(&m.mecha_home).join("gate");
-    let measured = async {
+    let measuring = async {
         let (old, old_v) = measure(servers, None, model.as_deref(), &logs, "old", say).await?;
         let new = measure(servers, Some(&managed), model.as_deref(), &logs, "new", say).await;
         Ok::<_, anyhow::Error>((old, old_v, new))
-    }
-    .await;
+    };
+    // An interrupt drops the legs in flight — their guards stop each server's
+    // whole group — and then takes the same way back as a failed measurement:
+    // the router restarted on its engine, with the model it had.
+    let measured = tokio::select! {
+        r = measuring => r,
+        () = cancel.cancelled() => Err(anyhow::anyhow!("interrupted during the measurement")),
+    };
     let (old, old_v, new) = match measured {
         Ok(x) => x,
         Err(e) => {
@@ -1512,6 +1543,14 @@ mod tests {
 
     const ROUTER: &str = "http://127.0.0.1:8080";
 
+    /// The refusal a call must have made, as text.
+    fn refused<T>(r: Result<T>) -> String {
+        match r {
+            Ok(_) => panic!("expected a refusal"),
+            Err(e) => e.to_string(),
+        }
+    }
+
     /// The safety the gate rests on: a run holding the router, or a switch
     /// already waiting, declines — before the download, and again under the
     /// switch — and leaves no switch behind.
@@ -1522,10 +1561,7 @@ mod tests {
         let held = h.try_hold(ROUTER, "web chat").unwrap().unwrap();
         let err = preflight(&h, ROUTER).unwrap_err().to_string();
         assert!(err.contains("web chat"), "{err}");
-        let err = take_switch(&h, ROUTER, "llama.cpp b1")
-            .err()
-            .expect("declined")
-            .to_string();
+        let err = refused(take_switch(&h, ROUTER, "llama.cpp b1"));
         assert!(err.contains("hold the router"), "{err}");
         assert!(
             h.pending(ROUTER).is_none(),
@@ -1551,6 +1587,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A machine where some units already run mecha's engine is refused
+    /// before anything is fetched or stopped: the install would repoint
+    /// `current` under them, and their "old" leg would run the candidate.
+    #[tokio::test]
+    async fn a_part_adopted_machine_is_refused_before_anything_moves() {
+        let root = std::env::temp_dir().join(format!("mecha-part-{}", uuid::Uuid::new_v4()));
+        let m = crate::sidecar::Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let unit = |role, env: Vec<(String, String)>| {
+            let s = SERVERS.iter().find(|s| s.role == role).copied().unwrap();
+            (
+                s,
+                Launcher {
+                    argv: vec!["/x".into()],
+                    env,
+                },
+            )
+        };
+        let path = ("PATH".to_string(), "/usr/bin".to_string());
+        let servers = Servers {
+            present: vec![
+                unit(Role::Router, vec![path.clone()]),
+                unit(
+                    Role::Embeddings,
+                    vec![
+                        path.clone(),
+                        (
+                            "LLAMA_SERVER".into(),
+                            managed_binary(&m.mecha_home).display().to_string(),
+                        ),
+                    ],
+                ),
+            ],
+            base_env: vec![],
+        };
+        let (h, dir) = holds();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let err = refused(
+            adopt(
+                &m,
+                &servers,
+                &h,
+                ROUTER,
+                Some("q"),
+                false,
+                &cancel,
+                &mut |_| {},
+            )
+            .await,
+        );
+        assert!(err.contains("--rollback"), "{err}");
+        assert!(
+            !crate::engine::engine_root(&m.mecha_home).exists(),
+            "nothing fetched"
+        );
+        assert!(h.pending(ROUTER).is_none(), "no switch taken");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn model(id: &str, status: &str) -> crate::provider::router::RouterModel {
         serde_json::from_value(serde_json::json!({"id": id, "status": {"value": status}})).unwrap()
     }
@@ -1570,6 +1671,8 @@ mod tests {
         assert!(err.contains("does not know"), "{err}");
         // Nothing to measure: declined before the router stops.
         assert!(measured_model(Some(&idle), None).is_err());
+        // An empty list is nothing loaded, not an unknown status.
+        assert_eq!(measured_model(Some(&[]), Some("cfg")).unwrap(), "cfg");
     }
 
     #[test]
