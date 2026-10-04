@@ -152,6 +152,9 @@ jobs:
       # worker's venv.
       - run: pip install loguru
       - run: python3 scripts/voice/test_journal.py
+        env:
+          # A missing loguru fails the step rather than skipping the sink.
+          MECHA_TEST_REQUIRE_BACKENDS: "1"
 
   # The Breeze adapter (scripts/voice/breeze_server.py) is where the voice's
   # fail-closed answers live: a 503 for an unreadable voices directory or a

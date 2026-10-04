@@ -8,37 +8,61 @@ sentence the TTS was handed and the whole conversation sent to the model (up
 to ~9,700 characters a line). The owner, on learning it: "Let's definitely
 fix that". Incognito calls were already silent (`worker.Unlogged`).
 
-Two rules, both here so they are tested without pipecat or loguru installed
-(CI runs the voice tests on a bare python3):
+The rules live here so they are tested without pipecat; CI runs this module's
+tests with loguru installed and nothing else.
 
 - `withheld`: a worker line that would carry words carries their length.
-- `keeps`: pipecat's `services` family logs text below INFO (measured
-  2026-10-04 over two days of this journal: `tts_service._push_tts_frames`,
-  `whisper.base_stt.run_stt` and `openai.base_llm.get_chat_completions` held
-  a phrase on 903 of 1,196 lines; no other pipecat DEBUG line held one in
-  ~4,000). The whole family is cut below INFO rather than those three
-  functions, so a service added or upgraded later cannot start writing words
-  through a door nobody listed. Its warnings and errors stay, as do every
-  other module's DEBUG lines (connection state, turn timing, metrics). The
-  price: about 290 of the family's DEBUG lines in those two days carried no
-  words and go too, among them `base_llm`'s function-call lines and
-  `tts_service`'s interruption handling. Debugging a tool call or a barge-in
-  in a voice turn, raise the worker's level by hand rather than suspecting
-  the TTS.
+- `keeps`: below INFO, a pipecat record reaches the journal only from a
+  family measured to carry no words (`WORDLESS_FAMILIES`). Measured over a
+  week of this journal (2026-09-27 to 2026-10-04): the `services` family had
+  a 3+-word phrase on 1,255 of 1,781 DEBUG lines (`tts_service`'s
+  `Generating TTS [...]`, `whisper.base_stt`'s `Transcription: [...]`,
+  `openai.base_llm`'s `Generating chat [...]`), and the seven families
+  listed had none in ~6,800. An allowlist, not a cut-list of the text-bearing
+  families: a family a pipecat upgrade adds or renames is unmeasured, and
+  unmeasured is not clean, so its DEBUG lines are dropped until someone
+  measures it (review of #547). Warnings and errors from every family stay,
+  as does everything outside `pipecat`.
+
+  The price: `services` lines that carried no words go too, among them
+  `base_llm`'s function-call lines and `tts_service`'s interruption handling,
+  and no log level brings them back, because `keeps` cuts below INFO
+  whatever the handler's level. To see them while debugging a tool call or a
+  barge-in, run the worker for that session with `install` skipped (or the
+  family added to `WORDLESS_FAMILIES`) and put it back after.
 - Tracebacks name the failing line but never the values on it: loguru's
   `diagnose` is off (see `install`).
 """
 
-# Below this loguru level number a record from a text family is dropped.
+# Below this loguru level number a pipecat record must come from a wordless
+# family to be kept.
 INFO = 20
 
-# Logger-name families whose lines below INFO carry what was said.
-TEXT_FAMILIES = ("pipecat.services",)
+# The namespace this narrows. Nothing outside it is pipecat's, so nothing
+# outside it is cut.
+CUT = "pipecat"
+
+# pipecat families whose DEBUG lines were measured to carry no words (see
+# the module docstring): connection state, turn timing, pipeline lifecycle,
+# metrics.
+WORDLESS_FAMILIES = (
+    "pipecat.audio",
+    "pipecat.pipeline",
+    "pipecat.processors",
+    "pipecat.registry",
+    "pipecat.transports",
+    "pipecat.utils",
+    "pipecat.workers",
+)
 
 
 def withheld(text: str) -> str:
     """A log line's stand-in for words: how many characters, never which."""
     return f"<{len(text)} chars>"
+
+
+def _within(name: str, family: str) -> bool:
+    return name == family or name.startswith(family + ".")
 
 
 def keeps(name: str | None, level_no: int) -> bool:
@@ -47,7 +71,9 @@ def keeps(name: str | None, level_no: int) -> bool:
     if level_no >= INFO:
         return True
     name = name or ""
-    return not any(name == f or name.startswith(f + ".") for f in TEXT_FAMILIES)
+    if not _within(name, CUT):
+        return True
+    return any(_within(name, f) for f in WORDLESS_FAMILIES)
 
 
 def install(logger, sink) -> int:
