@@ -216,11 +216,19 @@ pub fn manager_env() -> Result<Vec<(String, String)>> {
     }
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| {
-            l.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        })
+        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.to_string(), unquote(v))))
         .collect())
+}
+
+/// `show-environment` quotes a value that needs it, as a shell would; the
+/// value a process sees has no quotes.
+fn unquote(v: &str) -> String {
+    for q in ['"', '\''] {
+        if v.len() >= 2 && v.starts_with(q) && v.ends_with(q) {
+            return v[1..v.len() - 1].to_string();
+        }
+    }
+    v.to_string()
 }
 
 /// A free loopback port, asked of the kernel.
@@ -236,6 +244,7 @@ struct Running {
     child: std::process::Child,
     port: u16,
     log: PathBuf,
+    stopped: bool,
 }
 
 impl Running {
@@ -253,9 +262,17 @@ impl Running {
         lines[lines.len().saturating_sub(12)..].join("\n")
     }
 
-    /// TERM to the group, then KILL after a grace — and wait, so the memory
-    /// is free before the next engine loads.
+    /// TERM to the group, then KILL — and wait, so the memory is free before
+    /// the next engine loads. **The group is signalled whether or not the
+    /// leader is still alive:** a router leader that died leaves its
+    /// per-model child (tens of GB) in the group, and that is the case the
+    /// group kill exists for. A group id is not reused while the group has
+    /// members, so a signal to an emptied group meets `ESRCH`, nothing else.
     fn stop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        self.stopped = true;
         let pgid = self.child.id() as i32;
         // SAFETY: kill(2) with a negative pid signals a process group; no
         // memory is touched.
@@ -266,24 +283,20 @@ impl Running {
         while self.exited().is_none() && started.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(200));
         }
-        // Only a leader that outlived the grace is killed: once reaped, its
-        // pid — and so the group id — is free for another process to take.
-        if self.exited().is_none() {
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
-            }
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
         }
         let _ = self.child.wait();
-        // A child of the group can outlive its leader by a moment.
+        // The group's other members can outlive its leader by a moment.
         std::thread::sleep(Duration::from_secs(2));
     }
 }
 
 impl Drop for Running {
+    /// Every way out of a leg — a failed load, a failed bench, a leader that
+    /// died — stops the group and waits for it, as the explicit stop does.
     fn drop(&mut self) {
-        if self.exited().is_none() {
-            self.stop();
-        }
+        self.stop();
     }
 }
 
@@ -323,7 +336,12 @@ fn start(
     let child = c
         .spawn()
         .with_context(|| format!("starting {}'s launcher", server.unit))?;
-    Ok(Running { child, port, log })
+    Ok(Running {
+        child,
+        port,
+        log,
+        stopped: false,
+    })
 }
 
 fn http(timeout: Duration) -> Result<reqwest::Client> {
@@ -599,9 +617,22 @@ pub struct Leg {
     pub smoke: BTreeMap<String, Smoke>,
 }
 
+/// The widest the runs of one rate may disagree (as a fraction of their
+/// median) and still be a measurement. Past it the gate cannot say faster or
+/// slower, and says so rather than pass.
+pub const MAX_SPREAD: f64 = 0.25;
+
+/// The band "no slower" allows: the old engine's own noise, at least 3 % and
+/// at most 10 %. Never the candidate's — its instability must not widen its
+/// own acceptance.
+fn band(old: &Rate) -> f64 {
+    old.spread().clamp(0.03, 0.10)
+}
+
 /// The rule a promotion passes: every smoke the old engine passed, the new
-/// one passes too; and the new one is no slower, on generation or prefill,
-/// beyond the noise either engine's own runs show (at least 3 %).
+/// one passes too; both engines' runs agree well enough to be a measurement;
+/// and the new one is no slower, on generation or prefill, beyond the old
+/// engine's own noise (3 % to 10 %).
 pub fn verdict(old: &Leg, new: &Leg) -> std::result::Result<(), String> {
     for (name, was) in &old.smoke {
         let now = new.smoke.get(name);
@@ -623,7 +654,16 @@ pub fn verdict(old: &Leg, new: &Leg) -> std::result::Result<(), String> {
         ("generation", &a.generation_tps, &b.generation_tps),
         ("prefill", &a.prefill_tps, &b.prefill_tps),
     ] {
-        let noise = x.spread().max(y.spread()).max(0.03);
+        for (which, r) in [("old", x), ("new", y)] {
+            if r.spread() > MAX_SPREAD {
+                return Err(format!(
+                    "the {which} engine's {what} runs disagree by {:.0} % — not a measurement; \
+                     run this again when the machine is quiet",
+                    r.spread() * 100.0
+                ));
+            }
+        }
+        let noise = band(x);
         if y.median() < x.median() * (1.0 - noise) {
             return Err(format!(
                 "{what} is slower: {:.1} tok/s against {:.1} (noise {:.0} %)",
@@ -991,6 +1031,86 @@ pub async fn router_back(base: &str, model: Option<&str>, engine: &Path) -> Resu
     Ok(())
 }
 
+/// Decline before anything is downloaded or moved when the router is busy:
+/// a switch already pending, or a run holding it. Cheap, and asked again
+/// under the switch itself ([`take_switch`]) after the download.
+pub fn preflight(holds: &crate::hold::Holds, base: &str) -> Result<()> {
+    if let Some(other) = holds.pending(base) {
+        bail!(
+            "a switch to {} is already waiting on {base} (pid {}) — nothing was measured; run \
+             this again once it is done",
+            other.to,
+            other.pid
+        );
+    }
+    let live = holds.live(base);
+    if !live.is_empty() {
+        let what: Vec<String> = live.iter().map(|h| h.what.clone()).collect();
+        bail!(
+            "{} run(s) hold the router ({}) — nothing was measured or moved; run this again \
+             when the box is quiet",
+            live.len(),
+            what.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Take the router's switch — written before the holds are read, so a run
+/// starting meanwhile waits on it — and decline, withdrawing it, if a run
+/// holds the router: the gate declines rather than waits (§10.3).
+pub fn take_switch(
+    holds: &crate::hold::Holds,
+    base: &str,
+    to: &str,
+) -> Result<crate::hold::Switching> {
+    let switching = match holds.begin_switch(base, Some("llama.cpp (provided)"), to)? {
+        Ok(s) => s,
+        Err(other) => bail!(
+            "a switch to {} is already waiting on {base} (pid {}) — nothing was measured; run \
+             this again once it is done",
+            other.to,
+            other.pid
+        ),
+    };
+    let live = holds.live(base);
+    if !live.is_empty() {
+        drop(switching);
+        let what: Vec<String> = live.iter().map(|h| h.what.clone()).collect();
+        bail!(
+            "{} run(s) hold the router ({}) — nothing was measured or moved; run this again \
+             when the box is quiet",
+            live.len(),
+            what.join(", ")
+        );
+    }
+    switching.past_the_wait()?;
+    Ok(switching)
+}
+
+/// The model to measure: the one the owner has loaded, else the provider's.
+/// A `/models` answer this build cannot fully read is a finding, never "none
+/// loaded" (`router::readable`'s rule) — a newer llama.cpp's status would
+/// otherwise swap the owner's model for the configured one. And with nothing
+/// to measure, the router is not stopped for nothing.
+pub fn measured_model(
+    list: Option<&[crate::provider::router::RouterModel]>,
+    fallback: Option<&str>,
+) -> Result<String> {
+    let resident = match list {
+        Some(l) if !crate::provider::router::readable(l) => bail!(
+            "the router's model list has a status this build does not know, so which model is \
+             loaded is unknown — nothing was measured or moved"
+        ),
+        Some(l) => crate::provider::router::resident(l).map(str::to_owned),
+        None => None,
+    };
+    resident.or_else(|| fallback.map(str::to_owned)).context(
+        "no model is loaded and the provider names none, so there is nothing to measure — load \
+         one (`mecha model use <name>`) and run this again",
+    )
+}
+
 /// The command that finishes a promotion a step of which failed.
 const FINISH_ADOPT: &str = "systemctl --user daemon-reload && systemctl --user restart \
      llama-local.service (and `mecha setup engine --rollback` to undo)";
@@ -1004,20 +1124,21 @@ const FINISH_ADOPT: &str = "systemctl --user daemon-reload && systemctl --user r
 /// moving nothing, when a switch is pending or a run holds the router.
 pub async fn adopt(
     m: &crate::sidecar::Machinery,
+    servers: &Servers,
+    holds: &crate::hold::Holds,
     base_url: &str,
     fallback_model: Option<&str>,
     force: bool,
     say: &mut dyn FnMut(&str),
 ) -> Result<LedgerRow> {
     let base = crate::provider::router::base(base_url);
-    let servers = Servers::read()?;
     if servers.get(Role::Router).is_none() {
         bail!(
             "there is no llama-local.service to adopt — on a clean machine the units arrive \
              with step 7c, and run the managed engine from the start"
         );
     }
-    if adopted(&servers, &m.mecha_home) {
+    if adopted(servers, &m.mecha_home) {
         bail!("every llama.cpp unit here already runs mecha's engine — nothing to adopt");
     }
     // Before the download and the switch: a router whose engine cannot be
@@ -1025,54 +1146,24 @@ pub async fn adopt(
     let old_engine = servers
         .engine(Role::Router)
         .context("the router's unit names no llama-server it can find")?;
+    preflight(holds, &base)?;
     // The pin, side by side: nothing reads `current` until a drop-in names it.
+    // Downloaded before the switch is taken — holding it through a download
+    // would make every run that starts meanwhile wait on it.
     let managed = managed_binary(&m.mecha_home);
     crate::engine::install_engine(m, &mut *say).await?;
-
-    let holds = crate::hold::Holds::open_default()?;
     let to = format!("llama.cpp {}", crate::engine::PIN.tag);
-    let switching = match holds.begin_switch(&base, Some("llama.cpp (provided)"), &to)? {
-        Ok(s) => s,
-        Err(other) => bail!(
-            "a switch to {} is already waiting on {base} (pid {}) — nothing was measured; run \
-             this again once it is done",
-            other.to,
-            other.pid
-        ),
-    };
-    let live = holds.live(&base);
-    if !live.is_empty() {
-        drop(switching);
-        let what: Vec<String> = live.iter().map(|h| h.what.clone()).collect();
-        bail!(
-            "{} run(s) hold the router ({}) — nothing was measured or moved; run this again \
-             when the box is quiet",
-            live.len(),
-            what.join(", ")
-        );
-    }
-    switching.past_the_wait()?;
-
-    // What the owner is using is what gets measured: the resident model,
-    // else the provider's.
-    let model = crate::provider::router::models(&base)
-        .await
-        .and_then(|ms| crate::provider::router::resident(&ms).map(str::to_owned))
-        .or_else(|| fallback_model.map(str::to_owned));
+    let switching = take_switch(holds, &base, &to)?;
+    // What the owner is using is what gets measured, read before anything
+    // stops: an answer that cannot be read declines here.
+    let listed = crate::provider::router::models(&base).await;
+    let model = Some(measured_model(listed.as_deref(), fallback_model)?);
     say("stopping the router for the measurement");
     systemctl("stop", &["llama-local.service"])?;
     let logs = crate::engine::engine_root(&m.mecha_home).join("gate");
     let measured = async {
-        let (old, old_v) = measure(&servers, None, model.as_deref(), &logs, "old", say).await?;
-        let new = measure(
-            &servers,
-            Some(&managed),
-            model.as_deref(),
-            &logs,
-            "new",
-            say,
-        )
-        .await;
+        let (old, old_v) = measure(servers, None, model.as_deref(), &logs, "old", say).await?;
+        let new = measure(servers, Some(&managed), model.as_deref(), &logs, "new", say).await;
         Ok::<_, anyhow::Error>((old, old_v, new))
     }
     .await;
@@ -1116,7 +1207,7 @@ pub async fn adopt(
     let promote = decision.is_ok() || force;
     let outcome = if promote {
         say("promoting: pointing the units at mecha's engine");
-        match promote_adopt(m, &servers, &base, model.as_deref(), &managed).await {
+        match promote_adopt(m, servers, &base, model.as_deref(), &managed).await {
             Ok(()) => match decision {
                 Ok(()) => Outcome::Promoted,
                 Err(why) => Outcome::PromotedByForce { why },
@@ -1355,6 +1446,102 @@ mod tests {
         assert_eq!(new.smoke["embeddings"], Smoke::Passed);
         compare_embeddings(&mut new, Some(&[1.0, 0.0]), Some(&[0.9, 0.4]));
         assert!(matches!(new.smoke["embeddings"], Smoke::Failed { .. }));
+    }
+
+    /// One outlier run cannot open the band: runs that disagree past
+    /// `MAX_SPREAD` are not a measurement, and the band never exceeds 10 %
+    /// nor takes the candidate's own noise.
+    #[test]
+    fn the_band_has_a_ceiling_and_is_the_old_engine_s() {
+        let ok = &[("chat", Smoke::Passed)];
+        // Old prefill [5, 55, 60]: spread 1.0 — not a measurement.
+        let wild = leg([60.0; 3], [5.0, 55.0, 60.0], ok);
+        let err = verdict(&wild, &leg([60.0; 3], [5.0; 3], ok)).unwrap_err();
+        assert!(err.contains("not a measurement"), "{err}");
+        // A noisy candidate does not widen its own band: old is steady, new
+        // varies 20 % around a median 15 % slower.
+        let steady = leg([60.0; 3], [2000.0; 3], ok);
+        let err = verdict(&steady, &leg([46.0, 51.0, 57.0], [2000.0; 3], ok)).unwrap_err();
+        assert!(err.contains("generation is slower"), "{err}");
+        // An old engine at 20 % spread still allows only 10 %.
+        let noisy = leg([54.0, 60.0, 66.0], [2000.0; 3], ok);
+        assert!(verdict(&noisy, &leg([53.0; 3], [2000.0; 3], ok)).is_err());
+        assert!(verdict(&noisy, &leg([55.0; 3], [2000.0; 3], ok)).is_ok());
+    }
+
+    fn holds() -> (crate::hold::Holds, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mecha-gate-holds-{}", uuid::Uuid::new_v4()));
+        (crate::hold::Holds::new(&dir), dir)
+    }
+
+    const ROUTER: &str = "http://127.0.0.1:8080";
+
+    /// The safety the gate rests on: a run holding the router, or a switch
+    /// already waiting, declines — before the download, and again under the
+    /// switch — and leaves no switch behind.
+    #[test]
+    fn a_busy_router_declines_and_leaves_no_switch() {
+        let (h, dir) = holds();
+        preflight(&h, ROUTER).unwrap();
+        let held = h.try_hold(ROUTER, "web chat").unwrap().unwrap();
+        let err = preflight(&h, ROUTER).unwrap_err().to_string();
+        assert!(err.contains("web chat"), "{err}");
+        let err = take_switch(&h, ROUTER, "llama.cpp b1")
+            .err()
+            .expect("declined")
+            .to_string();
+        assert!(err.contains("hold the router"), "{err}");
+        assert!(
+            h.pending(ROUTER).is_none(),
+            "the declined switch is withdrawn"
+        );
+        drop(held);
+        // A switch already waiting declines both too, and is left alone.
+        let other = h.begin_switch(ROUTER, Some("a"), "qwen").unwrap().unwrap();
+        assert!(preflight(&h, ROUTER)
+            .unwrap_err()
+            .to_string()
+            .contains("qwen"));
+        assert!(take_switch(&h, ROUTER, "llama.cpp b1").is_err());
+        assert_eq!(h.pending(ROUTER).map(|s| s.to), Some("qwen".to_string()));
+        drop(other);
+        // Quiet: the switch is taken and held.
+        let s = take_switch(&h, ROUTER, "llama.cpp b1").unwrap();
+        assert_eq!(
+            h.pending(ROUTER).map(|s| s.to),
+            Some("llama.cpp b1".to_string())
+        );
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn model(id: &str, status: &str) -> crate::provider::router::RouterModel {
+        serde_json::from_value(serde_json::json!({"id": id, "status": {"value": status}})).unwrap()
+    }
+
+    #[test]
+    fn the_measured_model_is_the_resident_one_and_unknown_declines() {
+        let list = vec![model("a", "unloaded"), model("b", "loaded")];
+        assert_eq!(measured_model(Some(&list), Some("cfg")).unwrap(), "b");
+        let idle = vec![model("a", "unloaded")];
+        assert_eq!(measured_model(Some(&idle), Some("cfg")).unwrap(), "cfg");
+        assert_eq!(measured_model(None, Some("cfg")).unwrap(), "cfg");
+        // A status this build does not know: unknown, not "none loaded".
+        let newer = vec![model("a", "unloaded"), model("b", "warming")];
+        let err = measured_model(Some(&newer), Some("cfg"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not know"), "{err}");
+        // Nothing to measure: declined before the router stops.
+        assert!(measured_model(Some(&idle), None).is_err());
+    }
+
+    #[test]
+    fn show_environment_values_lose_their_quotes() {
+        assert_eq!(unquote("\"/a b/bin:/usr/bin\""), "/a b/bin:/usr/bin");
+        assert_eq!(unquote("'x y'"), "x y");
+        assert_eq!(unquote("/usr/bin"), "/usr/bin");
+        assert_eq!(unquote("\""), "\"");
     }
 
     #[test]
