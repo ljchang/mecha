@@ -10,6 +10,8 @@ here reads the machine's real conversations or journal. Run:
 `python3 scripts/test_check_private.py`."""
 
 import json
+import shutil
+import sqlite3
 import os
 import subprocess
 import sys
@@ -175,6 +177,37 @@ class Guard(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("voice journal could not be read", r.stdout)
+
+    def test_a_fact_in_a_persona_memory_is_refused(self):
+        # Memory holds paraphrases written from chats: in no transcript.
+        fact = "Keeps two hives of bees on the roof garden behind the library."
+        db = os.path.join(self.home, "personas", "quillon", "memory.db")
+        con = sqlite3.connect(db)
+        con.execute("CREATE VIRTUAL TABLE recall_fts USING fts5 (uid UNINDEXED, text)")
+        con.execute("INSERT INTO recall_fts VALUES ('f1', ?)", (fact,))
+        con.commit()
+        con.close()
+        self.stage("fixture.py", f"X = {fact!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_an_unreadable_persona_memory_refuses(self):
+        db = os.path.join(self.home, "personas", "quillon", "memory.db")
+        open(db, "wb").write(b"not a database at all, just bytes " * 40)
+        self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("persona memory", r.stdout)
+
+    def test_a_required_hook_that_cannot_run_refuses(self):
+        # The hook, without the script beside it.
+        hook = os.path.join(self.repo, "commit-msg")
+        shutil.copy(os.path.join(HERE, "..", ".githooks", "commit-msg"), hook)
+        msg = os.path.join(self.tmp.name, "MSG")
+        open(msg, "w").write("A message.\n")
+        for require, want in (("1", 1), ("", 0)):
+            env = dict(os.environ, CHECK_PRIVATE_REQUIRE=require)
+            r = subprocess.run(["bash", hook, msg], cwd=self.repo, env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, want, (require, r.stdout))
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')

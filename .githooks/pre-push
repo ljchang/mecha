@@ -8,8 +8,11 @@
 # refused, never skipped — a skipped push reads exactly like a passed one.
 # A clone with no python3, or none of this script, is not checked at all:
 # there is nothing here to run.
-command -v python3 >/dev/null 2>&1 || exit 0
-[ -f scripts/check-private.py ] || exit 0
+if ! command -v python3 >/dev/null 2>&1 || [ ! -f scripts/check-private.py ]; then
+    # Required here, and it cannot run: refuse, never pass quietly.
+    [ "$CHECK_PRIVATE_REQUIRE" = 1 ] && { echo "check-private: CHECK_PRIVATE_REQUIRE=1 but the check cannot run; refusing."; exit 1; }
+    exit 0
+fi
 remote="$1"
 zero=0000000000000000000000000000000000000000
 status=0
