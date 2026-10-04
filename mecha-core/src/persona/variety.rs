@@ -137,16 +137,12 @@ fn capitalised(word: &str) -> String {
 /// follows, or the whole text.
 fn last_sentence(text: &str) -> Option<String> {
     let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let mut start = 0;
-    for w in chars.windows(2) {
-        if matches!(w[0].1, '.' | '!' | '?' | '…') && w[1].1.is_whitespace() {
-            start = w[1].0;
-        }
-    }
+    // The boundary `PriorTails` cuts at, so an abbreviation ("Dr.") or a
+    // closing quote after a mark is read the same way (review of #550). The
+    // end of the last sentence that more text follows: strip the text's own
+    // final mark first, so the last sentence is not taken as "nothing after".
+    let body = text.trim_end_matches(['.', '!', '?', '…', '"', '\'', '”', '’', ')', ']']);
+    let start = crate::message::last_sentence_end(body).unwrap_or(0);
     let last = text[start..].trim();
     (!last.is_empty()).then(|| last.to_string())
 }
@@ -232,6 +228,16 @@ mod tests {
             !n.contains("opened with"),
             "the preamble's \"Mm\" counted: {n}"
         );
+    }
+
+    #[test]
+    fn a_closer_is_read_at_the_same_boundary_the_history_views_use() {
+        // An abbreviation is not a sentence end, and a closing quote after a
+        // mark still ends one (review of #550).
+        let n = note(&[said("I saw Dr. Chen yesterday.")]).expect("a note");
+        assert!(n.contains("(\"I saw Dr. Chen yesterday.\")"), "{n}");
+        let n = note(&[said("She said \"Go.\" Then left.")]).expect("a note");
+        assert!(n.contains("(\"Then left.\")"), "{n}");
     }
 
     #[test]
