@@ -49,7 +49,7 @@ function watchIdle({ idleMs }) {
 // unlocked page. `maya` is locked.
 const LISTS = (unlocked) => ({
   relationships: [], groups: [],
-  characters: unlocked ? ['john', 'priya', 'maya'] : ['john', 'priya'],
+  characters: unlocked ? ['john', 'maya', 'priya'] : ['john', 'priya'],
 });
 
 // A page with the form open, its lists read under `unlocked`, and a fetch
@@ -112,7 +112,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   await p.unlock();
   const { authoring, making, error } = p.get();
   assert.equal(error, '');
-  assert.deepEqual(authoring.characters, ['john', 'priya', 'maya']);
+  assert.deepEqual(authoring.characters, ['john', 'maya', 'priya']);
   assert.equal(making.character, 'priya', 'an unlock keeps what was chosen');
 }
 

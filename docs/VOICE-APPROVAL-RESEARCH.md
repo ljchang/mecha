@@ -35,10 +35,10 @@ lines, which come from code, quoted:
 19:36:08  heard   the owner asks for a recurring calendar event
 19:36:32  said    the model says it will check the calendars
 19:36:37  said    it drafts the first occurrence
-19:36:38  said    "That's drafted."                                ← item A (one account)
+19:36:38  said    it reports the draft made                        ← item A (one account)
 19:36:47  heard   the owner asks for a different account instead
 19:36:55  said    the model says it will discard the first draft and redraft
-19:36:57  said    "That's drafted." on the other account           ← item B
+19:36:57  said    it reports the redraft made, on the other account  ← item B
 19:37:02  said    the model ends on a question of its own
 19:37:03  offer   the full readback of item B: title, start, end, account, the
                    defaults clause, the taint line, "Say yes to send it, or
@@ -252,7 +252,7 @@ any offer, armed only if it reached the socket. Carried once; a second
 This is not the standing yes the module docs reject. The question is always
 **asked again before a yes counts**; what changes is that a draft cannot
 fall out of the conversation because the listener's first phrasing missed
-the list. Today it would have turned *"I agree."* into one more exchange
+the list. Today it would have turned the owner's short agreement into one more exchange
 rather than a dead end.
 
 ### 4.3 Tell the model the truth about the surface

@@ -10,8 +10,8 @@
 //! process that had started at 22:37 the night before, queried the calendar
 //! for the wrong day, and read yesterday's schedule back as today's — and when
 //! the owner corrected it twice, its own reasoning sided with the system
-//! prompt's stale date over the owner. A session on 2026-09-11 carried a date two days
-//! stale the same way. The trigger runner never did, because it builds an
+//! prompt's stale date over the owner. A session on 2026-09-11 carried a
+//! date two days stale the same way. The trigger runner never did, because it builds an
 //! agent per run.
 //!
 //! So the clock is a trait object, like [`Provider`] and [`Tool`] and

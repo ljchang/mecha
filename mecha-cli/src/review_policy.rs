@@ -303,8 +303,8 @@ const JOINERS: [&str; 2] = ["and", "just"];
 /// [`SpokenAnswer::NotAnAnswer`] and reaches the model as ordinary words.
 ///
 /// Composed rather than looked up, since 2026-09-13. The first real answer
-/// to a spoken offer was *"Go ahead and send it."* — two entries of the
-/// list joined by "and" — and equality against the list dropped it. Of
+/// to a spoken offer was two entries of the list joined by "and", and
+/// equality against the list dropped it. Of
 /// twenty natural spoken accepts tried that day, one matched. The safety
 /// argument never rested on the list being short, only on the utterance
 /// being consumed whole, and that is what [`segment`] still requires.
@@ -549,11 +549,12 @@ mod tests {
         }
     }
 
-    /// The first real answer to a spoken offer, 2026-09-13 19:37:44 UTC:
-    /// "Go ahead and send it." Equality against the list dropped it, the
+    /// The first real answer to a spoken offer (2026-09-13) was two list
+    /// entries joined by "and". Equality against the list dropped it, the
     /// words went to the model, and the model told the owner to use the
     /// CLI. Every line here is a composition of things the list already
-    /// accepted, and each must release.
+    /// accepts — natural accepts, not anyone's recorded words — and each
+    /// must release.
     #[test]
     fn an_answer_composed_of_answers_is_an_answer() {
         for said in [

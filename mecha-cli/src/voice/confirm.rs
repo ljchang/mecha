@@ -840,7 +840,7 @@ mod tests {
         )
     }
 
-    /// 2026-09-13: the owner's "Go ahead and send it." was not an answer the
+    /// 2026-09-13: the owner's spoken yes was not an answer the
     /// parser knew, the question was dropped, and nothing asked it again.
     /// A dropped question is now carried over the model's reply and put
     /// once more — and only once: the second drop settles it.
