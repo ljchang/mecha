@@ -128,10 +128,19 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         let m = sidecar::Machinery::real()?;
         let machine = recommend::Machine::read()?;
         let hub = mecha_core::fetch::hub_dir()?;
-        let mut todo: Vec<(&'static str, &'static str)> = Vec::new();
+        // (sidecar id, its label, the feature whose plan names it)
+        let mut todo: Vec<(&'static str, &'static str, Feature)> = Vec::new();
         for f in &features {
             let p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             for s in &p.sidecars {
+                // A check that could not run is never installed over — and
+                // never passed over in silence either.
+                if let SidecarState::Unknown { why } = &s.state {
+                    eprintln!(
+                        "mecha: {} could not be checked ({why}); nothing is installed over it",
+                        s.label
+                    );
+                }
                 // Missing or unfinished — or installed, but a model it
                 // serves is gone from the hub (a cleared cache leaves its
                 // link dangling): the install is idempotent, so running it
@@ -149,13 +158,14 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                     s.state,
                     SidecarState::Missing { .. } | SidecarState::Incomplete
                 ) || (matches!(s.state, SidecarState::Installed) && model_gone);
-                if wanted && install::installable(s.id) && !todo.iter().any(|(id, _)| *id == s.id) {
-                    todo.push((s.id, s.label));
+                if wanted && install::installable(s.id) && !todo.iter().any(|(id, ..)| *id == s.id)
+                {
+                    todo.push((s.id, s.label, p.feature));
                 }
             }
         }
         if !todo.is_empty() {
-            let names: Vec<&str> = todo.iter().map(|(_, label)| *label).collect();
+            let names: Vec<&str> = todo.iter().map(|(_, label, _)| *label).collect();
             let list = names.join(", ");
             if !std::io::stdin().is_terminal() {
                 anyhow::bail!(
@@ -168,12 +178,14 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 "Enabling {} installs, from pinned sources into ~/.mecha/sidecars/:",
                 ids.join(" ")
             );
-            for (_, label) in &todo {
+            for (_, label, _) in &todo {
                 println!("  {label}");
             }
+            let mut plans: Vec<&str> = todo.iter().map(|(.., f)| f.id()).collect();
+            plans.dedup();
             println!(
                 "(`mecha features plan {}` shows each piece and its size.)",
-                ids[0]
+                plans.join("` / `mecha features plan ")
             );
             print!("Install now? [y/N] ");
             use std::io::Write;
@@ -187,7 +199,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 );
                 return Ok(());
             }
-            for (id, label) in &todo {
+            for (id, label, _) in &todo {
                 println!("Installing {label}…");
                 install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
                     .await

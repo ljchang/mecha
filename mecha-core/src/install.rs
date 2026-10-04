@@ -112,18 +112,19 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     for d in &m.path {
         let p = d.join("uv");
         if p.is_file() && !p.starts_with(&sidecars) {
-            if uv_version(&p)
-                .and_then(|v| parse_version(&v))
-                .is_some_and(|v| v >= UV_FLOOR)
-            {
-                return Ok(p);
+            match uv_version(&p).and_then(|v| parse_version(&v)) {
+                Some(v) if v >= UV_FLOOR => return Ok(p),
+                Some(_) => say(&format!(
+                    "{} is older than uv {}.{}; using mecha's pinned copy",
+                    p.display(),
+                    UV_FLOOR.0,
+                    UV_FLOOR.1
+                )),
+                None => say(&format!(
+                    "{} did not answer `--version`; using mecha's pinned copy",
+                    p.display()
+                )),
             }
-            say(&format!(
-                "{} is older than uv {}.{}; using mecha's pinned copy",
-                p.display(),
-                UV_FLOOR.0,
-                UV_FLOOR.1
-            ));
             break;
         }
     }
