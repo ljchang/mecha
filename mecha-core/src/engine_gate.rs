@@ -88,13 +88,9 @@ impl Launcher {
         if let Some((_, v)) = self.env.iter().find(|(k, _)| k == "LLAMA_SERVER") {
             return Some(PathBuf::from(expand_home(v)));
         }
-        let path = self
-            .env
-            .iter()
-            .chain(base)
-            .find(|(k, _)| k == "PATH")?
-            .1
-            .clone();
+        // `%h` expanded here as in `LLAMA_SERVER`: one belief about one
+        // kind of string (systemd reports both expanded; this is the guard).
+        let path = expand_home(&self.env.iter().chain(base).find(|(k, _)| k == "PATH")?.1);
         std::env::split_paths(&path)
             .map(|d| d.join("llama-server"))
             .find(|p| p.is_file())
@@ -348,6 +344,27 @@ fn http(timeout: Duration) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder().timeout(timeout).build()?)
 }
 
+/// POST JSON and read JSON back, the status checked first: a 500 is said as
+/// a 500, never as a reply that "came back empty".
+async fn post_json(
+    client: &reqwest::Client,
+    url: String,
+    body: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("{url} answered {status}: {}", text.trim());
+    }
+    serde_json::from_str(&text).with_context(|| format!("{url} answered no JSON: {}", text.trim()))
+}
+
 /// Wait for `/health`, giving up when the process exits or the wait runs out.
 async fn ready(r: &mut Running, wait: Duration) -> Result<()> {
     let client = http(Duration::from_secs(5))?;
@@ -490,18 +507,17 @@ async fn bench(base: &str, model: &str) -> Result<Bench> {
 /// smoke test.
 async fn chat_smoke(base: &str, model: &str) -> Result<()> {
     let client = http(Duration::from_secs(300))?;
-    let v: serde_json::Value = client
-        .post(format!("{base}/v1/chat/completions"))
-        .json(&serde_json::json!({
+    let v = post_json(
+        &client,
+        format!("{base}/v1/chat/completions"),
+        serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": "Reply with the one word: ready"}],
             "max_tokens": 256,
             "chat_template_kwargs": {"enable_thinking": false},
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
+        }),
+    )
+    .await?;
     // Words in either channel are the engine answering: a template that
     // thinks despite the switch puts them in `reasoning_content` first.
     let said = |k: &str| {
@@ -517,13 +533,12 @@ async fn chat_smoke(base: &str, model: &str) -> Result<()> {
 
 async fn embedding(base: &str) -> Result<Vec<f64>> {
     let client = http(Duration::from_secs(120))?;
-    let v: serde_json::Value = client
-        .post(format!("{base}/v1/embeddings"))
-        .json(&serde_json::json!({"input": "the layout model reads a scanned page"}))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let v = post_json(
+        &client,
+        format!("{base}/v1/embeddings"),
+        serde_json::json!({"input": "the layout model reads a scanned page"}),
+    )
+    .await?;
     let e: Vec<f64> = v["data"][0]["embedding"]
         .as_array()
         .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
@@ -554,19 +569,18 @@ const OCR_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAADAAAAAQCAAAAAB1xaNtAAAAHElEQVR42
 
 async fn ocr_smoke(base: &str) -> Result<()> {
     let client = http(Duration::from_secs(300))?;
-    let v: serde_json::Value = client
-        .post(format!("{base}/v1/chat/completions"))
-        .json(&serde_json::json!({
+    let v = post_json(
+        &client,
+        format!("{base}/v1/chat/completions"),
+        serde_json::json!({
             "messages": [{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{OCR_PNG}")}},
                 {"type": "text", "text": "OCR:"},
             ]}],
             "max_tokens": 64,
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
+        }),
+    )
+    .await?;
     // An empty reply is llama-server's 200-with-nothing, not an answer: a
     // vision path that broke would otherwise read as passing on both engines.
     if !v["choices"][0]["message"]["content"]
@@ -795,6 +809,23 @@ impl Servers {
             present,
             base_env: manager_env()?,
         })
+    }
+
+    /// For a read-only view: a machine where `systemctl --user` cannot be
+    /// asked (macOS, or no user session bus) has no units to show, which is
+    /// said, not an error — `doctor`'s rule for an absent init system. The
+    /// moves (`--adopt`, `--rollback`) use [`Servers::read`], which fails.
+    pub fn read_or_none() -> (Servers, Option<String>) {
+        match Servers::read() {
+            Ok(s) => (s, None),
+            Err(e) => (
+                Servers {
+                    present: Vec::new(),
+                    base_env: Vec::new(),
+                },
+                Some(format!("{e:#}")),
+            ),
+        }
     }
 
     pub fn get(&self, role: Role) -> Option<&(Server, Launcher)> {
@@ -1172,7 +1203,12 @@ pub async fn adopt(
         Err(e) => {
             // The old engine could not be measured: nothing moved, so the
             // router goes back as it was.
-            let back = systemctl("start", &["llama-local.service"]);
+            // The model that was loaded is loaded again, on the engine it
+            // ran on, rather than whatever the router starts with.
+            let back = match systemctl("start", &["llama-local.service"]) {
+                Ok(()) => router_back(&base, model.as_deref(), &old_engine).await,
+                Err(e) => Err(e),
+            };
             return Err(e.context(match back {
                 Ok(()) => "measuring the engine the units run today — the router was restarted \
                            on it, and nothing was changed"
