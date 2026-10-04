@@ -132,10 +132,23 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         for f in &features {
             let p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             for s in &p.sidecars {
+                // Missing or unfinished — or installed, but a model it
+                // serves is gone from the hub (a cleared cache leaves its
+                // link dangling): the install is idempotent, so running it
+                // again fetches only what is missing.
+                let serves = sidecar::SIDECARS
+                    .iter()
+                    .find(|sc| sc.id == s.id)
+                    .map(|sc| sc.serves)
+                    .unwrap_or(&[]);
+                let model_gone = p.files.iter().any(|f| {
+                    serves.contains(&f.slot)
+                        && matches!(f.state, sidecar::FileState::Download { .. })
+                });
                 let wanted = matches!(
                     s.state,
                     SidecarState::Missing { .. } | SidecarState::Incomplete
-                );
+                ) || (matches!(s.state, SidecarState::Installed) && model_gone);
                 if wanted && install::installable(s.id) && !todo.iter().any(|(id, _)| *id == s.id) {
                     todo.push((s.id, s.label));
                 }
@@ -176,7 +189,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
             for (id, label) in &todo {
                 println!("Installing {label}…");
-                install::install(id, &m, &hub, &mut |s| println!("  {s}"))
+                install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
                     .await
                     .with_context(|| {
                         format!(

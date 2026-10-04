@@ -102,3 +102,32 @@ fn with_nothing_to_install_the_switch_is_written_as_before() {
         home.config()
     );
 }
+
+/// An install whose model is gone from the hub — a cleared cache leaves its
+/// link dangling — is offered again, not passed over as installed: so the
+/// message extraction gives (`mecha features enable documents`) is true.
+#[cfg(unix)]
+#[test]
+fn an_installed_layout_whose_model_is_gone_is_offered_again() {
+    let home = Home::new("dangling");
+    // MECHA_HOME is home/, so mecha's tree is home/sidecars/layout.
+    let mecha_home = home.0.join("home");
+    let tree = mecha_home.join("sidecars/layout");
+    std::fs::create_dir_all(tree.join("venv/bin")).unwrap();
+    std::fs::write(tree.join("venv/bin/python"), "").unwrap();
+    std::os::unix::fs::symlink(home.0.join("hub/gone"), tree.join("PP-DocLayoutV3.onnx")).unwrap();
+    let manifest = format!(
+        r#"{{"entries":[{{"sidecar":"layout","incomplete":false,"wrote":["{}","{}","{}"]}}]}}"#,
+        tree.display(),
+        tree.join("venv").display(),
+        tree.join("PP-DocLayoutV3.onnx").display()
+    );
+    std::fs::write(mecha_home.join("sidecars/manifest.json"), manifest).unwrap();
+    let out = home.enable(&["documents"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "the dangling model is offered, so a non-tty enable refuses: {err}"
+    );
+    assert!(err.contains("layout"), "{err}");
+}
