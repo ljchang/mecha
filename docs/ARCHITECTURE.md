@@ -1597,12 +1597,17 @@ module.
       Each note names what is repeating now, and kept, forty turns in
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
-      subtracts the dropped ones. So the persona's wire is not append-only:
-      last turn's note leaves a message the model already saw, which moves
-      the cache's divergence point back by one owner message, the cost
-      `PriorThinking::Drop` already pays at the previous reply.
+      subtracts the dropped ones. **This is the first view that rewrites
+      bytes already sent**: `PriorThinking` and `PriorTails` change only
+      replies that no earlier request carried, so their wire stays
+      append-only, while last turn's note leaves a message the model already
+      saw. The cost is small (the note is folded last, so the divergence is
+      its own tokens with nothing after them), but it is new, not a
+      precedent.
     - A turn that called a tool is not a reply: its text is a preamble
-      ("Let me look that up."), the turns `PriorTails` leaves alone too.
+      ("Let me look that up."), the turns `PriorTails` leaves alone too. A
+      reply with no whole sentence ("Mmm, I was just", barged in on) has no
+      closer: quoting it back would show the model a mid-sentence ending.
     - A closer is quoted on one line with its own double quotes removed, so
       a reply's words can never close the harness's quote and read on as a
       harness clause.
