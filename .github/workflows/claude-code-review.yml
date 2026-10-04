@@ -33,6 +33,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The agent may run cargo; it gets the toolchain `rust-toolchain.toml`
+      # pins, so its clippy and tests read the code as the developer's do.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
+
       - uses: anthropics/claude-code-action@v1
         with:
           # A subscription credential, not a metered API key: Pro/Max plans

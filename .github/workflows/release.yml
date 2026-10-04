@@ -25,7 +25,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
 
       # The two cheap gates first: a wrong tag or a missing changelog link
