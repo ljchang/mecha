@@ -57,6 +57,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from audio_stretch import stretch
+from fragments import speakable_core
 
 BREEZE_URL = os.environ.get("BREEZE_TTS_URL", "http://127.0.0.1:8886").rstrip("/")
 VOICES_DIR = os.path.expanduser(os.environ.get("VOICES_DIR", "~/models/voices"))
@@ -123,9 +124,13 @@ def clean_instructions(text: str | None) -> str:
 
 
 def speakable(text: str) -> bool:
-    """Whether there is a word to say: a letter or digit in any script.
-    Without one the engine hallucinates (module docstring)."""
-    return any(c.isalnum() for c in text)
+    """Whether there is a word to say: a letter or digit in any script,
+    outside a vocal-event tag. Without one the engine hallucinates (module
+    docstring); a tag alone, "(laugh)", came back once in three as invented
+    words (2026-10-04), so it counts as nothing to say. The worker joins a tag
+    to the sentence after it (`fragments.py`); this is the backstop for every
+    other route."""
+    return any(c.isalnum() for c in speakable_core(text))
 
 
 async def transcript_for(client: httpx.AsyncClient, name: str, wav_path: str) -> str:

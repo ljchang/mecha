@@ -146,6 +146,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/voice/test_echo_filter.py
+      # Which reply pieces wait for the next (pure; the worker-splitter layer
+      # needs the venv and skips here, by name).
+      - run: python3 scripts/voice/test_fragments.py
       # The journal (no words from any call). loguru so the sink and the
       # lifespan wrapper run here, not just the rules: a skipped test reads
       # exactly like a passing one. Only pipecat's real logger names need the
