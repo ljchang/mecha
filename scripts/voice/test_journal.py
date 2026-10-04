@@ -99,6 +99,20 @@ class TheSink(Loguru):
         self.assertIn("a service warning", self.captured())
         self.assertIn("bot started speaking", self.captured())
 
+    def test_a_traceback_names_the_failing_line_but_not_the_values_on_it(self):
+        # loguru's `diagnose` prints the values of the locals on the raising
+        # line; pipecat's frame_processor logs exceptions around the frame it
+        # was processing, at a name no family cut covers (review of #547).
+        journal.install(self.logger, self.capture)
+        frame_text = SAID
+        try:
+            raise ValueError("processing failed for " + frame_text[:0])
+        except ValueError:
+            self.log_named("pipecat.processors.frame_processor", "exception", "error processing frame")
+        self.assertIn("error processing frame", self.captured())
+        self.assertIn("ValueError", self.captured())
+        self.assertNotIn(SAID, self.captured(), "a diagnosed traceback printed a local's value")
+
 
 @unittest.skipUnless(HAVE_LOGURU, "loguru is not installed")
 class TheLifespan(Loguru):
