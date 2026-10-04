@@ -33,7 +33,8 @@ class Guard(unittest.TestCase):
         self.home = os.path.join(root, "home")
         persona = os.path.join(self.home, "personas", "quillon")
         os.makedirs(os.path.join(persona, "sessions"))
-        open(os.path.join(persona, "persona.toml"), "w").write('name = "quillon"\n')
+        open(os.path.join(persona, "persona.toml"), "w").write(
+            'name = "quillon"\ndisplay = "Quillon Marsh"\ncharacter = "tessaly"\n')
         with open(os.path.join(persona, "sessions", f"{SESSION}.jsonl"), "w") as f:
             f.write(json.dumps({"record": "meta", "id": SESSION}) + "\n")
             f.write(json.dumps({"record": "message", "role": "assistant",
@@ -128,6 +129,27 @@ class Guard(unittest.TestCase):
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("café.md:1", r.stdout)
+
+    def test_how_a_persona_is_addressed_and_drawn_is_refused(self):
+        for text in ("Talking with Marsh today.\n", "Draw tessaly by the sea.\n"):
+            git(self.repo, "reset", "-q")
+            self.stage("doc.md", text)
+            self.assertIn("of the owner's personas", self.run_guard("--staged").stdout, text)
+
+    def test_an_added_line_starting_with_plus_plus_is_content(self):
+        # Inside a hunk, "++ b/x" is a line of text, not a diff header.
+        self.stage("notes.md", "++ b/elsewhere\n++ just a line\n" + SAID + "\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("notes.md:3", r.stdout)
+
+    def test_required_conversations_refuse_when_missing(self):
+        empty = os.path.join(self.tmp.name, "empty")
+        os.makedirs(empty)
+        env = dict(os.environ, MECHA_HOME=empty, CHECK_PRIVATE_JOURNAL="0", CHECK_PRIVATE_REQUIRE="1")
+        r = subprocess.run([sys.executable, GUARD, "--staged"], cwd=self.repo, env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stdout)
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
