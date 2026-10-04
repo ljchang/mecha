@@ -39,8 +39,17 @@ class WhatWaits(unittest.TestCase):
 
     def test_a_real_aside_in_parentheses_is_words_not_a_tag(self):
         # Only a tag-shaped parenthetical counts as nothing to say (review of #548).
-        for piece in ("(It was enormous.)", "(See you at 5.)", "(Honestly? Yes.)"):
+        for piece in ("(It was enormous.)", "(See you at 5.)", "(Honestly? Yes.)",
+                      # Lowercase, tag-shaped, and still words (review of #548).
+                      "(and his sister)", "(she sighed)", "(he laughed)"):
             self.assertFalse(holds(piece), piece)
+
+    def test_every_known_event_alone_waits_in_any_case(self):
+        from fragments import EVENTS
+
+        for event in EVENTS:
+            self.assertTrue(holds(f"({event})"), event)
+            self.assertTrue(holds(f"({event.upper()})"), event)
 
 
 class TheJoin(unittest.TestCase):

@@ -216,7 +216,7 @@ class Adapter(unittest.TestCase):
         self.assertEqual(self.engine.spoken, [], "the engine was given nothing to say, and it invents")
         spoken = ["Mm.", "Hmm...", "3.", "好。", "(laugh) That is so funny.",
                   # A real aside is words, not a tag (review of #548).
-                  "(It was enormous.)"]
+                  "(It was enormous.)", "(and his sister)"]
         for text in spoken:
             self.speak(input=text)
         self.assertEqual([s["input"] for s in self.engine.spoken], spoken)
