@@ -1535,17 +1535,24 @@ impl Agent {
 
     /// The history as this agent sends it.
     fn wire<'a>(&self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
-        self.prior_nudges
-            .wire(self.prior_tails.wire(self.prior_thinking.wire(messages)))
+        // The nudge view judges against both: whether a reply goes out
+        // altered is what makes dropping the note ahead of it free.
+        let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
+        self.prior_nudges.wire(messages, earlier)
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
     fn wire_bytes(&self, messages: &[Message]) -> usize {
-        self.prior_thinking.wire_bytes(messages)
-            - self.prior_tails.dropped_bytes(messages)
-            - self.prior_nudges.dropped_bytes(messages)
+        let nudges = match self.prior_nudges {
+            PriorNudges::Keep => 0,
+            PriorNudges::Drop => {
+                let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
+                self.prior_nudges.dropped_bytes(messages, &earlier)
+            }
+        };
+        self.prior_thinking.wire_bytes(messages) - self.prior_tails.dropped_bytes(messages) - nudges
     }
 
     /// What this agent thinks the time is, now.

@@ -1599,21 +1599,27 @@ module.
       it was measured in. The transcript keeps every note; `wire_bytes`
       subtracts the dropped ones. **This is the first view that rewrites
       a request already sent**, so it drops a note only where that is free:
-      when a plain reply follows it, which the slot holds *with* the thinking
-      `PriorThinking::Drop` strips, so the server re-reads from there anyway.
-      A turn that called a tool keeps its thinking and, under the router's
-      `reasoning-preserve`, goes back byte-identical; a note ahead of one
-      stays, or every tool turn would re-read its call and results on a
-      spoken turn's latency path. So a cancelled tool call's fold can send
-      two notes, the cheaper harm. A later view that rewrites earlier text
-      pays from its own position on, unless it makes the same check.
+      when the reply after it goes out altered (thinking stripped by
+      `PriorThinking::Drop`, or a tail trimmed), since the slot holds it as
+      generated and the server re-reads from there anyway. It judges that
+      against the recorded history and the earlier views' output together
+      (`Agent::wire`). A turn that called a tool keeps its thinking and,
+      under the router's `reasoning-preserve`, goes back byte-identical, as
+      does a reply that came back with no reasoning; a note ahead of either
+      stays, or the server would re-read that turn and everything after it,
+      tool results included, on a spoken turn's latency path. So a cancelled
+      tool call's fold can send two notes, the cheaper harm. A later view
+      that rewrites earlier text pays from its own position on, unless it
+      makes the same check.
     - A turn that called a tool is not a reply: its text is a preamble
       ("Let me look that up."), the turns `PriorTails` leaves alone too. A
       reply with no whole sentence ("Mmm, I was just", barged in on) has no
       closer: quoting it back would show the model a mid-sentence ending.
-    - A closer is quoted on one line with its own double quotes removed, so
-      a reply's words can never close the harness's quote and read on as a
-      harness clause.
+    - A closer is quoted on one line with its own double quotes and
+      parentheses removed, so a reply's words can close neither the quote
+      nor the note's parenthetical and read on as a harness clause. This is
+      the first registered harness voice whose body carries model-written
+      text, and a reply can carry what a tool read back.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,
