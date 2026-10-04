@@ -1,0 +1,16 @@
+# The one Rust this repository builds with — locally, in every CI job, and in
+# the release. CI reads this file (`rustup toolchain install`, no arguments)
+# rather than floating on `stable`, so a lint added upstream reaches CI and a
+# developer's machine on the same day: the one that does not have to be
+# rediscovered as a red check (`clippy::chunks_exact_to_as_chunks`, #551).
+#
+# Moving it is a PR of its own: run `cargo fmt --all --check` and
+# `RUSTFLAGS="-D warnings" cargo clippy --workspace --all-features
+# --all-targets` on the new version first, fixing what they find there.
+#
+# `rust-version` in Cargo.toml is a different promise — the oldest Rust a
+# `cargo install` user may have — and CI's MSRV arm tests it separately.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
