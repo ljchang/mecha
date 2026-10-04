@@ -2,7 +2,7 @@
 //!
 //! The owner, after an afternoon of calls (2026-10-03): "A little repetitive
 //! but still better than before." Replies opened alike and closed on the same
-//! questions ("[removed]" six times in one chat). Replayed
+//! questions (one closing question six times in one chat). Replayed
 //! on seven late turns of that chat, two samples each, thinking capped as a
 //! call turn is, and judged blind by the same model with the order swapped
 //! (2026-10-04):
