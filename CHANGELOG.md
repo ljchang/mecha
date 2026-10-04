@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features enable` installs the llama.cpp engine.** On a machine
+  without one, enabling a feature that runs something on it offers the
+  official release for this machine — CUDA by the driver's version, Metal on
+  Apple silicon, else CPU — checked by sha256, into
+  `~/.mecha/sidecars/llama/<tag>/` behind a `current` link, with every
+  library found beside it. A machine whose chat runs elsewhere is not offered
+  the engine for a feature that runs nothing on it.
 - **`mecha features enable` installs what the feature needs.** It shows the
   plan, installs on one yes, and switches the feature on only after the
   install has passed its check. The first installer is layout's: a pinned

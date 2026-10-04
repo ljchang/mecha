@@ -30,7 +30,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::recommend::{self, Source};
-use crate::sidecar::{Machinery, Manifest};
+use crate::sidecar::{FileState, Machinery, Manifest, Plan, PlannedSidecar, SidecarState};
 
 /// The `uv` mecha fetches when the machine has none on `PATH`.
 pub const UV_VERSION: &str = "0.12.23";
@@ -94,7 +94,86 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
 /// The sidecars mecha can install today — the rest name the step that brings
 /// their installer.
 pub fn installable(id: &str) -> bool {
+    matches!(id, "layout" | "llama")
+}
+
+/// Whether a sidecar's install brings the models it serves. Layout's fetches
+/// its model; the engine's does not — the router's chat model, and the
+/// embeddings and OCR models, arrive with their servers (7c) — so a model
+/// gone from the hub is a reason to run layout's install again, never the
+/// engine's.
+fn fetches_models(id: &str) -> bool {
     id == "layout"
+}
+
+/// Whether the chat model is served from this machine: the default provider
+/// is `local` and names no address, or a loopback one. A machine that chats
+/// through a hosted provider, or a llama-server elsewhere, needs no engine
+/// for chat.
+pub fn chat_runs_here(cfg: &crate::config::Config) -> bool {
+    let Some(p) = cfg.providers.get(&cfg.default_provider) else {
+        return false;
+    };
+    if p.kind != "local" {
+        return false;
+    }
+    match p.base_url.as_deref() {
+        None => true,
+        Some(url) => reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .is_some_and(|h| matches!(h.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1")),
+    }
+}
+
+/// Why a sidecar in a plan is not needed on this machine, or `None` when it
+/// is. Only a shared sidecar can be unneeded — the engine and the router are
+/// in every plan because the chat model runs on them — so where chat runs
+/// elsewhere, one is needed only by a feature whose embeddings or OCR server
+/// it runs. The router serves chat alone, so it is never needed then.
+pub fn not_needed(id: &str, plan: &Plan, chat_here: bool) -> Option<&'static str> {
+    if chat_here {
+        return None;
+    }
+    let s = crate::sidecar::SIDECARS.iter().find(|s| s.id == id)?;
+    if !s.needed_by.is_empty() {
+        return None;
+    }
+    let other_server = plan
+        .files
+        .iter()
+        .any(|f| f.slot != "chat" && s.serves.contains(&f.slot));
+    (!other_server).then_some(
+        "not needed here — the chat model is served from elsewhere, and this feature runs \
+         nothing else on it",
+    )
+}
+
+/// What `mecha features enable` offers to install for one plan: each
+/// installable sidecar that is missing or unfinished — or installed, with a
+/// model its own install fetches now gone from the hub (a cleared cache
+/// leaves its link dangling; the install is idempotent, so running it again
+/// fetches only what is missing) — and needed here.
+pub fn offered(plan: &Plan, chat_here: bool) -> Vec<&PlannedSidecar> {
+    plan.sidecars
+        .iter()
+        .filter(|s| {
+            let serves = crate::sidecar::SIDECARS
+                .iter()
+                .find(|sc| sc.id == s.id)
+                .map(|sc| sc.serves)
+                .unwrap_or(&[]);
+            let model_gone = fetches_models(s.id)
+                && plan.files.iter().any(|f| {
+                    serves.contains(&f.slot) && matches!(f.state, FileState::Download { .. })
+                });
+            let wanted = matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            ) || (matches!(s.state, SidecarState::Installed) && model_gone);
+            wanted && installable(s.id) && not_needed(s.id, plan, chat_here).is_none()
+        })
+        .collect()
 }
 
 /// What an install says as it goes, for the terminal.
@@ -131,7 +210,7 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     let dir = sidecars.join("uv");
     let bin = dir.join("uv");
     // Ask the cached binary, not the record: a later pin must replace it.
-    if bin.is_file() && uv_version(&bin).is_some_and(|v| v.contains(UV_VERSION)) {
+    if bin.is_file() && uv_version(&bin).is_some_and(|v| is_pinned_uv(&v)) {
         // An unpack interrupted before its `finish` left the binary whole
         // and the record open; the version check is the health check, so
         // the record catches up here rather than reading unfinished forever.
@@ -176,7 +255,7 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
         bail!("tar could not unpack {}", archive.display());
     }
     let version = uv_version(&bin).unwrap_or_default();
-    if !version.contains(UV_VERSION) {
+    if !is_pinned_uv(&version) {
         bail!(
             "the unpacked uv reports `{}`, not {UV_VERSION}",
             version.trim()
@@ -193,6 +272,13 @@ pub async fn ensure_uv(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
 const UV_FLOOR: (u32, u32, u32) = (0, 5, 0);
 
 /// `uv 0.11.7 (…)` → (0, 11, 7).
+/// `uv 0.12.23 (…)` is the pin; `uv 0.12.230` and `uv 0.12.2` are not —
+/// compared as numbers, never as a substring.
+fn is_pinned_uv(text: &str) -> bool {
+    parse_version(text).is_some()
+        && parse_version(text) == parse_version(&format!("uv {UV_VERSION}"))
+}
+
 fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
     let v = text.split_whitespace().nth(1)?;
     let mut it = v.split('.').map(|n| n.parse::<u32>().ok());
@@ -347,6 +433,15 @@ pub async fn install(
 ) -> Result<()> {
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
+        "llama" => {
+            let server = crate::engine::install_engine(m, say).await?;
+            say(&format!(
+                "the engine is at {} — the servers that run it arrive with their units (step 7c); \
+                 until then a launcher reads it from LLAMA_SERVER",
+                server.display()
+            ));
+            Ok(())
+        }
         other => bail!("mecha cannot install {other} yet"),
     }
 }
@@ -354,6 +449,85 @@ pub async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_of(llama: SidecarState, slots: &[&'static str]) -> Plan {
+        use crate::sidecar::PlannedFile;
+        Plan {
+            feature: crate::feature::Feature::Documents,
+            sidecars: vec![PlannedSidecar {
+                id: "llama",
+                label: "llama.cpp (llama-server)",
+                state: llama,
+            }],
+            files: slots
+                .iter()
+                .map(|slot| PlannedFile {
+                    slot,
+                    model: "m",
+                    repo: Some("org/r"),
+                    path: "f.gguf",
+                    state: FileState::Download { bytes: 1 },
+                })
+                .collect(),
+            download_bytes: 1,
+            nothing_to_do: false,
+        }
+    }
+
+    /// The engine is offered where it will run something: the chat model
+    /// here, or a feature's embeddings or OCR server. A machine chatting
+    /// through a hosted provider is not handed 700 MB for `enable messages`.
+    #[test]
+    fn the_engine_is_offered_only_where_it_runs_something() {
+        let missing = || SidecarState::Missing { step: "7b" };
+        let chat_only = plan_of(missing(), &["chat"]);
+        assert_eq!(install_ids(&chat_only, true), vec!["llama"]);
+        assert!(install_ids(&chat_only, false).is_empty());
+        assert!(not_needed("llama", &chat_only, false).is_some());
+        let with_ocr = plan_of(missing(), &["chat", "ocr"]);
+        assert_eq!(install_ids(&with_ocr, false), vec!["llama"]);
+        assert!(not_needed("llama", &with_ocr, false).is_none());
+        // The router serves chat alone: never needed where chat is elsewhere,
+        // whatever else the feature runs. A feature's own sidecar always is.
+        assert!(not_needed("router", &with_ocr, false).is_some());
+        assert!(not_needed("router", &with_ocr, true).is_none());
+        assert!(not_needed("layout", &chat_only, false).is_none());
+    }
+
+    /// The engine's install fetches no model, so a model missing from the hub
+    /// never re-offers an installed engine — it would offer, install nothing
+    /// new, and offer again on every enable.
+    #[test]
+    fn a_missing_model_does_not_re_offer_the_engine() {
+        let installed = plan_of(SidecarState::Installed, &["chat", "ocr"]);
+        assert!(install_ids(&installed, true).is_empty());
+        let unfinished = plan_of(SidecarState::Incomplete, &["chat"]);
+        assert_eq!(install_ids(&unfinished, true), vec!["llama"]);
+    }
+
+    fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
+        offered(p, chat_here).iter().map(|s| s.id).collect()
+    }
+
+    #[test]
+    fn chat_runs_here_only_for_a_local_provider_on_this_machine() {
+        let with = |kind: &str, url: Option<&str>| {
+            let mut cfg = crate::config::Config::default();
+            let p = cfg
+                .providers
+                .get_mut(&cfg.default_provider.clone())
+                .unwrap();
+            p.kind = kind.into();
+            p.base_url = url.map(str::to_owned);
+            chat_runs_here(&cfg)
+        };
+        assert!(with("local", None));
+        assert!(with("local", Some("http://127.0.0.1:8080/v1")));
+        assert!(with("local", Some("http://localhost:8080/v1")));
+        assert!(!with("local", Some("http://gpu-box.tailnet:8080/v1")));
+        assert!(!with("anthropic", None));
+        assert!(!with("openai", Some("http://127.0.0.1:8080/v1")));
+    }
 
     /// The lock in the binary is the lock the script installs from: one
     /// file's two copies, held equal so they cannot drift.
@@ -406,21 +580,31 @@ mod tests {
     }
 
     /// What `install` can install and what the registry says arrives in a
-    /// later step agree: an installable sidecar is a registered one whose step
-    /// is this one.
+    /// later step agree, both ways: a sidecar is installable exactly when its
+    /// step is one already built.
+    #[test]
+    fn only_the_pinned_uv_is_the_pin() {
+        assert!(is_pinned_uv(&format!("uv {UV_VERSION} (abc 2026-09-30)")));
+        assert!(!is_pinned_uv(&format!("uv {UV_VERSION}0")));
+        assert!(!is_pinned_uv("uv 0.12.2"));
+        assert!(!is_pinned_uv(""));
+    }
+
     #[test]
     fn installable_and_the_registry_agree() {
+        const BUILT: &[&str] = &["7a-3", "7b"];
         assert!(installable("layout"));
+        assert!(installable("llama"));
         assert!(!installable("comfyui"));
-        assert!(crate::sidecar::SIDECARS.iter().any(|s| s.id == "layout"));
         for s in crate::sidecar::SIDECARS {
-            if installable(s.id) {
-                assert_eq!(
-                    s.installer, "7a-3",
-                    "{} is installable but its step says {}",
-                    s.id, s.installer
-                );
-            }
+            assert_eq!(
+                installable(s.id),
+                BUILT.contains(&s.installer),
+                "{} is installable: {}, but its step says {}",
+                s.id,
+                installable(s.id),
+                s.installer
+            );
         }
     }
 

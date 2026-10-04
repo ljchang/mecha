@@ -673,23 +673,32 @@ enum GpuRead {
 const NVIDIA_SMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn nvidia_total_mb() -> GpuRead {
-    let Ok(mut child) = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+    match nvidia_smi("memory.total") {
+        Some(text) => parse_nvidia_total(&text),
+        None => GpuRead::None,
+    }
+}
+
+/// One `nvidia-smi --query-gpu=<field>` reading, or `None` when it is not
+/// there, fails, or outlives [`NVIDIA_SMI_TIMEOUT`] — killed rather than
+/// waited on. The engine's driver read (`engine::read_nvidia`) shares it.
+pub(crate) fn nvidia_smi(field: &str) -> Option<String> {
+    let mut child = std::process::Command::new("nvidia-smi")
+        .arg(format!("--query-gpu={field}"))
+        .args(["--format=csv,noheader,nounits"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-    else {
-        return GpuRead::None;
-    };
+        .ok()?;
     let started = std::time::Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return GpuRead::None,
+            Ok(Some(_)) | Err(_) => return None,
             Ok(None) if started.elapsed() > NVIDIA_SMI_TIMEOUT => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return GpuRead::None;
+                return None;
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
         }
@@ -699,7 +708,7 @@ fn nvidia_total_mb() -> GpuRead {
         use std::io::Read;
         let _ = out.read_to_string(&mut text);
     }
-    parse_nvidia_total(&text)
+    Some(text)
 }
 
 fn parse_nvidia_total(text: &str) -> GpuRead {
