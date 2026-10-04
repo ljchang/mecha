@@ -62,7 +62,9 @@ Three facts to hold onto:
 - **The offer played, in full, and the owner answered it.** Until today
   `VOICE-RESEARCH.md` recorded that thirty days of journal contained no
   *"Say yes to send it"* — the fourth door had never run in anger. It has
-  now, once, and the first real answer to it fell through.
+  now, once, and the first real answer to it fell through. (That journal
+  probe is retired by #547, which keeps words out of the worker's journal;
+  serve's `voice: confirmation offered` line is the evidence since.)
 - **The harness never saw "Go ahead and send it." as an answer.** It reached
   the model as an ordinary turn, and the model — which has no release tool,
   by design — said what its tool result had told it: *review it with `mecha

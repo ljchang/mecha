@@ -3702,6 +3702,31 @@ brief (which reads the board through the graph server) do not run.
   affect latch, the facade's refusal path), and the voice stamp
   `brief::VoicePresence` is skipped for one (`stamp_presence`) — it outlives
   the chat and lands in other runs' briefs.
+- **No call's words reach the journal, incognito or not** (owner, 2026-10-04:
+  "Let's definitely fix that"; `scripts/voice/journal.py`). Until then an
+  ordinary call wrote typed turns and transcripts (the worker's own lines),
+  every sentence handed to the TTS and the whole conversation sent to the
+  model (pipecat's `services` DEBUG lines) to a journal kept on disk. The
+  worker's lines carry `journal.withheld` (a length), and `journal.install`
+  makes the only loguru sink one that, below INFO, keeps a `pipecat` record
+  only from a family measured to carry no words (`WORDLESS_FAMILIES`). It is
+  an allowlist, so a family a pipecat upgrade adds or renames is dropped
+  until someone measures it. Warnings and errors stay, as does everything
+  outside `pipecat`, and that is the residual: a week of pipecat warnings
+  held no words, but one that interpolates a frame would carry its text (an
+  incognito call is silenced at every level regardless). `LocalTTS.run_tts`
+  logs each sentence's length (no words; not for an incognito call) for
+  timing studies. It is a
+  sink filter, which the runner's one reset in `main()` would discard, so it
+  is installed after that reset: at server start (composed into the app's
+  lifespan by `journal.lifespan`, after the inner one has started) and at
+  the top of every `run_bot`. loguru's `diagnose` and `backtrace` are off,
+  because a diagnosed traceback prints the values of locals, such as the frame
+  pipecat was processing. The incognito silence above stays at the core
+  and does not depend on it. It retired a probe: the worker's journal held
+  the spoken outbox offer's text, the only evidence one had played, so
+  `voice::offer_note` now prints `voice: confirmation offered for draft …`
+  to serve's journal when an offer is armed (none for an incognito chat).
 - **The voice director runs, and keeps nothing** (owner ruling, 2026-10-03).
   An incognito call's sentences are directed like any other, on the local
   model, but no `spoken_direction` record is written — the chat has no
