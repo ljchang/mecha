@@ -248,14 +248,20 @@ async fn run_adopt(
             ""
         }
     );
+    // The refusals that move nothing, before the owner is asked to agree to
+    // a router stop.
+    let servers = gate::Servers::read()?;
+    let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
+    gate::check_adoptable(
+        m,
+        &servers,
+        &holds,
+        &mecha_core::provider::router::base(base),
+    )?;
     if !confirm("Go ahead?")? {
         println!("Nothing was changed.");
         return Ok(());
     }
-    let servers = gate::Servers::read()?;
-    // The holds under this machinery's home, the one the manifest, the
-    // ledger and the managed engine are under.
-    let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
     // From here an interrupt is the owner's "stop": during the download or
     // the measurement it unwinds (the servers it started stopped, the router
     // restarted on its engine); during the promotion it is held until the
@@ -301,6 +307,21 @@ async fn run_rollback(
         .filter(|u| gate::drop_in_path(dir, u).exists())
         .collect();
     if adopted.is_empty() {
+        // A partial adopt can record a drop-in it never wrote; forget those,
+        // or the engine reads as a half-finished install for good.
+        let mut cleared = 0;
+        for (srv, _) in &servers.present {
+            let path = gate::drop_in_path(dir, srv.unit);
+            let before = mecha_core::sidecar::Manifest::read(&m.mecha_home)?;
+            if before.entries.iter().any(|e| e.wrote.contains(&path)) {
+                mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
+                cleared += 1;
+            }
+        }
+        if cleared > 0 {
+            println!("no drop-ins were on disk; cleared {cleared} recorded but never written");
+            return Ok(());
+        }
         bail!(
             "no unit here runs mecha's engine through an adopt — nothing to roll back (moving \
              back from an upgrade arrives with `--upgrade`)"
@@ -360,9 +381,13 @@ async fn run_rollback(
         Err(e) => (None, Some(format!("{e:#}"))),
     };
 
-    for unit in &adopted {
-        let path = gate::drop_in_path(dir, unit);
-        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    // Every present unit's drop-in path is forgotten, written or not: a
+    // partial adopt records before it writes.
+    for (srv, _) in &servers.present {
+        let path = gate::drop_in_path(dir, srv.unit);
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        }
         mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
     }
     let finish = "systemctl --user daemon-reload && systemctl --user restart llama-local.service";
