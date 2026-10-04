@@ -376,7 +376,12 @@ conversation has no `Session` to record into, and a closed key comes back
   its warnings and errors as well as its words — and a
   filter keyed on the call's context leaks on the first task started outside
   it. The worker's own lines that carry words keep their measurements and
-  lose the words (`spoken_words`). No line says an incognito chat was
+  lose the words (`journal.withheld`, which since 2026-10-04 holds for every
+  call, incognito or not, as does a sink that drops pipecat's text-bearing
+  DEBUG lines; `scripts/voice/journal.py`). Since then a line keeps the
+  length of what was said (`<N chars>`) where it used to say
+  `<withheld: an incognito call is live>`. That was a constant, and it
+  announced the very fact this section promises no line says. No line says an incognito chat was
   spoken into, redacted or not: the worker's call-start line reads as a
   call that named no chat (`session_line`), its affect latch — once per
   answer, `worker.py`'s own record and so outside the silence — is not
@@ -509,7 +514,7 @@ server's history clear; `no-store` on every incognito route.
   says so if `serve` runs at `debug`.
 - **The voice worker at a raised level.** Its silence covers pipecat and its
   own words at every level, but a debugging patch that logs words from a new
-  line in `worker.py` is outside it until it goes through `spoken_words`.
+  line in `worker.py` is outside it until it goes through `journal.withheld`.
 - **That a voice call happened.** The worker's journal still has a call's
   connect and disconnect lines, as for any call, and pipecat's lines are
   absent for as long as it lasts — a gap a careful reader could take for an
