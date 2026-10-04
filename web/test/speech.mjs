@@ -42,10 +42,11 @@ assert.deepEqual(speechSentences('It cost 3.5 million, i.e.a lot. She said "go!"
 assert.deepEqual(speechSentences('Well... maybe. Fine...'), ['Well...', 'maybe.', 'Fine...']);
 assert.deepEqual(speechSentences('Hm. ... !'), ['Hm.']);
 
-// The player's pieces: the first sentence alone, then the rest grouped up
-// to the cap, nothing lost.
+// The player's pieces: whole sentences grouped up to the cap from the very
+// first — a short opener rides with what follows rather than going to the
+// engine alone — nothing lost.
 const grouped = speechPieces(long, 120);
-assert.equal(grouped[0], 'One short.');
+assert.ok(grouped[0].startsWith('One short. A much longer'), grouped[0]);
 assert.ok(grouped.length > 2 && grouped.length < pieces.length, JSON.stringify(grouped));
 assert.ok(grouped.every((p) => p.length <= 120), JSON.stringify(grouped));
 assert.equal(grouped.join(' '), long.replace(/\s+/g, ' ').trim());
