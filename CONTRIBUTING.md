@@ -157,7 +157,7 @@ does have `~/.ssh` and can reach the network.
   found those 105 sites, so that drift was never the toolchain's.
 - **The toolchain is pinned: `rust-toolchain.toml` names one exact version**,
   and a cargo in this tree uses it, as does every CI job (`rustup toolchain
-  install`, no arguments) and the review agent. It was not, until a lint added
+  install`, no arguments) and — once its own PR lands — the review agent. It was not, until a lint added
   upstream (`clippy::chunks_exact_to_as_chunks`) reached CI's floating
   `stable` two versions ahead of the machine the code was written on, and
   arrived on #551 as a red check nobody had seen locally — that time the
