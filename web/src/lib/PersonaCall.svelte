@@ -13,6 +13,10 @@
   // - The pictures the persona makes during the call are shown here. This
   //   screen covers the chat, where they are also drawn, so without this
   //   they stayed out of sight until the owner hung up (2026-10-03).
+  //   Tapped, one opens full screen *inside* this screen, with the chat's
+  //   Download and Edit — never a new tab: on a phone a tab sends the call
+  //   page to the background, its microphone stream dies and the call
+  //   drops, which is what three of the seven drops on 2026-10-04 were.
   //
   // Mounted while a chat is open and idle until `start()`, which the call
   // button invokes inside its own tap: the audio unlock needs the gesture.
@@ -28,12 +32,14 @@
     face = null,
     onended = () => {},
     // Made since the call was placed, oldest first (`picture.js`
-    // `picturesSince`), with the chat's own URL for each. `openable` is
-    // the chat's rule: a locked persona's picture is never a link, which
-    // would put its unlock token in the browser's history.
+    // `picturesSince`), with the chat's own URL for each.
     pictures = [],
     pictureUrl = (path) => path,
-    openable = false,
+    // The chat's own Download (`path` → why it failed, or null) and Edit
+    // (`path` → the chat opens its edit modal over this screen, and sends
+    // the edit as a line typed into the call: `say`). Null hides the button.
+    ondownload = null,
+    onedit = null,
   } = $props();
 
   let open = $state(false);
@@ -60,6 +66,24 @@
     }
   });
   const shown = $derived(picked && pictures.includes(picked) ? picked : (pictures.at(-1) ?? null));
+  // The picture open full screen, inside the call; and why its download
+  // failed, when it did.
+  let viewing = $state(null);
+  let viewNote = $state(null);
+  function view(path) {
+    viewing = path;
+    viewNote = null;
+  }
+  async function download() {
+    const path = viewing;
+    const why = await ondownload?.(path);
+    if (viewing === path) viewNote = why ?? null;
+  }
+  function edit() {
+    const path = viewing;
+    viewing = null;
+    onedit?.(path);
+  }
   // When the line first carried the call: what the meter counts from, so a
   // call that never connected is no minutes at all.
   let since = null;
@@ -81,7 +105,11 @@
     if (!keep) {
       typed = '';
       typing = false;
+      viewing = null;
     }
+    // An edit modal left open over the last call does not hold this one's
+    // mic: whoever paused it says so again.
+    away = false;
     // Read at the tap, never bound: a chat switched mid-call must not have
     // the words being spoken redirected into it.
     callKey = chatKey;
@@ -184,7 +212,19 @@
   // must not rest on focus leaving the box when mute is tapped (review of
   // #499, pass 5).
   function applyMic() {
-    session?.setMicEnabled(!muted && !typing);
+    session?.setMicEnabled(!muted && !typing && !away);
+  }
+  // Typing somewhere else for the call — the chat's edit modal, open over
+  // this screen: the mic pauses as it does for the call's own box.
+  let away = $state(false);
+  export function holdMic(on) {
+    away = on;
+    applyMic();
+  }
+  // A line typed into the call from outside it (an edit): sent as the box
+  // sends one, and false when there is no live line to carry it.
+  export function say(text) {
+    return !!(linked && session?.sendText(text));
   }
   function sendTyped() {
     if (session?.sendText(typed)) typed = '';
@@ -209,6 +249,8 @@
     return () => window.removeEventListener('pagehide', end);
   });
 </script>
+
+<svelte:window onkeydown={(e) => viewing && e.key === 'Escape' && (viewing = null)} />
 
 {#if open}
   <div class="call" role="dialog" aria-label={`call with ${display}`}>
@@ -236,13 +278,9 @@
       </div>
       {#if shown}
         <div class="shot">
-          {#if openable}
-            <a href={pictureUrl(shown)} target="_blank" rel="noopener" aria-label="open the picture full size">
-              <img src={pictureUrl(shown)} alt="made during the call" />
-            </a>
-          {:else}
+          <button class="shotbtn" onclick={() => view(shown)} aria-label="look at the picture full screen">
             <img src={pictureUrl(shown)} alt="made during the call" />
-          {/if}
+          </button>
         </div>
         {#if pictures.length > 1}
           <div class="thumbs" aria-label="pictures from this call">
@@ -275,7 +313,7 @@
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
       </button>
     </form>
-    {#if typing && !muted}<div class="typehint">mic paused while you type</div>{/if}
+    {#if (typing || away) && !muted}<div class="typehint">mic paused while you type</div>{/if}
     <div class="call-controls">
       <button class="mutebtn" class:muted onclick={toggleMute} title={muted ? 'unmute' : 'mute'} aria-label={muted ? 'unmute' : 'mute'}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -288,6 +326,18 @@
         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--hazard)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
     </div>
+    {#if viewing}
+      <!-- Full screen inside the call, so the call keeps its page. -->
+      <div class="viewer" role="dialog" aria-label="picture from the call">
+        <img src={pictureUrl(viewing)} alt="made during the call" />
+        {#if viewNote}<div class="viewnote">could not download: {viewNote}</div>{/if}
+        <div class="viewbar">
+          {#if onedit}<button class="viewbtn" onclick={edit}>Edit</button>{/if}
+          {#if ondownload}<button class="viewbtn" onclick={download}>Download</button>{/if}
+          <button class="viewbtn" onclick={() => (viewing = null)}>Back to the call</button>
+        </div>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -336,8 +386,49 @@
     /* Not stretched: the picture keeps its own shape, and its border with it. */
     align-items: center;
   }
-  .shot a {
+  .shotbtn {
     display: contents;
+    cursor: zoom-in;
+  }
+  .viewer {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    background: var(--void);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 16px;
+    box-sizing: border-box;
+  }
+  .viewer img {
+    flex: 1 1 0;
+    min-height: 0;
+    max-width: 100%;
+    object-fit: contain;
+    border-radius: var(--radius);
+  }
+  .viewnote {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--hazard);
+  }
+  .viewbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .viewbtn {
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 999px;
+    border: 1px solid var(--accent-900);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
   }
   .shot img {
     max-width: 100%;
