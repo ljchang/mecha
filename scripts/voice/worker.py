@@ -2440,25 +2440,30 @@ SAMPLE_LINE = (
 )
 
 
-async def tts_wav(text: str, voice: str, speed: float = 1.0, instructions: str | None = None) -> bytes:
-    """`text` in `voice`, as a WAV, from the TTS server - the expressiveness a
-    call opens with, so what is heard here is the voice as a call sounds:
-    the same honoured-only controls a call sends (`optional_controls`),
-    `instructions` among them when Listen's director gave a line.
-    Raises on any failure; the route says which."""
+async def speech_body(text: str, voice: str, speed: float, instructions: str | None, fmt: str) -> dict:
+    """The TTS request for `text` in `voice` - the expressiveness a call
+    opens with, so what is heard here is the voice as a call sounds: the
+    same honoured-only controls a call sends (`optional_controls`),
+    `instructions` among them when Listen's director gave a line."""
     body = {
         "input": text,
         "model": "tts",
         "voice": voice,
-        "response_format": "wav",
+        "response_format": fmt,
         "speed": speed,
     }
-    body |= optional_controls(
+    return body | optional_controls(
         await asyncio.to_thread(tts_controls),
         exaggeration=TTS_EXAGGERATION,
         cfg_weight=TTS_CFG_WEIGHT,
         instructions=instructions,
     )
+
+
+async def tts_wav(text: str, voice: str, speed: float = 1.0, instructions: str | None = None) -> bytes:
+    """`text` in `voice`, as a WAV, from the TTS server (`speech_body`).
+    Raises on any failure; the route says which."""
+    body = await speech_body(text, voice, speed, instructions, "wav")
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(f"{TTS_URL}/audio/speech", json=body)
         # As in `run_tts`: a TTS restarted under another model is asked
@@ -2466,6 +2471,50 @@ async def tts_wav(text: str, voice: str, speed: float = 1.0, instructions: str |
         await reask_after_refusal(r.status_code if r.status_code >= 400 else None)
         r.raise_for_status()
         return r.content
+
+
+# What a streamed piece is: raw signed 16-bit little-endian mono at this
+# rate, the format a call takes from the same TTS (`response_format: "pcm"`,
+# which every TTS this worker fronts serves).
+PCM_RATE = 24000
+
+
+async def tts_pcm(text: str, voice: str, speed: float = 1.0, instructions: str | None = None):
+    """`text` in `voice` as raw PCM chunks, passed on as the TTS makes them -
+    a play button's piece heard from its first chunk rather than after its
+    last (docs/VOICE-BREEZE-DESIGN.md S3.1). The TTS's answer is awaited
+    here, so a refusal raises before a byte is sent and the route can still
+    say which; what is returned is an async iterator of the chunks, which
+    closes the TTS request when it ends or is dropped - a stop on the page
+    stops the synthesis it was waiting for. A chunk is not sample-aligned:
+    the reader keeps an odd byte for the next one."""
+    body = await speech_body(text, voice, speed, instructions, "pcm")
+    # `read` bounds the wait between chunks, not the whole piece: a long
+    # sentence streams for longer than any single wait.
+    client = httpx.AsyncClient(timeout=httpx.Timeout(60, read=30))
+    try:
+        r = await client.send(client.build_request("POST", f"{TTS_URL}/audio/speech", json=body), stream=True)
+    except BaseException:
+        await client.aclose()
+        raise
+    try:
+        await reask_after_refusal(r.status_code if r.status_code >= 400 else None)
+        r.raise_for_status()
+    except BaseException:
+        await r.aclose()
+        await client.aclose()
+        raise
+
+    async def chunks():
+        try:
+            async for chunk in r.aiter_raw():
+                if chunk:
+                    yield chunk
+        finally:
+            await r.aclose()
+            await client.aclose()
+
+    return chunks()
 
 
 async def tts_sample(voice: str) -> bytes:
@@ -2592,16 +2641,20 @@ def install(app) -> None:
     # reply spoken in a voice. Nothing of the text or its direction is
     # logged - not even a length beside the voice - so an incognito chat's
     # reply leaves no trace here; the TTS server logs none either.
+    # `"stream": true` answers raw PCM as the TTS makes it (`tts_pcm`), at
+    # the rate `x-sample-rate` names; without it, the piece is one WAV - what
+    # a serve older than streaming asks for.
     from fastapi import Request
 
     @app.post("/mecha/speak")
     async def speak(request: Request):
-        from fastapi.responses import JSONResponse, Response
+        from fastapi.responses import JSONResponse, Response, StreamingResponse
 
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 - a body that is not JSON is refused, as any bad one
             body = None
+        stream = isinstance(body, dict) and body.get("stream") is True
         named = isinstance(body, dict) and body.get("voice") is not None
         known = available_voices(refresh=False) if named else None
         if named and (known is None or body.get("voice") not in known):
@@ -2613,6 +2666,12 @@ def install(app) -> None:
             _, status, why, _ = checked
             return JSONResponse({"error": why}, status)
         text, voice, speed, instructions = checked
+        if stream:
+            try:
+                chunks = await tts_pcm(text, voice, speed, instructions)
+            except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+                return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+            return StreamingResponse(chunks, media_type="audio/pcm", headers={"x-sample-rate": str(PCM_RATE)})
         try:
             wav = await tts_wav(text, voice, speed, instructions)
         except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
