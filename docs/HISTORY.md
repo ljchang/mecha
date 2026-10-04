@@ -26,9 +26,12 @@ by mecha-69's `6816c2bd` install at 23:51Z. Probe: `strings
   is stored as heard, mid-sentence. The model then ended replies "…\n\nI"
   on its own, and each one was another example: 41 of 75 earlier replies by
   the end of one chat (17:14–19:20Z), every one recorded
-  `stop_cause: completed`. Replayed against the loaded model, the same turn
-  stopped mid-sentence 4 of 4 times with the history as stored and 0 of 4
-  with it cut back. `message::PriorTails::Trim`, set in
+  `stop_cause: completed`. Replayed against the loaded model on three of
+  those replies, 4 samples each, the stored history stopped a reply
+  mid-sentence 7 of 12 times against 1 of 12 cut back. The effect tracked
+  how much mid-sentence history there was: with 8 such earlier replies, 0
+  of 4 either way; with 14, 4 of 4 against 0 of 4; with 22, 3 of 4
+  against 1 of 4. `message::PriorTails::Trim`, set in
   `setup::persona_agent` beside `PriorThinking::Drop`, cuts an earlier
   plain reply that ends mid-clause back to its last whole sentence
   (`dangling_tail`; `abbreviation` keeps "Dr." and "e.g." from counting as
@@ -37,11 +40,14 @@ by mecha-69's `6816c2bd` install at 23:51Z. Probe: `strings
   waited 47–50 s whenever thinking ran to the router's `--reasoning-budget`
   4096: one sentence of the draft repeated up to 23 times, with the fresh
   material ending 11–16% of the way in. Otherwise replies started in a
-  median 1.9 s. Replayed on 9 turns and judged blind by the same model
-  (each pair twice, order swapped): thinking off lost to the full budget
-  12–17; a 512-token cap lost 10–20 and stopped replies mid-sentence three
-  times as often; a 1024-token cap won 24–10, slowest 12.5 s against
-  41.3 s. `CompletionRequest::think_budget` is sent as llama-server's
+  median 1.9 s. Replayed on 9 turns, 2 samples per arm, and judged blind by
+  the same model with thinking off (36 judgements per comparison, each pair
+  twice with the order swapped): thinking off lost to the full budget 12–17
+  (7 ties); a 512-token cap lost 10–20 (6 ties) and stopped replies
+  mid-sentence three times as often; a 1024-token cap won 24–10 (2 ties),
+  slowest 12.5 s against 41.3 s. One chat, self-judged, and the full arm's
+  own showing varied between runs: read it as "1024 is at least as good and
+  far faster", not as a ranking. `CompletionRequest::think_budget` is sent as llama-server's
   `reasoning_budget_tokens`, only to `OpenAiCompatible::local` (`kind =
   "local"` with a base URL: the dialect, not the address).
   `RunContext::think_budget` is set to `SPOKEN_THINK_BUDGET` (1024) on a
@@ -9321,7 +9327,9 @@ learns it. Trim what goes back to the model (#538), never what is recorded.
 2026-10-03). A persona's long thinking was its reply drafted and then
 redrafted. A 512-token cap stopped the draft half-written and lost 10–20,
 blind, to the full budget; 1024 won 24–10, with a third of the worst wait.
-Read what the thinking is doing before choosing its budget.
+That is one chat, judged by the same model, so read it as "1024 is at least
+as good", not as a ranking. Read what the thinking is doing before choosing
+its budget.
 
 **A one-sided example list in a prompt is copied as a menu** (mecha-1e,
 2026-10-03). The voice director, shown texture words, used "husky" in 21 of
