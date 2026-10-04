@@ -32,6 +32,10 @@ too, and they come from the code. On a machine with no `~/.mecha` (CI, a
 fresh clone) there is nothing to compare against, and it passes, saying so.
 Nothing it finds is printed beyond the file, the line number and which check
 fired: the words stay where they are.
+
+On the machine that holds the conversations, set `CHECK_PRIVATE_REQUIRE=1`
+in the environment the hooks run in: a missing or moved store then refuses
+instead of passing.
 """
 
 import glob
@@ -91,14 +95,25 @@ def spoken(o):
 
 
 def read_journal():
-    """The voice worker's journal lines that carried words, or nothing."""
+    """The voice worker's journal lines that carried words, or nothing. Words
+    from before #547 exist nowhere else, so a journal that cannot be read is
+    refused rather than taken as empty (review of #557); a machine with no
+    journalctl at all (CI, another OS) has no such journal and reads empty."""
+    cmd = ["journalctl", "--user", "-u", "mecha-voice-worker", "--no-pager", "-o", "cat",
+           "--grep", "Generating TTS|Transcription:"]
     try:
-        return subprocess.run(
-            ["journalctl", "--user", "-u", "mecha-voice-worker", "--no-pager", "-o", "cat",
-             "--grep", "Generating TTS|Transcription:"],
-            capture_output=True, text=True, errors="replace", timeout=60).stdout
-    except (OSError, subprocess.TimeoutExpired):
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60)
+    except FileNotFoundError:
         return ""
+    except subprocess.TimeoutExpired:
+        print("check-private: the voice journal did not answer within 60 s; refusing rather than passing unread.")
+        sys.exit(2)
+    # journalctl exits 1 with nothing on stderr when no line matches --grep.
+    if r.returncode != 0 and (r.returncode != 1 or r.stderr.strip()):
+        print("check-private: the voice journal could not be read; refusing rather than passing unread.")
+        print(r.stderr.strip())
+        sys.exit(2)
+    return r.stdout
 
 
 def corpus():
