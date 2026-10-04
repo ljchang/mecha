@@ -1,7 +1,7 @@
 // A streamed piece's bytes into samples, and the clock that places them
 // (`pcm.js`): the parts of the play button's player that are not the browser.
 import assert from 'node:assert/strict';
-import { listenSession, pcmSamples, Schedule } from '../src/lib/pcm.js';
+import { listenSession, pcmSamples, Schedule, Stall } from '../src/lib/pcm.js';
 
 // Clock arithmetic is in floating point seconds.
 const near = (a, b, what) => assert.ok(Math.abs(a - b) < 1e-9, `${what}: ${a} vs ${b}`);
@@ -50,5 +50,24 @@ assert.equal(listenSession('auto', false), 'playback');
 assert.equal(listenSession('auto', true), null);
 assert.equal(listenSession('play-and-record', false), null);
 assert.equal(listenSession('playback', false), null);
+
+// A clock that will not run is said, not waited on forever: frozen only
+// with audio queued, on a visible page, after the limit.
+const w = new Stall(3000);
+assert.equal(w.frozen(1.0, 0, true, true), false); // first look
+assert.equal(w.frozen(1.0, 2999, true, true), false); // not yet
+assert.equal(w.frozen(1.0, 3000, true, true), true); // stuck with speech queued
+const moving = new Stall(3000);
+moving.frozen(1.0, 0, true, true);
+assert.equal(moving.frozen(1.5, 5000, true, true), false); // it moved: fine, and the wait restarts
+assert.equal(moving.frozen(1.5, 7000, true, true), false);
+const idle = new Stall(3000);
+idle.frozen(1.0, 0, false, true);
+assert.equal(idle.frozen(1.0, 9000, false, true), false); // nothing queued: nothing to hear
+const hidden = new Stall(3000);
+hidden.frozen(1.0, 0, true, false);
+assert.equal(hidden.frozen(1.0, 9000, true, false), false); // a locked phone suspends on purpose
+assert.equal(hidden.frozen(1.0, 10000, true, true), false); // and back in view the wait starts over
+assert.equal(hidden.frozen(1.0, 13000, true, true), true);
 
 console.log('pcm: ok');
