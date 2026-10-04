@@ -138,6 +138,10 @@ is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', '
   const onLink = call.slice(call.indexOf('onLink: (live) => {'), call.indexOf('onBotTurnEnd'));
   is(/viewing = null/.test(onLink), true, 'a dropped line closes the picture');
   is(/onclick=\{edit\} disabled=\{!linked\}/.test(markup), true, 'Edit waits for a live line, as the typing box does');
+  // Modal for focus too: the typing box behind it is inert while it is open,
+  // so Tab cannot pause the mic under a hint the viewer hides (review of #552).
+  is(/class="viewer"[^>]*aria-modal="true"/.test(markup), true, 'the viewer is modal');
+  is(/<form class="typerow" inert=\{!!viewing\}/.test(markup), true, "the call's typing box is inert behind the viewer");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

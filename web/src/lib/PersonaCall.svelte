@@ -74,10 +74,21 @@
     viewing = path;
     viewNote = null;
   }
+  // Focus goes into the viewer when it opens and back to the picture when
+  // it closes, so a keyboard owner is never left on what it covers, or on
+  // nothing.
+  let shotButton = $state(null);
+  let backButton = $state(null);
+  let wasViewing = false;
+  $effect(() => {
+    if (viewing && !wasViewing) backButton?.focus();
+    else if (!viewing && wasViewing) shotButton?.focus();
+    wasViewing = !!viewing;
+  });
   async function download() {
     const path = viewing;
     const why = await ondownload?.(path);
-    if (viewing === path) viewNote = why ?? null;
+    if (viewing === path) viewNote = why || null;
   }
   function edit() {
     const path = viewing;
@@ -259,10 +270,10 @@
 
 {#if open}
   <div class="call" role="dialog" aria-label={`call with ${display}`}>
-    <div class="call-top">
+    <div class="call-top" inert={!!viewing}>
       <span class="chip">on a call with {display} — same chat</span>
     </div>
-    <div class="call-stage">
+    <div class="call-stage" inert={!!viewing}>
       <button
         class="face {callState.name}"
         class:tappable={callState.name === 'idle'}
@@ -283,7 +294,7 @@
       </div>
       {#if shown}
         <div class="shot">
-          <button class="shotbtn" onclick={() => view(shown)} aria-label="look at the picture full screen">
+          <button class="shotbtn" bind:this={shotButton} onclick={() => view(shown)} aria-label="look at the picture full screen">
             <img src={pictureUrl(shown)} alt="made during the call" />
           </button>
         </div>
@@ -298,12 +309,12 @@
         {/if}
       {/if}
     </div>
-    <div class="call-pane" bind:this={pane}>
+    <div class="call-pane" bind:this={pane} inert={!!viewing}>
       {#each entries as entry}
         <div class={entry.who === 'user' ? 'said' : 'heard'} class:interim={entry.interim}>{entry.text}</div>
       {/each}
     </div>
-    <form class="typerow" onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
+    <form class="typerow" inert={!!viewing} onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
       <input
         class="typebox"
         placeholder={`Type to ${display}`}
@@ -319,7 +330,7 @@
       </button>
     </form>
     {#if (typing || away) && !muted}<div class="typehint">mic paused while you type</div>{/if}
-    <div class="call-controls">
+    <div class="call-controls" inert={!!viewing}>
       <button class="mutebtn" class:muted onclick={toggleMute} title={muted ? 'unmute' : 'mute'} aria-label={muted ? 'unmute' : 'mute'}>
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -333,7 +344,10 @@
     </div>
     {#if viewing}
       <!-- Full screen inside the call, so the call keeps its page. -->
-      <div class="viewer" role="dialog" aria-label="picture from the call">
+      <!-- Modal for focus as well as for the eye: what it covers is inert, so
+           Tab cannot reach the call's typing box (which pauses the mic under
+           a hint the viewer hides) (review of #552). -->
+      <div class="viewer" role="dialog" aria-modal="true" aria-label="picture from the call">
         <img src={pictureUrl(viewing)} alt="made during the call" />
         {#if viewNote}<div class="viewnote">could not download: {viewNote}</div>{/if}
         <div class="viewbar">
@@ -341,7 +355,7 @@
                carry it, as the call's own typing box is (review of #552). -->
           {#if onedit}<button class="viewbtn" onclick={edit} disabled={!linked}>Edit</button>{/if}
           {#if ondownload}<button class="viewbtn" onclick={download}>Download</button>{/if}
-          <button class="viewbtn" onclick={() => (viewing = null)}>Back to the call</button>
+          <button class="viewbtn" bind:this={backButton} onclick={() => (viewing = null)}>Back to the call</button>
           <!-- The hang-up stays one tap away while a picture is open. -->
           <button class="viewbtn viewend" onclick={end}>End call</button>
         </div>
@@ -455,6 +469,7 @@
     background: transparent;
     color: var(--text);
     font: inherit;
+    cursor: pointer;
   }
   .viewbtn:disabled {
     opacity: 0.4;
