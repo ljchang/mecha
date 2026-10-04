@@ -466,7 +466,11 @@ pub fn self_contained(dir: &Path) -> Result<()> {
             continue;
         }
         let bytes = std::fs::read(&path)?;
-        let Some(dynamic) = elf_dynamic(&bytes) else {
+        // Not an ELF is skipped; an ELF this check could not read stops the
+        // install — a check that could not run never passes.
+        let Some(dynamic) = elf_dynamic(&bytes)
+            .with_context(|| format!("reading {}'s dynamic section", path.display()))?
+        else {
             continue;
         };
         for p in dynamic.search_paths() {
@@ -508,13 +512,24 @@ impl Dynamic {
     }
 }
 
-/// Parse a 64-bit little-endian ELF's dynamic section — the linux targets mecha
-/// installs (x86_64, aarch64). Anything else, or anything malformed, is `None`:
-/// not an ELF this check reads.
-pub fn elf_dynamic(b: &[u8]) -> Option<Dynamic> {
-    if b.len() < 64 || &b[..4] != b"\x7fELF" || b[4] != 2 || b[5] != 1 {
-        return None;
+/// Parse an ELF's dynamic section. A file that is not an ELF is `Ok(None)`;
+/// an ELF that is not 64-bit little-endian — the linux targets mecha installs
+/// are x86_64 and aarch64 — or one whose headers or dynamic section do not
+/// parse is an error, never a skip. One with no dynamic section (static) needs
+/// nothing and reads empty.
+pub fn elf_dynamic(b: &[u8]) -> Result<Option<Dynamic>> {
+    if b.len() < 4 || &b[..4] != b"\x7fELF" {
+        return Ok(None);
     }
+    if b.len() < 64 || b[4] != 2 || b[5] != 1 {
+        bail!("an ELF this check cannot read: not 64-bit little-endian, or truncated");
+    }
+    parse_elf64le(b)
+        .map(Some)
+        .context("an ELF whose headers or dynamic section do not parse")
+}
+
+fn parse_elf64le(b: &[u8]) -> Option<Dynamic> {
     let u16_at = |o: usize| b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]));
     let u64_at = |o: usize| {
         b.get(o..o + 8)
@@ -542,7 +557,10 @@ pub fn elf_dynamic(b: &[u8]) -> Option<Dynamic> {
             _ => {}
         }
     }
-    let (dyn_off, dyn_len) = dynamic?;
+    let Some((dyn_off, dyn_len)) = dynamic else {
+        // Statically linked: it loads no library, from anywhere.
+        return Some(Dynamic::default());
+    };
     let mut strtab = None;
     let mut needed = Vec::new();
     let mut runpath = None;
@@ -560,6 +578,9 @@ pub fn elf_dynamic(b: &[u8]) -> Option<Dynamic> {
             _ => {}
         }
         i += 16;
+    }
+    if needed.is_empty() && runpath.is_none() && rpath.is_none() {
+        return Some(Dynamic::default());
     }
     let addr = strtab?;
     let (vaddr, offset, _) = loads
@@ -720,12 +741,42 @@ mod tests {
 
     #[test]
     fn the_dynamic_section_reads() {
-        let d = elf_dynamic(&elf(&["libggml.so.0", "libc.so.6"], Some("$ORIGIN"))).unwrap();
+        let d = elf_dynamic(&elf(&["libggml.so.0", "libc.so.6"], Some("$ORIGIN")))
+            .unwrap()
+            .unwrap();
         assert_eq!(d.needed, vec!["libggml.so.0", "libc.so.6"]);
         assert_eq!(d.runpath.as_deref(), Some("$ORIGIN"));
         assert_eq!(d.rpath, None);
-        assert!(elf_dynamic(b"#!/bin/sh\n").is_none());
-        assert!(elf_dynamic(&[0x7f, b'E', b'L', b'F']).is_none());
+        assert_eq!(elf_dynamic(b"#!/bin/sh\n").unwrap(), None);
+        assert_eq!(elf_dynamic(b"MIT License").unwrap(), None);
+    }
+
+    /// An ELF the parser gives up on is an error, never a skip: a shipped
+    /// library whose strings cannot be found would otherwise pass the check
+    /// unread.
+    #[test]
+    fn an_elf_that_does_not_parse_stops_the_check() {
+        // Truncated inside the program headers.
+        let full = elf(&["libggml.so.0"], Some("$ORIGIN"));
+        assert!(elf_dynamic(&full[..80]).is_err());
+        // DT_STRTAB pointing outside every PT_LOAD.
+        let mut bad = full.clone();
+        let ph = 64;
+        let total = bad.len() as u64;
+        bad[ph + 32..ph + 40].copy_from_slice(&(total / 4).to_le_bytes());
+        let err = elf_dynamic(&bad).unwrap_err();
+        assert!(format!("{err:#}").contains("do not parse"), "{err:#}");
+        // A 32-bit ELF is not read as anything.
+        let mut elf32 = full;
+        elf32[4] = 1;
+        assert!(elf_dynamic(&elf32).is_err());
+        // And `self_contained` stops on it, naming the file.
+        let dir = std::env::temp_dir().join(format!("mecha-engine-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("libggml-cuda.so"), &bad).unwrap();
+        let err = format!("{:#}", self_contained(&dir).unwrap_err());
+        assert!(err.contains("libggml-cuda.so"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The from-source failure §10.3 records: a build tree's absolute path in
@@ -790,7 +841,9 @@ mod tests {
         // The check read the real thing, not nothing: the server's dynamic
         // section parses, names a library shipped beside it, and finds it
         // through `$ORIGIN`.
-        let d = elf_dynamic(&std::fs::read(&server).unwrap()).expect("an ELF");
+        let d = elf_dynamic(&std::fs::read(&server).unwrap())
+            .unwrap()
+            .expect("an ELF");
         assert_eq!(d.runpath.as_deref(), Some("$ORIGIN"), "{d:?}");
         assert!(d.needed.iter().any(|n| n.starts_with("libllama")), "{d:?}");
         let man = Manifest::read(&m.mecha_home).unwrap();

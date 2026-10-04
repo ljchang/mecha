@@ -125,16 +125,14 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
     let cfg = Config::load_global()?;
     let features = feature::plan_enable(&cfg, ids).map_err(anyhow::Error::msg)?;
     // The machine is read only when some sidecar these features need is one
-    // mecha installs: `enable messages` stays a switch write, with no GPU
-    // probe to wait on.
-    let can_install = features
-        .iter()
-        .any(|f| sidecar::needed(*f).any(|s| install::installable(s.id)));
+    // mecha installs and this machine would run: `enable messages` beside a
+    // hosted provider stays a switch write, with no GPU probe to wait on.
+    let chat_here = install::chat_runs_here(&cfg);
+    let can_install = features.iter().any(|f| install::may_offer(*f, chat_here));
     if !no_install && can_install {
         let m = sidecar::Machinery::real()?;
         let machine = recommend::Machine::read()?;
         let hub = mecha_core::fetch::hub_dir()?;
-        let chat_here = install::chat_runs_here(&cfg);
         // (sidecar id, its label, the feature whose plan names it)
         let mut todo: Vec<(&'static str, &'static str, Feature)> = Vec::new();
         for f in &features {
@@ -407,19 +405,21 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
     use sidecar::{FileState, SidecarState};
     let mut out = format!("What `{}` runs beside mecha:\n", p.feature.id());
     for s in &p.sidecars {
+        let not_needed = mecha_core::install::not_needed(s.id, p.feature, chat_here);
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
             SidecarState::Installed => "installed by mecha".to_string(),
-            SidecarState::Incomplete => format!(
-                "an install mecha began and did not finish — `mecha features enable {}` resumes it",
-                p.feature.id()
-            ),
-            SidecarState::Missing { .. }
-                if mecha_core::install::not_needed(s.id, p, chat_here).is_some() =>
-            {
-                mecha_core::install::not_needed(s.id, p, chat_here)
-                    .unwrap_or_default()
-                    .to_string()
+            // An unfinished install the machine no longer needs is not
+            // resumed by `enable`, so the plan does not say it is.
+            SidecarState::Incomplete => match not_needed {
+                Some(why) => format!("an unfinished install mecha no longer offers — {why}"),
+                None => format!(
+                    "an install mecha began and did not finish — `mecha features enable {}` resumes it",
+                    p.feature.id()
+                ),
+            },
+            SidecarState::Missing { .. } if not_needed.is_some() => {
+                not_needed.unwrap_or_default().to_string()
             }
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
@@ -506,7 +506,7 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
     if p.sidecars.iter().any(|s| {
         matches!(s.state, SidecarState::Missing { .. })
             && !mecha_core::install::installable(s.id)
-            && mecha_core::install::not_needed(s.id, p, chat_here).is_none()
+            && mecha_core::install::not_needed(s.id, p.feature, chat_here).is_none()
     }) {
         out.push_str("Some installers are not built yet — each such line names its step.\n");
     }
