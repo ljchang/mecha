@@ -523,6 +523,16 @@ fn within(named: Feature, f: Feature) -> bool {
     f == named || f.switch_owner() == named
 }
 
+/// The model slots a feature's plan prices: the ones it or its parts need,
+/// and the chat model's, which every feature needs. A part resolves to its
+/// parent.
+pub fn needed_slots(named: Feature) -> impl Iterator<Item = &'static recommend::Slot> {
+    let named = named.switch_owner();
+    recommend::SLOTS
+        .iter()
+        .filter(move |s| s.needed_by.is_empty() || s.needed_by.iter().any(|f| within(named, *f)))
+}
+
 /// The sidecars a feature's plan reads: the ones it or its parts need, and
 /// the shared ones every feature needs. A part resolves to its parent.
 pub fn needed(named: Feature) -> impl Iterator<Item = &'static Sidecar> {
@@ -546,8 +556,6 @@ pub fn plan(
     let named = named.switch_owner();
     let manifest = Manifest::read(&m.mecha_home)?;
     let sidecars_dir = m.sidecars_dir();
-    let needs =
-        |needed_by: &[Feature]| needed_by.is_empty() || needed_by.iter().any(|f| within(named, *f));
 
     let mut sidecars = Vec::new();
     for s in needed(named) {
@@ -611,7 +619,7 @@ pub fn plan(
     }
 
     let mut files = Vec::new();
-    for slot in recommend::SLOTS.iter().filter(|s| needs(s.needed_by)) {
+    for slot in needed_slots(named) {
         let Some((row, _)) = recommend::row_for(slot, machine) else {
             // No model is recommended at this tier (the chat model below its
             // smallest): named, never skipped — a slot with no row is a
