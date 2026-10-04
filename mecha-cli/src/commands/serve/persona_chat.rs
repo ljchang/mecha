@@ -2980,6 +2980,9 @@ impl PersonaChats {
             .as_ref()
             .filter(|_| !ps.last_turn_spoken)
             .map(|s| mecha_core::persona::call::note(s.streams));
+        // What the persona keeps opening and closing with, named back to it in
+        // the harness's voice (`persona::variety`, measured 2026-10-04).
+        let variety_note = mecha_core::persona::variety::note(&conversation.messages);
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -3059,6 +3062,9 @@ impl PersonaChats {
             if let Some(note) = &call_note {
                 mecha_core::agent::append_user_text(&mut conversation.messages, note.clone());
             }
+            if let Some(note) = &variety_note {
+                mecha_core::agent::append_user_text(&mut conversation.messages, note.clone());
+            }
             ps.session
                 .append(&Record::Rewrite {
                     messages: conversation.messages.clone(),
@@ -3090,6 +3096,10 @@ impl PersonaChats {
                 });
             }
             if let Some(note) = &call_note {
+                user.content
+                    .push(mecha_core::message::Block::Text { text: note.clone() });
+            }
+            if let Some(note) = &variety_note {
                 user.content
                     .push(mecha_core::message::Block::Text { text: note.clone() });
             }
@@ -5158,6 +5168,60 @@ mod tests {
         assert!(
             recorded.contains(r"Glad you came. \n\nI"),
             "the transcript keeps the reply as written"
+        );
+    }
+
+    /// A persona that keeps opening and closing alike is told so, in the
+    /// harness's voice beside the owner's words (`persona::variety`): never
+    /// drawn as theirs, never their words to a miner.
+    #[tokio::test]
+    async fn a_persona_repeating_itself_is_told_what_it_repeats() {
+        // Replies with reasoning, as the persona model gives them: a stale
+        // note is dropped only ahead of a reply that goes out altered.
+        let w = world_with(Mode::Think("they said hello again".into()));
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        turn(&w, &key, "hi again").await;
+        turn(&w, &key, "and again").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        // Per block, as `owner_text` reads one: `is_note` matches a whole block,
+        // so a check on the joined text could never fail (review of #550).
+        let notes_in = |m: &Message| {
+            m.content
+                .iter()
+                .filter(|b| {
+                    matches!(b, mecha_core::message::Block::Text { text }
+                    if mecha_core::persona::variety::is_note(text))
+                })
+                .count()
+        };
+        assert_eq!(
+            notes_in(seen[0].messages.last().unwrap()),
+            0,
+            "nothing to vary from on the first turn"
+        );
+        // Only the turn being answered carries one on the wire: the earlier
+        // turns' notes stay in the transcript and out of what is sent.
+        let third = &seen.last().unwrap().messages;
+        let on_wire: usize = third.iter().map(notes_in).sum();
+        assert_eq!(on_wire, 1, "stale notes went back to the model");
+        let last = third.last().unwrap();
+        let note = last
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                mecha_core::message::Block::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .find(|t| mecha_core::persona::variety::is_note(t))
+            .expect("the third turn carries the note");
+        assert!(note.contains("opened with \"Hello\""), "{note}");
+        assert!(note.contains("\"Hello from Mara.\""), "{note}");
+        assert_eq!(
+            mecha_core::agent::owner_text(last),
+            "and again",
+            "the note is the harness's, never the owner's words"
         );
     }
 

@@ -1111,6 +1111,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona on a call (§11): how a reply is heard, folded beside the
         // owner's spoken words — the harness's note, never what they said.
         || crate::persona::call::is_note(text)
+        // A persona's own repetitions named back to it (`persona::variety`):
+        // the harness's note on what it keeps opening and closing with.
+        || crate::persona::variety::is_note(text)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -1468,6 +1471,9 @@ pub struct Agent {
     /// Whether earlier replies that stop mid-sentence go back to the model
     /// as they are. Kept unless a driver says otherwise; see [`PriorTails`].
     prior_tails: PriorTails,
+    /// Whether one-turn harness nudges in earlier owner turns go back to the
+    /// model. Kept unless a driver says otherwise; see [`PriorNudges`].
+    prior_nudges: PriorNudges,
 }
 
 impl Agent {
@@ -1494,6 +1500,7 @@ impl Agent {
             clock: Arc::new(crate::clock::SystemClock),
             prior_thinking: PriorThinking::Keep,
             prior_tails: PriorTails::Keep,
+            prior_nudges: PriorNudges::Keep,
         })
     }
 
@@ -1519,16 +1526,33 @@ impl Agent {
         self
     }
 
+    /// Leave one-turn nudges out of earlier owner turns in what is sent (or
+    /// keep them, the default). The transcript records them either way.
+    pub fn with_prior_nudges(mut self, nudges: PriorNudges) -> Self {
+        self.prior_nudges = nudges;
+        self
+    }
+
     /// The history as this agent sends it.
     fn wire<'a>(&self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
-        self.prior_tails.wire(self.prior_thinking.wire(messages))
+        // The nudge view judges against both: whether a reply goes out
+        // altered is what makes dropping the note ahead of it free.
+        let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
+        self.prior_nudges.wire(messages, earlier)
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
     fn wire_bytes(&self, messages: &[Message]) -> usize {
-        self.prior_thinking.wire_bytes(messages) - self.prior_tails.dropped_bytes(messages)
+        let nudges = match self.prior_nudges {
+            PriorNudges::Keep => 0,
+            PriorNudges::Drop => {
+                let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
+                self.prior_nudges.dropped_bytes(messages, &earlier)
+            }
+        };
+        self.prior_thinking.wire_bytes(messages) - self.prior_tails.dropped_bytes(messages) - nudges
     }
 
     /// What this agent thinks the time is, now.
