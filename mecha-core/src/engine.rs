@@ -523,7 +523,15 @@ impl Release {
             .filter_map(|a| a.name.strip_prefix(&prefix)?.strip_suffix(".tar.gz"))
             .filter(|p| platform_is(target, p))
             .collect();
-        platforms.sort_by(|a, b| b.cmp(a));
+        // Newest CUDA minor first, compared as a number: `13.10` is newer
+        // than `13.9`, which a string sort gets backwards.
+        let minor = |p: &str| -> u32 {
+            p.strip_prefix("ubuntu-cuda-")
+                .and_then(|r| r.split(['.', '-']).nth(1))
+                .and_then(|m| m.parse().ok())
+                .unwrap_or(0)
+        };
+        platforms.sort_by_key(|p| std::cmp::Reverse(minor(p)));
         let platform = platforms.first().with_context(|| {
             format!(
                 "llama.cpp {} publishes no {} build for this machine",
@@ -715,6 +723,11 @@ pub fn link_tag(link: &Path) -> Option<String> {
 /// Remove every build that is neither `current` nor `previous`, and its
 /// record — so upgrades keep two builds on disk, not every one ever tried.
 pub fn prune_builds(home: &Path) -> Result<Vec<String>> {
+    // Without a readable `current` nothing is known to be in use, and
+    // pruning would remove every build: refused, never guessed.
+    if link_tag(&current(home)).is_none() {
+        bail!("`current` names no build, so no build is pruned");
+    }
     let keep: Vec<String> = [current(home), previous(home)]
         .iter()
         .filter_map(|l| link_tag(l))
@@ -1439,6 +1452,17 @@ mod tests {
             "no 13.x x64 build"
         );
         assert!(r.archives_for(Target::MacArm64).is_err());
+        // The newest minor wins as a number: 13.10 over 13.9.
+        let two = release(&[
+            "llama-b20000-bin-ubuntu-cuda-13.9-arm64.tar.gz",
+            "cudart-llama-b20000-bin-ubuntu-cuda-13.9-arm64.tar.gz",
+            "llama-b20000-bin-ubuntu-cuda-13.10-arm64.tar.gz",
+            "cudart-llama-b20000-bin-ubuntu-cuda-13.10-arm64.tar.gz",
+        ]);
+        assert_eq!(
+            two.archives_for(Target::LinuxArm64Cuda13).unwrap()[0].name,
+            "llama-b20000-bin-ubuntu-cuda-13.10-arm64.tar.gz"
+        );
         // A CUDA build whose runtime archive is missing is not offered.
         let half = release(&["llama-b20000-bin-ubuntu-cuda-13.6-arm64.tar.gz"]);
         assert!(half.archives_for(Target::LinuxArm64Cuda13).is_err());
@@ -1555,6 +1579,11 @@ mod tests {
             "the pruned pin dir is forgotten"
         );
         assert!(e.wrote.contains(&root), "the root stays recorded");
+        // With no readable `current`, nothing is known to be in use: refused,
+        // and nothing removed.
+        std::fs::remove_file(current(&home)).unwrap();
+        assert!(prune_builds(&home).is_err());
+        assert!(root.join("b2").exists() && root.join("b3").exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 
