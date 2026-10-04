@@ -2,9 +2,12 @@
 //! on each of the rest, and `enable` / `disable` to answer the switches
 //! (`docs/FEATURES-DESIGN.md`).
 //!
-//! The human half of [`mecha_core::feature`]. **No network**: the core module
-//! reads the config and the disk, never a server, because several servers
-//! here start the moment they are asked. The switches are written in place
+//! The human half of [`mecha_core::feature`]. **No network for reading**:
+//! the listing, `--probe` and `plan` read the config and the disk, never a
+//! server, because several servers here start the moment they are asked.
+//! `enable` is the one verb that fetches — what a feature needs and this
+//! machine lacks, from pinned sources, on a yes (`mecha_core::install`).
+//! The switches are written in place
 //! into the global `config.toml` (`feature::write_switches`), never through
 //! a rewrite that would drop comments or a newer build's key.
 
