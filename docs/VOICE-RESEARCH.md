@@ -1197,7 +1197,8 @@ both look like bugs and only one is:
 
 - **TTS expands what the filter compares against.** `note_bot_speech` records
   the text *submitted* ("costs $149"); the microphone hears the text *spoken*
-  ("costs one hundred forty nine dollars"). Five of nine words exist in no
+  ("costs one hundred forty nine dollars"). (A stand-in of the same shape; the
+  counts below are the original's.) Five of nine words exist in no
   form in the window, so the filter scored it 4 matched of 9 and correctly
   declined. Closing it means reimplementing a TTS front-end's number, currency
   and abbreviation expansion. **It is not the worker's alone** — the
