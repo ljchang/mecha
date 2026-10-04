@@ -145,8 +145,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 scripts/voice/test_echo_filter.py
-      # The journal rules (no words from any call); the sink half needs the
-      # worker's venv and skips here.
+      # The journal (no words from any call). loguru so the sink and the
+      # lifespan wrapper run here, not just the rules: a skipped test reads
+      # exactly like a passing one. Only pipecat's real logger names need the
+      # worker's venv.
+      - run: pip install loguru
       - run: python3 scripts/voice/test_journal.py
 
   # The Breeze adapter (scripts/voice/breeze_server.py) is where the voice's

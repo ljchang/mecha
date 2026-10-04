@@ -51,3 +51,21 @@ def install(logger, sink) -> int:
     again at the top of every call."""
     logger.remove()
     return logger.add(sink, level="DEBUG", filter=lambda r: keeps(r["name"], r["level"].no))
+
+
+def lifespan(existing, logger, sink):
+    """Wrap an app's lifespan so `install` runs once the wrapped one has
+    started: ours is then the last word on loguru's handlers, whatever the
+    inner lifespan added or removed. What the inner one yields is passed
+    through, because Starlette merges a yielded mapping into each request's
+    `scope["state"]` and a wrapper yielding `None` would drop it silently
+    (review of #547)."""
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def wrapped(app):
+        async with existing(app) as state:
+            install(logger, sink)
+            yield state
+
+    return wrapped
