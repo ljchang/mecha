@@ -983,7 +983,7 @@ write `after:YYYY/MM/DD` itself and answers with no `as_of`, so the
 
 **2026-09-18 — the grounding arc merged and released as v0.1.21; what is left
 is a measurement and a ruling.** #244 (`569d4952`) is `grounding.rs`: one walk
-for what a run actually received (first seen wins; compaction's `[stale:`
+for what a run actually received (first seen wins; compaction's `stale:`
 marker is never evidence; every call listed with `result: Option`) and a
 dereference (`admit`) that names what it refuses; gossip's citation check, the
 outbox's source join and the diagnostician's carry-over refusal now share it,
@@ -1031,7 +1031,7 @@ own-evidence followups reached 24/42. Seven pairs tied and one favored the contr
 Extra peer rounds cost 104 requests and 108,668 output tokens with no coverage gain.
 These are source-item counts, not unique world facts or complete proposition recall.
 The assistant-reviewed, arm-blind audit also found wrong-person claims despite
-literal citations. See [the scorecard](../results/gossip-comparison-qwen36-35b-20260910/README.md)
+literal citations. See the scorecard (`results/gossip-comparison-qwen36-35b-20260910/README.md`, local since 2026-10-04)
 for full costs, judgments, one token-limited control response and preserved invalid
 setup attempts. Ordinary gossip entry points retain peer behavior.
 
@@ -1049,7 +1049,7 @@ were 19/24 versus 17/24; without rules, 20/24 versus 18/24. Lowering the cap cau
 two paired regressions and no gains in each comparison. Both-passing pairs used
 more calls/turns at 10. Rules had mixed effects (one improvement, two regressions
 at either cap), with no individual-rule attribution. Full method, limits and
-checks: [pilot scorecard](../results/executable-validation-qwen36-35b-20260910/README.md).
+checks: pilot scorecard (`results/executable-validation-qwen36-35b-20260910/README.md`, local since 2026-10-04).
 Required-backend workspace tests passed 2,626, with zero failures and three ignored;
 formatting, all-target build and Clippy passed. The initial exposure analyzer
 misread the empty rules hash; its reporting-only correction reran no model trials.
@@ -2321,8 +2321,10 @@ worktrees grew unwatched. `CARGO_TARGET_DIR` pointed at one shared directory
 is the structural fix if it recurs; a retention verb is the policy one.
 
 **And clearing them nearly destroyed the only copy of the raw benchmark
-trials.** `results/` in main tracks the Terminal-Bench *scorecards*; nothing
-tracked the per-trial output, and 1,627 files of `jobs/` — `config.json`,
+trials.** `results/` in main tracked the Terminal-Bench *scorecards* until
+2026-10-04, when it was untracked (no run output in a public repository;
+the files stay on the operator's disk); nothing ever tracked the per-trial
+output, and 1,627 files of `jobs/` — `config.json`,
 `result.json`, per-trial `trial.log` from 2026-08-11 — lived only in the
 `bench-run-*` worktrees, gitignored. Archived to
 `~/.mecha/archive/bench-jobs-2026-08-11.tar.gz` (4.4 MB, file count verified

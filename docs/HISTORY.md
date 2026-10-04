@@ -2247,7 +2247,7 @@ Two ambiguous identity contrasts were conservatively marked unresolved before
 unblinding. The valid archive retains one token-limited control answer and all
 actual costs. No default changed or deployment occurred. Full checks passed:
 2,628 tests, zero failures, three ignored, warning-free Clippy, build and formatting.
-See [the complete scorecard](../results/gossip-comparison-qwen36-35b-20260910/README.md)
+See the complete scorecard (`results/gossip-comparison-qwen36-35b-20260910/README.md`, local since 2026-10-04)
 for denominators, controls, limits and the complete synthetic evidence trail.
 
 The setup caught two measurement traps before semantic grading. Removing the
@@ -2271,7 +2271,7 @@ Execution hashes stayed fixed. A reporting-only empty-rule-hash correction reran
 no trials. Build, formatting, Clippy and required-backend tests passed (2,626 passed,
 zero failed, three ignored). The native CI fixture test also runs the four Python
 oracle/report checks. No production state changed. See
-[the scorecard](../results/executable-validation-qwen36-35b-20260910/README.md) for
+the scorecard (`results/executable-validation-qwen36-35b-20260910/README.md`, local since 2026-10-04) for
 conditions, task-level results, private-snapshot boundaries and remaining limits.
 
 **2026-09-10 — nightly measurement and gossip grounding, implemented in an

@@ -1996,8 +1996,9 @@ mod tests {
 
     #[test]
     fn a_report_written_before_runs_existed_still_loads() {
-        // The fields `--runs` added must all default: old scorecards in
-        // `results/` are the baselines everything gets compared against.
+        // The fields `--runs` added must all default: old scorecards (kept
+        // on the operator's disk under `results/`, untracked since
+        // 2026-10-04) are the baselines everything gets compared against.
         let old = json!({
             "model": "m", "provider": "p", "total": 2, "passed": 1,
             "check_pass_rate": 0.5, "malformed_tool_args": 0,
