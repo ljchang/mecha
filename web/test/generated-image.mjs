@@ -137,6 +137,7 @@ is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', '
   is(/onclick=\{end\}/.test(bar.slice(0, bar.indexOf('</div>'))), true, 'the viewer has the hang-up');
   const onLink = call.slice(call.indexOf('onLink: (live) => {'), call.indexOf('onBotTurnEnd'));
   is(/viewing = null/.test(onLink), true, 'a dropped line closes the picture');
+  is(/onclick=\{edit\} disabled=\{!linked\}/.test(markup), true, 'Edit waits for a live line, as the typing box does');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
