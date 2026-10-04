@@ -1,0 +1,7 @@
+#!/bin/bash
+# A commit message goes public with the commit: no persona chat's or voice
+# call's words in it either (owner's ruling, 2026-10-04; review of #557).
+# The same check as pre-commit, over the message git is about to record.
+command -v python3 >/dev/null 2>&1 || exit 0
+[ -f scripts/check-private.py ] || exit 0
+exec python3 scripts/check-private.py --message "$1"
