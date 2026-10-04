@@ -374,7 +374,13 @@ machine from starting is one people turn off.
   every ELF's RUNPATH `$ORIGIN`, the CUDA runtime beside it, and a `current`
   link the units will name (7c). The arm64 CUDA release runs on the GB10
   (measured 2026-10-04, `FEATURES-DESIGN.md` §10.3). This box's engine is
-  still the hand build below, read as provided and left alone.
+  still the hand build below, read as provided and left alone, until the
+  owner runs `mecha setup engine --adopt`: that measures the pin against it
+  (router stopped for a few minutes), and only if it is no slower writes a
+  `mecha-engine.conf` drop-in into each unit setting `LLAMA_SERVER` to the
+  `current` link. The hand build below stays as the rollback (`mecha setup
+  engine --rollback` removes the drop-ins); the drop-in is then the first
+  thing to check when "which engine runs" is the question.
 - **Upgrading llama.cpp: the build tree *is* the deployment.**
   `~/.local/bin/llama-server` is a 72 KB dynamically-linked stub that resolves
   `libllama.so` / `libggml.so` from **the build tree its RUNPATH names**, not
