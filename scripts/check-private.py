@@ -13,9 +13,10 @@ phrases kept in the repository, which would itself be the leak:
 - every persona chat (`~/.mecha/personas/<name>/sessions/*.jsonl`): every
   message's text, thinking, tool calls and tool results, and each spoken
   sentence;
-- every session that heard a voice call (`~/.mecha/sessions/*.jsonl` whose
-  kind is voice, or which carries the voice block a spoken turn opens with —
-  a call into a web chat, a test session, or one from before `kind` existed);
+- every voice session (`~/.mecha/sessions/*.jsonl` of kind voice), whole,
+  and the spoken turns of any other session a call spoke into (a web chat, a
+  test session, one from before `kind` existed): each turn that opens with
+  the voice block, and the reply that answers it;
 - every persona's memory (`memory.db`): the facts and episodes written from
   its chats, which are paraphrases rather than quotations;
 - the voice worker's journal lines that carried words (until #547 stopped
@@ -154,6 +155,27 @@ def read_memory(db):
         sys.exit(2)
 
 
+def spoken_turns(records):
+    """What was said aloud in a chat a call spoke into: each user turn that
+    opens with the voice block, and the reply that answers it. Only the
+    first turn of a spoken stretch carries the block, so a later turn of the
+    same call is not seen here; the worker journal holds the words of calls
+    before #547, and a call that is its own session is read whole."""
+    answering = False
+    for r in records:
+        if r.get("record") != "message":
+            continue
+        texts = [b.get("text", "") for b in r.get("content") or []
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        if r.get("role") == "user":
+            answering = any(VOICE_MARK in t for t in texts)
+            if answering:
+                yield from texts
+        elif r.get("role") == "assistant" and answering:
+            yield from texts
+            answering = False
+
+
 def corpus():
     """(shingles, short phrases, session ids, persona names) from ~/.mecha."""
     said = []
@@ -176,31 +198,39 @@ def corpus():
                     value = m.group(1).strip().lower()
                     names.add(value)
                     names.update(w for w in words(value) if len(w) >= 4)
-    files = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
-    # Every session that heard a voice call, whatever its kind (review of
-    # #557): a call speaks into a web chat, sessions from before `kind`
-    # existed read None, and a smoke test against the real store is "test".
-    # A spoken turn opens with the voice block, so its words mark the file —
-    # and only a file so marked counts, so a dev session that never heard a
-    # call is not mistaken for one.
+    # Read whole: every persona chat, and every session that is a call.
+    whole = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
+    # Read for their spoken turns only: any other session a call spoke into
+    # (a web chat, a test session, one from before `kind` existed). The rest
+    # of such a chat is the owner typing — often mecha's own development —
+    # and taking it whole made ordinary repository prose ("cargo test -p
+    # mecha-core") read as conversation (review of #557, follow-up).
+    partly = []
     for f in glob.glob(f"{MECHA}/sessions/*.jsonl"):
         try:
             with open(f, errors="replace") as fh:
                 kind = json.loads(fh.readline()).get("kind")
-                spoken_here = kind == "voice" or VOICE_MARK in fh.read()
+                if kind == "voice":
+                    whole.append(f)
+                elif VOICE_MARK in fh.read():
+                    partly.append(f)
         except (OSError, ValueError) as e:
             print(f"check-private: the session {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
-        if spoken_here:
-            files.append(f)
-    for f in files:
+    for f in whole + partly:
         ids.add(os.path.basename(f)[: -len(".jsonl")])
         with open(f, errors="replace") as fh:
+            records = []
             for line in fh:
                 try:
-                    said.extend(spoken(json.loads(line)))
+                    records.append(json.loads(line))
                 except ValueError:
                     continue
+        if f in whole:
+            for r in records:
+                said.extend(spoken(r))
+        else:
+            said.extend(spoken_turns(records))
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets
@@ -220,7 +250,7 @@ def corpus():
         for n in range(3, SHINGLE):
             phrases |= grams(w, n)
     # Persona folders with no chats yet still have names to refuse.
-    return shingles, phrases, ids, names, bool(files or names)
+    return shingles, phrases, ids, names, bool(whole or partly or names)
 
 
 def run_git(cmd):
