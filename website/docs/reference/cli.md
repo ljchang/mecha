@@ -1701,8 +1701,15 @@ reads provided, never missing.
 **`enable` installs what the feature needs and this machine lacks, when mecha
 can install it**. It shows the plan first, installs on one yes, and writes the
 switch only after every install has passed its check. So far that covers
-layout's environment: a pinned `uv`, a Python 3.12 it builds, the hash-locked
-packages and the pinned model, all under `~/.mecha/sidecars/layout/`.
+layout's environment — a pinned `uv`, a Python 3.12 it builds, the hash-locked
+packages and the pinned model, all under `~/.mecha/sidecars/layout/` — and the
+llama.cpp engine: the official release for this machine (CUDA by the NVIDIA
+driver's version, Metal on Apple silicon, else the CPU build), checked by
+sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. The
+engine is offered only where it runs something: when the chat model is served
+from this machine, or the feature runs an embeddings or OCR server. A machine
+whose NVIDIA device `nvidia-smi` cannot read gets no engine rather than the
+CPU build.
 Answering no writes nothing. `--no-install` writes the switch without
 installing. Without a terminal, an `enable` that would install refuses and
 names `--no-install`. A program that is already on the machine is left alone.

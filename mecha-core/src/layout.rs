@@ -601,7 +601,7 @@ impl LayoutModel {
             protected.push(PathBuf::from(home));
         }
         let mut readable = Vec::new();
-        for p in interpreter_hops(&self.python, &real_python) {
+        for p in interpreter_hops(&self.python, &real_python)? {
             if let Some(root) = p.parent().and_then(Path::parent) {
                 let root = admit_root(root, &protected)?;
                 if !readable.contains(&root) {
@@ -783,14 +783,24 @@ impl LayoutChild {
 
 /// Every path the interpreter is reached by: the configured one, each
 /// symlink it passes through, the venv's `pyvenv.cfg` `home` interpreter,
-/// and the resolved file. Bounded, so a symlink loop ends.
-fn interpreter_hops(python: &Path, resolved: &Path) -> Vec<PathBuf> {
+/// and the resolved file. Bounded, so a symlink loop ends — in an error: a
+/// hop left unbound would fail inside the jail with the bare `ENOENT` this
+/// exists to prevent, and nothing to say why.
+fn interpreter_hops(python: &Path, resolved: &Path) -> Result<Vec<PathBuf>> {
+    const MAX_HOPS: usize = 16;
     let mut hops = vec![python.to_path_buf()];
     let mut cur = python.to_path_buf();
-    for _ in 0..16 {
+    for i in 0..=MAX_HOPS {
         let Ok(target) = std::fs::read_link(&cur) else {
             break;
         };
+        if i == MAX_HOPS {
+            bail!(
+                "{} is reached through more than {MAX_HOPS} symlinks — a loop, or a chain the \
+                 jail will not follow",
+                python.display()
+            );
+        }
         let next = match cur.parent() {
             Some(dir) if target.is_relative() => dir.join(&target),
             _ => target,
@@ -814,7 +824,7 @@ fn interpreter_hops(python: &Path, resolved: &Path) -> Vec<PathBuf> {
         }
     }
     hops.push(resolved.to_path_buf());
-    hops
+    Ok(hops)
 }
 
 /// One readable root, admitted or refused. It must resolve (a root that
@@ -863,6 +873,23 @@ fn widens_the_jail(root: &Path, protected: &[PathBuf]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A symlink loop to the interpreter is an error that names it, not a
+    /// chain cut short — the hop past the cap would go unbound and the exec
+    /// would fail in the jail with a bare `ENOENT`.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_loop_to_the_interpreter_is_refused_by_name() {
+        use super::*;
+        let root = std::env::temp_dir().join(format!("mecha-hops-loop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("venv/bin")).unwrap();
+        std::os::unix::fs::symlink("b", root.join("venv/bin/a")).unwrap();
+        std::os::unix::fs::symlink("a", root.join("venv/bin/b")).unwrap();
+        let python = root.join("venv/bin/a");
+        let err = interpreter_hops(&python, &python).unwrap_err().to_string();
+        assert!(err.contains("more than 16 symlinks"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// uv's layout: the venv's `python` links into a minor-version link
     /// directory, which links to the patch-versioned one. Every hop's
     /// prefix is readable, or the exec fails inside the jail.
@@ -895,6 +922,7 @@ mod tests {
         let python = root.join("venv/bin/python");
         let resolved = std::fs::canonicalize(&python).unwrap();
         let roots: Vec<PathBuf> = interpreter_hops(&python, &resolved)
+            .unwrap()
             .iter()
             .filter_map(|p| p.parent().and_then(Path::parent).map(Path::to_path_buf))
             .collect();

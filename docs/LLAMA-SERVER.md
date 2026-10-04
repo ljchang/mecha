@@ -369,6 +369,12 @@ machine from starting is one people turn off.
   silence graded as a bad answer, and manufactured two of three rule
   regressions before anyone looked.
 
+- **An engine mecha installs is self-contained** (`mecha features enable`,
+  since 7b-1): the official release under `~/.mecha/sidecars/llama/<tag>/`,
+  every ELF's RUNPATH `$ORIGIN`, the CUDA runtime beside it, and a `current`
+  link the units will name (7c). The arm64 CUDA release runs on the GB10
+  (measured 2026-10-04, `FEATURES-DESIGN.md` §10.3). This box's engine is
+  still the hand build below, read as provided and left alone.
 - **Upgrading llama.cpp: the build tree *is* the deployment.**
   `~/.local/bin/llama-server` is a 72 KB dynamically-linked stub that resolves
   `libllama.so` / `libggml.so` from **the build tree its RUNPATH names**, not
