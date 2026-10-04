@@ -1111,6 +1111,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona on a call (§11): how a reply is heard, folded beside the
         // owner's spoken words — the harness's note, never what they said.
         || crate::persona::call::is_note(text)
+        // A persona's own repetitions named back to it (`persona::variety`):
+        // the harness's note on what it keeps opening and closing with.
+        || crate::persona::variety::is_note(text)
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as

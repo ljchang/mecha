@@ -1582,6 +1582,15 @@ module.
       text.
     - The transcript keeps every reply as written or heard; `wire_bytes`
       subtracts what the trim cuts.
+  - **A persona is told what it keeps repeating** (`persona::variety`,
+    owner 2026-10-04). Each turn folds a note beside the owner's words, in
+    the harness's registered voice (`variety::is_note` in
+    `is_harness_voice`): the opening word two of its last three replies
+    share, if any, and its last three closing lines, read as the model is
+    shown them (`PriorTails`). Specific, not general: on seven replayed call
+    turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
+    and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
+    "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,

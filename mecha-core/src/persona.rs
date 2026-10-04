@@ -44,6 +44,7 @@ pub mod memory_tools;
 pub mod recall;
 pub mod safety;
 pub mod search;
+pub mod variety;
 pub mod writer;
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
