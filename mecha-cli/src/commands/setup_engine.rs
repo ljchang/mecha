@@ -85,11 +85,17 @@ fn label(role: Role) -> &'static str {
 
 /// Which engine each server runs, mecha's builds, and the last measurement.
 fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
-    let servers = gate::Servers::read()?;
+    let (servers, unreadable) = gate::Servers::read_or_none();
     let managed = gate::managed_binary(&m.mecha_home);
     let mut out = String::from("llama.cpp on this machine:\n");
-    if servers.present.is_empty() {
-        out.push_str("  no llama.cpp units — they arrive with their features (step 7c)\n");
+    match (&unreadable, servers.present.is_empty()) {
+        (Some(why), _) => out.push_str(&format!(
+            "  no units read — systemd's user manager could not be asked ({why})\n"
+        )),
+        (None, true) => {
+            out.push_str("  no llama.cpp units — they arrive with their features (step 7c)\n")
+        }
+        _ => {}
     }
     for (s, l) in &servers.present {
         let line = match l.engine(&servers.base_env) {
@@ -330,6 +336,11 @@ async fn run_rollback(
     .await
     .context("nothing was rolled back")?;
     switching.past_the_wait()?;
+    // What the router has loaded now, read before the restart: the model the
+    // router is asked about afterwards — and loaded again — is the one the
+    // owner had, not only the configured one.
+    let listed = mecha_core::provider::router::models(&base).await;
+    let check = gate::measured_model(listed.as_deref(), model).ok();
 
     for unit in &adopted {
         let path = gate::drop_in_path(dir, unit);
@@ -348,7 +359,7 @@ async fn run_rollback(
     }
     gate::systemctl("restart", &["llama-local.service"])
         .with_context(|| format!("finish with: {finish}"))?;
-    gate::router_back(&base, model, &provided)
+    gate::router_back(&base, check.as_deref(), &provided)
         .await
         .with_context(|| {
             format!(
@@ -357,11 +368,19 @@ async fn run_rollback(
             )
         })?;
     drop(switching);
-    println!(
-        "rolled back: the units run {} again; mecha's engine stays installed for another \
-         `--adopt`",
-        provided.display()
-    );
+    match &check {
+        Some(model) => println!(
+            "rolled back: the router serves {model} on {} again, and the embeddings and OCR \
+             servers start on it at their next request; mecha's engine stays installed for \
+             another `--adopt`",
+            provided.display()
+        ),
+        None => println!(
+            "rolled back: the drop-ins are gone and the router answers, but no model was loaded \
+             to ask which engine runs it — `mecha setup engine` shows what each unit names; \
+             mecha's engine stays installed for another `--adopt`"
+        ),
+    }
     Ok(())
 }
 
