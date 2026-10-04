@@ -1,12 +1,16 @@
 """The voice worker's journal keeps measurements, never words (`journal.py`).
 
-The rules are pure and run on a bare python3, as CI does. The sink itself is
-measured against loguru and the real pipecat modules when they are installed
-(the worker's venv:
-`~/models/voice-worker-venv/bin/python scripts/voice/test_journal.py`), and
-skipped otherwise."""
+Three layers, by what each needs:
+- the rules, on a bare python3;
+- the sink and the lifespan wrapper, with loguru (CI installs it): a record
+  is named by `logger.patch`, so the filter, the level number and the
+  composition are measured without pipecat;
+- pipecat's real logger names and `worker.install`, in the worker's venv:
+  `~/models/voice-worker-venv/bin/python scripts/voice/test_journal.py`.
+A layer whose dependency is missing skips, by name."""
 
 import asyncio
+import contextlib
 import importlib
 import importlib.util
 import os
@@ -20,7 +24,8 @@ import journal  # noqa: E402
 SAID = "a sentence nobody should find in the journal"
 DEBUG, INFO, WARNING = 10, 20, 30
 
-HAVE_PIPECAT = all(importlib.util.find_spec(m) for m in ("loguru", "pipecat", "fastapi"))
+HAVE_LOGURU = importlib.util.find_spec("loguru") is not None
+HAVE_PIPECAT = HAVE_LOGURU and all(importlib.util.find_spec(m) for m in ("pipecat", "fastapi"))
 
 
 class TheRules(unittest.TestCase):
@@ -49,15 +54,9 @@ class TheRules(unittest.TestCase):
             self.assertTrue(journal.keeps(name, DEBUG), name)
 
 
-def log_as(module: str, level: str, message: str):
-    """Log from inside the real `module`, so the record is named the way
-    pipecat names its own (loguru takes the caller's `__name__`)."""
-    mod = importlib.import_module(module)
-    exec(f"logger.{level}(message)", vars(mod), {"message": message})
+class Loguru(unittest.TestCase):
+    """Captures through loguru, and leaves it as pipecat's runner would."""
 
-
-@unittest.skipUnless(HAVE_PIPECAT, "loguru, pipecat and fastapi live in the worker's venv")
-class TheSink(unittest.TestCase):
     def setUp(self):
         from loguru import logger
 
@@ -69,20 +68,80 @@ class TheSink(unittest.TestCase):
         self.logger.remove()
         self.logger.add(sys.stderr, level="DEBUG")
 
+    def capture(self, message):
+        self.lines.append(str(message))
+
     def captured(self) -> str:
         return "".join(self.lines)
 
+    def log_named(self, name, level, message):
+        """A record named `name`, as pipecat's module would name it."""
+        getattr(self.logger.patch(lambda r: r.update(name=name)), level)(message)
+
+
+@unittest.skipUnless(HAVE_LOGURU, "loguru is not installed")
+class TheSink(Loguru):
+    def test_the_level_cut_is_loggers_own_info(self):
+        self.assertEqual(journal.INFO, self.logger.level("INFO").no)
+
     def test_the_sink_drops_what_was_said_and_keeps_the_rest(self):
-        journal.install(self.logger, lambda m: self.lines.append(str(m)))
+        # An unfiltered handler first, as the runner leaves it: `install`
+        # must replace it, not sit beside it.
+        self.logger.remove()
+        self.logger.add(self.capture, level="DEBUG")
+        self.lines.clear()
+        journal.install(self.logger, self.capture)
+        self.log_named("pipecat.services.tts_service", "debug", f"Generating TTS [{SAID}]")
+        self.log_named("pipecat.services.openai.base_llm", "debug", f"Generating chat [{SAID}]")
+        self.log_named("pipecat.services.tts_service", "warning", "a service warning")
+        self.log_named("pipecat.transports.base_output", "debug", "bot started speaking")
+        self.assertNotIn(SAID, self.captured(), "a handler beside the filter still wrote the words")
+        self.assertIn("a service warning", self.captured())
+        self.assertIn("bot started speaking", self.captured())
+
+
+@unittest.skipUnless(HAVE_LOGURU, "loguru is not installed")
+class TheLifespan(Loguru):
+    def test_the_sink_is_installed_after_the_inner_lifespan_and_its_state_passes_through(self):
+        @contextlib.asynccontextmanager
+        async def inner(app):
+            # An inner lifespan that resets loguru as pipecat's runner does,
+            # and yields state as Starlette's lifespan-state form allows.
+            self.logger.remove()
+            self.logger.add(self.capture, level="DEBUG")
+            yield {"started": True}
+
+        wrapped = journal.lifespan(inner, self.logger, self.capture)
+
+        async def serve():
+            async with wrapped(object()) as state:
+                self.log_named("pipecat.services.tts_service", "debug", f"Generating TTS [{SAID}]")
+                self.log_named("pipecat.transports.base_output", "debug", "bot started speaking")
+                return state
+
+        state = asyncio.run(serve())
+        self.assertEqual(state, {"started": True}, "the inner lifespan's state was dropped")
+        self.assertNotIn(SAID, self.captured(), "the inner lifespan's reset won over the filter")
+        self.assertIn("bot started speaking", self.captured())
+
+
+def log_as(module: str, level: str, message: str):
+    """Log from inside the real `module`, so the record carries the name
+    pipecat gives its own (loguru takes the caller's `__name__`)."""
+    mod = importlib.import_module(module)
+    exec(f"logger.{level}(message)", vars(mod), {"message": message})
+
+
+@unittest.skipUnless(HAVE_PIPECAT, "pipecat and fastapi live in the worker's venv")
+class TheRealModules(Loguru):
+    def test_the_three_that_carried_words_are_named_inside_the_cut(self):
+        journal.install(self.logger, self.capture)
         # The three that carried words on this machine (measured 2026-10-04).
         log_as("pipecat.services.tts_service", "debug", f"Generating TTS [{SAID}]")
         log_as("pipecat.services.whisper.base_stt", "debug", f"Transcription: [{SAID}]")
         log_as("pipecat.services.openai.base_llm", "debug", f"Generating chat [{SAID}]")
-        # What stays: a service's warning, and every other module's DEBUG.
-        log_as("pipecat.services.tts_service", "warning", "a service warning")
         log_as("pipecat.transports.base_output", "debug", "bot started speaking")
         self.assertNotIn(SAID, self.captured())
-        self.assertIn("a service warning", self.captured())
         self.assertIn("bot started speaking", self.captured())
 
     def test_the_worker_installs_the_sink_at_server_start_after_pipecats_reset(self):
@@ -90,30 +149,31 @@ class TheSink(unittest.TestCase):
 
         import worker
 
+        test = self
+
+        class Capture:
+            def write(self, s):
+                test.lines.append(s)
+
+            def flush(self):
+                pass
+
+        # The worker's sink is the stderr it sees when `install` runs, so the
+        # capture stands in for stderr from before that call.
+        real_stderr = sys.stderr
+        sys.stderr = Capture()
+        self.addCleanup(setattr, sys, "stderr", real_stderr)
         app = FastAPI()
         worker.install(app)
         # What pipecat's `main()` does before it serves: replace every handler
         # with an unfiltered DEBUG sink (here, one that captures).
         self.logger.remove()
-        self.logger.add(lambda m: self.lines.append(str(m)), level="DEBUG")
-
-        real_stderr = sys.stderr
-
-        class Capture:
-            def write(_, s):
-                self.lines.append(s)
-
-            def flush(_):
-                pass
+        self.logger.add(self.capture, level="DEBUG")
 
         async def serve():
-            sys.stderr = Capture()
-            try:
-                async with app.router.lifespan_context(app):
-                    log_as("pipecat.services.tts_service", "debug", f"Generating TTS [{SAID}]")
-                    log_as("pipecat.transports.base_output", "debug", "bot started speaking")
-            finally:
-                sys.stderr = real_stderr
+            async with app.router.lifespan_context(app):
+                log_as("pipecat.services.tts_service", "debug", f"Generating TTS [{SAID}]")
+                log_as("pipecat.transports.base_output", "debug", "bot started speaking")
 
         asyncio.run(serve())
         self.assertNotIn(SAID, self.captured(), "the lifespan did not replace pipecat's sink")

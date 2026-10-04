@@ -2482,17 +2482,9 @@ def install(app) -> None:
     runs after `main()` has replaced loguru's handlers with an unfiltered
     DEBUG one. `run_bot` installs it again per call, so a start that skipped
     the lifespan still keeps words out of every call."""
-    existing = app.router.lifespan_context
+    from loguru import logger as _logger
 
-    @contextlib.asynccontextmanager
-    async def journal_lifespan(a):
-        from loguru import logger
-
-        journal.install(logger, sys.stderr)
-        async with existing(a):
-            yield
-
-    app.router.lifespan_context = journal_lifespan
+    app.router.lifespan_context = journal.lifespan(app.router.lifespan_context, _logger, sys.stderr)
 
     @app.get("/mecha/unlogged")
     async def unlogged():
