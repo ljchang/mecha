@@ -91,6 +91,8 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         )
         .await;
     }
+    // A body check, against this struct's own rule, because clap cannot say
+    // "only with the feature value `engine`" — and it refuses loudly.
     anyhow::ensure!(
         !args.adopt && !args.rollback,
         "--adopt and --rollback go with `mecha setup engine`"

@@ -268,9 +268,11 @@ impl Manifest {
     /// reads as an install that did not finish.
     pub fn unrecord(mecha_home: &Path, id: &str, path: &Path) -> Result<()> {
         let mut m = Manifest::read(mecha_home)?;
-        if let Some(e) = m.entries.iter_mut().find(|e| e.sidecar == id) {
-            e.wrote.retain(|w| w != path);
-        }
+        let Some(e) = m.entries.iter_mut().find(|e| e.sidecar == id) else {
+            // Nothing recorded: nothing to forget, and no manifest to make.
+            return Ok(());
+        };
+        e.wrote.retain(|w| w != path);
         m.write(mecha_home)
     }
 
