@@ -119,5 +119,17 @@ is(
 is(since([done(b), viewed(b)], []), '["images/b.png"]', 'a look at the picture just made is one picture');
 is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', 'a failed or running call shows nothing');
 
+// The call screen never opens a picture in a new tab or window: on a phone
+// that sends the call page to the background, its microphone stream dies and
+// the call drops (three of seven drops on 2026-10-04). It opens in place,
+// with the chat's Download and Edit.
+{
+  const fs = await import('node:fs');
+  const call = fs.readFileSync(new URL('../src/lib/PersonaCall.svelte', import.meta.url), 'utf8');
+  const markup = call.slice(call.indexOf('</script>'));
+  is(/target=["']_blank|window\.open\(/.test(markup), false, 'the call screen opens nothing outside its page');
+  is(/onclick=\{download\}/.test(markup) && /onclick=\{edit\}/.test(markup), true, 'the in-call viewer offers Download and Edit');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

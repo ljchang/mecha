@@ -767,6 +767,11 @@ looking unimpressed.
   (§8.3). "Save to library" is the owner's action, as it is today. During a
   call they also show in the call screen, which covers the chat; the call
   note tells the persona the owner can see them (`persona::call::note`).
+  Tapped, a picture opens full screen inside the call, with the chat's
+  Download and Edit; never in a new tab, which on a phone backgrounds the
+  call page and drops the call. An edit made in a call is a call turn
+  (owner, 2026-10-04): the chat's edit modal opens over the call with the
+  mic paused, and its words go in as a typed line the persona answers aloud.
 - **A persona with no character** can still generate images; it simply has
   no "self" to draw, and asking for one is an expected failure the model can
   route around, not an error.

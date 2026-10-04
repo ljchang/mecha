@@ -167,6 +167,7 @@
     // succeeding (review of #494).
     if (why) pictureNote = { path, why };
     else if (pictureNote?.path === path) pictureNote = null;
+    return why;
   }
 
   // The Edit modal (EditModal.svelte): anything already typed becomes its
@@ -272,6 +273,19 @@
   function editImage(path) {
     imageEdit = { path, src: pictureUrl(path), initial: input.trim(), busy: false, error: null };
   }
+  // Edit from the call screen (owner's ruling, 2026-10-04: an edit made in a
+  // call is a call turn): the same modal, over the call, with the mic paused
+  // while it is open; the words go into the call as a typed line, so the
+  // persona redraws and answers aloud, and the picture lands on the call
+  // screen. Nothing typed in the chat's box rides along.
+  function editInCall(path) {
+    imageEdit = { path, src: pictureUrl(path), initial: '', busy: false, error: null, call: true };
+    caller?.holdMic(true);
+  }
+  function closeEdit() {
+    if (imageEdit?.call) caller?.holdMic(false);
+    imageEdit = null;
+  }
 
   // The mask goes up into this chat's `inbox/` and is named in the message,
   // never attached — it is for `image_generate`, not for the persona to look
@@ -294,6 +308,15 @@
       const message = composeEditMessage(edit.path, maskPath, text);
       if (!message) {
         edit.busy = false; // never a modal that no button can close
+        return;
+      }
+      if (edit.call) {
+        if (!caller?.say(message)) {
+          edit.busy = false;
+          edit.error = 'The call is not connected, so nothing was sent.';
+          return;
+        }
+        closeEdit();
         return;
       }
       input = message;
@@ -2006,7 +2029,8 @@
       face={callFace}
       pictures={callPictures}
       {pictureUrl}
-      openable={!chosen.locked}
+      ondownload={savePicture}
+      onedit={editInCall}
     />
   {/if}
 </div>
@@ -2021,7 +2045,7 @@
     busy={imageEdit.busy}
     error={imageEdit.error}
     onsend={sendEdit}
-    onclose={() => (imageEdit = null)}
+    onclose={closeEdit}
   />
 {/if}
 
