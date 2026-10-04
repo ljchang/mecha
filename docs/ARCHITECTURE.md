@@ -3708,8 +3708,12 @@ brief (which reads the board through the graph server) do not run.
   every sentence handed to the TTS and the whole conversation sent to the
   model (pipecat's `services` DEBUG lines) to a journal kept on disk. The
   worker's lines carry `journal.withheld` (a length), and `journal.install`
-  makes the only loguru sink one that drops the `pipecat.services` family
-  below INFO, keeping its warnings and every other module's lines. It is a
+  makes the only loguru sink one that, below INFO, keeps a `pipecat` record
+  only from a family measured to carry no words (`WORDLESS_FAMILIES`). It is
+  an allowlist, so a family a pipecat upgrade adds or renames is dropped
+  until someone measures it. Warnings and errors stay, as does everything
+  outside `pipecat`; `LocalTTS.run_tts` logs each sentence's length (no
+  words) for timing studies. It is a
   sink filter, which the runner's one reset in `main()` would discard, so it
   is installed after that reset: at server start (composed into the app's
   lifespan by `journal.lifespan`, after the inner one has started) and at

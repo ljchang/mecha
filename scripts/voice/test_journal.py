@@ -27,19 +27,32 @@ DEBUG, INFO, WARNING = 10, 20, 30
 HAVE_LOGURU = importlib.util.find_spec("loguru") is not None
 HAVE_PIPECAT = HAVE_LOGURU and all(importlib.util.find_spec(m) for m in ("pipecat", "fastapi"))
 
+# A skip reads exactly like a pass, so CI says which layers it expects: with
+# MECHA_TEST_REQUIRE_BACKENDS=1 a missing loguru fails the run instead of
+# skipping the sink and lifespan layers, as mecha-core/tests/support does for
+# the Rust backends. pipecat's real names stay venv-only.
+if os.environ.get("MECHA_TEST_REQUIRE_BACKENDS") == "1" and not HAVE_LOGURU:
+    raise SystemExit("loguru is unavailable, and MECHA_TEST_REQUIRE_BACKENDS is set")
+
 
 class TheRules(unittest.TestCase):
     def test_a_line_carries_the_length_of_what_was_said_and_never_the_words(self):
         self.assertEqual(journal.withheld(SAID), f"<{len(SAID)} chars>")
         self.assertNotIn("sentence", journal.withheld(SAID))
 
-    def test_pipecats_services_are_cut_below_info_and_nothing_else_is(self):
-        for name in (
+    def test_below_info_pipecat_keeps_only_the_families_measured_wordless(self):
+        cut = (
+            # The three that carried words (measured 2026-10-04).
             "pipecat.services.tts_service",
             "pipecat.services.whisper.base_stt",
             "pipecat.services.openai.base_llm",
-            "pipecat.services.some_service_added_later",
-        ):
+            # Unmeasured, so not clean: a family an upgrade adds or renames.
+            "pipecat.transcriptions.language",
+            "pipecat.llm.context",
+            "pipecat",
+            "pipecat.transportsx",  # a prefix that is not the family
+        )
+        for name in cut:
             self.assertFalse(journal.keeps(name, DEBUG), name)
             self.assertTrue(journal.keeps(name, INFO), name)
             self.assertTrue(journal.keeps(name, WARNING), name)
@@ -47,8 +60,11 @@ class TheRules(unittest.TestCase):
             "pipecat.transports.base_output",
             "pipecat.processors.metrics.frame_processor_metrics",
             "pipecat.pipeline.worker",
+            "pipecat.audio.turn.smart_turn.base_smart_turn",
+            "pipecat.workers.runner",
+            # Outside pipecat, nothing is narrowed here.
             "__main__",
-            "pipecat.servicesx",  # a prefix that is not the family
+            "pipecatx.something",
             None,
         ):
             self.assertTrue(journal.keeps(name, DEBUG), name)
