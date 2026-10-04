@@ -10,6 +10,9 @@
   //   and strips it before the worker hears the call exists.
   // - When a call ends its length goes to the dose meter (§12.3): voice
   //   raises attachment, so the meters count call minutes, not only turns.
+  // - The pictures the persona makes during the call are shown here. This
+  //   screen covers the chat, where they are also drawn, so without this
+  //   they stayed out of sight until the owner hung up (2026-10-03).
   //
   // Mounted while a chat is open and idle until `start()`, which the call
   // button invokes inside its own tap: the audio unlock needs the gesture.
@@ -18,7 +21,20 @@
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
   import { chatUrl, hangUpReport } from './persona.js';
 
-  let { chatKey, token = null, display, face = null, onended = () => {} } = $props();
+  let {
+    chatKey,
+    token = null,
+    display,
+    face = null,
+    onended = () => {},
+    // Made since the call was placed, oldest first (`picture.js`
+    // `picturesSince`), with the chat's own URL for each. `openable` is
+    // the chat's rule: a locked persona's picture is never a link, which
+    // would put its unlock token in the browser's history.
+    pictures = [],
+    pictureUrl = (path) => path,
+    openable = false,
+  } = $props();
 
   let open = $state(false);
   let session = null;
@@ -33,6 +49,17 @@
   let muted = $state(false);
   let entries = $state([]);
   let pane = $state(null);
+  // The picture shown large: the newest, unless the owner tapped an earlier
+  // one — and a new picture takes the stage again when it arrives.
+  let picked = $state(null);
+  let seen = 0;
+  $effect(() => {
+    if (pictures.length !== seen) {
+      seen = pictures.length;
+      picked = null;
+    }
+  });
+  const shown = $derived(picked && pictures.includes(picked) ? picked : (pictures.at(-1) ?? null));
   // When the line first carried the call: what the meter counts from, so a
   // call that never connected is no minutes at all.
   let since = null;
@@ -207,6 +234,26 @@
           <span class="tick" class:lit={level * 14 > i} style:height="{14 + (i % 2 ? 6 : 0)}px"></span>
         {/each}
       </div>
+      {#if shown}
+        <div class="shot">
+          {#if openable}
+            <a href={pictureUrl(shown)} target="_blank" rel="noopener" aria-label="open the picture full size">
+              <img src={pictureUrl(shown)} alt="made during the call" />
+            </a>
+          {:else}
+            <img src={pictureUrl(shown)} alt="made during the call" />
+          {/if}
+        </div>
+        {#if pictures.length > 1}
+          <div class="thumbs" aria-label="pictures from this call">
+            {#each pictures as picture (picture)}
+              <button class="thumb" class:on={picture === shown} onclick={() => (picked = picture)} aria-label="show this picture">
+                <img src={pictureUrl(picture)} alt="" loading="lazy" />
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {/if}
     </div>
     <div class="call-pane" bind:this={pane}>
       {#each entries as entry}
@@ -269,11 +316,62 @@
   }
   .call-stage {
     flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 18px;
+  }
+  /* The newest picture takes what the stage has left, scaled to fit whole:
+     on a phone it sits under the face, never pushing the controls away. */
+  .shot {
+    flex: 1 1 0;
+    min-height: 96px;
+    width: 100%;
+    padding: 0 16px;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: center;
+    /* Not stretched: the picture keeps its own shape, and its border with it. */
+    align-items: center;
+  }
+  .shot a {
+    display: contents;
+  }
+  .shot img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent-900);
+  }
+  .thumbs {
+    display: flex;
+    gap: 6px;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 0 16px;
+    box-sizing: border-box;
+  }
+  .thumb {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid var(--accent-900);
+    border-radius: 6px;
+    background: none;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .thumb.on {
+    border-color: var(--accent-400);
+  }
+  .thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
   /* The persona's face is the call's state: its ring says listening,
      thinking or speaking, as the assistant's logo slot does. */

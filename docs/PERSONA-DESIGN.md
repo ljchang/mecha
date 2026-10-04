@@ -764,7 +764,9 @@ looking unimpressed.
   candidate.
 - **Pictures stay in the chat.** They are written to the chat's workspace
   like any generated image, shown in the page, and locked when the chat is
-  (§8.3). "Save to library" is the owner's action, as it is today.
+  (§8.3). "Save to library" is the owner's action, as it is today. During a
+  call they also show in the call screen, which covers the chat; the call
+  note tells the persona the owner can see them (`persona::call::note`).
 - **A persona with no character** can still generate images; it simply has
   no "self" to draw, and asking for one is an expected failure the model can
   route around, not an error.

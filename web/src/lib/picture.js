@@ -44,6 +44,24 @@ export function repeatedPictures(entries) {
   return again;
 }
 
+// Every picture the tool rows drew, in order, each once.
+export function picturesIn(entries) {
+  const out = [];
+  for (const entry of entries) {
+    const picture = entry.kind === 'tool' ? pictureOf(entry) : null;
+    if (picture && !out.includes(picture)) out.push(picture);
+  }
+  return out;
+}
+
+// The pictures drawn since a call began, oldest first: those not among
+// `before`, the set taken when the call was placed. Keyed on the picture,
+// never an entry index — a finished turn reloads the transcript from the
+// session file, which rebuilds the entries and moves every index.
+export function picturesSince(entries, before) {
+  return picturesIn(entries).filter((picture) => !before.has(picture));
+}
+
 // Where a turn asked for pictures and got none: the index of the turn's last
 // entry, for a plain line under it. Read off the tool rows' own results, so
 // a reply that says "here you go" over nothing cannot stand as the last word
