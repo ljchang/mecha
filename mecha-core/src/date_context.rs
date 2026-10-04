@@ -37,7 +37,7 @@ pub const REFERENCE_STEM: &str = "Calendar reference from the harness clock:";
 /// replaces — "do not attach a conflicting weekday or relative label" — was
 /// written against a model inventing weekdays, but it also told the model to
 /// hold its reference against a *contradicting user*, and on 2026-09-14 that
-/// is what it did: corrected twice, it reasoned "I should trust the system"
+/// is what it did: corrected twice, it sided with the stale stamp
 /// and argued the date with the one party who could see a calendar.
 ///
 /// **And the concession names a channel, not a role, because `Role::User` is

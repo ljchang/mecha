@@ -2085,8 +2085,8 @@ packets only on consumption. Deployed ~16:30 EDT (20:30 UTC) — `web/dist` with
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
 turn across a stall and says so, and the owner asked for the sound.** Two
 calls from a moving car on 2026-09-12 reached the model as six fragments —
-`Can you add` / `I need you to` / `urban to schedule and furnace.` /
-`Suburban` / `Um on Monday.` — each answered with a clarifying question, no
+a request cut into pieces of a few words each, several mid-word — each
+answered with a clarifying question, no
 tool called, no task captured, and the page said "listening" throughout,
 because the browser's `disconnected` needs a longer gap than the two-second
 ones that did the damage. The journal named three mechanisms

@@ -1628,7 +1628,7 @@ mod tests {
     /// with no way to see the rest.
     #[test]
     fn the_detail_carries_what_the_list_truncates() {
-        let long = "Possible duplicate: person node person-5ef7b325 (Grace Choi) and person node person-9a1b2c3d (Grace H. Choi) share an email identifier and forty-one overlapping calendar events".to_string();
+        let long = "Possible duplicate: person node person-5ef7b325 (Iris Park) and person node person-9a1b2c3d (Iris H. Park) share an email identifier and forty-one overlapping calendar events".to_string();
         let rows = items_from_json(&format!(
             r#"[{{"id":1737,"confidence":0.8,"payload":{{"statement":"{long}"}}}}]"#
         ))

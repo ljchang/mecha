@@ -406,7 +406,7 @@ class LinkStalls(unittest.TestCase):
             await asyncio.sleep(0.05)
             still_held = not call.stopped
             await call.stops_speaking()
-            await call.transcript("a reminder to call Suburban about the furnace.")
+            await call.transcript("a reminder to water the plants on Sunday.")
             await asyncio.sleep(0.05)
             ended = len(call.stopped) == 1
             await call.close()

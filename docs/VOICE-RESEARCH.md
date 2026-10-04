@@ -714,8 +714,7 @@ real interrupted call rather than reasoned about, because it decides
 whether "continue" is a usable thing to say out loud.
 
 - **The assistant's turn is recorded truncated at the cut** — the call
-  ended `"...two research blocks booked on your campus calendar, a"`,
-  mid-clause. So the model's own context shows it stopping mid-word, which
+  ended mid-clause, on a word left hanging. So the model's own context shows it stopping mid-word, which
   is why **"continue" needs no special handling**: there is no competing
   task to advance and the evidence of the cut is in the transcript. The
   ambiguous case is being cut off mid-explanation of something it was also
@@ -854,8 +853,8 @@ else.
 **A gap in the audio is not silence — 2026-09-12, from a moving car.** Two
 calls reached the worker all afternoon (the rest never got an offer through;
 `serve` logged nothing about them, and now warns), and every spoken turn in
-both was a fragment: `Can you add` / `I need you to` / `urban to schedule and
-furnace.` / `Suburban` / `Um on Monday.` — six turns, six clarifying
+both was a fragment: one request cut into six pieces of a few words each,
+several mid-word — six turns, six clarifying
 questions, no tool called, no task captured. The first fragment shipped at
 the instant the transport logged `Timeout: No audio frame received` and
 pipecat's input track logged `Disabling receiver … after 2.48s idle` — and,
@@ -1729,8 +1728,8 @@ model, each of these observed rather than assumed:
   refusal reads "Blocked by policy", never a user correction.
 - **Barge-in preserves the partial turn.** A hang-up two seconds into a
   streamed count-to-two-hundred recorded `stop_cause: "interrupted"`, and
-  the next request was answered with "I'd made it to thirty-three when
-  you interrupted" — the Ctrl-C guarantee through an HTTP disconnect.
+  the next request was answered with where the count had stopped and that
+  it had been interrupted — the Ctrl-C guarantee through an HTTP disconnect.
 - **Sessions are ordinary transcripts** (`voice: <key>` titles), so
   distill and the run-quality corpus see voice for free (D9).
 - A voice turn's prompt is ~14k tokens — the full prefix (tools, skills,

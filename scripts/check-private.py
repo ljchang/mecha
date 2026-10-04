@@ -13,7 +13,9 @@ phrases kept in the repository, which would itself be the leak:
 - every persona chat (`~/.mecha/personas/<name>/sessions/*.jsonl`): every
   message's text, thinking, tool calls and tool results, and each spoken
   sentence;
-- every voice session (`~/.mecha/sessions/*.jsonl` with `kind = "voice"`);
+- every session that heard a voice call (`~/.mecha/sessions/*.jsonl` whose
+  kind is voice, or which carries the voice block a spoken turn opens with —
+  a call into a web chat, a test session, or one from before `kind` existed);
 - every persona's memory (`memory.db`): the facts and episodes written from
   its chats, which are paraphrases rather than quotations;
 - the voice worker's journal lines that carried words (until #547 stopped
@@ -55,6 +57,9 @@ SHINGLE = 6
 HOME = os.path.expanduser("~")
 MECHA = os.environ.get("MECHA_HOME", f"{HOME}/.mecha")
 QUOTE = re.compile(r'"([^"\n]{6,240})"|“([^”\n]{6,240})”|\'([^\'\n]{12,240})\'')
+# The opening of the voice block every spoken turn carries
+# (`voice::VOICE_BLOCK` / `VOICE_BLOCK_STREAMING`).
+VOICE_MARK = "Voice mode: everything you write is spoken aloud"
 SESSION_ID = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
 
 
@@ -90,6 +95,9 @@ def spoken(o):
     if isinstance(o, dict):
         if o.get("record") == "spoken_direction":
             yield o.get("sentence", "")
+        # A session's title is model-written from the owner's first words.
+        if o.get("record") in ("meta", "title") and isinstance(o.get("title"), str):
+            yield o["title"]
         if o.get("role") in ("user", "assistant", "tool") and "content" in o:
             yield from strings(o["content"])
             return
@@ -169,13 +177,22 @@ def corpus():
                     names.add(value)
                     names.update(w for w in words(value) if len(w) >= 4)
     files = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
+    # Every session that heard a voice call, whatever its kind (review of
+    # #557): a call speaks into a web chat, sessions from before `kind`
+    # existed read None, and a smoke test against the real store is "test".
+    # A spoken turn opens with the voice block, so its words mark the file —
+    # and only a file so marked counts, so a dev session that never heard a
+    # call is not mistaken for one.
     for f in glob.glob(f"{MECHA}/sessions/*.jsonl"):
         try:
             with open(f, errors="replace") as fh:
-                if json.loads(fh.readline()).get("kind") == "voice":
-                    files.append(f)
-        except (OSError, ValueError):
-            continue
+                kind = json.loads(fh.readline()).get("kind")
+                spoken_here = kind == "voice" or VOICE_MARK in fh.read()
+        except (OSError, ValueError) as e:
+            print(f"check-private: the session {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+        if spoken_here:
+            files.append(f)
     for f in files:
         ids.add(os.path.basename(f)[: -len(".jsonl")])
         with open(f, errors="replace") as fh:
@@ -338,7 +355,9 @@ def main(args):
         print("check-private: no conversations on this machine to compare against; passing.")
         return 0
     findings = []
-    lines = [(p, n, t) for p, n, t in added_lines(args) if not p.endswith("check-private.py")]
+    # The guard's own file, under whatever label the mode gives its path.
+    lines = [(p, n, t) for p, n, t in added_lines(args)
+             if not p.split(" (in ")[0].endswith("check-private.py")]
     # Passages: runs of consecutive added lines in one file, read as one text,
     # so a sentence wrapped across lines — which prose here always is — is
     # still a run of words and a quote (review of #557). Ids and names are
@@ -374,7 +393,7 @@ def main(args):
                 break
         if not hit:
             for name in names:
-                if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(name):
+                if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
                     hit = "the name of one of the owner's personas"
                     break
         if hit:

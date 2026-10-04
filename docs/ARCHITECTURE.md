@@ -9265,8 +9265,8 @@ It used to be one string in the system prompt, rendered once by
 for a daemon: `mecha serve` holds one `Arc<Agent>` for its whole lifetime, and
 on 2026-09-14 a process started at 22:37 EDT on the 13th told a 09:21 voice
 call it was Sunday the 13th, queried the calendar for that day, and read
-yesterday's schedule back as today's. Corrected twice, the model reasoned *"I
-should trust the system"* — the stamp was the only clock it had. A session on
+yesterday's schedule back as today's. Corrected twice, the model sided with the
+stale stamp — the only clock it had. A session on
 2026-09-11 carried a date two days stale the same way; the trigger runner
 never did, because it builds an agent per run. A faster refresh would have
 been the same bug with a smaller window.
