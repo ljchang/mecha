@@ -1598,19 +1598,24 @@ module.
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
       subtracts the dropped ones. **This is the first view that rewrites
-      a request already sent**, so it drops a note only where that is free:
-      when the reply after it goes out altered (thinking stripped by
-      `PriorThinking::Drop`, or a tail trimmed), since the slot holds it as
-      generated and the server re-reads from there anyway. It judges that
-      against the recorded history and the earlier views' output together
-      (`Agent::wire`). A turn that called a tool keeps its thinking and,
-      under the router's `reasoning-preserve`, goes back byte-identical, as
-      does a reply that came back with no reasoning; a note ahead of either
-      stays, or the server would re-read that turn and everything after it,
-      tool results included, on a spoken turn's latency path. So a cancelled
-      tool call's fold can send two notes, the cheaper harm. A later view
-      that rewrites earlier text pays from its own position on, unless it
-      makes the same check.
+      a request already sent**, and the server re-reads from the dropped
+      note up to the first message that goes out altered anyway (thinking
+      stripped by `PriorThinking::Drop`, or a tail trimmed), judged against
+      the recorded history and the earlier views' output together
+      (`Agent::wire`). Ahead of a plain reply that is nothing. A turn that
+      called a tool keeps its thinking and, under the router's
+      `reasoning-preserve`, goes back byte-identical, so the note ahead of
+      one costs that round trip, once, on the turn after. **The owner's
+      ruling (2026-10-04): drop it when that re-read is within
+      `NUDGE_REREAD_BYTES` (8 KiB, ~2,000 tokens, ~1 s at the measured
+      ~1,800 tokens/s prefill), keep it ahead of a larger one.** Measured on
+      the last 12 persona chats: a quarter of turns call a tool, so keeping
+      every such note would carry ~10 stale ones in 40 turns, and re-reading
+      every trip costs 0.4 s at the median, ~3 s at p90, ~12 s at the worst.
+      The stretch ends at the next owner message, so a note's fate never
+      changes as the chat grows, since flipping it would itself re-read
+      everything after. A later view that rewrites earlier text pays from
+      its own position on, unless it makes the same check.
     - A turn that called a tool is not a reply: its text is a preamble
       ("Let me look that up."), the turns `PriorTails` leaves alone too. A
       reply with no whole sentence ("Mmm, I was just", barged in on) has no
