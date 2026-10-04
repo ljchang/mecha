@@ -45,8 +45,11 @@
 > resolver (the launchers and the layout installer brought onto its order)
 > and the resumable, sha256-checked downloader — is built (#521); so is
 > 7a-2: `sidecar.rs`, the manifest's reader, provided-detection and the
-> read-only `mecha features plan <id>`. 7a-3 (layout as the first installed
-> entry, and `enable` offering the plan) is next. Steps 7–8 are unbuilt (step 7 redesigned in §10). The
+> read-only `mecha features plan <id>` (#526); and so is 7a-3: `install.rs`,
+> a pinned `uv` (owner's choice, 2026-10-03: uv now, not at 7d), layout
+> installed through the manifest, and `mecha features enable` offering the
+> plan and installing on one yes (`--no-install`, and a refusal without a
+> terminal). 7b–7f and step 8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
