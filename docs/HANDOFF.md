@@ -171,9 +171,11 @@ and #541 are in HISTORY under 2026-10-03, all live with mecha-69's
 - **The nightly mail sweep ran during a call.** `mecha-mail-classify`
   started at 05:31:51Z mid-call, shared the model for 72 s, and every one of
   that call's 13 direction timeouts fell inside it. The night unit has no
-  `ExecCondition=`. The day unit's `mecha-model-idle` checks only for a busy
-  slot, and a call between sentences holds none. A live call should count as
-  busy, and the night sweep should stand down while one is. Unruled.
+  `ExecCondition=`. The day unit's `mecha-model-idle` stands down on a busy
+  slot or a GPU above `MECHA_GPU_BUSY`, and a call between sentences is
+  neither. A live call should count as busy, and the night sweep should
+  stand down while one is; the GPU check is for research jobs and should
+  stay as it is. Unruled.
 - **The phone's audio link stalls.** In the afternoon session the worker
   logged 56 `voice link paused … resumed after` pairs: 259 s in all, 27 of
   2 s or more, the longest 23.8 s. While paused, audio waits in both
