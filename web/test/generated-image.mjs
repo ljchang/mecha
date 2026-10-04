@@ -131,6 +131,12 @@ is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', '
   // and drops the call just as dead (review of #552).
   is(/target=["']_blank|window\.open\(|href=/.test(markup), false, 'the call screen opens nothing outside its page');
   is(/onclick=\{download\}/.test(markup) && /onclick=\{edit\}/.test(markup), true, 'the in-call viewer offers Download and Edit');
+  // The hang-up stays reachable while a picture is open, and a dropped line
+  // closes the picture so the redial shows (review of #552).
+  const bar = markup.slice(markup.indexOf('class="viewbar"'));
+  is(/onclick=\{end\}/.test(bar.slice(0, bar.indexOf('</div>'))), true, 'the viewer has the hang-up');
+  const onLink = call.slice(call.indexOf('onLink: (live) => {'), call.indexOf('onBotTurnEnd'));
+  is(/viewing = null/.test(onLink), true, 'a dropped line closes the picture');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
