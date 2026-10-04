@@ -711,30 +711,33 @@ pub enum PriorNudges {
     Drop,
 }
 
-/// Whether `block` is a nudge that lives one turn.
+/// Whether `block` is a nudge that lives one turn. Deliberately one entry,
+/// `persona::variety`'s note: `persona::call::note` also lives one turn but
+/// is not dropped, and a new one-turn nudge is not covered until it is
+/// added here.
 fn is_one_turn_nudge(block: &Block) -> bool {
     matches!(block, Block::Text { text } if crate::persona::variety::is_note(text))
 }
 
 /// The one-turn nudges [`PriorNudges::Drop`] leaves out, as (message, block)
 /// positions in `recorded`: every one but the newest in the history,
-/// wherever each sits, when leaving it out is free. "Newest", not "the turn
+/// wherever each sits, when leaving it out is cheap. "Newest", not "the turn
 /// being answered": a turn folded into an earlier owner message (a turn that
 /// died before a reply) can put two notes in one message (review of #550).
 ///
-/// **Free** means the server would re-read what follows the note anyway.
-/// Removing it rewrites a request already sent, so the slot's cache diverges
-/// at the note: costless when the note's message is the last one, or when the
-/// reply after it goes out *altered* — its thinking stripped
-/// (`PriorThinking::Drop`) or its tail trimmed (`PriorTails::Trim`) — since
-/// the slot holds it as generated and diverges there regardless. A reply that
-/// goes out as recorded matches the slot straight through: a turn that called
-/// a tool keeps its thinking, byte-identical under the router's
+/// **Cheap** is [`reread_bytes`] within [`NUDGE_REREAD_BYTES`]. Removing a
+/// note rewrites a request already sent, so the slot's cache diverges at
+/// it, and the server re-reads what follows up to the point it would have
+/// re-read anyway. That is nothing when the reply after the note goes out
+/// *altered* — its thinking stripped (`PriorThinking::Drop`) or its tail
+/// trimmed (`PriorTails::Trim`) — since the slot holds it as generated. A
+/// reply that goes out as recorded matches the slot straight through: a turn
+/// that called a tool keeps its thinking, byte-identical under the router's
 /// `reasoning-preserve`, and so does a reply that came back with none
-/// (review of #550). The note ahead of one stays, or dropping it would
-/// re-read that turn and everything after it, tool results included, on a
-/// spoken turn's latency path. `earlier` is the history after the views that
-/// run first: they alter assistant messages only and never remove one, so
+/// (review of #550). So a note ahead of a tool round trip costs that round
+/// trip, once, on a spoken turn's latency path; the cap keeps the note
+/// ahead of a large one. `earlier` is the history after the views that run
+/// first: they alter assistant messages only and never remove one, so
 /// positions in `recorded` hold in it. A block whose removal would leave its
 /// message empty stays too.
 fn stale_nudges(recorded: &[Message], earlier: &[Message]) -> Vec<(usize, usize)> {
@@ -753,17 +756,41 @@ fn stale_nudges(recorded: &[Message], earlier: &[Message]) -> Vec<(usize, usize)
     let Some((_, older)) = all.split_last() else {
         return Vec::new();
     };
-    let bytes = |m: &Message| crate::pressure::message_bytes(std::slice::from_ref(m));
     older
         .iter()
         .copied()
         .filter(|&(i, _)| recorded[i].content.iter().any(|b| !is_one_turn_nudge(b)))
-        .filter(|&(i, _)| match (recorded.get(i + 1), earlier.get(i + 1)) {
-            (None, _) => true,
-            (Some(next), Some(sent)) => bytes(sent) < bytes(next),
-            (Some(_), None) => false,
-        })
+        .filter(|&(i, _)| reread_bytes(recorded, earlier, i + 1) <= NUDGE_REREAD_BYTES)
         .collect()
+}
+
+/// The most a stale nudge's removal may make the server re-read, once, on
+/// the turn after: about 2,000 tokens, ~1 s of prefill at the router's
+/// measured ~1,800 tokens/s (2026-10-04). The owner's ruling (2026-10-04)
+/// between keeping every note ahead of a tool turn — a quarter of persona
+/// turns call one, so a 40-turn chat would carry ~10 stale notes — and
+/// re-reading every round trip in full (0.4 s at the median, ~3 s at p90,
+/// ~12 s at the largest of 57 measured): this drops the note ahead of about
+/// three round trips in four.
+const NUDGE_REREAD_BYTES: usize = 8 * 1024;
+
+/// What removing a nudge from the message before `from` makes the server
+/// re-read: the messages from `from` on that go out as recorded, up to the
+/// first one that goes out altered (the slot re-reads from there anyway) or
+/// the next owner message (the turn's end). Bounded by the turn so the
+/// answer never changes as the chat grows: a note dropped once stays
+/// dropped, and one kept stays kept, since flipping either way would itself
+/// re-read everything after it.
+fn reread_bytes(recorded: &[Message], earlier: &[Message], from: usize) -> usize {
+    let bytes = |m: &Message| crate::pressure::message_bytes(std::slice::from_ref(m));
+    let mut total = 0;
+    for (next, sent) in recorded.iter().zip(earlier).skip(from) {
+        if next.is_plain_user_text() || bytes(sent) < bytes(next) {
+            break;
+        }
+        total += bytes(sent);
+    }
+    total
 }
 
 impl PriorNudges {
@@ -1256,10 +1283,10 @@ mod tests {
                 },
             ])
         };
-        let result = |id: &str| {
+        let result = |id: &str, bytes: usize| {
             Message::tool_results(vec![Block::ToolResult {
                 tool_use_id: id.into(),
-                content: "a long result".into(),
+                content: "r".repeat(bytes),
                 is_error: false,
             }])
         };
@@ -1322,31 +1349,48 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert!(matches!(left[0], Block::Text { text } if text.contains("Newest.")));
 
-        // Dropping a note is free only where the reply after it goes out
-        // altered, since the slot re-reads from there anyway (review of
-        // #550). A tool turn keeps its thinking and goes back as the slot
-        // holds it, and so does a reply that came back with no reasoning:
-        // the note ahead of either stays, or the server would re-read that
-        // turn and everything after it.
+        // Removing a note makes the server re-read what follows it up to the
+        // first message that goes out altered (review of #550). A tool turn
+        // keeps its thinking and goes back as the slot holds it, as does a
+        // reply that came back with no reasoning, so the note ahead of one
+        // costs that stretch: dropped when it is small, kept ahead of a
+        // round trip past `NUDGE_REREAD_BYTES`.
         let history = vec![
             owner("hi", "Before a reply."),
             reply("Hello."),
-            owner("look it up", "Before a tool."),
+            owner("look it up", "Before a small tool."),
             tool_turn("t1"),
-            result("t1"),
+            result("t1", 2_000),
             reply("Found it."),
             owner("and?", "Before a bare reply."),
             Message::assistant(vec![Block::text("Mm.")]),
+            owner("read it all", "Before a big tool."),
+            tool_turn("t2"),
+            result("t2", NUDGE_REREAD_BYTES + 1),
+            reply("That's long."),
             owner("thanks", "Current."),
         ];
-        assert_eq!(with_note(&send(&history)), vec![2, 6, 8]);
+        assert_eq!(with_note(&send(&history)), vec![8, 12]);
+        // The stretch ends at the turn: a later turn never adds to it, so a
+        // note's fate does not change as the chat grows.
+        let earlier = PriorTails::Trim.wire(PriorThinking::Drop.wire(&history));
+        assert_eq!(
+            reread_bytes(&history, &earlier, 9),
+            crate::pressure::message_bytes(&history[9..11]),
+            "the call and its result, not the altered reply after them"
+        );
+        assert_eq!(
+            reread_bytes(&history, &earlier, 7),
+            crate::pressure::message_bytes(&history[7..8]),
+            "the bare reply, and not the next turn"
+        );
 
-        // So a turn cancelled after a tool ran, which folds the next note
-        // beside the tool result, sends two notes: the cheaper harm.
-        let mut results = result("t0");
+        // A turn cancelled after a small tool ran folds the next note beside
+        // the tool result: one note goes out.
+        let mut results = result("t0", 100);
         results.content.push(Block::text("and now?"));
         results.content.push(note("Newest."));
         let history = vec![owner("look it up", "Older."), tool_turn("t0"), results];
-        assert_eq!(with_note(&send(&history)), vec![0, 2]);
+        assert_eq!(with_note(&send(&history)), vec![2]);
     }
 }
