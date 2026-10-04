@@ -337,7 +337,9 @@
         <img src={pictureUrl(viewing)} alt="made during the call" />
         {#if viewNote}<div class="viewnote">could not download: {viewNote}</div>{/if}
         <div class="viewbar">
-          {#if onedit}<button class="viewbtn" onclick={edit}>Edit</button>{/if}
+          <!-- An edit is a call turn: offered only while there is a line to
+               carry it, as the call's own typing box is (review of #552). -->
+          {#if onedit}<button class="viewbtn" onclick={edit} disabled={!linked}>Edit</button>{/if}
           {#if ondownload}<button class="viewbtn" onclick={download}>Download</button>{/if}
           <button class="viewbtn" onclick={() => (viewing = null)}>Back to the call</button>
           <!-- The hang-up stays one tap away while a picture is open. -->
@@ -401,6 +403,10 @@
        did under the old link: a tall portrait stays inside the stage
        (measured headless, review of #552). */
     align-self: stretch;
+    /* Centred on every engine: Chromium's button default is flex-start,
+       which would lift a short picture to the top (review of #552). */
+    align-items: center;
+    justify-content: center;
     min-width: 0;
     min-height: 0;
     max-width: 100%;
@@ -449,6 +455,9 @@
     background: transparent;
     color: var(--text);
     font: inherit;
+  }
+  .viewbtn:disabled {
+    opacity: 0.4;
   }
   .viewend {
     border-color: var(--hazard);
