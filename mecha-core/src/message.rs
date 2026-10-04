@@ -1157,31 +1157,35 @@ mod tests {
     #[test]
     fn a_reply_that_stops_mid_sentence_is_cut_to_its_last_whole_sentence() {
         let cut = |t: &str| dangling_tail(t).map(|n| t[..n].to_string());
-        // The endings the persona wrote and spoke on 2026-10-03.
+        // Shaped like the endings a persona wrote and spoke on 2026-10-03; the
+        // words are made up (no chat's text in the repository).
         assert_eq!(
-            cut("You love it, don't you? \n\nI").as_deref(),
-            Some("You love it, don't you?")
+            cut("You liked that one, didn't you? \n\nI").as_deref(),
+            Some("You liked that one, didn't you?")
         );
         assert_eq!(
-            cut("Fuck me harder, baby.\"\n\nI").as_deref(),
-            Some("Fuck me harder, baby.\"")
+            cut("Read it to me again.\"\n\nI").as_deref(),
+            Some("Read it to me again.\"")
         );
         assert_eq!(
-            cut("Are you almost done with your errands, or are").as_deref(),
+            cut("Are you nearly at the station, or are").as_deref(),
             None,
             "no whole sentence before it: left alone, never emptied"
         );
         assert_eq!(
-            cut("Done already? Are you getting more tech").as_deref(),
+            cut("Done already? Are you buying more paint").as_deref(),
             Some("Done already?")
         );
-        assert_eq!(cut("It's late… so").as_deref(), Some("It's late…"));
+        assert_eq!(
+            cut("It's getting dark… so").as_deref(),
+            Some("It's getting dark…")
+        );
         // Whole replies are untouched.
         for whole in [
-            "Tell me what you're getting.",
-            "Shhh.. that's it..",
-            "Come here 😘",
-            "\"I need you.\"",
+            "Tell me how the walk went.",
+            "Hmm.. let me see..",
+            "See you soon 😊",
+            "\"I need a minute.\"",
             "Mmm, I",
             "",
         ] {
@@ -1191,7 +1195,7 @@ mod tests {
         assert_eq!(cut("See v1.2 and then"), None);
         // Nor is an abbreviation (review of #538): the reviewer's two cases
         // are left whole rather than cut to "…Dr." or "…e.g.".
-        assert_eq!(cut("Mmm, I saw Dr. Chen today and he"), None);
+        assert_eq!(cut("Hmm, I saw Dr. Chen today and he"), None);
         assert_eq!(cut("I was at the store, e.g. the big one, and then"), None);
         assert_eq!(cut("We met J. Smith there and"), None);
         assert_eq!(

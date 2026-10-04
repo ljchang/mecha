@@ -2,7 +2,7 @@
 //!
 //! The owner, after an afternoon of calls (2026-10-03): "A little repetitive
 //! but still better than before." Replies opened alike and closed on the same
-//! questions ("Tell me what you're getting" six times in one chat). Replayed
+//! questions (one closing question six times in one chat). Replayed
 //! on seven late turns of that chat, two samples each, thinking capped as a
 //! call turn is, and judged blind by the same model with the order swapped
 //! (2026-10-04):
@@ -192,19 +192,19 @@ mod tests {
     fn a_shared_opening_is_named_and_the_closers_listed() {
         let history = vec![
             Message::user("hi"),
-            said("Mmm, there you are. Tell me what you're getting."),
-            Message::user("milk"),
-            said("Oh, nice. What else is in the cart?"),
-            Message::user("bread"),
-            said("Mmmm, bread. Tell me what you're getting next."),
+            said("Mmm, there you are. How was the walk?"),
+            Message::user("long"),
+            said("Oh, nice. Where did you go?"),
+            Message::user("the river"),
+            said("Mmmm, the river. How was the walk back?"),
         ];
         let n = note(&history).expect("a note");
         assert!(n.starts_with(OPENING_STEM), "{n}");
         assert!(n.contains("opened with \"Mm\"; open some other way"), "{n}");
         assert!(
             n.contains(
-                "(\"Tell me what you're getting.\"; \"What else is in the cart?\"; \
-                 \"Tell me what you're getting next.\")"
+                "(\"How was the walk?\"; \"Where did you go?\"; \
+                 \"How was the walk back?\")"
             ),
             "{n}"
         );
@@ -228,8 +228,8 @@ mod tests {
     fn a_closer_is_quoted_from_the_reply_as_the_model_sees_it() {
         // A reply cut off mid-sentence is trimmed (`PriorTails`), so the note
         // never quotes a dangling "I" back as a line to avoid.
-        let n = note(&[said("You love it, don't you? \n\nI")]).expect("a note");
-        assert!(n.contains("(\"You love it, don't you?\")"), "{n}");
+        let n = note(&[said("You liked that one, didn't you? \n\nI")]).expect("a note");
+        assert!(n.contains("(\"You liked that one, didn't you?\")"), "{n}");
     }
 
     #[test]

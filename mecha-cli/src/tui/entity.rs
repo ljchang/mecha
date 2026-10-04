@@ -536,15 +536,15 @@ mod tests {
 
         m.merge_confirm = Some((
             "person-1".into(),
-            "Grace Choi".into(),
+            "Iris Park".into(),
             "person-2".into(),
-            "Youn Ji Choi".into(),
+            "Mina Park".into(),
         ));
         let confirming = rendered(&m, 130, 24);
         assert!(confirming.contains("CANNOT BE UNDONE"), "{confirming}");
         assert!(confirming.contains("y confirm"), "{confirming}");
         assert!(
-            confirming.contains("Youn Ji Choi") && confirming.contains("Grace Choi"),
+            confirming.contains("Mina Park") && confirming.contains("Iris Park"),
             "the confirmation must name both sides: {confirming}"
         );
     }

@@ -1794,8 +1794,8 @@ fn word_spans(text: &str) -> Vec<(usize, usize, String)> {
 /// What a persona wears and does, read from the words that follow its name
 /// where a prompt (or an extra) opens with it: the rest of that first clause
 /// is what it is doing, and a "wearing …" clause is what it wears. After
-/// "Stella", " lounging on a plush couch, wearing a lace set, warm light"
-/// gives "lounging on a plush couch" and "a lace set". Either is `None` when
+/// "Maya", " reading on a park bench, wearing a rain jacket, warm light"
+/// gives "reading on a park bench" and "a rain jacket". Either is `None` when
 /// the text does not say it that way. Handed the text *after* the name, so a
 /// name with punctuation in it ("Mara O'Brien", "J.R. Smith") is never
 /// miscounted into the clause (review of #444).
@@ -1809,7 +1809,7 @@ fn self_clauses(after_name: &str) -> (Option<String>, Option<String>) {
         .unwrap_or(after_name);
     let mut parts = after_name.split([',', '.', ';', '\n']).map(str::trim);
     // The first part is the rest of the name's own clause, even when empty
-    // ("Stella, wearing a coat"): what follows it is a new clause.
+    // ("Maya, wearing a coat"): what follows it is a new clause.
     let rest = parts.next().unwrap_or("");
     let clauses: Vec<&str> = std::iter::once(rest)
         .chain(parts.filter(|c| !c.is_empty()))
@@ -1827,8 +1827,8 @@ fn self_clauses(after_name: &str) -> (Option<String>, Option<String>) {
         })
     };
     // Only the persona's own clauses: the rest of its opening one, then the
-    // next if it begins "wearing". "Stella at the door, john wearing an
-    // apron" does not dress Stella in john's apron.
+    // next if it begins "wearing". "Maya at the door, john wearing an
+    // apron" does not dress Maya in john's apron.
     let (doing, own) = match find_w(rest) {
         Some(i) => (&rest[..i], Some(&rest[i + W.len()..])),
         None => (rest, None),
@@ -2438,8 +2438,8 @@ impl ImageGenerate {
         }
         // The compiler needs what they wear and do, or the portrait's own
         // outfit and pose come along. An extra that is the persona says both;
-        // so does a prompt that opens with it — the common selfie, "Stella
-        // lounging on a couch, wearing a lace set". Otherwise they point at
+        // so does a prompt that opens with it — the common selfie, "Maya
+        // reading on a bench, wearing a rain jacket". Otherwise they point at
         // the scene the prompt describes.
         let (wearing, doing) = match (&from_extra, in_prompt) {
             // An extra is removed once cast, so its words have nowhere else
@@ -5377,33 +5377,33 @@ mod tests {
             )
         };
         assert_eq!(
-            read("Stella lounging on a plush couch, wearing a lace set, warm light"),
+            read("Maya reading on a park bench, wearing a rain jacket, warm light"),
             (
-                Some("a lace set".into()),
-                Some("lounging on a plush couch".into())
+                Some("a rain jacket".into()),
+                Some("reading on a park bench".into())
             )
         );
         assert_eq!(
-            read("Stella lounging on a couch wearing a lace set"),
+            read("Maya reading on a bench wearing a rain jacket"),
             (
-                Some("a lace set".into()),
-                Some("lounging on a couch".into())
+                Some("a rain jacket".into()),
+                Some("reading on a bench".into())
             )
         );
-        assert_eq!(read("Stella wearing a coat"), (Some("a coat".into()), None));
+        assert_eq!(read("Maya wearing a coat"), (Some("a coat".into()), None));
         // Someone else's clothes are theirs.
         assert_eq!(
-            read("Stella at the door, john wearing an apron"),
+            read("Maya at the door, john wearing an apron"),
             (None, Some("at the door".into()))
         );
         // A word containing it is not it.
         assert_eq!(
-            read("Stella swearing loudly at the sky"),
+            read("Maya swearing loudly at the sky"),
             (None, Some("swearing loudly at the sky".into()))
         );
         // Over the compiler's cap: cut at a word, within it.
-        let long = format!("Stella, wearing {}", "a very long lace set ".repeat(30));
-        let full = self_clauses(&long["Stella".len()..]).0.unwrap();
+        let long = format!("Maya, wearing {}", "a very long rain jacket ".repeat(30));
+        let full = self_clauses(&long["Maya".len()..]).0.unwrap();
         let w = capped(&full);
         assert!(
             w.chars().count() <= crate::imagelib::MAX_CAST_FIELD,
@@ -5416,14 +5416,14 @@ mod tests {
             "{w}"
         );
         assert_eq!(capped("short"), "short");
-        // A possessive is the name's: "Stella's hand" is a hand, not "'s hand".
+        // A possessive is the name's: "Maya's hand" is a hand, not "'s hand".
         assert_eq!(
             self_clauses("'s hand holding a cup, wearing a ring"),
             (Some("a ring".into()), Some("hand holding a cup".into()))
         );
         // Lowercasing "İ" makes it longer: no panic, and the right slice.
         assert_eq!(
-            read("Stella İstanbul skyline behind her wearing é coat"),
+            read("Maya İstanbul skyline behind her wearing é coat"),
             (
                 Some("é coat".into()),
                 Some("İstanbul skyline behind her".into())
@@ -5531,7 +5531,7 @@ mod tests {
         // after the whole name.
         let out = mara
             .call(
-                json!({"prompt": "Mara O'Brien lounging on a couch, wearing a robe"}),
+                json!({"prompt": "Mara O'Brien reading on a bench, wearing a robe"}),
                 &ctx(&dir),
             )
             .await
@@ -5539,7 +5539,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
         assert_eq!(cast["name"], "maya", "{cast}");
-        assert_eq!(cast["doing"], "lounging on a couch", "{cast}");
+        assert_eq!(cast["doing"], "reading on a bench", "{cast}");
         assert_eq!(cast["wearing"], "a robe", "{cast}");
 
         // Named only in an extra that opens with it: cast from that extra,
@@ -5639,7 +5639,7 @@ mod tests {
         // The prompt opens with the persona and an extra is the persona too.
         let out = mara
             .call(
-                json!({"prompt": "Mara lounging on a couch", "extras": ["Mara in a robe"]}),
+                json!({"prompt": "Mara reading on a bench", "extras": ["Mara in a robe"]}),
                 &ctx(&dir),
             )
             .await
@@ -5670,7 +5670,7 @@ mod tests {
         // as a mention, never read as the persona (the dog would vanish).
         let out = mara
             .call(
-                json!({"prompt": "Mara lounging on a couch", "extras": ["Mara's dog at her feet"]}),
+                json!({"prompt": "Mara reading on a bench", "extras": ["Mara's dog at her feet"]}),
                 &ctx(&dir),
             )
             .await
@@ -5768,7 +5768,7 @@ mod tests {
     async fn a_persona_draws_itself_without_casting_itself() {
         let (url, seen) = fake(vec![done(), done(), done(), done(), done()], "200 OK").await;
         let dir = tempdir();
-        let lib = library_with(&["stella", "maya", "john"]);
+        let lib = library_with(&["maya", "priya", "john"]);
         let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
         let who = |name: &str, display: &str, character: Option<&str>| crate::tool::PersonaSelf {
             name: name.into(),
@@ -5793,30 +5793,30 @@ mod tests {
         };
 
         // The first live chat's call: its own name in the prompt, no cast.
-        let stella = Arc::clone(&base)
-            .for_persona_as(&who("stella", "Stella", Some("stella")))
+        let maya = Arc::clone(&base)
+            .for_persona_as(&who("maya", "Maya", Some("maya")))
             .unwrap();
-        let out = stella
+        let out = maya
             .call(
-                json!({"prompt": "Stella lounging on a plush couch, wearing a lace set, warm light", "seed": 7}),
+                json!({"prompt": "Maya reading on a park bench, wearing a rain jacket, warm light", "seed": 7}),
                 &ctx(&dir),
             )
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(
-            last_prompt().contains("(stella, a memorable face)"),
+            last_prompt().contains("(maya, a memorable face)"),
             "{}",
             last_prompt()
         );
         let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
-        assert_eq!(cast["name"], "stella", "{cast}");
-        assert_eq!(cast["doing"], "lounging on a plush couch", "{cast}");
-        assert_eq!(cast["wearing"], "a lace set", "{cast}");
+        assert_eq!(cast["name"], "maya", "{cast}");
+        assert_eq!(cast["doing"], "reading on a park bench", "{cast}");
+        assert_eq!(cast["wearing"], "a rain jacket", "{cast}");
 
-        // A persona whose name is not its character's: "Mara" is maya.
+        // A persona whose name is not its character's: "Mara" is priya.
         let mara = Arc::clone(&base)
-            .for_persona_as(&who("mara", "Mara Quinn", Some("maya")))
+            .for_persona_as(&who("mara", "Mara Quinn", Some("priya")))
             .unwrap();
         let out = mara
             .call(
@@ -5827,7 +5827,7 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         let cast = manifest_of(&dir, &out.content)["cast"][0].clone();
-        assert_eq!(cast["name"], "maya", "{cast}");
+        assert_eq!(cast["name"], "priya", "{cast}");
         assert_eq!(cast["doing"], "on a beach at dusk", "{cast}");
 
         // `self` in the cast is the character, in the place it was given:
@@ -5845,13 +5845,13 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let cast = manifest_of(&dir, &out.content)["cast"].clone();
         assert_eq!(cast[0]["name"], "john", "{cast}");
-        assert_eq!(cast[1]["name"], "maya", "{cast}");
+        assert_eq!(cast[1]["name"], "priya", "{cast}");
         assert_eq!(cast[1]["wearing"], "a robe", "{cast}");
 
         // Named after someone the prompt names first: after them.
-        let out = stella
+        let out = maya
             .call(
-                json!({"prompt": "john hands Stella a cup", "cast": [
+                json!({"prompt": "john hands Maya a cup", "cast": [
                     {"name": "john", "wearing": "a coat", "doing": "handing over a cup"}
                 ]}),
                 &ctx(&dir),
@@ -5861,12 +5861,12 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let cast = manifest_of(&dir, &out.content)["cast"].clone();
         assert_eq!(cast[0]["name"], "john", "{cast}");
-        assert_eq!(cast[1]["name"], "stella", "{cast}");
+        assert_eq!(cast[1]["name"], "maya", "{cast}");
 
         // Whole words only: "planning" does not name a persona called Ann,
         // so nothing is cast and the scene draws as written.
         let ann = Arc::clone(&base)
-            .for_persona_as(&who("ann", "Ann", Some("maya")))
+            .for_persona_as(&who("ann", "Ann", Some("priya")))
             .unwrap();
         let out = ann
             .call(
@@ -5886,8 +5886,8 @@ mod tests {
 
         let before = draws();
         // Another library character named without a cast is still refused.
-        let out = stella
-            .call(json!({"prompt": "Stella and john at a diner"}), &ctx(&dir))
+        let out = maya
+            .call(json!({"prompt": "Maya and john at a diner"}), &ctx(&dir))
             .await
             .unwrap();
         assert!(
@@ -5895,13 +5895,13 @@ mod tests {
             "{}",
             out.content
         );
-        // The assistant's form knows no "self": naming stella is refused as before.
+        // The assistant's form knows no "self": naming maya is refused as before.
         let out = base
-            .call(json!({"prompt": "Stella lounging on a couch"}), &ctx(&dir))
+            .call(json!({"prompt": "Maya reading on a bench"}), &ctx(&dir))
             .await
             .unwrap();
         assert!(
-            out.is_error && out.content.contains("`stella`"),
+            out.is_error && out.content.contains("`maya`"),
             "{}",
             out.content
         );

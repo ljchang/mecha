@@ -153,7 +153,7 @@ class TranscriptStartedTurns(unittest.TestCase):
     *after* the VAD stop and after smart-turn has ruled."""
 
     def test_incomplete_first_fragment_is_held_open(self):
-        """"add a couple" — smart-turn said INCOMPLETE; the stock strategy
+        """"put down a few" — smart-turn said INCOMPLETE; the stock strategy
         ended the turn 0.8s after the transcript anyway."""
 
         async def scenario(cls, p99):
@@ -162,14 +162,14 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.speaks()
             await call.stops_speaking()
             await call.turn_starts()
-            await call.transcript("add a couple")
+            await call.transcript("put down a few")
             await asyncio.sleep(1.5)
             held = not call.stopped
-            # The owner goes on: "...of to-dos", and this time smart-turn
+            # The owner goes on: "...more groceries", and this time smart-turn
             # says COMPLETE. The turn must end on that transcript.
             await call.speaks()
             await call.stops_speaking()
-            await call.transcript("of to-dos.")
+            await call.transcript("more groceries.")
             await asyncio.sleep(0.05)
             ended = bool(call.stopped)
             await call.close()
@@ -185,7 +185,7 @@ class TranscriptStartedTurns(unittest.TestCase):
         self.assertFalse(held, "the stock strategy no longer shows the fault this guards")
 
     def test_complete_first_fragment_ends_on_its_transcript(self):
-        """"Tell me about Jonathan Phillips." — smart-turn said COMPLETE
+        """"Tell me about the ferry timetable." — smart-turn said COMPLETE
         before the transcript arrived. The turn should end the moment the
         text lands, not a timer later."""
 
@@ -196,7 +196,7 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.stops_speaking()
             await call.turn_starts()
             t0 = time.monotonic()
-            await call.transcript("Tell me about Jonathan Phillips.")
+            await call.transcript("Tell me about the ferry timetable.")
             await asyncio.sleep(1.2)
             await call.close()
             return [t - t0 for t in call.stopped]
@@ -227,8 +227,8 @@ class TranscriptStartedTurns(unittest.TestCase):
         self.assertTrue(run(scenario()))
 
     def test_a_transcript_landing_after_the_owner_resumed_is_not_a_timer(self):
-        """The 2026-09-01 shape: "Can you research" [INCOMPLETE], and the
-        owner is already saying "Um options for" when its transcript lands.
+        """The 2026-09-01 shape: "Can you look up" [INCOMPLETE], and the
+        owner is already saying "Um prices for" when its transcript lands.
         The VAD start has cleared the pending stop, so the override defers
         to the stock reset - and the stock fallback timer must still not
         arm, because the owner is audibly speaking."""
@@ -240,14 +240,14 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.stops_speaking()
             await call.speaks()  # resumed before the transcript arrived
             await call.turn_starts()
-            await call.transcript("Can you research")
+            await call.transcript("Can you look up")
             await asyncio.sleep(STT_TTFS_P99 + 0.3)  # past any timer it could arm
             held = not call.stopped
             await call.stops_speaking()
             await asyncio.sleep(0.05)
             # The second segment's words are still in flight here.
             ended_early = bool(call.stopped)
-            await call.transcript("options for a Starlink for a car.")
+            await call.transcript("prices for a roof rack for a car.")
             await asyncio.sleep(0.05)
             ended = len(call.stopped) == 1
             await call.close()
@@ -297,7 +297,7 @@ class TranscriptStartedTurns(unittest.TestCase):
         self.assertLess(lag[0], 0.2)
 
     def test_a_dropped_tail_ends_a_complete_turn_at_once(self):
-        """Mid-turn: "add it to my to-dos" then a breath the gate drops,
+        """Mid-turn: "put it on the list" then a breath the gate drops,
         which is where smart-turn says COMPLETE. The words are all in;
         the turn ends when the STT says the breath was nothing."""
 
@@ -311,7 +311,7 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.speaks()
             await call.stops_speaking()
             await call.turn_starts()
-            await call.transcript("Okay. I just need you to add it to my to do's.")
+            await call.transcript("Okay. Just put it on the list.")
             await call.speaks()
             await call.stops_speaking()
             await asyncio.sleep(0.05)
@@ -346,7 +346,7 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.speaks()
             await call.stops_speaking()
             await call.turn_starts()
-            await call.transcript("Tell me about Jonathan Phillips.")
+            await call.transcript("Tell me about the ferry timetable.")
             await asyncio.sleep(0.05)
             ended_once = len(call.stopped) == 1
             # The harness has already relayed the controller's stop callback.
@@ -360,7 +360,7 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.speaks()
             await call.stops_speaking()
             await call.turn_starts()
-            await call.transcript("add a couple")
+            await call.transcript("put down a few")
             await asyncio.sleep(1.5)
             held = len(call.stopped) == 1
             await call.close()
@@ -406,7 +406,7 @@ class LinkStalls(unittest.TestCase):
             await asyncio.sleep(0.05)
             still_held = not call.stopped
             await call.stops_speaking()
-            await call.transcript("a reminder to call Suburban about the furnace.")
+            await call.transcript("a reminder to water the plants on Sunday.")
             await asyncio.sleep(0.05)
             ended = len(call.stopped) == 1
             await call.close()
@@ -669,7 +669,7 @@ class Transcripts(unittest.TestCase):
         stt = ParakeetSTT(api_key="unused", base_url="http://127.0.0.1:1/v1")
 
         async def fake(audio):
-            return Transcription(text="add a couple")
+            return Transcription(text="put down a few")
 
         stt._transcribe = fake
 

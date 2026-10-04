@@ -1041,9 +1041,9 @@ mod criterion_tests {
             );
             let ws = c.stage().unwrap();
             let actual = if id == "revision-2" {
-                include_str!("../../results/appraisal-mismatch-qwen36-35b-20260909/artifacts/control__revision-2__s1__r1/answer.json")
+                include_str!("../tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json")
             } else {
-                include_str!("../../results/appraisal-mismatch-qwen36-35b-20260909/artifacts/learning__revision-6__s1__r1/answer.json")
+                include_str!("../tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json")
             };
             std::fs::write(ws.path().join("answer.json"), actual).unwrap();
             let f = c.criterion_feedback(ws.path()).unwrap().remove(0);

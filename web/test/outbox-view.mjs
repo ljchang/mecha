@@ -164,9 +164,9 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   t('a reply with no thread read still summarises', rowSummary({ ...reply, sources: [] })?.subject === '');
   t('a new mail row is its to and subject', rowSummary({ tool: 'mail__mail_send', args: { to: 'a@x', subject: 'Hi' } })?.who === 'a@x');
   t('anything else has no mail summary', rowSummary({ tool: 'docs__docs_create', args: {} }) === null);
-  const d = docEdit('docs__docs_replace', { file_id: '1AkQCAJ_8sUeQTOXgolNwsOoXBDJYrJ9VA-bbSlgPYM0', find: 'Gabe_Specialist', replace: 'placeholder', match_case: true });
-  t('a doc edit reads as find → replace', d?.find === 'Gabe_Specialist' && d.replace === 'placeholder' && d.matchCase);
-  t('and opens the document on Google Docs', d?.url === 'https://docs.google.com/document/d/1AkQCAJ_8sUeQTOXgolNwsOoXBDJYrJ9VA-bbSlgPYM0/edit');
+  const d = docEdit('docs__docs_replace', { file_id: '1FakeDocId_ForTestsOnly_00000000000000000000', find: 'Name_Specialist', replace: 'placeholder', match_case: true });
+  t('a doc edit reads as find → replace', d?.find === 'Name_Specialist' && d.replace === 'placeholder' && d.matchCase);
+  t('and opens the document on Google Docs', d?.url === 'https://docs.google.com/document/d/1FakeDocId_ForTestsOnly_00000000000000000000/edit');
   t('an id that is not Drive-shaped gets no link', docEdit('docs__docs_replace', { file_id: 'evil.example/x', find: 'a' })?.url === null);
 }
 

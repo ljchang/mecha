@@ -486,7 +486,7 @@ fn ask_about(item: &OutboxItem) -> String {
 /// those lists is a hole in the gate by construction: `"So, send it."` is not
 /// a span of anything, normalises to `"send it"`, and releases. It needs the
 /// transcriber to insert a filler the offer did not contain, which Parakeet
-/// does — "Um options for" is in this project's own measurement table.
+/// does — "Um prices for" is in this project's own measurement table.
 ///
 /// So the span is tried against both forms. Checking only the raw one is the
 /// drift `Reread`'s comment warns about three functions down: two decision
@@ -840,7 +840,7 @@ mod tests {
         )
     }
 
-    /// 2026-09-13: the owner's "Go ahead and send it." was not an answer the
+    /// 2026-09-13: the owner's spoken yes was not an answer the
     /// parser knew, the question was dropped, and nothing asked it again.
     /// A dropped question is now carried over the model's reply and put
     /// once more — and only once: the second drop settles it.

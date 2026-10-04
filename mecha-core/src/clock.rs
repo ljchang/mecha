@@ -9,10 +9,9 @@
 //! 2026-09-14 a voice call at 09:21 local was told it was Sunday the 13th by a
 //! process that had started at 22:37 the night before, queried the calendar
 //! for the wrong day, and read yesterday's schedule back as today's — and when
-//! the owner corrected it twice, its own reasoning was "the user is insisting
-//! today is Monday, September 14th, which contradicts my system prompt. I
-//! should trust the system." A session on 2026-09-11 carried a date two days
-//! stale the same way. The trigger runner never did, because it builds an
+//! the owner corrected it twice, its own reasoning sided with the system
+//! prompt's stale date over the owner. A session on 2026-09-11 carried a
+//! date two days stale the same way. The trigger runner never did, because it builds an
 //! agent per run.
 //!
 //! So the clock is a trait object, like [`Provider`] and [`Tool`] and

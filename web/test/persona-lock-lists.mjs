@@ -46,10 +46,10 @@ function watchIdle({ idleMs }) {
 }
 
 // The server's rule (`PersonaChat::authoring`): locked characters only to an
-// unlocked page. `stella` is locked.
+// unlocked page. `maya` is locked.
 const LISTS = (unlocked) => ({
   relationships: [], groups: [],
-  characters: unlocked ? ['john', 'maya', 'stella'] : ['john', 'maya'],
+  characters: unlocked ? ['john', 'maya', 'priya'] : ['john', 'priya'],
 });
 
 // A page with the form open, its lists read under `unlocked`, and a fetch
@@ -108,19 +108,19 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
 
 // Unlocking with the form open offers the locked character.
 {
-  const p = page({ unlocked: false, character: 'maya' });
+  const p = page({ unlocked: false, character: 'priya' });
   await p.unlock();
   const { authoring, making, error } = p.get();
   assert.equal(error, '');
-  assert.deepEqual(authoring.characters, ['john', 'maya', 'stella']);
-  assert.equal(making.character, 'maya', 'an unlock keeps what was chosen');
+  assert.deepEqual(authoring.characters, ['john', 'maya', 'priya']);
+  assert.equal(making.character, 'priya', 'an unlock keeps what was chosen');
 }
 
 // An unlock arms the autolock with the server's span, and a relock — the
 // autolock's own or a tap — stops it, so a dead token is never relocked twice.
 {
   watched.length = 0;
-  const p = page({ unlocked: false, character: 'maya' });
+  const p = page({ unlocked: false, character: 'priya' });
   await p.unlock();
   assert.equal(watched.length, 1);
   assert.equal(watched[0].idleMs, 900_000);
@@ -134,10 +134,10 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
 
 // Relocking takes it back out, and drops it if it was the chosen portrait.
 {
-  const p = page({ unlocked: true, character: 'stella' });
+  const p = page({ unlocked: true, character: 'maya' });
   await p.relock();
   const { authoring, making } = p.get();
-  assert.deepEqual(authoring.characters, ['john', 'maya']);
+  assert.deepEqual(authoring.characters, ['john', 'priya']);
   assert.equal(making.character, '', 'a hidden portrait is not sent');
 }
 
@@ -155,11 +155,11 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   const { making, error, authoring } = p.get();
   assert.equal(making, null);
   assert.equal(error, '');
-  assert.deepEqual(authoring.characters, ['john', 'maya']);
+  assert.deepEqual(authoring.characters, ['john', 'priya']);
 }
 
 // Unlock, then relock before the unlocked lists arrive: the slow unlocked
-// answer lands last and must not put `stella` back on a locked page (review
+// answer lands last and must not put `maya` back on a locked page (review
 // of #425 — the lock button is live while a read is in flight).
 {
   let release;
@@ -173,7 +173,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   const { token, authoring, making, error } = p.get();
   assert.equal(error, '');
   assert.equal(token, null);
-  assert.deepEqual(authoring.characters, ['john', 'maya'], 'a stale unlocked read landed over the relock');
+  assert.deepEqual(authoring.characters, ['john', 'priya'], 'a stale unlocked read landed over the relock');
   assert.equal(making.character, '');
 }
 
@@ -193,12 +193,12 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
   const mid = p.get();
   assert.ok(mid.making, 'the form opened');
-  assert.ok(!mid.authoring?.characters?.includes('stella'), 'the unlocked list was shown on a relocked page');
+  assert.ok(!mid.authoring?.characters?.includes('maya'), 'the unlocked list was shown on a relocked page');
   releaseLocked();
   await Promise.all([opening, relocking]);
   const { authoring, error } = p.get();
   assert.equal(error, '');
-  assert.deepEqual(authoring.characters, ['john', 'maya']);
+  assert.deepEqual(authoring.characters, ['john', 'priya']);
 }
 
 // Relock while a new relationship is being added, with a locked portrait
@@ -209,7 +209,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   const posted = new Promise((r) => (releasePost = r));
   const listed = new Promise((r) => (releaseLists = r));
   const gate = (url) => (url === '/api/personas/relationships' ? posted : listed);
-  const p = page({ unlocked: true, character: 'stella', gate });
+  const p = page({ unlocked: true, character: 'maya', gate });
   p.add({ kind: 'relationship', name: 'Mentor', text: '' });
   const adding = p.addNew();
   await new Promise((r) => setImmediate(r));
@@ -220,7 +220,7 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
   await Promise.all([adding, relocking]);
   const { authoring, making, error } = p.get();
   assert.equal(error, '');
-  assert.deepEqual(authoring.characters, ['john', 'maya']);
+  assert.deepEqual(authoring.characters, ['john', 'priya']);
   assert.equal(making.character, '', 'a locked portrait survived the relock');
   assert.deepEqual(making.relationships, ['mentor']);
 }
@@ -230,18 +230,18 @@ function page({ unlocked, character, hold, holdIf = () => true, gate = null, for
 {
   let release;
   const held = new Promise((r) => (release = r));
-  const p = page({ unlocked: true, character: 'maya', gate: (url) => (url.includes('unlock=') ? null : held) });
+  const p = page({ unlocked: true, character: 'priya', gate: (url) => (url.includes('unlock=') ? null : held) });
   const relocking = p.relock();
   assert.deepEqual(p.get().authoring.characters, [], 'the unlocked list outlived the relock press');
   for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
   assert.deepEqual(p.get().authoring.characters, [], 'the unlocked list stayed up while the relock read');
-  assert.equal(p.get().making.character, 'maya', 'the choice waits for the answer');
+  assert.equal(p.get().making.character, 'priya', 'the choice waits for the answer');
   release();
   await relocking;
-  assert.equal(p.get().making.character, 'maya', 'an unlocked pick survives a relock');
+  assert.equal(p.get().making.character, 'priya', 'an unlocked pick survives a relock');
 }
 {
-  const p = page({ unlocked: true, character: 'stella', failIf: (url) => !url.includes('unlock=') });
+  const p = page({ unlocked: true, character: 'maya', failIf: (url) => !url.includes('unlock=') });
   await p.relock();
   const { authoring, making, error } = p.get();
   assert.equal(error, 'server down');

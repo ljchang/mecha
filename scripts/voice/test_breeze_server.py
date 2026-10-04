@@ -70,7 +70,7 @@ class Engine:
                 body = self._body()
                 if self.path == "/v1/audio/transcriptions":
                     engine.transcribed += 1
-                    return self._send(200, json.dumps({"text": "Please call Stella."}).encode())
+                    return self._send(200, json.dumps({"text": "Please call Maya."}).encode())
                 if self.path == "/v1/audio/voices":
                     v = json.loads(body)
                     engine.registered[v["name"]] = v
@@ -162,9 +162,9 @@ class Adapter(unittest.TestCase):
         self.speak(voice="vctk_p297")
         self.assertEqual(self.engine.transcribed, 1, "transcribed again instead of reading the sidecar")
         txt = os.path.join(self.voices, "vctk_p297.txt")
-        self.assertEqual(open(txt).read().strip(), "Please call Stella.")
+        self.assertEqual(open(txt).read().strip(), "Please call Maya.")
         reg = self.engine.registered["vctk_p297"]
-        self.assertEqual(reg["ref_text"], "Please call Stella.")
+        self.assertEqual(reg["ref_text"], "Please call Maya.")
         self.assertTrue(base64.b64decode(reg["wav_b64"]).startswith(b"RIFF"))
 
     def test_an_edited_sidecar_is_what_is_registered(self):
@@ -275,7 +275,7 @@ class Adapter(unittest.TestCase):
         os.utime(wav, (st.st_atime, st.st_mtime + 5))  # the clip is newer
         self.speak(voice="vctk_p297")
         self.assertEqual(self.engine.transcribed, 1)
-        self.assertEqual(self.engine.registered["vctk_p297"]["ref_text"], "Please call Stella.")
+        self.assertEqual(self.engine.registered["vctk_p297"]["ref_text"], "Please call Maya.")
 
     def test_an_engine_that_forgot_its_voices_is_taught_again(self):
         self.speak(voice="vctk_p297")

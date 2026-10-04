@@ -9966,8 +9966,8 @@ mod tests {
         let mut app = test_app();
         let mut modal = entity::EntityModal::new();
         modal.install(
-            r#"[{"id":"person-a","name":"Grace Choi","node_type":"person"},
-                {"id":"person-b","name":"Youn Ji Choi","node_type":"person"}]"#,
+            r#"[{"id":"person-a","name":"Iris Park","node_type":"person"},
+                {"id":"person-b","name":"Mina Park","node_type":"person"}]"#,
         );
         app.entities = Some(modal);
         app

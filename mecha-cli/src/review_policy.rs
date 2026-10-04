@@ -278,7 +278,7 @@ const READ_PHRASES: [&str; 9] = [
 ///
 /// A deliberately tiny closed set, on the same reasoning as the fillers: an
 /// answer is *composed* of answer phrases and these, and nothing else. "go
-/// ahead and send it" is `go ahead` · `and` · `send it`. "yes but change the
+/// ahead and do it" is `go ahead` · `and` · `do it`. "yes but change the
 /// time first" is `yes` · residue, and residue means the words go to the
 /// model. `but` is the word that must never be here.
 const CONNECTIVES: [&str; 5] = ["and", "then", "now", "please", "just"];
@@ -303,8 +303,8 @@ const JOINERS: [&str; 2] = ["and", "just"];
 /// [`SpokenAnswer::NotAnAnswer`] and reaches the model as ordinary words.
 ///
 /// Composed rather than looked up, since 2026-09-13. The first real answer
-/// to a spoken offer was *"Go ahead and send it."* — two entries of the
-/// list joined by "and" — and equality against the list dropped it. Of
+/// to a spoken offer was two entries of the list joined by "and", and
+/// equality against the list dropped it. Of
 /// twenty natural spoken accepts tried that day, one matched. The safety
 /// argument never rested on the list being short, only on the utterance
 /// being consumed whole, and that is what [`segment`] still requires.
@@ -549,19 +549,20 @@ mod tests {
         }
     }
 
-    /// The first real answer to a spoken offer, 2026-09-13 19:37:44 UTC:
-    /// "Go ahead and send it." Equality against the list dropped it, the
+    /// The first real answer to a spoken offer (2026-09-13) was two list
+    /// entries joined by "and". Equality against the list dropped it, the
     /// words went to the model, and the model told the owner to use the
     /// CLI. Every line here is a composition of things the list already
-    /// accepted, and each must release.
+    /// accepts — natural accepts, not anyone's recorded words — and each
+    /// must release.
     #[test]
     fn an_answer_composed_of_answers_is_an_answer() {
         for said in [
-            "Go ahead and send it.",
+            "Go ahead and approve it.",
             "Yes, go ahead.",
             "Sure, send it.",
             "Yep, do it.",
-            "Okay, go ahead and send it.",
+            "Okay, go ahead and approve it.",
             "Yes please send it.",
             "Send it now.",
             "Approve it.",

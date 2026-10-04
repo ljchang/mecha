@@ -745,8 +745,8 @@ opens with the persona. An `extras` entry that opens with the persona is
 taken as the persona and cast from its own words (#454); one that names it
 in passing, or in the possessive, is refused before drawing, as is a persona
 in `extras` beside a full cast or described twice. On the *prompt* path a
-possessive is read as part of the name ("Stella's hand holding a cup" casts
-Stella doing "hand holding a cup"), so the two paths differ there. Nothing
+possessive is read as part of the name ("Maya's hand holding a cup" casts
+Maya doing "hand holding a cup"), so the two paths differ there. Nothing
 tells the model in its system prompt; the tool does not need it to.
 
 A persona linked to a library character (§4.2) can make pictures of itself —

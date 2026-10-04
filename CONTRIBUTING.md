@@ -142,7 +142,14 @@ does have `~/.ssh` and can reach the network.
 - **Enable the hooks once per clone: `git config core.hooksPath .githooks`.**
   `core.hooksPath` is local config and does not survive a clone, so this is
   opt-in per checkout. The pre-commit hook refuses a commit that CI's rustfmt
-  job would reject; `--no-verify` skips it for a WIP commit on a branch. It
+  job would reject; `--no-verify` skips it for a WIP commit on a branch. The
+  same hooks refuse persona chat or voice call text (`scripts/check-private.py`,
+  on a machine that holds the conversations): pre-commit over the staged diff,
+  commit-msg over the message, and pre-push over everything being pushed, so a
+  `--no-verify` commit is still checked before it leaves. On the machine that holds
+  the conversations, export `CHECK_PRIVATE_REQUIRE=1` so a missing or moved
+  store refuses rather than passing; everywhere else the check passes and says
+  why. It
   exists because the line above was already the rule and did not hold — the
   tree drifted 105 sites across 20 files between 0.1.3 and 0.1.4, and four
   commits landed red, because a failing job nobody is watching is not a gate.

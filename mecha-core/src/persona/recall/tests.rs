@@ -765,17 +765,17 @@ fn a_record_is_dated_by_the_owners_day_of_its_chat_not_the_night_it_was_written(
     // 02:49 UTC on the 30th is 22:49 on the 29th in New York.
     m.add_fact(
         Table::User,
-        said_late("20260930T024959-100ea26c", "Has a sore back."),
+        said_late("20260930T024959-1a2b3c4d", "Is repainting the porch."),
     )
     .unwrap();
     m.add_episode(NewEpisode {
         // A stretch past the first turn has no start of its own.
         source: Some(Source {
-            chat: "20260930T024959-100ea26c".into(),
+            chat: "20260930T024959-1a2b3c4d".into(),
             from: 12,
             to: 20,
         }),
-        summary: "Talked about the sore back.".into(),
+        summary: "Talked about the porch.".into(),
         origin: Origin::ModelClean,
         model: "m".into(),
         ..NewEpisode::default()
@@ -790,7 +790,10 @@ fn a_record_is_dated_by_the_owners_day_of_its_chat_not_the_night_it_was_written(
         .block
         .unwrap()
         .text;
-    assert!(text.contains("- 2026-09-29 · Has a sore back."), "{text}");
+    assert!(
+        text.contains("- 2026-09-29 · Is repainting the porch."),
+        "{text}"
+    );
     assert!(text.contains("- 2026-09-29 · ["), "the episode too: {text}");
     assert!(!text.contains(&today), "never the write night: {text}");
 
@@ -799,12 +802,22 @@ fn a_record_is_dated_by_the_owners_day_of_its_chat_not_the_night_it_was_written(
         .block
         .unwrap()
         .text;
-    assert!(utc.contains("- 2026-09-30 · Has a sore back."), "{utc}");
+    assert!(
+        utc.contains("- 2026-09-30 · Is repainting the porch."),
+        "{utc}"
+    );
 
-    let turn = per_turn(&w.dir, &p, "how is my sore back doing", None, "", Some(ny))
-        .unwrap()
-        .unwrap()
-        .text;
+    let turn = per_turn(
+        &w.dir,
+        &p,
+        "how is the porch coming along",
+        None,
+        "",
+        Some(ny),
+    )
+    .unwrap()
+    .unwrap()
+    .text;
     assert!(turn.contains("2026-09-29"), "{turn}");
 }
 
@@ -816,7 +829,7 @@ fn a_chat_id_that_is_not_a_session_id_falls_back_to_the_write() {
         to: 0,
     };
     assert_eq!(
-        s("20260930T024959-100ea26c").chat_began().as_deref(),
+        s("20260930T024959-1a2b3c4d").chat_began().as_deref(),
         Some("2026-09-30T02:49:59Z")
     );
     for odd in ["c1", "2026-09-30", "20261399T000000-x", ""] {

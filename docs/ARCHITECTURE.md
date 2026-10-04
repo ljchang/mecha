@@ -1342,7 +1342,7 @@ module.
       episode's own span, else the start of the source chat
       (`Source::chat_began`, read from the session id), and the write night
       only last; `local_day` renders it in `[agent] timezone`. Dated by the
-      write, the first real night (2026-10-02) showed a six-day fever from
+      write, the first real night (2026-10-02) showed a days-old state from
       30 September as that morning's news, and a UTC day put most of the
       owner's late-evening chats a day ahead. Episode order and per-turn
       recency use the same date.
@@ -4782,7 +4782,7 @@ medium*. Four decisions carry it (`voice/confirm.rs`,
   nobody authorised. The match is compositional since 2026-09-14
   (`review_policy::segment`): the utterance must be *tiled* entirely by
   answer phrases of one kind and five connectives, with no word left over —
-  "go ahead and send it" releases, "yes later" does not — because the first
+  "go ahead and approve it" releases, "yes later" does not — because the first
   real spoken answer was two listed phrases joined by "and" and equality
   against the list dropped it (`VOICE-APPROVAL-RESEARCH.md`). An unanswered
   offer is never left *armed*: it is taken down, the words go to the model,
@@ -9265,8 +9265,8 @@ It used to be one string in the system prompt, rendered once by
 for a daemon: `mecha serve` holds one `Arc<Agent>` for its whole lifetime, and
 on 2026-09-14 a process started at 22:37 EDT on the 13th told a 09:21 voice
 call it was Sunday the 13th, queried the calendar for that day, and read
-yesterday's schedule back as today's. Corrected twice, the model reasoned *"I
-should trust the system"* — the stamp was the only clock it had. A session on
+yesterday's schedule back as today's. Corrected twice, the model sided with the
+stale stamp — the only clock it had. A session on
 2026-09-11 carried a date two days stale the same way; the trigger runner
 never did, because it builds an agent per run. A faster refresh would have
 been the same bug with a smaller window.

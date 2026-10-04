@@ -1,0 +1,43 @@
+#!/bin/bash
+# Refuse to push a persona chat's or a voice call's words (owner's ruling,
+# 2026-10-04): the same check as pre-commit, over every commit being pushed,
+# so a `--no-verify` commit is still caught before it is public.
+# `scripts/check-private.py` holds the reasoning.
+#
+# The range fails closed (review of #557): one that cannot be worked out is
+# refused, never skipped — a skipped push reads exactly like a passed one.
+# A clone with no python3, or none of this script, is not checked at all:
+# there is nothing here to run.
+if ! command -v python3 >/dev/null 2>&1 || [ ! -f scripts/check-private.py ]; then
+    # Required here, and it cannot run: refuse, never pass quietly.
+    [ "$CHECK_PRIVATE_REQUIRE" = 1 ] && { echo "check-private: CHECK_PRIVATE_REQUIRE=1 but the check cannot run; refusing."; exit 1; }
+    exit 0
+fi
+remote="$1"
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue          # a deletion pushes no text
+    base=""
+    if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        base="$remote_sha"
+    else
+        # A new branch, or a remote tip this clone has never fetched: the
+        # commits no remote has yet, and the parent of the oldest of them.
+        # Scoped to the remote being pushed to ($1): a branch already pushed
+        # to a fork is not therefore on origin (review of #557).
+        oldest=$(git rev-list --reverse "$local_sha" --not --remotes="$remote" 2>/dev/null | head -1)
+        if [ -z "$oldest" ]; then
+            continue                                # every commit is already on a remote
+        fi
+        base=$(git rev-parse --verify --quiet "$oldest^") || base=""
+    fi
+    if [ -z "$base" ]; then
+        echo "check-private: cannot tell what $local_ref adds (no base commit); refusing the push."
+        echo "  Fetch first, or push with --no-verify if you have checked it yourself."
+        status=1
+        continue
+    fi
+    python3 scripts/check-private.py --range "$base..$local_sha" || status=1
+done
+exit $status

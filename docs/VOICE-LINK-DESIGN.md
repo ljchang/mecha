@@ -12,8 +12,8 @@ Today the answer is "it is lost." Speech rides a WebRTC audio track, RTP does
 not retransmit, and on the morning call of 2026-09-14 (12:18–12:23 UTC) the
 uplink stalled eighteen times for 0.7–13 s: Parakeet received eleven seconds
 of speech in a five-minute call, every fragment transcribed correctly and
-every truncation lined up with a stall — *"Today is Monday the four"*,
-*"When is the / Cameron"*, and forty-seven closing seconds of the owner
+every truncation lined up with a stall — two utterances cut off mid-word,
+and forty-seven closing seconds of the owner
 talking into a dead uplink with no transcription at all. #226 (the pause
 sounds and the turn hold) keeps the *turn* across a stall; it cannot keep
 bytes that never arrived. `VOICE-RESEARCH.md` §*A gap in the audio is not

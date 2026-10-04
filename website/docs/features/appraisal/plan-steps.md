@@ -207,13 +207,13 @@ traces alongside the report before drawing conclusions or enabling guidance by
 default. The 2026-09-09 Qwen pilot tied on every task outcome, so the gate rejected
 promotion. It exposed completion-time check omissions and no confirmed-goal-anchor
 coverage; guidance remains opt-in. Results and limits are recorded in
-`results/appraisal-guidance-qwen36-35b-20260909/README.md` in the checkout.
+`results/appraisal-guidance-qwen36-35b-20260909/README.md` on the machine that ran it (run output is not kept in the repository).
 
 ### The pilot record
 
 Six pilots completed on 2026-09-09, all on the local Qwen 3.6 35B model. Each
-directory under `results/` in the checkout holds the method, the raw records and
-the gate's verdict.
+directory under `results/` on the machine that ran it holds the method, the raw
+records and the gate's verdict (run output is not kept in the repository).
 
 | Pilot | Control | Treatment | Paired outcome |
 |---|---|---|---|

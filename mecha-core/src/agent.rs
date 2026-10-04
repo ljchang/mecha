@@ -7082,7 +7082,7 @@ mod tests {
         );
         assert!(is_harness_voice(&block));
         assert!(
-            !is_harness_voice("Okay, but today is Monday, September 14th."),
+            !is_harness_voice("Okay, but today is Tuesday, March 3rd."),
             "the owner's own correction is not a harness voice"
         );
     }
@@ -12390,7 +12390,7 @@ mod tests {
                     vec![Block::ToolUse {
                         id: format!("x{i}"),
                         name: "refuse".into(),
-                        input: json!({"prompt": "Stella on the couch"}),
+                        input: json!({"prompt": "Maya in the garden"}),
                     }],
                     StopReason::ToolUse,
                 )

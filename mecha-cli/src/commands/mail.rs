@@ -2630,7 +2630,7 @@ async fn task(
 
     // **The way back to the mail that asked.** The board's whole failure
     // before this was that the thread id was in hand right here and went
-    // nowhere: a task read "Decide on SAS 2027 award nominations, due 09-11"
+    // nowhere: a task read "Decide on reading-group schedule, due 09-11"
     // and a person deciding it had no way to re-read the request without
     // searching their own inbox for a subject line they half-remembered. The
     // line printed at the bottom of this function said it once, to whoever

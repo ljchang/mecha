@@ -129,10 +129,9 @@ calls for. ",
 /// Appended to the staged-draft tool result on a spoken turn
 /// (`ToolCtx::review_hint`), in place of the sentence naming `mecha outbox`.
 ///
-/// On 2026-09-13 the model answered the owner's spoken "go ahead and send it"
-/// with *"You'll need to review and send it through `mecha outbox`"* — a
-/// faithful repetition of what its tool result had told it, on the one
-/// surface where it is untrue. The core composes that result without
+/// On 2026-09-13 the model answered the owner's spoken yes by pointing them
+/// at `mecha outbox` to review and send it — a faithful repetition of what
+/// its tool result had told it, on the one surface where it is untrue. The core composes that result without
 /// knowing which surface is listening; this is the surface saying.
 pub(crate) const SPOKEN_REVIEW_HINT: &str = "The user will be asked aloud whether to send it, \
 right after this reply; they answer by saying yes or later.";
@@ -569,7 +568,7 @@ pub struct Mount {
     /// The owner-present posture for voice runs. The shared agent carries
     /// the config's approver — `Ask`, which a non-interactive run answers
     /// with Blocked — so a mounted facade must say so explicitly or every
-    /// voice tool call is refused ("I don't have access to your calendar",
+    /// voice tool call is refused (the model said it had no calendar access,
     /// live, 2026-08-24). Outbox routing is untouched: sends still stage.
     pub approve_all: bool,
     /// The front-end whose conversations a call may speak into (D3). None

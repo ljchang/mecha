@@ -497,20 +497,20 @@ mod tests {
         let mut pool = Registry::new();
         pool.insert(Arc::clone(&asks) as Arc<dyn Tool>);
         let mut s = settings(&["image_generate"], Answers::Open);
-        s.display = " Stella ".into();
-        s.character = Some("stella".into());
-        let built = registry_as(&pool, "stella", &s);
+        s.display = " Maya ".into();
+        s.character = Some("maya".into());
+        let built = registry_as(&pool, "maya", &s);
         assert_eq!(names(&built.registry), ["image_generate"]);
         assert_eq!(
             asks.0.lock().unwrap().clone(),
             Some(crate::tool::PersonaSelf {
-                name: "stella".into(),
-                display: "Stella".into(),
-                character: Some("stella".into()),
+                name: "maya".into(),
+                display: "Maya".into(),
+                character: Some("maya".into()),
             })
         );
         s.character = Some("  ".into());
-        registry_as(&pool, "stella", &s);
+        registry_as(&pool, "maya", &s);
         assert_eq!(asks.0.lock().unwrap().as_ref().unwrap().character, None);
     }
 

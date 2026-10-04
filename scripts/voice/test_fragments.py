@@ -26,12 +26,12 @@ class WhatWaits(unittest.TestCase):
             self.assertTrue(holds(piece) or not piece.strip(), piece)
 
     def test_a_trailing_ellipsis_waits(self):
-        for piece in ("Shhh..", "that's it...", "slow…", '"Wait..."', "in.."):
+        for piece in ("Hmm..", "let me see...", "maybe…", '"Wait..."', "so.."):
             self.assertTrue(holds(piece), piece)
 
     def test_a_whole_sentence_is_spoken(self):
-        for piece in ("Mm.", "Yes!", "I'm right here.", "(laugh) That is so funny.",
-                      "Are you coming?", "I met him (and his sister) at the lake."):
+        for piece in ("Mm.", "Yes!", "The kettle is on.", "(laugh) That is so funny.",
+                      "Is the train late?", "I met him (and his sister) at the lake."):
             self.assertFalse(holds(piece), piece)
 
     def test_a_long_run_is_spoken_anyway(self):
@@ -53,14 +53,14 @@ class WhatWaits(unittest.TestCase):
 
 
 class TheJoin(unittest.TestCase):
-    def test_a_whispered_run_is_one_phrase_not_forty(self):
+    def test_a_trailing_off_run_is_one_phrase_not_forty(self):
         # The shape of the 2026-10-03 reply that came out as 84 pieces.
-        pieces = ["Shhh..", ".", "that's it..", ".", "just let yourself rest..", ".",
-                  "I'm right here.", "Slow..", ".", "in..", ".", "and out..", ".", "Good."]
+        pieces = ["Hmm..", ".", "let me see..", ".", "give me a second..", ".",
+                  "The kettle is on.", "Okay..", ".", "so..", ".", "and then..", ".", "Good."]
         out = run(pieces)
         self.assertEqual(out, [
-            "Shhh... that's it... just let yourself rest... I'm right here.",
-            "Slow... in... and out... Good.",
+            "Hmm... let me see... give me a second... The kettle is on.",
+            "Okay... so... and then... Good.",
         ])
         self.assertFalse(any(s.strip(" .…") == "" for s in out), "a lone dot was sent")
 
@@ -80,16 +80,16 @@ class TheJoin(unittest.TestCase):
         from fragments import Joiner as J
 
         j = J()
-        self.assertIsNone(j.push("Shhh.."))
-        self.assertEqual(j.flush("."), "Shhh...")
+        self.assertIsNone(j.push("Hmm.."))
+        self.assertEqual(j.flush("."), "Hmm...")
 
     def test_ordinary_sentences_pass_through_unchanged(self):
-        pieces = ["I'm feeling pretty good.", "How was your day?", "Tell me everything."]
+        pieces = ["The bus was on time.", "Did the parcel come?", "Leave it by the door."]
         self.assertEqual(run(pieces), pieces)
 
     def test_clear_drops_what_was_held(self):
         j = Joiner()
-        self.assertIsNone(j.push("Shhh.."))
+        self.assertIsNone(j.push("Hmm.."))
         j.clear()
         self.assertEqual(j.push("Hello."), "Hello.")
 
@@ -111,7 +111,7 @@ class TheWorkersSplitter(unittest.TestCase):
 
         async def feed():
             out = []
-            for chunk in ["Shhh.. ", "that", "'s it.. ", "just rest.. ", "I am here. ",
+            for chunk in ["Hmm.. ", "le", "t me see.. ", "one sec.. ", "I am here. ",
                           "(laugh) ", "So funny. ", "Bye"]:
                 async for piece in agg.aggregate(chunk):
                     out.append(piece.text)
@@ -120,7 +120,7 @@ class TheWorkersSplitter(unittest.TestCase):
             return out
 
         self.assertEqual(asyncio.run(feed()),
-                         ["Shhh.. that's it.. just rest.. I am here.", "(laugh) So funny.", "Bye"])
+                         ["Hmm.. let me see.. one sec.. I am here.", "(laugh) So funny.", "Bye"])
 
     def test_an_interruption_drops_what_was_held(self):
         import asyncio
@@ -130,7 +130,7 @@ class TheWorkersSplitter(unittest.TestCase):
         agg = worker.JoiningAggregator()
 
         async def feed():
-            async for _ in agg.aggregate("Shhh.. that's it.. "):
+            async for _ in agg.aggregate("Hmm.. let me see.. "):
                 pass
             await agg.handle_interruption()
             out = [p.text async for p in agg.aggregate("Hello there. Next")]

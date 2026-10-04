@@ -24,7 +24,7 @@ mecha-slack/    the Slack transport; has no mecha-core dependency, and must
 eval/           the case set and its fixtures
 website/        the Docusaurus documentation site
 docs/           design and research notes, not user documentation
-results/        recorded scorecards; the baselines comparisons are made against
+results/        local only (untracked since 2026-10-04): run output and scorecards, on the operator's disk
 ```
 
 Four workspace members, all published to crates.io. A new one that anything

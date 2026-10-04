@@ -15,7 +15,7 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-10-03 — a persona on a call: no dangling last word, and thinking
-capped at one draft (#538, #541; mecha-1e).** After an afternoon of Stella
+capped at one draft (#538, #541; mecha-1e).** After an afternoon of persona
 calls the owner reported replies "ending on 'I' or talking too long or too
 short", and asked "why is it so slow to start talking sometimes and fast at
 other times?". Merged as `eb37184c` and `2b3a633e`, installed from
@@ -146,7 +146,7 @@ owner's rulings (§6).
   `spoken_direction` record in the session; in incognito the director
   runs and nothing is kept. A single-slot router preset skips
   (`Bound::slots`). The worker asks only when the TTS lists `instructions`.
-  The first live call (Stella, 04:59Z): 23 of 26 sentences directed, 3
+  The first live call (a persona, 04:59Z): 23 of 26 sentences directed, 3
   skipped as harness, median 723 ms, max 1,269 ms against a 2,500 ms
   deadline.
 - **Brevity off on a streaming engine (#527).** The worker sends
@@ -229,7 +229,7 @@ fix (`PERSONA-DESIGN.md` §12.7 has the owner's rulings).
 - **Seven review passes on #517 and two on #522**, counted from the
   reviewer's summary comments on each PR. Deployed by mecha-1e at `c6f59b05`, 2026-10-03 02:36Z, with
   #520.
-- **First reading on the live store:** 8 of 92 replies in 6 Stella chats
+- **First reading on the live store:** 8 of 92 replies in 6 persona chats
   over the week before repeated an earlier one, mostly from before the
   fix.
 
@@ -784,7 +784,7 @@ because a hit in the message pauses before any pixels are read. Test:
 arming it fails at the `Done`, and without the checkpoint it fails at the
 reloaded file. One review pass.
 
-#448 (`b8f27e7f`) answers the owner's "Let's fix 1". The owner's Stella chat
+#448 (`b8f27e7f`) answers the owner's "Let's fix 1". The owner's persona chat
 resent one refused `image_generate` forty times a run, twice, to `max_turns`.
 The second loop held the model and the GPU while a new chat drew. The loop
 guard was dormant until a compaction, which a chat never reaches, and persona
@@ -795,7 +795,7 @@ before watching ordinary work. The scan covered 1,031 transcripts
 consecutive turns:
 - N=3: 4 fires. Two were mail runs that recovered on the very next turn,
   after boredom's notice named the repeat (the model added `account`).
-- N=4 to N=7: only the Stella loop.
+- N=4 to N=7: only the persona chat's loop.
 
 So `LoopGuard::observe_refusals` stops at `REFUSED_REPEATS` =
 `boredom::STILL_STUCK + 1` (7), after both of boredom's rungs have spoken.
@@ -1945,8 +1945,7 @@ Installed and the five long-running units restarted the same day.
 asked per turn and folded into the turn.** On 2026-09-14 a 09:21 voice call
 was told it was Sunday the 13th, queried the calendar for that day, and read
 yesterday's schedule back as today's; corrected twice, the model's own
-thinking was *"the user is insisting today is Monday, September 14th, which
-contradicts my system prompt. I should trust the system."* `prepare_tools`
+thinking sided with its system prompt's stale date over the owner. `prepare_tools`
 rendered `date_context::render` once and `Agent::new` froze it into
 `Agent::system` — correct for a one-shot and wrong for a daemon, and
 `mecha serve` holds one `Arc<Agent>` for its whole lifetime, that process
@@ -2086,8 +2085,8 @@ packets only on consumption. Deployed ~16:30 EDT (20:30 UTC) — `web/dist` with
 **2026-09-13 — a gap in the audio is not silence: the voice call holds the
 turn across a stall and says so, and the owner asked for the sound.** Two
 calls from a moving car on 2026-09-12 reached the model as six fragments —
-`Can you add` / `I need you to` / `urban to schedule and furnace.` /
-`Suburban` / `Um on Monday.` — each answered with a clarifying question, no
+a request cut into pieces of a few words each, several mid-word — each
+answered with a clarifying question, no
 tool called, no task captured, and the page said "listening" throughout,
 because the browser's `disconnected` needs a longer gap than the two-second
 ones that did the damage. The journal named three mechanisms
@@ -2248,7 +2247,7 @@ Two ambiguous identity contrasts were conservatively marked unresolved before
 unblinding. The valid archive retains one token-limited control answer and all
 actual costs. No default changed or deployment occurred. Full checks passed:
 2,628 tests, zero failures, three ignored, warning-free Clippy, build and formatting.
-See [the complete scorecard](../results/gossip-comparison-qwen36-35b-20260910/README.md)
+See the complete scorecard (`results/gossip-comparison-qwen36-35b-20260910/README.md`, local since 2026-10-04)
 for denominators, controls, limits and the complete synthetic evidence trail.
 
 The setup caught two measurement traps before semantic grading. Removing the
@@ -2272,7 +2271,7 @@ Execution hashes stayed fixed. A reporting-only empty-rule-hash correction reran
 no trials. Build, formatting, Clippy and required-backend tests passed (2,626 passed,
 zero failed, three ignored). The native CI fixture test also runs the four Python
 oracle/report checks. No production state changed. See
-[the scorecard](../results/executable-validation-qwen36-35b-20260910/README.md) for
+the scorecard (`results/executable-validation-qwen36-35b-20260910/README.md`, local since 2026-10-04) for
 conditions, task-level results, private-snapshot boundaries and remaining limits.
 
 **2026-09-10 — nightly measurement and gossip grounding, implemented in an
@@ -8124,7 +8123,7 @@ evidence of a person.
 
 **A pinned session runs the version it was opened with, so "deployed"
 is not "reaching the owner".** After #444 shipped self-portraits, the owner
-still saw refused pictures. Their Stella chat was pinned to persona version 4
+still saw refused pictures. Their persona chat was pinned to persona version 4
 (`sessions/<id>.persona.json`), and v4 had no `character` line, which arrived
 in v5. The fix was live and could never apply in that chat; a new chat drew
 first time. When a fix depends on per-object state, check the object the
@@ -8675,8 +8674,8 @@ things and neither substitutes for the other; and an exit status behind a
 pipe is not a check at all.
 
 **A chat model in the transcriber's seat answered the audio instead of
-transcribing it.** Voxtral returned "I don't have access to your calendar"
-for question-shaped speech and obeyed a spoken "just say banana" — which also
+transcribing it.** Voxtral answered question-shaped speech (saying it had no
+calendar access) instead of transcribing it, and obeyed a spoken "just say banana" — which also
 made the STT leg a prompt-injection surface, since anyone who can play audio
 at the mic could steer the transcript. No prompt fixes what a model is; the
 seat needed a transcription model (Parakeet), and the proof was adversarial
