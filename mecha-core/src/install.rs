@@ -156,6 +156,32 @@ pub fn may_offer(feature: Feature, chat_here: bool) -> bool {
         .any(|s| installable(s.id) && not_needed(s.id, feature, chat_here).is_none())
 }
 
+/// Price what a plan would install whose size is known before installing:
+/// the engine's pinned archives for this machine, on its line and in the
+/// total. `nvidia` is read only when the engine is to be installed, so a plan
+/// with nothing to fetch probes no driver. A machine `engine::choose` refuses
+/// is priced at nothing, and its install says why.
+pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::engine::Nvidia) {
+    let feature = plan.feature;
+    let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == "llama"
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && not_needed(s.id, feature, chat_here).is_none()
+    }) else {
+        return;
+    };
+    if let Ok(target) =
+        crate::engine::choose(std::env::consts::OS, std::env::consts::ARCH, nvidia())
+    {
+        let bytes = crate::engine::download_bytes(target);
+        s.bytes = Some(bytes);
+        plan.download_bytes += bytes;
+    }
+}
+
 /// What `mecha features enable` offers to install for one plan: each
 /// installable sidecar that is missing or unfinished — or installed, with a
 /// model its own install fetches now gone from the hub (a cleared cache
@@ -464,6 +490,7 @@ mod tests {
                 id: "llama",
                 label: "llama.cpp (llama-server)",
                 state: llama,
+                bytes: None,
             }],
             files: vec![],
             download_bytes: 0,
@@ -512,6 +539,34 @@ mod tests {
         assert!(install_ids(&installed, true).is_empty());
         let unfinished = plan_of(Feature::Messages, SidecarState::Incomplete);
         assert_eq!(install_ids(&unfinished, true), vec!["llama"]);
+    }
+
+    /// The engine's archives are on its line and in the total — what `enable`
+    /// is about to fetch, shown before the yes — and only when it is to be
+    /// installed: a provided or unneeded engine probes no driver.
+    #[test]
+    fn the_engine_s_download_is_in_the_plan() {
+        use crate::engine::Nvidia;
+        let mut p = plan_of(Feature::Documents, SidecarState::Missing { step: "7b" });
+        p.download_bytes = 5;
+        price(&mut p, true, || Nvidia::None);
+        let b = p.sidecars[0].bytes.expect("priced");
+        assert!(b > 1_000_000, "{b}");
+        assert_eq!(p.download_bytes, 5 + b);
+
+        let mut provided = plan_of(
+            Feature::Documents,
+            SidecarState::Provided { by: "x".into() },
+        );
+        price(&mut provided, true, || {
+            panic!("probed for a provided engine")
+        });
+        assert_eq!(provided.sidecars[0].bytes, None);
+        let mut unneeded = plan_of(Feature::Messages, SidecarState::Missing { step: "7b" });
+        price(&mut unneeded, false, || {
+            panic!("probed for an unneeded engine")
+        });
+        assert_eq!(unneeded.download_bytes, 0);
     }
 
     fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
