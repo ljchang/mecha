@@ -4346,8 +4346,11 @@ is recoverable without the checkout's cwd. Record:
   one on purpose. (`VOICE-APPROVAL-RESEARCH.md` records it playing once
   since. That probe is retired by #547: the worker's journal keeps no words,
   so its grep is empty whether or not an offer played. Since #547 the
-  evidence is serve's `voice: confirmation offered for draft …` line:
-  `journalctl --user -u mecha-serve | grep -c 'voice: confirmation offered'`.) Nothing was installed or restarted by this lane. **Later
+  evidence is serve's `voice: confirmation offered for draft …` line, printed
+  each time a question is armed (a re-ask prints again, so it shows that
+  offers played, not how many): `journalctl --user -u mecha-serve | grep
+  'voice: confirmation offered'`.) Nothing was installed or restarted by
+  this lane. **Later
   the same morning (~10:00), the owner ruled that nothing calls `pkg` any
   more:** the 01:30 crontab line now runs
   `~/Github/mecha-graph/scripts/nightly.sh` (backup at

@@ -291,8 +291,9 @@ Suggested order:
 1. The voice call, staging a draft on purpose. It is the first end-to-end
    exercise of the confirmation path — thirty days of journal contain no
    `"Say yes to send it"`, so none of #158 has run in anger. (Since #547 that
-   grep proves nothing: the worker's journal keeps no words. Count serve's
-   `voice: confirmation offered` lines instead.)
+   grep proves nothing: the worker's journal keeps no words. Look for serve's
+   `voice: confirmation offered` lines instead; a re-ask prints one too, so
+   they show that offers played, not how many.)
 2. The timing layer, from that call's numbers.
 3. This.
 

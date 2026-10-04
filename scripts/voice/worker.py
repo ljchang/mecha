@@ -1359,8 +1359,11 @@ class LocalTTS(OpenAITTSService):
         # study, without the words: when each sentence went to the TTS, and
         # how long it was (`journal`; review of #547). Paired with the kept
         # `_bot_started_speaking`/`_bot_stopped_speaking` lines, it gives
-        # characters per second of real playback.
-        logger.debug(f"tts: {withheld(text)}")
+        # characters per second of real playback. Not for an incognito call,
+        # by this file's rule for per-sentence lines (`direction_for`); the
+        # timing study is taken from ordinary calls (review of #547).
+        if not names_incognito(self._affect_key):
+            logger.debug(f"tts: {withheld(text)}")
         try:
             # `on_turn_context_created` always fires before `run_tts` for a
             # given context per the base class's own contract, so the
