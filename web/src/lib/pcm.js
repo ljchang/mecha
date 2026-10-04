@@ -25,6 +25,18 @@ export function pcmSamples(bytes, carry = null) {
 }
 
 /**
+ * The phone audio session the player asks for, given the session's current
+ * `type` and whether a call holds a microphone: `playback`, so the ringer
+ * switch does not silence a reply the owner asked to hear — but never over
+ * a live microphone (iOS's playback category does not capture, and a call
+ * would go quiet with nothing to say so), and never over a type something
+ * else chose. `null` leaves the session as it is (review of #555).
+ */
+export function listenSession(type, micLive) {
+  return type === 'auto' && !micLive ? 'playback' : null;
+}
+
+/**
  * The audio clock's plan for one reply: each run of samples starts where
  * the last ends, so the pieces of a reply play as one stream. When the
  * voice falls behind the listener — nothing queued, or the next run late —

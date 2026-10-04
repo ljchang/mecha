@@ -10,8 +10,9 @@
 // One AudioContext, resumed inside the tap: a phone plays only audio a tap
 // started, and a piece fetched after an await is no longer that tap's — so
 // the context is woken in the tap, and every piece plays through it.
+import { micOpen } from '../../../scripts/voice/voice-core.js';
 import { apiFetch as fetch } from './api.js';
-import { pcmSamples, Schedule } from './pcm.js';
+import { listenSession, pcmSamples, Schedule } from './pcm.js';
 import { replyKey, speakable, speechPieces } from './speech.js';
 
 // Which reply is playing, by the id its ChatProse gave it; and why one could
@@ -28,6 +29,9 @@ const MAX_AHEAD = 20;
 const MIN_RUN = 0.1;
 
 let ctx = null;
+// Whether this player set the phone's audio session, and so must hand it
+// back: one it found set otherwise is left alone both ways.
+let tookSession = false;
 let gen = 0;
 let abort = null;
 let wake = null;
@@ -44,7 +48,8 @@ function context() {
 /** Inside the tap: wake the context and play a sample of silence, which is
  * what an older iPhone needs before a context sounds at all; and ask for
  * playback rather than ambient audio, so the ringer switch does not mute a
- * reply the owner asked to hear. */
+ * reply the owner asked to hear — unless a call holds the microphone, which
+ * playback would silence (`listenSession`). */
 function unlock(c) {
   c.resume?.().catch(() => {});
   const s = c.createBufferSource();
@@ -52,15 +57,22 @@ function unlock(c) {
   s.connect(c.destination);
   s.start(0);
   try {
-    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    const session = navigator.audioSession;
+    const want = session ? listenSession(session.type, micOpen()) : null;
+    if (want) {
+      session.type = want;
+      tookSession = true;
+    }
   } catch {}
 }
 
-/** Hand the phone's audio back: a call that follows sets its own. */
+/** Hand the phone's audio session back, if this player took it and nothing
+ * (a call starting meanwhile) has changed it since. */
 function relinquish() {
   try {
-    if (navigator.audioSession) navigator.audioSession.type = 'auto';
+    if (tookSession && navigator.audioSession?.type === 'playback') navigator.audioSession.type = 'auto';
   } catch {}
+  tookSession = false;
 }
 
 /** Stop whatever is playing. */
