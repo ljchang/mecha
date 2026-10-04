@@ -11,7 +11,7 @@
 // or `image_view` (a workspace-relative path of plain segments, none starting
 // with a dot, with an image extension), only a finished call — never a `..`,
 // a leading `/`, or anything a different tool happened to print.
-import { pictureOf as generatedImage, repeatedPictures } from '../src/lib/picture.js';
+import { pictureOf as generatedImage, repeatedPictures, picturesSince } from '../src/lib/picture.js';
 
 let passed = 0;
 let failed = 0;
@@ -100,6 +100,24 @@ is(
   '[]',
   'only tool rows draw pictures'
 );
+
+// A call shows the pictures made since it was placed (the call screen covers
+// the chat, so a picture drawn only in the chat is out of sight until the
+// owner hangs up). Keyed on the picture, so a transcript reloaded mid-call —
+// every entry rebuilt, every index moved — shows the same ones.
+const a = 'image: images/a.png';
+const b = 'image: images/b.png';
+const c = 'image: images/c.png';
+const since = (entries, before) => JSON.stringify(picturesSince(entries, new Set(before)));
+is(since([done(a), done(b), done(c)], ['images/a.png']), '["images/b.png","images/c.png"]', 'the pictures since the call began, oldest first');
+is(since([done(a)], ['images/a.png']), '[]', 'none yet');
+is(
+  since([{ kind: 'notice', text: 'x' }, done(a), done(b)], ['images/a.png']),
+  since([done(a), done(b)], ['images/a.png']),
+  'a reload that moves every index shows the same pictures'
+);
+is(since([done(b), viewed(b)], []), '["images/b.png"]', 'a look at the picture just made is one picture');
+is(since([done(b, { is_error: true }), done(b, { pending: true })], []), '[]', 'a failed or running call shows nothing');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
