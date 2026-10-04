@@ -65,15 +65,13 @@ fn every_workflow_installs_the_pinned_toolchain() {
                  pinned toolchain with `rustup toolchain install` (no arguments) instead"
             );
         }
-        // A workflow that builds Rust says where its toolchain came from.
-        // The two Claude workflows are held back for one PR:
-        // `claude-code-action` refuses to run on a PR that edits its own
-        // workflow, so the pin lands where it can be reviewed and their
-        // install steps follow in a PR of their own, which removes this.
-        let pending = ["claude.yml", "claude-code-review.yml"];
-        if text.contains("cargo ") && !pending.contains(&name.as_str()) {
+        // A workflow that builds Rust installs the pin: the no-argument
+        // spelling, which reads the file. The MSRV arm's versioned install
+        // contains the same words and must not satisfy this on its own.
+        if text.contains("cargo ") {
             assert!(
-                text.contains("rustup toolchain install"),
+                text.contains("rustup toolchain install\n")
+                    || text.contains("rustup toolchain install &&"),
                 "{name} runs cargo without installing the pinned toolchain"
             );
         }
