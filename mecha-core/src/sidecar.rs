@@ -766,6 +766,38 @@ pub fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path taken away on purpose and unrecorded leaves the install
+    /// whole: recorded-but-gone reads `Incomplete`, forgotten reads as before.
+    #[test]
+    fn an_unrecorded_path_no_longer_reads_incomplete() {
+        let home = std::env::temp_dir().join(format!("mecha-unrecord-{}", uuid::Uuid::new_v4()));
+        let kept = home.join("sidecars/llama");
+        let drop_in = home.join("units/llama-local.service.d/mecha-engine.conf");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::create_dir_all(drop_in.parent().unwrap()).unwrap();
+        std::fs::write(&drop_in, "").unwrap();
+        Manifest::begin(&home, "llama").unwrap();
+        Manifest::record(&home, "llama", &kept).unwrap();
+        Manifest::record(&home, "llama", &drop_in).unwrap();
+        Manifest::finish(&home, "llama").unwrap();
+        let state = |home: &Path| {
+            let m = Manifest::read(home).unwrap();
+            let e = m.entry("llama").unwrap();
+            let present = e.wrote.iter().filter(|p| p.exists()).count();
+            (present, e.wrote.len())
+        };
+        assert_eq!(state(&home), (2, 2));
+        std::fs::remove_file(&drop_in).unwrap();
+        assert_eq!(state(&home), (1, 2), "gone but recorded: incomplete");
+        Manifest::unrecord(&home, "llama", &drop_in).unwrap();
+        assert_eq!(state(&home), (1, 1), "forgotten: whole again");
+        // Unrecording under an id with no entry makes no manifest.
+        let empty = home.join("elsewhere");
+        Manifest::unrecord(&empty, "llama", &drop_in).unwrap();
+        assert!(!Manifest::path(&empty).exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
     use crate::recommend::Machine;
 
     fn scratch() -> PathBuf {

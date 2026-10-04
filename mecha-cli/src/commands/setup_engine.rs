@@ -33,34 +33,51 @@ fn router_of(cfg: &mecha_core::config::Config) -> (String, Option<String>) {
     }
 }
 
-pub async fn run(
-    cfg: &mecha_core::config::Config,
-    json: bool,
-    adopt: bool,
-    rollback: bool,
-    now: bool,
-    force: bool,
-) -> Result<()> {
-    anyhow::ensure!(!json, "`mecha setup engine` has no --json form yet");
+/// The flags `mecha setup engine` takes, from `setup`'s arguments.
+pub struct Flags {
+    pub json: bool,
+    pub adopt: bool,
+    pub upgrade: bool,
+    pub to: Option<String>,
+    pub rollback: bool,
+    pub now: bool,
+    pub force: bool,
+}
+
+pub async fn run(cfg: &mecha_core::config::Config, f: Flags) -> Result<()> {
+    anyhow::ensure!(!f.json, "`mecha setup engine` has no --json form yet");
+    anyhow::ensure!(
+        !f.force || f.adopt || f.upgrade,
+        "--force goes with --adopt or --upgrade"
+    );
     let m = mecha_core::sidecar::Machinery::real()?;
     let (base, model) = router_of(cfg);
-    if adopt || rollback {
+    let verb = if f.adopt {
+        Some("adopt")
+    } else if f.upgrade {
+        Some("upgrade")
+    } else if f.rollback {
+        Some("rollback")
+    } else {
+        None
+    };
+    if let Some(verb) = verb {
         this_machine(&base)?;
         anyhow::ensure!(
             std::io::stdin().is_terminal(),
-            "`mecha setup engine --{}` changes what every server runs, so it runs only at a \
-             terminal",
-            if adopt { "adopt" } else { "rollback" }
+            "`mecha setup engine --{verb}` changes what every server runs, so it runs only at a \
+             terminal"
         );
     }
-    if adopt {
-        return run_adopt(&m, &base, model.as_deref(), force).await;
+    match verb {
+        Some("adopt") => run_adopt(&m, &base, model.as_deref(), f.force).await,
+        Some("upgrade") => run_upgrade(&m, &base, model.as_deref(), f.to.as_deref(), f.force).await,
+        Some(_) => run_rollback(&m, &base, model.as_deref(), f.now).await,
+        None => {
+            print!("{}", status(&m)?);
+            Ok(())
+        }
     }
-    if rollback {
-        return run_rollback(&m, &base, model.as_deref(), now).await;
-    }
-    print!("{}", status(&m)?);
-    Ok(())
 }
 
 /// `kind = "local"` is a dialect, not a place: the gate stops and moves this
@@ -123,17 +140,19 @@ fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
     if builds.is_empty() {
         out.push_str("mecha's engines: none installed\n");
     } else {
-        let current = std::fs::read_link(mecha_core::engine::current(&m.mecha_home)).ok();
+        let current = mecha_core::engine::link_tag(&mecha_core::engine::current(&m.mecha_home));
+        let previous = mecha_core::engine::link_tag(&mecha_core::engine::previous(&m.mecha_home));
         let list: Vec<String> = builds
             .iter()
             .map(|b| {
-                let here = current.as_deref() == Some(std::path::Path::new(&b.tag));
-                format!(
-                    "{} ({}){}",
-                    b.tag,
-                    &b.commit[..b.commit.len().min(9)],
-                    if here { " — current" } else { "" }
-                )
+                let role = if current.as_deref() == Some(&b.tag) {
+                    " — current"
+                } else if previous.as_deref() == Some(&b.tag) {
+                    " — previous, the way back"
+                } else {
+                    ""
+                };
+                format!("{} ({}){role}", b.tag, &b.commit[..b.commit.len().min(9)])
             })
             .collect();
         out.push_str(&format!("mecha's engines: {}\n", list.join(", ")));
@@ -142,12 +161,12 @@ fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
         Ok(ledger) => {
             match ledger.rows.last() {
                 Some(row) => out.push_str(&format!(
-                    "last measured: {} {} — {}\n",
+                    "last change: {} {} — {}\n",
                     row.at.format("%Y-%m-%d %H:%MZ"),
                     row.action,
                     outcome_text(&row.outcome)
                 )),
-                None => out.push_str("last measured: never\n"),
+                None => out.push_str("last change: never measured\n"),
             }
             if ledger.skipped > 0 {
                 out.push_str(&format!(
@@ -156,7 +175,7 @@ fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
                 ));
             }
         }
-        Err(e) => out.push_str(&format!("last measured: unknown — {e:#}\n")),
+        Err(e) => out.push_str(&format!("last change: unknown — {e:#}\n")),
     }
     if !servers.present.is_empty() && !gate::adopted(&servers, &m.mecha_home) {
         out.push_str(&format!(
@@ -179,6 +198,7 @@ fn outcome_text(o: &Outcome) -> String {
             error,
             finish,
         } => format!("STOPPED PART WAY at {step}: {error} — finish with: {finish}"),
+        Outcome::RolledBack { to } => format!("rolled back to {to}"),
         Outcome::Unknown => "an outcome this build does not know".into(),
     }
 }
@@ -229,6 +249,120 @@ fn confirm(question: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
+/// From here an interrupt is the owner's "stop": during the download or the
+/// measurement it unwinds (the servers it started stopped, the router back on
+/// its engine with the model it had); during the promotion it is held until
+/// the promotion has finished, never leaving the servers half moved.
+fn interrupt_token(
+    what: &str,
+) -> Result<(
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<()>,
+)> {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut interrupt =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .with_context(|| format!("installing the interrupt handler for the {what}"))?;
+    let on_interrupt = cancel.clone();
+    let listener = tokio::spawn(async move {
+        while interrupt.recv().await.is_some() {
+            eprintln!("\ninterrupted — stopping what is running and putting the router back");
+            on_interrupt.cancel();
+        }
+    });
+    Ok((cancel, listener))
+}
+
+async fn run_upgrade(
+    m: &mecha_core::sidecar::Machinery,
+    base: &str,
+    model: Option<&str>,
+    to: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    // The refusals that move nothing, before anything is asked or fetched.
+    let servers = gate::Servers::read()?;
+    let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
+    let (_, current) = gate::check_upgradable(
+        m,
+        &servers,
+        &holds,
+        &mecha_core::provider::router::base(base),
+    )?;
+    let target = mecha_core::engine::choose(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        mecha_core::engine::read_nvidia(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let release = mecha_core::engine::resolve_release(to, target)
+        .await
+        .context("asking GitHub which llama.cpp release to fetch")?;
+    if release.tag == current {
+        println!("the servers already run llama.cpp {current} — nothing to upgrade to");
+        return Ok(());
+    }
+    let archives = release.archives_for(target)?;
+    let bytes: u64 = archives.iter().map(|a| a.bytes).sum();
+    // F10: printing the tag is disclosure; the owner's yes to *this* tag is
+    // the choice, and the only thing that lets GitHub's own digests stand in
+    // for a reviewed pin.
+    println!(
+        "llama.cpp {} — published {}, commit {} — against {current}, which the servers run now.",
+        release.tag,
+        release.published.get(..10).unwrap_or(&release.published),
+        &release.commit[..9]
+    );
+    println!(
+        "This fetches it ({:.0} MiB, each archive checked against the digest GitHub publishes for \
+         {} — no reviewer has pinned it), stops the router, and measures the model it has loaded \
+         on both builds in turn — a few minutes in which chat does not answer. If {} is no slower \
+         and passes every check {current} passes{}, the servers move to it and {current} stays as \
+         the way back (`mecha setup engine --rollback`).",
+        bytes as f64 / 1_048_576.0,
+        release.tag,
+        release.tag,
+        if force {
+            " — or whatever it measures, with --force"
+        } else {
+            ""
+        }
+    );
+    if !confirm(&format!("Fetch and measure llama.cpp {}?", release.tag))? {
+        println!("Nothing was changed.");
+        return Ok(());
+    }
+    let spec = mecha_core::engine::Spec {
+        tag: release.tag.clone(),
+        build: release.build,
+        commit: release.commit.clone(),
+        source: mecha_core::engine::Source::OwnerConfirmed(archives),
+    };
+    let (cancel, listener) = interrupt_token("upgrade")?;
+    let row = gate::upgrade(
+        m,
+        &servers,
+        &holds,
+        base,
+        &spec,
+        target,
+        model,
+        force,
+        &cancel,
+        &mut |s| println!("  {s}"),
+    )
+    .await;
+    listener.abort();
+    let row = row.context("upgrading the engine")?;
+    print!("\n{}", render(&row));
+    if let Outcome::Partial { .. } = row.outcome {
+        bail!(
+            "the upgrade stopped part way — see above for the step and the command that finishes it"
+        );
+    }
+    Ok(())
+}
+
 async fn run_adopt(
     m: &mecha_core::sidecar::Machinery,
     base: &str,
@@ -262,20 +396,7 @@ async fn run_adopt(
         println!("Nothing was changed.");
         return Ok(());
     }
-    // From here an interrupt is the owner's "stop": during the download or
-    // the measurement it unwinds (the servers it started stopped, the router
-    // restarted on its engine); during the promotion it is held until the
-    // promotion has finished, never leaving the drop-ins half written.
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .context("installing the interrupt handler for the adopt")?;
-    let on_interrupt = cancel.clone();
-    let listener = tokio::spawn(async move {
-        while interrupt.recv().await.is_some() {
-            eprintln!("\ninterrupted — stopping what is running and putting the router back");
-            on_interrupt.cancel();
-        }
-    });
+    let (cancel, listener) = interrupt_token("adopt")?;
     let row = gate::adopt(m, &servers, &holds, base, model, force, &cancel, &mut |s| {
         println!("  {s}")
     })
@@ -297,6 +418,7 @@ async fn run_rollback(
     model: Option<&str>,
     now: bool,
 ) -> Result<()> {
+    use mecha_core::engine;
     let base = mecha_core::provider::router::base(base);
     let servers = gate::Servers::read()?;
     let dir = gate::unit_dir(m)?;
@@ -313,7 +435,11 @@ async fn run_rollback(
         for (srv, _) in &servers.present {
             let path = gate::drop_in_path(dir, srv.unit);
             let before = mecha_core::sidecar::Manifest::read(&m.mecha_home)?;
-            if before.entries.iter().any(|e| e.wrote.contains(&path)) {
+            if before
+                .entries
+                .iter()
+                .any(|e| e.sidecar == "llama" && e.wrote.contains(&path))
+            {
                 mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
                 cleared += 1;
             }
@@ -322,38 +448,64 @@ async fn run_rollback(
             println!("no drop-ins were on disk; cleared {cleared} recorded but never written");
             return Ok(());
         }
-        bail!(
-            "no unit here runs mecha's engine through an adopt — nothing to roll back (moving \
-             back from an upgrade arrives with `--upgrade`)"
-        );
+        bail!("no unit here runs mecha's engine — nothing to roll back");
     }
+    // An upgrade is undone first, one build back; an adopt with no upgrade
+    // after it is undone by removing its drop-ins.
+    let back_to = engine::link_tag(&engine::previous(&m.mecha_home));
+    let from_tag = engine::link_tag(&engine::current(&m.mecha_home));
     // What the router runs once the drop-ins are gone, read before anything
     // moves: a lookup that fails stops the rollback before it starts, never
     // after it succeeded.
-    let provided = {
-        let (_, l) = servers
-            .get(Role::Router)
-            .context("there is no llama-local.service")?;
-        let mut bare = l.clone();
-        bare.env.retain(|(k, _)| k != "LLAMA_SERVER");
-        bare.engine(&servers.base_env).context(
-            "without mecha's drop-in the router's unit names no llama-server it can find — \
-             nothing was rolled back",
-        )?
+    let provided = match &back_to {
+        Some(_) => None,
+        None => Some({
+            let (_, l) = servers
+                .get(Role::Router)
+                .context("there is no llama-local.service")?;
+            let mut bare = l.clone();
+            bare.env.retain(|(k, _)| k != "LLAMA_SERVER");
+            bare.engine(&servers.base_env).context(
+                "without mecha's drop-in the router's unit names no llama-server it can find — \
+                 nothing was rolled back",
+            )?
+        }),
+    };
+    // The build `previous` names must be one whose commit is recorded, or the
+    // router could not be asked whether it runs it.
+    let back_build = match &back_to {
+        Some(tag) => {
+            let manifest = mecha_core::sidecar::Manifest::read(&m.mecha_home)?;
+            let b = manifest
+                .entries
+                .iter()
+                .find(|e| e.sidecar == "llama")
+                .and_then(|e| e.builds.iter().find(|b| &b.tag == tag))
+                .with_context(|| format!("`previous` names {tag}, which mecha has no record of"))?;
+            let n: u32 = tag
+                .strip_prefix('b')
+                .and_then(|n| n.parse().ok())
+                .with_context(|| format!("`previous` names `{tag}`, not a build tag"))?;
+            Some((tag.clone(), n, b.commit.clone()))
+        }
+        None => None,
     };
     // A rollback waits for runs, as any switch does; `--now` asks them to
     // stop (hold.rs's ruling, which the measurement alone departs from).
     let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
-    let switching =
-        match holds.begin_switch(&base, Some("llama.cpp (mecha's)"), "llama.cpp (provided)")? {
-            Ok(s) => s,
-            Err(other) => bail!(
+    let to_label = match &back_to {
+        Some(t) => format!("llama.cpp {t}"),
+        None => "llama.cpp (provided)".into(),
+    };
+    let switching = match holds.begin_switch(&base, Some("llama.cpp (mecha's)"), &to_label)? {
+        Ok(s) => s,
+        Err(other) => bail!(
             "a switch to {} is already waiting on {base} (pid {}) — let it finish, or withdraw it \
              with `mecha model cancel-switch`",
             other.to,
             other.pid
         ),
-        };
+    };
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .context("installing the interrupt handler for the rollback")?;
     if now {
@@ -380,48 +532,93 @@ async fn run_rollback(
         Ok(m) => (Some(m), None),
         Err(e) => (None, Some(format!("{e:#}"))),
     };
+    let managed = gate::managed_binary(&m.mecha_home);
+    let from_engine = match &from_tag {
+        Some(t) => engine::engine_root(&m.mecha_home)
+            .join(t)
+            .join("llama-server"),
+        None => managed.clone(),
+    };
 
-    // Every present unit's drop-in path is forgotten, written or not: a
-    // partial adopt records before it writes.
-    for (srv, _) in &servers.present {
-        let path = gate::drop_in_path(dir, srv.unit);
-        if path.exists() {
-            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-        }
-        mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
-    }
-    let finish = "systemctl --user daemon-reload && systemctl --user restart llama-local.service";
-    gate::systemctl("daemon-reload", &[]).with_context(|| format!("finish with: {finish}"))?;
-    let backends: Vec<&str> = adopted
-        .iter()
-        .copied()
-        .filter(|u| *u != "llama-local.service")
-        .collect();
-    if !backends.is_empty() {
-        gate::systemctl("stop", &backends).with_context(|| format!("finish with: {finish}"))?;
-    }
-    gate::systemctl("restart", &["llama-local.service"])
-        .with_context(|| format!("finish with: {finish}"))?;
-    gate::router_back(&base, check.as_deref(), &provided)
-        .await
-        .with_context(|| {
-            format!(
-                "the router did not come back on {} — finish with: {finish}",
-                provided.display()
+    let (to_engine, finish) = match (&back_build, &provided) {
+        (Some((tag, _, _)), _) => {
+            // One build back: `current` to the previous build, `previous`
+            // cleared — a second rollback then returns to the hand install.
+            engine::point_current(&m.mecha_home, tag)?;
+            let _ = std::fs::remove_file(engine::previous(&m.mecha_home));
+            (
+                engine::engine_root(&m.mecha_home)
+                    .join(tag)
+                    .join("llama-server"),
+                "systemctl --user restart llama-local.service",
             )
-        })?;
+        }
+        (None, Some(provided)) => {
+            // Every present unit's drop-in path is forgotten, written or not:
+            // a partial adopt records before it writes.
+            for (srv, _) in &servers.present {
+                let path = gate::drop_in_path(dir, srv.unit);
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("removing {}", path.display()))?;
+                }
+                mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
+            }
+            gate::systemctl("daemon-reload", &[]).context(
+                "finish with: systemctl --user daemon-reload && systemctl --user restart \
+                 llama-local.service",
+            )?;
+            (
+                provided.clone(),
+                "systemctl --user daemon-reload && systemctl --user restart llama-local.service",
+            )
+        }
+        (None, None) => unreachable!("one of the two is read above"),
+    };
+    let router_engine = if back_build.is_some() {
+        managed.clone()
+    } else {
+        to_engine.clone()
+    };
+    match &check {
+        Some(model) => gate::restart_on(&servers, &base, model, &router_engine)
+            .await
+            .map_err(|(step, e)| anyhow::anyhow!("{step}: {e:#} — finish with: {finish}"))?,
+        None => {
+            gate::systemctl("restart", &["llama-local.service"])
+                .with_context(|| format!("finish with: {finish}"))?;
+            gate::router_back(&base, None, &router_engine)
+                .await
+                .with_context(|| format!("finish with: {finish}"))?;
+        }
+    }
+    if let (Some(model), Some((tag, n, commit))) = (&check, &back_build) {
+        gate::verify_build(&base, model, *n, commit)
+            .await
+            .with_context(|| format!("after moving back to {tag} — finish with: {finish}"))?;
+    }
+    let row = gate::rollback_row(&from_engine, &to_engine, check.clone());
+    if let Err(e) = gate::append_ledger(&m.mecha_home, &row) {
+        eprintln!("the rollback could not be written to the ledger: {e:#}");
+    }
+    if back_build.is_some() {
+        if let Err(e) = engine::prune_builds(&m.mecha_home) {
+            eprintln!("the build rolled back from could not be removed: {e:#}");
+        }
+    }
     drop(switching);
+    let what = match &back_to {
+        Some(t) => format!("mecha's llama.cpp {t}"),
+        None => to_engine.display().to_string(),
+    };
     match &check {
         Some(model) => println!(
-            "rolled back: the router serves {model} on {} again, and the embeddings and OCR \
-             servers start on it at their next request; mecha's engine stays installed for \
-             another `--adopt`",
-            provided.display()
+            "rolled back: the router serves {model} on {what} again, and the embeddings and OCR \
+             servers start on it at their next request"
         ),
         None => println!(
-            "rolled back: the drop-ins are gone and the router answers, but which engine runs \
-             it was not asked ({}) — `mecha setup engine` shows what each unit names; mecha's \
-             engine stays installed for another `--adopt`",
+            "rolled back to {what}: the router answers, but which engine runs it was not asked \
+             ({}) — `mecha setup engine` shows what each unit names",
             unchecked.as_deref().unwrap_or("no model to ask about")
         ),
     }

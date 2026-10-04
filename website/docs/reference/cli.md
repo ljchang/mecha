@@ -1489,7 +1489,7 @@ the combination instead.
 #### `mecha setup engine`
 
 ```
-mecha setup engine [--adopt [--force] | --rollback [--now]]
+mecha setup engine [--adopt [--force] | --upgrade [--to <TAG>] [--force] | --rollback [--now]]
 ```
 
 `engine` is a word `setup` reserves, not a feature: on its own it says which
@@ -1520,11 +1520,25 @@ on its engine with the model you had; once the servers are being moved it
 finishes that first. A machine where only some units run mecha's engine is
 refused: `--rollback` first, so every unit is measured against what it ran.
 
-**`--rollback`** removes the drop-ins, so the units run your llama.cpp again,
-and restarts the router on it. It waits for running work, as any model switch
-does; `--now` asks the work to stop instead.
+**`--upgrade`** moves an adopted machine to a newer llama.cpp. It finds the
+newest `b` release that publishes a build for this machine — or the one you name
+with `--to b11399` — prints its tag, date and commit, and asks you to confirm
+**that tag**: no reviewer has pinned a release newer than the one mecha ships,
+so each archive is checked against the digest GitHub publishes for it, and your
+yes to the tag is what lets that stand in for a review. It installs the release
+beside the current one and measures both exactly as `--adopt` does; only if the
+new build is no slower does `current` move to it, the old build staying as
+`previous`. The router is then asked which build serves your model. A machine
+still on a llama.cpp you installed is sent to `--adopt` first.
 
-Both refuse without a terminal: they change what every server runs.
+**`--rollback`** steps back one change. After an upgrade, `current` returns to
+the previous build; after an adopt with nothing since, the drop-ins are removed,
+so the units run your llama.cpp again. Either way the router restarts on it and
+the rollback is a row in the ledger. It waits for running work, as any model
+switch does; `--now` asks the work to stop instead. mecha keeps two builds on
+disk — the current one and the way back — and removes any other.
+
+All three refuse without a terminal: they change what every server runs.
 
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
 *what is silently broken about a working install*, in one pass with no network
