@@ -263,6 +263,19 @@ impl Manifest {
         m.write(mecha_home)
     }
 
+    /// Forget a path the install no longer owns, after removing it — so a
+    /// path taken away on purpose (an adopt's drop-in, rolled back) never
+    /// reads as an install that did not finish.
+    pub fn unrecord(mecha_home: &Path, id: &str, path: &Path) -> Result<()> {
+        let mut m = Manifest::read(mecha_home)?;
+        let Some(e) = m.entries.iter_mut().find(|e| e.sidecar == id) else {
+            // Nothing recorded: nothing to forget, and no manifest to make.
+            return Ok(());
+        };
+        e.wrote.retain(|w| w != path);
+        m.write(mecha_home)
+    }
+
     /// Record a build the install unpacked and checked, replacing an earlier
     /// record of the same tag.
     pub fn record_build(mecha_home: &Path, id: &str, build: crate::engine::Build) -> Result<()> {
