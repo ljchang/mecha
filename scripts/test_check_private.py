@@ -124,7 +124,7 @@ class Guard(unittest.TestCase):
         git(self.repo, "commit", "-q", "--no-verify", "-m", "tidy")
         r = self.run_guard("--range", f"{base}..HEAD")
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("wip.py:1", r.stdout)
+        self.assertIn("wip.py (in ", r.stdout)
 
     def test_a_pushed_commit_message_is_checked(self):
         base = git(self.repo, "rev-parse", "HEAD").strip()
@@ -208,6 +208,15 @@ class Guard(unittest.TestCase):
             env = dict(os.environ, CHECK_PRIVATE_REQUIRE=require)
             r = subprocess.run(["bash", hook, msg], cwd=self.repo, env=env, capture_output=True, text=True)
             self.assertEqual(r.returncode, want, (require, r.stdout))
+
+    def test_a_diff_prefix_config_does_not_block(self):
+        # diff.noprefix drops the a/ b/ prefixes the parser reads.
+        git(self.repo, "config", "diff.noprefix", "true")
+        self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+        git(self.repo, "reset", "-q")
+        self.stage("fixture.py", f"X = {SAID!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')

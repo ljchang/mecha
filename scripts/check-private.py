@@ -259,7 +259,11 @@ def diff_lines(out, where=""):
             new_left = int(m.group(3)) if m.group(3) is not None else 1
 
 
-DIFF = ["git", "-c", "core.quotepath=false", "diff", "--unified=0", "--no-color"]
+# Prefixes and helpers pinned, so no one's git config (diff.noprefix,
+# diff.mnemonicPrefix, an external diff driver) changes what is parsed
+# (review of #557).
+DIFF = ["git", "-c", "core.quotepath=false", "diff", "--unified=0", "--no-color",
+        "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/"]
 
 
 def added_lines(args):
@@ -282,7 +286,10 @@ def added_lines(args):
             short = c[:8]
             parents = run_git(["git", "rev-list", "--parents", "-n", "1", c]).split()[1:]
             base = parents[0] if parents else "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-            yield from diff_lines(run_git(DIFF + [base, c]), f" in {short}")
+            # Each commit's lines are their own passages: a run that exists
+            # only by joining two commits' lines is not what the push adds.
+            for path, num, text in diff_lines(run_git(DIFF + [base, c]), f" in {short}"):
+                yield f"{path} (in {short})", num, text
             message = run_git(["git", "log", "-n", "1", "--format=%B", c])
             for num, line in enumerate(message.splitlines(), 1):
                 yield f"commit message of {short}", num, line
