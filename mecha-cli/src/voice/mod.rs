@@ -1714,9 +1714,13 @@ fn offer_note(confirm_key: &str, pending: &confirm::Pending) -> Option<String> {
     if direct::names_incognito(confirm_key) {
         return None;
     }
+    // An empty queue is armed too (a publish-only turn; the answer to the
+    // last draft) and asks nothing, so it is not counted as an offer. A
+    // non-empty one after an answer is: that reply speaks the next question
+    // (`confirm::next_question`). Review of #547.
+    let draft = pending.queue.front()?;
     Some(format!(
-        "voice: confirmation offered for draft {} ({} queued)",
-        pending.queue.front().map(String::as_str).unwrap_or("?"),
+        "voice: confirmation offered for draft {draft} ({} queued)",
         pending.queue.len()
     ))
 }
@@ -2490,6 +2494,9 @@ mod tests {
         );
         let incognito = format!("chat:{}", crate::commands::serve::incognito::new_key());
         assert_eq!(offer_note(&incognito, &pending), None);
+        // Armed with nothing to ask (a publish-only turn, or the answer to the
+        // last draft): not an offer, so not counted as one.
+        assert_eq!(offer_note("chat:main", &confirm::Pending::default()), None);
     }
 
     /// The fifth pop site's regression, pinned at the predicate: the old
