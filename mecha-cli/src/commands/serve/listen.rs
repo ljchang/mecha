@@ -3,9 +3,9 @@
 //! for the entire turn … let's start simple"). Calls are untouched: their
 //! sentences are each directed (`voice::direct`).
 //!
-//! The page asks `/api/speak` a piece at a time, the next while the last
-//! plays, naming the reply by a key of its own and sending its text with
-//! each piece. Four rules carry the design:
+//! The page asks `/api/speak` a piece at a time, each streamed, the next as
+//! soon as the last has arrived, naming the reply by a key of its own and
+//! sending its text with each piece. Four rules carry the design:
 //!
 //! - **Once per reply, before the first piece.** The direction is settled
 //!   when the first piece is asked for and every piece is spoken with it, so
