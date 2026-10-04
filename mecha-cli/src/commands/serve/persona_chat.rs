@@ -5176,9 +5176,9 @@ mod tests {
     /// drawn as theirs, never their words to a miner.
     #[tokio::test]
     async fn a_persona_repeating_itself_is_told_what_it_repeats() {
-        let w = world_with(Mode::Say(
-            "Mmm, there you are. Tell me about the dig.".into(),
-        ));
+        // Replies with reasoning, as the persona model gives them: a stale
+        // note is dropped only ahead of a reply that goes out altered.
+        let w = world_with(Mode::Think("they said hello again".into()));
         let key = open_chat(&w).await;
         turn(&w, &key, "hello").await;
         turn(&w, &key, "hi again").await;
@@ -5216,8 +5216,8 @@ mod tests {
             })
             .find(|t| mecha_core::persona::variety::is_note(t))
             .expect("the third turn carries the note");
-        assert!(note.contains("opened with \"Mm\""), "{note}");
-        assert!(note.contains("\"Tell me about the dig.\""), "{note}");
+        assert!(note.contains("opened with \"Hello\""), "{note}");
+        assert!(note.contains("\"Hello from Mara.\""), "{note}");
         assert_eq!(
             mecha_core::agent::owner_text(last),
             "and again",
