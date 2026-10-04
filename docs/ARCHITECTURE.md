@@ -3911,7 +3911,12 @@ speaker; the chat model's prompt is untouched.
   it, so a short sentence before it leaves little playback to hide the call
   in; directing each sentence as its text streams would close that gap.
 - **Listen is directed once per reply, by serve, under the same rules**
-  (`serve::listen`). The page asks `/api/speak` a piece at a time with
+  (`serve::listen`). The page asks `/api/speak` a piece at a time —
+  streamed, `stream: true`: the worker answers raw PCM as the engine makes
+  it (`x-sample-rate`), serve passes the body on unbuffered and never
+  collects it, and the page plays it on one Web Audio clock, asking for the
+  next piece once the last has arrived (`VOICE-BREEZE-DESIGN.md` §3.1;
+  a worker older than streaming answers one WAV) — with
   `listen: {reply, index, whole, asked, last_reply}`; on the first piece
   serve asks the worker whether its engine takes a direction
   (`GET /mecha/directs` — a worker without the route is a no), then asks the
