@@ -1614,8 +1614,16 @@ module.
       every trip costs 0.4 s at the median, ~3 s at p90, ~12 s at the worst.
       The stretch ends at the next owner message, so a note's fate never
       changes as the chat grows, since flipping it would itself re-read
-      everything after. A later view that rewrites earlier text pays from
-      its own position on, unless it makes the same check.
+      everything after. The price is per note, not set by the oldest one
+      dropped: the slot matches each request against the previous one,
+      which lacked every note dropped before, so a request diverges only at
+      the note that just went stale (tested turn by turn in
+      `only_the_turn_being_answered_keeps_its_one_turn_nudge`). **The
+      precondition is a llama-server slot** that holds what it generated; a
+      provider whose cache is keyed on the previous request's bytes has no
+      free divergence point after a reply. A later view that rewrites
+      earlier text pays from its own position on, unless it makes the same
+      check.
     - A turn that called a tool is not a reply: its text is a preamble
       ("Let me look that up."), the turns `PriorTails` leaves alone too. A
       reply with no whole sentence ("Mmm, I was just", barged in on) has no

@@ -1396,5 +1396,43 @@ mod tests {
         results.content.push(note("Newest."));
         let history = vec![owner("look it up", "Older."), tool_turn("t0"), results];
         assert_eq!(with_note(&send(&history)), vec![2]);
+
+        // What the cap is priced against: the slot matches each request
+        // against the *previous* one (and what it generated), not against
+        // the recorded history. Grown turn by turn, every request repeats
+        // the one before it exactly, up to the owner message whose note has
+        // just gone stale — an older note dropped long ago diverges nothing,
+        // because the previous request lacked it too (review of #550).
+        let turns: Vec<Vec<Message>> = vec![
+            vec![owner("hi", "One.")],
+            vec![reply("Hello."), owner("read it all", "Two.")],
+            vec![
+                tool_turn("t2"),
+                result("t2", NUDGE_REREAD_BYTES + 1),
+                reply("That's long."),
+                owner("and?", "Three."),
+            ],
+            vec![reply("Mm, yes."), owner("thanks", "Four.")],
+        ];
+        let mut history: Vec<Message> = Vec::new();
+        let mut previous: Option<(Vec<Message>, usize)> = None;
+        for turn in turns {
+            history.extend(turn);
+            let sent = send(&history);
+            let answering = history.len() - 1;
+            if let Some((before, stale)) = &previous {
+                assert_eq!(
+                    sent[..*stale],
+                    before[..*stale],
+                    "a request rewrote more than the note that just went stale"
+                );
+            }
+            previous = Some((sent, answering));
+        }
+        // And the final request: "One." and "Three." dropped (a plain reply
+        // after each), "Two." kept ahead of the large round trip — the state
+        // the review read as "diverged at 0, so 8 KiB spent anyway".
+        let sent = send(&history);
+        assert_eq!(with_note(&sent), vec![2, 8]);
     }
 }
