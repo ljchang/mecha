@@ -397,7 +397,7 @@ mod tests {
 
     fn scene() -> Scene {
         Scene {
-            character: Some("Stella, a wry friend who teases gently.".into()),
+            character: Some("Maya, a wry friend who teases gently.".into()),
             last_reply: Some("Good luck with the grant!".into()),
             utterance: "I finally finished it, but I'm wiped out.".into(),
             last_direction: None,

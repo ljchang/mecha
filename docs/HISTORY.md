@@ -15,7 +15,7 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 **2026-10-03 — a persona on a call: no dangling last word, and thinking
-capped at one draft (#538, #541; mecha-1e).** After an afternoon of Stella
+capped at one draft (#538, #541; mecha-1e).** After an afternoon of persona
 calls the owner reported replies "ending on 'I' or talking too long or too
 short", and asked "why is it so slow to start talking sometimes and fast at
 other times?". Merged as `eb37184c` and `2b3a633e`, installed from
@@ -146,7 +146,7 @@ owner's rulings (§6).
   `spoken_direction` record in the session; in incognito the director
   runs and nothing is kept. A single-slot router preset skips
   (`Bound::slots`). The worker asks only when the TTS lists `instructions`.
-  The first live call (Stella, 04:59Z): 23 of 26 sentences directed, 3
+  The first live call (a persona, 04:59Z): 23 of 26 sentences directed, 3
   skipped as harness, median 723 ms, max 1,269 ms against a 2,500 ms
   deadline.
 - **Brevity off on a streaming engine (#527).** The worker sends
@@ -229,7 +229,7 @@ fix (`PERSONA-DESIGN.md` §12.7 has the owner's rulings).
 - **Seven review passes on #517 and two on #522**, counted from the
   reviewer's summary comments on each PR. Deployed by mecha-1e at `c6f59b05`, 2026-10-03 02:36Z, with
   #520.
-- **First reading on the live store:** 8 of 92 replies in 6 Stella chats
+- **First reading on the live store:** 8 of 92 replies in 6 persona chats
   over the week before repeated an earlier one, mostly from before the
   fix.
 
@@ -784,7 +784,7 @@ because a hit in the message pauses before any pixels are read. Test:
 arming it fails at the `Done`, and without the checkpoint it fails at the
 reloaded file. One review pass.
 
-#448 (`b8f27e7f`) answers the owner's "Let's fix 1". The owner's Stella chat
+#448 (`b8f27e7f`) answers the owner's "Let's fix 1". The owner's persona chat
 resent one refused `image_generate` forty times a run, twice, to `max_turns`.
 The second loop held the model and the GPU while a new chat drew. The loop
 guard was dormant until a compaction, which a chat never reaches, and persona
@@ -795,7 +795,7 @@ before watching ordinary work. The scan covered 1,031 transcripts
 consecutive turns:
 - N=3: 4 fires. Two were mail runs that recovered on the very next turn,
   after boredom's notice named the repeat (the model added `account`).
-- N=4 to N=7: only the Stella loop.
+- N=4 to N=7: only the persona chat's loop.
 
 So `LoopGuard::observe_refusals` stops at `REFUSED_REPEATS` =
 `boredom::STILL_STUCK + 1` (7), after both of boredom's rungs have spoken.
@@ -8124,7 +8124,7 @@ evidence of a person.
 
 **A pinned session runs the version it was opened with, so "deployed"
 is not "reaching the owner".** After #444 shipped self-portraits, the owner
-still saw refused pictures. Their Stella chat was pinned to persona version 4
+still saw refused pictures. Their persona chat was pinned to persona version 4
 (`sessions/<id>.persona.json`), and v4 had no `character` line, which arrived
 in v5. The fix was live and could never apply in that chat; a new chat drew
 first time. When a fix depends on per-object state, check the object the

@@ -1,18 +1,18 @@
 """Which pieces of a reply are not sentences of their own, and wait for the next.
 
 Pipecat's splitter cuts a streaming reply into sentences at sentence marks,
-and a spoken persona writes ellipses: on 2026-10-03 one Stella reply came out
+and a spoken persona writes ellipses: on 2026-10-03 one persona reply came out
 of it as 84 "sentences", 42 of them a lone "." and half the rest four
-characters or fewer ("Shhh..", "slow..", "in.."). Each piece went to the TTS on
-its own and got its own delivery direction, so a whispered run was performed
-as disconnected fragments, and a lone "." made Breeze invent speech (the
+characters or fewer. Each piece went to the TTS on its own and got its own
+delivery direction, so a run of trailing-off phrases was performed as
+disconnected fragments, and a lone "." made Breeze invent speech (the
 adapter's `speakable` guard, #531). A vocal-event tag alone, "(laugh)", does
 the same: measured on Breeze, a lone tag came back once in three as invented
 words.
 
 `holds(text)` says whether a piece should wait and be joined to what follows:
 - nothing speakable outside a tag (".", "…", "(laugh)", "(sigh) ."), or
-- it trails off in an ellipsis ("Shhh..", "that's it..."),
+- it trails off in an ellipsis ("Hmm..", "let me see..."),
 unless it has grown to `MAX_HOLD` characters, so a long run of trailing-off
 phrases still starts speaking. The worker's `JoiningAggregator` applies it to
 pipecat's sentences; the end of a reply flushes whatever is held.
@@ -66,8 +66,8 @@ class Joiner:
     def push(self, piece: str) -> str | None:
         piece = piece.strip()
         if self.held and not any(c.isalnum() for c in piece):
-            # Punctuation closes the held phrase where it stands: "Shhh.." and
-            # "." are "Shhh...", not "Shhh.. .".
+            # Punctuation closes the held phrase where it stands: "Hmm.." and
+            # "." are "Hmm...", not "Hmm.. .".
             combined = self.held + piece
         else:
             combined = f"{self.held} {piece}".strip() if self.held else piece
@@ -80,7 +80,7 @@ class Joiner:
     def flush(self, rest: str = "") -> str | None:
         rest = rest.strip()
         if self.held and rest and not any(c.isalnum() for c in rest):
-            text = self.held + rest  # attached as in `push`: "Shhh.." + "." is "Shhh..."
+            text = self.held + rest  # attached as in `push`: "Hmm.." + "." is "Hmm..."
         else:
             text = " ".join(t for t in (self.held, rest) if t)
         self.held = ""

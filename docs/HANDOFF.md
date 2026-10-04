@@ -55,10 +55,10 @@ state.
   next. #531 (mecha-1e, merged) stops a bare "." reaching the engine; the
   splitting itself is untouched. This is calls only (pipecat's splitter);
   Listen's page splitter (`speechSentences`, #539) never sends a lone ".".
-  It is not rare: one Stella reply on
+  It is not rare: one persona reply on
   2026-10-03 (05:36Z) had 42 lone dots, and half its "sentences" were 4
-  characters or fewer ("slow..", "in.."). Each piece is its own TTS request
-  and its own direction, so a whispered run is performed as separate
+  characters or fewer. Each piece is its own TTS request and its own
+  direction, so a run of trailing-off phrases is performed as separate
   fragments. The fix is in the worker: keep an ellipsis inside a sentence,
   and join tiny fragments to the next one.
 - **Old VCTK clips still say everything twice.** Re-cut one by deleting
@@ -80,7 +80,7 @@ at `c6f59b05` (02:36Z). The owner's rulings are in `PERSONA-DESIGN.md`
 
 - **Watch the reading, then decide.** `mecha persona show <name>` reports
   how many replies in the last week's chats repeated an earlier one. The
-  first reading was 8 of 92 across 6 Stella chats, mostly but not all from
+  first reading was 8 of 92 across 6 persona chats, mostly but not all from
   before the fix. The 7-day window (`echo::SHOWN_DAYS`, chats by last
   write) straddles the 02:36Z deploy until 2026-10-10, so before then a
   repeat can be either side of it. Let the numbers show whether repetition
@@ -151,7 +151,7 @@ Verified against `7663b9a8`.
 **2026-10-03 — persona calls: what is open (mecha-1e).** #531, #532, #538
 and #541 are in HISTORY under 2026-10-03, all live, by two routes: #531 in
 the shared checkout (adapter restarted 16:31:27Z), and #532, #538 and #541
-in the `mecha` binary, latest mecha-69's `6816c2bd` (23:51Z). The analysis behind them read two Stella calls
+in the `mecha` binary, latest mecha-69's `6816c2bd` (23:51Z). The analysis behind them read two persona calls
 (sessions `20261003T045915-ec7e12cb` and `20261003T171429-16623e41`).
 
 - **Read the first call after the 23:51Z install.** Three numbers say
@@ -234,7 +234,7 @@ against `a51e1c01`:
   - 6 chats read, 29 memories embedded, and none waiting for their model;
   - the 4 records from one chat that read outside content are candidates.
 
-  The owner's review of stella found most "facts about the owner" were
+  The owner's review of one persona found most "facts about the owner" were
   states or one-off events. That finding is #518 (D26, §9.13).
 - **#530 (`27156c9e`) is installed; prove it live.** Persona chats now
   record a `config` on their first turn in a process and at every router
@@ -424,7 +424,7 @@ open, verified against `612075c8`:
     the writer and recall (the persona-memory entry above).
 - **A chat opened before a persona gained its `character` never gets a
   "self".** Chats pin a version, and `PersonaSelf` comes from the pinned
-  `persona.toml`. The owner's Stella chat (pinned v4) refused every picture
+  `persona.toml`. The owner's persona chat (pinned v4) refused every picture
   after #444 shipped; a new chat drew. Two fixes, the owner's choice:
   - read `character` live, as #426 did for the safety switches;
   - offer to move a chat that is behind to the latest version.

@@ -5004,8 +5004,8 @@ mod tests {
     /// A persona chat says which model each stretch ran on: a `config` on its
     /// first turn in this process, none while the binding holds, and another
     /// when the router moves it — so the memory writer reads the model the
-    /// chat last ran on, not the one it started on (2026-10-03: a stella chat
-    /// moved to the uncensored model at 02:50Z mid-chat, and the writer would
+    /// chat last ran on, not the one it started on (2026-10-03: a persona chat
+    /// moved to another model at 02:50Z mid-chat, and the writer would
     /// have waited for the base model for good).
     #[tokio::test]
     async fn a_persona_chat_records_the_model_it_runs_on_and_each_switch() {

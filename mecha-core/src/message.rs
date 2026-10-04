@@ -1178,10 +1178,10 @@ mod tests {
         assert_eq!(cut("It's late… so").as_deref(), Some("It's late…"));
         // Whole replies are untouched.
         for whole in [
-            "Tell me what you're getting.",
-            "Shhh.. that's it..",
-            "Come here 😘",
-            "\"I need you.\"",
+            "Tell me how the walk went.",
+            "Hmm.. let me see..",
+            "See you soon 😊",
+            "\"I need a minute.\"",
             "Mmm, I",
             "",
         ] {

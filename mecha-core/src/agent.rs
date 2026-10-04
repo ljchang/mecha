@@ -12390,7 +12390,7 @@ mod tests {
                     vec![Block::ToolUse {
                         id: format!("x{i}"),
                         name: "refuse".into(),
-                        input: json!({"prompt": "Stella on the couch"}),
+                        input: json!({"prompt": "Maya in the garden"}),
                     }],
                     StopReason::ToolUse,
                 )
