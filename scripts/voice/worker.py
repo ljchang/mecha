@@ -683,6 +683,9 @@ class LinkWatch(FrameProcessor):
 import time as _time
 
 from echo_filter import BotSpeech, echo_rms, overlapped
+from fragments import Joiner
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
+from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 import journal
 from journal import withheld
 
@@ -1134,6 +1137,50 @@ def optional_controls(controls: frozenset | None, **wanted) -> dict:
     }
 
 
+class JoiningAggregator(SimpleTextAggregator):
+    """Pipecat's sentence splitter, with pieces that are not sentences of
+    their own held and joined to the next (`fragments.py`): a lone ".", a
+    vocal-event tag alone, a phrase that trails off in an ellipsis. Measured on
+    the 2026-10-03 night call: 497 pieces became 384, and the 59 that were
+    punctuation alone became none."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._joiner = Joiner()
+
+    @property
+    def text(self) -> Aggregation:
+        base = super().text
+        joined = " ".join(t for t in (self._joiner.held, base.text) if t)
+        return Aggregation(text=joined, type=base.type)
+
+    async def aggregate(self, text: str):
+        async for piece in super().aggregate(text):
+            # Only TOKEN mode yields anything but a sentence, and then nothing
+            # is ever held, so passing it through cannot reorder. This worker
+            # runs SENTENCE mode (pipecat's default); `flush` relies on the
+            # same, since in TOKEN mode the base flush returns None.
+            if piece.type != AggregationType.SENTENCE:
+                yield piece
+                continue
+            spoken = self._joiner.push(piece.text)
+            if spoken is not None:
+                yield Aggregation(text=spoken, type=piece.type)
+
+    async def flush(self):
+        rest = await super().flush()
+        spoken = self._joiner.flush(rest.text if rest else "")
+        return Aggregation(text=spoken, type=AggregationType.SENTENCE) if spoken else None
+
+    async def handle_interruption(self):
+        await super().handle_interruption()
+        self._joiner.clear()
+
+    async def reset(self):
+        await super().reset()
+        self._joiner.clear()
+
+
 class LocalTTS(OpenAITTSService):
     """The stock service hard-validates `voice` against OpenAI's own list,
     which rejects every voice our local servers actually have. Same wire
@@ -1151,6 +1198,9 @@ class LocalTTS(OpenAITTSService):
                  affect_key: str | None = None,
                  echo_window: BotSpeech, **kwargs):
         super().__init__(*args, **kwargs)
+        # Pieces with nothing to say on their own wait for the next
+        # (`JoiningAggregator`); built by `TTSService.__init__`, replaced here.
+        self._text_aggregator = JoiningAggregator(aggregation_type=self._text_aggregation_mode)
         # Where this connection's spoken text is recorded for the echo filter:
         # a reference to the STT's own window, so the two halves are the same
         # object.
