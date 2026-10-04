@@ -156,24 +156,53 @@ def read_memory(db):
 
 
 def spoken_turns(records):
-    """What was said aloud in a chat a call spoke into: each user turn that
-    opens with the voice block, and the reply that answers it. Only the
-    first turn of a spoken stretch carries the block, so a later turn of the
-    same call is not seen here; the worker journal holds the words of calls
-    before #547, and a call that is its own session is read whole."""
-    answering = False
+    """What was said aloud in a chat a call spoke into (review of #559):
+
+    - every spoken direction's sentence — a direction is only ever written
+      for a sentence that was spoken;
+    - each stretch that opens with a user turn carrying the voice block:
+      the owner's words, the assistant's replies and the arguments it passed
+      to tools, through any tool turns, until the owner types again — but
+      not what a tool returned, which is a file or a page, not speech;
+    - each reply containing a directed sentence, and the owner's turn it
+      answers — which is how a later turn of a call is found, since only the
+      first turn of a spoken stretch carries the block.
+
+    What stays out of reach: the owner's own words in a later turn of a call
+    whose reply was not directed (a TTS that takes no directions, or a
+    direction that failed). The worker journal held those until #547 stopped
+    it carrying words; nothing does now."""
+    def text_of(r):
+        return " ".join(b.get("text", "") for b in r.get("content") or []
+                        if isinstance(b, dict) and b.get("type") == "text")
+
+    directed = set()
     for r in records:
-        if r.get("record") != "message":
-            continue
-        texts = [b.get("text", "") for b in r.get("content") or []
-                 if isinstance(b, dict) and b.get("type") == "text"]
+        if r.get("record") == "spoken_direction" and r.get("sentence"):
+            yield r["sentence"]
+            directed.add(" ".join(words(r["sentence"])))
+    messages = [r for r in records if r.get("record") == "message"]
+    in_stretch = False
+    last_user = None
+    for r in messages:
+        text = text_of(r)
         if r.get("role") == "user":
-            answering = any(VOICE_MARK in t for t in texts)
-            if answering:
-                yield from texts
-        elif r.get("role") == "assistant" and answering:
-            yield from texts
-            answering = False
+            if text.strip():  # a tool-results turn has no text: the stretch goes on
+                in_stretch = VOICE_MARK in text
+                last_user = r
+                if in_stretch:
+                    yield text
+            # What a tool returned is not what anyone said — often a file or
+            # a page the assistant read — so a tool-results turn adds nothing.
+        elif r.get("role") == "assistant":
+            said = " ".join(words(text))
+            if in_stretch:
+                yield from spoken(r)
+            elif said and any(d and d in said for d in directed):
+                # A directed reply: it was spoken, and so was what it answers.
+                yield from spoken(r)
+                if last_user is not None:
+                    yield text_of(last_user)
 
 
 def corpus():
