@@ -378,7 +378,10 @@ conversation has no `Session` to record into, and a closed key comes back
   it. The worker's own lines that carry words keep their measurements and
   lose the words (`journal.withheld`, which since 2026-10-04 holds for every
   call, incognito or not, as does a sink that drops pipecat's text-bearing
-  DEBUG lines; `scripts/voice/journal.py`). No line says an incognito chat was
+  DEBUG lines; `scripts/voice/journal.py`). Since then a line keeps the
+  length of what was said (`<N chars>`) where it used to say
+  `<withheld: an incognito call is live>`. That was a constant, and it
+  announced the very fact this section promises no line says. No line says an incognito chat was
   spoken into, redacted or not: the worker's call-start line reads as a
   call that named no chat (`session_line`), its affect latch — once per
   answer, `worker.py`'s own record and so outside the silence — is not

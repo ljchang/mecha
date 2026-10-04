@@ -19,7 +19,14 @@ Two rules, both here so they are tested without pipecat or loguru installed
   ~4,000). The whole family is cut below INFO rather than those three
   functions, so a service added or upgraded later cannot start writing words
   through a door nobody listed. Its warnings and errors stay, as do every
-  other module's DEBUG lines (connection state, turn timing, metrics).
+  other module's DEBUG lines (connection state, turn timing, metrics). The
+  price: about 290 of the family's DEBUG lines in those two days carried no
+  words and go too, among them `base_llm`'s function-call lines and
+  `tts_service`'s interruption handling. Debugging a tool call or a barge-in
+  in a voice turn, raise the worker's level by hand rather than suspecting
+  the TTS.
+- Tracebacks name the failing line but never the values on it: loguru's
+  `diagnose` is off (see `install`).
 """
 
 # Below this loguru level number a record from a text family is dropped.
@@ -50,7 +57,18 @@ def install(logger, sink) -> int:
     this must run after it, and the worker calls it at server start and
     again at the top of every call."""
     logger.remove()
-    return logger.add(sink, level="DEBUG", filter=lambda r: keeps(r["name"], r["level"].no))
+    return logger.add(
+        sink,
+        level="DEBUG",
+        # loguru defaults both to True, and a diagnosed traceback prints the
+        # values of the locals on each line it shows: for pipecat's
+        # frame_processor exception path, the frame being processed, which is
+        # a whole turn, at a name no family cut covers (review of #547). The
+        # traceback still names the file, line and exception.
+        backtrace=False,
+        diagnose=False,
+        filter=lambda r: keeps(r["name"], r["level"].no),
+    )
 
 
 def lifespan(existing, logger, sink):
