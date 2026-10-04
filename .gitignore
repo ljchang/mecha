@@ -101,3 +101,21 @@ Thumbs.db
 *.eml
 target-musl/
 .cargo-musl/
+
+# Logs, recordings and run output never belong in a public repository (owner's
+# ruling, 2026-10-04): no persona chat or voice call text anywhere in git. A
+# journal excerpt, a call recording or an experiment's stage log is what a
+# `git add -A` sweeps in by accident; these patterns are the backstop, the CI
+# `no-logs` job is the gate, and `scripts/check-private.py` (the pre-commit
+# and pre-push hooks) compares added text against the conversations themselves.
+*.log
+*.log.*
+*.pid
+*.pcm
+*.wav
+*.mp3
+*.ogg
+*.m4a
+*.webm
+journal*.txt
+/results/

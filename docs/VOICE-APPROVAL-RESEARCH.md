@@ -27,6 +27,10 @@ journal is the instrument here rather than serve's: `mecha serve` runs at
 the default `warn` filter and every line the confirmation path writes is
 `info`, so serve's journal for this window is `-- No entries --`.
 
+What was said is not reproduced here (the owner's ruling, 2026-10-04: no
+call's words in the repository). The shape, with the harness's own fixed
+lines, which come from code, quoted:
+
 ```
 19:36:08  heard   the owner asks for a recurring calendar event
 19:36:32  said    the model says it will check the calendars
@@ -137,7 +141,7 @@ assistant refusing.
 The second untruth is the model's, and it is structural too: it announced
 that it would discard the first draft — it cannot. It has no way to withdraw
 a draft its own run staged, so item A is still pending, offered to nobody,
-the model having announced it gone.
+with the model having announced it gone.
 
 ### 2.4 A fourth thing, which did not bite today but will
 
@@ -265,7 +269,7 @@ Two edits, both cache-safe:
   core stays surface-blind — it prints a string a caller handed it — and
   every other surface keeps today's wording.
 
-Both would have replaced 19:37:45's *"You'll [removed]
+Both would have replaced 19:37:45's pointer at `mecha outbox` with the
 sentence the owner needed.
 
 ### 4.4 Supersession, so a re-drafted draft retires the one it replaces

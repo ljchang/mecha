@@ -8674,7 +8674,7 @@ things and neither substitutes for the other; and an exit status behind a
 pipe is not a check at all.
 
 **A chat model in the transcriber's seat answered the audio instead of
-transcribing it.** Voxtral returned "I [removed]"
+transcribing it.** Voxtral answered question-shaped speech (saying it had no
 calendar access) instead of transcribing it, and obeyed a spoken "just say banana" — which also
 made the STT leg a prompt-injection surface, since anyone who can play audio
 at the mic could steer the transcript. No prompt fixes what a model is; the
