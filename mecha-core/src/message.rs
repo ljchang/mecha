@@ -539,11 +539,20 @@ pub enum PriorTails {
 /// alone rather than emptied.
 pub fn dangling_tail(text: &str) -> Option<usize> {
     let body = text.trim_end();
-    let last = body.chars().next_back()?;
-    if !(last.is_alphanumeric() || matches!(last, ',' | ';' | ':' | '-' | '–' | '—')) {
+    if !ends_mid_clause(body) {
         return None;
     }
     last_sentence_end(body)
+}
+
+/// Whether `text` stops mid-clause: its last character, past trailing
+/// whitespace, is a letter, a digit, or `, ; : - – —`. The test
+/// [`dangling_tail`] cuts on; after its cut, a reply still answering true
+/// had no complete sentence to cut back to.
+pub fn ends_mid_clause(text: &str) -> bool {
+    text.trim_end().chars().next_back().is_some_and(|last| {
+        last.is_alphanumeric() || matches!(last, ',' | ';' | ':' | '-' | '–' | '—')
+    })
 }
 
 /// Where the last complete sentence of `text` ends: just past its last
