@@ -1980,6 +1980,10 @@ pub struct ImageGenerate {
     /// names and the library character it looks like. `None` outside a
     /// persona chat.
     self_as: Option<crate::tool::PersonaSelf>,
+    /// A reference with more pixels than this is fitted before upload:
+    /// [`MAX_REFERENCE_PIXELS`], lowered only by tests, which cannot afford
+    /// a 4 Mpx picture in an unoptimised build.
+    reference_pixels: u64,
 }
 
 /// An edit that came back a near-copy: the picture a retry should edit, and
@@ -2063,6 +2067,7 @@ impl ImageGenerate {
             last_drawn: Default::default(),
             persona: false,
             self_as: None,
+            reference_pixels: MAX_REFERENCE_PIXELS,
         })
     }
 
@@ -2293,6 +2298,12 @@ impl ImageGenerate {
         self
     }
 
+    #[cfg(test)]
+    fn with_reference_pixels(mut self, pixels: u64) -> Self {
+        self.reference_pixels = pixels;
+        self
+    }
+
     /// The form a persona chat gets: strict about unknown cast names, and
     /// knowing who "self" is when `who` says.
     fn persona_form(&self, who: Option<crate::tool::PersonaSelf>) -> ImageGenerate {
@@ -2306,6 +2317,7 @@ impl ImageGenerate {
             last_drawn: Default::default(),
             persona: true,
             self_as: who,
+            reference_pixels: self.reference_pixels,
         }
     }
 
@@ -3095,10 +3107,11 @@ impl Tool for ImageGenerate {
         // it and the repeat guard hashes it, so all three see what is sent.
         // Off the runtime: decoding 24 Mpx takes a while.
         let read = std::mem::take(&mut req.references);
+        let budget = self.reference_pixels;
         req.references = match tokio::task::spawn_blocking(move || {
             read.into_iter()
                 .map(|mut r| {
-                    if let Some(fitted) = fit_reference(&r.bytes, MAX_REFERENCE_PIXELS) {
+                    if let Some(fitted) = fit_reference(&r.bytes, budget) {
                         r.bytes = fitted;
                         r.ext = "png";
                     }
@@ -4580,6 +4593,43 @@ mod tests {
             std::fs::read(dir.join("inbox/me.jpg"))
                 .unwrap()
                 .starts_with(&[0xFF, 0xD8]),
+            "the original is untouched"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The fit is wired where its comment says: a photo over the budget goes
+    /// up as the fitted PNG — no EXIF block, so no location — and the repeat
+    /// guard and the near-copy check run over those bytes, not the file's.
+    #[tokio::test]
+    async fn a_large_photo_goes_up_fitted_and_upright() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let photo = jpeg_with_orientation(300, 100, 6);
+        assert!(String::from_utf8_lossy(&photo).contains("Exif"));
+        std::fs::write(dir.join("inbox/big.jpg"), &photo).unwrap();
+        let out = tool(&url)
+            .with_reference_pixels(10_000)
+            .call(
+                json!({"prompt": "Keep <image1> unchanged except: a sunset sky",
+                       "reference_images": ["inbox/big.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let upload = seen
+            .iter()
+            .find(|l| l.starts_with("POST /upload/image"))
+            .unwrap();
+        assert!(upload.contains("PNG\r\n"), "sent as a PNG: {upload:.200}");
+        assert!(!upload.contains("Exif"), "the EXIF block stays behind");
+        assert!(!upload.contains("JFIF"), "not the original JPEG");
+        assert_eq!(
+            std::fs::read(dir.join("inbox/big.jpg")).unwrap(),
+            photo,
             "the original is untouched"
         );
         std::fs::remove_dir_all(dir).ok();
@@ -7455,33 +7505,7 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    /// A JPEG of `w`×`h`, red on its left half and blue on its right, with an
-    /// EXIF orientation tag spliced in ahead of the encoder's own segments —
-    /// the way a phone stores a photo it took sideways.
-    fn jpeg_with_orientation(w: u32, h: u32, orientation: u16) -> Vec<u8> {
-        let img = image::RgbImage::from_fn(w, h, |x, _| {
-            image::Rgb(if x < w / 2 { [255, 0, 0] } else { [0, 0, 255] })
-        });
-        let mut jpg = Vec::new();
-        img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
-            &mut jpg, 90,
-        ))
-        .unwrap();
-        let [lo, hi] = orientation.to_le_bytes();
-        // TIFF, little-endian: IFD0 at 8 holding one entry, 0x0112
-        // (Orientation), SHORT, count 1, the value; no next IFD.
-        let tiff = [
-            b'I', b'I', 0x2A, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, lo, hi, 0, 0, 0,
-            0, 0, 0,
-        ];
-        let mut app1 = b"Exif\0\0".to_vec();
-        app1.extend_from_slice(&tiff);
-        let len = u16::try_from(app1.len() + 2).unwrap().to_be_bytes();
-        let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1, len[0], len[1]];
-        out.extend_from_slice(&app1);
-        out.extend_from_slice(&jpg[2..]);
-        out
-    }
+    use crate::image::jpeg_with_orientation;
 
     /// A reference within the budget goes up byte for byte, tag and all:
     /// the server reads the tag itself.
