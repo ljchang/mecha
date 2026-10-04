@@ -1213,7 +1213,7 @@ mod tests {
         // A message that is only a nudge is never emptied.
         let mut lone = Message::user("");
         lone.content = vec![note("Lone.")];
-        let alone = vec![lone, Message::user("now")];
+        let alone = [lone, Message::user("now")];
         let sent = PriorNudges::Drop.wire(std::borrow::Cow::Borrowed(&alone[..]));
         assert!(!sent[0].content.is_empty());
     }
