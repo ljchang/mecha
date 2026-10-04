@@ -27,11 +27,15 @@ import re
 # for long.
 MAX_HOLD = 200
 
-# A parenthesised stage tag ("(laugh)", "(clears throat)"): one to three
-# lowercase words and nothing else. Narrow on purpose: a real aside in
-# parentheses ("(It was enormous.)") is words to speak, and only a tag alone
-# made Breeze invent speech (review of #548).
-TAG = re.compile(r"\([a-z]+(?: [a-z]+){0,2}\)")
+# The vocal events Breeze performs, as the tags the voice prompt may write.
+# Measured 2026-10-04 (`vctk_p297`): each added 0.6-1.4 s of non-word audio
+# after the tag and was never spoken as a word. A closed set, not a shape: a
+# real aside in parentheses, "(and his sister)" or "(she sighed)", is words to
+# speak, and only a known tag alone made Breeze invent speech (review of #548).
+EVENTS = ("laugh", "sigh", "clears throat", "cough", "gasp", "giggle", "moan")
+
+# One of `EVENTS` in parentheses, any case.
+TAG = re.compile(r"\((?:" + "|".join(re.escape(e) for e in EVENTS) + r")\)", re.IGNORECASE)
 
 # A trailing ellipsis, with any closing quote or bracket after it.
 TRAILING_ELLIPSIS = re.compile(r"(?:(?:\.\s*){2,}|…\s*)(?:[\"'”’)\]*_~]\s*)*$")
