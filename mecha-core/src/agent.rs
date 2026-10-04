@@ -15872,4 +15872,58 @@ justification = "this box never sends from an armed conversation"
         let (sent, _) = sent_across_turns(PriorThinking::Keep).await;
         assert!(sent[1].contains("PLAN-A") && sent[2].contains("PLAN-A"));
     }
+
+    /// A persona runs both views at once (`setup::persona_agent`), and every
+    /// pressure reading trusts `wire_bytes` to be the size of `wire`. Each
+    /// view's own test measures it alone; this measures the composition, which
+    /// is the only place the subtraction in `wire_bytes` happens (review of
+    /// #538).
+    #[test]
+    fn both_views_together_measure_exactly_what_is_sent() {
+        let think = |t: &str| Block::Thinking {
+            text: t.into(),
+            signature: None,
+        };
+        let history = vec![
+            Message::user("hi"),
+            Message::assistant(vec![think("PLAN-A"), Block::text("Hello there. \n\nI")]),
+            Message::assistant(vec![
+                think("chose a call"),
+                Block::text("Let me look. Then"),
+                Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t0".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
+            Message::assistant(vec![think("PLAN-B"), Block::text("Found it. And")]),
+            Message::user("mm"),
+        ];
+        let (agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        let agent = agent
+            .with_prior_thinking(PriorThinking::Drop)
+            .with_prior_tails(PriorTails::Trim);
+        let sent = agent.wire(&history);
+        assert_eq!(
+            agent.wire_bytes(&history),
+            crate::pressure::message_bytes(&sent),
+            "wire_bytes must be the size of what wire sends"
+        );
+        // And both views did something, so the equality is not vacuous.
+        assert!(crate::pressure::message_bytes(&sent) < crate::pressure::message_bytes(&history));
+        let texts: Vec<String> = sent.iter().map(Message::text).collect();
+        assert_eq!(texts[1], "Hello there.");
+        assert_eq!(
+            sent[1].thinking(),
+            "",
+            "an earlier reply's thinking is dropped"
+        );
+        assert_eq!(texts[2], "Let me look. Then", "a tool turn keeps its text");
+        assert_eq!(sent[2].thinking(), "chose a call", "and its thinking");
+    }
 }
