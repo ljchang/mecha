@@ -151,6 +151,22 @@ class Guard(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2, r.stdout)
 
+    def test_an_unreadable_journal_refuses(self):
+        # Pre-#547 call words exist only in the journal: failing to read it
+        # is not an empty journal.
+        fake = os.path.join(self.tmp.name, "bin")
+        os.makedirs(fake)
+        jc = os.path.join(fake, "journalctl")
+        open(jc, "w").write("#!/bin/sh\necho 'Failed to open journal: permission denied' >&2\nexit 2\n")
+        os.chmod(jc, 0o755)
+        self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
+        env = dict(os.environ, MECHA_HOME=self.home, CHECK_PRIVATE_JOURNAL="1",
+                   PATH=fake + os.pathsep + os.environ["PATH"])
+        r = subprocess.run([sys.executable, GUARD, "--staged"], cwd=self.repo, env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("voice journal could not be read", r.stdout)
+
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
         self.assertEqual(self.run_guard("--staged").returncode, 0)

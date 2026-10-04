@@ -4777,7 +4777,7 @@ medium*. Four decisions carry it (`voice/confirm.rs`,
   nobody authorised. The match is compositional since 2026-09-14
   (`review_policy::segment`): the utterance must be *tiled* entirely by
   answer phrases of one kind and five connectives, with no word left over —
-  "go ahead and send it" releases, "yes later" does not — because the first
+  "go ahead and approve it" releases, "yes later" does not — because the first
   real spoken answer was two listed phrases joined by "and" and equality
   against the list dropped it (`VOICE-APPROVAL-RESEARCH.md`). An unanswered
   offer is never left *armed*: it is taken down, the words go to the model,

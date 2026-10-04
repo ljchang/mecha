@@ -456,8 +456,9 @@ re-deriving the rule. Each has at least one named incident in
   in tests, docs, comments or commit messages; fixtures and examples are
   made up, and a measurement keeps its numbers, never the words. Real chat
   lines once became test fixtures and a call's transcript a research doc.
-  `scripts/check-private.py` (pre-commit and pre-push) compares added text
-  against the conversations in `~/.mecha` and refuses a match.
+  `scripts/check-private.py` (pre-commit, commit-msg and pre-push) compares
+  added text against the conversations in `~/.mecha` and refuses a match;
+  `CHECK_PRIVATE_REQUIRE=1` makes a missing store a refusal.
 - **A new field on `Config` is two edits, not one** — `Config` and
   `ConfigLayer` — or its TOML table becomes a startup parse error while every
   unit test stays green, which is exactly how hooks shipped unreachable.

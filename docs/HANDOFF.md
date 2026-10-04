@@ -983,7 +983,7 @@ write `after:YYYY/MM/DD` itself and answers with no `as_of`, so the
 
 **2026-09-18 — the grounding arc merged and released as v0.1.21; what is left
 is a measurement and a ruling.** #244 (`569d4952`) is `grounding.rs`: one walk
-for what a run actually received (first seen wins; compaction's `stale:`
+for what a run actually received (first seen wins; compaction's `[stale:`
 marker is never evidence; every call listed with `result: Option`) and a
 dereference (`admit`) that names what it refuses; gossip's citation check, the
 outbox's source join and the diagnostician's carry-over refusal now share it,
@@ -1011,7 +1011,7 @@ required backends); eval 36 cases / 15 tags.
 
 **2026-09-14 — two voice arcs merged and deployed; the next drive is the
 measurement.** #228 (`d4b56e00`): the spoken outbox confirmation takes a
-*composed* answer ("go ahead and send it"), re-asks a dropped question once,
+*composed* answer ("go ahead and approve it"), re-asks a dropped question once,
 and tells the model it will ask aloud — `docs/VOICE-APPROVAL-RESEARCH.md`
 is the incident (the first real spoken yes fell through on 2026-09-13) and
 what is still unbuilt. #231 (`2b4a89fa`): speech is buffered on the phone

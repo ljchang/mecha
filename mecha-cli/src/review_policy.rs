@@ -558,11 +558,11 @@ mod tests {
     #[test]
     fn an_answer_composed_of_answers_is_an_answer() {
         for said in [
-            "Go ahead and send it.",
+            "Go ahead and approve it.",
             "Yes, go ahead.",
             "Sure, send it.",
             "Yep, do it.",
-            "Okay, go ahead and send it.",
+            "Okay, go ahead and approve it.",
             "Yes please send it.",
             "Send it now.",
             "Approve it.",
