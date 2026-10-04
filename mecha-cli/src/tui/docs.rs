@@ -518,8 +518,8 @@ mod tests {
     fn modal() -> DocsModal {
         let mut m = DocsModal::new("personal".into(), vec!["personal".into(), "work".into()]);
         m.install(
-            r#"[{"id":"1abc","name":"Psych60_F2026","mimeType":"application/vnd.google-apps.spreadsheet","modifiedTime":"2026-08-20T14:12:44.487Z"},
-                {"id":"2def","name":"Py-FEAT v2.0 Manuscript","mimeType":"application/vnd.google-apps.document","modifiedTime":"2026-08-18T23:24:03.683Z"}]"#,
+            r#"[{"id":"1abc","name":"Kelp_Survey_F2026","mimeType":"application/vnd.google-apps.spreadsheet","modifiedTime":"2026-08-20T14:12:44.487Z"},
+                {"id":"2def","name":"Kelp Survey Manuscript","mimeType":"application/vnd.google-apps.document","modifiedTime":"2026-08-18T23:24:03.683Z"}]"#,
         );
         m
     }
@@ -542,7 +542,7 @@ mod tests {
     fn the_list_names_the_kind_the_name_and_the_day_it_moved() {
         let text = frame_text(&modal(), 100, 20);
         assert!(text.contains("sheet"), "{text}");
-        assert!(text.contains("Psych60_F2026"), "{text}");
+        assert!(text.contains("Kelp_Survey_F2026"), "{text}");
         assert!(text.contains("2026-08-20"), "{text}");
         assert!(text.contains("2 in scope"), "{text}");
     }
@@ -571,7 +571,7 @@ mod tests {
         let m = modal();
         let r = m.current().unwrap().reference();
         assert!(r.contains("1abc"), "{r}");
-        assert!(r.contains("Psych60_F2026"), "{r}");
+        assert!(r.contains("Kelp_Survey_F2026"), "{r}");
         assert!(r.contains("sheet"), "{r}");
     }
 
