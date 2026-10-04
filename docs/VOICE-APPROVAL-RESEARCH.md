@@ -89,11 +89,11 @@ natural *composition* of two accepted phrases is rejected. Run today's
 
 | utterance | result |
 |---|---|
-| Go ahead and approve it. | **drop** — both halves are in the list; the conjunction is not |
+| Go ahead and do it. | **drop** — both halves are in the list; the conjunction is not |
 | Yes, go ahead. | drop |
 | Sure, send it. | drop |
 | Yep, do it. | drop |
-| Okay, go ahead and approve it. | drop |
+| Okay, go ahead and do it. | drop |
 | Yes please send it. | drop — `please` is stripped only from the tail |
 | Send it now. | drop |
 | Approve it. | drop — `approve` is in; `approve it` is not |

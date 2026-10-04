@@ -278,7 +278,7 @@ const READ_PHRASES: [&str; 9] = [
 ///
 /// A deliberately tiny closed set, on the same reasoning as the fillers: an
 /// answer is *composed* of answer phrases and these, and nothing else. "go
-/// ahead and send it" is `go ahead` · `and` · `send it`. "yes but change the
+/// ahead and do it" is `go ahead` · `and` · `do it`. "yes but change the
 /// time first" is `yes` · residue, and residue means the words go to the
 /// model. `but` is the word that must never be here.
 const CONNECTIVES: [&str; 5] = ["and", "then", "now", "please", "just"];
