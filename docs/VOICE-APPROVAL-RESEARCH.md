@@ -215,7 +215,7 @@ accept phrases and a tiny set of connectives (`and`, `then`, `now`,
 for `LATER_PHRASES`. A segmentation that leaves any word over is not an
 answer, exactly as now.
 
-- *"go ahead and approve it"* → `go ahead` · `and` · `approve it` → accept.
+- *"go ahead and do it"* → `go ahead` · `and` · `do it` → accept.
 - *"yes but change the time first"* → `yes` · residue → not an answer. The
   safety argument survives intact: it never rested on the list being short,
   only on the whole utterance being consumed.
@@ -443,7 +443,7 @@ approval ([framework survey](https://soniox.com/wiki/voice-agent-frameworks)).
 1. **§4.1–4.3, together, first.** They are the incident. Each is a small
    change in `review_policy.rs`, `voice/confirm.rs`, `voice/mod.rs` and one
    string in `agent.rs`; each has a test that fails on today's transcript
-   (*"Go ahead and approve it."* must release; *"Yes, but change the time
+   (*"Go ahead and do it."* must release; *"Yes, but change the time
    first."* must not; a dropped draft must be re-offered once; the staged
    result on the spoken door must not say `mecha outbox`).
 2. **§4.4 same-turn supersession and §4.6**, small and independent.
