@@ -1156,6 +1156,10 @@ class JoiningAggregator(SimpleTextAggregator):
 
     async def aggregate(self, text: str):
         async for piece in super().aggregate(text):
+            # Only TOKEN mode yields anything but a sentence, and then nothing
+            # is ever held, so passing it through cannot reorder. This worker
+            # runs SENTENCE mode (pipecat's default); `flush` relies on the
+            # same, since in TOKEN mode the base flush returns None.
             if piece.type != AggregationType.SENTENCE:
                 yield piece
                 continue

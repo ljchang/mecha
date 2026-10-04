@@ -214,12 +214,12 @@ class Adapter(unittest.TestCase):
         r = self.client.post("/v1/audio/speech", json={"input": ".", "response_format": "wav"})
         self.assertTrue(r.content.startswith(b"RIFF"))
         self.assertEqual(self.engine.spoken, [], "the engine was given nothing to say, and it invents")
-        for text in ("Mm.", "Hmm...", "3.", "好。", "(laugh) That is so funny."):
+        spoken = ["Mm.", "Hmm...", "3.", "好。", "(laugh) That is so funny.",
+                  # A real aside is words, not a tag (review of #548).
+                  "(It was enormous.)"]
+        for text in spoken:
             self.speak(input=text)
-        self.assertEqual(
-            [s["input"] for s in self.engine.spoken],
-            ["Mm.", "Hmm...", "3.", "好。", "(laugh) That is so funny."],
-        )
+        self.assertEqual([s["input"] for s in self.engine.spoken], spoken)
         self.assertEqual(self.speak(input=".", voice="nobody").status_code, 400, "a pause skipped the voice check")
 
     def test_an_unreadable_voices_directory_is_said(self):
