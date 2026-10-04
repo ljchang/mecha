@@ -1352,8 +1352,15 @@ class LocalTTS(OpenAITTSService):
         return direction
 
     async def run_tts(self, text: str, context_id: str):
+        from loguru import logger
         from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
+        # What pipecat's `Generating TTS [...]` line used to give a timing
+        # study, without the words: when each sentence went to the TTS, and
+        # how long it was (`journal`; review of #547). Paired with the kept
+        # `_bot_started_speaking`/`_bot_stopped_speaking` lines, it gives
+        # characters per second of real playback.
+        logger.debug(f"tts: {withheld(text)}")
         try:
             # `on_turn_context_created` always fires before `run_tts` for a
             # given context per the base class's own contract, so the
