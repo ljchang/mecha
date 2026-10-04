@@ -1,7 +1,7 @@
 // A streamed piece's bytes into samples, and the clock that places them
 // (`pcm.js`): the parts of the play button's player that are not the browser.
 import assert from 'node:assert/strict';
-import { pcmSamples, Schedule } from '../src/lib/pcm.js';
+import { listenSession, pcmSamples, Schedule } from '../src/lib/pcm.js';
 
 // Clock arithmetic is in floating point seconds.
 const near = (a, b, what) => assert.ok(Math.abs(a - b) < 1e-9, `${what}: ${a} vs ${b}`);
@@ -42,5 +42,13 @@ assert.equal(s.ahead(30), 0);
 const t = new Schedule(0.1);
 t.place(0, 1); // ends at 1.1
 near(t.place(1.095, 1), 1.195, 'slop');
+
+// The phone's audio session: playback, so the ringer switch does not mute
+// a reply — but never over a call's live microphone, which iOS's playback
+// category would silence, and never over a type something else set.
+assert.equal(listenSession('auto', false), 'playback');
+assert.equal(listenSession('auto', true), null);
+assert.equal(listenSession('play-and-record', false), null);
+assert.equal(listenSession('playback', false), null);
 
 console.log('pcm: ok');

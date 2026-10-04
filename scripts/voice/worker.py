@@ -2489,9 +2489,11 @@ async def tts_pcm(text: str, voice: str, speed: float = 1.0, instructions: str |
     stops the synthesis it was waiting for. A chunk is not sample-aligned:
     the reader keeps an odd byte for the next one."""
     body = await speech_body(text, voice, speed, instructions, "pcm")
-    # `read` bounds the wait between chunks, not the whole piece: a long
-    # sentence streams for longer than any single wait.
-    client = httpx.AsyncClient(timeout=httpx.Timeout(60, read=30))
+    # Each wait is bounded, never the whole piece, which streams for as long
+    # as it takes to speak. `read` covers the wait for the TTS's answer as
+    # well as each wait between chunks, so it is `tts_wav`'s 60 s: a model
+    # loading has as long to answer here as on the WAV path (review of #555).
+    client = httpx.AsyncClient(timeout=httpx.Timeout(60))
     try:
         r = await client.send(client.build_request("POST", f"{TTS_URL}/audio/speech", json=body), stream=True)
     except BaseException:
@@ -2505,9 +2507,12 @@ async def tts_pcm(text: str, voice: str, speed: float = 1.0, instructions: str |
         await client.aclose()
         raise
 
+    # Decoded, as `run_tts` and `tts_wav` read theirs: serve passes no
+    # content-encoding on, so a compressed body would reach the page as
+    # samples (review of #555).
     async def chunks():
         try:
-            async for chunk in r.aiter_raw():
+            async for chunk in r.aiter_bytes():
                 if chunk:
                     yield chunk
         finally:

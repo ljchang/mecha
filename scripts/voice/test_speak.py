@@ -213,16 +213,28 @@ class Pcm(unittest.IsolatedAsyncioTestCase):
                 test.closed.append(True)
 
         def handler(request):
+            import gzip
+
             body = json.loads(request.content)
             self.bodies.append(body)
+            if body["input"] == "compressed":
+                return httpx.Response(
+                    200, headers={"content-encoding": "gzip"}, content=gzip.compress(b"\x01\x00\x02\x00")
+                )
             return httpx.Response(500 if body["input"] == "refused" else 200, stream=Body())
 
         async def reask(status):
             self.reasked.append(status)
 
+        self.timeouts = []
+
+        def client(**kw):
+            self.timeouts.append(kw.get("timeout"))
+            return real_client(transport=httpx.MockTransport(handler), **kw)
+
         real_client = httpx.AsyncClient
         self.real = (worker.httpx.AsyncClient, worker.tts_controls, worker.reask_after_refusal)
-        worker.httpx.AsyncClient = lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw)
+        worker.httpx.AsyncClient = client
         worker.tts_controls = lambda: frozenset({"instructions"})
         worker.reask_after_refusal = reask
 
@@ -247,6 +259,19 @@ class Pcm(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await chunks.__anext__(), b"\x01\x00")
         await chunks.aclose()
         self.assertEqual(self.closed, [True])
+
+    async def test_a_compressed_answer_is_decoded_not_passed_on(self):
+        # Serve passes no content-encoding on: compressed bytes would be
+        # played as samples (review of #555).
+        chunks = await worker.tts_pcm("compressed", "ada")
+        self.assertEqual(b"".join([c async for c in chunks]), b"\x01\x00\x02\x00")
+
+    async def test_the_answer_is_waited_for_as_long_as_a_wav_is(self):
+        # httpx's `read` bound covers the wait for the headers: a loading
+        # model gets the WAV path's 60 s, not less (review of #555).
+        chunks = await worker.tts_pcm("Hello there.", "ada")
+        await chunks.aclose()
+        self.assertGreaterEqual(self.timeouts[0].read, 60)
 
 
 if __name__ == "__main__":

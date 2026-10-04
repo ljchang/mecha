@@ -1011,7 +1011,13 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
         return (StatusCode::BAD_GATEWAY, "reading the speech\n").into_response();
     };
     if status.is_success() {
-        return ([("content-type", "audio/wav")], bytes.to_vec()).into_response();
+        // Kept out of the cache as the stream is: a reply's speech, a locked
+        // persona's among them (review of #555).
+        return (
+            [("content-type", "audio/wav"), ("cache-control", "no-store")],
+            bytes.to_vec(),
+        )
+            .into_response();
     }
     // The worker's own refusal carries `error`; a 404 without one is the
     // route missing — a worker older than the play button.
