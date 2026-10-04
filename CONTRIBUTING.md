@@ -154,9 +154,19 @@ does have `~/.ssh` and can reach the network.
   tree drifted 105 sites across 20 files between 0.1.3 and 0.1.4, and four
   commits landed red, because a failing job nobody is watching is not a gate.
   Note what the fix is *not*: v0.1.3 is fmt-clean under the same rustfmt that
-  found those 105 sites, so this was never toolchain drift, and a
-  `rust-toolchain.toml` would both fix nothing and override the `[stable,
-  "1.89"]` test matrix into testing stable twice.
+  found those 105 sites, so that drift was never the toolchain's.
+- **The toolchain is pinned: `rust-toolchain.toml` names one exact version**,
+  and a cargo in this tree uses it, as does every CI job (`rustup toolchain
+  install`, no arguments) and — once its own PR lands — the review agent. It was not, until a lint added
+  upstream (`clippy::chunks_exact_to_as_chunks`) reached CI's floating
+  `stable` two versions ahead of the machine the code was written on, and
+  arrived on #551 as a red check nobody had seen locally — that time the
+  drift *was* the toolchain's. The MSRV arm still tests the oldest promised
+  Rust: it names that version in `RUSTUP_TOOLCHAIN`, which wins over the
+  file, so the matrix does not collapse into testing one version twice.
+  Moving the pin is a pull request of its own that runs fmt and clippy on the
+  new version first; `mecha-core/tests/toolchain_pin.rs` fails if a workflow
+  floats again or the MSRV arm leaves `rust-version`.
 - Every commit builds and passes tests alone — history is bisectable and
   stays that way.
 - Explain *why* in the description. The code shows what changed; the reasoning
@@ -186,7 +196,9 @@ notices.
 `rust-version` in the workspace manifest is the oldest Rust that builds the
 tree, and CI pins an arm to exactly that number so breaking it is a failure
 rather than a discovery. Keep the two in step; they are one promise written
-twice.
+twice. It is not the toolchain the tree is developed and checked with — that
+is `rust-toolchain.toml`'s, moved freely to current stable — and raising one
+never raises the other.
 
 **It moves when a dependency we want needs it to, and not otherwise.** Never
 to use a new language or standard-library feature ourselves — that trades
