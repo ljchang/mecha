@@ -259,6 +259,7 @@ class Guard(unittest.TestCase):
         reply = "The piano tuner is booked for the first Tuesday of next month."
         later = "And tell the neighbours the tuner arrives in the afternoon please."
         later_reply = "I will let the neighbours know the tuner comes in the afternoon."
+        steer = "Actually make it the second Tuesday because the first one is busy."
         def rec(role, *blocks):
             return json.dumps({"record": "message", "role": role, "content": list(blocks)}) + "\n"
         t = lambda x: {"type": "text", "text": x}
@@ -266,12 +267,29 @@ class Guard(unittest.TestCase):
             f.write(json.dumps({"record": "meta", "id": "z", "kind": "web"}) + "\n")
             f.write(rec("user", t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + first)))
             f.write(rec("assistant", {"type": "tool_use", "id": "t1", "name": "cal", "input": {}}))
-            f.write(rec("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}))
+            f.write(rec("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                        t(steer)))  # a sentence said mid-turn, folded beside the result
             f.write(rec("assistant", t(reply)))
             f.write(rec("user", t(later)))  # a later spoken turn: no block
             f.write(rec("assistant", t(later_reply)))
             f.write(json.dumps({"record": "spoken_direction", "turn": "x", "sentence": later_reply}) + "\n")
-        for text in (reply, later, later_reply):
+        for text in (steer, reply, later, later_reply):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, 1, text)
+
+    def test_a_chat_title_and_a_compaction_summary_count(self):
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        title = "Planning the lighthouse open day with the harbour society"
+        summary = "The owner asked to move the open day to the last weekend of June."
+        with open(os.path.join(sessions, "20990105T000000-4e5f6a7b.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "w", "kind": "web", "title": title}) + "\n")
+            f.write(json.dumps({"record": "message", "role": "user", "content": [{"type": "text",
+                    "text": "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhello"}]}) + "\n")
+            f.write(json.dumps({"record": "rewrite", "messages": [{"role": "user", "content": [{"type": "text",
+                    "text": "[Earlier turns were compacted to fit the context window. What happened in them:]\n" + summary}]}]}) + "\n")
+        for text in (title, summary):
             git(self.repo, "reset", "-q")
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, 1, text)
