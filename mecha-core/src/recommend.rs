@@ -433,7 +433,7 @@ pub const SLOTS: &[Slot] = &[
                 peak: Peak::Arithmetic { mb: 20_790 },
             },
             model: "Qwen-Image 2.1 int8 ConvRot, in ComfyUI",
-            counts: "peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load; ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by the ~0.8 the int8 file measured above it)",
+            counts: "peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load; ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by what the int8 file measured above it on 2026-10-04: ~0.7 from cold, ~0.8 warm)",
             sources: &[Source::HuggingFace {
                 repo: "Comfy-Org/Qwen-Image-2.1",
                 revision: "cb504a4090723e43f17ad01cec0359490e2de613",
