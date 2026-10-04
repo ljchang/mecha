@@ -102,6 +102,33 @@ class Guard(unittest.TestCase):
         open(msg, "w").write("Fix the fixture\n\nIt said something made up.\n")
         self.assertEqual(self.run_guard("--message", msg).returncode, 0)
 
+    def test_a_push_reads_every_commit_not_only_the_ends(self):
+        # Added in one --no-verify commit and rewritten in the next: the
+        # range's endpoint diff is clean, and the push must still refuse.
+        base = git(self.repo, "rev-parse", "HEAD").strip()
+        self.stage("wip.py", f"X = {SAID!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "wip")
+        self.stage("wip.py", 'X = "The ferry leaves at noon."\n')
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "tidy")
+        r = self.run_guard("--range", f"{base}..HEAD")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("wip.py:1", r.stdout)
+
+    def test_a_pushed_commit_message_is_checked(self):
+        base = git(self.repo, "rev-parse", "HEAD").strip()
+        self.stage("ok.py", 'X = "The ferry leaves at noon."\n')
+        git(self.repo, "commit", "-q", "--no-verify", "-m", f"Fix it\n\nIt said: {SAID}")
+        r = self.run_guard("--range", f"{base}..HEAD")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("commit message of", r.stdout)
+
+    def test_a_file_with_a_non_ascii_name_is_read(self):
+        # git quotes such paths in a diff header unless told not to.
+        self.stage("café.md", f"{SAID}\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("café.md:1", r.stdout)
+
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
         self.assertEqual(self.run_guard("--staged").returncode, 0)

@@ -141,13 +141,53 @@ def corpus():
         shingles |= grams(w, SHINGLE)
         for n in range(3, SHINGLE):
             phrases |= grams(w, n)
-    return shingles, phrases, ids, names, bool(files)
+    # Persona folders with no chats yet still have names to refuse.
+    return shingles, phrases, ids, names, bool(files or names)
+
+
+def run_git(cmd):
+    """A git command's output; one that fails is refused, never read as
+    "nothing added" (review of #557 — the silently-degrading guard)."""
+    r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if r.returncode != 0:
+        print(f"check-private: `{' '.join(cmd)}` failed; refusing rather than passing unread.")
+        print(r.stderr.strip())
+        sys.exit(2)
+    return r.stdout
+
+
+def diff_lines(out, where=""):
+    """(path, line number, text) for every line a unified diff adds. A `+++`
+    header it cannot read is refused: only `/dev/null` means nothing added."""
+    path, num = None, 0
+    for line in out.splitlines():
+        if line.startswith("+++ "):
+            target = line[4:]
+            if target.startswith("b/"):
+                path = target[2:]
+            elif target == "/dev/null":
+                path = None
+            else:
+                print(f"check-private: cannot read the diff header {target!r}{where}; refusing.")
+                sys.exit(2)
+        elif line.startswith("@@"):
+            num = int(re.search(r"\+(\d+)", line).group(1))
+        elif line.startswith("+") and path:
+            yield path, num, line[1:]
+            num += 1
+
+
+DIFF = ["git", "-c", "core.quotepath=false", "diff", "--unified=0", "--no-color"]
 
 
 def added_lines(args):
-    """(path, line number, text) for every line the change adds — or, with
-    `--message FILE` (the commit-msg hook), every line of a commit message,
-    which is text that goes public as surely as a diff (review of #557)."""
+    """(path, line number, text) for every line the change adds: the staged
+    diff; with `--message FILE` (the commit-msg hook), every line of a
+    commit message, which goes public as surely as a diff; with `--range
+    A..B` (the pre-push hook), every commit's own diff *and message*, one by
+    one — an endpoint diff would never read text added and then rewritten
+    inside the range, which is exactly a `--no-verify` WIP branch (review of
+    #557)."""
     if args and args[0] == "--message":
         with open(args[1], errors="replace") as fh:
             for num, line in enumerate(fh, 1):
@@ -155,27 +195,17 @@ def added_lines(args):
                     yield "commit message", num, line.rstrip("\n")
         return
     if args and args[0] == "--range":
-        diff = ["git", "diff", "--unified=0", "--no-color", args[1]]
-    else:
-        diff = ["git", "diff", "--cached", "--unified=0", "--no-color"]
-    r = subprocess.run(diff, capture_output=True, text=True, errors="replace")
-    if r.returncode != 0:
-        # A diff that could not be read is never "nothing added": refuse
-        # rather than pass unread (review of #557 — the silently-degrading
-        # guard).
-        print(f"check-private: `{' '.join(diff)}` failed; refusing rather than passing unread.")
-        print(r.stderr.strip())
-        sys.exit(2)
-    out = r.stdout
-    path, num = None, 0
-    for line in out.splitlines():
-        if line.startswith("+++ "):
-            path = line[6:] if line.startswith("+++ b/") else None
-        elif line.startswith("@@"):
-            num = int(re.search(r"\+(\d+)", line).group(1))
-        elif line.startswith("+") and path:
-            yield path, num, line[1:]
-            num += 1
+        commits = run_git(["git", "rev-list", "--reverse", args[1]]).split()
+        for c in commits:
+            short = c[:8]
+            parents = run_git(["git", "rev-list", "--parents", "-n", "1", c]).split()[1:]
+            base = parents[0] if parents else "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            yield from diff_lines(run_git(DIFF + [base, c]), f" in {short}")
+            message = run_git(["git", "log", "-n", "1", "--format=%B", c])
+            for num, line in enumerate(message.splitlines(), 1):
+                yield f"commit message of {short}", num, line
+        return
+    yield from diff_lines(run_git(DIFF + ["--cached"]))
 
 
 BASE = ["HEAD"]
