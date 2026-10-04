@@ -252,6 +252,30 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
 
+    def test_a_spoken_turn_that_calls_a_tool_keeps_its_reply_and_later_directed_turns_count(self):
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        first = "Book the piano tuner for the first Tuesday of next month."
+        reply = "The piano tuner is booked for the first Tuesday of next month."
+        later = "And tell the neighbours the tuner arrives in the afternoon please."
+        later_reply = "I will let the neighbours know the tuner comes in the afternoon."
+        def rec(role, *blocks):
+            return json.dumps({"record": "message", "role": role, "content": list(blocks)}) + "\n"
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990104T000000-3d4e5f6a.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "z", "kind": "web"}) + "\n")
+            f.write(rec("user", t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + first)))
+            f.write(rec("assistant", {"type": "tool_use", "id": "t1", "name": "cal", "input": {}}))
+            f.write(rec("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}))
+            f.write(rec("assistant", t(reply)))
+            f.write(rec("user", t(later)))  # a later spoken turn: no block
+            f.write(rec("assistant", t(later_reply)))
+            f.write(json.dumps({"record": "spoken_direction", "turn": "x", "sentence": later_reply}) + "\n")
+        for text in (reply, later, later_reply):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, 1, text)
+
     def test_the_guard_excuses_its_own_file_in_a_push(self):
         base = git(self.repo, "rev-parse", "HEAD").strip()
         os.makedirs(os.path.join(self.repo, "scripts"))
