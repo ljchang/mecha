@@ -149,8 +149,9 @@ Verified against `7663b9a8`.
   (`OPENS_ANYWAY`), but has no tab of its own.
 
 **2026-10-03 — persona calls: what is open (mecha-1e).** #531, #532, #538
-and #541 are in HISTORY under 2026-10-03, all live with mecha-69's
-`6816c2bd` (23:51Z). The analysis behind them read two Stella calls
+and #541 are in HISTORY under 2026-10-03, all live, by two routes: #531 in
+the shared checkout (adapter restarted 16:31:27Z), and #532, #538 and #541
+in the `mecha` binary, latest mecha-69's `6816c2bd` (23:51Z). The analysis behind them read two Stella calls
 (sessions `20261003T045915-ec7e12cb` and `20261003T171429-16623e41`).
 
 - **Read the first call after the 23:51Z install.** Three numbers say
