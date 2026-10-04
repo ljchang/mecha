@@ -118,15 +118,19 @@ fn status(m: &mecha_core::sidecar::Machinery) -> Result<String> {
         out.push_str("mecha's engines: none installed\n");
     } else {
         let current = std::fs::read_link(mecha_core::engine::current(&m.mecha_home)).ok();
-        for b in &builds {
-            let here = current.as_deref() == Some(std::path::Path::new(&b.tag));
-            out.push_str(&format!(
-                "mecha's engine: {} ({}){}\n",
-                b.tag,
-                &b.commit[..b.commit.len().min(9)],
-                if here { " — current" } else { "" }
-            ));
-        }
+        let list: Vec<String> = builds
+            .iter()
+            .map(|b| {
+                let here = current.as_deref() == Some(std::path::Path::new(&b.tag));
+                format!(
+                    "{} ({}){}",
+                    b.tag,
+                    &b.commit[..b.commit.len().min(9)],
+                    if here { " — current" } else { "" }
+                )
+            })
+            .collect();
+        out.push_str(&format!("mecha's engines: {}\n", list.join(", ")));
     }
     match gate::read_ledger(&m.mecha_home) {
         Ok(ledger) => {
@@ -185,9 +189,11 @@ fn render(row: &LedgerRow) -> String {
         ));
         match &leg.bench {
             Some(b) => out.push_str(&format!(
-                "  generation {:.1} tok/s, prefill {:.0} tok/s (median of {})\n",
+                "  generation {:.1} tok/s (runs within {:.0} %), prefill {:.0} tok/s (within {:.0} %), median of {}\n",
                 b.generation_tps.median(),
+                b.generation_tps.spread() * 100.0,
                 b.prefill_tps.median(),
+                b.prefill_tps.spread() * 100.0,
                 b.generation_tps.runs.len()
             )),
             None => out.push_str("  chat model not measured\n"),
@@ -240,9 +246,15 @@ async fn run_adopt(
         println!("Nothing was changed.");
         return Ok(());
     }
-    let row = gate::adopt(m, base, model, force, &mut |s| println!("  {s}"))
-        .await
-        .context("adopting the engine")?;
+    let servers = gate::Servers::read()?;
+    // The holds under this machinery's home, the one the manifest, the
+    // ledger and the managed engine are under.
+    let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
+    let row = gate::adopt(m, &servers, &holds, base, model, force, &mut |s| {
+        println!("  {s}")
+    })
+    .await
+    .context("adopting the engine")?;
     print!("\n{}", render(&row));
     if let Outcome::Partial { .. } = row.outcome {
         bail!(
@@ -289,7 +301,7 @@ async fn run_rollback(
     };
     // A rollback waits for runs, as any switch does; `--now` asks them to
     // stop (hold.rs's ruling, which the measurement alone departs from).
-    let holds = mecha_core::hold::Holds::open_default()?;
+    let holds = mecha_core::hold::Holds::new(mecha_core::hold::dir_under(&m.mecha_home));
     let switching =
         match holds.begin_switch(&base, Some("llama.cpp (mecha's)"), "llama.cpp (provided)")? {
             Ok(s) => s,
