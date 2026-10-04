@@ -1164,7 +1164,7 @@ number was wrong:
 | 0.0124 | `''` | silence |
 | 0.0141 | "The garden." | a real turn |
 | 0.0201 | "What's the weather like today?" | a real turn |
-| **0.0257** | "The library opens at nine tomorrow morning." | **echo** |
+| **0.0257** | "The museum pass costs one hundred ninety nine dollars." | **echo** |
 | 0.0311 | "Yeah." | a real turn |
 | 0.0457–0.0774 | | real turns |
 
@@ -1196,8 +1196,8 @@ table above.
 both look like bugs and only one is:
 
 - **TTS expands what the filter compares against.** `note_bot_speech` records
-  the text *submitted* (a price in digits); the microphone hears the text
-  *spoken* (the price in words). Five of nine words exist in no
+  the text *submitted* ("costs $199"); the microphone hears the text *spoken*
+  ("costs one hundred ninety nine dollars"). Five of nine words exist in no
   form in the window, so the filter scored it 4 matched of 9 and correctly
   declined. Closing it means reimplementing a TTS front-end's number, currency
   and abbreviation expansion. **It is not the worker's alone** — the

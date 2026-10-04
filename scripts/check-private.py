@@ -89,6 +89,17 @@ def spoken(o):
             yield from spoken(v)
 
 
+def read_journal():
+    """The voice worker's journal lines that carried words, or nothing."""
+    try:
+        return subprocess.run(
+            ["journalctl", "--user", "-u", "mecha-voice-worker", "--no-pager", "-o", "cat",
+             "--grep", "Generating TTS|Transcription:"],
+            capture_output=True, text=True, errors="replace", timeout=60).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
 def corpus():
     """(shingles, short phrases, session ids, persona names) from ~/.mecha."""
     said = []
@@ -113,13 +124,12 @@ def corpus():
                     said.extend(spoken(json.loads(line)))
                 except ValueError:
                     continue
-    try:
-        journal = subprocess.run(
-            ["journalctl", "--user", "-u", "mecha-voice-worker", "--no-pager", "-o", "cat",
-             "--grep", "Generating TTS|Transcription:"],
-            capture_output=True, text=True, errors="replace", timeout=60).stdout
-    except (OSError, subprocess.TimeoutExpired):
+    # The worker journal is this machine's; a test of the check itself sets
+    # CHECK_PRIVATE_JOURNAL=0 and reads only the store it built.
+    if os.environ.get("CHECK_PRIVATE_JOURNAL", "1") == "0":
         journal = ""
+    else:
+        journal = read_journal()
     for line in journal.splitlines():
         m = re.search(r"(?:Generating TTS|Transcription:) \[(.*)\]", line)
         if m:
@@ -139,7 +149,15 @@ def added_lines(args):
         diff = ["git", "diff", "--unified=0", "--no-color", args[1]]
     else:
         diff = ["git", "diff", "--cached", "--unified=0", "--no-color"]
-    out = subprocess.run(diff, capture_output=True, text=True, errors="replace").stdout
+    r = subprocess.run(diff, capture_output=True, text=True, errors="replace")
+    if r.returncode != 0:
+        # A diff that could not be read is never "nothing added": refuse
+        # rather than pass unread (review of #557 — the silently-degrading
+        # guard).
+        print(f"check-private: `{' '.join(diff)}` failed; refusing rather than passing unread.")
+        print(r.stderr.strip())
+        sys.exit(2)
+    out = r.stdout
     path, num = None, 0
     for line in out.splitlines():
         if line.startswith("+++ "):
