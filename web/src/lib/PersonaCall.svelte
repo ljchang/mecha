@@ -137,6 +137,9 @@
         linked = live;
         if (!live && open) {
           count();
+          // Never a picture over a dropped line: the call's own state, and
+          // its redial, must be what the owner sees (review of #552).
+          viewing = null;
           callState = { name: 'idle', label: 'line dropped — tap to call again' };
         }
       },
@@ -337,6 +340,8 @@
           {#if onedit}<button class="viewbtn" onclick={edit}>Edit</button>{/if}
           {#if ondownload}<button class="viewbtn" onclick={download}>Download</button>{/if}
           <button class="viewbtn" onclick={() => (viewing = null)}>Back to the call</button>
+          <!-- The hang-up stays one tap away while a picture is open. -->
+          <button class="viewbtn viewend" onclick={end}>End call</button>
         </div>
       </div>
     {/if}
@@ -392,6 +397,10 @@
      button, and an unboxed one leaves the accessibility tree (review of #552). */
   .shotbtn {
     display: flex;
+    /* Stretched, so the picture's max-height resolves against the slot as it
+       did under the old link: a tall portrait stays inside the stage
+       (measured headless, review of #552). */
+    align-self: stretch;
     min-width: 0;
     min-height: 0;
     max-width: 100%;
@@ -440,6 +449,10 @@
     background: transparent;
     color: var(--text);
     font: inherit;
+  }
+  .viewend {
+    border-color: var(--hazard);
+    color: var(--hazard);
   }
   .shot img {
     max-width: 100%;
