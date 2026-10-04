@@ -7082,7 +7082,7 @@ mod tests {
         );
         assert!(is_harness_voice(&block));
         assert!(
-            !is_harness_voice("Okay, but today is Monday, September 14th."),
+            !is_harness_voice("Okay, but today is Tuesday, March 3rd."),
             "the owner's own correction is not a harness voice"
         );
     }

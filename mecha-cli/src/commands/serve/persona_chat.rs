@@ -5804,7 +5804,7 @@ mod tests {
                     text: text.into(),
                     kind: Kind::Stated,
                     source: Source {
-                        chat: "20260930T024959-100ea26c".into(),
+                        chat: "20260930T024959-1a2b3c4d".into(),
                         from: 0,
                         to: 1,
                     },

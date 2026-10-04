@@ -371,7 +371,7 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
 // 2026-10-01).
 {
   const { ownWords, toolRun } = await import('../src/lib/persona.js');
-  assert.equal(ownWords('(What I want from this conversation: Review the paper)\n\nGive me a summary'), 'Give me a summary');
+  assert.equal(ownWords('(What I want from this conversation: Plan the trip)\n\nGive me a summary'), 'Give me a summary');
   assert.equal(ownWords('No goal here'), 'No goal here');
   assert.equal(ownWords('(What I want from this conversation: x) but on one line'), '(What I want from this conversation: x) but on one line');
   const t = (name, extra = {}) => ({ kind: 'tool', name, is_error: false, ...extra });

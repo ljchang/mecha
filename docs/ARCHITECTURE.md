@@ -1342,7 +1342,7 @@ module.
       episode's own span, else the start of the source chat
       (`Source::chat_began`, read from the session id), and the write night
       only last; `local_day` renders it in `[agent] timezone`. Dated by the
-      write, the first real night (2026-10-02) showed a six-day fever from
+      write, the first real night (2026-10-02) showed a days-old state from
       30 September as that morning's news, and a UTC day put most of the
       owner's late-evening chats a day ahead. Episode order and per-turn
       recency use the same date.

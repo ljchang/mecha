@@ -4672,7 +4672,7 @@ mod wire_tests {
         // name and when it is — not an argument map in alphabetical order,
         // where an event reads end before start.
         let event = serde_json::json!({
-            "title": "B4 brown bag",
+            "title": "Team sync",
             "start_time": "2026-08-28T12:00:00-04:00",
             "end_time": "2026-08-28T13:30:00-04:00",
             "account": "campus",

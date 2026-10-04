@@ -84,7 +84,7 @@ class FakeSTT:
 
     _bot_speaking = False
 
-    def __init__(self, text="lab meeting at noon"):
+    def __init__(self, text="team lunch at noon"):
         stt = self
         stt.requests = []
 
@@ -547,7 +547,7 @@ class Injection(unittest.TestCase):
 
     def test_a_late_span_is_one_turn_put_before_the_speech_that_ended_it(self):
         async def scenario():
-            inp, stt = FakeInput(), FakeSTT("call the dentist tomorrow")
+            inp, stt = FakeInput(), FakeSTT("water the plants tomorrow")
             link = LinkWatch()
             up = UplinkAudio(inp, link, stt)
             await up.on_start({"tz_offset_min": -240})
@@ -567,7 +567,7 @@ class Injection(unittest.TestCase):
         self.assertEqual(len(inp.frames), 1)
         text = inp.frames[0].messages[0]["content"]
         self.assertTrue(text.startswith("[delivered late — said at 08:22 while the connection was down] "), text)
-        self.assertTrue(text.endswith("call the dentist tomorrow"))
+        self.assertTrue(text.endswith("water the plants tomorrow"))
         self.assertTrue(inp.frames[0].run_llm, "a late turn runs the model at once; a transcript-only turn waits 15 s")
         self.assertEqual(inp.order[0], "LLMMessagesAppendFrame", "the late turn must precede the live audio")
         self.assertGreater(len(inp.audio), 0)

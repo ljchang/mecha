@@ -27,34 +27,33 @@ journal is the instrument here rather than serve's: `mecha serve` runs at
 the default `warn` filter and every line the confirmation path writes is
 `info`, so serve's journal for this window is `-- No entries --`.
 
+What was said is not reproduced here (the owner's ruling, 2026-10-04: no
+call's words in the repository). The shape, with the harness's own fixed
+lines, which come from code, quoted:
+
 ```
-19:36:08  heard   "Can you add a recurring meeting from twelve to two for my lab meetings on Wednesdays."
-19:36:32  said    "Let me check your calendars first."
-19:36:37  said    "Let me create the first lab meeting for this Wednesday, September 16th."
-19:36:38  said    "That's drafted."                                    ← item 20260913T193636 (lab calendar)
-19:36:47  heard   "Um yeah, I don't want that one. I want my [owner's name] Gmail calendar."
-19:36:55  said    "Got it — let me scrap that draft and put it on your Gmail calendar instead."
-19:36:57  said    "That's drafted on your Gmail calendar for this Wednesday from noon to two."  ← item 20260913T193654
-19:37:02  said    "Want me to create more individual Wednesdays too?"
-19:37:03  offer   "Here it is, in full. Title: Lab Meeting. Start time: Wednesday September 16 at 12 PM.
-                   End time: Wednesday September 16 at 2 PM. Account: personal.
-                   Defaults: all day false, calendar id primary.
-                   I had read outside content when I wrote this, so listen to the addressing.
-                   Say yes to send it, or later to leave it in your outbox.
-                   That one is from your personal account."
-19:37:44  heard   "Go ahead and send it."          (rms 0.0357, over_speaker=True)
-19:37:45  said    "I don't have the ability to release drafts — that's your call.
-                   You'll need to review and send it through `mecha outbox`."
-19:37:51  heard   "I agree."
-19:37:53  said    "Go ahead and release it whenever you're ready through your outbox."
-19:37:59  heard   "Why can't I release it through you?"
-19:38:02  said    "I can stage drafts, but the release step is intentionally yours — it's a
-                   safety gate so nothing goes out without your review. I don't have a tool to bypass that."
-19:38:17  heard   "But you did, you could do inline approvals."
-19:38:22  said    "You're right, I should have been upfront about that. I genuinely can't release
-                   drafts — I don't have that tool. I can only stage them for you to review."
-19:40:33  outbox  20260913T193654 released from a screen — 2 min 49 s after the spoken yes.
-          outbox  20260913T193636 (the lab-calendar draft the model "scrapped") is still pending.
+19:36:08  heard   the owner asks for a recurring calendar event
+19:36:32  said    the model says it will check the calendars
+19:36:37  said    it drafts the first occurrence
+19:36:38  said    "That's drafted."                                ← item A (one account)
+19:36:47  heard   the owner asks for a different account instead
+19:36:55  said    the model says it will discard the first draft and redraft
+19:36:57  said    "That's drafted." on the other account           ← item B
+19:37:02  said    the model ends on a question of its own
+19:37:03  offer   the full readback of item B: title, start, end, account, the
+                   defaults clause, the taint line, "Say yes to send it, or
+                   later to leave it in your outbox.", and the account tail
+19:37:44  heard   a spoken yes                    (rms 0.0357, over_speaker=True)
+19:37:45  said    the model says it cannot release drafts and points at
+                   `mecha outbox`
+19:37:51  heard   a short agreement
+19:37:53  said    the model repeats that release is the owner's step
+19:37:59  heard   the owner asks why it cannot release through the call
+19:38:02  said    the model explains the release step is a safety gate
+19:38:17  heard   the owner points out inline approvals exist
+19:38:22  said    the model apologises and repeats that it has no release tool
+19:40:33  outbox  item B released from a screen — 2 min 49 s after the spoken yes.
+          outbox  item A (the draft the model said it would discard) is still pending.
 ```
 
 Three facts to hold onto:
@@ -65,13 +64,13 @@ Three facts to hold onto:
   now, once, and the first real answer to it fell through. (That journal
   probe is retired by #547, which keeps words out of the worker's journal;
   serve's `voice: confirmation offered` line is the evidence since.)
-- **The harness never saw "Go ahead and send it." as an answer.** It reached
+- **The harness never saw the spoken yes as an answer.** It reached
   the model as an ordinary turn, and the model — which has no release tool,
   by design — said what its tool result had told it: *review it with `mecha
   outbox`*. Every sentence after that is the model defending a rule it has
   been told and cannot see around.
 - **The listener waited about forty-eight seconds to answer.** Speech ran
-  continuously from "Got it — let me scrap that draft" (19:36:55) until the
+  continuously from the model's redraft announcement (19:36:55) until the
   `over_speaker=True` flag on the owner's answer at 19:37:44 — the model's
   reply, its own trailing question, and then the readback with its defaults
   clause, taint line, menu and identity tail.
@@ -139,16 +138,16 @@ no release tool; the deliberate absence of `outbox_approve` from the model's
 surface (`mecha review`'s oldest rule) became, from the listener's side, the
 assistant refusing.
 
-The second untruth is the model's, and it is structural too: *"let me scrap
-that draft"* — it cannot. It has no way to withdraw a draft its own run
-staged, so the lab-calendar item is still pending, offered to nobody, with
-the model having announced it gone.
+The second untruth is the model's, and it is structural too: it announced
+that it would discard the first draft — it cannot. It has no way to withdraw
+a draft its own run staged, so item A is still pending, offered to nobody,
+with the model having announced it gone.
 
 ### 2.4 A fourth thing, which did not bite today but will
 
 The offer is spoken *after* the model's reply, in the same breath. Today
-the reply ended with the model's own question — *"Want me to create more
-individual Wednesdays too?"* — and the harness's question followed it. A
+the reply ended with the model's own question, and the harness's question
+followed it. A
 bare "yes" there is a yes to whichever the listener was answering, and the
 harness takes it as a send. The D10 block should forbid a trailing question
 on a turn that staged something; it does not yet.
@@ -245,7 +244,7 @@ When `react` returns `PassToModel`, remember the head id under the
 `confirm_key` as *carried* — not armed. The words go to the model as now.
 When that model turn finishes, `offer_for_turn` prepends the carried draft
 if it is still pending and nothing has changed it: *"Still waiting on the
-Lab Meeting draft. Say yes to send it, or later to leave it in your
+<title> draft. Say yes to send it, or later to leave it in your
 outbox."* — a full re-ask through `say`, seeded into the echo window like
 any offer, armed only if it reached the socket. Carried once; a second
 `PassToModel` on the same draft says *"It's in your outbox"* and stops.
@@ -270,8 +269,8 @@ Two edits, both cache-safe:
   core stays surface-blind — it prints a string a caller handed it — and
   every other surface keeps today's wording.
 
-Both would have replaced 19:37:45's *"You'll need to review and send it
-through `mecha outbox`"* with the sentence the owner needed.
+Both would have replaced 19:37:45's pointer at `mecha outbox` with the
+sentence the owner needed.
 
 ### 4.4 Supersession, so a re-drafted draft retires the one it replaces
 

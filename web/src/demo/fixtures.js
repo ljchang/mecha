@@ -1762,7 +1762,7 @@ export const personaAuthoring = {
 // What Mara remembers, for the memory page — the fictional cast only.
 export const personaMemory = {
   episodes: [
-    { uid: 'e1a2b3c4d5e6f708', day: '2026-09-29', said_at: '2026-09-30T02:49:59Z', summary: 'Worked through the reviewer\'s second comment and agreed to rerun the model without site 4.', open_threads: ['the revision deadline'], chat: '20260930T024959-100ea26c', origin: 'model_clean', status: 'active', pinned: false },
+    { uid: 'e1a2b3c4d5e6f708', day: '2026-09-29', said_at: '2026-09-30T02:49:59Z', summary: 'Worked through the reviewer\'s second comment and agreed to rerun the model without site 4.', open_threads: ['the revision deadline'], chat: '20260930T024959-1a2b3c4d', origin: 'model_clean', status: 'active', pinned: false },
   ],
   facts: {
     persona: [

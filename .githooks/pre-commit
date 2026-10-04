@@ -41,3 +41,12 @@ if ! cargo fmt --all --check >/dev/null 2>&1; then
     echo "  Intentional (WIP branch)? Commit with --no-verify."
     exit 1
 fi
+
+# No persona chat or voice call words in this public repository (owner's
+# ruling, 2026-10-04). Compared against the conversations in ~/.mecha, never a
+# phrase list kept here; passes on a machine with none. `scripts/check-private.py`
+# says why. Not skippable by intent: a WIP commit is still a commit that can
+# be pushed, and the pre-push hook runs the same check over what leaves.
+if command -v python3 >/dev/null 2>&1 && [ -f scripts/check-private.py ]; then
+    python3 scripts/check-private.py --staged || exit 1
+fi

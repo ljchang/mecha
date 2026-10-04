@@ -228,8 +228,8 @@ mod tests {
     fn a_closer_is_quoted_from_the_reply_as_the_model_sees_it() {
         // A reply cut off mid-sentence is trimmed (`PriorTails`), so the note
         // never quotes a dangling "I" back as a line to avoid.
-        let n = note(&[said("You love it, don't you? \n\nI")]).expect("a note");
-        assert!(n.contains("(\"You love it, don't you?\")"), "{n}");
+        let n = note(&[said("You liked that one, didn't you? \n\nI")]).expect("a note");
+        assert!(n.contains("(\"You liked that one, didn't you?\")"), "{n}");
     }
 
     #[test]

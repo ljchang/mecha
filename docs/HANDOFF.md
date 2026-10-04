@@ -194,7 +194,7 @@ in the `mecha` binary, latest mecha-69's `6816c2bd` (23:51Z). The analysis behin
   (router log, 05:32Z), so the per-turn prefix is only about half cached.
   The cause has not been run down.
 - **Minors from review:**
-  - #538: a complete reply with no final mark ("…What are you doing now")
+  - #538: a complete reply with no final mark (a question with no question mark)
     loses its last clause on the wire. None occurred in the chat that
     measured the fix.
   - #538: no test composes `PriorThinking` and `PriorTails` through
@@ -4823,7 +4823,7 @@ neither is restated here.
   a missing `voice-uplink-transform.js` (a 404) falls back to RTP —
   the one branch nothing here can reach.
 - **Seen on the 2026-09-14 morning call, unverified:** the morning
-  briefing opened *"Today is Sunday, September 13th"* on Monday the 14th
+  briefing opened with Sunday's date on Monday the 14th
   and the owner corrected it. Whether the brief was Sunday's file read
   back or the model's own clock, nobody has looked.
 

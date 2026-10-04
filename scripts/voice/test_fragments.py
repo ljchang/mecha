@@ -30,8 +30,8 @@ class WhatWaits(unittest.TestCase):
             self.assertTrue(holds(piece), piece)
 
     def test_a_whole_sentence_is_spoken(self):
-        for piece in ("Mm.", "Yes!", "I'm right here.", "(laugh) That is so funny.",
-                      "Are you coming?", "I met him (and his sister) at the lake."):
+        for piece in ("Mm.", "Yes!", "The kettle is on.", "(laugh) That is so funny.",
+                      "Is the train late?", "I met him (and his sister) at the lake."):
             self.assertFalse(holds(piece), piece)
 
     def test_a_long_run_is_spoken_anyway(self):
@@ -56,10 +56,10 @@ class TheJoin(unittest.TestCase):
     def test_a_trailing_off_run_is_one_phrase_not_forty(self):
         # The shape of the 2026-10-03 reply that came out as 84 pieces.
         pieces = ["Hmm..", ".", "let me see..", ".", "give me a second..", ".",
-                  "I'm right here.", "Okay..", ".", "so..", ".", "and then..", ".", "Good."]
+                  "The kettle is on.", "Okay..", ".", "so..", ".", "and then..", ".", "Good."]
         out = run(pieces)
         self.assertEqual(out, [
-            "Hmm... let me see... give me a second... I'm right here.",
+            "Hmm... let me see... give me a second... The kettle is on.",
             "Okay... so... and then... Good.",
         ])
         self.assertFalse(any(s.strip(" .…") == "" for s in out), "a lone dot was sent")
@@ -84,7 +84,7 @@ class TheJoin(unittest.TestCase):
         self.assertEqual(j.flush("."), "Hmm...")
 
     def test_ordinary_sentences_pass_through_unchanged(self):
-        pieces = ["I'm feeling pretty good.", "How was your day?", "Tell me everything."]
+        pieces = ["The bus was on time.", "Did the parcel come?", "Leave it by the door."]
         self.assertEqual(run(pieces), pieces)
 
     def test_clear_drops_what_was_held(self):
