@@ -37,6 +37,31 @@ export function listenSession(type, micLive) {
 }
 
 /**
+ * Whether the audio clock has stopped while there is speech to play: the
+ * one witness that a reply is not being heard, since a context that will
+ * not run raises nothing (review of #555). Fed the clock and the wall
+ * clock each time the player looks; frozen once the audio clock has not
+ * moved for `limit` ms of wall time with audio queued, on a visible page —
+ * a hidden one may be suspended by the phone on purpose, and wakes again.
+ */
+export class Stall {
+  constructor(limit = 3000) {
+    this.limit = limit;
+    this.audio = null;
+    this.since = 0;
+  }
+
+  frozen(audioNow, wallNow, queued, visible) {
+    if (audioNow !== this.audio || !queued || !visible) {
+      this.audio = audioNow;
+      this.since = wallNow;
+      return false;
+    }
+    return wallNow - this.since >= this.limit;
+  }
+}
+
+/**
  * The audio clock's plan for one reply: each run of samples starts where
  * the last ends, so the pieces of a reply play as one stream. When the
  * voice falls behind the listener — nothing queued, or the next run late —

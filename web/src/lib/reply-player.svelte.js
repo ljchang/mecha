@@ -12,7 +12,7 @@
 // the context is woken in the tap, and every piece plays through it.
 import { micOpen } from '../../../scripts/voice/voice-core.js';
 import { apiFetch as fetch } from './api.js';
-import { listenSession, pcmSamples, Schedule } from './pcm.js';
+import { listenSession, pcmSamples, Schedule, Stall } from './pcm.js';
 import { replyKey, speakable, speechPieces } from './speech.js';
 
 // Which reply is playing, by the id its ChatProse gave it; and why one could
@@ -27,6 +27,11 @@ const MAX_AHEAD = 20;
 // not waiting: a network chunk can be a few milliseconds, and a node per
 // chunk is work for nothing.
 const MIN_RUN = 0.1;
+// The rate the voice worker streams at (`PCM_RATE`), and the context's own:
+// a run at the context's rate is played as it is, where one at another rate
+// is resampled node by node with no state carried across a join (review of
+// #555; Chromium measured clean at 44.1 kHz either way, other engines not).
+const RATE = 24000;
 
 let ctx = null;
 // Whether this player set the phone's audio session, and so must hand it
@@ -40,7 +45,12 @@ const sources = new Set();
 function context() {
   if (!ctx) {
     const Ctx = globalThis.AudioContext ?? globalThis.webkitAudioContext;
-    ctx = new Ctx();
+    try {
+      ctx = new Ctx({ sampleRate: RATE });
+    } catch {
+      // An engine that takes no rate plays at its own, resampling each run.
+      ctx = new Ctx();
+    }
   }
   return ctx;
 }
@@ -123,19 +133,31 @@ export async function playReply(
   if (player.id === id && player.state !== 'error') return stopPlaying();
   stopPlaying();
   const mine = gen;
-  // Inside the tap, before any await: this is what lets the pieces play.
-  const c = context();
-  unlock(c);
   const said = speakable(text);
   const pieces = speechPieces(said);
   const reply = replyKey(said);
+  // Nothing to say touches nothing: a phone's session set to playback here
+  // would have no stop to hand it back (review of #555).
   if (!pieces.length) return;
+  // Inside the tap, before any await: this is what lets the pieces play.
+  const c = context();
+  unlock(c);
   player.id = id;
   player.state = 'loading';
   player.error = null;
   const controller = new AbortController();
   abort = controller;
   const clock = new Schedule();
+  // A context that will not run raises nothing; its clock standing still
+  // with speech queued is the one sign, and it is said rather than shown as
+  // "Stop" over silence forever (review of #555).
+  const stall = new Stall();
+  const check = () => {
+    const visible = typeof document === 'undefined' || document.visibilityState === 'visible';
+    if (stall.frozen(c.currentTime, performance.now(), clock.ahead(c.currentTime) > 0, visible)) {
+      throw new Error('the audio would not play — tap Listen to try again');
+    }
+  };
 
   const play = (samples, rate) => {
     if (!samples.length || mine !== gen) return;
@@ -210,6 +232,7 @@ export async function playReply(
       // A run goes once it is long enough to be worth a buffer — or at once
       // when the listener would otherwise be waiting on it.
       if (heldLen >= min || clock.ahead(c.currentTime) < MIN_RUN) flush();
+      check();
     }
     flush();
   };
@@ -219,6 +242,7 @@ export async function playReply(
       while (clock.ahead(c.currentTime) > MAX_AHEAD) {
         await nap(500);
         if (mine !== gen) return;
+        check();
       }
       await piece(pieces[i], i);
       if (mine !== gen) return;
@@ -227,6 +251,7 @@ export async function playReply(
     while (clock.ahead(c.currentTime) > 0) {
       await nap(Math.min(1000, clock.ahead(c.currentTime) * 1000 + 50));
       if (mine !== gen) return;
+      check();
     }
     stopPlaying();
   } catch (e) {
