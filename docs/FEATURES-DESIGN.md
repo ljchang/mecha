@@ -52,9 +52,12 @@
 > terminal). **7b is split in three** (§10.6): 7b-1 — `engine.rs`, the
 > pinned release installed side by side behind a `current` link, the asset
 > chosen from the driver, offered by `features enable` where the engine runs
-> something — is built; 7b-2 (the build fallback) and 7b-3 (`setup engine
-> --upgrade|--rollback|--adopt`), 7c–7f and step 8 are unbuilt (step 7
-> redesigned in §10). The
+> something — is built; so is 7b-3a: `engine_gate.rs`, the measurement
+> gate (each unit's own launcher on a private port, both engines in turn,
+> under a held switch that declines rather than waits), its ledger, and
+> `mecha setup engine` with `--adopt` and `--rollback`. 7b-2 (the build
+> fallback), 7b-3b (`--upgrade` and an upgrade's rollback), 7c–7f and step
+> 8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1555,7 +1558,17 @@ Step 7 becomes these, each a PR that leaves every feature working:
   directories, `--upgrade` with its measurement, `--rollback`, and `--adopt` for a provided engine.
   Built in three PRs: **7b-1** the pinned release, side by side, offered by
   `features enable`; **7b-2** the build fallback; **7b-3** `setup engine`'s
-  `--upgrade`, `--rollback` and `--adopt`, with the gate and its ledger.
+  `--upgrade`, `--rollback` and `--adopt`, with the gate and its ledger —
+  itself two: **7b-3a** the gate, the ledger, `--adopt` and its
+  `--rollback`; **7b-3b** `--upgrade` (F10) and an upgrade's rollback. The
+  gate measures each server **as its unit runs it**: the unit's own
+  launcher and environment (read from `systemctl --user show`), with
+  `LLAMA_SERVER` and the launcher's port variable overridden, so the
+  measurement carries the router's real presets and flags without mecha
+  re-deriving them. Measured on the GB10 (2026-10-04): the embeddings and
+  OCR legs pass on both this box's engine and `b11391`, the embedding
+  agreeing at cosine 1.000000; the router leg is the owner's first
+  `--adopt`, because it stops the live router.
 - **7c.** The router unit and chat model choice; the embeddings and OCR
   servers on demand from nothing.
 - **7d.** `uv` and the voice venv, Parakeet and the voice worker.
