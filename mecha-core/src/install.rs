@@ -208,7 +208,12 @@ pub fn layout_dir(mecha_home: &Path) -> PathBuf {
 /// packages) and the pinned model, then the check `scripts/layout/install.sh`
 /// runs — the model loads in that environment. Run again after an
 /// interruption, it carries on.
-pub async fn install_layout(m: &Machinery, hub: &Path, say: Say<'_>) -> Result<()> {
+pub async fn install_layout(
+    m: &Machinery,
+    machine: &recommend::Machine,
+    hub: &Path,
+    say: Say<'_>,
+) -> Result<()> {
     let id = "layout";
     let home = &m.mecha_home;
     let dir = layout_dir(home);
@@ -233,7 +238,10 @@ pub async fn install_layout(m: &Machinery, hub: &Path, say: Say<'_>) -> Result<(
         c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
             .env("UV_CACHE_DIR", dir.join(".uv-cache"))
             .env("UV_PYTHON_PREFERENCE", "only-managed")
-            .env("UV_NO_CONFIG", "1");
+            .env("UV_NO_CONFIG", "1")
+            // `only-managed` needs the download; an operator's `never` would
+            // turn the install into a confusing failure.
+            .env("UV_PYTHON_DOWNLOADS", "automatic");
     };
     if !python.exists() {
         say(&format!("building a Python {LAYOUT_PYTHON} environment"));
@@ -262,7 +270,7 @@ pub async fn install_layout(m: &Machinery, hub: &Path, say: Say<'_>) -> Result<(
         repo,
         revision,
         files,
-    }) = slot.rows.first().and_then(|r| r.sources.first())
+    }) = recommend::row_for(slot, machine).and_then(|(r, _)| r.sources.first())
     else {
         bail!("the layout slot pins no Hugging Face file");
     };
@@ -272,15 +280,15 @@ pub async fn install_layout(m: &Machinery, hub: &Path, say: Say<'_>) -> Result<(
         file.bytes as f64 / 1_048_576.0
     ));
     let snap = crate::fetch::fetch_hub_file(hub, repo, revision, file, &mut |_| {}).await?;
-    match std::fs::symlink_metadata(&link) {
-        Ok(_) => std::fs::remove_file(&link)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
+    // Swapped in one rename, so a run interrupted here leaves the old link
+    // or the new one, never none.
+    let tmp = dir.join("PP-DocLayoutV3.onnx.new");
+    let _ = std::fs::remove_file(&tmp);
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&snap, &link)?;
+    std::os::unix::fs::symlink(&snap, &tmp)?;
     #[cfg(not(unix))]
-    std::fs::copy(&snap, &link).map(|_| ())?;
+    std::fs::copy(&snap, &tmp).map(|_| ())?;
+    std::fs::rename(&tmp, &link)?;
 
     say("checking the model loads");
     let mut c = std::process::Command::new(&python);
@@ -310,9 +318,15 @@ fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
 }
 
 /// Install one sidecar by id — the installers built so far.
-pub async fn install(id: &str, m: &Machinery, hub: &Path, say: Say<'_>) -> Result<()> {
+pub async fn install(
+    id: &str,
+    m: &Machinery,
+    machine: &recommend::Machine,
+    hub: &Path,
+    say: Say<'_>,
+) -> Result<()> {
     match id {
-        "layout" => install_layout(m, hub, say).await,
+        "layout" => install_layout(m, machine, hub, say).await,
         other => bail!("mecha cannot install {other} yet"),
     }
 }
@@ -390,6 +404,11 @@ mod tests {
         }
     }
 
+    const GB10: recommend::Machine = recommend::Machine::Unified {
+        total_mb: 124_610,
+        gpu_unread: false,
+    };
+
     fn which_bwrap() -> bool {
         std::process::Command::new("bwrap")
             .arg("--version")
@@ -414,7 +433,7 @@ mod tests {
         };
         let hub = root.join("hub");
         let mut log = Vec::new();
-        install_layout(&m, &hub, &mut |s| log.push(s.to_string()))
+        install_layout(&m, &GB10, &hub, &mut |s| log.push(s.to_string()))
             .await
             .unwrap();
         let dir = layout_dir(&m.mecha_home);
@@ -453,7 +472,7 @@ mod tests {
             drop(child);
         }
         // Again: everything is there, and it still passes its check.
-        install_layout(&m, &hub, &mut |_| {}).await.unwrap();
+        install_layout(&m, &GB10, &hub, &mut |_| {}).await.unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 }
