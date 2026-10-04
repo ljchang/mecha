@@ -1613,6 +1613,57 @@ module.
       text.
     - The transcript keeps every reply as written or heard; `wire_bytes`
       subtracts what the trim cuts.
+  - **A persona is told what it keeps repeating** (`persona::variety`,
+    owner 2026-10-04). Each turn folds a note beside the owner's words, in
+    the harness's registered voice (`variety::is_note` in
+    `is_harness_voice`): the opening word two of its last three replies
+    share, if any, and its last three closing lines, read as the model is
+    shown them (`PriorTails`). Specific, not general: on seven replayed call
+    turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
+    and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
+    "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
+    - Only the newest note goes on the wire (`PriorNudges::Drop`, set in
+      `persona_agent` beside the other two views), wherever it sits: a turn
+      folded into an earlier message after a cancelled tool call can hold two.
+      Each note names what is repeating now, and kept, forty turns in
+      would be forty stale "don't end on X" lines, which is not the condition
+      it was measured in. The transcript keeps every note; `wire_bytes`
+      subtracts the dropped ones. **This is the first view that rewrites
+      a request already sent**, and the server re-reads from the dropped
+      note up to the first message that goes out altered anyway (thinking
+      stripped by `PriorThinking::Drop`, or a tail trimmed), judged against
+      the recorded history and the earlier views' output together
+      (`Agent::wire`). Ahead of a plain reply that is nothing. A turn that
+      called a tool keeps its thinking and, under the router's
+      `reasoning-preserve`, goes back byte-identical, so the note ahead of
+      one costs that round trip, once, on the turn after. **The owner's
+      ruling (2026-10-04): drop it when that re-read is within
+      `NUDGE_REREAD_BYTES` (8 KiB, ~2,000 tokens, ~1 s at the measured
+      ~1,800 tokens/s prefill), keep it ahead of a larger one.** Measured on
+      the last 12 persona chats: a quarter of turns call a tool, so keeping
+      every such note would carry ~10 stale ones in 40 turns, and re-reading
+      every trip costs 0.4 s at the median, ~3 s at p90, ~12 s at the worst.
+      The stretch ends at the next owner message, so a note's fate never
+      changes as the chat grows, since flipping it would itself re-read
+      everything after. The price is per note, not set by the oldest one
+      dropped: the slot matches each request against the previous one,
+      which lacked every note dropped before, so a request diverges only at
+      the note that just went stale (tested turn by turn in
+      `only_the_turn_being_answered_keeps_its_one_turn_nudge`). **The
+      precondition is a llama-server slot** that holds what it generated; a
+      provider whose cache is keyed on the previous request's bytes has no
+      free divergence point after a reply. A later view that rewrites
+      earlier text pays from its own position on, unless it makes the same
+      check.
+    - A turn that called a tool is not a reply: its text is a preamble
+      ("Let me look that up."), the turns `PriorTails` leaves alone too. A
+      reply with no whole sentence ("Mmm, I was just", barged in on) has no
+      closer: quoting it back would show the model a mid-sentence ending.
+    - A closer is quoted on one line with its own double quotes and
+      parentheses removed, so a reply's words can close neither the quote
+      nor the note's parenthetical and read on as a harness clause. This is
+      the first registered harness voice whose body carries model-written
+      text, and a reply can carry what a tool read back.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,

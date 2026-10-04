@@ -2134,7 +2134,10 @@ pub fn persona_agent(
     .with_prior_thinking(mecha_core::message::PriorThinking::Drop)
     // Nor from earlier replies cut off mid-sentence, which it otherwise
     // learns to write: "…\n\nI", spoken as a dangling word.
-    .with_prior_tails(mecha_core::message::PriorTails::Trim);
+    .with_prior_tails(mecha_core::message::PriorTails::Trim)
+    // And the harness's note on what it repeats, from this turn only: kept,
+    // the earlier turns' notes would stack up stale (`persona::variety`).
+    .with_prior_nudges(mecha_core::message::PriorNudges::Drop);
     Ok((agent, tools.refused))
 }
 
