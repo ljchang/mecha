@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha setup engine` says which llama.cpp each server runs, and `--adopt`
+  moves them onto mecha's — only if it measures no slower.** It runs each
+  server's own launcher on a private port with the old engine and then the
+  new, loading the model you have loaded, measuring generation and prefill and
+  checking chat, embeddings and OCR, and records the result in
+  `~/.mecha/sidecars/llama/ledger.jsonl`. The router is stopped while it
+  measures, so it asks first and declines if anything is running.
+  `--rollback` puts the servers back on the llama.cpp you installed, which
+  `--adopt` leaves in place.
 - **`mecha features enable` installs the llama.cpp engine.** On a machine
   without one, enabling a feature that runs something on it offers the
   official release for this machine — CUDA by the driver's version, Metal on

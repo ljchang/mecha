@@ -54,11 +54,49 @@ pub struct Args {
     /// turns any one on later, and `--undecline` asks again.
     #[arg(long, conflicts_with_all = ["json", "write", "undecline"])]
     pub minimal: bool,
+
+    /// With `engine`: measure the shipped llama.cpp against the engine the
+    /// servers run, and move them onto it if it is no slower. At a terminal.
+    #[arg(long, conflicts_with_all = ["json", "write", "undecline", "minimal", "rollback"])]
+    pub adopt: bool,
+
+    /// With `engine` and `--adopt`: move the servers even if the new engine
+    /// measures slower, or fails a check the old one passes.
+    #[arg(long, requires = "adopt")]
+    pub force: bool,
+
+    /// With `engine`: move an adopted machine back onto the engine it ran
+    /// before. Waits for running work, as any switch does. At a terminal.
+    #[arg(long, conflicts_with_all = ["json", "write", "undecline", "minimal"])]
+    pub rollback: bool,
+
+    /// With `engine --rollback`: ask running work to stop rather than wait.
+    #[arg(long, requires = "rollback")]
+    pub now: bool,
 }
 
 pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     let cfg = mecha_core::config::Config::load_global()
         .context("reading the global config — run `mecha config init` first")?;
+    // `engine` is a reserved noun here, never a feature id (§10.3): it owns
+    // the engine's flags and needs no provider answering first.
+    if args.feature.as_deref() == Some("engine") {
+        return super::setup_engine::run(
+            &cfg,
+            args.json,
+            args.adopt,
+            args.rollback,
+            args.now,
+            args.force,
+        )
+        .await;
+    }
+    // A body check, against this struct's own rule, because clap cannot say
+    // "only with the feature value `engine`" — and it refuses loudly.
+    anyhow::ensure!(
+        !args.adopt && !args.rollback,
+        "--adopt and --rollback go with `mecha setup engine`"
+    );
     let (name, pcfg) = cfg.provider(global.provider.as_deref())?;
     let home = mecha_core::work::mecha_home()?;
 

@@ -1486,6 +1486,46 @@ is a different verb, and a pair used to resolve by whichever branch came first �
 `--json --write` printed a plan, exited 1 and wrote nothing. The parser refuses
 the combination instead.
 
+#### `mecha setup engine`
+
+```
+mecha setup engine [--adopt [--force] | --rollback [--now]]
+```
+
+`engine` is a word `setup` reserves, not a feature: on its own it says which
+llama.cpp each server runs — the router, the embeddings server and the OCR
+server — mecha's own builds, and the last measurement.
+
+**`--adopt`** moves a machine whose servers run a llama.cpp you installed
+yourself onto mecha's pinned one, **only if it measures no slower.** It installs
+the pinned release beside yours, stops the router, and runs each server's own
+launcher on a private port — once on the engine it runs today, once on the new
+one — loading the model you have loaded, measuring generation and prefill
+(median of three), and checking a chat turn, an embedding (which must match the
+old engine's) and an OCR page, each where its server exists. The new engine
+wins when every check the old one passes, it passes too, and neither rate drops
+by more than the runs' own noise (at least 3 %). Then each unit gets a drop-in
+pointing it at mecha's engine, the on-demand servers are stopped so their next
+request starts on it, and the router restarts and is asked which engine it runs.
+Otherwise the router restarts on the old engine and nothing changes. Either way
+the result is a row in `~/.mecha/sidecars/llama/ledger.jsonl`. `--force` moves
+the servers whatever the measurement says — though not onto an engine that could
+not be measured at all.
+
+The router does not answer while it is measured — a few minutes — so `--adopt`
+asks first, and **declines without measuring** if any run holds the router or
+another switch is waiting. Your own llama.cpp is left where it is. **Ctrl-C** during
+the download or the measurement stops what it started and puts the router back
+on its engine with the model you had; once the servers are being moved it
+finishes that first. A machine where only some units run mecha's engine is
+refused: `--rollback` first, so every unit is measured against what it ran.
+
+**`--rollback`** removes the drop-ins, so the units run your llama.cpp again,
+and restarts the router on it. It waits for running work, as any model switch
+does; `--now` asks the work to stop instead.
+
+Both refuse without a terminal: they change what every server runs.
+
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
 *what is silently broken about a working install*, in one pass with no network
 and no model. Every question `setup` asks needs to **ask a server something**,

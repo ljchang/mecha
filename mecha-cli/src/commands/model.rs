@@ -116,7 +116,7 @@ struct Model {
 }
 
 /// How long `--now` (or a hurried switch) gives the runs it asked to stop.
-const NOW_GRACE: Duration = Duration::from_secs(15);
+pub(crate) const NOW_GRACE: Duration = Duration::from_secs(15);
 
 fn load_config(global: &GlobalOpts) -> Result<Config> {
     if global.global_config_only {
@@ -661,7 +661,7 @@ impl router::LoadHooks for SwitchHooks<'_> {
 /// ([`Holds::request_now`](mecha_core::hold::Holds::request_now), the chip's
 /// "switch now"): it then does what `--now` does from that moment — asks the
 /// runs to stop and gives them the same grace — and returns `true`.
-async fn wait_for_runs(
+pub(crate) async fn wait_for_runs(
     holds: &mecha_core::hold::Holds,
     switching: &mecha_core::hold::Switching,
     base: &str,
