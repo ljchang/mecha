@@ -908,7 +908,7 @@ async fn dispatch() -> Result<()> {
         Command::Work(args) => commands::work::execute(args).await,
         Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
-        Command::Features(args) => commands::features::execute(args),
+        Command::Features(args) => commands::features::execute(args).await,
         Command::Serve(args) => commands::serve::execute(args).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,

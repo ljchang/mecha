@@ -560,7 +560,8 @@ impl LayoutModel {
     /// Find the interpreter and the model, or say which is missing and what
     /// installs it. Nothing runs here.
     pub fn locate(&self) -> Result<Located> {
-        let install = "scripts/layout/install.sh installs both";
+        let install =
+            "`mecha features enable documents` installs both (or scripts/layout/install.sh)";
         let model = std::fs::canonicalize(&self.model).map_err(|e| {
             anyhow!(
                 "the layout model {} is not there ({e}) — {install}",
@@ -577,10 +578,15 @@ impl LayoutModel {
             )
         })?;
         // The environment the interpreter belongs to (`venv/bin/python` →
-        // `venv`), as configured and as resolved: a venv's `python` is a
-        // symlink to an interpreter whose own prefix must be readable too.
+        // `venv`), as configured, as resolved, and at every symlink hop
+        // between: a venv's `python` is a symlink to an interpreter whose own
+        // prefix must be readable too, and `uv` points it through a
+        // minor-version link (`cpython-3.12-…` → `cpython-3.12.15-…`) that
+        // must exist inside the jail under its own name, or the exec fails
+        // there with ENOENT. The venv's `pyvenv.cfg` `home` names the same
+        // path, and Python reads its standard library from it.
         let mut readable = Vec::new();
-        for p in [&self.python, &real_python] {
+        for p in interpreter_hops(&self.python, &real_python) {
             if let Some(root) = p.parent().and_then(Path::parent) {
                 if !readable.iter().any(|r: &PathBuf| r == root) {
                     readable.push(root.to_path_buf());
@@ -605,7 +611,7 @@ impl LayoutModel {
                 bail!(
                     "the layout interpreter's environment {} would expose too much to the \
                      confined worker (it is / or contains the mecha home or $HOME) — install \
-                     the layout venv with scripts/layout/install.sh",
+                     the layout venv with `mecha features enable documents`",
                     root.display()
                 );
             }
@@ -784,12 +790,94 @@ impl LayoutChild {
 
 /// Whether making `root` readable would expose `/` or any `protected`
 /// directory (the mecha home, the user's home) to the confined worker.
+/// Every path the interpreter is reached by: the configured one, each
+/// symlink it passes through, the venv's `pyvenv.cfg` `home` interpreter,
+/// and the resolved file. Bounded, so a symlink loop ends.
+fn interpreter_hops(python: &Path, resolved: &Path) -> Vec<PathBuf> {
+    let mut hops = vec![python.to_path_buf()];
+    let mut cur = python.to_path_buf();
+    for _ in 0..16 {
+        let Ok(target) = std::fs::read_link(&cur) else {
+            break;
+        };
+        let next = match cur.parent() {
+            Some(dir) if target.is_relative() => dir.join(&target),
+            _ => target,
+        };
+        hops.push(next.clone());
+        cur = next;
+    }
+    // `home = <prefix>/bin` in the venv's pyvenv.cfg: a file under it stands
+    // for the directory, whose parent is the prefix.
+    if let Some(venv) = python.parent().and_then(Path::parent) {
+        if let Ok(cfg) = std::fs::read_to_string(venv.join("pyvenv.cfg")) {
+            for line in cfg.lines() {
+                if let Some(home) = line
+                    .strip_prefix("home")
+                    .map(str::trim)
+                    .and_then(|r| r.strip_prefix('='))
+                {
+                    hops.push(PathBuf::from(home.trim()).join("python"));
+                }
+            }
+        }
+    }
+    hops.push(resolved.to_path_buf());
+    hops
+}
+
 fn widens_the_jail(root: &Path, protected: &[PathBuf]) -> bool {
     root.parent().is_none() || protected.iter().any(|p| p.starts_with(root))
 }
 
 #[cfg(test)]
 mod tests {
+    /// uv's layout: the venv's `python` links into a minor-version link
+    /// directory, which links to the patch-versioned one. Every hop's
+    /// prefix is readable, or the exec fails inside the jail.
+    #[cfg(unix)]
+    #[test]
+    fn every_hop_to_the_interpreter_is_readable() {
+        let root = std::env::temp_dir().join(format!("mecha-hops-{}", uuid::Uuid::new_v4()));
+        let real = root.join("python/cpython-3.12.15/bin");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("python3.12"), "").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("python/cpython-3.12.15"),
+            root.join("python/cpython-3.12"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("venv/bin")).unwrap();
+        std::os::unix::fs::symlink(
+            root.join("python/cpython-3.12/bin/python3.12"),
+            root.join("venv/bin/python"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("venv/pyvenv.cfg"),
+            format!(
+                "home = {}\n",
+                root.join("python/cpython-3.12/bin").display()
+            ),
+        )
+        .unwrap();
+        let python = root.join("venv/bin/python");
+        let resolved = std::fs::canonicalize(&python).unwrap();
+        let roots: Vec<PathBuf> = interpreter_hops(&python, &resolved)
+            .iter()
+            .filter_map(|p| p.parent().and_then(Path::parent).map(Path::to_path_buf))
+            .collect();
+        assert!(roots.contains(&root.join("venv")));
+        assert!(
+            roots.contains(&root.join("python/cpython-3.12")),
+            "the minor-version link: {roots:?}"
+        );
+        assert!(
+            roots.contains(&std::fs::canonicalize(root.join("python/cpython-3.12.15")).unwrap())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_worker_jail_never_widens_to_root_or_a_home() {
         let protected = vec![

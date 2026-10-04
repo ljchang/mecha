@@ -236,6 +236,8 @@ fetch.rs     pinned downloads: the one hub resolver the launchers share, and a
              resumable fetch that keeps nothing whose sha256 is not the pin's
 sidecar.rs   what a feature runs beside mecha, whether this machine already has
              it (provided, never installed over), and the plan — no socket
+install.rs   the installers `features enable` offers: a pinned uv, layout first;
+             the record leads the bytes, one tree per install
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,

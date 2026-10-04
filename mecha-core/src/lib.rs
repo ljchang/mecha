@@ -93,6 +93,7 @@ pub mod hooks;
 pub mod image;
 pub mod imagegen;
 pub mod imagelib;
+pub mod install;
 pub mod layout;
 pub mod learning;
 pub mod lesson_source;
