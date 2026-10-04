@@ -230,6 +230,28 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {heard!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_only_the_spoken_turns_of_a_web_chat_count(self):
+        # A chat a call spoke into is mostly the owner typing (often about
+        # mecha itself); only the spoken turn and its reply are voice data.
+        heard = "Please put the swim lesson on Saturday morning at nine."
+        reply = "Done, the swim lesson is on Saturday morning at nine sharp."
+        typed = "Run the release checklist and then tag the next version."
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        def msg(role, text):
+            return json.dumps({"record": "message", "role": role,
+                               "content": [{"type": "text", "text": text}]}) + "\n"
+        with open(os.path.join(sessions, "20990103T000000-2c3d4e5f.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "y", "kind": "web"}) + "\n")
+            f.write(msg("user", typed))
+            f.write(msg("assistant", "Tagged the next version after the checklist passed."))
+            f.write(msg("user", "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + heard))
+            f.write(msg("assistant", reply))
+        for text, want in ((heard, 1), (reply, 1), (typed, 0)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
     def test_the_guard_excuses_its_own_file_in_a_push(self):
         base = git(self.repo, "rev-parse", "HEAD").strip()
         os.makedirs(os.path.join(self.repo, "scripts"))
