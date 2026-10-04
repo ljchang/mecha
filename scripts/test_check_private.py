@@ -85,21 +85,30 @@ class Guard(unittest.TestCase):
         self.stage("doc.md", f"see {SESSION}\n")
         self.assertIn("session id", self.run_guard("--staged").stdout)
 
-    def test_a_sentence_split_across_two_lines_is_not_excused(self):
-        # The repository "says" a run only on one line: words that meet only
-        # across a line break, or a file boundary, excuse nothing.
+    def test_a_sentence_split_across_two_files_is_not_excused(self):
+        # The repository "says" a run only within one file: words that meet
+        # only across a file boundary excuse nothing (review of #557).
         half = SAID.split()
-        self.stage("a.md", " ".join(half[:4]) + "\n" + " ".join(half[4:]) + "\n")
+        self.stage("a.md", "notes\n" + " ".join(half[:4]) + "\n")
+        self.stage("b.md", " ".join(half[4:]) + "\nmore\n")
         git(self.repo, "commit", "-q", "--no-verify", "-m", "split")
-        self.stage("b.py", f"Y = {SAID!r}\n")
+        self.stage("c.py", f"Y = {SAID!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_a_sentence_wrapped_across_added_lines_is_refused(self):
+        # Prose is wrapped: the sentence crosses a line break in what is added.
+        half = SAID.split()
+        self.stage("doc.md", "/// " + " ".join(half[:5]) + "\n/// " + " ".join(half[5:]) + "\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("doc.md:1-2", r.stdout)
 
     def test_a_commit_message_is_checked(self):
         msg = os.path.join(self.tmp.name, "COMMIT_EDITMSG")
         open(msg, "w").write(f"Fix the fixture\n\nIt said: {SAID}\n# a git comment\n")
         r = self.run_guard("--message", msg)
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("commit message:3", r.stdout)
+        self.assertIn("commit message:1-3", r.stdout)
         open(msg, "w").write("Fix the fixture\n\nIt said something made up.\n")
         self.assertEqual(self.run_guard("--message", msg).returncode, 0)
 
@@ -141,7 +150,7 @@ class Guard(unittest.TestCase):
         self.stage("notes.md", "++ b/elsewhere\n++ just a line\n" + SAID + "\n")
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("notes.md:3", r.stdout)
+        self.assertIn("notes.md:1-3", r.stdout)
 
     def test_required_conversations_refuse_when_missing(self):
         empty = os.path.join(self.tmp.name, "empty")

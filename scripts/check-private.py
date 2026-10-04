@@ -17,7 +17,9 @@ phrases kept in the repository, which would itself be the leak:
 - the voice worker's journal lines that carried words (until #547 stopped
   them).
 
-Then it looks at the lines being added — the staged diff (`--staged`, the
+Then it looks at the text being added — each run of consecutive added lines
+read as one passage, since prose here is wrapped and a sentence crosses lines
+— in the staged diff (`--staged`, the
 pre-commit hook), a commit range (`--range A..B`, the pre-push hook) or a
 commit message (`--message FILE`, the commit-msg hook) — for:
 
@@ -31,7 +33,9 @@ sentences (the call note, the outbox read-back) are spoken in conversations
 too, and they come from the code. On a machine with no `~/.mecha` (CI, a
 fresh clone) there is nothing to compare against, and it passes, saying so.
 Nothing it finds is printed beyond the file, the line number and which check
-fired: the words stay where they are.
+fired: the words stay where they are. It reads text only: a recording or other
+binary file shows in a diff as "Binary files differ" and is never scanned —
+`.gitignore` and the CI no-logs job hold that line.
 
 On the machine that holds the conversations, set `CHECK_PRIVATE_REQUIRE=1`
 in the environment the hooks run in: a missing or moved store then refuses
@@ -264,16 +268,23 @@ BASE = ["HEAD"]
 def in_head(normalised, head_cache=[]):
     """Whether the repository already says this before the change — the
     harness's own words. `HEAD` for a commit; the range's base for a push,
-    whose `HEAD` is the change itself. Lines are kept apart by a separator
-    no word can match: a run of words that exists only by straddling two
-    lines, or two files, is not something the repository says (review of
-    #557). The added side is read per line too, so the coverage is per line:
-    a private phrase rewrapped across lines is caught where six of its words
-    share one line, or by the quoted-phrase check."""
+    whose `HEAD` is the change itself. Each file is read as one run of words
+    — prose here is wrapped at ~80 columns, and a wrapped harness sentence is
+    still the repository's — but files are kept apart by a separator no word
+    can match: a run that only exists by straddling two files is not
+    something the repository says (review of #557)."""
     if not head_cache:
-        out = subprocess.run(["git", "grep", "-I", "-h", "-e", "", BASE[0], "--"],
-                             capture_output=True, text=True, errors="replace").stdout
-        head_cache.append(" | ".join(" ".join(words(line)) for line in out.splitlines()))
+        # Per file: `git grep -h` gives no file boundaries, so ask with them.
+        listing = subprocess.run(["git", "grep", "-I", "-z", "-e", "", BASE[0], "--"],
+                                 capture_output=True, text=True, errors="replace").stdout
+        files = {}
+        for rec in listing.split("\n"):
+            # `<rev>:<path>\0<line>` with -z: path and text split on the NUL.
+            if "\0" not in rec:
+                continue
+            path, text = rec.split("\0", 1)
+            files.setdefault(path, []).append(text)
+        head_cache.append(" | ".join(" ".join(words(" ".join(lines))) for lines in files.values()))
     return f" {normalised} " in f" {head_cache[0]} "
 
 
@@ -292,12 +303,23 @@ def main(args):
         print("check-private: no conversations on this machine to compare against; passing.")
         return 0
     findings = []
-    for path, num, text in added_lines(args):
-        if path.endswith(("check-private.py",)):
-            continue
-        w = words(text)
+    lines = [(p, n, t) for p, n, t in added_lines(args) if not p.endswith("check-private.py")]
+    # Passages: runs of consecutive added lines in one file, read as one text,
+    # so a sentence wrapped across lines — which prose here always is — is
+    # still a run of words and a quote (review of #557). Ids and names are
+    # line-local and checked per line.
+    passages = []
+    for p, n, t in lines:
+        if passages and passages[-1][0] == p and passages[-1][2] == n - 1:
+            passages[-1][2] = n
+            passages[-1][3].append(t)
+        else:
+            passages.append([p, n, n, [t]])
+    for p, first, last, texts in passages:
+        text = " ".join(texts)
+        where = f"{first}" if first == last else f"{first}-{last}"
         hit = None
-        for g in grams(w, SHINGLE) & shingles:
+        for g in grams(words(text), SHINGLE) & shingles:
             if not in_head(g):
                 hit = "words said in a conversation"
                 break
@@ -307,18 +329,21 @@ def main(args):
                 if 3 <= len(q.split()) < SHINGLE and q in phrases and not in_head(q):
                     hit = "a quoted phrase said in a conversation"
                     break
-        if not hit:
-            for sid in SESSION_ID.findall(text):
-                if sid in ids:
-                    hit = "a real persona or voice session id"
-                    break
+        if hit:
+            findings.append((p, where, hit))
+    for p, n, t in lines:
+        hit = None
+        for sid in SESSION_ID.findall(t):
+            if sid in ids:
+                hit = "a real persona or voice session id"
+                break
         if not hit:
             for name in names:
-                if re.search(rf"\b{re.escape(name)}\b", text, re.I) and not in_head(name):
+                if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(name):
                     hit = "the name of one of the owner's personas"
                     break
         if hit:
-            findings.append((path, num, hit))
+            findings.append((p, n, hit))
     if not findings:
         return 0
     print("check-private: refusing — this change carries conversation text (owner's ruling,")
