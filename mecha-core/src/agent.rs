@@ -1471,6 +1471,9 @@ pub struct Agent {
     /// Whether earlier replies that stop mid-sentence go back to the model
     /// as they are. Kept unless a driver says otherwise; see [`PriorTails`].
     prior_tails: PriorTails,
+    /// Whether one-turn harness nudges in earlier owner turns go back to the
+    /// model. Kept unless a driver says otherwise; see [`PriorNudges`].
+    prior_nudges: PriorNudges,
 }
 
 impl Agent {
@@ -1497,6 +1500,7 @@ impl Agent {
             clock: Arc::new(crate::clock::SystemClock),
             prior_thinking: PriorThinking::Keep,
             prior_tails: PriorTails::Keep,
+            prior_nudges: PriorNudges::Keep,
         })
     }
 
@@ -1522,16 +1526,26 @@ impl Agent {
         self
     }
 
+    /// Leave one-turn nudges out of earlier owner turns in what is sent (or
+    /// keep them, the default). The transcript records them either way.
+    pub fn with_prior_nudges(mut self, nudges: PriorNudges) -> Self {
+        self.prior_nudges = nudges;
+        self
+    }
+
     /// The history as this agent sends it.
     fn wire<'a>(&self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
-        self.prior_tails.wire(self.prior_thinking.wire(messages))
+        self.prior_nudges
+            .wire(self.prior_tails.wire(self.prior_thinking.wire(messages)))
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
     fn wire_bytes(&self, messages: &[Message]) -> usize {
-        self.prior_thinking.wire_bytes(messages) - self.prior_tails.dropped_bytes(messages)
+        self.prior_thinking.wire_bytes(messages)
+            - self.prior_tails.dropped_bytes(messages)
+            - self.prior_nudges.dropped_bytes(messages)
     }
 
     /// What this agent thinks the time is, now.

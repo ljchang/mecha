@@ -1591,6 +1591,14 @@ module.
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
+    - Only the turn being answered carries one on the wire
+      (`PriorNudges::Drop`, set in `persona_agent` beside the other two
+      views): each note names what is repeating now, and kept, forty turns in
+      would be forty stale "don't end on X" lines, which is not the condition
+      it was measured in. The transcript keeps every note; `wire_bytes`
+      subtracts the dropped ones.
+    - A turn that called a tool is not a reply: its text is a preamble
+      ("Let me look that up."), the turns `PriorTails` leaves alone too.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,

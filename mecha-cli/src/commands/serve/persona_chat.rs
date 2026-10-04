@@ -5185,13 +5185,28 @@ mod tests {
         turn(&w, &key, "and again").await;
 
         let seen = w.seen.lock().unwrap().clone();
-        let first = seen[0].messages.last().unwrap().text();
-        assert!(
-            !mecha_core::persona::variety::is_note(&first)
-                && !first.contains("(From the harness: your last"),
-            "nothing to vary from on the first turn: {first}"
+        // Per block, as `owner_text` reads one: `is_note` matches a whole block,
+        // so a check on the joined text could never fail (review of #550).
+        let notes_in = |m: &Message| {
+            m.content
+                .iter()
+                .filter(|b| {
+                    matches!(b, mecha_core::message::Block::Text { text }
+                    if mecha_core::persona::variety::is_note(text))
+                })
+                .count()
+        };
+        assert_eq!(
+            notes_in(seen[0].messages.last().unwrap()),
+            0,
+            "nothing to vary from on the first turn"
         );
-        let last = seen.last().unwrap().messages.last().unwrap();
+        // Only the turn being answered carries one on the wire: the earlier
+        // turns' notes stay in the transcript and out of what is sent.
+        let third = &seen.last().unwrap().messages;
+        let on_wire: usize = third.iter().map(notes_in).sum();
+        assert_eq!(on_wire, 1, "stale notes went back to the model");
+        let last = third.last().unwrap();
         let note = last
             .content
             .iter()

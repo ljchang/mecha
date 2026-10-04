@@ -21,17 +21,15 @@
 //! their correction. Measured on call turns; typed turns carry it too,
 //! unmeasured.
 
-use crate::message::{dangling_tail, Message, Role};
+use crate::message::{dangling_tail, Block, Message, Role};
 
 /// The two ways the note can open; both are fixed text, so the voice is
 /// recognised whole.
 pub const OPENING_STEM: &str = "(From the harness: your last replies opened with";
 pub const CLOSING_STEM: &str = "(From the harness: don't end on a line you've used lately";
 
-/// How many earlier replies' closing lines are named.
+/// How many earlier replies' closing lines are named: the last three.
 const CLOSERS_NAMED: usize = 3;
-/// How many earlier replies the closers are drawn from.
-const CLOSERS_FROM: usize = 6;
 /// The most of one closing line quoted back.
 const CLOSER_CHARS: usize = 80;
 
@@ -46,16 +44,25 @@ pub fn is_note(text: &str) -> bool {
 pub fn note(messages: &[Message]) -> Option<String> {
     let replies: Vec<String> = messages
         .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .map(|m| {
-            let text = m.text();
-            let text = text.trim();
-            // As the model is shown it (`PriorTails::Trim`), so a quoted closer
-            // is never a dangling half-sentence.
-            match dangling_tail(text) {
+        // A reply the owner heard: not a turn that called a tool, whose text
+        // is a preamble ("Let me look that up.") rather than a reply, the
+        // turns `PriorTails` leaves alone too (review of #550).
+        .filter(|m| {
+            m.role == Role::Assistant
+                && !m.content.iter().any(|b| matches!(b, Block::ToolUse { .. }))
+        })
+        .filter_map(|m| {
+            // Its last text block, cut as the model is shown it
+            // (`PriorTails::Trim`), so a quoted closer is never a dangling
+            // half-sentence.
+            let text = m.content.iter().rev().find_map(|b| match b {
+                Block::Text { text } => Some(text.trim()),
+                _ => None,
+            })?;
+            Some(match dangling_tail(text) {
                 Some(len) => text[..len].to_string(),
                 None => text.to_string(),
-            }
+            })
         })
         .filter(|t| !t.is_empty())
         .collect();
@@ -81,9 +88,8 @@ pub fn note(messages: &[Message]) -> Option<String> {
     let closers: Vec<String> = replies
         .iter()
         .rev()
-        .take(CLOSERS_FROM)
-        .filter_map(|r| last_sentence(r))
         .take(CLOSERS_NAMED)
+        .filter_map(|r| last_sentence(r))
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -200,6 +206,32 @@ mod tests {
         // never quotes a dangling "I" back as a line to avoid.
         let n = note(&[said("You liked that one, didn't you? \n\nI")]).expect("a note");
         assert!(n.contains("(\"You liked that one, didn't you?\")"), "{n}");
+    }
+
+    #[test]
+    fn a_turn_that_called_a_tool_is_not_a_reply() {
+        let looked_up = Message::assistant(vec![
+            crate::message::Block::text("Mm, hold on. Let me look that up."),
+            crate::message::Block::ToolUse {
+                id: "t0".into(),
+                name: "memory_search".into(),
+                input: serde_json::json!({}),
+            },
+        ]);
+        let history = vec![
+            said("Mm, hello. How was the drive?"),
+            looked_up,
+            said("Found it. It was the lake house."),
+        ];
+        let n = note(&history).expect("a note");
+        assert!(
+            !n.contains("Let me look that up"),
+            "a preamble named as a closer: {n}"
+        );
+        assert!(
+            !n.contains("opened with"),
+            "the preamble's \"Mm\" counted: {n}"
+        );
     }
 
     #[test]
