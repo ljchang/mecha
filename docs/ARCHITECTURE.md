@@ -724,8 +724,9 @@ conversation, so the capabilities do not change. Three rules:
   owner's persona edits — so a chain ended as somebody else, on the Q4 and
   int8 models alike. In a persona chat, an edit of a single picture that
   traces back, manifest by manifest through each edit's first reference, to
-  a scene whose cast was that persona's own approved character alone (no
-  extras) gets a tight crop of the character's portrait as `<image2>` and
+  a scene whose cast was that persona's own approved character alone — no
+  extras there or on the way, and no edit on the way given a second picture,
+  either of which is someone the face could land on (review of #569) — gets a tight crop of the character's portrait as `<image2>` and
   `FACE_ANCHOR_SENTENCE`, which names `<image1>` the canvas. Each of those
   was measured on two five-step chains (2026-10-05): the whole portrait as
   the reference copied its outfit and selfie pose into four of six scenes; a
@@ -1012,9 +1013,14 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   now (0700 scratch directory, removed on drop) and `add-character` runs as a
   child. Both library routes that read a chat refuse an incognito key.
 - **A portrait's face crop is derived, cached and disposable**
-  (`imagelib/faces/`, `face::cache_paths`): named by the portrait's blob, so
-  a new portrait is a new crop and nothing is invalidated, with a `.none`
-  file when the detector found no face so it is not run again. Blob
+  (`imagelib/faces/<generation>/`, `face::cache_paths`), owner-only: named by
+  the portrait's blob, so a new portrait is a new crop and nothing is
+  invalidated, with a `.none` file when the detector found no face so it is
+  not run again. The generation (`CACHE_VERSION`) moves with the weights,
+  thresholds or crop size, or every portrait keeps the old crop. The
+  directory is created on first write — the first cut assumed it and saved
+  nothing, so every edit ran the detector and went unanchored (review of
+  #569). Blob
   collection never walks it; a crop of a removed portrait is simply never
   asked for again. The portrait is re-hashed when it is read for a crop, as
   it is for a cast.
