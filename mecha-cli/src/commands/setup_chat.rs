@@ -64,15 +64,19 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     // anything — the answer is to fix the driver, not to say yes (found on
     // review of #568). A machine with a llama-server of its own probes no
     // driver.
-    let needs_engine = !mecha_core::llama_units::has_engine(&m);
-    if needs_engine {
-        mecha_core::engine::choose(
+    // Its download is priced from the pin for this machine's build, never
+    // remembered: a CPU build is a fiftieth of a CUDA one.
+    let engine_bytes = if mecha_core::llama_units::has_engine(&m) {
+        None
+    } else {
+        let target = mecha_core::engine::choose(
             std::env::consts::OS,
             std::env::consts::ARCH,
             mecha_core::engine::read_nvidia(),
         )
         .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
-    }
+        Some(mecha_core::engine::download_bytes(target))
+    };
 
     // The choice: the tier's row, or the owner's own GGUF.
     let slot = mecha_core::recommend::SLOTS
@@ -97,12 +101,18 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             "  1) {} — {:.1} GiB to download (less what is already in the cache){}   (recommended)",
             row.model,
             bytes as f64 / 1_073_741_824.0,
-            geo.map(|g| format!(
-                ", served with {} tokens across {} slot{}",
-                g.ctx,
-                g.slots,
-                if g.slots == 1 { "" } else { "s" }
-            ))
+            // Per slot first: that is the window a run gets, and the figure
+            // the config will say (`-c` is divided across slots).
+            geo.map(|g| if g.slots == 1 {
+                format!(", served with a {}-token context", g.ctx)
+            } else {
+                format!(
+                    ", served with a {}-token context in each of {} slots ({} in all)",
+                    g.ctx / g.slots,
+                    g.slots,
+                    g.ctx
+                )
+            })
             .unwrap_or_default()
         );
     } else {
@@ -135,17 +145,19 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         "\nThis installs{} the router (a systemd user service on :8080) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
-        if needs_engine {
-            " llama.cpp (mecha's pinned build, about 700 MB) and"
-        } else {
-            ""
+        match engine_bytes {
+            Some(b) => format!(
+                " llama.cpp (mecha's pinned build, {:.0} MiB to download) and",
+                b as f64 / 1_048_576.0
+            ),
+            None => String::new(),
         }
     );
     if !matches!(ask("Go ahead? [y/N] ")?.as_str(), "y" | "Y" | "yes") {
         println!("Nothing was changed.");
         return Ok(());
     }
-    if needs_engine {
+    if engine_bytes.is_some() {
         mecha_core::engine::install_engine(&m, &mut |s| println!("  {s}"))
             .await
             .context("installing llama.cpp")?;

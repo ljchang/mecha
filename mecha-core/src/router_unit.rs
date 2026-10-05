@@ -212,15 +212,24 @@ pub async fn preset_for(
 ) -> Result<Preset> {
     match choice {
         Choice::Own { model, mmproj } => {
-            for f in std::iter::once(model).chain(mmproj.iter()) {
-                if !f.is_file() {
-                    bail!("{} is not a file", f.display());
+            // Absolute: the presets are read by a systemd user unit whose
+            // working directory is `%h`, not the one `mecha setup chat` ran
+            // in, so a path relative to the owner's shell would install a
+            // router that cannot load its model (found on review of #568).
+            // Not canonicalized: a hub file is a link to a blob named by its
+            // hash, and the alias is the name the owner chose.
+            let abs = |p: &PathBuf| -> Result<PathBuf> {
+                if !p.is_file() {
+                    bail!("{} is not a file", p.display());
                 }
-            }
+                std::path::absolute(p).with_context(|| format!("resolving {}", p.display()))
+            };
+            let model = abs(model)?;
+            let mmproj = mmproj.as_ref().map(abs).transpose()?;
             Ok(Preset {
-                alias: alias_for(model),
-                model: model.clone(),
-                mmproj: mmproj.clone(),
+                alias: alias_for(&model),
+                model,
+                mmproj,
                 ctx: 32_768,
                 slots: 1,
                 cache_ram_mb: None,
@@ -386,13 +395,19 @@ async fn check(naming: &Naming, alias: &str) -> Result<()> {
     crate::provider::router::load(&base, alias, Duration::from_secs(900))
         .await
         .with_context(|| format!("loading {alias} on the router"))?;
-    let resident = crate::provider::router::models(&base)
+    // An unreadable list is not an empty one: "holds nothing" is said only
+    // of a list that could be read.
+    let models = crate::provider::router::models(&base)
         .await
-        .and_then(|ms| crate::provider::router::resident(&ms).map(str::to_owned));
-    if resident.as_deref() != Some(alias) {
+        .filter(|ms| crate::provider::router::readable(ms))
+        .with_context(|| {
+            format!("the router loaded {alias} but its model list could not be read")
+        })?;
+    let resident = crate::provider::router::resident(&models);
+    if resident != Some(alias) {
         bail!(
             "the router answers, but {alias} is not resident (it holds {})",
-            resident.as_deref().unwrap_or("nothing")
+            resident.unwrap_or("nothing")
         );
     }
     Ok(())
@@ -547,6 +562,56 @@ mod tests {
         for live in ["8080", "llama-local", "%h/.local", "@PRESETS@"] {
             assert!(!unit.contains(live), "{live} left in:\n{unit}");
         }
+    }
+
+    /// A brought path is written absolute — the unit does not run where the
+    /// owner typed it — and one that is not a file is refused by the name
+    /// typed.
+    #[tokio::test]
+    async fn a_brought_path_is_made_absolute() {
+        let root = std::env::temp_dir().join(format!("mecha-7c2-a-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("mine.gguf"), b"GGUF").unwrap();
+        let machine = crate::recommend::Machine::read().unwrap();
+        // Relative to the test's working directory, as a shell's
+        // `models/mine.gguf` is to its own.
+        let cwd = std::env::current_dir().unwrap();
+        let mut rel = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            rel.push("..");
+        }
+        let rel = rel.join(root.strip_prefix("/").unwrap()).join("mine.gguf");
+        assert!(rel.is_relative() && rel.is_file(), "{}", rel.display());
+        let p = preset_for(
+            &Choice::Own {
+                model: rel,
+                mmproj: None,
+            },
+            &machine,
+            &root,
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(p.model.is_absolute(), "{}", p.model.display());
+        assert!(p.model.is_file(), "{}", p.model.display());
+        assert_eq!(p.alias, "mine");
+        let err = preset_for(
+            &Choice::Own {
+                model: "~/nowhere.gguf".into(),
+                mmproj: None,
+            },
+            &machine,
+            &root,
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("~/nowhere.gguf is not a file"),
+            "{err:#}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The presets file says what the router serves: the pinned row by its
