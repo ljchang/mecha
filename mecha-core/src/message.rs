@@ -782,12 +782,20 @@ fn stale_nudges(recorded: &[Message], earlier: &[Message]) -> Vec<(usize, usize)
         .iter()
         .rposition(|m| m.role == Role::User && !crate::agent::owner_text(m).is_empty())
         .unwrap_or(newest);
+    // And within it, after the owner's newest words: a typed turn folded into
+    // an edit turn that died before a reply follows that turn's edit note,
+    // which is then about words no longer the newest (review of #566).
+    let after = recorded[answering]
+        .content
+        .iter()
+        .rposition(|b| matches!(b, Block::Text { text } if !crate::agent::is_harness_voice(text)));
     let kept = |i: usize, j: usize, kind: Nudge| {
         i == answering
+            && after.is_none_or(|a| j > a)
             && all
                 .iter()
                 .rev()
-                .find(|n| n.0 == answering && n.2 == kind)
+                .find(|n| n.0 == answering && n.2 == kind && after.is_none_or(|a| n.1 > a))
                 .map(|n| (n.0, n.1))
                 == Some((i, j))
     };
@@ -1411,6 +1419,19 @@ mod tests {
             }]),
         ];
         assert_eq!(kinds(&send(&history)[2]), vec![Nudge::Variety, Nudge::Edit]);
+
+        // The fold path: an edit turn that died before a reply takes the
+        // next typed turn into the same message. Its edit note now precedes
+        // the owner's newest words and goes; the new variety note stays.
+        let mut folded = edit_turn("Edit images/a.png: make the sky pink", "Older.");
+        folded.content.push(Block::text("never mind, how are you"));
+        folded.content.push(variety("Newest."));
+        let sent = send(std::slice::from_ref(&folded));
+        assert_eq!(kinds(&sent[0]), vec![Nudge::Variety]);
+        assert!(
+            matches!(sent[0].content.last(), Some(Block::Text { text }) if text.contains("Newest.")),
+            "the newer variety note is the one kept"
+        );
     }
 
     #[test]

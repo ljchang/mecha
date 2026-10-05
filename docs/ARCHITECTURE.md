@@ -1663,7 +1663,8 @@ module.
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
     - Only the turn being answered (the last message with the owner's own
-      words) keeps its notes on the wire, the newest of each kind
+      words) keeps its notes on the wire, those after the owner's newest
+      words and the newest of each kind
       (`PriorNudges::Drop`, set in `persona_agent` beside the other two
       views): a turn folded into an earlier message after a cancelled tool
       call can hold two of one kind. So an edit turn keeps its variety note
