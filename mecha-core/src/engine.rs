@@ -756,12 +756,17 @@ pub fn link_tag(link: &Path) -> Option<String> {
 pub fn prune_builds(home: &Path) -> Result<Vec<String>> {
     // Without a readable `current` nothing is known to be in use, and
     // pruning would remove every build: refused, never guessed.
-    if link_tag(&current(home)).is_none() {
-        bail!("`current` names no build, so no build is pruned");
+    // A link counts only when its build is on disk: `read_link` succeeds on
+    // a broken link, and a dangling `current` kept by name would let every
+    // installed build go.
+    let installed =
+        |l: &Path| link_tag(l).filter(|t| engine_root(home).join(t).join("llama-server").is_file());
+    if installed(&current(home)).is_none() {
+        bail!("`current` names no installed build, so no build is pruned");
     }
     let keep: Vec<String> = [current(home), previous(home)]
         .iter()
-        .filter_map(|l| link_tag(l))
+        .filter_map(|l| installed(l))
         .collect();
     let mut gone = Vec::new();
     let mut manifest = Manifest::read(home)?;
@@ -1680,6 +1685,7 @@ mod tests {
         Manifest::record(&home, "llama", &root.join("b1")).unwrap();
         for t in ["b1", "b2", "b3"] {
             std::fs::create_dir_all(root.join(t)).unwrap();
+            std::fs::write(root.join(t).join("llama-server"), "").unwrap();
             Manifest::record_build(
                 &home,
                 "llama",
@@ -1706,6 +1712,12 @@ mod tests {
             "the pruned pin dir is forgotten"
         );
         assert!(e.wrote.contains(&root), "the root stays recorded");
+        // A dangling `current` — its tree gone — names no installed build:
+        // refused, and the installed one kept, never pruned by name.
+        std::fs::rename(root.join("b3"), root.join("b3-moved")).unwrap();
+        assert!(prune_builds(&home).is_err());
+        assert!(root.join("b2").exists());
+        std::fs::rename(root.join("b3-moved"), root.join("b3")).unwrap();
         // With no readable `current`, nothing is known to be in use: refused,
         // and nothing removed.
         std::fs::remove_file(current(&home)).unwrap();

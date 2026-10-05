@@ -95,7 +95,12 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
 /// The sidecars mecha can install today — the rest name the step that brings
 /// their installer.
 pub fn installable(id: &str) -> bool {
-    matches!(id, "layout" | "llama")
+    match id {
+        "layout" | "llama" => true,
+        // systemd user units: on macOS they stay manual (§10.5).
+        "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
+        _ => false,
+    }
 }
 
 /// Whether a sidecar's install brings the models it serves. Layout's fetches
@@ -104,7 +109,7 @@ pub fn installable(id: &str) -> bool {
 /// gone from the hub is a reason to run layout's install again, never the
 /// engine's.
 fn fetches_models(id: &str) -> bool {
-    id == "layout"
+    matches!(id, "layout" | "embed-server" | "ocr-server")
 }
 
 /// Whether the chat model is served from this machine: the default provider
@@ -466,6 +471,14 @@ pub async fn install(
 ) -> Result<()> {
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
+        "embed-server" | "ocr-server" => {
+            let which = if id == "embed-server" {
+                crate::llama_units::Which::Embeddings
+            } else {
+                crate::llama_units::Which::Ocr
+            };
+            crate::llama_units::install(m, which, &which.shipped(), machine, hub, say).await
+        }
         "llama" => {
             let server = crate::engine::install_engine(m, say).await?;
             say(&format!(
@@ -659,14 +672,19 @@ mod tests {
 
     #[test]
     fn installable_and_the_registry_agree() {
-        const BUILT: &[&str] = &["7a-3", "7b"];
+        // The on-demand servers' installer is built, for systemd machines.
+        let built: &[&str] = if cfg!(target_os = "linux") {
+            &["7a-3", "7b", "7c-1"]
+        } else {
+            &["7a-3", "7b"]
+        };
         assert!(installable("layout"));
         assert!(installable("llama"));
         assert!(!installable("comfyui"));
         for s in crate::sidecar::SIDECARS {
             assert_eq!(
                 installable(s.id),
-                BUILT.contains(&s.installer),
+                built.contains(&s.installer),
                 "{} is installable: {}, but its step says {}",
                 s.id,
                 installable(s.id),

@@ -1,0 +1,15 @@
+# Forwards llama-embed.socket's connections to the embeddings llama-server,
+# and is the idle timer: systemd-socket-proxyd exits after MECHA_LLAMA_IDLE
+# with no open connection, and llama-embed.service (StopWhenUnneeded=yes)
+# stops with it. Change the idle time with
+# `systemctl --user edit llama-embed-proxy.service`:
+#   [Service]
+#   Environment=MECHA_LLAMA_IDLE=30min
+[Unit]
+Description=Proxy to the on-demand embeddings llama-server (idle stop)
+Requires=llama-embed.service
+After=llama-embed.service
+
+[Service]
+Environment=MECHA_LLAMA_IDLE=10min
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=${MECHA_LLAMA_IDLE} 127.0.0.1:18081

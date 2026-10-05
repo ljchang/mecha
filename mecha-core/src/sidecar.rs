@@ -83,7 +83,7 @@ pub const SIDECARS: &[Sidecar] = &[
         needed_by: &[],
         serves: &["chat"],
         evidence: &[Evidence::UserUnit("llama-local.service")],
-        installer: "7c",
+        installer: "7c-2",
         models_in_hub: true,
     },
     Sidecar {
@@ -95,7 +95,7 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::UserUnit("llama-embed.socket"),
             Evidence::UserUnit("llama-embed.service"),
         ],
-        installer: "7c",
+        installer: "7c-1",
         models_in_hub: true,
     },
     Sidecar {
@@ -107,7 +107,7 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::UserUnit("llama-ocr.socket"),
             Evidence::UserUnit("llama-ocr.service"),
         ],
-        installer: "7c",
+        installer: "7c-1",
         models_in_hub: true,
     },
     Sidecar {
@@ -839,7 +839,7 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c", "7d", "7e", "7f"].contains(&s.installer),
+                ["7a-3", "7b", "7c-1", "7c-2", "7d", "7e", "7f"].contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
@@ -857,7 +857,7 @@ mod tests {
         let p = plan(Feature::Ocr, &m, &GB10, &hub, false).unwrap();
         assert_eq!(p.feature, Feature::Documents, "a part plans as its parent");
         let ocr = p.sidecars.iter().find(|s| s.id == "ocr-server").unwrap();
-        assert_eq!(ocr.state, SidecarState::Missing { step: "7c" });
+        assert_eq!(ocr.state, SidecarState::Missing { step: "7c-1" });
         let layout = p.sidecars.iter().find(|s| s.id == "layout").unwrap();
         assert_eq!(layout.state, SidecarState::Missing { step: "7a-3" });
         assert!(
