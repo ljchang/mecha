@@ -262,6 +262,17 @@ pub enum Record {
         index: usize,
         blocks: Vec<crate::message::Block>,
     },
+    /// The harness's notes for the run that follows (`RunContext::notes`,
+    /// PERSONA-CONTEXT-DESIGN.md §5.1): sent on every request of that run,
+    /// never part of the conversation. Recorded so a reader can still see
+    /// what the model was told, since the messages no longer carry it.
+    ///
+    /// **Audit only.** [`Session::read`] leaves it out of the conversation it
+    /// rebuilds, which is the point. A build from before this record skips the
+    /// line as one it cannot parse, as with [`Record::Extend`].
+    Notes {
+        notes: Vec<String>,
+    },
     /// A better name for this conversation than the one it was created with.
     ///
     /// **Appended, never patched.** The header is the first line of the file
@@ -2087,6 +2098,8 @@ impl Session {
                 Ok(Record::Summary { .. }) => {}
                 // For the corpus, not the conversation: nothing to rebuild.
                 Ok(Record::SpokenDirection(_)) => {}
+                // A run's notes are never part of the conversation it rebuilds.
+                Ok(Record::Notes { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
@@ -5386,6 +5399,27 @@ mod extension_tests {
         let ever = Session::messages_ever(&std::fs::read_to_string(&s.path).unwrap());
         assert_eq!(ever.len(), 3, "{ever:?}");
         assert!(ever.iter().all(|m| m.role == Role::User));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A run's notes are recorded for audit and never rebuilt into the
+    /// conversation, or a resume would store what §5.1 keeps out.
+    #[test]
+    fn a_runs_notes_are_recorded_and_left_out_of_the_conversation() {
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("hello"))).unwrap();
+        s.append(&Record::Notes {
+            notes: vec!["(From the harness: a note.)".into()],
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        assert!(text.contains(r#""record":"notes""#), "{text}");
+        let (_, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(convo.messages.len(), 1);
+        assert_eq!(convo.messages[0].content, vec![Block::text("hello")]);
+        assert!(Session::messages_ever(&text)
+            .iter()
+            .all(|m| !m.text().contains("a note")));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

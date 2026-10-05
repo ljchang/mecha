@@ -856,6 +856,7 @@ fn exhaustive(record: &Record) {
         | Record::Taint(_)
         | Record::Rewrite { .. }
         | Record::Extend { .. }
+        | Record::Notes { .. }
         | Record::Title { .. }
         | Record::SpokenDirection(_)
         | Record::Outcome(_)

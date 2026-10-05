@@ -182,6 +182,7 @@ mod tests {
             cache_prompt: true,
             think: None,
             think_budget: None,
+            trailing_notes: 0,
         }
     }
 

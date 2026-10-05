@@ -28,7 +28,8 @@
 /// What the note opens with; registered as the harness's voice.
 pub const EDIT_STEM: &str = "(From the harness: this message came from the picture edit panel";
 
-/// The note, folded beside the owner's words on a turn the edit panel sent.
+/// The note for a turn the edit panel sent: one of that run's notes
+/// (`RunContext::notes`), so it lasts exactly the edit's run.
 pub fn note() -> String {
     format!(
         "{EDIT_STEM}. Make the edit, then answer in a sentence or two, in your own \

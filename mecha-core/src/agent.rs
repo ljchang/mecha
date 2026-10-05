@@ -336,6 +336,23 @@ pub struct RunContext {
     /// agent because one persona agent answers both typed and spoken turns,
     /// and only a spoken turn has someone waiting in silence for it.
     pub think_budget: Option<u32>,
+    /// The harness's words for this run alone (PERSONA-CONTEXT-DESIGN.md
+    /// §5.1): added to every request of the run, at the end of its last user
+    /// message (`message::attach_notes`), and **never written into
+    /// `Conversation::messages`**.
+    ///
+    /// Guidance that changes per run (a persona's call note, its memory, a
+    /// reminder of who it is) used to be folded into the owner's message,
+    /// where it stayed and was re-sent on every later turn. At one measured
+    /// moment it was 39% of what the model read, against the owner's 3.5%,
+    /// and the model followed the larger share. So a note lives exactly as
+    /// long as the run it is for.
+    ///
+    /// A note arms taint by the rule content does (`Taint::arm_for_content`),
+    /// and the front-end records the run's notes in the session
+    /// (`Record::Notes`). Empty by default, and a subagent never inherits
+    /// its parent's: they are for the run that set them.
+    pub notes: Arc<[String]>,
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -375,6 +392,7 @@ impl RunContext {
             outbox: None,
             mailbox: None,
             think_budget: None,
+            notes: Arc::from(Vec::new()),
         }
     }
 
@@ -625,6 +643,20 @@ impl Taint {
                 }
             }
         }
+    }
+
+    /// [`Taint::arm_for_content`] over a run's notes (`RunContext::notes`):
+    /// they reach the model as user-role text, only without being stored, so
+    /// they arm by the same rule. A persona's memory note arms `private`, and
+    /// the taint, a property of the conversation, keeps it armed on later
+    /// turns that carry no note.
+    pub fn arm_for_notes(&mut self, notes: &[String]) {
+        if notes.is_empty() {
+            return;
+        }
+        let mut carried = Message::user("");
+        carried.content = notes.iter().map(|n| Block::text(n.clone())).collect();
+        self.arm_for_content(std::slice::from_ref(&carried));
     }
 
     pub fn merge(&mut self, other: Taint) {
@@ -1537,25 +1569,27 @@ impl Agent {
     }
 
     /// The history as this agent sends it.
-    fn wire<'a>(&self, messages: &'a [Message]) -> std::borrow::Cow<'a, [Message]> {
-        // The nudge view judges against both: whether a reply goes out
-        // altered is what makes dropping the note ahead of it free.
+    ///
+    /// `notes` are the run's (`RunContext::notes`), added last, so no view
+    /// ever sees one: `answering`, which `PriorThinking::Drop` cuts at, is
+    /// found on the recorded history.
+    fn wire<'a>(
+        &self,
+        messages: &'a [Message],
+        notes: &[String],
+    ) -> std::borrow::Cow<'a, [Message]> {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        self.prior_nudges.wire(messages, earlier)
+        crate::message::attach_notes(self.prior_nudges.wire(earlier), notes)
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
-    fn wire_bytes(&self, messages: &[Message]) -> usize {
-        let nudges = match self.prior_nudges {
-            PriorNudges::Keep => 0,
-            PriorNudges::Drop => {
-                let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-                self.prior_nudges.dropped_bytes(messages, &earlier)
-            }
-        };
-        self.prior_thinking.wire_bytes(messages) - self.prior_tails.dropped_bytes(messages) - nudges
+    fn wire_bytes(&self, messages: &[Message], notes: &[String]) -> usize {
+        self.prior_thinking.wire_bytes(messages)
+            - self.prior_tails.dropped_bytes(messages)
+            - self.prior_nudges.dropped_bytes(messages)
+            + crate::message::notes_bytes(notes)
     }
 
     /// What this agent thinks the time is, now.
@@ -2135,6 +2169,8 @@ impl Agent {
         // rather than tracked, which costs a walk of the block types and is
         // idempotent because taint only ever grows.
         convo.taint.arm_for_content(&convo.messages);
+        // And the run's notes, which reach the model without being stored.
+        convo.taint.arm_for_notes(&cx.notes);
 
         let mut usage = Usage::default();
         let mut turns = 0;
@@ -2360,7 +2396,7 @@ impl Agent {
                     && (asked
                         || pressure.over_by(
                             limit,
-                            self.wire_bytes(messages),
+                            self.wire_bytes(messages, &cx.notes),
                             self.cfg.predictive_compaction,
                         ))
                 {
@@ -2456,7 +2492,7 @@ impl Agent {
                     if !asked
                         && pressure.freed_enough(
                             limit,
-                            self.wire_bytes(messages),
+                            self.wire_bytes(messages, &cx.notes),
                             self.cfg.predictive_compaction,
                         )
                     {
@@ -2629,12 +2665,12 @@ impl Agent {
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
             // one request.
-            let mut sent_bytes = self.wire_bytes(messages);
+            let mut sent_bytes = self.wire_bytes(messages, &cx.notes);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: self.wire(messages).into_owned(),
+                messages: self.wire(messages, &cx.notes).into_owned(),
                 tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
@@ -2642,6 +2678,7 @@ impl Agent {
                 cache_prompt: self.cfg.cache_prompt,
                 think: None,
                 think_budget: cx.think_budget,
+                trailing_notes: cx.notes.len(),
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -2731,13 +2768,13 @@ impl Agent {
                         taint.private = true;
                         convo.taint = taint;
                     }
-                    request.messages = self.wire(messages).into_owned();
+                    request.messages = self.wire(messages, &cx.notes).into_owned();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
                     // prediction is measured from a transcript that was never
                     // sent.
                     pressure.invalidate();
-                    sent_bytes = self.wire_bytes(messages);
+                    sent_bytes = self.wire_bytes(messages, &cx.notes);
                     self.complete(cx, &request, &events).await?
                 }
                 other => other?,
@@ -2891,7 +2928,7 @@ impl Agent {
                     // check above orders its cheap guards first. Measuring it
                     // twice in one expression pays that twice on every
                     // tool-calling turn.
-                    let transcript_bytes = self.wire_bytes(messages);
+                    let transcript_bytes = self.wire_bytes(messages, &cx.notes);
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
@@ -3100,7 +3137,11 @@ impl Agent {
                                 &mut trace,
                                 &mut taint,
                                 &mut check_blocks,
-                                self.output_budget(cx, pressure, self.wire_bytes(messages)),
+                                self.output_budget(
+                                    cx,
+                                    pressure,
+                                    self.wire_bytes(messages, &cx.notes),
+                                ),
                                 None,
                             )
                             .await;
@@ -3639,7 +3680,7 @@ impl Agent {
             response_schema: None,
             model: self.model.clone(),
             system: self.system.clone(),
-            messages: self.wire(messages).into_owned(),
+            messages: self.wire(messages, &cx.notes).into_owned(),
             // The load-bearing line.
             tools: Vec::new(),
             max_tokens: self.cfg.max_tokens,
@@ -3648,6 +3689,7 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
             think: None,
             think_budget: cx.think_budget,
+            trailing_notes: cx.notes.len(),
         };
 
         let response = match self.complete(cx, &request, events).await? {
@@ -15894,6 +15936,69 @@ justification = "this box never sends from an armed conversation"
         assert!(recorded.contains("PLAN-A") && recorded.contains("PLAN-B"));
     }
 
+    /// PERSONA-CONTEXT-DESIGN.md §5.1: a run's notes go on every request of
+    /// that run, at the end of its newest message, are counted as notes for
+    /// the cache breakpoint, arm taint as content would, and are never stored,
+    /// so the next run carries none of them.
+    #[tokio::test]
+    async fn run_notes_reach_every_request_of_their_run_and_are_never_stored() {
+        let (agent, provider) = agent_with(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "echo".into(),
+                        input: json!({"value": "pong"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+                assistant(vec![Block::text("again")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let memory = format!(
+            "{}: the owner likes tea.)",
+            crate::persona::recall::MEMORY_STEM
+        );
+        let mut cx = (**agent.context()).clone();
+        cx.notes = Arc::from(vec![memory.clone()]);
+        let mut convo = Conversation::from(vec![Message::user("hi")]);
+        assert!(!convo.taint.private);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert!(convo.taint.private, "a memory note arms private");
+        convo.push(Message::user("mm"));
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        let copies = |req: &CompletionRequest| -> usize {
+            req.messages
+                .iter()
+                .map(|m| m.text().matches("likes tea").count())
+                .sum()
+        };
+        // The first request ends on the owner's turn, the second on the tool
+        // results: the note rides whichever is newest, once.
+        for req in &seen[..2] {
+            assert_eq!(
+                req.messages.last().unwrap().content.last(),
+                Some(&Block::text(memory.clone()))
+            );
+            assert_eq!(req.trailing_notes, 1);
+            assert_eq!(copies(req), 1);
+        }
+        assert_eq!(seen[0].messages.len(), 1, "never a message of its own");
+        assert!(seen[1].messages[0].content == vec![Block::text("hi")]);
+        // The next run set none, and the record never held one.
+        assert_eq!(seen[2].trailing_notes, 0);
+        assert_eq!(copies(&seen[2]), 0);
+        assert!(!serde_json::to_string(&convo.messages)
+            .unwrap()
+            .contains("likes tea"));
+        assert!(convo.taint.private, "taint outlives the note");
+    }
+
     #[tokio::test]
     async fn kept_prior_thinking_is_sent_back_as_recorded() {
         let (sent, _) = sent_across_turns(PriorThinking::Keep).await;
@@ -15929,17 +16034,34 @@ justification = "this box never sends from an armed conversation"
                 is_error: false,
             }]),
             Message::assistant(vec![think("PLAN-B"), Block::text("Found it. And")]),
-            Message::user("mm"),
+            Message {
+                content: vec![
+                    Block::text("mm"),
+                    // Recorded before run notes existed: left off the wire.
+                    Block::text(crate::persona::edit::note()),
+                ],
+                ..Message::user("")
+            },
         ];
         let (agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
         let agent = agent
             .with_prior_thinking(PriorThinking::Drop)
-            .with_prior_tails(PriorTails::Trim);
-        let sent = agent.wire(&history);
+            .with_prior_tails(PriorTails::Trim)
+            .with_prior_nudges(PriorNudges::Drop);
+        let notes = ["(From the harness: this run's note.)".to_string()];
+        let sent = agent.wire(&history, &notes);
         assert_eq!(
-            agent.wire_bytes(&history),
+            agent.wire_bytes(&history, &notes),
             crate::pressure::message_bytes(&sent),
             "wire_bytes must be the size of what wire sends"
+        );
+        assert_eq!(
+            sent.last().unwrap().content,
+            vec![
+                Block::text("mm"),
+                Block::text("(From the harness: this run's note.)")
+            ],
+            "the recorded note goes, the run's note rides last"
         );
         // And both views did something, so the equality is not vacuous.
         assert!(crate::pressure::message_bytes(&sent) < crate::pressure::message_bytes(&history));
