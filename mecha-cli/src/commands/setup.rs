@@ -683,7 +683,7 @@ fn report_salvage(salvaged: Option<std::path::PathBuf>) {
 /// `context_window`. `answers_like_a_model_server` is the identification step
 /// that tolerance left out; it lives in core beside the claim it supports, so
 /// it is testable without a socket.
-pub(super) async fn probe_for_a_local_server() -> onboarding::LocalProbe {
+async fn probe_for_a_local_server() -> onboarding::LocalProbe {
     for base_url in onboarding::local_probe_candidates() {
         match mecha_core::provider::preflight::fetch(base_url, None).await {
             Some(props) if onboarding::answers_like_a_model_server(&props) => {
