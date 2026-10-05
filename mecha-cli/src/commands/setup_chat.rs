@@ -28,6 +28,15 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         "`mecha setup chat` installs a model server and asks which model, so it runs only at a \
          terminal"
     );
+    // Refused before anything is asked or fetched: the router is a systemd
+    // user unit, and the engine download ahead of it would otherwise run
+    // and then fail (found on review of #568).
+    anyhow::ensure!(
+        cfg!(target_os = "linux"),
+        "`mecha setup chat` installs the router as a systemd user unit, which this system does \
+         not have — start llama-server by hand and run `mecha setup --write` (FEATURES-DESIGN \
+         §10.5)"
+    );
     let m = mecha_core::sidecar::Machinery::real()?;
     let machine = mecha_core::recommend::Machine::read()?;
     let hub = mecha_core::fetch::hub_dir()?;

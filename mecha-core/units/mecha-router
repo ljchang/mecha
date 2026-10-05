@@ -3,5 +3,16 @@
 # time, the request's `model` field choosing among the presets in
 # MECHA_ROUTER_PRESETS (written by mecha from the chat row it installed). The
 # engine is the unit's LLAMA_SERVER, named in a drop-in.
-exec ${LLAMA_SERVER:-llama-server} --host 127.0.0.1 --port "${MECHA_ROUTER_PORT:-8080}" \
-  --models-preset "${MECHA_ROUTER_PRESETS:?the unit names no presets file}" --models-max 1
+#
+# The cache is emptied on purpose, as scripts/start-router.sh does: without it
+# the router offers every GGUF in the Hugging Face cache as a model loadable by
+# name with bare flags (no projector, default context) — the embeddings and OCR
+# models mecha fetched among them — and with --models-max 1 loading one evicts
+# the chat model (LLAMA-SERVER.md §Router mode). The children load by absolute
+# path and never read it.
+PRESETS="${MECHA_ROUTER_PRESETS:?the unit names no presets file}"
+NO_CACHE="$(dirname "$PRESETS")/no-cache"
+mkdir -p "$NO_CACHE" || exit 1
+LLAMA_CACHE="$NO_CACHE" \
+  exec ${LLAMA_SERVER:-llama-server} --host 127.0.0.1 --port "${MECHA_ROUTER_PORT:-8080}" \
+  --models-preset "$PRESETS" --models-max 1

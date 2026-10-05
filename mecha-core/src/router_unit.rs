@@ -135,6 +135,11 @@ pub fn alias_for(model: &Path) -> String {
     let a = a.trim_matches('-').to_string();
     if a.is_empty() {
         "local".into()
+    } else if a == PINNED_ALIAS {
+        // The production name means the pinned row with its sampling and
+        // draft lines; a brought file of the same name gets neither, so it
+        // is not given the name.
+        format!("{a}-own")
     } else {
         a
     }
@@ -219,17 +224,18 @@ pub async fn preset_for(
                     );
                 }
             }
+            // The projector by its name, the weights as the file that is not
+            // it — never by position in the pin list.
+            let is_mmproj = |p: &PathBuf| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("mmproj"))
+            };
             let model = paths
-                .first()
-                .cloned()
-                .context("the chat row pins no file")?;
-            let mmproj = paths
                 .iter()
-                .find(|p| {
-                    p.file_name()
-                        .is_some_and(|n| n.to_string_lossy().contains("mmproj"))
-                })
-                .cloned();
+                .find(|p| !is_mmproj(p))
+                .cloned()
+                .context("the chat row pins no weights")?;
+            let mmproj = paths.iter().find(|p| is_mmproj(p)).cloned();
             Ok(Preset {
                 alias: PINNED_ALIAS.into(),
                 model,
@@ -468,6 +474,10 @@ mod tests {
             "llama-3.1-8b-q4"
         );
         assert_eq!(alias_for(Path::new("/m/___.gguf")), "local");
+        assert_eq!(
+            alias_for(Path::new(&format!("/m/{PINNED_ALIAS}.gguf"))),
+            format!("{PINNED_ALIAS}-own")
+        );
     }
 
     /// Rendered for a test naming, nothing of the live router remains.
@@ -496,6 +506,53 @@ mod tests {
         for live in ["8080", "llama-local", "%h/.local", "@PRESETS@"] {
             assert!(!unit.contains(live), "{live} left in:\n{unit}");
         }
+    }
+
+    /// The launcher empties the model cache as `scripts/start-router.sh`
+    /// does, or the router offers every GGUF in the hub — the embeddings and
+    /// OCR models among them — loadable by name, and loading one evicts the
+    /// chat model (found on review of #568).
+    #[test]
+    fn the_launcher_hides_the_hub_from_the_router() {
+        let script = include_str!("../../scripts/start-router.sh");
+        assert!(script.contains("LLAMA_CACHE="), "the authority changed");
+        assert!(ROUTER_LAUNCHER.contains("LLAMA_CACHE=\"$NO_CACHE\""));
+        assert!(ROUTER_LAUNCHER.contains("--models-max 1"));
+        assert!(ROUTER_LAUNCHER.contains("--models-preset \"$PRESETS\""));
+    }
+
+    /// Run for real: the launcher, given a presets file and a stand-in
+    /// engine, execs it with an empty cache beside the presets.
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_runs_the_engine_with_an_empty_cache() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("mecha-7c2-l-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let launcher = root.join("mecha-router");
+        std::fs::write(&launcher, ROUTER_LAUNCHER).unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let engine = root.join("fake-llama-server");
+        std::fs::write(&engine, "#!/bin/sh\necho \"cache=$LLAMA_CACHE args=$*\"\n").unwrap();
+        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let presets = root.join("router").join("models.ini");
+        let out = std::process::Command::new(&launcher)
+            .env("LLAMA_SERVER", &engine)
+            .env("MECHA_ROUTER_PRESETS", &presets)
+            .env("MECHA_ROUTER_PORT", "41080")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let said = String::from_utf8_lossy(&out.stdout);
+        let no_cache = root.join("router").join("no-cache");
+        assert!(
+            said.contains(&format!("cache={}", no_cache.display())),
+            "{said}"
+        );
+        assert!(no_cache.is_dir());
+        assert!(said.contains("--port 41080"), "{said}");
+        assert!(said.contains("--models-max 1"), "{said}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The geometry the preset serves is the one the row's memory figure was
@@ -556,9 +613,19 @@ mod tests {
             &mut |s| said.push(s.to_string()),
         )
         .await;
+        // What the router offers, asked before it goes: the presets only —
+        // never the hub's other GGUFs, which this machine's cache is full of
+        // (found on review of #568).
+        let offered: Vec<String> = crate::provider::router::models(&naming.base())
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         let cleaned = remove(&m, &naming);
-        eprintln!("{said:#?}");
+        eprintln!("{said:#?}\noffered: {offered:?}");
         assert_eq!(r.unwrap(), "harrier-oss-v1-0.6b.f16");
+        assert_eq!(offered, ["harrier-oss-v1-0.6b.f16"]);
         cleaned.unwrap();
         let man = Manifest::read(&m.mecha_home).unwrap();
         assert!(
