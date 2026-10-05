@@ -267,9 +267,11 @@ pub enum Record {
     /// never part of the conversation. Recorded so a reader can still see
     /// what the model was told, since the messages no longer carry it.
     ///
-    /// **Audit only.** [`Session::read`] leaves it out of the conversation it
-    /// rebuilds, which is the point. A build from before this record skips the
-    /// line as one it cannot parse, as with [`Record::Extend`].
+    /// [`Session::read`] leaves it out of the conversation it rebuilds, which
+    /// is the point, but arms the taint from it by the content rule: notes are
+    /// no longer in the messages, and the transcript is how a torn taint
+    /// record is re-derived. A build from before this record skips the line as
+    /// one it cannot parse, as with [`Record::Extend`].
     Notes {
         notes: Vec<String>,
     },
@@ -2098,8 +2100,20 @@ impl Session {
                 Ok(Record::Summary { .. }) => {}
                 // For the corpus, not the conversation: nothing to rebuild.
                 Ok(Record::SpokenDirection(_)) => {}
-                // A run's notes are never part of the conversation it rebuilds.
-                Ok(Record::Notes { .. }) => {}
+                // A run's notes are never part of the conversation it rebuilds,
+                // but what they carried armed it, and the transcript is how a
+                // torn taint record is re-derived (`Taint::arm_for_content`'s
+                // reason for reading it). Notes are no longer in the messages,
+                // so they arm here by the same rule, from the point they were
+                // recorded: a memory note re-arms `private` even after the
+                // store it came from is gone.
+                Ok(Record::Notes { notes }) => {
+                    let was = taint;
+                    taint.arm_for_notes(&notes);
+                    if taint != was {
+                        taint_checkpoints.push((messages.len(), taint));
+                    }
+                }
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
@@ -5417,9 +5431,30 @@ mod extension_tests {
         let (_, convo) = Session::load(&s.path).unwrap();
         assert_eq!(convo.messages.len(), 1);
         assert_eq!(convo.messages[0].content, vec![Block::text("hello")]);
+        assert!(!convo.taint.private, "a plain note arms nothing");
         assert!(Session::messages_ever(&text)
             .iter()
             .all(|m| !m.text().contains("a note")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A memory note armed the chat when it ran. With no taint record on file
+    /// (torn, or a crash before it was written), the rebuild still arms from
+    /// the recorded note, as it would from a memory block in the messages.
+    #[test]
+    fn a_recorded_memory_note_re_arms_a_chat_whose_taint_record_is_missing() {
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("hello"))).unwrap();
+        s.append(&Record::Notes {
+            notes: vec![format!(
+                "{}: the owner likes tea.)",
+                crate::persona::recall::MEMORY_STEM
+            )],
+        })
+        .unwrap();
+        let (_, convo) = Session::load(&s.path).unwrap();
+        assert!(convo.taint.private);
+        assert!(!convo.taint.untrusted);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
