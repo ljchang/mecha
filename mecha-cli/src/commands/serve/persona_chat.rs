@@ -2675,6 +2675,7 @@ impl PersonaChats {
                     None,
                     token.as_deref(),
                     Vec::new(),
+                    false,
                     Some(spoken),
                 )
                 .await
@@ -2720,8 +2721,17 @@ impl PersonaChats {
         request_id: Option<String>,
         token: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
-        self.send_with(chat, library, key, text, request_id, token, Vec::new())
-            .await
+        self.send_with(
+            chat,
+            library,
+            key,
+            text,
+            request_id,
+            token,
+            Vec::new(),
+            false,
+        )
+        .await
     }
 
     /// `send`, with the files the page uploaded for this turn (`upload`),
@@ -2729,7 +2739,9 @@ impl PersonaChats {
     /// among them also rides on the turn as pixels for a model that can see
     /// (`chat::attached_images`), which arms `private_data`; a blind model,
     /// the cap or an unreadable file leave it to its path, and the answer
-    /// says how many were not shown.
+    /// says how many were not shown. `edit`: the picture edit panel sent
+    /// it, and the persona is told so (`persona::edit`); a message that
+    /// steers a run in flight carries text only, and no note.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_with(
         self: &Arc<Self>,
@@ -2740,6 +2752,7 @@ impl PersonaChats {
         request_id: Option<String>,
         token: Option<&str>,
         attachments: Vec<String>,
+        edit: bool,
     ) -> Result<serde_json::Value, Refusal> {
         self.start(
             chat,
@@ -2749,6 +2762,7 @@ impl PersonaChats {
             request_id,
             token,
             attachments,
+            edit,
             None,
         )
         .await
@@ -2767,6 +2781,7 @@ impl PersonaChats {
         request_id: Option<String>,
         token: Option<&str>,
         attachments: Vec<String>,
+        edit: bool,
         spoken: Option<Spoken>,
     ) -> Result<serde_json::Value, Refusal> {
         let text = text.trim().to_string();
@@ -2983,6 +2998,10 @@ impl PersonaChats {
         // What the persona keeps opening and closing with, named back to it in
         // the harness's voice (`persona::variety`, measured 2026-10-04).
         let variety_note = mecha_core::persona::variety::note(&conversation.messages);
+        // A turn the picture edit panel sent: answered in a line, not by
+        // retelling a picture the persona has not seen (`persona::edit`,
+        // measured 2026-10-05). Typed only; a spoken turn has the call note.
+        let edit_note = (edit && spoken.is_none()).then(mecha_core::persona::edit::note);
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -3065,6 +3084,9 @@ impl PersonaChats {
             if let Some(note) = &variety_note {
                 mecha_core::agent::append_user_text(&mut conversation.messages, note.clone());
             }
+            if let Some(note) = &edit_note {
+                mecha_core::agent::append_user_text(&mut conversation.messages, note.clone());
+            }
             ps.session
                 .append(&Record::Rewrite {
                     messages: conversation.messages.clone(),
@@ -3100,6 +3122,10 @@ impl PersonaChats {
                     .push(mecha_core::message::Block::Text { text: note.clone() });
             }
             if let Some(note) = &variety_note {
+                user.content
+                    .push(mecha_core::message::Block::Text { text: note.clone() });
+            }
+            if let Some(note) = &edit_note {
                 user.content
                     .push(mecha_core::message::Block::Text { text: note.clone() });
             }
@@ -3803,6 +3829,9 @@ pub struct SendBody {
     /// named in `text` (`PersonaChats::send_with`).
     #[serde(default)]
     attachments: Vec<String>,
+    /// The picture edit panel sent this turn (`persona::edit`).
+    #[serde(default)]
+    edit: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -4424,6 +4453,7 @@ pub async fn send(
                 body.request_id,
                 body.unlock.as_deref(),
                 body.attachments,
+                body.edit,
             )
             .await,
     )
@@ -4984,9 +5014,14 @@ mod tests {
 
     /// Run one turn and wait for it to finish.
     async fn turn(w: &World, key: &str, text: &str) {
+        turn_as(w, key, text, false).await
+    }
+
+    /// `turn`, sent from the picture edit panel when `edit`.
+    async fn turn_as(w: &World, key: &str, text: &str, edit: bool) {
         let (mut rx, _) = w.personas().subscribe(&w.library, key, None).await.unwrap();
         w.personas()
-            .send(&w.chat, &w.library, key, text, None, None)
+            .send_with(&w.chat, &w.library, key, text, None, None, Vec::new(), edit)
             .await
             .unwrap();
         loop {
@@ -5169,6 +5204,43 @@ mod tests {
             recorded.contains(r"Glad you came. \n\nI"),
             "the transcript keeps the reply as written"
         );
+    }
+
+    /// A turn the edit panel sent carries the edit note in the harness's
+    /// voice (`persona::edit`), never as the owner's words; a typed turn
+    /// does not, and the next turn's request leaves the stale note out.
+    #[tokio::test]
+    async fn an_edit_panel_turn_is_told_to_answer_in_a_line() {
+        let w = world_with(Mode::Think("they asked for an edit".into()));
+        let key = open_chat(&w).await;
+        let edit_notes = |m: &Message| {
+            m.content
+                .iter()
+                .filter(|b| {
+                    matches!(b, mecha_core::message::Block::Text { text }
+                    if mecha_core::persona::edit::is_note(text))
+                })
+                .count()
+        };
+        turn(&w, &key, "hello").await;
+        turn_as(&w, &key, "Edit images/a.png: make the sky pink", true).await;
+        turn(&w, &key, "lovely").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(
+            edit_notes(seen[0].messages.last().unwrap()),
+            0,
+            "a typed turn"
+        );
+        let edited = seen[1].messages.last().unwrap();
+        assert_eq!(edit_notes(edited), 1, "the edit turn carries the note");
+        assert_eq!(
+            mecha_core::agent::owner_text(edited),
+            "Edit images/a.png: make the sky pink",
+            "the note is the harness's, never the owner's words"
+        );
+        let on_wire: usize = seen[2].messages.iter().map(edit_notes).sum();
+        assert_eq!(on_wire, 0, "a stale edit note went back to the model");
     }
 
     /// A persona that keeps opening and closing alike is told so, in the
@@ -6580,7 +6652,7 @@ mod tests {
                     .unwrap();
                 let answer = w
                     .personas()
-                    .send_with(&w.chat, &w.library, &key, text, None, None, attached)
+                    .send_with(&w.chat, &w.library, &key, text, None, None, attached, false)
                     .await
                     .unwrap();
                 loop {
@@ -7271,6 +7343,7 @@ mod tests {
                 None,
                 None,
                 vec!["inbox/photo.png".into()],
+                false,
             )
             .await
             .unwrap();
