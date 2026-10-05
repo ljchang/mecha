@@ -9,6 +9,11 @@
 #   scripts/llama/install.sh --remove stop and remove everything it installed
 #
 # It does not download the model: `hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF`.
+#
+# `mecha features enable documents` installs the same units and launchers on a
+# machine without them (mecha-core/src/llama_units.rs, which ships copies of
+# these files held equal to them by a test) — fetching the model, launchers
+# under ~/.mecha/sidecars/bin/. This script stays for a hand install.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 bin="$HOME/.local/bin"

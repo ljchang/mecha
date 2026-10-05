@@ -83,7 +83,7 @@ pub const SIDECARS: &[Sidecar] = &[
         needed_by: &[],
         serves: &["chat"],
         evidence: &[Evidence::UserUnit("llama-local.service")],
-        installer: "7c",
+        installer: "7c-2",
         models_in_hub: true,
     },
     Sidecar {
@@ -95,7 +95,7 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::UserUnit("llama-embed.socket"),
             Evidence::UserUnit("llama-embed.service"),
         ],
-        installer: "7c",
+        installer: "7c-1",
         models_in_hub: true,
     },
     Sidecar {
@@ -107,7 +107,7 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::UserUnit("llama-ocr.socket"),
             Evidence::UserUnit("llama-ocr.service"),
         ],
-        installer: "7c",
+        installer: "7c-1",
         models_in_hub: true,
     },
     Sidecar {
@@ -273,6 +273,20 @@ impl Manifest {
             return Ok(());
         };
         e.wrote.retain(|w| w != path);
+        m.write(mecha_home)
+    }
+
+    /// Drop an entry that no longer records anything — a sidecar removed whole
+    /// — so the plan reads the machine again rather than an empty, finished
+    /// record (which it would call unknown, and never offer over).
+    pub fn forget_if_empty(mecha_home: &Path, id: &str) -> Result<()> {
+        let mut m = Manifest::read(mecha_home)?;
+        let before = m.entries.len();
+        m.entries
+            .retain(|e| !(e.sidecar == id && e.wrote.is_empty() && e.builds.is_empty()));
+        if m.entries.len() == before {
+            return Ok(());
+        }
         m.write(mecha_home)
     }
 
@@ -767,6 +781,26 @@ pub fn plan(
 mod tests {
     use super::*;
 
+    /// An entry emptied by a removal is dropped; one still naming a path, or
+    /// another sidecar's, is kept.
+    #[test]
+    fn an_emptied_entry_is_forgotten_and_nothing_else() {
+        let home = std::env::temp_dir().join(format!("mecha-forget-{}", uuid::Uuid::new_v4()));
+        Manifest::begin(&home, "ocr-server").unwrap();
+        Manifest::begin(&home, "embed-server").unwrap();
+        Manifest::record(&home, "embed-server", &home.join("x")).unwrap();
+        Manifest::forget_if_empty(&home, "embed-server").unwrap();
+        Manifest::forget_if_empty(&home, "ocr-server").unwrap();
+        let ids: Vec<String> = Manifest::read(&home)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|e| e.sidecar)
+            .collect();
+        assert_eq!(ids, vec!["embed-server".to_string()]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// A path taken away on purpose and unrecorded leaves the install
     /// whole: recorded-but-gone reads `Incomplete`, forgotten reads as before.
     #[test]
@@ -839,7 +873,7 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c", "7d", "7e", "7f"].contains(&s.installer),
+                ["7a-3", "7b", "7c-1", "7c-2", "7d", "7e", "7f"].contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
@@ -857,7 +891,7 @@ mod tests {
         let p = plan(Feature::Ocr, &m, &GB10, &hub, false).unwrap();
         assert_eq!(p.feature, Feature::Documents, "a part plans as its parent");
         let ocr = p.sidecars.iter().find(|s| s.id == "ocr-server").unwrap();
-        assert_eq!(ocr.state, SidecarState::Missing { step: "7c" });
+        assert_eq!(ocr.state, SidecarState::Missing { step: "7c-1" });
         let layout = p.sidecars.iter().find(|s| s.id == "layout").unwrap();
         assert_eq!(layout.state, SidecarState::Missing { step: "7a-3" });
         assert!(

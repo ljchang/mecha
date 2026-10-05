@@ -1,0 +1,31 @@
+#!/bin/bash
+# mecha-wait-healthy PORT [SECONDS]
+#
+# The ExecStartPost of every on-demand llama-server unit here
+# (docs/DOCUMENT-EXTRACTION-DESIGN.md §6). A unit is "active" when this exits
+# 0, and the socket proxy is ordered after the unit, so no connection is ever
+# forwarded to a server that is still loading.
+#
+# **A listening server is not a ready one.** llama-server answers /health with
+# 503 while the model loads, so the envelope is checked before the body: the
+# status must be 200 AND the body must say "ok". A port that merely accepts is
+# what the proxy would otherwise forward a caller's request into.
+#
+# Installed to ~/.local/bin beside the launchers, not run from a checkout —
+# the llama-embed rule of 2026-08-20: a unit references a stable path, never
+# a working tree someone is editing.
+set -u
+port="${1:?usage: mecha-wait-healthy PORT [SECONDS]}"
+limit="${2:-120}"
+deadline=$((SECONDS + limit))
+while (( SECONDS < deadline )); do
+  out=$(curl -s --max-time 2 -w $'\n%{http_code}' "http://127.0.0.1:${port}/health" 2>/dev/null)
+  code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  if [[ "$code" == 200 && "$body" == *'"ok"'* ]]; then
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "llama-server on 127.0.0.1:${port} did not answer /health with status ok within ${limit}s (last: ${code:-no answer})" >&2
+exit 1
