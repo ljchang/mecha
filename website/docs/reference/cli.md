@@ -1763,7 +1763,11 @@ sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. The
 engine is offered only where it runs something: when the chat model is served
 from this machine, or the feature runs an embeddings or OCR server. A machine
 whose NVIDIA device `nvidia-smi` cannot read gets no engine rather than the
-CPU build.
+CPU build. On Linux it also covers the **embeddings and OCR servers** — the
+pinned model, a launcher under `~/.mecha/sidecars/bin/`, and the three systemd
+user units that start the server on its first request and stop it after ten
+idle minutes; the install starts it once to check it answers. A file mecha did
+not write is never replaced. (On macOS these start by hand, for now.)
 Answering no writes nothing. `--no-install` writes the switch without
 installing. Without a terminal, an `enable` that would install refuses and
 names `--no-install`. A program that is already on the machine is left alone.

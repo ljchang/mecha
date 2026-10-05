@@ -37,6 +37,7 @@ pub mod agent;
 pub mod call;
 pub mod cite;
 pub mod echo;
+pub mod edit;
 pub mod files;
 pub mod judge;
 pub mod memory;
