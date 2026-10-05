@@ -148,12 +148,8 @@ fn render(text: &str, which: Which, naming: &Naming, bin: &Path, proxyd: &str) -
     let shipped = which.shipped();
     text.replace(&shipped.backend.to_string(), "\u{0}BACKEND\u{0}")
         .replace(
-            &format!("127.0.0.1:{}", shipped.public),
-            &format!("127.0.0.1:{}", naming.public),
-        )
-        .replace(
-            &format!(":{})", shipped.public),
-            &format!(":{})", naming.public),
+            &format!(":{}", shipped.public),
+            &format!(":{}", naming.public),
         )
         .replace("\u{0}BACKEND\u{0}", &naming.backend.to_string())
         .replace(&shipped.stem, &naming.stem)
@@ -169,16 +165,29 @@ fn write_owned(home: &Path, id: &str, path: &Path, text: &str, mode: u32) -> Res
         .entries
         .iter()
         .any(|e| e.wrote.iter().any(|w| w == path));
+    // A dangling link is a path someone put there, not an empty one.
+    let link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     match std::fs::read_to_string(path) {
-        Ok(existing) if existing == text => {}
+        Ok(existing) if existing == text && !link => {}
         Ok(_) if !ours => bail!(
             "{} is there already and mecha did not write it — move it aside to install mecha's",
+            path.display()
+        ),
+        // Unknown is never clean: bytes that are not text, a file that cannot
+        // be read, a link to nothing — whose it is cannot be said, so it is
+        // not replaced.
+        Err(e) if !ours && (link || e.kind() != std::io::ErrorKind::NotFound) => bail!(
+            "{} is there already and mecha cannot read it ({e}), so it cannot say whose it is — \
+             move it aside to install mecha's",
             path.display()
         ),
         _ => {
             Manifest::record(home, id, path)?;
             std::fs::create_dir_all(path.parent().context("a path with no parent")?)?;
-            let tmp = path.with_extension("mecha-new");
+            let tmp = path.with_file_name(format!(
+                "{}.mecha-new",
+                path.file_name().and_then(|n| n.to_str()).unwrap_or("unit")
+            ));
             std::fs::write(&tmp, text)?;
             #[cfg(unix)]
             {
@@ -288,18 +297,22 @@ pub async fn install(
     )?;
     let dropins = units.join(format!("{stem}.service.d"));
     write_owned(home, id, &dropins.join("path.conf"), PATH_CONF, 0o644)?;
-    // mecha's engine, when it is mecha's: otherwise the launcher runs the
-    // `llama-server` on the unit's PATH, a provided engine left alone.
-    let managed = crate::engine_gate::managed_binary(home);
-    if managed.is_file() {
-        write_owned(
-            home,
-            id,
-            &dropins.join("mecha-engine.conf"),
-            &crate::engine_gate::drop_in_text(&managed),
-            0o644,
-        )?;
-    }
+    // The engine the launcher runs, named in the unit: mecha's when it is
+    // installed, else the provided `llama-server` found where the engine's
+    // own check found it — the shell's PATH, which can be wider than the
+    // unit's fixed one (a Nix profile, Homebrew, a build tree). Left alone
+    // either way: the drop-in only names it.
+    let engine = engine_for_units(m).context(
+        "there is no llama-server for these servers to run — `mecha features enable` installs \
+         mecha's engine where it is offered, or put a llama.cpp build on PATH",
+    )?;
+    write_owned(
+        home,
+        id,
+        &dropins.join("mecha-engine.conf"),
+        &crate::engine_gate::drop_in_text(&engine),
+        0o644,
+    )?;
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])?;
@@ -309,6 +322,19 @@ pub async fn install(
     ));
     check(which, naming.public).await?;
     Manifest::finish(home, id)
+}
+
+/// The `llama-server` the units should run: mecha's own engine when it is
+/// installed, else the first one on the machinery's PATH.
+fn engine_for_units(m: &Machinery) -> Option<PathBuf> {
+    let managed = crate::engine_gate::managed_binary(&m.mecha_home);
+    if managed.is_file() {
+        return Some(managed);
+    }
+    m.path
+        .iter()
+        .map(|d| d.join("llama-server"))
+        .find(|p| p.is_file())
 }
 
 /// One request through the public port, waited out across the cold start the
@@ -374,6 +400,23 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
         Manifest::unrecord(&m.mecha_home, which.sidecar(), &p)?;
     }
     let _ = std::fs::remove_dir(&dropins);
+    // The launchers too, or the record would still read installed with no
+    // unit on the machine. `mecha-wait-healthy` is shared: each server keeps
+    // its own record of it, and the file goes only when no record is left.
+    let bin = bin_dir(&m.mecha_home);
+    let (_, _, _, _, launcher_name) = which.files();
+    let launcher = bin.join(launcher_name);
+    let _ = std::fs::remove_file(&launcher);
+    Manifest::unrecord(&m.mecha_home, which.sidecar(), &launcher)?;
+    let wait = bin.join("mecha-wait-healthy");
+    Manifest::unrecord(&m.mecha_home, which.sidecar(), &wait)?;
+    let still_used = Manifest::read(&m.mecha_home)?
+        .entries
+        .iter()
+        .any(|e| e.wrote.contains(&wait));
+    if !still_used {
+        let _ = std::fs::remove_file(&wait);
+    }
     crate::engine_gate::systemctl("daemon-reload", &[])
 }
 
@@ -437,8 +480,9 @@ mod tests {
         let service = render(OCR_SERVICE, ocr, &test, bin, proxyd);
         assert!(service.contains("MECHA_OCR_PORT=41001"), "{service}");
         assert!(service.contains("mecha-wait-healthy 41001"), "{service}");
-        for rendered in [&proxy, &socket, &service] {
-            for live in ["8085", "18085", "llama-ocr.", "llama-ocr-"] {
+        let launcher = render(OCR_LAUNCHER, ocr, &test, bin, proxyd);
+        for rendered in [&proxy, &socket, &service, &launcher] {
+            for live in [":8085", "18085", "llama-ocr.", "llama-ocr-"] {
                 assert!(!rendered.contains(live), "{live} left in:\n{rendered}");
             }
         }
@@ -455,6 +499,18 @@ mod tests {
         );
         assert!(embed.contains("ListenStream=127.0.0.1:41010"), "{embed}");
         assert!(!embed.contains("8081"), "{embed}");
+        let embed_launcher = render(
+            EMBED_LAUNCHER,
+            Which::Embeddings,
+            &Naming {
+                stem: "mecha-test-embed".into(),
+                public: 41010,
+                backend: 41011,
+            },
+            bin,
+            proxyd,
+        );
+        assert!(!embed_launcher.contains(":8081"), "{embed_launcher}");
     }
 
     /// A file mecha did not write is never overwritten: identical bytes are
@@ -472,6 +528,28 @@ mod tests {
         std::fs::write(&p, "#!/bin/sh\necho changed\n").unwrap();
         write_owned(&home, "ocr-server", &p, WAIT_HEALTHY, 0o755).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), WAIT_HEALTHY);
+        // Bytes that are not text, and a link to nothing, cannot be said to be
+        // anyone's: refused, untouched.
+        let binary = home.join("bin/binary");
+        std::fs::write(&binary, [0xff, 0xfe]).unwrap();
+        let err = write_owned(&home, "ocr-server", &binary, "ours", 0o755)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot read"), "{err}");
+        assert_eq!(std::fs::read(&binary).unwrap(), vec![0xff, 0xfe]);
+        #[cfg(unix)]
+        {
+            let dangling = home.join("bin/dangling");
+            std::os::unix::fs::symlink(home.join("nowhere"), &dangling).unwrap();
+            let err = write_owned(&home, "ocr-server", &dangling, "ours", 0o755)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("cannot read"), "{err}");
+            assert!(std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
         let fresh = home.join("bin/other");
         std::fs::write(&fresh, "theirs").unwrap();
         let err = write_owned(&home, "ocr-server", &fresh, "ours", 0o755)
@@ -515,6 +593,15 @@ mod tests {
         eprintln!("{said:#?}");
         r.unwrap();
         cleaned.unwrap();
+        // Removed is removed from the record too: nothing left for the plan
+        // to read as installed.
+        let man = Manifest::read(&m.mecha_home).unwrap();
+        let entry = man
+            .entries
+            .iter()
+            .find(|e| e.sidecar == "ocr-server")
+            .unwrap();
+        assert!(entry.wrote.is_empty(), "{:?}", entry.wrote);
         let unit = crate::engine_gate::unit_dir(&m)
             .unwrap()
             .join(format!("{}.socket", naming.stem));
