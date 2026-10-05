@@ -396,18 +396,16 @@ pub async fn install_engine(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     Ok(link.join("llama-server"))
 }
 
-/// `current` is set to the pin only when it names nothing (a first install)
-/// or names the pin already. A machine an upgrade moved on keeps its build:
-/// re-running the pin's install — `features enable` repairing an unfinished
-/// entry — must never demote it outside the gate.
+/// `current` is set to the pin only on a first install, when it names
+/// nothing. Any build already there is the gate's to change: an install that
+/// repointed `current` — up from an older pin, down from an upgrade, or over
+/// a deliberate `--to` — would move every adopted unit onto an engine nothing
+/// measured, with no `previous` and no ledger row. `--adopt` points `current`
+/// at the pin itself, as its promotion.
 fn settle_current_on_pin(home: &Path) -> Result<()> {
-    let build = |t: &str| t.strip_prefix('b').and_then(|n| n.parse::<u32>().ok());
     match link_tag(&current(home)) {
-        // Upgraded past the pin: an upgrade's build is kept.
-        Some(t) if build(&t).is_some_and(|b| b > PIN.build) => Ok(()),
-        // Nothing yet, the pin, or a build older than it (an earlier pin):
-        // the pin, which this mecha ships as the newest it has measured.
-        _ => point_current(home, PIN.tag),
+        Some(_) => Ok(()),
+        None => point_current(home, PIN.tag),
     }
 }
 
@@ -1705,17 +1703,18 @@ mod tests {
     /// The pin's install sets `current` on a first run and leaves an upgraded
     /// machine's alone — the link rule `install_engine` follows.
     #[test]
-    fn the_pin_install_never_demotes_an_upgraded_current() {
+    fn the_pin_install_sets_current_only_on_a_first_install() {
         let home = std::env::temp_dir().join(format!("mecha-demote-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(engine_root(&home)).unwrap();
         point_current(&home, "b20000").unwrap();
         settle_current_on_pin(&home).unwrap();
         assert_eq!(link_tag(&current(&home)).as_deref(), Some("b20000"));
-        // An older build — an earlier pin — moves up to this pin.
+        // An older build — an earlier pin, or a `--to` downgrade — is left
+        // too: moving it would be a promotion no gate measured.
         point_current(&home, "b10000").unwrap();
         settle_current_on_pin(&home).unwrap();
-        assert_eq!(link_tag(&current(&home)).as_deref(), Some(PIN.tag));
-        // A first install, and a machine on the pin, get the pin.
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some("b10000"));
+        // A first install gets the pin.
         std::fs::remove_file(current(&home)).unwrap();
         settle_current_on_pin(&home).unwrap();
         assert_eq!(link_tag(&current(&home)).as_deref(), Some(PIN.tag));
