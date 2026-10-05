@@ -38,7 +38,7 @@
  *                          // of the call is logged (`refusesAnswer`) — set
  *                          // for a call into an incognito chat
  *     onState,             // (name, label) — idle|connecting|listening|thinking|speaking|paused
- *     onTranscript,        // ({who: "user"|"bot"|"notice", text, interim}) - "notice" is the
+ *     onTranscript,        // ({who: "user"|"bot"|"notice", text, interim, typed?}) - "notice" is the
  *                          //   call's own state (a dead mic, a dropped line, an error), never speech
  *     onLevel,             // (0..1) real mic level, for state rings
  *     onLink,              // (live: bool)
@@ -1305,7 +1305,7 @@ export function createVoiceSession(opts = {}) {
       const t = typeof text === "string" ? text.trim() : "";
       if (!t) return false;
       if (!sendClientMessage("typed", { text: t })) return false;
-      cfg.onTranscript({ who: "user", text: t, interim: false });
+      cfg.onTranscript({ who: "user", text: t, interim: false, typed: true });
       return true;
     },
   };
