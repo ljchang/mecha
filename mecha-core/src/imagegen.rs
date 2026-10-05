@@ -72,7 +72,9 @@ pub struct ImageConfig {
     pub backend: ImageBackend,
     /// The server's base URL. Must be loopback: see [`loopback_url`].
     pub url: String,
-    /// File names as the server lists them (ComfyUI: under `models/`).
+    /// File names as the server lists them (ComfyUI: under `models/`). A
+    /// `.gguf` diffusion model loads through the ComfyUI-GGUF custom node,
+    /// anything else through ComfyUI's own `UNETLoader` ([`unet_loader`]).
     pub diffusion_model: String,
     pub text_encoder: String,
     pub vae: String,
@@ -84,10 +86,11 @@ pub struct ImageConfig {
     /// the check. On unified memory (GB10) the GPU's allocations come out of
     /// the same pool as everything else, and the first generation on this
     /// machine took it down alongside `llama-server` and a parallel link. A
-    /// generation from a server holding no model needs ~18.5 GB above its
-    /// idle footprint (GPU + RSS, measured 2026-10-02; the earlier "15 GB
-    /// peak" counted the GPU side only), and an idle-reset server holds no
-    /// model, so the default covers that with a little room.
+    /// generation from a server holding no model needed ~18.5 GB above its
+    /// idle footprint with the Q4 GGUF (GPU + RSS, measured 2026-10-02; the
+    /// earlier "15 GB peak" counted the GPU side only), and ~0.7 GB more with
+    /// the int8 file (2026-10-04); an idle-reset server holds no model, so
+    /// the default covers that with a little room.
     pub min_available_mb: u64,
     /// Ask the server to unload its models this long after the last
     /// generation. `0` keeps them. Best effort only: the timer lives in this
@@ -111,13 +114,21 @@ impl Default for ImageConfig {
         ImageConfig {
             backend: ImageBackend::Comfyui,
             url: "http://127.0.0.1:8188".into(),
-            diffusion_model: "Qwen-Image-2.1-Q4.gguf".into(),
+            // int8 ConvRot, not the Q4 GGUF: 28 s against 64 s a picture at
+            // 40 steps on the GB10, and 37 s against ~80 s an edit, for
+            // about 0.7 GB more at peak and the same pictures seed for seed
+            // (measured 2026-10-04; ARCHITECTURE §Image generation). A GGUF
+            // re-quantises every weight on every step; the ConvRot file
+            // runs on native int8 kernels.
+            diffusion_model: "qwen_image_2.1_int8_convrot.safetensors".into(),
             text_encoder: "qwen3vl_8b_w4a8.safetensors".into(),
             vae: "qwen_image_2.1_vae_bf16.safetensors".into(),
             steps: 40,
             timeout_secs: 600,
             // `LOAD_COST_MB` is derived from this figure; change both.
-            min_available_mb: 19_456,
+            // 20 GiB since the int8 default: its ~19.2 GiB load no longer
+            // fit under the Q4's 19 (2026-10-04).
+            min_available_mb: 20_480,
             unload_after_secs: 600,
             server_temp_dir: None,
         }
@@ -235,6 +246,39 @@ const MAX_REFERENCES: usize = 4;
 /// A reference larger than this is refused rather than read. A phone photo
 /// is well under it; the node resizes to about 1024² anyway.
 const MAX_REFERENCE_BYTES: u64 = 25 * 1024 * 1024;
+
+/// A reference with more pixels than this goes up scaled down to it. The
+/// encoder resizes every reference to about `reference_size`² (1 Mpx) anyway,
+/// so the rest of a phone photo's 24.5 Mpx was decoded and resized by the
+/// server for nothing: ~2 s an edit (measured 2026-10-04, a 24.5 Mpx
+/// reference against the same picture at 1 Mpx). 4 Mpx is twice the
+/// encoder's side, so its own resize still starts from more than it keeps.
+pub const MAX_REFERENCE_PIXELS: u64 = 2048 * 2048;
+
+/// `bytes` scaled to at most `max_pixels`, upright, as a PNG — or `None` to
+/// send it as it is: small enough already, or not a picture this can decode,
+/// which the server then judges as it always did. Turned by its EXIF
+/// orientation first, because the PNG carries no tag and a phone photo is
+/// stored sideways; one sent as it is keeps its tag, which the server reads.
+/// Dropping the tag also drops the rest of the EXIF block, location included.
+pub fn fit_reference(bytes: &[u8], max_pixels: u64) -> Option<Vec<u8>> {
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels <= max_pixels {
+        return None;
+    }
+    let img = crate::image::decode_upright(bytes, "the reference").ok()?;
+    let scale = (max_pixels as f64 / pixels as f64).sqrt();
+    let fit = |side: u32| ((f64::from(side) * scale).floor() as u32).max(1);
+    // `thumbnail` keeps the aspect ratio inside the box, and is the fast
+    // filter for a reduction this large.
+    let small = img.thumbnail(fit(img.width()), fit(img.height()));
+    png_bytes(&small.to_rgb8()).ok()
+}
 
 /// The image type of `bytes`, by magic number, as an upload extension.
 pub(crate) fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
@@ -472,6 +516,24 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
     }
 }
 
+/// The node that loads `diffusion_model`, and its inputs other than the file
+/// name. A `.gguf` file goes through the ComfyUI-GGUF custom node; any other
+/// (the default int8 ConvRot `.safetensors`) through ComfyUI's own
+/// `UNETLoader`, which reads the file's quantisation metadata itself, so
+/// `weight_dtype` stays `default`. Chosen by file name so an operator's
+/// `[image] diffusion_model` alone switches formats, with nothing else to keep
+/// in step; the preflight asks the server for the same node.
+pub fn unet_loader(diffusion_model: &str) -> (&'static str, Value) {
+    let gguf = std::path::Path::new(diffusion_model)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"));
+    if gguf {
+        ("UnetLoaderGGUF", json!({}))
+    } else {
+        ("UNETLoader", json!({"weight_dtype": "default"}))
+    }
+}
+
 /// ComfyUI's graph for one generation with Qwen-Image 2.1 — text to image,
 /// or an edit when `uploaded` names reference images already on the server.
 ///
@@ -500,8 +562,10 @@ pub fn comfy_graph(
     let mut encode = json!({
         "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
         "resolution": req.reference_size});
+    let (loader, mut unet) = unet_loader(&cfg.diffusion_model);
+    unet["unet_name"] = json!(cfg.diffusion_model);
     let mut graph = json!({
-        "unet": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": cfg.diffusion_model}},
+        "unet": {"class_type": loader, "inputs": unet},
         "clip": {"class_type": "CLIPLoader", "inputs": {
             "clip_name": cfg.text_encoder, "type": "qwen_image", "device": "default"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": cfg.vae}},
@@ -573,12 +637,14 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
 }
 
 /// What loading the model costs, which a server that has loaded it has
-/// already paid: the default cold figure (19 GiB) less what a reload from a
+/// already paid: the default cold figure (20 GiB) less what a reload from a
 /// `/free`d state still needs (~12 GiB, the worse of the two states
-/// `/system_stats` cannot tell apart). **The 19_456 is `ImageConfig`'s default
-/// `min_available_mb`**, written out because a `Default` impl is not const:
-/// change one, change both.
-pub const LOAD_COST_MB: u64 = 19_456 - 12_288;
+/// `/system_stats` cannot tell apart; measured with the Q4 GGUF on
+/// 2026-10-02, not re-measured for the int8 file). **The 20_480 is
+/// `ImageConfig`'s default `min_available_mb`**, written out because a
+/// `Default` impl is not const: change one, change both
+/// (`the_load_cost_is_the_default_less_a_reload` holds them together).
+pub const LOAD_COST_MB: u64 = 20_480 - 12_288;
 
 /// Whether ComfyUI's `/system_stats` says it has loaded a model since it
 /// started. Its `torch_vram_total` is 0 in a fresh process and stays above 0
@@ -877,7 +943,11 @@ impl ComfyUi {
     /// validation error the model cannot act on.
     async fn preflight(&self, cfg: &ImageConfig) -> Result<()> {
         let checks = [
-            ("UnetLoaderGGUF", "unet_name", &cfg.diffusion_model),
+            (
+                unet_loader(&cfg.diffusion_model).0,
+                "unet_name",
+                &cfg.diffusion_model,
+            ),
             ("CLIPLoader", "clip_name", &cfg.text_encoder),
             ("VAELoader", "vae_name", &cfg.vae),
         ];
@@ -1493,7 +1563,9 @@ struct Drawn {
 /// one flat tone — no reading, not a low one.
 pub fn layout_similarity(a: &[u8], b: &[u8]) -> Option<f64> {
     fn thumb(bytes: &[u8]) -> Option<Vec<f64>> {
-        let picture = crate::image::decode(bytes, "the picture").ok()?;
+        // Upright, as the server and the page see it: a phone photo is
+        // stored sideways with a tag, and the result never is.
+        let picture = crate::image::decode_upright(bytes, "the picture").ok()?;
         let small = image::imageops::resize(
             &picture.to_luma8(),
             32,
@@ -1567,7 +1639,10 @@ pub fn prepare_mask(
     resolution: u32,
 ) -> std::result::Result<MaskPlan, String> {
     use image::imageops::{fast_blur, resize, FilterType};
-    let picture = crate::image::decode(picture, "the picture").map_err(|e| format!("{e:#}"))?;
+    // Upright, as the page painted over it: a phone photo stored sideways
+    // with a tag would otherwise read as the other shape from its mask.
+    let picture =
+        crate::image::decode_upright(picture, "the picture").map_err(|e| format!("{e:#}"))?;
     let mask = crate::image::decode(mask, "the mask").map_err(|e| format!("{e:#}"))?;
     let (pw, ph) = (picture.width(), picture.height());
     let (mw, mh) = (mask.width(), mask.height());
@@ -1711,7 +1786,9 @@ pub fn layout_similarity_painted(
     (x1 > x0 && y1 > y0).then_some(())?;
     let (w, h) = (x1 - x0, y1 - y0);
     let thumb = |bytes: &[u8]| -> Option<Vec<f64>> {
-        let picture = crate::image::decode(bytes, "the picture").ok()?;
+        // Upright, as the server and the page see it: a phone photo is
+        // stored sideways with a tag, and the result never is.
+        let picture = crate::image::decode_upright(bytes, "the picture").ok()?;
         if (picture.width(), picture.height()) != soft.dimensions() {
             return None;
         }
@@ -1903,6 +1980,10 @@ pub struct ImageGenerate {
     /// names and the library character it looks like. `None` outside a
     /// persona chat.
     self_as: Option<crate::tool::PersonaSelf>,
+    /// A reference with more pixels than this is fitted before upload:
+    /// [`MAX_REFERENCE_PIXELS`], lowered only by tests, which cannot afford
+    /// a 4 Mpx picture in an unoptimised build.
+    reference_pixels: u64,
 }
 
 /// An edit that came back a near-copy: the picture a retry should edit, and
@@ -1986,6 +2067,7 @@ impl ImageGenerate {
             last_drawn: Default::default(),
             persona: false,
             self_as: None,
+            reference_pixels: MAX_REFERENCE_PIXELS,
         })
     }
 
@@ -2216,6 +2298,12 @@ impl ImageGenerate {
         self
     }
 
+    #[cfg(test)]
+    fn with_reference_pixels(mut self, pixels: u64) -> Self {
+        self.reference_pixels = pixels;
+        self
+    }
+
     /// The form a persona chat gets: strict about unknown cast names, and
     /// knowing who "self" is when `who` says.
     fn persona_form(&self, who: Option<crate::tool::PersonaSelf>) -> ImageGenerate {
@@ -2229,6 +2317,7 @@ impl ImageGenerate {
             last_drawn: Default::default(),
             persona: true,
             self_as: who,
+            reference_pixels: self.reference_pixels,
         }
     }
 
@@ -3013,6 +3102,32 @@ impl Tool for ImageGenerate {
             Ok(references) => references,
             Err(why) => return Ok(refused(why)),
         };
+        // A phone photo goes up at the encoder's scale, not its own, and
+        // upright: before the mask is sized to it, the near-copy check reads
+        // it and the repeat guard hashes it, so all three see what is sent.
+        // Off the runtime: decoding 24 Mpx takes a while.
+        let read = std::mem::take(&mut req.references);
+        let budget = self.reference_pixels;
+        req.references = match tokio::task::spawn_blocking(move || {
+            read.into_iter()
+                .map(|mut r| {
+                    if let Some(fitted) = fit_reference(&r.bytes, budget) {
+                        r.bytes = fitted;
+                        r.ext = "png";
+                    }
+                    r
+                })
+                .collect()
+        })
+        .await
+        {
+            Ok(fitted) => fitted,
+            Err(e) => {
+                return Ok(refused(format!(
+                    "The references could not be prepared: {e}"
+                )))
+            }
+        };
         // The owner's painted mask: read through the jail like a reference,
         // then sized with the picture to the edit canvas and softened, off
         // the runtime. Both go up at canvas size, so the encoder's reference,
@@ -3463,15 +3578,26 @@ mod tests {
     /// What a job asks for follows what the server holds: cold after a
     /// restart or when unknown, and less by the load's cost once it has loaded
     /// the model, keeping whatever margin the operator added.
+    /// `LOAD_COST_MB` is written out from the default because a `Default`
+    /// impl is not const; this is what makes "change both" a failure rather
+    /// than a comment when only one moves.
+    #[test]
+    fn the_load_cost_is_the_default_less_a_reload() {
+        assert_eq!(
+            LOAD_COST_MB + 12_288,
+            ImageConfig::default().min_available_mb
+        );
+    }
+
     #[test]
     fn the_memory_asked_for_follows_what_the_server_holds() {
-        assert_eq!(memory_need_mb(Some(false), 19_456), 19_456);
+        assert_eq!(memory_need_mb(Some(false), 20_480), 20_480);
         assert_eq!(
-            memory_need_mb(None, 19_456),
-            19_456,
+            memory_need_mb(None, 20_480),
+            20_480,
             "unknown is never warm"
         );
-        assert_eq!(memory_need_mb(Some(true), 19_456), 12_288);
+        assert_eq!(memory_need_mb(Some(true), 20_480), 12_288);
         // An operator's raised margin is kept, not capped at the default's.
         assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
         // A small figure is not computed into the "check off" sentinel: the
@@ -3774,6 +3900,9 @@ mod tests {
                     let out = if let Some(node) = path.strip_prefix("/object_info/") {
                         let files = |input: &str, name: &str| json!({node: {"input": {"required": {input: [[name], {}]}}}});
                         json_reply(match node {
+                            "UNETLoader" => {
+                                files("unet_name", "qwen_image_2.1_int8_convrot.safetensors")
+                            }
                             "UnetLoaderGGUF" => files("unet_name", "Qwen-Image-2.1-Q4.gguf"),
                             "CLIPLoader" => files("clip_name", "qwen3vl_8b_w4a8.safetensors"),
                             "VAELoader" => files("vae_name", "qwen_image_2.1_vae_bf16.safetensors"),
@@ -3966,7 +4095,7 @@ mod tests {
                 "KSampler",
                 "PreviewImage",
                 "TextEncodeQwenImage21",
-                "UnetLoaderGGUF",
+                "UNETLoader",
                 "VAEDecode",
                 "VAELoader",
             ]
@@ -3975,6 +4104,46 @@ mod tests {
         assert_eq!(g["sample"]["inputs"]["seed"], 7);
         assert_eq!(g["sample"]["inputs"]["cfg"], 1.0);
         assert_eq!(g["unet"]["inputs"]["unet_name"], cfg.diffusion_model);
+        assert_eq!(g["unet"]["inputs"]["weight_dtype"], "default");
+    }
+
+    /// The loader follows the file: a GGUF still loads through the custom
+    /// node, with no `weight_dtype` (the node has no such input, and an
+    /// unknown input fails validation), whatever the extension's case.
+    #[test]
+    fn the_diffusion_loader_follows_the_model_file() {
+        for (file, node) in [
+            ("qwen_image_2.1_int8_convrot.safetensors", "UNETLoader"),
+            ("qwen_image_2.1_bf16.safetensors", "UNETLoader"),
+            ("Qwen-Image-2.1-Q4.gguf", "UnetLoaderGGUF"),
+            ("Qwen-Image-2.1-Q4.GGUF", "UnetLoaderGGUF"),
+            // A name that only contains the word is not a GGUF file.
+            ("gguf-notes.safetensors", "UNETLoader"),
+        ] {
+            let cfg = ImageConfig {
+                diffusion_model: file.into(),
+                ..ImageConfig::default()
+            };
+            let req = Request {
+                prompt: "a lighthouse".into(),
+                negative: String::new(),
+                size: Some((1024, 1024)),
+                steps: 40,
+                seed: 7,
+                references: Vec::new(),
+                reference_size: EDIT_REFERENCE_SIZE,
+                mask: None,
+            };
+            let g = comfy_graph(&cfg, &req, &[], None);
+            assert_eq!(g["unet"]["class_type"], node, "{file}");
+            assert_eq!(g["unet"]["inputs"]["unet_name"], file, "{file}");
+            assert_eq!(
+                g["unet"]["inputs"].get("weight_dtype").is_some(),
+                node == "UNETLoader",
+                "{file}"
+            );
+            assert_eq!(unet_loader(file).0, node, "{file}");
+        }
     }
 
     #[test]
@@ -4424,6 +4593,43 @@ mod tests {
             std::fs::read(dir.join("inbox/me.jpg"))
                 .unwrap()
                 .starts_with(&[0xFF, 0xD8]),
+            "the original is untouched"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The fit is wired where its comment says: a photo over the budget goes
+    /// up as the fitted PNG — no EXIF block, so no location — and the repeat
+    /// guard and the near-copy check run over those bytes, not the file's.
+    #[tokio::test]
+    async fn a_large_photo_goes_up_fitted_and_upright() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let photo = jpeg_with_orientation(300, 100, 6);
+        assert!(String::from_utf8_lossy(&photo).contains("Exif"));
+        std::fs::write(dir.join("inbox/big.jpg"), &photo).unwrap();
+        let out = tool(&url)
+            .with_reference_pixels(10_000)
+            .call(
+                json!({"prompt": "Keep <image1> unchanged except: a sunset sky",
+                       "reference_images": ["inbox/big.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let upload = seen
+            .iter()
+            .find(|l| l.starts_with("POST /upload/image"))
+            .unwrap();
+        assert!(upload.contains("PNG\r\n"), "sent as a PNG: {upload:.200}");
+        assert!(!upload.contains("Exif"), "the EXIF block stays behind");
+        assert!(!upload.contains("JFIF"), "not the original JPEG");
+        assert_eq!(
+            std::fs::read(dir.join("inbox/big.jpg")).unwrap(),
+            photo,
             "the original is untouched"
         );
         std::fs::remove_dir_all(dir).ok();
@@ -7297,5 +7503,101 @@ mod tests {
             next.content
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    use crate::image::jpeg_with_orientation;
+
+    /// A reference within the budget goes up byte for byte, tag and all:
+    /// the server reads the tag itself.
+    #[test]
+    fn a_small_reference_is_sent_as_it_is() {
+        let jpg = jpeg_with_orientation(90, 30, 6);
+        assert_eq!(fit_reference(&jpg, 90 * 30), None);
+    }
+
+    /// Over the budget: scaled to fit it, the shape kept, and turned upright
+    /// first — a sideways-stored landscape comes back portrait, its left
+    /// half on top, because the PNG it becomes has no tag to say so.
+    #[test]
+    fn a_large_sideways_photo_goes_up_scaled_and_upright() {
+        let jpg = jpeg_with_orientation(300, 100, 6); // 6: turn 90° clockwise
+        let fitted = fit_reference(&jpg, 10_000).expect("over the budget");
+        assert_eq!(sniff_image(&fitted), Some("png"));
+        let img = image::load_from_memory(&fitted).unwrap().to_rgb8();
+        let (w, h) = img.dimensions();
+        assert!(u64::from(w) * u64::from(h) <= 10_000, "{w}×{h}");
+        assert!(h > w * 2, "upright is portrait: {w}×{h}");
+        let (top, bottom) = (img.get_pixel(w / 2, h / 8), img.get_pixel(w / 2, h * 7 / 8));
+        assert!(
+            top[0] > 200 && top[2] < 60,
+            "the left half is on top: {top:?}"
+        );
+        assert!(
+            bottom[2] > 200 && bottom[0] < 60,
+            "the right half below: {bottom:?}"
+        );
+    }
+
+    /// No tag: the shape as stored, scaled within the budget.
+    #[test]
+    fn a_large_untagged_picture_keeps_its_shape() {
+        let jpg = jpeg_with_orientation(300, 100, 1); // 1: as stored
+        let fitted = fit_reference(&jpg, 10_000).unwrap();
+        let img = image::load_from_memory(&fitted).unwrap();
+        let (w, h) = (img.width(), img.height());
+        assert!(u64::from(w) * u64::from(h) <= 10_000, "{w}×{h}");
+        let ratio = f64::from(w) / f64::from(h);
+        assert!((ratio - 3.0).abs() < 0.1, "{w}×{h}");
+    }
+
+    /// A file whose header reads but whose body does not is the server's to
+    /// judge, as before this step existed: sent as it is, never dropped.
+    #[test]
+    fn a_reference_that_does_not_decode_is_sent_as_it_is() {
+        // A PNG, whose decoder fails on a short body; a JPEG decoder may
+        // fill in what is missing instead, which is not this case.
+        let png = png_bytes(&image::RgbImage::from_pixel(
+            300,
+            100,
+            image::Rgb([9, 9, 9]),
+        ))
+        .unwrap();
+        let cut = &png[..png.len() / 2];
+        assert!(image::ImageReader::new(std::io::Cursor::new(cut))
+            .with_guessed_format()
+            .unwrap()
+            .into_dimensions()
+            .is_ok());
+        assert_eq!(fit_reference(cut, 10_000), None);
+        assert_eq!(fit_reference(b"not a picture", 10_000), None);
+    }
+
+    /// A small photo stored sideways with a tag is not fitted, so the mask
+    /// path meets it as stored. The page painted over it upright, so the
+    /// mask is the other shape; read without the tag, this refused.
+    #[test]
+    fn a_mask_over_a_sideways_stored_photo_fits_it() {
+        let jpg = jpeg_with_orientation(300, 100, 6);
+        let mask = image::GrayImage::from_fn(100, 300, |_, y| {
+            image::Luma([if y < 150 { 255 } else { 0 }])
+        });
+        let mask = png_bytes(&mask).unwrap();
+        let plan = prepare_mask(&jpg, &mask, EDIT_REFERENCE_SIZE).expect("same shape upright");
+        assert_eq!(plan.source, (100, 300));
+        assert!(plan.picture.height() > plan.picture.width());
+    }
+
+    /// The near-copy check compares the reference as the server saw it,
+    /// upright, with a result that is: a sideways-stored copy of a picture
+    /// reads as the picture, where read as stored it did not.
+    #[test]
+    fn a_sideways_stored_reference_is_compared_upright() {
+        let jpg = jpeg_with_orientation(300, 100, 6);
+        let upright = image::RgbImage::from_fn(100, 300, |_, y| {
+            image::Rgb(if y < 150 { [255, 0, 0] } else { [0, 0, 255] })
+        });
+        let upright = png_bytes(&upright).unwrap();
+        let alike = layout_similarity(&jpg, &upright).unwrap();
+        assert!(alike > 0.9, "{alike}");
     }
 }

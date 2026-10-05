@@ -671,6 +671,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pictures take about half as long: the image model is now the int8 file.**
+  `[image] diffusion_model` defaults to `qwen_image_2.1_int8_convrot.safetensors`
+  in place of the Q4 GGUF. On the DGX Spark a picture takes about 28 s instead
+  of 64, and an edit about 37 s instead of 80, with the same pictures for the
+  same seed. It loads through ComfyUI's own loader, so the ComfyUI-GGUF node is
+  no longer needed for the default; a `.gguf` file still works through it.
+  Put the file in ComfyUI's `models/diffusion_models/`
+  (`Comfy-Org/Qwen-Image-2.1`) before upgrading, or set `diffusion_model`
+  back to the GGUF. It needs about 0.7 GB more at its peak, so
+  `min_available_mb` defaults to 20480 (was 19456).
+- **A large photo is scaled down before an edit.** A reference over 4
+  megapixels — every phone photo — goes to the image server scaled to 4 Mpx,
+  turned upright, without its metadata. The model works at about 1 Mpx, so
+  nothing is lost, and the server no longer spends ~2 s an edit decoding the
+  full photo. The photo in the chat is untouched.
 - **The memory figures count speech as Breeze, the new default voice.**
   `mecha features --probe` and the hardware page now use Breeze TTS 2 (Q6_K,
   qwentts.cpp): 4.1 GiB at its peak while speaking, read on the GB10, where
@@ -781,6 +796,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Painting a region on a phone photo taken upright now edits it.** A phone
+  stores such a photo sideways with a tag saying so; the edit read it as
+  stored, found it the other shape from the region painted over it, and
+  refused. The near-copy notice read it the same way and could miss a
+  copy. Both now read a photo upright, as the page shows it.
 - **Listen no longer goes silent after the first sentence.** A reply read
   aloud was spoken as its first sentence, then a ~400-character piece that
   could only play once it had all been made — about 8 s of silence on an
