@@ -2928,12 +2928,12 @@ impl PersonaChats {
             (Some((bound, _)), true) => self.files_block(&name, bound).await,
             _ => None,
         };
-        // What the persona remembers, read off its store outside the lock
-        // and with the memory switches as the persona stands now — turning
-        // one off reaches an open chat, as the safety switches do.
-        // Read on the chat's first turn in this process, and kept: a resumed
-        // chat reads it again, and a chat recorded before run notes has its
-        // stored copy left off the wire (`PriorNudges::Drop`).
+        // What the persona remembers, read off its store outside the lock,
+        // with the memory switches as the persona stands at that read. Read
+        // on the chat's first turn in this process and kept, so a switch
+        // turned off mid-chat reaches it on the next resume. A chat recorded
+        // before run notes has its stored copy left off the wire
+        // (`PriorNudges::Drop`).
         let remembered = match (remembered, &ready, &live) {
             (Some(kept), _, _) => Some(kept),
             (None, Some((bound, _)), Some(persona)) => Some(
