@@ -23,6 +23,8 @@
   // conversation this view is rendering, and spoken turns arrive here over
   // the ordinary SSE feed like any other.
   import { createVoiceSession, dropRing, readVoicePrefs } from '../../../scripts/voice/voice-core.js';
+  import { historyLines, pendingSpeech } from './call-lines.js';
+  import { speakable } from './speech.js';
 
   let key = $state('main');
   let mode = $state('read_only');
@@ -1100,19 +1102,37 @@
   let vKey = $state(null);
   let vIncognito = $state(false);
 
-  function vScroll() {
-    queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
+  // The call shows this chat's own transcript, which spoken turns join over
+  // the ordinary feed, the reply streaming in, and only the owner's speech
+  // the transcript has not taken yet (the owner's ask, 2026-10-05: the call
+  // shows the whole conversation, as the persona call does). One source, so
+  // a re-read never draws a line twice.
+  const vTranscript = $derived(historyLines(entries));
+  const vReplying = $derived(streaming ? speakable(streaming).trim() : '');
+  const vSpeaking = $derived(pendingSpeech(vEntries, vTranscript));
+  // Held at the bottom while the owner is there, left alone once they scroll
+  // up to read: nothing arriving drags a reader back down.
+  let vStick = true;
+  function vScrolled() {
+    if (voicePane) vStick = voicePane.scrollHeight - voicePane.scrollTop - voicePane.clientHeight < 40;
   }
+  $effect(() => {
+    void vTranscript.length, vReplying, vSpeaking.length, voicePane;
+    if (vStick && voicePane) queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
+  });
 
   function onTranscript({ who, text, interim }) {
+    // When a line finishes, how many of the owner's lines the transcript
+    // held: it is drawn until the transcript has taken it (`pendingSpeech`).
+    const heardAt = interim ? null : vTranscript.filter((l) => l.who === 'user').length;
     const last = vEntries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
+      last.heardAt = heardAt;
     } else {
-      vEntries.push({ who, text, interim });
+      vEntries.push({ who, text, interim, heardAt });
     }
-    vScroll();
   }
 
   // `keep` is the reconnect path: the words already spoken stay on screen,
@@ -1122,6 +1142,7 @@
   function startVoice({ keep = false } = {}) {
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
+    vStick = true;
     // A line typed into another call — another chat, or an incognito one —
     // must not wait in this one's box (review of #499).
     if (!keep) {
@@ -2320,13 +2341,19 @@
           {/each}
         </div>
       </div>
-      <div class="voice-pane" bind:this={voicePane}>
-        {#each vEntries as entry}
-          {#if entry.who === 'user'}
-            <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
+      <div class="voice-pane" bind:this={voicePane} onscroll={vScrolled}>
+        {#each vTranscript as line}
+          {#if line.who === 'user'}
+            <div class="vbubble">{line.text}</div>
           {:else}
-            <div class="vanswer" class:interim={entry.interim}>{entry.text}</div>
+            <div class="vanswer" class:vpicture={line.picture}>{line.text}</div>
           {/if}
+        {/each}
+        {#if vReplying}
+          <div class="vanswer">{vReplying}</div>
+        {/if}
+        {#each vSpeaking as entry}
+          <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
         {/each}
       </div>
       <!-- Voice and rate moved to the settings page (the gear on Home):
@@ -3559,6 +3586,10 @@
     line-height: 1.5;
   }
   .vbubble.interim,
+  /* A picture in the transcript, as a line. */
+  .vpicture {
+    font-style: italic;
+  }
   .vanswer.interim {
     color: var(--text-muted);
   }

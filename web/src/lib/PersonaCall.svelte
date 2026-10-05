@@ -23,7 +23,8 @@
   import { onDestroy } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
-  import { chatUrl, hangUpReport, pendingSpeech } from './persona.js';
+  import { chatUrl, hangUpReport } from './persona.js';
+  import { pendingSpeech } from './call-lines.js';
   import { speakable } from './speech.js';
 
   let {
@@ -41,7 +42,7 @@
     // the edit as a line typed into the call: `say`). Null hides the button.
     ondownload = null,
     onedit = null,
-    // The chat's own transcript (`persona.js` `historyLines`), which the
+    // The chat's own transcript (`call-lines.js` `historyLines`), which the
     // call's turns join as they happen, and the reply streaming in: the
     // conversation as the chat shows it (the owner's ask, 2026-10-05).
     transcript = [],
