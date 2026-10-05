@@ -148,14 +148,15 @@
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
   const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
-  // Where the call began in the transcript: what came before is shown above
-  // the call's own lines, so the call reads as part of the conversation
-  // rather than a new one (the owner's ask, 2026-10-05).
-  let callFrom = $state(null);
-  const callHistory = $derived(callFrom == null ? [] : historyLines(run.entries.slice(0, callFrom)));
+  // What was said before the call, shown above the call's own lines so the
+  // call reads as part of the conversation (the owner's ask, 2026-10-05).
+  // A snapshot, never an entry index: a re-read rebuilds the entries and a
+  // page-only notice moves every index (as `callBefore` above keys on the
+  // picture, and `savedReplies` on the text, for the same reason).
+  let callHistory = $state([]);
   function placeCall() {
     callBefore = new Set(picturesIn(run.entries));
-    callFrom = run.entries.length;
+    callHistory = historyLines(run.entries);
     caller?.start();
   }
 

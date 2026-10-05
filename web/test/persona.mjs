@@ -524,12 +524,16 @@ console.log('persona: ok');
     { kind: 'notice', text: 'the model changed' },
     { kind: 'assistant', text: '   ' },
     { kind: 'user', text: 'Good to know, thanks.' },
+    { kind: 'user', text: 'Pack the blue umbrella.', queued: true, delivery: 'discarded' },
+    { kind: 'user', text: 'And the red one.', queued: true, delivery: 'delivered' },
   ];
   assert.deepEqual(historyLines(before), [
     { who: 'user', text: 'Did the ferry sail on time?' },
     { who: 'persona', text: 'It did — it left at half past nine.' },
     { who: 'persona', picture: true, text: 'a picture' },
     { who: 'user', text: 'Good to know, thanks.' },
+    // Never received: not part of the conversation. Steered in: it was.
+    { who: 'user', text: 'And the red one.' },
   ]);
   // Nothing before the call: nothing drawn above it.
   assert.deepEqual(historyLines([]), []);

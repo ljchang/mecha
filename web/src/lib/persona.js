@@ -601,12 +601,15 @@ export function dragFrame(frame, dx, dy, size, aspect = 1) {
 // during voice mode"). Only what was said and drawn: the owner's words as
 // their bubble shows them (`ownWords`), the persona's replies as plain text
 // (`speakable`, so no Markdown marks), and a picture as a line saying so.
-// Tool rows, notices and empty replies are the chat's detail, not the
-// conversation, and are left out.
+// Tool rows, notices, empty replies and lines never delivered are the
+// chat's detail, not the conversation, and are left out.
 export function historyLines(entries) {
   const lines = [];
   for (const e of entries ?? []) {
     if (e.kind === 'user') {
+      // A line the persona never received is not part of the conversation:
+      // its bubble says "not delivered", which a call line has no room for.
+      if (e.queued && e.delivery !== 'delivered') continue;
       const text = ownWords(e.text).trim();
       if (text) lines.push({ who: 'user', text });
     } else if (e.kind === 'assistant') {
