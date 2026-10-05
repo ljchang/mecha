@@ -725,8 +725,10 @@ conversation, so the capabilities do not change. Three rules:
   int8 models alike. In a persona chat, an edit of a single picture that
   traces back, manifest by manifest through each edit's first reference, to
   a scene whose cast was that persona's own approved character alone — no
-  extras there or on the way, and no edit on the way given a second picture,
-  either of which is someone the face could land on (review of #569) — gets a tight crop of the character's portrait as `<image2>` and
+  extras there, on the way or in this edit, and no edit on the way given a
+  second picture, any of which is someone the face could land on (review of
+  #569); the walk always reaches that scene, so today's rule judges the
+  whole chain — gets a tight crop of the character's portrait as `<image2>` and
   `FACE_ANCHOR_SENTENCE`, which names `<image1>` the canvas. Each of those
   was measured on two five-step chains (2026-10-05): the whole portrait as
   the reference copied its outfit and selfie pose into four of six scenes; a
