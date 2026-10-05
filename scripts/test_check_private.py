@@ -307,21 +307,75 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
 
-    def test_a_chat_title_and_a_compaction_summary_count(self):
+    def test_a_title_counts_only_when_the_chat_opened_spoken_and_a_summary_never(self):
+        # A title is written from the owner's first words; a summary
+        # paraphrases typed and spoken turns alike (review of #559, pass 4).
         sessions = os.path.join(self.home, "sessions")
         os.makedirs(sessions, exist_ok=True)
-        title = "Planning the lighthouse open day with the harbour society"
+        spoken_title = "Planning the lighthouse open day with the harbour society"
+        typed_title = "Refactoring the compaction cut and rerunning the benchmark suite"
         summary = "The owner asked to move the open day to the last weekend of June."
+        voice = "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhello"
+        def user(text):
+            return json.dumps({"record": "message", "role": "user",
+                               "content": [{"type": "text", "text": text}]}) + "\n"
         with open(os.path.join(sessions, "20990105T000000-4e5f6a7b.jsonl"), "w") as f:
-            f.write(json.dumps({"record": "meta", "id": "w", "kind": "web", "title": title}) + "\n")
-            f.write(json.dumps({"record": "message", "role": "user", "content": [{"type": "text",
-                    "text": "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhello"}]}) + "\n")
+            f.write(json.dumps({"record": "meta", "id": "w", "kind": "web", "title": spoken_title}) + "\n")
+            f.write(user(voice))
             f.write(json.dumps({"record": "rewrite", "messages": [{"role": "user", "content": [{"type": "text",
                     "text": "[Earlier turns were compacted to fit the context window. What happened in them:]\n" + summary}]}]}) + "\n")
-        for text in (title, summary):
+        with open(os.path.join(sessions, "20990105T000001-4e5f6a7c.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "u", "kind": "web", "title": typed_title}) + "\n")
+            f.write(user("Refactor the cut, then rerun the benchmark."))
+            f.write(user(voice))
+        for text, want in ((spoken_title, 1), (typed_title, 0), (summary, 0)):
             git(self.repo, "reset", "-q")
             self.stage("fixture.py", f"X = {text!r}\n")
-            self.assertEqual(self.run_guard("--staged").returncode, 1, text)
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
+    def test_a_rewrite_yields_only_a_fold_and_only_inside_a_stretch(self):
+        # Pass 4 of #559: a compaction's carried state is new user text in a
+        # rewrite and is not speech; a typed turn folded after a cancelled
+        # tool turn has a barge-in's shape and is not speech either.
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        carried = "[Live state, carried past the compaction and current as of now:]\nThe release branch has four commits awaiting the benchmark rerun."
+        typed_fold = "Skip the flaky test for now and push the branch to origin."
+        t = lambda x: {"type": "text", "text": x}
+        msg = lambda role, *b: {"role": role, "content": list(b)}
+        head = [msg("user", t("Tag the release once the benchmark has finished running.")),
+                msg("assistant", {"type": "tool_use", "id": "t1", "name": "shell", "input": {}}),
+                msg("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"})]
+        with open(os.path.join(sessions, "20990107T000000-6a7b8c9d.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "s", "kind": "web"}) + "\n")
+            for m in head:
+                f.write(json.dumps({"record": "message", **m}) + "\n")
+            f.write(json.dumps({"record": "rewrite", "messages": head[:2] + [
+                msg("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}, t(typed_fold))]}) + "\n")
+            f.write(json.dumps({"record": "rewrite", "messages": [
+                msg("user", t(carried)), msg("assistant", t("Carrying on with the release."))]}) + "\n")
+            # A call later spoke into the chat, so it is read for spoken turns.
+            f.write(json.dumps({"record": "message", "role": "user", "content": [t(
+                "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhi")]}) + "\n")
+        for text in (carried.split("\n", 1)[1], typed_fold):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, 0, text)
+
+    def test_a_picture_sent_without_words_closes_a_spoken_stretch(self):
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        after = "That photo shows the release dashboard with every benchmark passing."
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990108T000000-7b8c9d0e.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "p", "kind": "web"}) + "\n")
+            for role, blocks in (("user", [t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhi")]),
+                                 ("assistant", [t("Hello there.")]),
+                                 ("user", [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]),
+                                 ("assistant", [t(after)])):
+                f.write(json.dumps({"record": "message", "role": role, "content": blocks}) + "\n")
+        self.stage("fixture.py", f"X = {after!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
 
     def test_the_guard_excuses_its_own_file_in_a_push(self):
         base = git(self.repo, "rev-parse", "HEAD").strip()
