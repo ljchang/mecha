@@ -390,7 +390,7 @@ pub fn has_engine(m: &Machinery) -> bool {
 }
 
 /// The drop-in naming the hub a server's model was fetched into.
-pub(crate) fn hub_text(hub: &Path) -> String {
+fn hub_text(hub: &Path) -> String {
     format!(
         "# Written by `mecha features enable`: the Hugging Face cache this server's\n\
          # model was fetched into, so the launcher reads the same one under the user\n\
