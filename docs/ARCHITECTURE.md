@@ -1662,9 +1662,15 @@ module.
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
-    - Only the newest note goes on the wire (`PriorNudges::Drop`, set in
-      `persona_agent` beside the other two views), wherever it sits: a turn
-      folded into an earlier message after a cancelled tool call can hold two.
+    - Only the newest variety note goes on the wire (`PriorNudges::Drop`,
+      set in `persona_agent` beside the other two views), wherever it sits:
+      a turn folded into an earlier message after a cancelled tool call can
+      hold two. An edit note goes on the wire only while it is the last note
+      of all and its message is the turn being answered (`answering`, which
+      a steer folded into a tool result never moves): the edit turn appends
+      it after its variety note, so any note after it is a later turn's,
+      folded or not. So an edit turn keeps both its notes through its tool
+      round trip, a steer included, and a later turn drops the edit note.
       Each note names what is repeating now, and kept, forty turns in
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
@@ -1704,6 +1710,26 @@ module.
       nor the note's parenthetical and read on as a harness clause. This is
       the first registered harness voice whose body carries model-written
       text, and a reply can carry what a tool read back.
+  - **A turn the picture edit panel sent is answered in a line**
+    (`persona::edit`, 2026-10-05). The page marks the turn
+    (`SendBody::edit`), so it is known by the door it came through, never by
+    parsing `Edit <picture>: …`; the server folds a one-turn note in the
+    harness's registered voice beside the owner's words: make the edit,
+    answer in a sentence or two, and don't describe a picture you have not
+    seen (`image_generate` never shows the persona its result). Unmarked,
+    edit replies retold the scene and then reused the rest of the previous
+    reply: 11 of 34 edit replies across every persona chat were at least
+    half copied, against 9 of 201 turns that drew nothing. Replayed on 22
+    edit turns, the recorded tool call kept: at least half copied 37/64 →
+    16/66, longest copy 206 → 126 words, median length 744 → 209 chars,
+    judged blind 66–59 (a tie), and the edit prompts unchanged. Typed turns
+    only: on a call the panel's words go out as speech, and the call note
+    already says a picture reaches the owner unseen. A message that steers a
+    run in flight carries no note. Once stale it is dropped whatever the
+    re-read costs, unlike the variety note: the cap is a spoken turn's
+    latency control, every edit turn is a tool round trip (5 of 30 measured
+    past the cap), and a kept edit note would tell the persona the next
+    typed message came from the panel.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,
