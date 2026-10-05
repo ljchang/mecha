@@ -307,9 +307,10 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
 
-    def test_a_title_counts_only_when_the_chat_opened_spoken_and_a_summary_never(self):
-        # A title is written from the owner's first words; a summary
-        # paraphrases typed and spoken turns alike (review of #559, pass 4).
+    def test_every_title_counts_and_a_summary_never(self):
+        # A title can be written from a spoken turn whichever turn opened the
+        # chat (`title::due` renames at turns 1, 3 and 8; review of #559,
+        # pass 6); a summary paraphrases typed and spoken turns alike (pass 4).
         sessions = os.path.join(self.home, "sessions")
         os.makedirs(sessions, exist_ok=True)
         spoken_title = "Planning the lighthouse open day with the harbour society"
@@ -328,7 +329,7 @@ class Guard(unittest.TestCase):
             f.write(json.dumps({"record": "meta", "id": "u", "kind": "web", "title": typed_title}) + "\n")
             f.write(user("Refactor the cut, then rerun the benchmark."))
             f.write(user(voice))
-        for text, want in ((spoken_title, 1), (typed_title, 0), (summary, 0)):
+        for text, want in ((spoken_title, 1), (typed_title, 1), (summary, 0)):
             git(self.repo, "reset", "-q")
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
@@ -408,6 +409,34 @@ class Guard(unittest.TestCase):
             git(self.repo, "reset", "-q")
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, 0, text)
+
+    def test_a_listen_tap_binds_nothing_and_a_summary_does_not_ride_with_a_turn(self):
+        # A Listen tap records a direction for a typed reply read aloud
+        # (`LISTEN_TURN`): neither it nor the typed turn it answers is
+        # speech. And when a directed reply pulls in the turn it answers,
+        # a compaction summary folded into that turn stays out (pass 6).
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        typed = "Explain why the compaction cut must land on an assistant message."
+        tapped = "Because an orphaned tool result after the cut is rejected by the provider."
+        summary = "Earlier the owner profiled the release build and trimmed the slow tests."
+        later = "And book the vet for the cat on the Friday after next please."
+        reply = "The vet is booked for the cat on the Friday after next, in the morning."
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990111T000000-0e1f2a3b.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "l", "kind": "web"}) + "\n")
+            for role, blocks in (("user", [t(typed)]), ("assistant", [t(tapped)]),
+                                 ("user", [t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhi")]),
+                                 ("assistant", [t("Hello there.")]),
+                                 ("user", [t(later), t("\n\n[Earlier turns were compacted to fit the context window. What happened in them:]\n" + summary)]),
+                                 ("assistant", [t(reply)])):
+                f.write(json.dumps({"record": "message", "role": role, "content": blocks}) + "\n")
+            f.write(json.dumps({"record": "spoken_direction", "turn": "listen:abc", "sentence": tapped}) + "\n")
+            f.write(json.dumps({"record": "spoken_direction", "turn": "c1", "sentence": reply}) + "\n")
+        for text, want in ((typed, 0), (tapped, 0), (summary, 0), (later, 1), (reply, 1)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
 
     def test_a_picture_sent_without_words_closes_a_spoken_stretch(self):
         sessions = os.path.join(self.home, "sessions")
