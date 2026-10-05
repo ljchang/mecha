@@ -18,8 +18,9 @@ not exist.
 ## Setting it up
 
 mecha does not run the image model itself; it talks to a local server. Today
-that server is [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the
-[ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) node and Qwen-Image 2.1:
+that server is [ComfyUI](https://github.com/comfyanonymous/ComfyUI) running
+Qwen-Image 2.1, with the diffusion model as the int8 file from
+[Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1):
 
 1. Put the three model files where ComfyUI looks for them — the diffusion
    model under `models/diffusion_models/`, the text encoder under
@@ -32,13 +33,20 @@ that server is [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with the
 ```toml
 [image]
 url = "http://127.0.0.1:8188"
-diffusion_model = "Qwen-Image-2.1-Q4.gguf"
+diffusion_model = "qwen_image_2.1_int8_convrot.safetensors"
 text_encoder = "qwen3vl_8b_w4a8.safetensors"
 vae = "qwen_image_2.1_vae_bf16.safetensors"
 ```
 
 `mecha tools` lists `image_generate` once it is configured. Every key and its
 default is in the [configuration reference](/docs/reference/configuration#image).
+
+A `.gguf` diffusion model works too, through the
+[ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) node: name the file
+and mecha uses that node for it. On the DGX Spark the int8 file is more than
+twice as fast — about 28 seconds a picture against 64 for the Q4 GGUF, and 37
+against about 80 for an edit — with the same pictures for the same seed and
+about 1 GB more memory at its peak.
 
 ## Using it
 
@@ -56,7 +64,9 @@ are revising, a seed.
 - **It works in any chat, read-only ones included.** It only ever adds new
   files under `images/` in the conversation's own folder, so it needs no
   approval and no mode switch.
-- **It takes about a minute** for a 1024×1024 image at the default 40 steps.
+- **It takes about half a minute** for a 1024×1024 image at the default 40
+  steps on the DGX Spark; an edit, a little more. Anything else using the GPU
+  at the same time — reading a reply aloud, say — slows it down.
   Cancelling the run stops the generation on the server too.
 
 ## Editing a picture
@@ -75,7 +85,10 @@ second picture on the person in the first" works. The result keeps the first
 picture's shape unless you ask for a size.
 
 Your photo is handed to the image server on this machine only, into a
-temporary folder it clears when it restarts.
+temporary folder it clears when it restarts. A large photo — anything over
+4 megapixels, which is every phone photo — is scaled down and turned upright
+first, since the model works at about 1 megapixel anyway; its metadata,
+location included, stays behind. Your original file is not changed.
 
 ## Recurring characters: the image library
 

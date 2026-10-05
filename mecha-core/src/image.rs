@@ -101,7 +101,9 @@ pub fn block_from_bytes(bytes: Vec<u8>, name: Option<String>, what: &str) -> Res
         }
     }
 
-    let img = decode(&bytes, what)?;
+    // Upright: the JPEG below carries no orientation tag, and a phone photo
+    // is stored sideways with one (review of #560).
+    let img = decode_upright(&bytes, what)?;
     // `thumbnail` preserves the aspect ratio and takes the *bound* rather
     // than a target, so an image that is oversized in only one dimension is
     // not stretched to fill the other.
@@ -147,7 +149,9 @@ pub fn rendered_block(bytes: &[u8], name: Option<String>) -> Result<Block> {
     // proof it is a picture. A good header on a broken body would otherwise
     // ride into the transcript, and a picture the provider rejects fails
     // every later request of that conversation, not just this one.
-    let img = decode(bytes, "the picture")?;
+    // Upright, for the same reason as `block_from_bytes`: a re-encode drops
+    // the tag that said which way up the photo was.
+    let img = decode_upright(bytes, "the picture")?;
     if bytes.len() <= PASS_THROUGH_BYTES && img.width().max(img.height()) <= MAX_EDGE {
         // Decoded, but not a type both backends read: re-encode below.
         if let Some(media_type) = image::guess_format(bytes).ok().and_then(media_type_of) {
@@ -200,6 +204,19 @@ const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 /// [`MAX_DECODE_PIXELS`] — said as too large, not as a failed decode, since
 /// the two lead to different fixes. `what` names it in either error.
 pub(crate) fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+    decode_with(bytes, what, false)
+}
+
+/// [`decode`], turned the way the file's EXIF orientation says — the way a
+/// browser shows it. A phone photo is stored sideways with a tag saying so,
+/// and re-encoding it drops the tag, so anything that re-encodes a photo
+/// must decode it this way or hand on a sideways picture.
+pub(crate) fn decode_upright(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
+    decode_with(bytes, what, true)
+}
+
+fn decode_with(bytes: &[u8], what: &str, upright: bool) -> Result<image::DynamicImage> {
+    use image::ImageDecoder;
     let reader = || image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
     if let Ok((w, h)) = reader()
         .map_err(anyhow::Error::from)
@@ -216,9 +233,18 @@ pub(crate) fn decode(bytes: &[u8], what: &str) -> Result<image::DynamicImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
-    reader
-        .decode()
-        .with_context(|| format!("{what} is named as an image but did not decode"))
+    let failed = || format!("{what} is named as an image but did not decode");
+    if !upright {
+        return reader.decode().with_context(failed);
+    }
+    let mut decoder = reader.into_decoder().with_context(failed)?;
+    // An unreadable tag is no tag: the picture as stored, as before.
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).with_context(failed)?;
+    img.apply_orientation(orientation);
+    Ok(img)
 }
 
 /// The media type both backends read for a sniffed format, or `None` for
@@ -310,6 +336,35 @@ pub fn attached_images(workspace: &std::path::Path, paths: &[String]) -> Vec<Blo
 /// A file larger than this is named by path only: the door caps what rides
 /// on the turn either way, and a phone photo is a few megabytes.
 pub const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
+
+/// A JPEG of `w`×`h`, red on its left half and blue on its right, with an
+/// EXIF orientation tag spliced in ahead of the encoder's own segments — the
+/// way a phone stores a photo it took sideways.
+#[cfg(test)]
+pub(crate) fn jpeg_with_orientation(w: u32, h: u32, orientation: u16) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(w, h, |x, _| {
+        image::Rgb(if x < w / 2 { [255, 0, 0] } else { [0, 0, 255] })
+    });
+    let mut jpg = Vec::new();
+    img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut jpg, 90,
+    ))
+    .unwrap();
+    let [lo, hi] = orientation.to_le_bytes();
+    // TIFF, little-endian: IFD0 at 8 holding one entry, 0x0112
+    // (Orientation), SHORT, count 1, the value; no next IFD.
+    let tiff = [
+        b'I', b'I', 0x2A, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, lo, hi, 0, 0, 0, 0, 0,
+        0,
+    ];
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend_from_slice(&tiff);
+    let len = u16::try_from(app1.len() + 2).unwrap().to_be_bytes();
+    let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1, len[0], len[1]];
+    out.extend_from_slice(&app1);
+    out.extend_from_slice(&jpg[2..]);
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -591,5 +646,32 @@ mod tests {
             assert!(err.contains("did not decode"), "{name}: {err}");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A photo shown to the model is shown upright: one over the edge cap is
+    /// re-encoded, the tag that said which way up it was is lost, so the
+    /// pixels are turned first — as the edit path turns them (review of #560).
+    #[test]
+    fn an_oversized_sideways_photo_is_shown_upright() {
+        let photo = super::jpeg_with_orientation(MAX_EDGE + 32, 600, 6);
+        for block in [
+            block_from_bytes(photo.clone(), None, "the photo").unwrap(),
+            rendered_block(&photo, None).unwrap(),
+        ] {
+            let Block::Image { data, .. } = block else {
+                panic!("expected an image block")
+            };
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&data)
+                .unwrap();
+            let img = image::load_from_memory(&bytes).unwrap();
+            assert!(
+                img.height() > img.width(),
+                "{}×{}",
+                img.width(),
+                img.height()
+            );
+        }
     }
 }
