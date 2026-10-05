@@ -153,6 +153,47 @@ pub fn presets_path(mecha_home: &Path) -> PathBuf {
         .join("models.ini")
 }
 
+/// What the installed router's presets serve, read back from the file mecha
+/// wrote: the pinned row by its alias, or the GGUF the owner brought. `None`
+/// when there is no presets file; an error when there is one that cannot be
+/// read or names no model — unknown is never the pinned row, or a later
+/// `features enable` would install the recommended model over the owner's
+/// (found on review of #568).
+pub fn installed_choice(mecha_home: &Path) -> Result<Option<Choice>> {
+    let path = presets_path(mecha_home);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut section: Option<&str> = None;
+    let (mut model, mut mmproj) = (None, None);
+    for line in text.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if section.is_some_and(|s| s != "*") {
+                break;
+            }
+            section = Some(name);
+            continue;
+        }
+        if section.is_none_or(|s| s == "*") {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            match k.trim() {
+                "model" => model = Some(PathBuf::from(v.trim())),
+                "mmproj" => mmproj = Some(PathBuf::from(v.trim())),
+                _ => {}
+            }
+        }
+    }
+    match (section, model) {
+        (Some(PINNED_ALIAS), Some(_)) => Ok(Some(Choice::Recommended)),
+        (Some(s), Some(model)) if s != "*" => Ok(Some(Choice::Own { model, mmproj })),
+        _ => bail!("{} names no model", path.display()),
+    }
+}
+
 /// The unit file and launcher, rendered for this install.
 fn render(text: &str, naming: &Naming, bin: &Path, presets: &Path) -> String {
     text.replace("8080", &naming.port.to_string())
@@ -506,6 +547,46 @@ mod tests {
         for live in ["8080", "llama-local", "%h/.local", "@PRESETS@"] {
             assert!(!unit.contains(live), "{live} left in:\n{unit}");
         }
+    }
+
+    /// The presets file says what the router serves: the pinned row by its
+    /// alias, a brought GGUF with its projector, nothing when absent, and an
+    /// error — never the pinned row — when it names no model.
+    #[test]
+    fn the_presets_say_which_model_was_chosen() {
+        let home = std::env::temp_dir().join(format!("mecha-7c2-c-{}", uuid::Uuid::new_v4()));
+        assert!(installed_choice(&home).unwrap().is_none());
+        let path = presets_path(&home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let preset = |alias: &str, mmproj: Option<&str>| Preset {
+            alias: alias.into(),
+            model: "/m/w.gguf".into(),
+            mmproj: mmproj.map(PathBuf::from),
+            ctx: 8192,
+            slots: 1,
+            cache_ram_mb: None,
+            pinned: alias == PINNED_ALIAS,
+        };
+        std::fs::write(
+            &path,
+            presets_text(&preset(PINNED_ALIAS, Some("/m/p.gguf"))),
+        )
+        .unwrap();
+        assert!(matches!(
+            installed_choice(&home).unwrap(),
+            Some(Choice::Recommended)
+        ));
+        std::fs::write(&path, presets_text(&preset("w", Some("/m/p.gguf")))).unwrap();
+        match installed_choice(&home).unwrap() {
+            Some(Choice::Own { model, mmproj }) => {
+                assert_eq!(model, Path::new("/m/w.gguf"));
+                assert_eq!(mmproj.as_deref(), Some(Path::new("/m/p.gguf")));
+            }
+            other => panic!("{other:?}"),
+        }
+        std::fs::write(&path, "version = 1\n[*]\njinja = true\n").unwrap();
+        assert!(installed_choice(&home).is_err());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The launcher empties the model cache as `scripts/start-router.sh`

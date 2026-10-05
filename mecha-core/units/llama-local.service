@@ -12,8 +12,11 @@ Type=exec
 Environment=MECHA_ROUTER_PORT=8080
 Environment=MECHA_ROUTER_PRESETS=@PRESETS@
 ExecStart=%h/.local/bin/mecha-router
-ExecStartPost=%h/.local/bin/mecha-wait-healthy 8080 120
-TimeoutStartSec=180
+# The live GB10 unit's start budget: a ~23 GB model's cold load from disk can
+# outlast a short health wait, and a start job that times out restarts the
+# load from the beginning (found on review of #568).
+ExecStartPost=%h/.local/bin/mecha-wait-healthy 8080 540
+TimeoutStartSec=600
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT

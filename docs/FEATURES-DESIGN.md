@@ -1609,7 +1609,10 @@ Step 7 becomes these, each a PR that leaves every feature working:
   none, installs and starts the router, waits for the model to load, and
   hands the router's `/props` **for that model** (never the bare
   placeholder) to `mecha setup`'s write-and-confirm step. A router
-  installed by hand is provided and left alone. The real-machine test
+  installed by hand is provided and left alone. A router serving a brought GGUF
+  plans its chat slot as `Brought` — read back from the presets file — so
+  `features enable` neither prices the pinned row nor offers the router
+  again over the owner's choice. The real-machine test
   installs a router beside the live one on a free port, serving the
   embeddings GGUF as an owner's model, and removes it (measured
   2026-10-05).
