@@ -59,12 +59,12 @@
   let linked = $state(false);
   let muted = $state(false);
   let entries = $state([]);
+  let pane = $state(null);
   // Opened at the bottom: the call starts where it always has, with the
   // conversation before it a scroll up.
   $effect(() => {
     if (open && pane && history.length) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
   });
-  let pane = $state(null);
   // The picture shown large: the newest, unless the owner tapped an earlier
   // one — and a new picture takes the stage again when it arrives.
   let picked = $state(null);
@@ -322,7 +322,7 @@
     <div class="call-pane" bind:this={pane} inert={!!viewing}>
       {#if history.length}
         {#each history as line}
-          <div class={line.who === 'user' ? 'said' : 'heard'} class:past={true} class:pictured={line.picture}>{line.text}</div>
+          <div class={['past', line.who === 'user' ? 'said' : 'heard']} class:pictured={line.picture}>{line.text}</div>
         {/each}
         <div class="call-start" role="separator">Call</div>
       {/if}
