@@ -9,6 +9,8 @@
 
 import { changesOf } from './tomlform.js';
 import { isDirty as mdDirty } from './mdform.js';
+import { pictureOf } from './picture.js';
+import { speakable } from './speech.js';
 
 // A persona chat key, exactly as the server mints one: `p-` and twelve hex.
 const KEY = /^p-[0-9a-f]{12}$/;
@@ -592,6 +594,29 @@ export function dragFrame(frame, dx, dy, size, aspect = 1) {
     return room > 0.5 ? clamp(p - d / room, 0, 1) : p;
   };
   return { ...f, x: pan(f.x, dx, S * Math.max(1, a)), y: pan(f.y, dy, S * Math.max(1, 1 / a)) };
+}
+
+// The conversation before a call, as the call screen shows it above the
+// call's own lines (the owner's ask, 2026-10-05: "see the full chat history
+// during voice mode"). Only what was said and drawn: the owner's words as
+// their bubble shows them (`ownWords`), the persona's replies as plain text
+// (`speakable`, so no Markdown marks), and a picture as a line saying so.
+// Tool rows, notices and empty replies are the chat's detail, not the
+// conversation, and are left out.
+export function historyLines(entries) {
+  const lines = [];
+  for (const e of entries ?? []) {
+    if (e.kind === 'user') {
+      const text = ownWords(e.text).trim();
+      if (text) lines.push({ who: 'user', text });
+    } else if (e.kind === 'assistant') {
+      const text = speakable(e.text).trim();
+      if (text) lines.push({ who: 'persona', text });
+    } else if (e.kind === 'tool' && pictureOf(e)) {
+      lines.push({ who: 'persona', picture: true, text: 'a picture' });
+    }
+  }
+  return lines;
 }
 
 // The owner's words in their own bubble: a chat opened with a goal sends it

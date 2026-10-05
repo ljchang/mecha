@@ -40,6 +40,11 @@
     // the edit as a line typed into the call: `say`). Null hides the button.
     ondownload = null,
     onedit = null,
+    // The conversation before the call (`persona.js` `historyLines`), drawn
+    // above the call's own lines: a call continues the chat, and the owner
+    // reads back through it here as in the chat (the owner's ask,
+    // 2026-10-05).
+    history = [],
   } = $props();
 
   let open = $state(false);
@@ -54,6 +59,11 @@
   let linked = $state(false);
   let muted = $state(false);
   let entries = $state([]);
+  // Opened at the bottom: the call starts where it always has, with the
+  // conversation before it a scroll up.
+  $effect(() => {
+    if (open && pane && history.length) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
+  });
   let pane = $state(null);
   // The picture shown large: the newest, unless the owner tapped an earlier
   // one — and a new picture takes the stage again when it arrives.
@@ -310,6 +320,12 @@
       {/if}
     </div>
     <div class="call-pane" bind:this={pane} inert={!!viewing}>
+      {#if history.length}
+        {#each history as line}
+          <div class={line.who === 'user' ? 'said' : 'heard'} class:past={true} class:pictured={line.picture}>{line.text}</div>
+        {/each}
+        <div class="call-start" role="separator">Call</div>
+      {/if}
       {#each entries as entry}
         <div class={entry.who === 'user' ? 'said' : 'heard'} class:interim={entry.interim}>{entry.text}</div>
       {/each}
@@ -593,6 +609,29 @@
   }
   .call-pane:empty {
     display: none;
+  }
+  /* Before the call: the same bubbles, quieter, and a picture as a line. */
+  .past {
+    opacity: 0.62;
+  }
+  .pictured {
+    font-style: italic;
+  }
+  .call-start {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    opacity: 0.8;
+  }
+  .call-start::before,
+  .call-start::after {
+    content: '';
+    flex: 1;
+    border-top: 1px solid var(--accent-900);
   }
   .said {
     align-self: flex-end;

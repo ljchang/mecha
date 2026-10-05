@@ -21,7 +21,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
-    citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
+    citeEntries, citeOpens, citedUrl, ownWords, historyLines, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -148,8 +148,14 @@
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
   const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
+  // Where the call began in the transcript: what came before is shown above
+  // the call's own lines, so the call reads as part of the conversation
+  // rather than a new one (the owner's ask, 2026-10-05).
+  let callFrom = $state(null);
+  const callHistory = $derived(callFrom == null ? [] : historyLines(run.entries.slice(0, callFrom)));
   function placeCall() {
     callBefore = new Set(picturesIn(run.entries));
+    callFrom = run.entries.length;
     caller?.start();
   }
 
@@ -2030,6 +2036,7 @@
       display={chosen.display}
       face={callFace}
       pictures={callPictures}
+      history={callHistory}
       {pictureUrl}
       ondownload={savePicture}
       onedit={editInCall}

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
-  fileUrl, uploadUrl,
+  fileUrl, uploadUrl, historyLines,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
 
@@ -509,4 +509,29 @@ console.log('persona: ok');
   assert.match(proposalOrigin('model_untrusted'), /outside content/);
   // An origin this page does not know reads as the cautious one.
   assert.match(proposalOrigin('something_new'), /outside content/);
+}
+
+// The conversation before a call, as its screen shows it above the call's own
+// lines (the owner's ask, 2026-10-05): what was said and drawn, in order, with
+// the owner's words as their bubble shows them and replies as plain text.
+{
+  const before = [
+    { kind: 'user', text: '(What I want from this conversation: rest)\n\nDid the ferry sail on time?' },
+    { kind: 'tool', name: 'memory_search', preview: '3 results' },
+    { kind: 'assistant', text: 'It **did** — it left at [half past nine](https://example.com).' },
+    { kind: 'tool', name: 'image_generate', preview: 'image: images/20261005-1.png' },
+    { kind: 'tool', name: 'image_generate', is_error: true, preview: 'Cancelled — nothing was saved.' },
+    { kind: 'notice', text: 'the model changed' },
+    { kind: 'assistant', text: '   ' },
+    { kind: 'user', text: 'Good to know, thanks.' },
+  ];
+  assert.deepEqual(historyLines(before), [
+    { who: 'user', text: 'Did the ferry sail on time?' },
+    { who: 'persona', text: 'It did — it left at half past nine.' },
+    { who: 'persona', picture: true, text: 'a picture' },
+    { who: 'user', text: 'Good to know, thanks.' },
+  ]);
+  // Nothing before the call: nothing drawn above it.
+  assert.deepEqual(historyLines([]), []);
+  assert.deepEqual(historyLines(undefined), []);
 }
