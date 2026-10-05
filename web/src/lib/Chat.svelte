@@ -1107,9 +1107,14 @@
   // the transcript has not taken yet (the owner's ask, 2026-10-05: the call
   // shows the whole conversation, as the persona call does). One source, so
   // a re-read never draws a line twice.
-  const vTranscript = $derived(historyLines(entries));
-  const vReplying = $derived(streaming ? speakable(streaming).trim() : '');
-  const vSpeaking = $derived(pendingSpeech(vEntries, vTranscript));
+  // Only while the page shows the conversation the call speaks into
+  // (`vKey`, captured at connect): switched to another chat mid-call, the
+  // pane falls back to the call's own lines rather than draw a different
+  // conversation under the chip that names this one (review of #570).
+  const vSame = $derived(!!vKey && key === vKey);
+  const vTranscript = $derived(vSame ? historyLines(entries) : []);
+  const vReplying = $derived(vSame && streaming ? speakable(streaming).trim() : '');
+  const vSpeaking = $derived(vSame ? pendingSpeech(vEntries, vTranscript) : vEntries);
   // Held at the bottom while the owner is there, left alone once they scroll
   // up to read: nothing arriving drags a reader back down.
   let vStick = true;
@@ -1122,16 +1127,12 @@
   });
 
   function onTranscript({ who, text, interim }) {
-    // When a line finishes, how many of the owner's lines the transcript
-    // held: it is drawn until the transcript has taken it (`pendingSpeech`).
-    const heardAt = interim ? null : vTranscript.filter((l) => l.who === 'user').length;
     const last = vEntries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
-      last.heardAt = heardAt;
     } else {
-      vEntries.push({ who, text, interim, heardAt });
+      vEntries.push({ who, text, interim });
     }
   }
 
@@ -2353,7 +2354,11 @@
           <div class="vanswer">{vReplying}</div>
         {/if}
         {#each vSpeaking as entry}
-          <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
+          {#if entry.who === 'user'}
+            <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
+          {:else}
+            <div class="vanswer" class:interim={entry.interim}>{entry.text}</div>
+          {/if}
         {/each}
       </div>
       <!-- Voice and rate moved to the settings page (the gear on Home):
@@ -3586,12 +3591,12 @@
     line-height: 1.5;
   }
   .vbubble.interim,
+  .vanswer.interim {
+    color: var(--text-muted);
+  }
   /* A picture in the transcript, as a line. */
   .vpicture {
     font-style: italic;
-  }
-  .vanswer.interim {
-    color: var(--text-muted);
   }
   .typerow {
     display: flex;

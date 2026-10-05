@@ -121,16 +121,12 @@
   let since = null;
 
   function onTranscript({ who, text, interim }) {
-    // When a line finishes, how many of the owner's lines the transcript held:
-    // it is drawn until the transcript has taken it (`pendingSpeech`).
-    const heardAt = interim ? null : transcript.filter((l) => l.who === 'user').length;
     const last = entries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
-      last.heardAt = heardAt;
     } else {
-      entries.push({ who, text, interim, heardAt });
+      entries.push({ who, text, interim });
     }
   }
 

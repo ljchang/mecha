@@ -39,23 +39,32 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
 
 // The owner's speech below the transcript: still being heard, or finished
 // and not yet in the transcript — never twice once the transcript has it,
-// and never the persona's words, which come from the transcript.
+// never the persona's words (which come from the transcript), and taken by
+// text, so a re-read that folds two lines into one draws nothing twice.
 {
   const lines = [{ who: 'user', text: 'Is the bakery open?' }, { who: 'persona', text: 'Until six.' }];
   const call = [
-    { who: 'user', text: 'Is the bakery open?', interim: false, heardAt: 0 },
-    { who: 'persona', text: 'Until six.', interim: false, heardAt: null },
-    { who: 'user', text: 'And tomor', interim: true, heardAt: null },
+    { who: 'user', text: 'is the bakery open', interim: false },
+    { who: 'persona', text: 'Until six.', interim: false },
+    { who: 'user', text: 'And tomor', interim: true },
   ];
-  // The first line is in the transcript (one owner line now, heard at zero):
-  // only the line still being heard is drawn.
+  // The first line is in the transcript (case and marks aside): only the
+  // line still being heard is drawn.
   assert.deepEqual(pendingSpeech(call, lines).map((e) => e.text), ['And tomor']);
   // Finished, and the transcript has not taken it yet: still drawn.
-  call[2] = { who: 'user', text: 'And tomorrow?', interim: false, heardAt: 1 };
+  call[2] = { who: 'user', text: 'And tomorrow?', interim: false };
   assert.deepEqual(pendingSpeech(call, lines).map((e) => e.text), ['And tomorrow?']);
-  // The transcript takes it: gone from below, drawn once, above.
+  // The transcript takes it: gone from below.
   const taken = [...lines, { who: 'user', text: 'And tomorrow?' }];
   assert.deepEqual(pendingSpeech(call, taken), []);
+  // A re-read that folded the two owner lines into one: both are in it, so
+  // neither is drawn again — where a count of owner lines would have shrunk.
+  const folded = [{ who: 'user', text: 'Is the bakery open?\n\nAnd tomorrow?' }, { who: 'persona', text: 'Until six.' }];
+  assert.deepEqual(pendingSpeech(call, folded), []);
+  // A word inside another word is not the line ("art" is not in "start").
+  assert.deepEqual(pendingSpeech([{ who: 'user', text: 'Art', interim: false }], [{ who: 'user', text: 'Start now' }]).map((e) => e.text), ['Art']);
+  // A finished line with nothing in it is never drawn.
+  assert.deepEqual(pendingSpeech([{ who: 'user', text: ' … ', interim: false }], []), []);
   assert.deepEqual(pendingSpeech(undefined, undefined), []);
 }
 
