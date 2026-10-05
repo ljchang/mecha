@@ -2161,8 +2161,10 @@ impl ImageGenerate {
     /// alone, with no extras — the picture the crop's face belongs to. An
     /// earlier anchored edit of the same character ends the walk as well.
     /// A picture with no manifest (an attached photo), a path that is not a
-    /// plain workspace file, or a cast of anyone else is false: the anchor
-    /// would put this character's face on someone who is not them.
+    /// plain workspace file, a cast of anyone else, extras anywhere on the
+    /// way, or an edit on the way that was given a second picture is false:
+    /// the anchor would put this character's face on someone who is not
+    /// them. People an edit's prompt alone adds cannot be seen here.
     async fn traces_to(&self, ctx: &ToolCtx, edited: &str, character: &str) -> bool {
         let is = |v: Option<&Value>| {
             v.and_then(Value::as_str)
@@ -2173,10 +2175,18 @@ impl ImageGenerate {
             let Some(m) = read_manifest(ctx, &at).await else {
                 return false;
             };
+            // Anyone brought in on the way — beside the cast, or from a
+            // second picture an edit was given — is someone this face could
+            // land on (review of #569).
+            if !m.get("extras").is_none_or(Value::is_null)
+                || m.get("reference_images")
+                    .and_then(Value::as_array)
+                    .is_some_and(|r| r.len() > 1)
+            {
+                return false;
+            }
             if let Some(cast) = m.get("cast").and_then(Value::as_array) {
-                return cast.len() == 1
-                    && is(cast[0].get("name"))
-                    && m.get("extras").is_none_or(Value::is_null);
+                return cast.len() == 1 && is(cast[0].get("name"));
             }
             if is(m.get("face_anchor").and_then(|a| a.get("name"))) {
                 return true;
@@ -3296,8 +3306,15 @@ impl Tool for ImageGenerate {
                     })
                 })
                 .await
-                .ok()
-                .flatten();
+                // A detector that panicked is said, never silently drawn
+                // without (review of #569).
+                .unwrap_or_else(|_| {
+                    Some((
+                        crate::face::Anchor::Unavailable("the face detector failed".into()),
+                        0,
+                        None,
+                    ))
+                });
                 if let Some((anchor, version, portrait)) = got {
                     face_anchor = match anchor {
                         crate::face::Anchor::Crop(bytes) => {
@@ -7917,7 +7934,7 @@ mod tests {
     /// the reason.
     #[tokio::test]
     async fn an_edit_is_anchored_only_to_its_own_character_alone() {
-        let (url, seen) = fake(vec![done(); 10], "200 OK").await;
+        let (url, seen) = fake(vec![done(); 14], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
         let faces = stub_faces(crate::face::Anchor::Crop(PNG.to_vec()));
@@ -7934,7 +7951,7 @@ mod tests {
                 .rev()
                 .find(|l| l.starts_with("POST /prompt"))
                 .unwrap()
-                .contains("images.image_2")
+                .contains("facial identity from <image2>")
         };
         let edit = |tool: Arc<dyn Tool>, picture: String| {
             let dir = dir.clone();
@@ -7976,6 +7993,29 @@ mod tests {
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::write(dir.join("inbox/me.png"), PNG).unwrap();
         let out = edit(Arc::clone(&maya), "inbox/me.png".into()).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        // Someone brought in from a second picture by an earlier edit: that
+        // edit is unanchored (it has two references), and so is every edit
+        // after it, though the walk would otherwise reach her scene (found
+        // on review of #569).
+        let hers = maya
+            .call(
+                json!({"prompt": "a garden", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "standing"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let joined = maya
+            .call(
+                json!({"prompt": "Keep <image1> unchanged. Add the man from <image2> beside her.",
+                       "reference_images": [picture_of(&hers.content), "inbox/me.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!joined.is_error && !anchored(), "{}", joined.content);
+        let out = edit(Arc::clone(&maya), picture_of(&joined.content)).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         // The assistant's own form never anchors.
         let alone = maya

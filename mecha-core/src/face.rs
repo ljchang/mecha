@@ -70,10 +70,14 @@ pub fn weights() -> Result<Option<PathBuf>> {
     let hub = crate::fetch::hub_dir()?;
     Ok(
         match crate::fetch::cached(&hub, REPO, REVISION, &WEIGHTS, false)? {
-            crate::fetch::Cached::Verified | crate::fetch::Cached::Unverified => {
+            // Only the blob `fetch` named by the pin's sha256: a plain file of
+            // the right size was put there by hand, and nothing hashed it.
+            crate::fetch::Cached::Verified => {
                 Some(crate::fetch::snapshot_path(&hub, REPO, REVISION, &WEIGHTS))
             }
-            crate::fetch::Cached::Mismatch | crate::fetch::Cached::Absent => None,
+            crate::fetch::Cached::Unverified
+            | crate::fetch::Cached::Mismatch
+            | crate::fetch::Cached::Absent => None,
         },
     )
 }
@@ -201,6 +205,11 @@ pub trait FaceAnchors: Send + Sync {
     fn anchor(&self, library: &crate::imagelib::Library, entry: &crate::imagelib::Entry) -> Anchor;
 }
 
+/// The cache's generation. A crop depends on the weights, the thresholds,
+/// [`DETECT_SIDE`] and [`CROP_SCALE`]; change any of them and bump this, or
+/// every portrait keeps the crop — or the "no face" — the old ones made.
+const CACHE_VERSION: &str = "r34-1";
+
 /// The real source: the cached crop of a portrait, else RetinaFace on it.
 pub struct CachedRetinaFace;
 
@@ -210,7 +219,7 @@ pub struct CachedRetinaFace;
 /// that was removed is simply never asked for again.
 pub fn cache_paths(library_dir: &Path, blob: &str) -> (PathBuf, PathBuf) {
     let stem = blob.split('.').next().unwrap_or(blob);
-    let dir = library_dir.join("faces");
+    let dir = library_dir.join("faces").join(CACHE_VERSION);
     (
         dir.join(format!("{stem}.png")),
         dir.join(format!("{stem}.none")),
@@ -219,40 +228,96 @@ pub fn cache_paths(library_dir: &Path, blob: &str) -> (PathBuf, PathBuf) {
 
 impl FaceAnchors for CachedRetinaFace {
     fn anchor(&self, library: &crate::imagelib::Library, entry: &crate::imagelib::Entry) -> Anchor {
-        let Some(blob) = entry.portrait.as_deref() else {
-            return Anchor::Unavailable("the character has no portrait".into());
-        };
-        let (png, none) = cache_paths(library.dir(), blob);
-        if let Ok(bytes) = std::fs::read(&png) {
-            return Anchor::Crop(bytes);
-        }
-        if none.exists() {
-            return Anchor::NoFace;
-        }
-        let made = (|| -> Result<Anchor> {
-            let Some(weights) = weights()? else {
-                return Ok(Anchor::Unavailable(format!(
-                    "the face detector is not installed ({INSTALL_HINT})"
-                )));
-            };
-            // Re-hashed on read: a portrait whose bytes no longer match its
-            // blob name is refused, as it is for a cast.
-            let (bytes, _) = library.read_portrait(entry)?;
-            let detector = Detector::load(&weights)?;
-            let anchor = match anchor_crop(&detector, &bytes)? {
-                Some(crop) => {
-                    crate::imagelib::write_atomic_mode(&png, &crop, Some(0o600))?;
-                    Anchor::Crop(crop)
+        cached(library, entry, &|portrait| {
+            // A short reason for the manifest, which the model can read; the
+            // detail, home paths and all, goes to the log.
+            let weights = match weights() {
+                Ok(Some(w)) => w,
+                Ok(None) => {
+                    return Err(format!(
+                        "the face detector is not installed ({INSTALL_HINT})"
+                    ))
                 }
-                None => {
-                    crate::imagelib::write_atomic_mode(&none, b"", Some(0o600))?;
-                    Anchor::NoFace
+                Err(e) => {
+                    tracing::warn!("face detector weights: {e:#}");
+                    return Err("the face detector's weights could not be checked".into());
                 }
             };
-            Ok(anchor)
-        })();
-        made.unwrap_or_else(|e| Anchor::Unavailable(format!("{e:#}")))
+            let detector = Detector::load(&weights).map_err(|e| {
+                tracing::warn!("face detector: {e:#}");
+                "the face detector could not be loaded".to_string()
+            })?;
+            anchor_crop(&detector, portrait).map_err(|e| {
+                tracing::warn!("face crop: {e:#}");
+                "no face crop could be made from the portrait".to_string()
+            })
+        })
     }
+}
+
+/// What a detector made of a portrait: a crop, no face, or why it could not
+/// run.
+type Found = std::result::Result<Option<Vec<u8>>, String>;
+
+/// The cache around a detector: a crop or a "no face" already recorded for
+/// this portrait is answered without detecting; otherwise `detect` runs on
+/// the portrait and what it found is recorded. `Err` from `detect` is a
+/// reason the crop could not be had, said and never cached.
+fn cached(
+    library: &crate::imagelib::Library,
+    entry: &crate::imagelib::Entry,
+    detect: &dyn Fn(&[u8]) -> Found,
+) -> Anchor {
+    let Some(blob) = entry.portrait.as_deref() else {
+        return Anchor::Unavailable("the character has no portrait".into());
+    };
+    let (png, none) = cache_paths(library.dir(), blob);
+    if let Ok(bytes) = std::fs::read(&png) {
+        return Anchor::Crop(bytes);
+    }
+    if none.exists() {
+        return Anchor::NoFace;
+    }
+    // Re-hashed on read: a portrait whose bytes no longer match its blob
+    // name is refused, as it is for a cast.
+    let portrait = match library.read_portrait(entry) {
+        Ok((bytes, _)) => bytes,
+        Err(e) => {
+            tracing::warn!("face crop: {e:#}");
+            return Anchor::Unavailable("the portrait could not be read".into());
+        }
+    };
+    let found = match detect(&portrait) {
+        Ok(found) => found,
+        Err(why) => return Anchor::Unavailable(why),
+    };
+    let (path, bytes, anchor) = match found {
+        Some(crop) => (png, crop.clone(), Anchor::Crop(crop)),
+        None => (none, Vec::new(), Anchor::NoFace),
+    };
+    // A crop that cannot be cached is still used: the edit should not pay
+    // for a full disk, only the next one.
+    let saved = make_private_dir(path.parent().unwrap_or(library.dir()))
+        .and_then(|()| crate::imagelib::write_atomic_mode(&path, &bytes, Some(0o600)));
+    if let Err(e) = saved {
+        tracing::warn!("face crop cache: {e:#}");
+    }
+    anchor
+}
+
+/// The cache directory and any parent it lacks, owner-only like the
+/// library's own files: a crop is a face.
+fn make_private_dir(dir: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .with_context(|| format!("creating {}", dir.display()))
 }
 
 /// Anchors, decoded boxes, NMS: py-feat's `generate_priors`, `decode_boxes`
@@ -355,9 +420,13 @@ fn read_safetensors(bytes: &[u8]) -> Result<Tensors> {
         }
         let shape: Vec<usize> = serde_json::from_value(t["shape"].clone())?;
         let [start, end]: [usize; 2] = serde_json::from_value(t["data_offsets"].clone())?;
+        let bytes = shape
+            .iter()
+            .try_fold(4usize, |n, &d| n.checked_mul(d))
+            .ok_or_else(|| anyhow!("`{name}`'s shape overflows"))?;
         let raw = data
             .get(start..end)
-            .filter(|r| r.len() == 4 * shape.iter().product::<usize>())
+            .filter(|r| r.len() == bytes)
             .ok_or_else(|| anyhow!("`{name}`'s data is not where its header says"))?;
         let v = raw
             .as_chunks::<4>()
@@ -490,18 +559,32 @@ impl Conv {
         let [cout, cin, k, k2] = shape[..] else {
             bail!("`{conv}.weight` is not four-dimensional");
         };
-        if k != k2 {
-            bail!("`{conv}.weight` is not square");
+        if k != k2 || k == 0 || stride == 0 {
+            bail!("`{conv}.weight` is not a square kernel");
+        }
+        // Every length checked here, so `run_in`'s matrix product only ever
+        // reads what these hold (review of #569).
+        let per_channel = |name: String, v: Vec<f32>| -> Result<Vec<f32>> {
+            if v.len() != cout {
+                bail!("`{name}` has {} values for {cout} channels", v.len());
+            }
+            Ok(v)
+        };
+        if w.len() != cout * cin * k * k {
+            bail!("`{conv}.weight` does not hold its shape");
         }
         let mut b = match t.remove(&format!("{conv}.bias")) {
-            Some((_, b)) => b,
+            Some((_, b)) => per_channel(format!("{conv}.bias"), b)?,
             None => vec![0.0; cout],
         };
         if let Some(bn) = bn {
-            let (_, gamma) = take(t, &format!("{bn}.weight"))?;
-            let (_, beta) = take(t, &format!("{bn}.bias"))?;
-            let (_, mean) = take(t, &format!("{bn}.running_mean"))?;
-            let (_, var) = take(t, &format!("{bn}.running_var"))?;
+            let mut get = |field: &str| -> Result<Vec<f32>> {
+                let name = format!("{bn}.{field}");
+                let (_, v) = take(t, &name)?;
+                per_channel(name, v)
+            };
+            let (gamma, beta) = (get("weight")?, get("bias")?);
+            let (mean, var) = (get("running_mean")?, get("running_var")?);
             let per = cin * k * k;
             for o in 0..cout {
                 let s = gamma[o] / (var[o] + 1e-5).sqrt();
@@ -527,7 +610,21 @@ impl Conv {
 
     /// Im2col and one matrix product per band of output rows.
     fn run_in(&self, x: &Map, budget: usize) -> Map {
-        debug_assert_eq!(x.c, self.cin);
+        // The bounds the `unsafe` product below relies on, checked in every
+        // build: a map of the wrong depth would read past its end.
+        assert!(
+            x.c == self.cin
+                && x.v.len() == x.c * x.h * x.w
+                && x.h + 2 * self.pad >= self.k
+                && x.w + 2 * self.pad >= self.k,
+            "a {}×{}×{} map into a {}-channel {}×{} convolution",
+            x.c,
+            x.h,
+            x.w,
+            self.cin,
+            self.k,
+            self.k
+        );
         let (k, s, p) = (self.k, self.stride, self.pad);
         let oh = (x.h + 2 * p - k) / s + 1;
         let ow = (x.w + 2 * p - k) / s + 1;
@@ -1074,10 +1171,59 @@ mod tests {
         }
     }
 
+    /// The cache around the detector, on a scratch library: a crop is made
+    /// once and answered from disk after, a portrait with no face is
+    /// remembered as such, and a crop that could not be had is said and
+    /// never cached. (The first cut never created the cache directory, so
+    /// every crop failed to save and the edit went unanchored — found on
+    /// review of #569; the stubbed tests in `imagegen` could not see it.)
+    #[test]
+    fn a_crop_is_made_once_cached_and_a_missing_face_remembered() {
+        let dir = std::env::temp_dir().join(format!("mecha-face-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, name) in ["maya", "john", "ann"].iter().enumerate() {
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([40 * i as u8, 10, 10]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            crate::imagelib::create(
+                &dir,
+                crate::imagelib::NewEntry {
+                    kind: crate::imagelib::Kind::Character,
+                    name: name.to_string(),
+                    text: format!("{name}, a memorable face"),
+                    portrait: Some(png.into_inner()),
+                    source_seed: None,
+                    origin: crate::imagelib::Origin::Owner,
+                    locked: false,
+                },
+            )
+            .unwrap();
+        }
+        let (lib, _) = crate::imagelib::Library::load(&dir);
+        let get = |n: &str| lib.get(crate::imagelib::Kind::Character, n).unwrap();
+        let never =
+            |_: &[u8]| -> Found { panic!("detected again rather than read from the cache") };
+        // A crop: made once, then read back.
+        let crop = cached(&lib, get("maya"), &|_| Ok(Some(b"crop".to_vec())));
+        assert_eq!(crop, Anchor::Crop(b"crop".to_vec()));
+        assert_eq!(cached(&lib, get("maya"), &never), crop);
+        // No face: remembered, not detected again.
+        assert_eq!(cached(&lib, get("john"), &|_| Ok(None)), Anchor::NoFace);
+        assert_eq!(cached(&lib, get("john"), &never), Anchor::NoFace);
+        // Unavailable: said, and not cached, so the next call tries again.
+        let missing = cached(&lib, get("ann"), &|_| Err("not installed".into()));
+        assert_eq!(missing, Anchor::Unavailable("not installed".into()));
+        assert_eq!(
+            cached(&lib, get("ann"), &|_| Ok(Some(b"later".to_vec()))),
+            Anchor::Crop(b"later".to_vec())
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn the_cache_is_named_by_the_portrait_blob() {
         let (png, none) = cache_paths(Path::new("/lib"), "sha256-abc.jpg");
-        assert_eq!(png, Path::new("/lib/faces/sha256-abc.png"));
-        assert_eq!(none, Path::new("/lib/faces/sha256-abc.none"));
+        assert_eq!(png, Path::new("/lib/faces/r34-1/sha256-abc.png"));
+        assert_eq!(none, Path::new("/lib/faces/r34-1/sha256-abc.none"));
     }
 }
