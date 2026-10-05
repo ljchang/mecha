@@ -1068,4 +1068,15 @@ mod tests {
         assert!(!cmd(&["mecha", "eval", "cases.toml"]).may_follow());
         assert!(cmd(&["mecha", "run", "hello"]).may_follow());
     }
+
+    /// `--force` overrides a measurement, and a rollback measures nothing:
+    /// the parser refuses the pair, not a check in the body (#564).
+    #[test]
+    fn force_with_rollback_is_refused_at_the_parser() {
+        assert!(
+            Cli::try_parse_from(["mecha", "setup", "engine", "--rollback", "--force"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["mecha", "setup", "engine", "--upgrade", "--force"]).is_ok());
+        assert!(Cli::try_parse_from(["mecha", "setup", "engine", "--adopt", "--force"]).is_ok());
+    }
 }

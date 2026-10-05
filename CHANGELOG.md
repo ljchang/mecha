@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features enable` installs the embeddings and OCR servers.** On a
+  Linux machine without them, enabling a feature that uses one fetches its
+  pinned model, writes its launcher and the systemd user units that start it on
+  its first request and stop it when idle, and starts it once to check it
+  answers. A server already set up by hand is left alone.
 - **`mecha setup engine --upgrade` moves to a newer llama.cpp — only if it
   measures no slower.** It finds the newest release with a build for this
   machine (or `--to <tag>`), asks you to confirm that tag, checks each archive

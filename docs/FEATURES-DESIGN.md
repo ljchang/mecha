@@ -60,8 +60,13 @@
 > the machine, its tag confirmed at a terminal, its archives checked against
 > the release API's digests), `install_build` beside `current`, the
 > promotion moving `current` and keeping `previous`, the router asked for
-> its `build_info`, and `--rollback` one build back. 7b-2 (the build
-> fallback), 7c–7f and step 8 are unbuilt (step 7 redesigned in §10). The
+> its `build_info`, and `--rollback` one build back. **7c is split in two**:
+> 7c-1 — `llama_units.rs`, the on-demand embeddings and OCR servers from
+> nothing (their units and launchers shipped in the binary, held equal to
+> `scripts/llama/`, rendered with absolute launcher paths and the engine
+> drop-in, started once through their socket) — is built; 7c-2 (the router
+> and the chat model choice), 7b-2 (the build fallback), 7d–7f and step 8
+> are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1581,7 +1586,14 @@ Step 7 becomes these, each a PR that leaves every feature working:
   agreeing at cosine 1.000000; the router leg is the owner's first
   `--adopt`, because it stops the live router.
 - **7c.** The router unit and chat model choice; the embeddings and OCR
-  servers on demand from nothing.
+  servers on demand from nothing. Built in two PRs: **7c-1** the embeddings
+  and OCR servers; **7c-2** the router and the chat model choice. Each server
+  is three units and a launcher, as on the GB10: a socket on the public port,
+  a `systemd-socket-proxyd` service that stops after ten idle minutes, and
+  the server on a private backend port. The unit names and ports are
+  parameters of the rendering, so the real-machine test installs an OCR server
+  beside the live one on free ports, starts it through its socket, and
+  removes it (measured 2026-10-05).
 - **7d.** `uv` and the voice venv, Parakeet and the voice worker.
 - **7e.** ComfyUI, ComfyUI-GGUF and the image models.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
