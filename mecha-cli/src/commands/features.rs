@@ -457,6 +457,7 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
     for f in &p.files {
         let what = match (f.repo, f.path) {
             (Some(repo), path) => format!("{repo}/{path}"),
+            (None, "") if f.state == FileState::Brought => "your own model".to_string(),
             (None, "") if f.model.is_empty() => "no recommended model".to_string(),
             (None, "") => f.model.to_string(),
             (None, path) => path.to_string(),
@@ -475,6 +476,10 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             FileState::NoRow => "no model is recommended for this machine's tier".to_string(),
             FileState::KeeperUnknown { sidecar } => {
                 format!("kept by {sidecar}, which could not be checked — not priced")
+            }
+            FileState::Brought => {
+                "your own GGUF, served by mecha's router (`mecha setup chat` changes it)"
+                    .to_string()
             }
         };
         out.push_str(&format!(

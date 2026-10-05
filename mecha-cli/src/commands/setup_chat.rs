@@ -60,6 +60,20 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         }
     }
 
+    // A machine no pinned engine build fits is told so before it is asked
+    // anything — the answer is to fix the driver, not to say yes (found on
+    // review of #568). A machine with a llama-server of its own probes no
+    // driver.
+    let needs_engine = !mecha_core::llama_units::has_engine(&m);
+    if needs_engine {
+        mecha_core::engine::choose(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            mecha_core::engine::read_nvidia(),
+        )
+        .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
+    }
+
     // The choice: the tier's row, or the owner's own GGUF.
     let slot = mecha_core::recommend::SLOTS
         .iter()
@@ -117,7 +131,6 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     };
 
     // The engine first, when the machine has none to run.
-    let needs_engine = !mecha_core::llama_units::has_engine(&m);
     println!(
         "\nThis installs{} the router (a systemd user service on :8080) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \

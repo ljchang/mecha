@@ -496,6 +496,10 @@ pub enum FileState {
     /// Kept outside the hub by a sidecar that could not be checked: not
     /// priced, never offered over.
     KeeperUnknown { sidecar: &'static str },
+    /// The chat slot served by mecha's router from a GGUF the owner brought
+    /// (`mecha setup chat`): the pinned row is not this machine's model, so
+    /// it is neither priced nor offered.
+    Brought,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -654,8 +658,33 @@ pub fn plan(
         });
     }
 
+    // What mecha's own router serves, when it is here: a brought model makes
+    // the chat row's pinned files nobody's to fetch.
+    let router_here = sidecars.iter().any(|p| {
+        p.id == crate::router_unit::ID
+            && matches!(p.state, SidecarState::Installed | SidecarState::Incomplete)
+    });
     let mut files = Vec::new();
     for slot in needed_slots(named) {
+        if slot.id == "chat" && router_here {
+            let state = match crate::router_unit::installed_choice(&m.mecha_home) {
+                Ok(Some(crate::router_unit::Choice::Own { .. })) => Some(FileState::Brought),
+                Ok(_) => None,
+                Err(_) => Some(FileState::KeeperUnknown {
+                    sidecar: "the chat router",
+                }),
+            };
+            if let Some(state) = state {
+                files.push(PlannedFile {
+                    slot: slot.id,
+                    model: "",
+                    repo: None,
+                    path: "",
+                    state,
+                });
+                continue;
+            }
+        }
         let Some((row, _)) = recommend::row_for(slot, machine) else {
             // No model is recommended at this tier (the chat model below its
             // smallest): named, never skipped — a slot with no row is a
@@ -765,7 +794,10 @@ pub fn plan(
     }) && files.iter().all(|f| {
         matches!(
             f.state,
-            FileState::Cached | FileState::WithSidecar | FileState::HeldBy { .. }
+            FileState::Cached
+                | FileState::WithSidecar
+                | FileState::HeldBy { .. }
+                | FileState::Brought
         )
     });
     Ok(Plan {
@@ -1035,6 +1067,80 @@ mod tests {
             state("embed-server"),
             SidecarState::Unknown { .. }
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A router `mecha setup chat` installed with the owner's own GGUF serves
+    /// that model: the chat row's pinned files are neither priced nor a
+    /// reason to offer the router again — which would rewrite its presets
+    /// with the recommended row (found on review of #568). The pinned row's
+    /// router, its files gone, is offered as before.
+    #[test]
+    fn a_router_serving_a_brought_model_is_not_offered_the_row() {
+        use crate::router_unit::{presets_path, presets_text, Preset, PINNED_ALIAS};
+        let root = scratch();
+        let m = machinery(&root);
+        let presets = presets_path(&m.mecha_home);
+        std::fs::create_dir_all(presets.parent().unwrap()).unwrap();
+        let manifest = Manifest {
+            entries: vec![Entry {
+                sidecar: "router".into(),
+                incomplete: false,
+                wrote: vec![presets.clone()],
+                builds: vec![],
+            }],
+        };
+        std::fs::write(
+            Manifest::path(&m.mecha_home),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let with = |alias: &str| {
+            std::fs::write(
+                &presets,
+                presets_text(&Preset {
+                    alias: alias.into(),
+                    model: "/m/mine.gguf".into(),
+                    mmproj: None,
+                    ctx: 8192,
+                    slots: 1,
+                    cache_ram_mb: None,
+                    pinned: alias == PINNED_ALIAS,
+                }),
+            )
+            .unwrap();
+            plan(Feature::Messages, &m, &GB10, &root.join("hub"), false).unwrap()
+        };
+
+        let own = with("mine");
+        let router = own.sidecars.iter().find(|s| s.id == "router").unwrap();
+        assert_eq!(router.state, SidecarState::Installed);
+        let chat: Vec<_> = own.files.iter().filter(|f| f.slot == "chat").collect();
+        assert_eq!(chat.len(), 1, "{chat:?}");
+        assert_eq!(chat[0].state, FileState::Brought);
+        assert!(!crate::install::offered(&own, true)
+            .iter()
+            .any(|s| s.id == "router"));
+
+        let pinned = with(PINNED_ALIAS);
+        assert!(pinned
+            .files
+            .iter()
+            .any(|f| f.slot == "chat" && matches!(f.state, FileState::Download { .. })));
+        assert!(
+            !cfg!(target_os = "linux")
+                || crate::install::offered(&pinned, true)
+                    .iter()
+                    .any(|s| s.id == "router"),
+            "the pinned row's router, its model gone, is offered again"
+        );
+
+        std::fs::write(&presets, "version = 1\n").unwrap();
+        let unread = plan(Feature::Messages, &m, &GB10, &root.join("hub"), false).unwrap();
+        assert!(unread
+            .files
+            .iter()
+            .any(|f| f.slot == "chat" && matches!(f.state, FileState::KeeperUnknown { .. })));
         let _ = std::fs::remove_dir_all(&root);
     }
 
