@@ -1554,7 +1554,9 @@ installs mecha's pinned llama.cpp first if the machine has none, then the
 router: a systemd user service on `:8080`, its launcher in
 `~/.mecha/sidecars/bin/`, and its presets in `~/.mecha/sidecars/router/models.ini`.
 It starts the router, waits for the model to load — several minutes for a large
-one — and asks it which model it serves.
+one — and asks it which model it serves. A model you brought stays yours: `mecha features
+enable` never offers the recommended one over it, and running `setup chat` again
+is how to change it.
 
 When no local provider is configured yet, it then offers to write one, from
 what the router reports about the model it installed — the same write-and-confirm

@@ -470,11 +470,13 @@ pub async fn install(
 ) -> Result<()> {
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
-        // The router with the row recommended for this machine: choosing
-        // another, or bringing one's own, is `mecha setup chat`'s.
+        // The router with what its presets already serve — a GGUF the owner
+        // brought through `mecha setup chat` is kept, never replaced by the
+        // recommended row — else the row recommended for this machine.
         "router" => crate::router_unit::install(
             m,
-            &crate::router_unit::Choice::Recommended,
+            &crate::router_unit::installed_choice(&m.mecha_home)?
+                .unwrap_or(crate::router_unit::Choice::Recommended),
             &crate::router_unit::Naming::shipped(),
             machine,
             hub,
