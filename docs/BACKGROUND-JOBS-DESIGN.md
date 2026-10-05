@@ -1,8 +1,8 @@
 # Background jobs: a slow side effect that outlives the turn
 
-**Status:** proposed 2026-10-05. It builds `PERSONA-CONTEXT-DESIGN.md` §5.4, which the owner ruled
+**Status:** accepted 2026-10-05 (rulings in §7). It builds `PERSONA-CONTEXT-DESIGN.md` §5.4, which the owner ruled
 as R3: "pictures as jobs, as a core job mechanism, built separately on §5.1's notes". It is built
-after that doc's §5.2 and §5.5, which also edit `imagegen.rs`. Open questions are in §7.
+after that doc's §5.2 and §5.5, which also edit `imagegen.rs`.
 
 **The question:** how does a ~40 s side effect (a picture first) run without blocking the turn,
 without being killed by speech, without chaining inside one turn, and without inventing a new
@@ -153,15 +153,12 @@ get the same behaviour.
 4. The assistant chat host, the same way.
 5. The scripted-call measurement.
 
-## 7. Open questions for the owner
+## 7. Rulings (owner, 2026-10-05)
 
-- **Q1. When a picture arrives, should the persona say so?** By default it does not: the picture
-  appears, and the persona learns of it on its next turn. On a call, an unprompted "there it is"
-  is an extra turn the owner did not ask for.
-- **Q2. How is a picture stopped on a call?** Hanging up does not stop it (§2.4). Options:
-  - a Stop control on the call screen's picture slot;
-  - a spoken "stop" mapped to the Stop path;
-  - neither, so a picture always finishes.
-- **Q3. One job per conversation, or one per machine?** ComfyUI renders one job at a time anyway.
-  Per-conversation keeps a second chat from being refused because of a first. Per-machine makes
-  the queue explicit. Per-conversation is proposed.
+- **Q1. A finished picture is not announced.** It appears on screen, in the chat and on the call,
+  and the persona learns of it on its next turn (§2.3). There is no unprompted extra turn.
+- **Q2. On a call, a picture is stopped by a stop control on the call screen's picture slot**,
+  shown while one is being made. It takes the Stop path of §2.4 for that conversation's job.
+  Speech never stops a picture, and hanging up does not either.
+- **Q3. One job per conversation.** ComfyUI still renders one job at a time, so a second chat's
+  picture waits its turn in ComfyUI's queue rather than being refused.
