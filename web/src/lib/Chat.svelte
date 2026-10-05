@@ -1111,7 +1111,7 @@
   // (`vKey`, captured at connect): switched to another chat mid-call, the
   // pane falls back to the call's own lines rather than draw a different
   // conversation under the chip that names this one (review of #570).
-  const vSame = $derived(!!vKey && key === vKey);
+  const vSame = $derived(voiceOpen && !!vKey && key === vKey);
   const vTranscript = $derived(vSame ? historyLines(entries) : []);
   const vReplying = $derived(vSame && streaming ? speakable(streaming).trim() : '');
   const vSpeaking = $derived(vSame ? pendingSpeech(vEntries, vTranscript) : vEntries);
@@ -1134,6 +1134,9 @@
     } else {
       vEntries.push({ who, text, interim });
     }
+    // A line growing in place changes no length the effect reads: follow it
+    // here, while the owner is at the bottom (review of #570).
+    if (vStick) queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
   }
 
   // `keep` is the reconnect path: the words already spoken stay on screen,
@@ -1143,6 +1146,8 @@
   function startVoice({ keep = false } = {}) {
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
+    // A reconnect supersedes the notices that led to it: keep the speech.
+    else vEntries = vEntries.filter((e) => e.who !== 'notice');
     vStick = true;
     // A line typed into another call — another chat, or an incognito one —
     // must not wait in this one's box (review of #499).

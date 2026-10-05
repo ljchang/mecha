@@ -128,10 +128,15 @@
     } else {
       entries.push({ who, text, interim });
     }
+    // A line growing in place changes no length the effect reads: follow it
+    // here, while the owner is at the bottom (review of #570).
+    if (stick) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
   }
 
   export function start({ keep = false } = {}) {
     if (!keep) entries = [];
+    // A reconnect supersedes the notices that led to it: keep the speech.
+    else entries = entries.filter((e) => e.who !== 'notice');
     stick = true;
     // A line typed into another persona's call must not wait in this one's.
     if (!keep) {

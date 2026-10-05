@@ -73,6 +73,10 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
     { who: 'notice', text: 'voice: the microphone path stopped - tap to reconnect', interim: false },
   ];
   assert.deepEqual(pendingSpeech(withNotice, lines).map((e) => e.who), ['notice']);
+  // A notice the owner has since spoken after is history, not the call's
+  // state: it stops showing.
+  const after = [...withNotice, { who: 'user', text: 'Is the bakery open?', interim: false }];
+  assert.deepEqual(pendingSpeech(after, lines), []);
 }
 
 console.log('call-lines: ok');
