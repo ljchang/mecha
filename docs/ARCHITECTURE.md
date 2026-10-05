@@ -1662,6 +1662,17 @@ module.
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
+    - It also quotes the longest run of eight or more words the last reply
+      took from one of the five before it (2026-10-05): openings and closers
+      miss a passage lifted from the middle, which is how a persona repeats
+      itself around pictures, a new first paragraph and then the previous
+      reply's paragraphs word for word until whole replies repeat. Replayed
+      on image turns, the recorded tool call kept: at least half copied
+      18/59 → 7/60 on images asked for in conversation (judged 55–56), and
+      16/66 → 11/66 on edit-panel turns beside `persona::edit`'s note
+      (judged 75–50). The passage goes back as lowercase words only, so it
+      can close neither the quote nor the note. A note can be this clause
+      alone, so it has its own stem (`COPY_STEM`).
     - Only the newest variety note goes on the wire (`PriorNudges::Drop`,
       set in `persona_agent` beside the other two views), wherever it sits:
       a turn folded into an earlier message after a cancelled tool call can
