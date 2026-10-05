@@ -1705,8 +1705,10 @@ module.
     - They arm taint by the content rule (`Taint::arm_for_notes`), at run
       start and in the live snapshot a steer is judged by. The taint is the
       conversation's, so it stays armed on later turns that carry no note.
-    - The run's notes are recorded as `Record::Notes`, for audit only.
-      `Session::read` leaves them out of the conversation it rebuilds.
+    - The run's notes are recorded as `Record::Notes`. `Session::read`
+      leaves them out of the conversation it rebuilds and arms the taint
+      from them, since the transcript is how a torn taint record is
+      re-derived and the notes are no longer in the messages.
     - Material is not a note: the files block and the session goal ride in
       the first turn and stay there.
     - A subagent never inherits its parent's notes.
