@@ -1662,14 +1662,15 @@ module.
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
-    - Only the turn being answered (the last message with the owner's own
-      words) keeps its notes on the wire, those after the owner's newest
-      words and the newest of each kind
-      (`PriorNudges::Drop`, set in `persona_agent` beside the other two
-      views): a turn folded into an earlier message after a cancelled tool
-      call can hold two of one kind. So an edit turn keeps its variety note
-      and its edit note side by side through its tool round trip, and a
-      later turn drops both, even one that earned no note of its own.
+    - Only the newest variety note goes on the wire (`PriorNudges::Drop`,
+      set in `persona_agent` beside the other two views), wherever it sits:
+      a turn folded into an earlier message after a cancelled tool call can
+      hold two. An edit note goes on the wire only while it is the last note
+      of all and its message is the turn being answered (`answering`, which
+      a steer folded into a tool result never moves): the edit turn appends
+      it after its variety note, so any note after it is a later turn's,
+      folded or not. So an edit turn keeps both its notes through its tool
+      round trip, a steer included, and a later turn drops the edit note.
       Each note names what is repeating now, and kept, forty turns in
       would be forty stale "don't end on X" lines, which is not the condition
       it was measured in. The transcript keeps every note; `wire_bytes`
