@@ -47,13 +47,25 @@ export function historyLines(entries) {
 // The owner's speech the call screen draws below the transcript: what is
 // still being heard (interim), and a finished line until the transcript has
 // taken it — the turn reaches the chat a moment after the speech ends, and
-// the line must not blink out in between. `heardAt` is how many of the
-// owner's lines the transcript held when the line finished. Only the owner's:
-// the persona's words come from the transcript and the reply streaming in.
+// the line must not blink out in between. "Taken" is by text: a finished line
+// is in the transcript once one of its last few owner lines contains it.
+// Containment, because the server may fold two plain lines into one message
+// on a re-read; never a count, which that fold changes (review of #570). A
+// repeated short line ("yes") may count as taken a moment early: a blink, and
+// one that corrects itself, where a stale count drew a line twice for good.
+// Only the owner's lines: the persona's words come from the transcript and
+// the reply streaming in.
 export function pendingSpeech(callEntries, lines) {
-  const said = (lines ?? []).filter((l) => l.who === 'user').length;
-  return (callEntries ?? []).filter(
-    (e) => e.who === 'user' && (e.interim || e.heardAt == null || said <= e.heardAt),
-  );
+  const norm = (t) => (t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const said = (callEntries ?? []).filter((e) => e.who === 'user');
+  const finished = said.filter((e) => !e.interim).length;
+  const recent = (lines ?? [])
+    .filter((l) => l.who === 'user')
+    .slice(-(finished + 2))
+    .map((l) => ` ${norm(l.text)} `);
+  return said.filter((e) => {
+    if (e.interim) return true;
+    const t = norm(e.text);
+    return t !== '' && !recent.some((r) => r.includes(` ${t} `));
+  });
 }
-
