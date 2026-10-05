@@ -354,6 +354,24 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {heard!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_the_mark_in_a_tool_result_does_not_read_a_chat_whole(self):
+        # A session that read the voice code (or this guard) holds the mark
+        # in a tool result; that is not a call, and its typed prose stays
+        # out of the corpus (review of #559, pass 8).
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        typed = "Read the voice module and tell me where the block is prepended."
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990114T000000-3b4c5d6e.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "d", "kind": "web"}) + "\n")
+            for role, blocks in (("user", [t(typed)]),
+                                 ("assistant", [{"type": "tool_use", "id": "t1", "name": "fs_read", "input": {}}]),
+                                 ("user", [{"type": "tool_result", "tool_use_id": "t1", "content":
+                                            "const VOICE_BLOCK = \"Voice mode: everything you write is spoken aloud by a text-to-speech voice.\""}])):
+                f.write(json.dumps({"record": "message", "role": role, "content": blocks}) + "\n")
+        self.stage("fixture.py", f"X = {typed!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
     def test_an_extension_is_replayed_but_not_read_as_said(self):
         # `Record::Extend` folds harness text onto the last recorded message;
         # the replay applies it, so a later fold is still recognised, and
