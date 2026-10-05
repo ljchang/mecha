@@ -324,8 +324,25 @@ async fn run_upgrade(
         println!("the servers already run llama.cpp {current} — nothing to upgrade to");
         return Ok(());
     }
+    // Asked for "the newest", only a newer build is an upgrade: an edited
+    // older release at the top of the list must not become a downgrade.
+    // `--to` names any tag on purpose, older included.
+    let current_build: Option<u32> = current.strip_prefix('b').and_then(|n| n.parse().ok());
+    if to.is_none() && current_build.is_some_and(|c| release.build <= c) {
+        println!(
+            "the newest llama.cpp release with a build for this machine is {}, not newer than {current} — nothing to upgrade to",
+            release.tag
+        );
+        return Ok(());
+    }
     let archives = release.archives_for(target)?;
-    let bytes: u64 = archives.iter().map(|a| a.bytes).sum();
+    let spec = mecha_core::engine::Spec {
+        tag: release.tag.clone(),
+        build: release.build,
+        commit: release.commit.clone(),
+        source: mecha_core::engine::Source::OwnerConfirmed(archives),
+    };
+    let bytes = spec.bytes();
     // F10: printing the tag is disclosure; the owner's yes to *this* tag is
     // the choice, and the only thing that lets GitHub's own digests stand in
     // for a reviewed pin.
@@ -354,12 +371,7 @@ async fn run_upgrade(
         println!("Nothing was changed.");
         return Ok(());
     }
-    let spec = mecha_core::engine::Spec {
-        tag: release.tag.clone(),
-        build: release.build,
-        commit: release.commit.clone(),
-        source: mecha_core::engine::Source::OwnerConfirmed(archives),
-    };
+
     let (cancel, listener) = interrupt_token("upgrade")?;
     let row = gate::upgrade(
         m,
@@ -611,6 +623,10 @@ async fn run_rollback(
                 .await
                 .map_err(|(step, e)| anyhow::anyhow!("{step}: {e:#}"))?,
             None => {
+                // The backends move too, model or no model: left running,
+                // they would serve the build rolled back from — which the
+                // pruning below then deletes.
+                gate::stop_backends(&servers)?;
                 gate::systemctl("restart", &["llama-local.service"])?;
                 gate::router_back(&base, None, &router_engine).await?;
             }

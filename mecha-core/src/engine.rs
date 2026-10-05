@@ -383,9 +383,21 @@ pub async fn install_engine(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     Manifest::record(home, id, &engine_root(home).join(PIN.tag))?;
     Manifest::record(home, id, &link)?;
     install_build(m, target, &Spec::pin(target)?, say).await?;
-    point_current(home, PIN.tag)?;
+    settle_current_on_pin(home)?;
     Manifest::finish(home, id)?;
     Ok(link.join("llama-server"))
+}
+
+/// `current` is set to the pin only when it names nothing (a first install)
+/// or names the pin already. A machine an upgrade moved on keeps its build:
+/// re-running the pin's install — `features enable` repairing an unfinished
+/// entry — must never demote it outside the gate.
+fn settle_current_on_pin(home: &Path) -> Result<()> {
+    match link_tag(&current(home)) {
+        None => point_current(home, PIN.tag),
+        Some(t) if t == PIN.tag => point_current(home, PIN.tag),
+        Some(_) => Ok(()),
+    }
 }
 
 /// Unpack, check and record one build in its own directory under the engine
@@ -1584,6 +1596,22 @@ mod tests {
         std::fs::remove_file(current(&home)).unwrap();
         assert!(prune_builds(&home).is_err());
         assert!(root.join("b2").exists() && root.join("b3").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The pin's install sets `current` on a first run and leaves an upgraded
+    /// machine's alone — the link rule `install_engine` follows.
+    #[test]
+    fn the_pin_install_never_demotes_an_upgraded_current() {
+        let home = std::env::temp_dir().join(format!("mecha-demote-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(engine_root(&home)).unwrap();
+        point_current(&home, "b20000").unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some("b20000"));
+        // A first install, and a machine on the pin, get the pin.
+        std::fs::remove_file(current(&home)).unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some(PIN.tag));
         let _ = std::fs::remove_dir_all(&home);
     }
 
