@@ -338,7 +338,11 @@
         <div class="heard">{replying}</div>
       {/if}
       {#each speaking as entry}
-        <div class="said" class:interim={entry.interim}>{entry.text}</div>
+        {#if entry.who === 'notice'}
+          <div class="heard callnote">{entry.text}</div>
+        {:else}
+          <div class="said" class:interim={entry.interim}>{entry.text}</div>
+        {/if}
       {/each}
     </div>
     <form class="typerow" inert={!!viewing} onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
@@ -623,6 +627,11 @@
   }
   /* A picture in the transcript, as a line. */
   .pictured {
+    font-style: italic;
+  }
+  /* The call's own state — a dead mic, a dropped line — never speech. */
+  .callnote {
+    color: var(--text-muted);
     font-style: italic;
   }
   .said {

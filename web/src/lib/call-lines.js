@@ -53,18 +53,20 @@ export function historyLines(entries) {
 // on a re-read; never a count, which that fold changes (review of #570). A
 // repeated short line ("yes") may count as taken a moment early: a blink, and
 // one that corrects itself, where a stale count drew a line twice for good.
-// Only the owner's lines: the persona's words come from the transcript and
-// the reply streaming in.
+// The call's own notices (`who: "notice"` — a dead mic, a dropped typed line,
+// an error) always show: the pane is their only surface, and a silent one
+// over a dead mic is the state #534 was fixed for. Never the persona's
+// speech, which comes from the transcript and the reply streaming in.
 export function pendingSpeech(callEntries, lines) {
   const norm = (t) => (t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const said = (callEntries ?? []).filter((e) => e.who === 'user');
-  const finished = said.filter((e) => !e.interim).length;
+  const said = (callEntries ?? []).filter((e) => e.who === 'user' || e.who === 'notice');
+  const finished = said.filter((e) => e.who === 'user' && !e.interim).length;
   const recent = (lines ?? [])
     .filter((l) => l.who === 'user')
     .slice(-(finished + 2))
     .map((l) => ` ${norm(l.text)} `);
   return said.filter((e) => {
-    if (e.interim) return true;
+    if (e.who === 'notice' || e.interim) return true;
     const t = norm(e.text);
     return t !== '' && !recent.some((r) => r.includes(` ${t} `));
   });

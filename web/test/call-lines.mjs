@@ -66,6 +66,13 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   // A finished line with nothing in it is never drawn.
   assert.deepEqual(pendingSpeech([{ who: 'user', text: ' … ', interim: false }], []), []);
   assert.deepEqual(pendingSpeech(undefined, undefined), []);
+  // The call's own notices always show — the pane is their only surface —
+  // and the persona's speech never does: it is in the transcript.
+  const withNotice = [
+    { who: 'bot', text: 'Until six.', interim: false },
+    { who: 'notice', text: 'voice: the microphone path stopped - tap to reconnect', interim: false },
+  ];
+  assert.deepEqual(pendingSpeech(withNotice, lines).map((e) => e.who), ['notice']);
 }
 
 console.log('call-lines: ok');
