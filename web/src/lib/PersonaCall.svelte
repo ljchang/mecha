@@ -324,7 +324,7 @@
         {#each history as line}
           <div class={['past', line.who === 'user' ? 'said' : 'heard']} class:pictured={line.picture}>{line.text}</div>
         {/each}
-        <div class="call-start" role="separator">Call</div>
+        <div class="call-start" role="separator" aria-label="Call">Call</div>
       {/if}
       {#each entries as entry}
         <div class={entry.who === 'user' ? 'said' : 'heard'} class:interim={entry.interim}>{entry.text}</div>
