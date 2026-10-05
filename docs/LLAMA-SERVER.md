@@ -385,7 +385,11 @@ machine from starting is one people turn off.
   against the current build, `current` moved only on a win, `previous` kept,
   and `--rollback` one build back — the in-place `build/bin.prev` dance below
   is for the hand build only. Ask the router which build serves a model
-  with `GET /props?model=<id>&autoload=false` → `build_info`.
+  with `GET /props?model=<id>&autoload=false` → `build_info` — on
+  2026-10-05 it answered `b1193-95887577` for the resident
+  `qwen3.6-35b-a3b-uncensored`, the same build and commit the binary's
+  `--version` reports (`build 1193, commit 95887577`); that pair is what
+  `engine::build_info_is` is tested against.
 - **Upgrading llama.cpp: the build tree *is* the deployment.**
   `~/.local/bin/llama-server` is a 72 KB dynamically-linked stub that resolves
   `libllama.so` / `libggml.so` from **the build tree its RUNPATH names**, not

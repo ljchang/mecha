@@ -578,8 +578,10 @@ async fn run_rollback(
         (Some((tag, _, _)), _) => {
             // One build back: `current` to the previous build, `previous`
             // cleared — a second rollback then returns to the hand install.
+            // `previous` is cleared only once the servers answer on it (below):
+            // a rollback that fails part way stays retryable as a rollback,
+            // never turning into a de-adopt on the next run.
             engine::point_current(&m.mecha_home, tag)?;
-            let _ = std::fs::remove_file(engine::previous(&m.mecha_home));
             (
                 engine::engine_root(&m.mecha_home)
                     .join(tag)
@@ -654,10 +656,16 @@ async fn run_rollback(
     if let Err(e) = finished {
         drop(switching);
         return Err(e.context(format!(
-            "the rollback moved but did not finish — finish with: {finish}"
+            "the rollback moved but did not finish — finish with: {finish}, or run \
+             `mecha setup engine --rollback` again"
         )));
     }
     if back_build.is_some() {
+        // A `previous` that cannot be removed would name the build now
+        // current: pruning would then delete the one rolled back from, and
+        // every later rollback would step onto the build it is on.
+        std::fs::remove_file(engine::previous(&m.mecha_home))
+            .context("clearing `previous` after the rollback — remove it by hand")?;
         if let Err(e) = engine::prune_builds(&m.mecha_home) {
             eprintln!("the build rolled back from could not be removed: {e:#}");
         }

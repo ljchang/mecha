@@ -1560,7 +1560,8 @@ async fn run_gate(
                     ledger_path(&m.mecha_home).display()
                 ));
             }
-            let _ = crate::engine::prune_builds(&m.mecha_home);
+            // The candidate is kept: nothing was decided about it, and the
+            // next run finds it unpacked rather than fetching it again.
             return Err(e.context(match back {
                 Ok(()) => "measuring the engine the units run today — the router was restarted \
                            on it, and nothing was changed"
@@ -1696,6 +1697,15 @@ async fn promote_adopt(
     // names it.
     crate::engine::point_current(&m.mecha_home, crate::engine::PIN.tag)
         .map_err(step("pointing `current` at the pin"))?;
+    // An adopt starts the engine's history: a `previous` left from before a
+    // de-adopt would make this adopt's rollback step onto a stale build
+    // instead of removing its drop-ins.
+    match std::fs::remove_file(crate::engine::previous(&m.mecha_home)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(("clearing a stale `previous`".into(), e.into()))
+        }
+        _ => {}
+    }
     let managed = managed_binary(&m.mecha_home);
     let dir = unit_dir(m).map_err(step("finding the user unit directory"))?;
     for (s, _) in &servers.present {

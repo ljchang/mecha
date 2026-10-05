@@ -182,6 +182,14 @@ impl Target {
         }
     }
 
+    /// Whether the build ships its CUDA runtime as a second archive.
+    pub fn needs_cudart(self) -> bool {
+        matches!(
+            self,
+            Target::LinuxArm64Cuda13 | Target::LinuxX64Cuda13 | Target::LinuxX64Cuda12
+        )
+    }
+
     /// Whether the build must find a GPU to be what was chosen.
     fn wants_gpu(self) -> bool {
         matches!(
@@ -393,10 +401,13 @@ pub async fn install_engine(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
 /// re-running the pin's install — `features enable` repairing an unfinished
 /// entry — must never demote it outside the gate.
 fn settle_current_on_pin(home: &Path) -> Result<()> {
+    let build = |t: &str| t.strip_prefix('b').and_then(|n| n.parse::<u32>().ok());
     match link_tag(&current(home)) {
-        None => point_current(home, PIN.tag),
-        Some(t) if t == PIN.tag => point_current(home, PIN.tag),
-        Some(_) => Ok(()),
+        // Upgraded past the pin: an upgrade's build is kept.
+        Some(t) if build(&t).is_some_and(|b| b > PIN.build) => Ok(()),
+        // Nothing yet, the pin, or a build older than it (an earlier pin):
+        // the pin, which this mecha ships as the newest it has measured.
+        _ => point_current(home, PIN.tag),
     }
 }
 
@@ -559,7 +570,7 @@ impl Release {
                 .with_context(|| format!("llama.cpp {} has no {name}", self.tag))
         };
         let mut out = vec![find(format!("{prefix}{platform}.tar.gz"))?];
-        if target.label().starts_with("CUDA") {
+        if target.needs_cudart() {
             out.push(find(format!("cudart-{prefix}{platform}.tar.gz"))?);
         }
         Ok(out)
@@ -792,7 +803,7 @@ fn health(dir: &Path, target: Target, spec: &Spec) -> Result<()> {
     // The CUDA runtime is the second archive's whole contribution, and a
     // machine with its own CUDA would load that one without a word — so its
     // presence is checked, not inferred from the engine starting.
-    if target.label().starts_with("CUDA") && !ships_cudart(dir) {
+    if target.needs_cudart() && !ships_cudart(dir) {
         bail!(
             "{} has no libcudart beside the engine — the CUDA runtime archive did not land",
             dir.display()
@@ -1201,7 +1212,7 @@ mod tests {
             // A CUDA build ships its runtime in a second archive, and must
             // carry it: the first alone would load whatever CUDA the machine
             // has, or none.
-            if t.label().starts_with("CUDA") {
+            if t.needs_cudart() {
                 assert!(a.archives.iter().any(|(n, ..)| n.starts_with("cudart-")));
             }
         }
@@ -1504,6 +1515,17 @@ mod tests {
 
     #[test]
     fn build_info_names_its_build() {
+        // Read from the live router on the GB10, 2026-10-05:
+        // `GET /props?model=qwen3.6-35b-a3b-uncensored&autoload=false`
+        // answered `build_info: b1193-95887577`, the binary whose `--version`
+        // says `build 1193, commit 95887577`.
+        let hand = "95887577abcdef0123456789abcdef0123456789";
+        assert!(build_info_is("b1193-95887577", 1193, hand));
+        assert!(reports(
+            "version: 0.5.0-dev (build 1193, commit 95887577)",
+            1193,
+            hand
+        ));
         let commit = "2bc563573479d53b30b8793039485887bc0fdda8";
         assert!(build_info_is("b11391-2bc563573", 11391, commit));
         assert!(build_info_is("b11391-2bc5635", 11391, commit));
@@ -1689,6 +1711,10 @@ mod tests {
         point_current(&home, "b20000").unwrap();
         settle_current_on_pin(&home).unwrap();
         assert_eq!(link_tag(&current(&home)).as_deref(), Some("b20000"));
+        // An older build — an earlier pin — moves up to this pin.
+        point_current(&home, "b10000").unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some(PIN.tag));
         // A first install, and a machine on the pin, get the pin.
         std::fs::remove_file(current(&home)).unwrap();
         settle_current_on_pin(&home).unwrap();
