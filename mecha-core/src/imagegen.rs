@@ -1519,6 +1519,22 @@ pub(crate) async fn read_references(
 /// never "the edit failed": only the model knows which it asked for.
 pub const NEAR_COPY_LAYOUT: f64 = 0.78;
 
+/// The path a face anchor's crop is listed under in `Request::references`:
+/// never a workspace file, and left out of what the result says was edited.
+const FACE_REFERENCE: &str = "library:face:";
+
+/// What a face-anchored edit adds to its prompt. The canvas half is what lets
+/// the crop ride along without dragging the framing to its own close-up
+/// (2026-10-05, chain B: without it the anchored edits zoomed in).
+pub const FACE_ANCHOR_SENTENCE: &str = " <image1> is the canvas: keep its camera position, \
+     angle, framing and composition. Take only the person's facial identity from <image2>, \
+     nothing else.";
+
+/// How many manifests an anchor's lineage walk reads before giving up: far
+/// past any chain an owner makes by hand, and a bound on a cycle a hand-edited
+/// manifest could close.
+const MAX_LINEAGE: usize = 64;
+
 /// How long a near-copy of a picture counts against the next edit of it. A
 /// retry lands within a couple of minutes; a new request later starts over.
 const NEAR_COPY_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -1984,6 +2000,10 @@ pub struct ImageGenerate {
     /// [`MAX_REFERENCE_PIXELS`], lowered only by tests, which cannot afford
     /// a 4 Mpx picture in an unoptimised build.
     reference_pixels: u64,
+    /// Where a persona edit's face anchor comes from ([`crate::face`]): the
+    /// cached crop of the character's portrait, else the detector on it.
+    /// Stood in for by tests, which have no 88 MB of weights.
+    faces: Arc<dyn crate::face::FaceAnchors>,
 }
 
 /// An edit that came back a near-copy: the picture a retry should edit, and
@@ -2068,6 +2088,7 @@ impl ImageGenerate {
             persona: false,
             self_as: None,
             reference_pixels: MAX_REFERENCE_PIXELS,
+            faces: Arc::new(crate::face::CachedRetinaFace),
         })
     }
 
@@ -2132,6 +2153,58 @@ impl ImageGenerate {
             key,
             kept: false,
         })
+    }
+
+    /// Does `edited` trace back to a scene whose only person was `character`?
+    /// Manifest by manifest through each edit's first reference, to the first
+    /// one that drew from the library: true when its cast was that character
+    /// alone, with no extras — the picture the crop's face belongs to. It
+    /// always walks to that scene, never stopping at an earlier anchored
+    /// edit, so today's rule judges the whole chain (review of #569).
+    /// A picture with no manifest (an attached photo), a path that is not a
+    /// plain workspace file, a cast of anyone else, extras anywhere on the
+    /// way, or an edit on the way that was given a second picture is false:
+    /// the anchor would put this character's face on someone who is not
+    /// them. People an edit's prompt alone adds cannot be seen here.
+    async fn traces_to(&self, ctx: &ToolCtx, edited: &str, character: &str) -> bool {
+        let is = |v: Option<&Value>| {
+            v.and_then(Value::as_str)
+                .is_some_and(|n| n.trim().eq_ignore_ascii_case(character))
+        };
+        let mut at = edited.to_string();
+        for _ in 0..MAX_LINEAGE {
+            let Some(m) = read_manifest(ctx, &at).await else {
+                return false;
+            };
+            // Anyone brought in on the way — beside the cast, or from a
+            // second picture an edit was given — is someone this face could
+            // land on (review of #569).
+            if !m.get("extras").is_none_or(Value::is_null)
+                || m.get("reference_images")
+                    .and_then(Value::as_array)
+                    .is_some_and(|r| r.len() > 1)
+            {
+                return false;
+            }
+            if let Some(cast) = m.get("cast").and_then(Value::as_array) {
+                return cast.len() == 1 && is(cast[0].get("name"));
+            }
+            let Some(next) = m
+                .get("reference_images")
+                .and_then(|r| r.get(0))
+                .and_then(Value::as_str)
+                .filter(|p| {
+                    p.len() <= 200
+                        && p.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+                        && ctx.resolve(p).is_ok()
+                })
+            else {
+                return false;
+            };
+            at = next.to_string();
+        }
+        false
     }
 
     /// The picture a retry of an edit of `edited` should go back to: the one
@@ -2304,6 +2377,12 @@ impl ImageGenerate {
         self
     }
 
+    #[cfg(test)]
+    fn with_faces(mut self, faces: Arc<dyn crate::face::FaceAnchors>) -> Self {
+        self.faces = faces;
+        self
+    }
+
     /// The form a persona chat gets: strict about unknown cast names, and
     /// knowing who "self" is when `who` says.
     fn persona_form(&self, who: Option<crate::tool::PersonaSelf>) -> ImageGenerate {
@@ -2318,6 +2397,7 @@ impl ImageGenerate {
             persona: true,
             self_as: who,
             reference_pixels: self.reference_pixels,
+            faces: Arc::clone(&self.faces),
         }
     }
 
@@ -2828,7 +2908,12 @@ impl Tool for ImageGenerate {
          named, then an instruction naming the change, e.g. \"Keep the style, the background \
          and the man unchanged. Have the woman stand up.\" Never describe the whole \
          scene or keep the whole picture unchanged: the edit model reads either as the picture \
-         it already has, and returns it unchanged. If the user's message names a mask (a picture \
+         it already has, and returns it unchanged. Say what each face does — expression, head \
+         angle, where the eyes look — or it comes back as it was. Describe a camera change by \
+         where the camera is and what is nearest it (\"from a low camera near the floor, her \
+         boots closest to the lens\") and set camera_moves. For a view from behind, say whether \
+         the face shows. Do not describe a person's looks in an edit: the picture carries them. \
+         If the user's message names a mask (a picture \
          they painted over the part to change), pass it as mask, with the picture in \
          reference_images, and write only the change: everything outside the mask is kept \
          exactly. The result is not shown to you. If image_view is among your tools, look at it only when the \
@@ -2846,7 +2931,7 @@ impl Tool for ImageGenerate {
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "A new image: what it shows, as descriptive prose — subject, setting, style, lighting. An edit: the parts to keep, named, then an instruction naming the change — never a description of the scene. Quote any text that should appear in it."
+                    "description": "A new image: what it shows, as descriptive prose — subject, setting, style, lighting. An edit: the parts to keep, named, then an instruction naming the change — never a description of the scene — and what each face does: expression, head angle, gaze. Quote any text that should appear in it."
                 },
                 "negative_prompt": {
                     "type": "string",
@@ -2866,6 +2951,10 @@ impl Tool for ImageGenerate {
                 "mask": {
                     "type": "string",
                     "description": "Workspace path of a mask the user painted over the first reference: white is redrawn, the rest is kept pixel for pixel. Pass it exactly as the user's message names it; never make one up, never drop it on a retry, and do not open it with image_view — it is for this tool, not for you to look at."
+                },
+                "camera_moves": {
+                    "type": "boolean",
+                    "description": "An edit only: true when it moves the camera — a new angle, height or distance, such as a low angle, a view from above or a wider shot. Leave it out otherwise."
                 },
                 "seed": {
                     "type": "integer",
@@ -3165,6 +3254,89 @@ impl Tool for ImageGenerate {
                 Some(plan)
             }
         };
+        // The face anchor (`crate::face`). An edit keeps only part of the
+        // face it was given — about 0.77 per step in the owner's persona
+        // chats — so a chain of edits ends as somebody else. In a persona
+        // chat, an edit of a picture that traces back to the persona's own
+        // character alone gets a tight crop of its portrait as <image2>.
+        // Not on a masked edit (outside the mask nothing moves anyway, and
+        // the masked graph has one canvas), not beside references the model
+        // chose, and not when the edit moves the camera: the crop holds the
+        // framing still, and a low angle came back at eye level with it on
+        // (2026-10-05). A crop that cannot be had is recorded, never refused:
+        // the edit draws as it did before the anchor existed.
+        let camera_moves = input
+            .get("camera_moves")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut face_anchor = Value::Null;
+        let character = self
+            .self_as
+            .as_ref()
+            .and_then(|w| w.character.as_deref())
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| !c.is_empty());
+        // Nobody this edit adds itself, either: an extra is a second person
+        // in this very picture (review of #569).
+        let alone = ask.as_ref().is_none_or(|a| a.extras.is_empty());
+        if let (true, true, true, None, 1, Some(character), Some(dir)) = (
+            is_edit,
+            self.persona,
+            alone,
+            plan.as_ref(),
+            req.references.len(),
+            character,
+            self.library_dir.clone(),
+        ) {
+            if self.traces_to(ctx, &paths[0], &character).await {
+                let faces = Arc::clone(&self.faces);
+                let c = character.clone();
+                let got = tokio::task::spawn_blocking(move || {
+                    let lib = crate::imagelib::Library::load(&dir).0;
+                    // Only an approved character, as for `self` in a cast.
+                    let entry = lib
+                        .get(crate::imagelib::Kind::Character, &c)
+                        .filter(|e| e.status == crate::imagelib::Status::Approved)
+                        .cloned();
+                    entry.map(|e| {
+                        let anchor = if camera_moves {
+                            crate::face::Anchor::Unavailable("the edit moves the camera".into())
+                        } else {
+                            faces.anchor(&lib, &e)
+                        };
+                        (anchor, e.version, e.portrait)
+                    })
+                })
+                .await
+                // A detector that panicked is said, never silently drawn
+                // without (review of #569).
+                .unwrap_or_else(|_| {
+                    Some((
+                        crate::face::Anchor::Unavailable("the face detector failed".into()),
+                        0,
+                        None,
+                    ))
+                });
+                if let Some((anchor, version, portrait)) = got {
+                    face_anchor = match anchor {
+                        crate::face::Anchor::Crop(bytes) => {
+                            req.references.push(Reference {
+                                path: format!("{FACE_REFERENCE}{character}"),
+                                bytes,
+                                ext: "png",
+                            });
+                            req.prompt.push_str(FACE_ANCHOR_SENTENCE);
+                            json!({"name": character, "version": version, "portrait": portrait})
+                        }
+                        crate::face::Anchor::NoFace => json!({"name": character,
+                            "skipped": "no face was found in the portrait"}),
+                        crate::face::Anchor::Unavailable(why) => {
+                            json!({"name": character, "skipped": why})
+                        }
+                    };
+                }
+            }
+        }
         // The library's half: the model named who and what style; this code
         // writes how they look — each portrait as a reference at 512², each
         // description verbatim beside its pointer.
@@ -3423,6 +3595,7 @@ impl Tool for ImageGenerate {
             "extras": (!drawn_extras.is_empty()).then_some(&drawn_extras),
             "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                 .map(|u| json!({"name": u.name, "version": u.version})),
+            "face_anchor": face_anchor,
             "model": {
                 "backend": "comfyui",
                 "diffusion_model": self.cfg.diffusion_model,
@@ -3473,7 +3646,12 @@ impl Tool for ImageGenerate {
                 ));
             }
         } else {
-            let sources: Vec<&str> = req.references.iter().map(|r| r.path.as_str()).collect();
+            let sources: Vec<&str> = req
+                .references
+                .iter()
+                .map(|r| r.path.as_str())
+                .filter(|p| !p.starts_with(FACE_REFERENCE))
+                .collect();
             let styled = used
                 .iter()
                 .find(|u| u.kind == crate::imagelib::Kind::Style)
@@ -4036,6 +4214,7 @@ mod tests {
         // anywhere.
         // `cast` and `style` name library entries, resolved by this code in
         // the owner's store — names, never paths or addresses.
+        // `camera_moves` is a boolean: it only turns the face anchor off.
         let schema = t.input_schema();
         let props = schema["properties"].as_object().unwrap();
         let mut keys: Vec<_> = props.keys().map(String::as_str).collect();
@@ -4043,6 +4222,7 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "camera_moves",
                 "cast",
                 "extras",
                 "mask",
@@ -7599,5 +7779,288 @@ mod tests {
         let upright = png_bytes(&upright).unwrap();
         let alike = layout_similarity(&jpg, &upright).unwrap();
         assert!(alike > 0.9, "{alike}");
+    }
+
+    /// A face anchor that never runs a detector: a fixed crop, or a fixed
+    /// reason it cannot, counting how often it was asked.
+    struct StubFaces {
+        answer: crate::face::Anchor,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::face::FaceAnchors for StubFaces {
+        fn anchor(
+            &self,
+            _: &crate::imagelib::Library,
+            _: &crate::imagelib::Entry,
+        ) -> crate::face::Anchor {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.answer.clone()
+        }
+    }
+
+    fn stub_faces(answer: crate::face::Anchor) -> Arc<StubFaces> {
+        Arc::new(StubFaces {
+            answer,
+            asked: Default::default(),
+        })
+    }
+
+    fn persona_maya() -> crate::tool::PersonaSelf {
+        crate::tool::PersonaSelf {
+            name: "maya".into(),
+            display: "Maya".into(),
+            character: Some("maya".into()),
+        }
+    }
+
+    fn picture_of(content: &str) -> String {
+        content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap()
+            .to_string()
+    }
+
+    /// The face anchor (2026-10-05): in a persona chat, an edit of a picture
+    /// that traces back to the persona's own character alone carries a tight
+    /// crop of its portrait as <image2>, with the sentence that keeps the
+    /// canvas — through a chain of edits, read from the manifests. Moving the
+    /// camera leaves it off and says so in the manifest; the result never
+    /// lists the crop as a picture that was edited.
+    #[tokio::test]
+    async fn a_persona_edit_of_its_own_character_is_anchored_to_its_face() {
+        let (url, seen) = fake(vec![done(); 4], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let faces = stub_faces(crate::face::Anchor::Crop(PNG.to_vec()));
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(faces.clone()),
+        );
+        let maya = base.for_persona_as(&persona_maya()).unwrap();
+        let last_prompt = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .clone()
+        };
+        let scene = maya
+            .call(
+                json!({"prompt": "a park", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "sitting on a bench"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!scene.is_error, "{}", scene.content);
+        assert!(
+            !last_prompt().contains("images.image_2"),
+            "a cast scene is not anchored: {}",
+            last_prompt()
+        );
+        let first = maya
+            .call(
+                json!({"prompt": "Keep the bench and the park unchanged. Have her laugh.",
+                       "reference_images": [picture_of(&scene.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let sent = last_prompt();
+        assert!(
+            sent.contains("images.image_2") && sent.contains("facial identity from <image2>"),
+            "{sent}"
+        );
+        assert!(!first.content.contains(FACE_REFERENCE), "{}", first.content);
+        let m = manifest_of(&dir, &first.content);
+        assert_eq!(m["face_anchor"]["name"], "maya", "{m}");
+        assert!(m["face_anchor"]["portrait"].is_string(), "{m}");
+        // An edit of the edit: the walk reaches the cast scene through it.
+        let second = maya
+            .call(
+                json!({"prompt": "Keep the park unchanged. Have her look down at a book.",
+                       "reference_images": [picture_of(&first.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            last_prompt().contains("images.image_2"),
+            "{}",
+            second.content
+        );
+        // A camera move: no crop, and the manifest says why.
+        let moved = maya
+            .call(
+                json!({"prompt": "Keep the park unchanged. Have her stand, seen from a low \
+                                  camera near the ground.",
+                       "reference_images": [picture_of(&second.content)],
+                       "camera_moves": true}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!moved.is_error, "{}", moved.content);
+        assert!(
+            !last_prompt().contains("images.image_2"),
+            "{}",
+            last_prompt()
+        );
+        let m = manifest_of(&dir, &moved.content);
+        assert_eq!(
+            m["face_anchor"]["skipped"], "the edit moves the camera",
+            "{m}"
+        );
+        assert_eq!(
+            faces.asked.load(Ordering::SeqCst),
+            2,
+            "asked once per anchored edit"
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The anchor puts one character's face on whoever the picture's person
+    /// is, so it is only for a picture that traces back to that character
+    /// alone: not a scene of someone else, not a scene with extras, not an
+    /// attached photo with no manifest, and never in the assistant's own
+    /// chats. A crop that cannot be had draws the edit as before and records
+    /// the reason.
+    #[tokio::test]
+    async fn an_edit_is_anchored_only_to_its_own_character_alone() {
+        let (url, seen) = fake(vec![done(); 16], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let faces = stub_faces(crate::face::Anchor::Crop(PNG.to_vec()));
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(faces.clone()),
+        );
+        let maya = Arc::clone(&base).for_persona_as(&persona_maya()).unwrap();
+        let anchored = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .contains("facial identity from <image2>")
+        };
+        let edit = |tool: Arc<dyn Tool>, picture: String| {
+            let dir = dir.clone();
+            async move {
+                tool.call(
+                    json!({"prompt": "Keep the room unchanged. Have them smile.",
+                           "reference_images": [picture]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        // Someone else's scene.
+        let john = maya
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let out = edit(Arc::clone(&maya), picture_of(&john.content)).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        assert!(manifest_of(&dir, &out.content)["face_anchor"].is_null());
+        // Her own scene, with a stranger in it.
+        let crowd = maya
+            .call(
+                json!({"prompt": "a cafe", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "reading"}],
+                    "extras": ["a waiter pouring coffee"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let out = edit(Arc::clone(&maya), picture_of(&crowd.content)).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        // An attached photo: no manifest, no lineage.
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/me.png"), PNG).unwrap();
+        let out = edit(Arc::clone(&maya), "inbox/me.png".into()).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        // Someone brought in from a second picture by an earlier edit: that
+        // edit is unanchored (it has two references), and so is every edit
+        // after it, though the walk would otherwise reach her scene (found
+        // on review of #569).
+        let hers = maya
+            .call(
+                json!({"prompt": "a garden", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "standing"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let joined = maya
+            .call(
+                json!({"prompt": "Keep <image1> unchanged. Add the man from <image2> beside her.",
+                       "reference_images": [picture_of(&hers.content), "inbox/me.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!joined.is_error && !anchored(), "{}", joined.content);
+        let out = edit(Arc::clone(&maya), picture_of(&joined.content)).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        // An edit that adds someone itself, through `extras`: a second
+        // person in this very picture (found on review of #569).
+        let out = maya
+            .call(
+                json!({"prompt": "Keep the garden unchanged. Have a waiter bring her coffee.",
+                       "reference_images": [picture_of(&hers.content)],
+                       "extras": ["a waiter pouring coffee"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        // The assistant's own form never anchors.
+        let alone = maya
+            .call(
+                json!({"prompt": "a park", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "walking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let out = edit(base.clone() as Arc<dyn Tool>, picture_of(&alone.content)).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        assert_eq!(
+            faces.asked.load(Ordering::SeqCst),
+            0,
+            "never asked for a crop"
+        );
+        // No detector: the edit draws, unanchored, and says why.
+        let missing = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(stub_faces(crate::face::Anchor::Unavailable(
+                "the face detector is not installed".into(),
+            )));
+        let maya = Arc::new(missing).for_persona_as(&persona_maya()).unwrap();
+        let out = edit(maya, picture_of(&alone.content)).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["face_anchor"]["skipped"],
+            "the face detector is not installed"
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 }

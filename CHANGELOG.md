@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona's edits keep its face.** In a persona chat, an edit of a
+  picture of the persona's own character now sends a tight crop of the
+  character's portrait beside it, so a chain of edits no longer drifts into
+  somebody else. The edit sets `camera_moves` when it moves the camera, which
+  leaves the crop off. The face is found by a detector that runs inside
+  mecha: install it once with `mecha imagelib install-face-detector`
+  (89 MB). Without it, edits draw as before and their manifests say why.
+  Edit prompts are now asked to say what the face does and to describe a
+  camera change by where the camera is.
+
 - **`mecha features enable` installs the embeddings and OCR servers.** On a
   Linux machine without them, enabling a feature that uses one fetches its
   pinned model, writes its launcher and the systemd user units that start it on

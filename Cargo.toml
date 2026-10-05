@@ -24,6 +24,11 @@ base64 = "0.22"
 # on the other end would have taken anyway.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 chrono = { version = "0.4", features = ["serde"] }
+# The persona face anchor's detector (`face.rs`) multiplies its matrices
+# here: pure Rust, one dependency (`rawpointer`), the kernel ndarray uses.
+# A framework (candle) was tried and brought 68 crates — two of them C and
+# C++ libraries built from source — for a network this small.
+matrixmultiply = "0.3"
 # IANA zones, so "3pm Thursday" survives a DST boundary. A fixed offset in
 # config would be wrong twice a year, silently.
 chrono-tz = "0.10"
