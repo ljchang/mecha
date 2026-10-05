@@ -20,6 +20,21 @@
 //! `agent::is_harness_voice`), so it is never drawn as theirs or mined as
 //! their correction. Measured on call turns; typed turns carry it too,
 //! unmeasured.
+//!
+//! The openings and closers miss a passage lifted from the middle of an
+//! earlier reply, which is how a persona repeats itself around pictures: a
+//! new first paragraph, then the previous reply's paragraphs word for word,
+//! growing until whole replies repeat. So the note also quotes the longest
+//! run of [`COPY_RUN`]+ words the last reply took from one of the
+//! [`COPY_LOOKBACK`] before it. Replayed on image turns (2026-10-05, three
+//! samples each, the recorded tool call kept):
+//!
+//! | turns | at least half copied, without → with | judged with vs without |
+//! |---|---|---|
+//! | 22 edit-panel turns, beside `persona::edit`'s note | 16/66 → 11/66 | 75–50 |
+//! | 20 image turns asked for in conversation | 18/59 → 7/60 | 55–56 |
+//!
+//! and on 9 call turns (2026-10-04) 10/27 → 6/27 copying a run, judged a tie.
 
 use crate::message::{dangling_tail, ends_mid_clause, Block, Message, Role};
 
@@ -27,17 +42,23 @@ use crate::message::{dangling_tail, ends_mid_clause, Block, Message, Role};
 /// recognised whole.
 pub const OPENING_STEM: &str = "(From the harness: your last replies opened with";
 pub const CLOSING_STEM: &str = "(From the harness: don't end on a line you've used lately";
+pub const COPY_STEM: &str = "(From the harness: your last reply reused a passage";
 
 /// How many earlier replies' closing lines are named: the last three that
 /// have one (a reply with no whole sentence is passed over).
 const CLOSERS_NAMED: usize = 3;
 /// The most of one closing line quoted back.
 const CLOSER_CHARS: usize = 80;
+/// The shortest run of words shared with an earlier reply that counts as
+/// reusing it: long enough that ordinary phrases ("on the way to the") do not.
+const COPY_RUN: usize = 8;
+/// How many replies before the last one a copied passage is looked for in.
+const COPY_LOOKBACK: usize = 5;
 
 /// Whether `text` is this note.
 pub fn is_note(text: &str) -> bool {
     let text = text.trim_start();
-    text.starts_with(OPENING_STEM) || text.starts_with(CLOSING_STEM)
+    text.starts_with(OPENING_STEM) || text.starts_with(CLOSING_STEM) || text.starts_with(COPY_STEM)
 }
 
 /// The note for the turn about to be answered, from the replies already in
@@ -107,10 +128,60 @@ pub fn note(messages: &[Message]) -> Option<String> {
             closers.join("; ")
         ));
     }
+    if let Some(passage) = copied_passage(&replies) {
+        parts.push(format!(
+            "your last reply reused a passage from an earlier one (\"{passage}\"); \
+             don't reuse it, say what is new in new words"
+        ));
+    }
     if parts.is_empty() {
         return None;
     }
     Some(format!("(From the harness: {}.)", parts.join(", and ")))
+}
+
+/// The longest run of [`COPY_RUN`]+ words the last of `replies` shares with
+/// one of the [`COPY_LOOKBACK`] before it, as lowercase words joined by
+/// spaces (so nothing in it can close the note's quote or parenthetical),
+/// cut at a word to [`CLOSER_CHARS`].
+fn copied_passage(replies: &[String]) -> Option<String> {
+    let (last, earlier) = replies.split_last()?;
+    let last = words(last);
+    let mut best: &[String] = &[];
+    for reply in earlier.iter().rev().take(COPY_LOOKBACK) {
+        let run = longest_shared_run(&last, &words(reply));
+        if run.len() > best.len() {
+            best = run;
+        }
+    }
+    (best.len() >= COPY_RUN).then(|| quotable(&best.join(" ")))
+}
+
+/// Words as the copy check reads them: letters and apostrophes, lowercased.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphabetic() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// The longest run of consecutive words of `a` that also appears in `b`.
+fn longest_shared_run<'a>(a: &'a [String], b: &[String]) -> &'a [String] {
+    let (mut len, mut end) = (0, 0);
+    let mut prev = vec![0usize; b.len() + 1];
+    for (i, word) in a.iter().enumerate() {
+        let mut cur = vec![0usize; b.len() + 1];
+        for (j, other) in b.iter().enumerate() {
+            if word == other {
+                cur[j + 1] = prev[j] + 1;
+                if cur[j + 1] > len {
+                    (len, end) = (cur[j + 1], i + 1);
+                }
+            }
+        }
+        prev = cur;
+    }
+    &a[end - len..end]
 }
 
 /// The first word, lowercased; any run of "m"s that opens with "mm" ("Mmm",
@@ -316,6 +387,68 @@ mod tests {
         // And a closer is quoted on one line.
         let n = note(&[said("Hey\nthere, so what now?")]).expect("a note");
         assert!(n.contains("(\"Hey there, so what now?\")"), "{n}");
+    }
+
+    #[test]
+    fn a_passage_the_last_reply_reused_is_quoted_back() {
+        let passage = "the lamp by the window was still on when we came home late";
+        let history = vec![
+            said(&format!(
+                "We walked the long way. Then {passage}. Good night."
+            )),
+            said("Oh, a new day. What now?"),
+            said(&format!("Here it is. And {passage}, wasn't it? Sleep.")),
+        ];
+        let n = note(&history).expect("a note");
+        assert!(
+            n.contains(&format!(
+                "reused a passage from an earlier one (\"{passage}\")"
+            )),
+            "{n}"
+        );
+        assert!(is_note(&n) && crate::agent::is_harness_voice(&n));
+        // Only the last reply's copying is named: the same passage two
+        // replies back, with a fresh reply after it, is not.
+        let mut fresh = history.clone();
+        fresh.push(said("Something else entirely. Breakfast?"));
+        let n = note(&fresh).expect("a note");
+        assert!(!n.contains("reused a passage"), "{n}");
+    }
+
+    #[test]
+    fn a_short_shared_phrase_or_a_reply_past_the_lookback_is_no_copy() {
+        // Seven words in common: an ordinary phrase, not a reused passage.
+        let n = note(&[
+            said("We could take the bus into town. Okay?"),
+            said("Then we could take the bus into town. Fine."),
+        ])
+        .expect("a note");
+        assert!(!n.contains("reused a passage"), "{n}");
+        // The same long passage, but six replies back.
+        let passage = "the lamp by the window was still on when we came home late";
+        let mut history = vec![said(&format!("{passage}."))];
+        for i in 0..COPY_LOOKBACK {
+            history.push(said(&format!("Reply number {i} here.")));
+        }
+        history.push(said(&format!("{passage}.")));
+        let n = note(&history).expect("a note");
+        assert!(!n.contains("reused a passage"), "{n}");
+    }
+
+    #[test]
+    fn a_note_with_only_a_copy_still_reads_as_the_harness() {
+        // Two fragments with no whole sentence have no closer and different
+        // openings, so the copy clause stands alone.
+        let passage = "and then the lamp by the window was still on when";
+        let n = note(&[
+            said(&format!("Well {passage}")),
+            said(&format!("So {passage}")),
+        ])
+        .expect("a note");
+        assert!(n.starts_with(COPY_STEM), "{n}");
+        assert!(is_note(&n) && crate::agent::is_harness_voice(&n));
+        assert_eq!(n.matches('"').count(), 2, "{n}");
+        assert!(n.ends_with(".)"), "{n}");
     }
 
     #[test]
