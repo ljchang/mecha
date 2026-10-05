@@ -675,14 +675,14 @@ prompt (#408), merged and installed.** What shipped, and the measurement,
 are in HISTORY under 2026-09-29; the install is in *Machine state, dated*.
 What is open:
 
-- **E4, Q4 against int8, is still unmeasured.** It was the first suspect
-  and turned out not to be the cause. The run stopped at 17 of 84 images,
-  all on today's files, when Claude Code reaped it for low memory while
-  other lanes were building. It now bears only on quality and speed. The
-  int8 files are on disk (`qwen_image_2.1_int8_convrot.safetensors`,
-  `qwen3vl_8b_int8_convrot.safetensors`) and need about 4.4 GB more than
-  today's pair. `comfy_graph` would have to choose `UNETLoader` over
-  `UnetLoaderGGUF` by file type. Run it when no build is going.
+- **E4, Q4 against int8: measured 2026-10-04, and int8 is the default from
+  this branch's PR (`image/int8-and-reference-downscale`).** 28 s against
+  64 s a picture and ~37 s against ~80 s an edit, ~0.7 GB more at peak,
+  near-identical pictures with the same text encoder, signs 8 of 8 on both.
+  `unet_loader` chooses the node by file type. The numbers, and what was
+  tried and not adopted, are in ARCHITECTURE §Image generation. Owed after
+  deploy: the reload-from-`/free` cost (`LOAD_COST_MB`'s 12 GiB) was
+  measured on the Q4 and not re-measured on int8.
 - **The model still describes pictures it has not seen.** In all eight live
   chats it told the user "Maya is now standing" without looking. Four ran
   #408's draft wording and four its final wording. In two of the eight (one

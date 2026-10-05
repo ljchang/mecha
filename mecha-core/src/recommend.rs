@@ -426,39 +426,35 @@ pub const SLOTS: &[Slot] = &[
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
-                // ~1.1 GiB after the idle reset + ~18.5 GiB for a load from
-                // cold (2026-10-02); ~15 warm, ~13.6 loaded and idle.
-                peak: Peak::Arithmetic { mb: 20_070 },
+                // ~1.1 GiB after the idle reset + ~19.2 GiB for a load from
+                // cold: the Q4's 18.5 (2026-10-02), plus the ~0.7 the int8
+                // ConvRot file measured above the Q4, same method, same
+                // pictures (2026-10-04).
+                peak: Peak::Arithmetic { mb: 20_790 },
             },
-            model: "Qwen-Image 2.1 Q4, in ComfyUI",
-            counts: "peak, a picture from cold: ~1.1 idle after the reset and ~18.5 to load; ~15 warm, ~13.6 loaded and idle",
-            sources: &[
-                Source::HuggingFace {
-                    repo: "realrebelai/Qwen-Image-2.1_GGUFs",
-                    revision: "8d393b750593a72ee040fe7d40611f479ccee679",
-                    files: &[HubFile {
-                        path: "Qwen-Image-2.1-Q4.gguf",
-                        sha256: "51998ad7c068ce7d68e233237537900ffe874ab4d5c72e20758f5f18ceb15b8a",
-                        bytes: 5_959_127_264,
-                    }],
-                },
-                Source::HuggingFace {
-                    repo: "Comfy-Org/Qwen-Image-2.1",
-                    revision: "cb504a4090723e43f17ad01cec0359490e2de613",
-                    files: &[
-                        HubFile {
-                            path: "text_encoders/qwen3vl_8b_w4a8.safetensors",
-                            sha256: "7754425e55e7bea2bfde4dde59a4cc236cb44e5ee9c215ea66ef8d47012824eb",
-                            bytes: 6_312_105_364,
-                        },
-                        HubFile {
-                            path: "vae/qwen_image_2.1_vae_bf16.safetensors",
-                            sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
-                            bytes: 675_509_688,
-                        },
-                    ],
-                },
-            ],
+            model: "Qwen-Image 2.1 int8 ConvRot, in ComfyUI",
+            counts: "peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load; ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by what the int8 file measured above it on 2026-10-04: ~0.7 from cold, ~0.8 warm)",
+            sources: &[Source::HuggingFace {
+                repo: "Comfy-Org/Qwen-Image-2.1",
+                revision: "cb504a4090723e43f17ad01cec0359490e2de613",
+                files: &[
+                    HubFile {
+                        path: "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+                        sha256: "cb74113cb03faecd79611b01fd7fd642f0aa60d6f0b95086abee214d75eaa57d",
+                        bytes: 7_256_783_064,
+                    },
+                    HubFile {
+                        path: "text_encoders/qwen3vl_8b_w4a8.safetensors",
+                        sha256: "7754425e55e7bea2bfde4dde59a4cc236cb44e5ee9c215ea66ef8d47012824eb",
+                        bytes: 6_312_105_364,
+                    },
+                    HubFile {
+                        path: "vae/qwen_image_2.1_vae_bf16.safetensors",
+                        sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
+                        bytes: 675_509_688,
+                    },
+                ],
+            }],
             excludes: Some(
                 "from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset",
             ),
@@ -1262,7 +1258,7 @@ mod tests {
         };
         let b = budget(m, &[Feature::Graph, Feature::Image]);
         assert_eq!(b.gpu.loaded_mb, None);
-        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + 20_070);
+        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + 20_790);
         // Each line's floor is its own: nothing resident is known here, and
         // image generation (released on idle) is not charged to it.
         assert_eq!(b.gpu.resident_floor.known_mb, 0);
