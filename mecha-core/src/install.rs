@@ -481,8 +481,9 @@ pub async fn install(
         "llama" => {
             let server = crate::engine::install_engine(m, say).await?;
             say(&format!(
-                "the engine is at {} — the servers that run it arrive with their units (step 7c); \
-                 until then a launcher reads it from LLAMA_SERVER",
+                "the engine is at {} — the embeddings and OCR servers' units name it; the \
+                 router's arrives with step 7c-2, and until then a launcher reads it from \
+                 LLAMA_SERVER",
                 server.display()
             ));
             Ok(())

@@ -386,8 +386,14 @@ fn provided_engine_text(engine: &Path) -> String {
 /// socket triggers; then, for embeddings, one embedding.
 async fn check(which: Which, port: u16) -> Result<()> {
     let base = format!("http://127.0.0.1:{port}");
+    // Loopback, never through a proxy: on a machine that needs one to reach
+    // the hub, `http_proxy` is exported for the fetch above, and a proxy
+    // answering 2xx would pass a server that never started (as
+    // `document.rs` and `imagegen.rs` found on review).
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(200))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let health = client
         .get(format!("{base}/health"))
