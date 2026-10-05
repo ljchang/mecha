@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
-  fileUrl, uploadUrl, historyLines,
+  fileUrl, uploadUrl, historyLines, beforeTurn, turnsSaid,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
 
@@ -535,7 +535,40 @@ console.log('persona: ok');
     // Never received: not part of the conversation. Steered in: it was.
     { who: 'user', text: 'And the red one.' },
   ]);
+  // A picture made and then viewed is one picture, as the chat draws it once.
+  const twice = [
+    { kind: 'tool', name: 'image_generate', preview: 'image: images/a.png' },
+    { kind: 'tool', name: 'image_view', preview: 'image: images/a.png' },
+  ];
+  assert.equal(historyLines(twice).length, 1);
   // Nothing before the call: nothing drawn above it.
   assert.deepEqual(historyLines([]), []);
   assert.deepEqual(historyLines(undefined), []);
 }
+
+// Where a call begins, as a count of the owner's lines: a re-read that adds a
+// page-only notice does not move it, an undelivered line does not count, and
+// the reply to the last line before the call joins the history when it lands.
+{
+  const atCall = [
+    { kind: 'user', text: 'Is the bakery open?' },
+    { kind: 'assistant', text: 'Until six.' },
+    { kind: 'user', text: 'And tomorrow?' },
+    { kind: 'user', text: 'Never sent.', queued: true, delivery: 'discarded' },
+  ];
+  const n = turnsSaid(atCall);
+  assert.equal(n, 2);
+  const later = [
+    { kind: 'notice', text: 'the model changed' },
+    { kind: 'user', text: 'Is the bakery open?' },
+    { kind: 'assistant', text: 'Until six.' },
+    { kind: 'user', text: 'And tomorrow?' },
+    { kind: 'assistant', text: 'From eight.' },
+    { kind: 'user', text: 'Great, thanks.' },
+    { kind: 'assistant', text: 'Any time.' },
+  ];
+  assert.deepEqual(historyLines(beforeTurn(later, n)).map((l) => l.text),
+    ['Is the bakery open?', 'Until six.', 'And tomorrow?', 'From eight.']);
+  assert.deepEqual(beforeTurn(later, 0).map((e) => e.kind), ['notice']);
+}
+

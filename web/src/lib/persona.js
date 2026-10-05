@@ -596,27 +596,57 @@ export function dragFrame(frame, dx, dy, size, aspect = 1) {
   return { ...f, x: pan(f.x, dx, S * Math.max(1, a)), y: pan(f.y, dy, S * Math.max(1, 1 / a)) };
 }
 
+// A line of the owner's that the persona received: not one still queued or
+// discarded (its bubble says "not delivered"). Steered lines count.
+function said(e) {
+  return e.kind === 'user' && !(e.queued && e.delivery !== 'delivered');
+}
+
+// How many lines the owner has said so far: where a call begins, as a count
+// of turns rather than an entry index, which a re-read rebuilds and a
+// page-only notice shifts (`callBefore` keys on pictures for the same reason).
+export function turnsSaid(entries) {
+  return (entries ?? []).filter(said).length;
+}
+
+// The transcript before the owner's line number `n + 1`: the conversation up
+// to a call that began after `n` lines, and the reply to the last of them
+// even if it was still streaming when the call was placed.
+export function beforeTurn(entries, n) {
+  const out = [];
+  let count = 0;
+  for (const e of entries ?? []) {
+    if (said(e) && ++count > n) break;
+    out.push(e);
+  }
+  return out;
+}
+
 // The conversation before a call, as the call screen shows it above the
 // call's own lines (the owner's ask, 2026-10-05: "see the full chat history
 // during voice mode"). Only what was said and drawn: the owner's words as
 // their bubble shows them (`ownWords`), the persona's replies as plain text
-// (`speakable`, so no Markdown marks), and a picture as a line saying so.
-// Tool rows, notices, empty replies and lines never delivered are the
-// chat's detail, not the conversation, and are left out.
+// (`speakable`, so no Markdown marks), and a picture as a line saying so —
+// once, as the chat draws it once (`image_view` of a picture just made is
+// the same picture). Tool rows, notices, empty replies and lines the persona
+// never received are the chat's detail, not the conversation.
 export function historyLines(entries) {
   const lines = [];
+  const pictures = new Set();
   for (const e of entries ?? []) {
     if (e.kind === 'user') {
-      // A line the persona never received is not part of the conversation:
-      // its bubble says "not delivered", which a call line has no room for.
-      if (e.queued && e.delivery !== 'delivered') continue;
+      if (!said(e)) continue;
       const text = ownWords(e.text).trim();
       if (text) lines.push({ who: 'user', text });
     } else if (e.kind === 'assistant') {
       const text = speakable(e.text).trim();
       if (text) lines.push({ who: 'persona', text });
-    } else if (e.kind === 'tool' && pictureOf(e)) {
-      lines.push({ who: 'persona', picture: true, text: 'a picture' });
+    } else if (e.kind === 'tool') {
+      const picture = pictureOf(e);
+      if (picture && !pictures.has(picture)) {
+        pictures.add(picture);
+        lines.push({ who: 'persona', picture: true, text: 'a picture' });
+      }
     }
   }
   return lines;

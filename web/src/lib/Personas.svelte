@@ -21,7 +21,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
-    citeEntries, citeOpens, citedUrl, ownWords, historyLines, toolRun, sourceFileUrl, chatHeadline,
+    citeEntries, citeOpens, citedUrl, ownWords, historyLines, beforeTurn, turnsSaid, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -150,13 +150,15 @@
   const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
   // What was said before the call, shown above the call's own lines so the
   // call reads as part of the conversation (the owner's ask, 2026-10-05).
-  // A snapshot, never an entry index: a re-read rebuilds the entries and a
-  // page-only notice moves every index (as `callBefore` above keys on the
-  // picture, and `savedReplies` on the text, for the same reason).
-  let callHistory = $state([]);
+  // Anchored to how many lines the owner had said, never an entry index — a
+  // re-read rebuilds the entries and a page-only notice moves every index —
+  // and derived, so a reply still streaming when the call was placed joins
+  // the history when it lands.
+  let callTurns = $state(null);
+  const callHistory = $derived(callTurns == null ? [] : historyLines(beforeTurn(run.entries, callTurns)));
   function placeCall() {
     callBefore = new Set(picturesIn(run.entries));
-    callHistory = historyLines(run.entries);
+    callTurns = turnsSaid(run.entries);
     caller?.start();
   }
 
