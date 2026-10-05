@@ -1389,7 +1389,13 @@ pub async fn adopt(
         action: "adopt",
         from: "llama.cpp (provided)".into(),
         to: format!("llama.cpp {}", crate::engine::PIN.tag),
-        candidate: managed_binary(&m.mecha_home),
+        // The pin's own build, not whatever `current` names: the pin's
+        // install leaves an upgraded `current` alone, so after upgrades and
+        // rollbacks the link can name another build — and what is measured
+        // must be what the promotion then asserts.
+        candidate: crate::engine::engine_root(&m.mecha_home)
+            .join(crate::engine::PIN.tag)
+            .join("llama-server"),
         build: crate::engine::PIN.build,
         commit: crate::engine::PIN.commit.into(),
         promotion: Promotion::Adopt,
@@ -1601,7 +1607,7 @@ async fn run_gate(
     let outcome = if promote {
         say(&format!("promoting: the servers move to {}", change.to));
         let promoted = match &change.promotion {
-            Promotion::Adopt => promote_adopt(m, servers, base, &model, candidate).await,
+            Promotion::Adopt => promote_adopt(m, servers, base, &model).await,
             Promotion::Upgrade { from_tag, to_tag } => {
                 promote_upgrade(m, servers, base, &model, from_tag, to_tag).await
             }
@@ -1681,23 +1687,27 @@ async fn promote_adopt(
     servers: &Servers,
     base: &str,
     model: &str,
-    managed: &Path,
 ) -> std::result::Result<(), (String, anyhow::Error)> {
     let step = |s: &str| {
         let s = s.to_string();
         move |e: anyhow::Error| (s, e)
     };
+    // `current` to the pin — the build the gate measured — before any unit
+    // names it.
+    crate::engine::point_current(&m.mecha_home, crate::engine::PIN.tag)
+        .map_err(step("pointing `current` at the pin"))?;
+    let managed = managed_binary(&m.mecha_home);
     let dir = unit_dir(m).map_err(step("finding the user unit directory"))?;
     for (s, _) in &servers.present {
         let path = drop_in_path(dir, s.unit);
         crate::sidecar::Manifest::record(&m.mecha_home, "llama", &path)
             .map_err(step("recording the drop-ins"))?;
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
-            .and_then(|()| std::fs::write(&path, drop_in_text(managed)))
+            .and_then(|()| std::fs::write(&path, drop_in_text(&managed)))
             .map_err(|e| (format!("writing {}", path.display()), e.into()))?;
     }
     systemctl("daemon-reload", &[]).map_err(step("systemctl daemon-reload"))?;
-    restart_on(servers, base, model, managed)
+    restart_on(servers, base, model, &managed)
         .await
         .map_err(|(s, e)| (s.to_string(), e))
 }

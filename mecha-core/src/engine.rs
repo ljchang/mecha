@@ -1513,6 +1513,87 @@ mod tests {
         assert!(!build_info_is("", 11391, commit));
     }
 
+    /// A mock release API: route → JSON, everything else 404.
+    fn mock_api(routes: Vec<(&'static str, serde_json::Value)>) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in l.incoming().flatten() {
+                let mut s = stream;
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("");
+                let hit = routes.iter().find(|(r, _)| *r == path);
+                let (status, body) = match hit {
+                    Some((_, v)) => ("200 OK", v.to_string()),
+                    None => ("404 Not Found", "{}".to_string()),
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        base
+    }
+
+    fn rel(tag: &str, draft: bool) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag, "draft": draft, "published_at": "2026-10-05T00:00:00Z",
+            "assets": [{"name": format!("llama-{tag}-bin-ubuntu-arm64.tar.gz"), "size": 9, "digest": format!("sha256:{}", "a".repeat(64))}],
+        })
+    }
+
+    /// The newest scan skips a draft and a non-`b` release, an annotated tag
+    /// is followed to its commit, and a tag naming no commit is refused —
+    /// before anything could be fetched.
+    #[tokio::test]
+    async fn release_resolution_walks_the_list_and_follows_the_tag() {
+        let commit = "d".repeat(40);
+        let base = mock_api(vec![
+            (
+                "/repos/ggml-org/llama.cpp/releases?per_page=30",
+                serde_json::json!([
+                    rel("b30001", true),
+                    rel("v0.5.0", false),
+                    rel("b30000", false)
+                ]),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/git/ref/tags/b30000",
+                serde_json::json!({"object": {"type": "tag", "sha": "t".repeat(40)}}),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/git/tags/tttttttttttttttttttttttttttttttttttttttt",
+                serde_json::json!({"object": {"type": "commit", "sha": commit}}),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/releases/tags/b29999",
+                rel("b29999", false),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/git/ref/tags/b29999",
+                serde_json::json!({"object": {"type": "commit", "sha": "not-a-sha"}}),
+            ),
+        ]);
+        let r = resolve_release_from(&base, None, Target::LinuxArm64Cpu)
+            .await
+            .unwrap();
+        assert_eq!(r.tag, "b30000", "the draft and the v-tag are skipped");
+        assert_eq!(
+            r.commit, commit,
+            "the annotated tag is followed to its commit"
+        );
+        let err = resolve_release_from(&base, Some("b29999"), Target::LinuxArm64Cpu)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("names no commit"), "{err}");
+    }
+
     /// The release API's digests for the pinned tag are the pinned sha256s —
     /// the check that F10's source and a reviewer's pin agree where both
     /// exist. Real network.

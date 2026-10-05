@@ -587,26 +587,13 @@ async fn run_rollback(
                 "systemctl --user restart llama-local.service",
             )
         }
-        (None, Some(provided)) => {
-            // Every present unit's drop-in path is forgotten, written or not:
-            // a partial adopt records before it writes.
-            for (srv, _) in &servers.present {
-                let path = gate::drop_in_path(dir, srv.unit);
-                if path.exists() {
-                    std::fs::remove_file(&path)
-                        .with_context(|| format!("removing {}", path.display()))?;
-                }
-                mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
-            }
-            gate::systemctl("daemon-reload", &[]).context(
-                "finish with: systemctl --user daemon-reload && systemctl --user restart \
-                 llama-local.service",
-            )?;
-            (
-                provided.clone(),
-                "systemctl --user daemon-reload && systemctl --user restart llama-local.service",
-            )
-        }
+        // The drop-ins come out inside the recorded block below: their
+        // removal is the move, so a failure in it is a partial rollback with
+        // a row, never a ledger that still says "promoted".
+        (None, Some(provided)) => (
+            provided.clone(),
+            "systemctl --user daemon-reload && systemctl --user restart llama-local.service",
+        ),
         (None, None) => unreachable!("one of the two is read above"),
     };
     let router_engine = if back_build.is_some() {
@@ -617,7 +604,21 @@ async fn run_rollback(
     // From here the move has happened, so it is recorded whatever follows:
     // a restart or a check that fails is a partial rollback naming the
     // command that finishes it, never a ledger that still says "promoted".
+    let undo_adopt = back_build.is_none();
     let finished: Result<()> = async {
+        if undo_adopt {
+            // Every present unit's drop-in path is forgotten, written or not:
+            // a partial adopt records before it writes.
+            for (srv, _) in &servers.present {
+                let path = gate::drop_in_path(dir, srv.unit);
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("removing {}", path.display()))?;
+                }
+                mecha_core::sidecar::Manifest::unrecord(&m.mecha_home, "llama", &path)?;
+            }
+            gate::systemctl("daemon-reload", &[])?;
+        }
         match &check {
             Some(model) => gate::restart_on(&servers, &base, model, &router_engine)
                 .await
