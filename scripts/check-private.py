@@ -228,30 +228,43 @@ def folded(before, after):
     return head.get("text", "")
 
 
+def user_texts(records):
+    """Every text block of every owner-side message, recorded or rewritten."""
+    for r in records:
+        msgs = [r] if r.get("record") == "message" else r.get("messages") or [] if r.get("record") == "rewrite" else []
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "user":
+                for b in m.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        yield b.get("text", "")
+
+
 def spoken_turns(records):
     """What was said aloud in a chat a call spoke into (review of #559),
     replayed in order the way `Session::read` does:
 
     - every spoken direction's sentence — a direction is only ever written
       for a sentence that was spoken;
-    - each stretch that opens with a user turn carrying the voice block:
-      the owner's words, the assistant's replies and the arguments it passed
-      to tools, through any tool turns, any turn folded into the tail (a
-      barge-in) and any turn recorded only inside a compaction's rewrite,
-      until the owner sends a turn without the block — but
+    - each turn that carries the voice block — the first of a call, since
+      `voice::open_spoken_turn` adds it only when the turn before was not
+      spoken: the owner's words, the assistant's replies and the arguments
+      it passed to tools, through its tool turns, a turn folded into its
+      tail (a barge-in) and any of it recorded only inside a compaction's
+      rewrite — but
       not what a tool returned, which is a file or a page, not speech, nor
       harness text folded beside it;
     - each reply containing a directed sentence, and the owner's turn it
       answers — which is how a later turn of a call is found, since only the
       first turn of a spoken stretch carries the block;
-    - every title the chat was given: one can be written from a spoken
-      turn whichever turn opened the chat.
+    - every rename recorded after a turn read as spoken, and the header's
+      title when the chat opened spoken.
 
     What stays out of reach, and is the trade for not reading the owner's
     typing as speech:
 
     - a later turn of a call whose reply was not directed — the owner's
-      words in it and the reply both. A direction is asked for only when the
+      words in it and the reply both — and, even when it was directed,
+      what was said into its tool turns. A direction is asked for only when the
       worker's TTS honours `instructions` (`voice::direct`), so on any other
       engine no direction is written and *every* turn of a call after its
       first is out of reach. The worker journal held those until #547
@@ -280,7 +293,10 @@ def spoken_turns(records):
             # spoken: "Sure." is in half of them (review of #559, pass 3).
             if len(sentence.split()) >= 3:
                 directed.add(sentence)
-    state = {"in_stretch": False, "last_user": None}
+    # `heard`: has a turn been read as spoken yet — a title recorded after
+    # one can have been written from it. `opened`: was the first owner turn
+    # spoken — the header's title is written before any turn.
+    state = {"in_stretch": False, "last_user": None, "heard": False, "opened": None}
 
     def turn(m):
         """One message entering the conversation, as said or not."""
@@ -298,6 +314,9 @@ def spoken_turns(records):
                 # Any turn the owner sends decides the stretch, a picture
                 # with no words included (review of #559, pass 4).
                 state["in_stretch"] = VOICE_MARK in text
+                state["heard"] = state["heard"] or state["in_stretch"]
+                if state["opened"] is None:
+                    state["opened"] = state["in_stretch"]
                 # What the owner said, less what a door or a compaction
                 # folded beside it (review of #559, pass 6).
                 state["last_user"] = " ".join(
@@ -313,17 +332,26 @@ def spoken_turns(records):
                 yield from spoken(m)
             elif said and any(f" {d} " in f" {said} " for d in directed):
                 # A directed reply: it was spoken, and so was what it answers.
+                state["heard"] = True
                 yield from spoken(m)
                 if state["last_user"] is not None:
                     yield state["last_user"]
 
     convo = []
     seen = set()
-    titles = []
+    header = []
     for r in records:
         kind = r.get("record")
-        if kind in ("meta", "title") and isinstance(r.get("title"), str):
-            titles.append(r["title"])
+        if kind == "meta" and isinstance(r.get("title"), str):
+            header.append(r["title"])
+        elif kind == "title" and isinstance(r.get("title"), str):
+            # `title::due` renames at owner turns 1, 3 and 8 from the owner's
+            # turns oldest-first, a spoken one included — so a rename after a
+            # spoken turn can be written from it, whichever turn opened the
+            # chat. One before any is typed words only, and a title runs to
+            # 48 characters, enough for a shingle (review of #559, pass 7).
+            if state["heard"]:
+                yield r["title"]
         elif kind == "extend":
             # Harness text folded onto the last message (`Record::Extend`):
             # kept for the replay, never read as said.
@@ -340,6 +368,7 @@ def spoken_turns(records):
                 # #559, pass 4: a compaction's new text is not a barge-in).
                 if text.strip() and not derived(text):
                     state["in_stretch"] = state["in_stretch"] or VOICE_MARK in text
+                    state["heard"] = state["heard"] or state["in_stretch"]
                     state["last_user"] = text
                     if state["in_stretch"]:
                         yield text
@@ -360,11 +389,8 @@ def spoken_turns(records):
             convo.append(r)
             seen.add(message_key(r))
             yield from turn(r)
-    # `title::due` renames at owner turns 1, 3 and 8 from the owner's turns
-    # oldest-first, a spoken one included, so a chat that opened typed can
-    # still be named from what was said. A title is at most six words, so
-    # taking every one costs no shingle and no quote (review of #559, pass 6).
-    yield from titles
+    if state["opened"]:
+        yield from header
 
 
 def corpus():
@@ -424,7 +450,16 @@ def corpus():
                     said.extend(spoken(r))
                 else:
                     records.append(r)
-        said.extend(spoken_turns(records))
+        if f in whole_set or any(VOICE_MARK in text for text in user_texts(records)):
+            said.extend(spoken_turns(records))
+        else:
+            # The mark is in the file but in no owner turn: a standalone
+            # `mecha voice-serve` carries the block in the system prompt (a
+            # `config` record), and under `MECHA_SESSION_KIND=test` its kind
+            # reads "test", not "voice". Read whole rather than find nothing
+            # (review of #559, pass 7).
+            for r in records:
+                said.extend(spoken(r))
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets
