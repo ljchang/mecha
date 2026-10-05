@@ -2354,7 +2354,9 @@
           <div class="vanswer">{vReplying}</div>
         {/if}
         {#each vSpeaking as entry}
-          {#if entry.who === 'user'}
+          {#if entry.who === 'notice'}
+            <div class="vanswer vnote">{entry.text}</div>
+          {:else if entry.who === 'user'}
             <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
           {:else}
             <div class="vanswer" class:interim={entry.interim}>{entry.text}</div>
@@ -3596,6 +3598,11 @@
   }
   /* A picture in the transcript, as a line. */
   .vpicture {
+    font-style: italic;
+  }
+  /* The call's own state — a dead mic, a dropped line — never speech. */
+  .vnote {
+    color: var(--text-muted);
     font-style: italic;
   }
   .typerow {

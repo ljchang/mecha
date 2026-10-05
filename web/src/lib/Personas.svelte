@@ -152,7 +152,10 @@
   // The call screen shows the chat's own transcript, which the call's turns
   // join as they happen (the owner's ask, 2026-10-05): one conversation, read
   // from one place, so a re-read can never draw a line twice.
-  const callTranscript = $derived(historyLines(run.entries));
+  // Through `callEntries`, so a streamed token — which replaces `run` but not
+  // its entries — does not rebuild the call's transcript (review of #570).
+  const callEntries = $derived(run.entries);
+  const callTranscript = $derived(historyLines(callEntries));
   function placeCall() {
     callBefore = new Set(picturesIn(run.entries));
     caller?.start();
