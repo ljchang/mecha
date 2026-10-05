@@ -204,12 +204,17 @@ fn write_owned(home: &Path, id: &str, path: &Path, text: &str, mode: u32) -> Res
             return Ok(());
         }
     }
-    // Present and identical: recorded, so a later `--remove` knows it.
-    if ours {
-        Ok(())
-    } else {
-        Manifest::record(home, id, path)
+    // Present and identical: recorded under *this* sidecar whatever else
+    // records it — a shared file (`mecha-wait-healthy`) is then kept while
+    // any server that uses it remains — and given the mode it needs, since a
+    // hand copy with the right bytes may not be executable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .with_context(|| format!("setting the mode of {}", path.display()))?;
     }
+    Manifest::record(home, id, path)
 }
 
 /// Install one on-demand server under `naming`: its pinned model fetched, its
@@ -344,7 +349,7 @@ pub async fn install(
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])?;
     say(&format!(
-        "starting it once through :{} — a cold start, up to three minutes",
+        "starting it once through :{} — a cold start, up to 200 s",
         naming.public
     ));
     check(which, naming.public).await?;
@@ -604,6 +609,31 @@ mod tests {
                 .unwrap()
                 .file_type()
                 .is_symlink());
+        }
+        // A file both servers write is recorded under each: removing one
+        // must not delete what the other's unit still runs.
+        Manifest::begin(&home, "embed-server").unwrap();
+        let shared = home.join("bin/mecha-wait-healthy-shared");
+        write_owned(&home, "embed-server", &shared, WAIT_HEALTHY, 0o755).unwrap();
+        write_owned(&home, "ocr-server", &shared, WAIT_HEALTHY, 0o755).unwrap();
+        let man = Manifest::read(&home).unwrap();
+        for id in ["embed-server", "ocr-server"] {
+            let e = man.entries.iter().find(|e| e.sidecar == id).unwrap();
+            assert!(
+                e.wrote.contains(&shared),
+                "{id} does not record the shared file"
+            );
+        }
+        // An adopted copy gets the mode it needs.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let hand = home.join("bin/hand-copy");
+            std::fs::write(&hand, WAIT_HEALTHY).unwrap();
+            std::fs::set_permissions(&hand, std::fs::Permissions::from_mode(0o644)).unwrap();
+            write_owned(&home, "ocr-server", &hand, WAIT_HEALTHY, 0o755).unwrap();
+            let mode = std::fs::metadata(&hand).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755);
         }
         let fresh = home.join("bin/other");
         std::fs::write(&fresh, "theirs").unwrap();
