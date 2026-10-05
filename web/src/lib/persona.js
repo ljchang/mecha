@@ -602,34 +602,16 @@ function said(e) {
   return e.kind === 'user' && !(e.queued && e.delivery !== 'delivered');
 }
 
-// How many lines the owner has said so far: where a call begins, as a count
-// of turns rather than an entry index, which a re-read rebuilds and a
-// page-only notice shifts (`callBefore` keys on pictures for the same reason).
-export function turnsSaid(entries) {
-  return (entries ?? []).filter(said).length;
-}
-
-// The transcript before the owner's line number `n + 1`: the conversation up
-// to a call that began after `n` lines, and the reply to the last of them
-// even if it was still streaming when the call was placed.
-export function beforeTurn(entries, n) {
-  const out = [];
-  let count = 0;
-  for (const e of entries ?? []) {
-    if (said(e) && ++count > n) break;
-    out.push(e);
-  }
-  return out;
-}
-
-// The conversation before a call, as the call screen shows it above the
-// call's own lines (the owner's ask, 2026-10-05: "see the full chat history
-// during voice mode"). Only what was said and drawn: the owner's words as
-// their bubble shows them (`ownWords`), the persona's replies as plain text
-// (`speakable`, so no Markdown marks), and a picture as a line saying so —
-// once, as the chat draws it once (`image_view` of a picture just made is
-// the same picture). Tool rows, notices, empty replies and lines the persona
-// never received are the chat's detail, not the conversation.
+// The conversation as the call screen shows it (the owner's ask, 2026-10-05:
+// "see the full chat history during voice mode"): the chat's own transcript,
+// which a call's turns join live — one source, so nothing has to mark where
+// the call began, and nothing a re-read rebuilds can draw a line twice. Only
+// what was said and drawn: the owner's words as their bubble shows them
+// (`ownWords`), the persona's replies as plain text (`speakable`, so no
+// Markdown marks), and a picture as a line saying so — once, as the chat
+// draws it once (`image_view` of a picture just made is the same picture).
+// Tool rows, notices, empty replies and lines the persona never received are
+// the chat's detail, not the conversation.
 export function historyLines(entries) {
   const lines = [];
   const pictures = new Set();
@@ -650,6 +632,19 @@ export function historyLines(entries) {
     }
   }
   return lines;
+}
+
+// The owner's speech the call screen draws below the transcript: what is
+// still being heard (interim), and a finished line until the transcript has
+// taken it — the turn reaches the chat a moment after the speech ends, and
+// the line must not blink out in between. `heardAt` is how many of the
+// owner's lines the transcript held when the line finished. Only the owner's:
+// the persona's words come from the transcript and the reply streaming in.
+export function pendingSpeech(callEntries, lines) {
+  const said = (lines ?? []).filter((l) => l.who === 'user').length;
+  return (callEntries ?? []).filter(
+    (e) => e.who === 'user' && (e.interim || e.heardAt == null || said <= e.heardAt),
+  );
 }
 
 // The owner's words in their own bubble: a chat opened with a goal sends it

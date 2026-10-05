@@ -21,7 +21,7 @@
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
-    citeEntries, citeOpens, citedUrl, ownWords, historyLines, beforeTurn, turnsSaid, toolRun, sourceFileUrl, chatHeadline,
+    citeEntries, citeOpens, citedUrl, ownWords, historyLines, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -148,17 +148,12 @@
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
   const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
-  // What was said before the call, shown above the call's own lines so the
-  // call reads as part of the conversation (the owner's ask, 2026-10-05).
-  // Anchored to how many lines the owner had said, never an entry index — a
-  // re-read rebuilds the entries and a page-only notice moves every index —
-  // and derived, so a reply still streaming when the call was placed joins
-  // the history when it lands.
-  let callTurns = $state(null);
-  const callHistory = $derived(callTurns == null ? [] : historyLines(beforeTurn(run.entries, callTurns)));
+  // The call screen shows the chat's own transcript, which the call's turns
+  // join as they happen (the owner's ask, 2026-10-05): one conversation, read
+  // from one place, so a re-read can never draw a line twice.
+  const callTranscript = $derived(historyLines(run.entries));
   function placeCall() {
     callBefore = new Set(picturesIn(run.entries));
-    callTurns = turnsSaid(run.entries);
     caller?.start();
   }
 
@@ -2039,7 +2034,8 @@
       display={chosen.display}
       face={callFace}
       pictures={callPictures}
-      history={callHistory}
+      transcript={callTranscript}
+      streaming={run.streaming}
       {pictureUrl}
       ondownload={savePicture}
       onedit={editInCall}

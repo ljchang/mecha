@@ -23,7 +23,8 @@
   import { onDestroy } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
-  import { chatUrl, hangUpReport } from './persona.js';
+  import { chatUrl, hangUpReport, pendingSpeech } from './persona.js';
+  import { speakable } from './speech.js';
 
   let {
     chatKey,
@@ -40,11 +41,11 @@
     // the edit as a line typed into the call: `say`). Null hides the button.
     ondownload = null,
     onedit = null,
-    // The conversation before the call (`persona.js` `historyLines`), drawn
-    // above the call's own lines: a call continues the chat, and the owner
-    // reads back through it here as in the chat (the owner's ask,
-    // 2026-10-05).
-    history = [],
+    // The chat's own transcript (`persona.js` `historyLines`), which the
+    // call's turns join as they happen, and the reply streaming in: the
+    // conversation as the chat shows it (the owner's ask, 2026-10-05).
+    transcript = [],
+    streaming = null,
   } = $props();
 
   let open = $state(false);
@@ -60,16 +61,19 @@
   let muted = $state(false);
   let entries = $state([]);
   let pane = $state(null);
-  // Opened at the bottom, once: the call starts where it always has, with the
-  // conversation before it a scroll up. Armed by `start`, spent on the first
-  // look — never a level, or every streamed word (which rebuilds `history`)
-  // would drag an owner reading back up to the bottom (review of #570).
-  let landAtBottom = false;
+  // Held at the bottom while the owner is there, and left alone once they
+  // scroll up to read: what arrives (speech, a reply streaming in, a
+  // transcript re-read) never drags a reader back down (review of #570).
+  let stick = true;
+  function scrolled() {
+    if (pane) stick = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+  }
+  const replying = $derived(streaming ? speakable(streaming).trim() : '');
+  const speaking = $derived(pendingSpeech(entries, transcript));
   $effect(() => {
-    if (open && pane && landAtBottom) {
-      landAtBottom = false;
-      requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
-    }
+    // Read what can grow, so the effect runs when any of it does.
+    void transcript.length, replying, speaking.length, open;
+    if (stick && pane) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
   });
   // The picture shown large: the newest, unless the owner tapped an earlier
   // one — and a new picture takes the stage again when it arrives.
@@ -116,19 +120,22 @@
   let since = null;
 
   function onTranscript({ who, text, interim }) {
+    // When a line finishes, how many of the owner's lines the transcript held:
+    // it is drawn until the transcript has taken it (`pendingSpeech`).
+    const heardAt = interim ? null : transcript.filter((l) => l.who === 'user').length;
     const last = entries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
+      last.heardAt = heardAt;
     } else {
-      entries.push({ who, text, interim });
+      entries.push({ who, text, interim, heardAt });
     }
-    requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
   }
 
   export function start({ keep = false } = {}) {
     if (!keep) entries = [];
-    landAtBottom = true;
+    stick = true;
     // A line typed into another persona's call must not wait in this one's.
     if (!keep) {
       typed = '';
@@ -326,15 +333,15 @@
         {/if}
       {/if}
     </div>
-    <div class="call-pane" bind:this={pane} inert={!!viewing}>
-      {#if history.length}
-        {#each history as line}
-          <div class={line.who === 'user' ? 'past said' : 'past heard'} class:pictured={line.picture}>{line.text}</div>
-        {/each}
-        <div class="call-start" role="separator" aria-label="Call">Call</div>
+    <div class="call-pane" bind:this={pane} inert={!!viewing} onscroll={scrolled}>
+      {#each transcript as line}
+        <div class={line.who === 'user' ? 'said' : 'heard'} class:pictured={line.picture}>{line.text}</div>
+      {/each}
+      {#if replying}
+        <div class="heard">{replying}</div>
       {/if}
-      {#each entries as entry}
-        <div class={entry.who === 'user' ? 'said' : 'heard'} class:interim={entry.interim}>{entry.text}</div>
+      {#each speaking as entry}
+        <div class="said" class:interim={entry.interim}>{entry.text}</div>
       {/each}
     </div>
     <form class="typerow" inert={!!viewing} onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
@@ -617,28 +624,9 @@
   .call-pane:empty {
     display: none;
   }
-  /* Before the call: the same bubbles, quieter, and a picture as a line. */
-  .past {
-    opacity: 0.62;
-  }
+  /* A picture in the transcript, as a line. */
   .pictured {
     font-style: italic;
-  }
-  .call-start {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-    opacity: 0.8;
-  }
-  .call-start::before,
-  .call-start::after {
-    content: '';
-    flex: 1;
-    border-top: 1px solid var(--accent-900);
   }
   .said {
     align-self: flex-end;
