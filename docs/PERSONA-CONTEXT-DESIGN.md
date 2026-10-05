@@ -222,6 +222,10 @@ what is true for this run. Nothing a component says is written into the conversa
   of their own, because two user messages in a row are invalid. On a run's first request the last
   user message is the owner's turn. After a tool round trip it is the message carrying the tool
   results, which is the slot steering already uses.
+  - In that slot the notes come after the owner's steered words, as they come after the owner's
+    words on a first request. That is the order L6 and L7 measured. A steered turn itself is
+    unmeasured. If the owner's words are better last there, it is a change to `attach_notes`
+    alone.
 - **Why the end, not the owner's turn.** The notes move to the newest message with each request, so
   each request re-reads only the notes and the step before them. A note pinned to the owner's
   turn would be cached for the run, but the next turn would then re-read the whole of the
@@ -241,9 +245,17 @@ what is true for this run. Nothing a component says is written into the conversa
   (`Taint::arm_for_notes`). Missing it would silently un-arm `private_data` in exactly these chats,
   with every test over `arm_for_content` still green. Memory of the owner arms `private`, and
   memory first read from outside also arms `untrusted`. Taint stays a property of the conversation
-  and is recorded as before, so a later turn without the note stays armed.
-- **Audit.** The session records each run's notes in their own record (`Record::Notes`). A build
-  from before it skips the line, as with `Record::Extend`.
+  and is recorded as before, so a later turn without the note stays armed. The transcript is also
+  how a torn taint record is re-derived, and the notes are no longer in its messages. So
+  `Session::read` arms from the recorded notes (`Record::Notes`) by the same rule.
+- **The record.** The session records each run's notes in their own record (`Record::Notes`). A
+  build from before it skips the line, as with `Record::Extend`.
+  - Any reader that rebuilds a moment to send it again must re-attach that moment's notes, or the
+    replayed moment is not the recorded one. That covers `replay::extract` and
+    `counterfactual::followup_branch`, which resubmit `messages` as recorded.
+  - Neither serves persona chats today (a persona agent renders no learned rules). §8's gate
+    replay is the external harness, which applies the projection itself.
+  - Re-attaching notes is owed before either reader is pointed at a chat that carries them.
 - **Guidance and material.**
   - *Guidance* changes per run and becomes notes: the call note, the variety note, the edit note,
     the identity reminder, and memory (the chat-start block and per-turn recall, joined into one
