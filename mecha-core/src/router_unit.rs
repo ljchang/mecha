@@ -194,6 +194,23 @@ pub fn installed_choice(mecha_home: &Path) -> Result<Option<Choice>> {
     }
 }
 
+/// Whether mecha's record names a router install — finished or not.
+pub fn installed_by_mecha(mecha_home: &Path) -> Result<bool> {
+    Ok(Manifest::read(mecha_home)?
+        .entries
+        .iter()
+        .any(|e| e.sidecar == ID))
+}
+
+/// Whether anything accepts a connection on this loopback port.
+pub fn port_answers(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_secs(2),
+    )
+    .is_ok()
+}
+
 /// The unit file and launcher, rendered for this install.
 fn render(text: &str, naming: &Naming, bin: &Path, presets: &Path) -> String {
     text.replace("8080", &naming.port.to_string())
@@ -318,6 +335,18 @@ pub async fn install(
         );
     }
     let home = &m.mecha_home;
+    // A server on the port that mecha did not install is someone's: a
+    // router started by hand from a terminal, or another program. Nothing
+    // is written over it — an enabled unit there would restart-loop against
+    // the owner's port (found on review of #568). Mecha's own router, being
+    // reinstalled, is the one that may answer.
+    if !installed_by_mecha(home)? && port_answers(naming.port) {
+        bail!(
+            "something already answers on :{} and mecha did not install it — nothing is \
+             installed over it; `mecha setup --write` reads a running server's settings",
+            naming.port
+        );
+    }
     let engine = Engine::resolve(m)?;
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let bin = bin_dir(home);
@@ -614,6 +643,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A port someone else's server holds is refused before anything is
+    /// written — no record, no unit — unless mecha's own router is the one
+    /// being reinstalled.
+    #[tokio::test]
+    async fn a_port_held_by_another_server_is_left_alone() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            stem: "mecha-test-held".into(),
+            port: held.local_addr().unwrap().port(),
+        };
+        let root = std::env::temp_dir().join(format!("mecha-7c2-p-{}", uuid::Uuid::new_v4()));
+        let mut m = Machinery::real().unwrap();
+        m.mecha_home = root.join(".mecha");
+        let machine = crate::recommend::Machine::read().unwrap();
+        let r = install(
+            &m,
+            &Choice::Own {
+                model: "/nowhere.gguf".into(),
+                mmproj: None,
+            },
+            &naming,
+            &machine,
+            &root,
+            &mut |_| {},
+        )
+        .await;
+        if cfg!(target_os = "linux") {
+            let err = format!("{:#}", r.unwrap_err());
+            assert!(err.contains("already answers"), "{err}");
+            assert!(
+                !installed_by_mecha(&m.mecha_home).unwrap(),
+                "nothing recorded"
+            );
+            // Mecha's own router may answer: the refusal is for someone else's.
+            Manifest::begin(&m.mecha_home, ID).unwrap();
+            assert!(installed_by_mecha(&m.mecha_home).unwrap());
+        }
+        drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The presets file says what the router serves: the pinned row by its
     /// alias, a brought GGUF with its projector, nothing when absent, and an
     /// error — never the pinned row — when it names no model.
@@ -710,10 +780,17 @@ mod tests {
             .find(|s| s.id == "chat")
             .unwrap();
         for row in slot.rows {
+            let g = crate::recommend::chat_geometry(row.tier_gb)
+                .unwrap_or_else(|| panic!("the {} GB chat row has no geometry", row.tier_gb));
+            // The prompt cache the router runs with is outside the priced
+            // peak, so each row says how large it may grow — the figure the
+            // preset serves, not a remembered one (found on review of #568).
+            let said = format!("up to {} GiB", g.cache_ram_mb / 1024);
             assert!(
-                crate::recommend::chat_geometry(row.tier_gb).is_some(),
-                "the {} GB chat row has no geometry",
-                row.tier_gb
+                row.excludes.is_some_and(|e| e.contains(&said)),
+                "the {} GB chat row does not say {said}: {:?}",
+                row.tier_gb,
+                row.excludes
             );
         }
     }
