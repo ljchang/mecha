@@ -1,10 +1,13 @@
 //! Recall: what a persona remembers, brought back into a chat
 //! (`docs/PERSONA-DESIGN.md` §9.7, build step 5).
 //!
-//! This is the chat-start half: one block, folded into the chat's first
-//! turn beside the files block, in the harness's voice — never the system
-//! prompt, which stays the persona's cached prefix (§8.2). Per-turn search
-//! and the `recall` tools are later.
+//! Two blocks, each one of a run's notes (`RunContext::notes`,
+//! PERSONA-CONTEXT-DESIGN.md §5.1) and never stored in a message: what the
+//! persona remembers at chat start ([`chat_start`]), read once per chat and
+//! sent with every run, and what the owner's message brings to mind
+//! ([`per_turn`]). Never the system prompt, which stays the persona's cached
+//! prefix (§8.2). Chats recorded before run notes hold the blocks in their
+//! owner turns, and `PriorNudges::Drop` leaves them off the wire.
 //!
 //! **Taint is chosen by the harness, and the transcript says which.** The
 //! block opens with one of two stems:
@@ -28,7 +31,6 @@ use anyhow::Result;
 
 use super::memory::{Episode, Fact, Filter, Memory, Recallable, Shared, Table};
 use super::{Origin, Persona, Store, UserFacts};
-use crate::message::{Block, Message, Role};
 
 /// The block's opening when every record in it is clean.
 pub const MEMORY_STEM: &str = "(What you remember from past conversations, from the harness";
@@ -65,24 +67,6 @@ pub fn stem_of(text: &str) -> Option<(bool, bool)> {
     } else {
         None
     }
-}
-
-/// Whether a conversation already carries a memory block, in an owner turn —
-/// so a turn that finished in between cannot make it ride twice.
-pub fn carries(messages: &[Message]) -> bool {
-    messages.iter().any(|m| {
-        m.role == Role::User
-            && m.content
-                .iter()
-                .any(|b| matches!(b, Block::Text { text } if stem_of(text).is_some()))
-    })
-}
-
-/// Whether a turn should carry the memory block: before the chat's first
-/// reply, so it lands in `messages[0]`, which compaction keeps whole — the
-/// files block's rule, for the files block's reason.
-pub fn carries_now(messages: &[Message]) -> bool {
-    !messages.iter().any(|m| m.role == Role::Assistant) && !carries(messages)
 }
 
 /// The owner's calendar day of a stored stamp, in `[agent] timezone` (`None`
