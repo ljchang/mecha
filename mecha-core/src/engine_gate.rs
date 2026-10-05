@@ -1332,15 +1332,20 @@ pub fn rollback_row(from: &Path, to: &Path, model: Option<String>) -> LedgerRow 
 /// Ask the router which build serves `model` — `/props` with `autoload=false`,
 /// so the question loads nothing — and require it to be the one expected.
 pub async fn verify_build(base: &str, model: &str, build: u32, commit: &str) -> Result<()> {
-    let v: serde_json::Value = http(Duration::from_secs(10))?
+    let resp = http(Duration::from_secs(10))?
         .get(format!("{base}/props"))
         .query(&[("model", model), ("autoload", "false")])
         .send()
         .await
-        .context("asking the router which build serves the model")?
-        .json()
-        .await
-        .context("reading /props")?;
+        .context("asking the router which build serves the model")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!(
+            "the router answered {status} when asked which build serves {model}: {}",
+            resp.text().await.unwrap_or_default().trim()
+        );
+    }
+    let v: serde_json::Value = resp.json().await.context("reading /props")?;
     let info = v["build_info"].as_str().unwrap_or("");
     if !crate::engine::build_info_is(info, build, commit) {
         bail!(
@@ -1716,6 +1721,21 @@ async fn promote_upgrade(
         .map_err(|(s, e)| (s.to_string(), e))
 }
 
+/// Stop the embeddings and OCR services, leaving their sockets: the next
+/// request starts each on whatever engine the units name by then.
+pub fn stop_backends(servers: &Servers) -> Result<()> {
+    let backends: Vec<&str> = servers
+        .present
+        .iter()
+        .filter(|(s, _)| s.role != Role::Router)
+        .map(|(s, _)| s.unit)
+        .collect();
+    if backends.is_empty() {
+        return Ok(());
+    }
+    systemctl("stop", &backends)
+}
+
 /// The servers onto the engine the units now name: the on-demand backends
 /// stopped (their sockets stay, so the next request starts them on it), the
 /// router restarted, and the model the owner had loaded on it again.
@@ -1725,15 +1745,7 @@ pub async fn restart_on(
     model: &str,
     engine: &Path,
 ) -> std::result::Result<(), (&'static str, anyhow::Error)> {
-    let backends: Vec<&str> = servers
-        .present
-        .iter()
-        .filter(|(s, _)| s.role != Role::Router)
-        .map(|(s, _)| s.unit)
-        .collect();
-    if !backends.is_empty() {
-        systemctl("stop", &backends).map_err(|e| ("stopping the on-demand backends", e))?;
-    }
+    stop_backends(servers).map_err(|e| ("stopping the on-demand backends", e))?;
     systemctl("restart", &["llama-local.service"]).map_err(|e| ("restarting the router", e))?;
     router_back(base, Some(model), engine)
         .await
