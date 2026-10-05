@@ -64,9 +64,11 @@
 > 7c-1 — `llama_units.rs`, the on-demand embeddings and OCR servers from
 > nothing (their units and launchers shipped in the binary, held equal to
 > `scripts/llama/`, rendered with absolute launcher paths and the engine
-> drop-in, started once through their socket) — is built; 7c-2 (the router
-> and the chat model choice), 7b-2 (the build fallback), 7d–7f and step 8
-> are unbuilt (step 7 redesigned in §10). The
+> drop-in, started once through their socket) — is built; so is 7c-2:
+> `router_unit.rs`, the resident router from nothing (its unit, launcher and
+> presets file, the presets from the tier's chat geometry or the owner's own
+> GGUF), behind `mecha setup chat` (F11). 7b-2 (the build fallback), 7d–7f
+> and step 8 are unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1023,6 +1025,8 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F8** | This machine's hand installs | **Detected and left alone.** A sidecar whose port answers, or whose unit mecha did not write, is *provided*; nothing is installed over it and no file mecha did not write is touched. Moving this box onto managed copies is a later, explicit step. Ruled by the owner 2026-10-02 (§10.2 item 4) |
 | **F9** | How llama.cpp is obtained | **A prebuilt release when one matches, else a build from the pinned commit.** Prebuilt assets are verified by sha256; the build checks the toolchain first. Ruled by the owner 2026-10-02, with the owner's observation that updating it often improves performance — so `--upgrade` measures before it promotes (§10.3) |
 | **F10** | Trusting an engine newer than the shipped pin | **Only for a tag the owner confirmed at a terminal.** `--to <tag>` names it; bare `--upgrade` prints the newest tag and asks for confirmation of that tag before downloading. For a confirmed tag the release API's sha256 over TLS is trusted (and, for a build, the commit GitHub names for the tag) — the one exception to item 1's reviewed-pin rule, and only on this path. Ruled by the owner 2026-10-02 (§10.3) |
+| **F11** | A fresh machine's door to a local chat model | **`mecha setup chat`** — a word `setup` reserves, as `engine` is, not a feature: chat is not optional, so it cannot be an `enable`. It shows the tier's recommended row or takes the owner's GGUF, installs, and writes the provider from what the router reports. `mecha setup`'s provider step names it first. Ruled by the owner 2026-10-05 |
+| **F12** | The provider a fresh install defaults to | **A local one, never Anthropic** — the owner: *"we definitely don't want to default to anthropic."* The starter config and `Config::default()` move in their own change after 7c-2. Ruled by the owner 2026-10-05 |
 
 ---
 
@@ -1593,7 +1597,22 @@ Step 7 becomes these, each a PR that leaves every feature working:
   the server on a private backend port. The unit names and ports are
   parameters of the rendering, so the real-machine test installs an OCR server
   beside the live one on free ports, starts it through its socket, and
-  removes it (measured 2026-10-05).
+  removes it (measured 2026-10-05). The router is one resident service, not
+  three units: `llama-local.service` runs a launcher that hands llama-server
+  a presets file (`~/.mecha/sidecars/router/models.ini`) with `--models-max
+  1`. The recommended row's presets carry its geometry — context, slots and
+  prompt-cache budget, now the same constants `recommend.rs` sums the peak
+  from, so the figure shown and the server started cannot disagree — and the
+  pinned model's sampling and MTP draft lines; a GGUF the owner brings gets
+  the geometry alone. The door is `mecha setup chat` (F11): it shows the
+  row or takes a path, installs mecha's engine first when the machine has
+  none, installs and starts the router, waits for the model to load, and
+  hands the router's `/props` **for that model** (never the bare
+  placeholder) to `mecha setup`'s write-and-confirm step. A router
+  installed by hand is provided and left alone. The real-machine test
+  installs a router beside the live one on a free port, serving the
+  embeddings GGUF as an owner's model, and removes it (measured
+  2026-10-05).
 - **7d.** `uv` and the voice venv, Parakeet and the voice worker.
 - **7e.** ComfyUI, ComfyUI-GGUF and the image models.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the

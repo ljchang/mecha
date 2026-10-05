@@ -600,24 +600,31 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
     // **Only said when a probe actually ran.** Reporting "nothing was
     // answering at X" after not asking is the same class of claim as writing
     // down a `context_window` nobody read off the wire.
+    //
+    // The local route comes first, and names the command that installs one
+    // (ruling F11): a local model is what mecha is for, and a fresh machine
+    // with no server used to be told only to "serve it", which presumes the
+    // server it does not have.
     let local_line = match &facts.local_probe {
         LocalProbe::NothingAnswered => format!(
             concat!(
-                "2. Run a model locally — the target rather than the fallback. Serve ",
-                "it, then `mecha setup --write` reads the settings off it. Nothing ",
-                "was answering at {tried} when this ran."
+                "1. Run a model locally — the target rather than the fallback. ",
+                "`mecha setup chat` installs one and points mecha at it (Linux); a ",
+                "server you run yourself, `mecha setup --write` reads the settings ",
+                "off. Nothing was answering at {tried} when this ran."
             ),
             tried = local_probe_candidates().join(", ")
         ),
         _ => concat!(
-            "2. Run a model locally — the target rather than the fallback. Serve it, ",
-            "then `mecha setup --write` reads the settings off it."
+            "1. Run a model locally — the target rather than the fallback. ",
+            "`mecha setup chat` installs one and points mecha at it (Linux); a ",
+            "server you run yourself, `mecha setup --write` reads the settings off."
         )
         .to_string(),
     };
     step(format!(
         "Nothing can answer a prompt yet, so nothing below this can be tested. \
-         Two ways out.\n\n1. {key_line}\n\n{local_line}"
+         Two ways out.\n\n{local_line}\n\n2. {key_line}"
     ))
 }
 
@@ -1706,6 +1713,11 @@ mod tests {
         // And the rest of the advice survives — this is about dropping one
         // unearned sentence, not the route it belongs to.
         assert!(never_asked.contains("Run a model locally"), "{never_asked}");
+        // And it names the command that installs one (ruling F11), ahead of
+        // the key.
+        let local = never_asked.find("mecha setup chat").expect(&never_asked);
+        let key = never_asked.find("ANTHROPIC_API_KEY").expect(&never_asked);
+        assert!(local < key, "the local route comes first: {never_asked}");
     }
 
     /// A configured local provider that simply is not selected gets named,

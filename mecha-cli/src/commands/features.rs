@@ -861,9 +861,9 @@ mod tests {
                     bytes: None,
                 },
                 PlannedSidecar {
-                    id: "router",
-                    label: "the chat router",
-                    state: SidecarState::Missing { step: "7c-2" },
+                    id: "comfyui",
+                    label: "ComfyUI",
+                    state: SidecarState::Missing { step: "7e" },
                     bytes: None,
                 },
                 PlannedSidecar {
@@ -904,7 +904,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7c-2",
+            "not here — its installer arrives in step 7e",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",
