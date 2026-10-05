@@ -62,7 +62,6 @@ something shipped.
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |
 | [`MESSAGING-RESEARCH.md`](MESSAGING-RESEARCH.md) | How separate mecha sessions should message each other, and what travels with a message |
-| [`PERSONA-CONTEXT-DESIGN.md`](PERSONA-CONTEXT-DESIGN.md) | Why a persona follows its own past and the harness instead of the owner — the context it reads, measured — and the root fixes: ephemeral guidance, factual tool results, history as what reached the owner, pictures as jobs, edits only on the owner's initiative (2026-10-05, rulings pending) |
 | [`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`](PERSONA-MEMORY-TIMESCALES-RESEARCH.md) | What a persona's "fact" should be: lasting facts vs states vs episodes, whether memory should decay, and what the evidence says about each (2026-10-02) |
 | [`POLL-RESEARCH.md`](POLL-RESEARCH.md) | What polling products ship, and which parts are worth copying |
 | [`PRIOR-ART-RESEARCH.md`](PRIOR-ART-RESEARCH.md) | What openclaw, codex and the other harnesses do that this one does not |
@@ -98,6 +97,7 @@ something shipped.
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
+| [`PERSONA-CONTEXT-DESIGN.md`](PERSONA-CONTEXT-DESIGN.md) | Why a persona follows its own past and the harness instead of the owner — the context it reads, measured — and the root fixes: run notes in core, factual tool results, history as what happened, pictures as jobs, edits only on the owner's initiative (2026-10-05) |
 | [`PERSONA-DESIGN.md`](PERSONA-DESIGN.md) | Characters the owner authors and talks to — relationship templates, memory, files they can read and cite, voice, self-portraits — kept in their own sessions, apart from the assistant's reach. §3 is the boundary; §16 holds every ruling |
 | [`POLL-DESIGN.md`](POLL-DESIGN.md) | Polls as a general-purpose instrument — the six kinds and the lecture mode |
 | [`PROVENANCE-DESIGN.md`](PROVENANCE-DESIGN.md) | Why nearly every conversation arms, and four ways to label by provenance instead of by server — self-writes, field labels, grounded destinations, re-derivation — without any classifier lowering a label |

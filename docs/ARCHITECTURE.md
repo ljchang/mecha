@@ -21,7 +21,13 @@ Two different things, and the difference is the point:
   turn boundary or mid-stream — and keeps the partial turn. Cancellation is a
   dropped future; that is what aborts the HTTP request. A cancellable run
   always streams, because otherwise there is no partial answer to keep. Tools
-  are never interrupted mid-call.
+  are never interrupted mid-call, with one exception: `image_generate` honours
+  the cancel, takes its job off the image server, and returns "Cancelled —
+  the generation was stopped and nothing was saved." (`imagegen.rs`,
+  `Failure::Cancelled`). The chat's Stop button needs that. A call's barge-in
+  cancels the same way, which is what turned a picture into a cancel-and-retry
+  loop on calls. `PERSONA-CONTEXT-DESIGN.md` §5.4 removes the exception by
+  making a picture a job that the barge-in does not touch.
 - **Steer** (`RunContext::queued_input`) redirects a run *without* stopping it.
   Text queued mid-run is folded into the message carrying the tool results, so
   the model sees the results and the new instruction as one user turn and keeps
