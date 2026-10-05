@@ -448,18 +448,21 @@ def corpus():
                     continue
                 if f in whole_set:
                     said.extend(spoken(r))
-                else:
+                elif isinstance(r, dict):
                     records.append(r)
-        if f in whole_set or any(VOICE_MARK in text for text in user_texts(records)):
-            said.extend(spoken_turns(records))
-        else:
-            # The mark is in the file but in no owner turn: a standalone
-            # `mecha voice-serve` carries the block in the system prompt (a
-            # `config` record), and under `MECHA_SESSION_KIND=test` its kind
-            # reads "test", not "voice". Read whole rather than find nothing
-            # (review of #559, pass 7).
+        # The block in the system prompt and in no owner turn: a standalone
+        # `mecha voice-serve`, whose kind reads "test" rather than "voice"
+        # under `MECHA_SESSION_KIND=test`. Every turn of it was spoken, so it
+        # is read whole rather than found empty (review of #559, pass 7) —
+        # but only on that shape: the mark in a tool result or a reply is a
+        # session that read the voice code or this guard (pass 8).
+        voiced_prompt = any(r.get("record") == "config" and VOICE_MARK in str(r.get("system_prompt") or "")
+                            for r in records)
+        if voiced_prompt and not any(VOICE_MARK in text for text in user_texts(records)):
             for r in records:
                 said.extend(spoken(r))
+        else:
+            said.extend(spoken_turns(records))
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets
