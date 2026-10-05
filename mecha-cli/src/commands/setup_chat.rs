@@ -14,6 +14,15 @@ use anyhow::{bail, Context, Result};
 use mecha_core::router_unit::{self, Choice, Naming};
 use std::io::{IsTerminal, Write};
 
+/// `~` and `~/…` as a shell would expand them; anything else as typed.
+fn expand_home(typed: &str) -> String {
+    match (typed, dirs::home_dir()) {
+        ("~", Some(h)) => h.display().to_string(),
+        (t, Some(h)) if t.starts_with("~/") => h.join(&t[2..]).display().to_string(),
+        (t, _) => t.to_string(),
+    }
+}
+
 fn ask(question: &str) -> Result<String> {
     print!("{question}");
     std::io::stdout().flush()?;
@@ -60,7 +69,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         }
     }
 
-    // A server on :8080 that mecha did not install — a router started from a
+    // A server on the router's port that mecha did not install — a router started from a
     // terminal, or another program — is the owner's too: the unit check above
     // cannot see it (found on review of #568).
     let naming = Naming::shipped();
@@ -141,11 +150,16 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     let choice = match (pick.as_str(), row.is_some()) {
         ("" | "1", true) => Choice::Recommended,
         ("" | "2", _) => {
-            let model = ask("Path to the model's GGUF: ")?;
+            // Read off the terminal, not through a shell: a leading `~` is
+            // expanded here or it names a directory called `~` (found on
+            // review of #568).
+            let model = expand_home(&ask("Path to the model's GGUF: ")?);
             if model.is_empty() {
                 bail!("no model path — nothing was installed");
             }
-            let mmproj = ask("Path to its vision projector (mmproj), or Enter for none: ")?;
+            let mmproj = expand_home(&ask(
+                "Path to its vision projector (mmproj), or Enter for none: ",
+            )?);
             Choice::Own {
                 model: model.into(),
                 mmproj: (!mmproj.is_empty()).then(|| mmproj.into()),
@@ -156,7 +170,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
 
     // The engine first, when the machine has none to run.
     println!(
-        "\nThis installs{} the router (a systemd user service on :8080) serving that model, \
+        "\nThis installs{} the router (a systemd user service on :{}) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
         match engine_bytes {
@@ -165,7 +179,8 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
                 b as f64 / 1_048_576.0
             ),
             None => String::new(),
-        }
+        },
+        naming.port
     );
     if !matches!(ask("Go ahead? [y/N] ")?.as_str(), "y" | "Y" | "yes") {
         println!("Nothing was changed.");
@@ -186,20 +201,62 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     // The provider, read back from the router — for the model installed:
     // the router's bare /props is a placeholder (CLAUDE.md, the local model
     // server), never the model's.
-    if cfg.providers.values().any(|p| p.kind == "local") {
-        println!(
-            "Your config already names a local provider — `mecha setup` checks it agrees with \
-             the router, and `mecha setup --write` brings it in line."
-        );
-        return Ok(());
-    }
     let base = naming.base();
     let props = mecha_core::provider::preflight::fetch(&base, Some(&alias))
         .await
         .with_context(|| format!("asking the router about {alias}"))?;
+    // A local provider already in the config — `setup chat` run again to
+    // change the model: the table's `model` is the preset name the router
+    // routes by, so it is brought in line with what was just installed, the
+    // same show-and-ask as `mecha setup --write` (found on review of #568).
+    // Only a table that names this router: a local provider on another
+    // machine is someone else's server and is not rewritten from this one.
+    let port = format!(":{}", naming.port);
+    let this_router = |p: &mecha_core::config::ProviderConfig| {
+        p.kind == "local"
+            && p.base_url
+                .as_deref()
+                .is_none_or(|u| mecha_core::provider::router::is_loopback(u) && u.contains(&port))
+    };
+    if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| this_router(p)) {
+        println!();
+        return super::setup::offer_settings(name, &props);
+    }
+    if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| p.kind == "local") {
+        println!(
+            "Your config's local provider `{name}` names a server elsewhere, so it is left as it \
+             is — the router here serves {alias} on {base}."
+        );
+        return Ok(());
+    }
     let found = mecha_core::onboarding::LocalServer {
         base_url: base,
         props,
     };
     super::setup::write_local_provider(&found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `chat` is a noun in `setup`'s feature position, as `engine` is, so no
+    /// feature may ever be called that.
+    #[test]
+    fn no_feature_is_called_chat() {
+        assert!(mecha_core::feature::Feature::parse("chat").is_none());
+    }
+
+    #[test]
+    fn a_typed_home_is_expanded_and_nothing_else() {
+        let h = dirs::home_dir().unwrap();
+        assert_eq!(expand_home("~"), h.display().to_string());
+        assert_eq!(
+            expand_home("~/models/m.gguf"),
+            h.join("models/m.gguf").display().to_string()
+        );
+        assert_eq!(expand_home("~bob/m.gguf"), "~bob/m.gguf");
+        assert_eq!(expand_home("models/m.gguf"), "models/m.gguf");
+        assert_eq!(expand_home(""), "");
+    }
 }

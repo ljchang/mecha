@@ -724,6 +724,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The pinned preset is `scripts/start-router.sh`'s production section,
+    /// key for key: the script says it is the only copy of the router's
+    /// flags, and this is the second, so it is held equal rather than
+    /// remembered (found on review of #568). Paths differ by machine and are
+    /// left out; the script's `${VAR:-default}`s are read at their defaults.
+    #[test]
+    fn the_pinned_preset_is_the_script_s_production_section() {
+        let script = include_str!("../../scripts/start-router.sh");
+        // The quoted lines a shell function prints.
+        let printed = |func: &str| -> Vec<String> {
+            let body = script
+                .split_once(&format!("{func}() {{"))
+                .unwrap_or_else(|| panic!("{func} moved"))
+                .1;
+            let body = &body[..body.find("\n}").unwrap()];
+            body.split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        };
+        let sampling: Vec<String> = printed("qwen_sampling")
+            .into_iter()
+            .map(|l| l.replace("$1", "0.6"))
+            .collect();
+        let vision = printed("qwen_vision");
+        let section = script
+            .split_once(&format!("\n[{PINNED_ALIAS}]\n"))
+            .expect("the production section moved")
+            .1;
+        let section = &section[..section.find("\nEOF").unwrap()];
+        let default = |v: &str| -> String {
+            match v.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+                Some(v) => v.split_once(":-").expect("a default").1.to_string(),
+                None => v.to_string(),
+            }
+        };
+        let mut theirs = std::collections::BTreeMap::new();
+        for line in section.lines() {
+            let lines = match line.trim() {
+                "$(qwen_vision)" => vision.clone(),
+                "$(qwen_sampling 0.6)" => sampling.clone(),
+                l => vec![l.to_string()],
+            };
+            for l in lines {
+                let (k, v) = l.split_once(" = ").unwrap_or_else(|| panic!("{l:?}"));
+                theirs.insert(k.to_string(), default(v));
+            }
+        }
+        let g = crate::recommend::chat_geometry(128).unwrap();
+        let ours_text = presets_text(&Preset {
+            alias: PINNED_ALIAS.into(),
+            model: "/m/w.gguf".into(),
+            mmproj: Some("/m/p.gguf".into()),
+            ctx: g.ctx,
+            slots: g.slots,
+            cache_ram_mb: Some(g.cache_ram_mb),
+            pinned: true,
+        });
+        let ours: std::collections::BTreeMap<String, String> = ours_text
+            .split_once(&format!("[{PINNED_ALIAS}]\n"))
+            .unwrap()
+            .1
+            .lines()
+            .filter_map(|l| l.split_once(" = "))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut ours = ours;
+        for m in [&mut ours, &mut theirs] {
+            m.remove("model");
+            m.remove("mmproj");
+        }
+        assert_eq!(ours, theirs);
+        // And the shared lines.
+        for l in ["n-gpu-layers = 999", "jinja = true"] {
+            assert!(script.contains(&format!("\"{l}\"")), "{l}");
+            assert!(ours_text.contains(l), "{l}");
+        }
+    }
+
     /// The launcher empties the model cache as `scripts/start-router.sh`
     /// does, or the router offers every GGUF in the hub — the embeddings and
     /// OCR models among them — loadable by name, and loading one evicts the
