@@ -406,7 +406,11 @@ pub async fn install_engine(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
 /// measured, with no `previous` and no ledger row. `--adopt` points `current`
 /// at the pin itself, as its promotion.
 fn settle_current_on_pin(home: &Path) -> Result<()> {
-    match link_tag(&current(home)) {
+    // `link_tag` is `read_link`, which succeeds on a broken link: a `current`
+    // naming a tree that is gone names no build, and the install repairs it.
+    let installed = link_tag(&current(home))
+        .filter(|tag| engine_root(home).join(tag).join("llama-server").is_file());
+    match installed {
         Some(_) => Ok(()),
         None => point_current(home, PIN.tag),
     }
@@ -1716,6 +1720,10 @@ mod tests {
     fn the_pin_install_sets_current_only_on_a_first_install() {
         let home = std::env::temp_dir().join(format!("mecha-demote-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(engine_root(&home)).unwrap();
+        for t in ["b20000", "b10000"] {
+            std::fs::create_dir_all(engine_root(&home).join(t)).unwrap();
+            std::fs::write(engine_root(&home).join(t).join("llama-server"), "").unwrap();
+        }
         point_current(&home, "b20000").unwrap();
         settle_current_on_pin(&home).unwrap();
         assert_eq!(link_tag(&current(&home)).as_deref(), Some("b20000"));
@@ -1724,6 +1732,11 @@ mod tests {
         point_current(&home, "b10000").unwrap();
         settle_current_on_pin(&home).unwrap();
         assert_eq!(link_tag(&current(&home)).as_deref(), Some("b10000"));
+        // A `current` whose tree is gone names no build: repaired to the pin.
+        std::fs::remove_dir_all(engine_root(&home).join("b20000")).unwrap();
+        point_current(&home, "b20000").unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some(PIN.tag));
         // A first install gets the pin.
         std::fs::remove_file(current(&home)).unwrap();
         settle_current_on_pin(&home).unwrap();

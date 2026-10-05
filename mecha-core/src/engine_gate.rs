@@ -2066,6 +2066,59 @@ mod tests {
     /// A router that answers `/health` but not `/models` is a finding — the
     /// gate declines rather than measure (and load) the configured model —
     /// while a router answering nothing reads as down.
+    /// One canned answer, every request line kept: what `verify_build` asked
+    /// is asserted literally, as `brief.rs` and `preflight.rs` do.
+    fn mock_props(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in l.incoming().flatten() {
+                let mut s = stream;
+                let mut buf = [0u8; 2048];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                log.lock()
+                    .unwrap()
+                    .push(req.lines().next().unwrap_or("").to_string());
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (base, seen)
+    }
+
+    /// The promotion's last word: the router asked which build serves the
+    /// model — with `autoload=false`, so the question loads nothing (a probe
+    /// without it loads the model: LLAMA-SERVER.md) — and a non-success
+    /// answer or a missing `build_info` refused.
+    #[tokio::test]
+    async fn verify_build_asks_without_loading_and_refuses_what_it_cannot_read() {
+        let commit = "2bc563573479d53b30b8793039485887bc0fdda8";
+        let (base, seen) = mock_props("200 OK", r#"{"build_info":"b11391-2bc563573"}"#);
+        verify_build(&base, "qwen", 11391, commit).await.unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[0],
+            "GET /props?model=qwen&autoload=false HTTP/1.1"
+        );
+        let (base, _) = mock_props("200 OK", r#"{"build_info":"b1193-95887577"}"#);
+        let err = refused(verify_build(&base, "qwen", 11391, commit).await);
+        assert!(err.contains("b1193-95887577"), "{err}");
+        let (base, _) = mock_props("500 Internal Server Error", r#"{"error":"boom"}"#);
+        let err = refused(verify_build(&base, "qwen", 11391, commit).await);
+        assert!(err.contains("500"), "{err}");
+        let (base, _) = mock_props("200 OK", r#"{"model_alias":"qwen"}"#);
+        assert!(verify_build(&base, "qwen", 11391, commit).await.is_err());
+    }
+
     #[tokio::test]
     async fn a_router_that_will_not_list_its_models_declines() {
         use std::io::{Read, Write};
