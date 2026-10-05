@@ -31,7 +31,7 @@ uuid.workspace = true
 sha2 = "0.11"
 # The image library's browse lock: the one password the web surface holds,
 # hashed with a vetted KDF rather than a hand-rolled one.
-argon2 = "0.5"
+argon2 = "0.6"
 toml_edit = "0.25"
 
 # Landlock is a Linux LSM; the crate does not build elsewhere. Everything
