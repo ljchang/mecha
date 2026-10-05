@@ -321,7 +321,9 @@
       }
       input = message;
       imageEdit = null;
-      await send();
+      // Marked as the panel's, so the persona is told it was an edit and
+      // answers in a line rather than retelling a picture it has not seen.
+      await send({ edit: true });
     } catch (err) {
       if (imageEdit === edit) {
         edit.busy = false;
@@ -1234,7 +1236,7 @@
     }
   }
 
-  async function send() {
+  async function send({ edit = false } = {}) {
     const typed = input.trim();
     const attached = [...attachments];
     const text = withAttachments(typed, attached);
@@ -1245,7 +1247,7 @@
       const res = await fetch(chatUrl(key, '/send'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, attachments: attached, unlock: token ?? undefined }),
+        body: JSON.stringify({ text, attachments: attached, unlock: token ?? undefined, edit: edit || undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
@@ -1896,7 +1898,7 @@
           ></textarea>
           <!-- Send stays during a run: it steers, and a phone has no Enter to
                spare for that. -->
-          <button class="send" aria-label={run.running ? 'Steer' : 'Send'} title={run.running ? 'Steer' : 'Send'} disabled={!input.trim() && !attachments.length} onclick={send}>
+          <button class="send" aria-label={run.running ? 'Steer' : 'Send'} title={run.running ? 'Steer' : 'Send'} disabled={!input.trim() && !attachments.length} onclick={() => send()}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
           </button>
         </div>
