@@ -60,9 +60,20 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["json", "write", "undecline", "minimal", "rollback"])]
     pub adopt: bool,
 
-    /// With `engine` and `--adopt`: move the servers even if the new engine
-    /// measures slower, or fails a check the old one passes.
-    #[arg(long, requires = "adopt")]
+    /// With `engine`: fetch a newer llama.cpp release (the newest, or
+    /// `--to <tag>`), confirm its tag, measure it against the one the
+    /// servers run, and move them onto it if it is no slower. At a terminal.
+    #[arg(long, conflicts_with_all = ["json", "write", "undecline", "minimal", "adopt", "rollback"])]
+    pub upgrade: bool,
+
+    /// With `engine --upgrade`: the release tag to fetch (`b` and digits),
+    /// instead of the newest.
+    #[arg(long, value_name = "TAG", requires = "upgrade")]
+    pub to: Option<String>,
+
+    /// With `engine --adopt` or `--upgrade`: move the servers even if the
+    /// new engine measures slower, or fails a check the old one passes.
+    #[arg(long)]
     pub force: bool,
 
     /// With `engine`: move an adopted machine back onto the engine it ran
@@ -83,19 +94,23 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     if args.feature.as_deref() == Some("engine") {
         return super::setup_engine::run(
             &cfg,
-            args.json,
-            args.adopt,
-            args.rollback,
-            args.now,
-            args.force,
+            super::setup_engine::Flags {
+                json: args.json,
+                adopt: args.adopt,
+                upgrade: args.upgrade,
+                to: args.to.clone(),
+                rollback: args.rollback,
+                now: args.now,
+                force: args.force,
+            },
         )
         .await;
     }
     // A body check, against this struct's own rule, because clap cannot say
     // "only with the feature value `engine`" — and it refuses loudly.
     anyhow::ensure!(
-        !args.adopt && !args.rollback,
-        "--adopt and --rollback go with `mecha setup engine`"
+        !args.adopt && !args.rollback && !args.upgrade && !args.force,
+        "--adopt, --upgrade, --rollback and --force go with `mecha setup engine`"
     );
     let (name, pcfg) = cfg.provider(global.provider.as_deref())?;
     let home = mecha_core::work::mecha_home()?;
