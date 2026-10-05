@@ -1,0 +1,22 @@
+# The llama-server ROUTER for mecha's local provider, as `mecha setup chat`
+# installs it (docs/FEATURES-DESIGN.md §10.6, 7c-2): one model resident, the
+# request's `model` field choosing among the presets mecha wrote. Unlike the
+# embeddings and OCR servers it is not socket-started: a chat model is loaded
+# at start and kept, because the first answer is the one a person waits on.
+[Unit]
+Description=llama-server router for mecha's local chat model (:8080)
+Documentation=https://docs.mecha-factory.ai/
+
+[Service]
+Type=exec
+Environment=MECHA_ROUTER_PORT=8080
+Environment=MECHA_ROUTER_PRESETS=@PRESETS@
+ExecStart=%h/.local/bin/mecha-router
+ExecStartPost=%h/.local/bin/mecha-wait-healthy 8080 120
+TimeoutStartSec=180
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target

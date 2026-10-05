@@ -93,6 +93,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         .context("reading the global config — run `mecha config init` first")?;
     // `engine` is a reserved noun here, never a feature id (§10.3): it owns
     // the engine's flags and needs no provider answering first.
+    // `chat` is reserved the same way (ruling F11): a fresh machine's door to
+    // a local chat model — engine, router and model — never a feature id.
+    if args.feature.as_deref() == Some("chat") {
+        anyhow::ensure!(
+            !args.adopt && !args.upgrade && !args.rollback && !args.force && !args.json,
+            "`mecha setup chat` takes no flags — it asks"
+        );
+        return super::setup_chat::run(&cfg).await;
+    }
     if args.feature.as_deref() == Some("engine") {
         return super::setup_engine::run(
             &cfg,
@@ -674,7 +683,7 @@ fn report_salvage(salvaged: Option<std::path::PathBuf>) {
 /// `context_window`. `answers_like_a_model_server` is the identification step
 /// that tolerance left out; it lives in core beside the claim it supports, so
 /// it is testable without a socket.
-async fn probe_for_a_local_server() -> onboarding::LocalProbe {
+pub(super) async fn probe_for_a_local_server() -> onboarding::LocalProbe {
     for base_url in onboarding::local_probe_candidates() {
         match mecha_core::provider::preflight::fetch(base_url, None).await {
             Some(props) if onboarding::answers_like_a_model_server(&props) => {
@@ -766,7 +775,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
 /// It also moves `default_provider`, which is a bigger change than the three
 /// keys `--write` otherwise touches: it changes what answers. So it is
 /// printed in full and confirmed, and the previous file is kept.
-fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
+pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
     let settings = onboarding::verified_settings(&found.props);
     println!(
         "Found a server at {} and nothing in the config names it.\n",

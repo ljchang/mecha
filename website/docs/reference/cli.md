@@ -1540,6 +1540,32 @@ disk — the current one and the way back — and removes any other.
 
 All three refuse without a terminal: they change what every server runs.
 
+#### `mecha setup chat`
+
+```
+mecha setup chat
+```
+
+`chat` is the other word `setup` reserves: it is how a machine with no model
+server gets one. It shows the chat model recommended for this machine's memory
+tier — its download size and the context and slots it will be served with — or
+takes a GGUF you already have (and its vision projector, if any). On a yes it
+installs mecha's pinned llama.cpp first if the machine has none, then the
+router: a systemd user service on `:8080`, its launcher in
+`~/.mecha/sidecars/bin/`, and its presets in `~/.mecha/sidecars/router/models.ini`.
+It starts the router, waits for the model to load — several minutes for a large
+one — and asks it which model it serves.
+
+When no local provider is configured yet, it then offers to write one, from
+what the router reports about the model it installed — the same write-and-confirm
+step as `mecha setup --write`, so the model name, context window and vision are
+read off the server, never typed. When one is configured, it leaves the config
+alone and says `mecha setup --write` brings it in line.
+
+A router you installed yourself is detected and left alone: nothing is installed
+over it. It takes no flags and runs only at a terminal, because it asks. On
+Linux only, as the other servers' installs are.
+
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
 *what is silently broken about a working install*, in one pass with no network
 and no model. Every question `setup` asks needs to **ask a server something**,
@@ -1579,10 +1605,12 @@ about itself and points `default_provider` at it. Every value is read back off
 `/props`, so the *existence* of the provider is as much a measured fact as its
 context window.
 
-**Nothing is serving.** Then the fix is an API key, and a key is the one thing
-this tool will not write. mecha stores the **name of an environment variable**,
-never a secret, which is what makes a config file safe to read, copy and commit.
-So the step names the exact variable and both routes forward rather than
+**Nothing is serving.** Then the step offers two routes, local first, because a
+local model is what mecha is for: [`mecha setup chat`](#mecha-setup-chat)
+installs one on Linux and points mecha at it. The other route is an API key,
+and a key is the one thing this tool will not write. mecha stores the **name of
+an environment variable**, never a secret, which is what makes a config file
+safe to read, copy and commit. So the step names the exact variable rather than
 offering a command that could only print what you already know. A provider
 configured with no `api_key_env` at all is told *that*, instead of being told to
 set a variable it does not name.

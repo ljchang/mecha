@@ -34,6 +34,7 @@ pub mod run;
 pub mod serve;
 pub mod sessions;
 pub mod setup;
+pub mod setup_chat;
 pub mod setup_engine;
 pub mod skills;
 pub mod slack;
