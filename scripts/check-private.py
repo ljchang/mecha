@@ -450,6 +450,8 @@ def corpus():
                     said.extend(spoken(r))
                 elif isinstance(r, dict):
                     records.append(r)
+        if f in whole_set:
+            continue
         # The block in the system prompt and in no owner turn: a standalone
         # `mecha voice-serve`, whose kind reads "test" rather than "voice"
         # under `MECHA_SESSION_KIND=test`. Every turn of it was spoken, so it

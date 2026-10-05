@@ -372,6 +372,29 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {typed!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 0)
 
+    def test_a_voice_session_is_read_whole(self):
+        # The only path that reads a real call whole is its kind: a later
+        # turn (no block, no direction) and a tool result are both out of
+        # spoken_turns' reach by design, so losing the whole-read must fail
+        # here (review of #559, pass 9).
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        later = "Then move the plumber to Thursday afternoon after the school run."
+        fetched = "The plumber can come on Thursday afternoon between two and four."
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990115T000000-4c5d6e7f.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "vc", "kind": "voice"}) + "\n")
+            for role, blocks in (("user", [t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhi")]),
+                                 ("assistant", [t("Hello there.")]),
+                                 ("user", [t(later)]),
+                                 ("assistant", [{"type": "tool_use", "id": "t1", "name": "cal", "input": {}}]),
+                                 ("user", [{"type": "tool_result", "tool_use_id": "t1", "content": fetched}])):
+                f.write(json.dumps({"record": "message", "role": role, "content": blocks}) + "\n")
+        for text in (later, fetched):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, 1, text)
+
     def test_an_extension_is_replayed_but_not_read_as_said(self):
         # `Record::Extend` folds harness text onto the last recorded message;
         # the replay applies it, so a later fold is still recognised, and
