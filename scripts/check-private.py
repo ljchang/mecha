@@ -63,13 +63,23 @@ QUOTE = re.compile(r'"([^"\n]{6,240})"|“([^”\n]{6,240})”|\'([^\'\n]{12,240
 VOICE_MARK = "Voice mode: everything you write is spoken aloud"
 # The header a compaction summary opens with (`compact::SUMMARY_HEADER`).
 SUMMARY_HEADER = "[Earlier turns were compacted to fit the context window. What happened in them:]"
-# What `title::is_derived` treats as the harness's, not the owner's: the
-# compaction sentinels (`compact::SUMMARY_HEADER`, `CARRIED_HEADER`), the
-# tool picture caption (`agent::TOOL_IMAGE_STEM`), the calendar reference
-# (`date_context::REFERENCE_STEM`) and the situation brief
-# (`brief::BRIEF_STEM`), plus a mailbox delivery (`mailbox::DELIVERY_STEM`).
+# Harness text that can ride in a user message of a chat that is not a
+# persona's (persona chats are read whole, so the persona stems
+# `title::is_derived` also matches are left out): the compaction sentinels
+# (`compact::SUMMARY_HEADER`, `CARRIED_HEADER`), the tool picture caption
+# (`agent::TOOL_IMAGE_STEM`), the calendar reference
+# (`date_context::REFERENCE_STEM`), the situation brief (`brief::BRIEF_STEM`),
+# and the loop's own voices in `agent::is_harness_voice` — boredom's notice,
+# the plan step's escalation and check feedback, the criterion observation,
+# the two nudges and the two plan-check sentences — plus a mailbox delivery
+# (`mailbox::DELIVERY_STEM`). Matched as prefixes; a stale one fails toward
+# refusing, never toward passing.
 DERIVED_STEMS = (SUMMARY_HEADER, "[Live state, carried past the compaction", "[picture returned by ",
-                 "Calendar reference from the harness clock:", "Situation brief from the harness")
+                 "Calendar reference from the harness clock:", "Situation brief from the harness",
+                 "Nothing is being learned here:", "A second opinion on your plan:",
+                 "Harness check feedback: ", "Harness observations of owner-bound task criteria.",
+                 "You have used your entire tool budget", "Your previous turn ended without producing anything",
+                 "A declared plan check was not run", "The declared plan check did not establish completion")
 DELIVERY_STEM = "another mecha agent on this machine, not the user"
 SESSION_ID = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
 
@@ -234,8 +244,8 @@ def spoken_turns(records):
     - each reply containing a directed sentence, and the owner's turn it
       answers — which is how a later turn of a call is found, since only the
       first turn of a spoken stretch carries the block;
-    - the chat's title, when its first turn was spoken: a title is written
-      from the owner's first words.
+    - every title the chat was given: one can be written from a spoken
+      turn whichever turn opened the chat.
 
     What stays out of reach, and is the trade for not reading the owner's
     typing as speech:
@@ -246,8 +256,8 @@ def spoken_turns(records):
       engine no direction is written and *every* turn of a call after its
       first is out of reach. The worker journal held those until #547
       stopped it carrying words; nothing does now;
-    - a compaction summary, which paraphrases typed and spoken turns alike,
-      and a title written from typed first words;
+    - a compaction summary, which paraphrases typed and spoken turns alike;
+    - a Listen tap's reply, which was typed and only read aloud;
     - a sentence the owner typed into a spoken stretch's tool turn reads as
       spoken (over-inclusion, the safe direction)."""
     def text_of(content):
@@ -257,13 +267,20 @@ def spoken_turns(records):
     directed = set()
     for r in records:
         if r.get("record") == "spoken_direction" and r.get("sentence"):
+            # A Listen tap is recorded as a direction too (`serve::listen`,
+            # under `voice_direction::LISTEN_TURN`), on any reply of any
+            # chat: a typed reply read aloud, not a call — and its sentence
+            # is the whole reply. It binds nothing and is not speech here
+            # (review of #559, pass 6); a persona's is read whole anyway.
+            if str(r.get("turn", "")).startswith("listen:"):
+                continue
             yield r["sentence"]
             sentence = " ".join(words(r["sentence"]))
             # Only a sentence long enough to tell replies apart marks one as
             # spoken: "Sure." is in half of them (review of #559, pass 3).
             if len(sentence.split()) >= 3:
                 directed.add(sentence)
-    state = {"in_stretch": False, "last_user": None, "opened": None}
+    state = {"in_stretch": False, "last_user": None}
 
     def turn(m):
         """One message entering the conversation, as said or not."""
@@ -281,9 +298,11 @@ def spoken_turns(records):
                 # Any turn the owner sends decides the stretch, a picture
                 # with no words included (review of #559, pass 4).
                 state["in_stretch"] = VOICE_MARK in text
-                state["last_user"] = text
-                if state["opened"] is None:
-                    state["opened"] = state["in_stretch"]
+                # What the owner said, less what a door or a compaction
+                # folded beside it (review of #559, pass 6).
+                state["last_user"] = " ".join(
+                    b.get("text", "") for b in m.get("content") or []
+                    if isinstance(b, dict) and b.get("type") == "text" and not derived(b.get("text", "")))
             if state["in_stretch"]:
                 for b in m.get("content") or []:
                     if isinstance(b, dict) and b.get("type") == "text" and not derived(b.get("text", "")):
@@ -341,8 +360,11 @@ def spoken_turns(records):
             convo.append(r)
             seen.add(message_key(r))
             yield from turn(r)
-    if state["opened"]:
-        yield from titles
+    # `title::due` renames at owner turns 1, 3 and 8 from the owner's turns
+    # oldest-first, a spoken one included, so a chat that opened typed can
+    # still be named from what was said. A title is at most six words, so
+    # taking every one costs no shingle and no quote (review of #559, pass 6).
+    yield from titles
 
 
 def corpus():
@@ -390,17 +412,19 @@ def corpus():
     for f in whole + partly:
         ids.add(os.path.basename(f)[: -len(".jsonl")])
         with open(f, errors="replace") as fh:
+            # Streamed when read whole: a transcript holds pictures, and only
+            # the replay needs the records at once (review of #559, pass 6).
             records = []
             for line in fh:
                 try:
-                    records.append(json.loads(line))
+                    r = json.loads(line)
                 except ValueError:
                     continue
-        if f in whole_set:
-            for r in records:
-                said.extend(spoken(r))
-        else:
-            said.extend(spoken_turns(records))
+                if f in whole_set:
+                    said.extend(spoken(r))
+                else:
+                    records.append(r)
+        said.extend(spoken_turns(records))
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets
