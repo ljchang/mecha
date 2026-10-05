@@ -2063,9 +2063,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A router that answers `/health` but not `/models` is a finding — the
-    /// gate declines rather than measure (and load) the configured model —
-    /// while a router answering nothing reads as down.
     /// One canned answer, every request line kept: what `verify_build` asked
     /// is asserted literally, as `brief.rs` and `preflight.rs` do.
     fn mock_props(
@@ -2119,6 +2116,9 @@ mod tests {
         assert!(verify_build(&base, "qwen", 11391, commit).await.is_err());
     }
 
+    /// A router that answers `/health` but not `/models` is a finding — the
+    /// gate declines rather than measure (and load) the configured model —
+    /// while a router answering nothing reads as down.
     #[tokio::test]
     async fn a_router_that_will_not_list_its_models_declines() {
         use std::io::{Read, Write};
