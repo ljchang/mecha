@@ -13,9 +13,10 @@ phrases kept in the repository, which would itself be the leak:
 - every persona chat (`~/.mecha/personas/<name>/sessions/*.jsonl`): every
   message's text, thinking, tool calls and tool results, and each spoken
   sentence;
-- every session that heard a voice call (`~/.mecha/sessions/*.jsonl` whose
-  kind is voice, or which carries the voice block a spoken turn opens with —
-  a call into a web chat, a test session, or one from before `kind` existed);
+- every voice session (`~/.mecha/sessions/*.jsonl` of kind voice), whole,
+  and the spoken turns of any other session a call spoke into (a web chat, a
+  test session, one from before `kind` existed): each turn that opens with
+  the voice block, and the reply that answers it;
 - every persona's memory (`memory.db`): the facts and episodes written from
   its chats, which are paraphrases rather than quotations;
 - the voice worker's journal lines that carried words (until #547 stopped
@@ -60,6 +61,26 @@ QUOTE = re.compile(r'"([^"\n]{6,240})"|“([^”\n]{6,240})”|\'([^\'\n]{12,240
 # The opening of the voice block every spoken turn carries
 # (`voice::VOICE_BLOCK` / `VOICE_BLOCK_STREAMING`).
 VOICE_MARK = "Voice mode: everything you write is spoken aloud"
+# The header a compaction summary opens with (`compact::SUMMARY_HEADER`).
+SUMMARY_HEADER = "[Earlier turns were compacted to fit the context window. What happened in them:]"
+# Harness text that can ride in a user message of a chat that is not a
+# persona's (persona chats are read whole, so the persona stems
+# `title::is_derived` also matches are left out): the compaction sentinels
+# (`compact::SUMMARY_HEADER`, `CARRIED_HEADER`), the tool picture caption
+# (`agent::TOOL_IMAGE_STEM`), the calendar reference
+# (`date_context::REFERENCE_STEM`), the situation brief (`brief::BRIEF_STEM`),
+# and the loop's own voices in `agent::is_harness_voice` — boredom's notice,
+# the plan step's escalation and check feedback, the criterion observation,
+# the two nudges and the two plan-check sentences — plus a mailbox delivery
+# (`mailbox::DELIVERY_STEM`). Matched as prefixes; a stale one fails toward
+# refusing, never toward passing.
+DERIVED_STEMS = (SUMMARY_HEADER, "[Live state, carried past the compaction", "[picture returned by ",
+                 "Calendar reference from the harness clock:", "Situation brief from the harness",
+                 "Nothing is being learned here:", "A second opinion on your plan:",
+                 "Harness check feedback: ", "Harness observations of owner-bound task criteria.",
+                 "You have used your entire tool budget", "Your previous turn ended without producing anything",
+                 "A declared plan check was not run", "The declared plan check did not establish completion")
+DELIVERY_STEM = "another mecha agent on this machine, not the user"
 SESSION_ID = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
 
 
@@ -154,6 +175,224 @@ def read_memory(db):
         sys.exit(2)
 
 
+def derived(text):
+    """Harness text that rides in a user message (`title::is_derived` and the
+    folds it names): a compaction's summary or carried state, a tool's
+    picture caption, a mailbox delivery, the calendar reference, the
+    situation brief. Never the owner's words."""
+    text = text.strip()
+    return text.startswith(DERIVED_STEMS) or DELIVERY_STEM in text
+
+
+def block_key(b):
+    """A block as a replay compares it: what it says and which call it
+    belongs to, never a picture's bytes or a tool result's body."""
+    if not isinstance(b, dict):
+        return str(b)
+    return (b.get("type"), b.get("text"), b.get("id"), b.get("tool_use_id"))
+
+
+def message_key(m):
+    """A message as a replay compares it, less the harness text a door or a
+    compaction folds into it — so the head `compact::rebuild` gave a summary
+    and carried state is still the head the owner sent."""
+    return (m.get("role"), tuple(block_key(b) for b in m.get("content") or []
+                                 if not (isinstance(b, dict) and b.get("type") == "text"
+                                         and derived(b.get("text", "")))))
+
+
+def folded(before, after):
+    """The text a door folded into the tail, or None: `after` is `before`
+    with exactly one text block (and any pictures sent with it) appended to
+    its last message, a user message, and nothing else changed. That is the
+    shape `serve::chat::begin_turn` records as a rewrite when a turn arrives
+    while the conversation already ends on a user message — a barge-in that
+    cancelled a tool turn, or a message after a failed run. A compaction
+    rewrites the head and never has this shape."""
+    if not before or len(before) != len(after):
+        return None
+    old, new = before[-1], after[-1]
+    if old.get("role") != "user" or new.get("role") != "user":
+        return None
+    if any(a.get("role") != b.get("role") or list(map(block_key, a.get("content") or [])) != list(map(block_key, b.get("content") or []))
+           for a, b in zip(before[:-1], after[:-1])):
+        return None
+    was, now = old.get("content") or [], new.get("content") or []
+    if len(now) <= len(was) or list(map(block_key, now[:len(was)])) != list(map(block_key, was)):
+        return None
+    head, *rest = now[len(was):]
+    if not isinstance(head, dict) or head.get("type") != "text":
+        return None
+    if any(isinstance(b, dict) and b.get("type") == "text" for b in rest):
+        return None
+    return head.get("text", "")
+
+
+def user_texts(records):
+    """Every text block of every owner-side message, recorded or rewritten."""
+    for r in records:
+        msgs = [r] if r.get("record") == "message" else r.get("messages") or [] if r.get("record") == "rewrite" else []
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "user":
+                for b in m.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text":
+                        yield b.get("text", "")
+
+
+def spoken_turns(records):
+    """What was said aloud in a chat a call spoke into (review of #559),
+    replayed in order the way `Session::read` does:
+
+    - every spoken direction's sentence — a direction is only ever written
+      for a sentence that was spoken;
+    - each turn that carries the voice block — the first of a call, since
+      `voice::open_spoken_turn` adds it only when the turn before was not
+      spoken: the owner's words, the assistant's replies and the arguments
+      it passed to tools, through its tool turns, a turn folded into its
+      tail (a barge-in) and any of it recorded only inside a compaction's
+      rewrite — but
+      not what a tool returned, which is a file or a page, not speech, nor
+      harness text folded beside it;
+    - each reply containing a directed sentence, and the owner's turn it
+      answers — which is how a later turn of a call is found, since only the
+      first turn of a spoken stretch carries the block;
+    - every rename recorded after a turn read as spoken, and the header's
+      title when the chat opened spoken.
+
+    What stays out of reach, and is the trade for not reading the owner's
+    typing as speech:
+
+    - a later turn of a call whose reply was not directed — the owner's
+      words in it and the reply both — and, even when it was directed,
+      what was said into its tool turns. A direction is asked for only when the
+      worker's TTS honours `instructions` (`voice::direct`), so on any other
+      engine no direction is written and *every* turn of a call after its
+      first is out of reach. The worker journal held those until #547
+      stopped it carrying words; nothing does now;
+    - a compaction summary, which paraphrases typed and spoken turns alike;
+    - a Listen tap's reply, which was typed and only read aloud;
+    - a sentence the owner typed into a spoken stretch's tool turn reads as
+      spoken (over-inclusion, the safe direction)."""
+    def text_of(content):
+        return " ".join(b.get("text", "") for b in content or []
+                        if isinstance(b, dict) and b.get("type") == "text")
+
+    directed = set()
+    for r in records:
+        if r.get("record") == "spoken_direction" and r.get("sentence"):
+            # A Listen tap is recorded as a direction too (`serve::listen`,
+            # under `voice_direction::LISTEN_TURN`), on any reply of any
+            # chat: a typed reply read aloud, not a call — and its sentence
+            # is the whole reply. It binds nothing and is not speech here
+            # (review of #559, pass 6); a persona's is read whole anyway.
+            if str(r.get("turn", "")).startswith("listen:"):
+                continue
+            yield r["sentence"]
+            sentence = " ".join(words(r["sentence"]))
+            # Only a sentence long enough to tell replies apart marks one as
+            # spoken: "Sure." is in half of them (review of #559, pass 3).
+            if len(sentence.split()) >= 3:
+                directed.add(sentence)
+    # `heard`: has a turn been read as spoken yet — a title recorded after
+    # one can have been written from it. `opened`: was the first owner turn
+    # spoken — the header's title is written before any turn.
+    state = {"in_stretch": False, "last_user": None, "heard": False, "opened": None}
+
+    def turn(m):
+        """One message entering the conversation, as said or not."""
+        text = text_of(m.get("content"))
+        if m.get("role") == "user":
+            # A tool-results turn goes on with the stretch: steering and a
+            # queued sentence are folded into it beside the results, since
+            # nothing can sit between a tool_use and its result
+            # (`agent::is_plain_user_text`, the same distinction). Its folded
+            # words were said; what the tool returned was not (a file or a
+            # page), so only the text blocks count, less harness text.
+            results = any(isinstance(b, dict) and b.get("type") == "tool_result"
+                          for b in m.get("content") or [])
+            if not results:
+                # Any turn the owner sends decides the stretch, a picture
+                # with no words included (review of #559, pass 4).
+                state["in_stretch"] = VOICE_MARK in text
+                state["heard"] = state["heard"] or state["in_stretch"]
+                if state["opened"] is None:
+                    state["opened"] = state["in_stretch"]
+                # What the owner said, less what a door or a compaction
+                # folded beside it (review of #559, pass 6).
+                state["last_user"] = " ".join(
+                    b.get("text", "") for b in m.get("content") or []
+                    if isinstance(b, dict) and b.get("type") == "text" and not derived(b.get("text", "")))
+            if state["in_stretch"]:
+                for b in m.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "text" and not derived(b.get("text", "")):
+                        yield b.get("text", "")
+        elif m.get("role") == "assistant":
+            said = " ".join(words(text))
+            if state["in_stretch"]:
+                yield from spoken(m)
+            elif said and any(f" {d} " in f" {said} " for d in directed):
+                # A directed reply: it was spoken, and so was what it answers.
+                state["heard"] = True
+                yield from spoken(m)
+                if state["last_user"] is not None:
+                    yield state["last_user"]
+
+    convo = []
+    seen = set()
+    header = []
+    for r in records:
+        kind = r.get("record")
+        if kind == "meta" and isinstance(r.get("title"), str):
+            header.append(r["title"])
+        elif kind == "title" and isinstance(r.get("title"), str):
+            # `title::due` renames at owner turns 1, 3 and 8 from the owner's
+            # turns oldest-first, a spoken one included — so a rename after a
+            # spoken turn can be written from it, whichever turn opened the
+            # chat. One before any is typed words only, and a title runs to
+            # 48 characters, enough for a shingle (review of #559, pass 7).
+            if state["heard"]:
+                yield r["title"]
+        elif kind == "extend":
+            # Harness text folded onto the last message (`Record::Extend`):
+            # kept for the replay, never read as said.
+            index = r.get("index")
+            if isinstance(index, int) and index + 1 == len(convo) and isinstance(r.get("blocks"), list):
+                convo[-1] = dict(convo[-1], content=list(convo[-1].get("content") or []) + r["blocks"])
+                seen.add(message_key(convo[-1]))
+        elif kind == "rewrite":
+            after = [m for m in r.get("messages") or [] if isinstance(m, dict)]
+            text = folded(convo, after)
+            if text is not None:
+                # A fold goes on with the turn it joins, as steering does;
+                # one that carries the voice block opens a stretch (review of
+                # #559, pass 4: a compaction's new text is not a barge-in).
+                if text.strip() and not derived(text):
+                    state["in_stretch"] = state["in_stretch"] or VOICE_MARK in text
+                    state["heard"] = state["heard"] or state["in_stretch"]
+                    state["last_user"] = text
+                    if state["in_stretch"]:
+                        yield text
+            else:
+                # A compaction. `Session::record_run` writes a run that
+                # compacted itself as the compacted state *plus* every turn
+                # the loop produced after it, in this one record — those
+                # turns are nowhere else (review of #559, pass 5). The head
+                # it rebuilt (summary, carried state) is harness text, and
+                # the turns it kept were read when they were recorded.
+                for m in after:
+                    k = message_key(m)
+                    if k[1] and k not in seen:
+                        yield from turn(m)
+            convo = after
+            seen.update(message_key(m) for m in after)
+        elif kind == "message":
+            convo.append(r)
+            seen.add(message_key(r))
+            yield from turn(r)
+    if state["opened"]:
+        yield from header
+
+
 def corpus():
     """(shingles, short phrases, session ids, persona names) from ~/.mecha."""
     said = []
@@ -176,31 +415,56 @@ def corpus():
                     value = m.group(1).strip().lower()
                     names.add(value)
                     names.update(w for w in words(value) if len(w) >= 4)
-    files = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
-    # Every session that heard a voice call, whatever its kind (review of
-    # #557): a call speaks into a web chat, sessions from before `kind`
-    # existed read None, and a smoke test against the real store is "test".
-    # A spoken turn opens with the voice block, so its words mark the file —
-    # and only a file so marked counts, so a dev session that never heard a
-    # call is not mistaken for one.
+    # Read whole: every persona chat, and every session that is a call.
+    whole = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
+    # Read for their spoken turns only: any other session a call spoke into
+    # (a web chat, a test session, one from before `kind` existed). The rest
+    # of such a chat is the owner typing — often mecha's own development —
+    # and taking it whole made ordinary repository prose ("cargo test -p
+    # mecha-core") read as conversation (review of #557, follow-up).
+    partly = []
     for f in glob.glob(f"{MECHA}/sessions/*.jsonl"):
         try:
             with open(f, errors="replace") as fh:
                 kind = json.loads(fh.readline()).get("kind")
-                spoken_here = kind == "voice" or VOICE_MARK in fh.read()
+                if kind == "voice":
+                    whole.append(f)
+                elif VOICE_MARK in fh.read():
+                    partly.append(f)
         except (OSError, ValueError) as e:
             print(f"check-private: the session {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
-        if spoken_here:
-            files.append(f)
-    for f in files:
+    whole_set = set(whole)
+    for f in whole + partly:
         ids.add(os.path.basename(f)[: -len(".jsonl")])
         with open(f, errors="replace") as fh:
+            # Streamed when read whole: a transcript holds pictures, and only
+            # the replay needs the records at once (review of #559, pass 6).
+            records = []
             for line in fh:
                 try:
-                    said.extend(spoken(json.loads(line)))
+                    r = json.loads(line)
                 except ValueError:
                     continue
+                if f in whole_set:
+                    said.extend(spoken(r))
+                elif isinstance(r, dict):
+                    records.append(r)
+        if f in whole_set:
+            continue
+        # The block in the system prompt and in no owner turn: a standalone
+        # `mecha voice-serve`, whose kind reads "test" rather than "voice"
+        # under `MECHA_SESSION_KIND=test`. Every turn of it was spoken, so it
+        # is read whole rather than found empty (review of #559, pass 7) —
+        # but only on that shape: the mark in a tool result or a reply is a
+        # session that read the voice code or this guard (pass 8).
+        voiced_prompt = any(r.get("record") == "config" and VOICE_MARK in str(r.get("system_prompt") or "")
+                            for r in records)
+        if voiced_prompt and not any(VOICE_MARK in text for text in user_texts(records)):
+            for r in records:
+                said.extend(spoken(r))
+        else:
+            said.extend(spoken_turns(records))
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets
@@ -220,7 +484,7 @@ def corpus():
         for n in range(3, SHINGLE):
             phrases |= grams(w, n)
     # Persona folders with no chats yet still have names to refuse.
-    return shingles, phrases, ids, names, bool(files or names)
+    return shingles, phrases, ids, names, bool(whole or partly or names)
 
 
 def run_git(cmd):
