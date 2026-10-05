@@ -14,7 +14,8 @@ to the same context, so each one also added to the cause.
 
 **Why the fix lives in core:** the harness has no place for its own words except the owner's
 message. Everything after that is repair work: a registry of text prefixes to tell harness text
-from the owner's (`agent::is_harness_voice`, nine voices), and wire views that remove some of it
+from the owner's (`agent::is_harness_voice`, about twenty entries, six of them a persona's), and
+wire views that remove some of it
 again on the way out (`PriorNudges`, beside `PriorThinking` and `PriorTails`). The assistant's
 chat adds the calendar reference and the situation brief to user turns the same way. Personas show
 the cost first because their chats are long, mostly talk, and run on a small local model. So the
@@ -63,8 +64,9 @@ the repository (§8).
 - **A call's barge-in** (`persona_chat::speak`) cancels the run in flight (`CancelReason::Stopped`).
   `image_generate` honours that cancel and stops the ComfyUI job, because the chat's Stop button
   needs exactly that. The result is "Cancelled — the generation was stopped and nothing was
-  saved." This is the one exception to "a tool is never interrupted mid-call", and
-  `ARCHITECTURE.md` §Interruption and steering records it. Steered owner speech is folded in
+  saved." This is one of two exceptions to "a tool is never interrupted mid-call"
+  (`document_read` is the other), and `ARCHITECTURE.md` §Interruption and steering records
+  both. Steered owner speech is folded in
   after that result.
 - **Persona chats are unseeded** (`setup::persona_provider_config`, `PersonaUse::Converse`). The
   session's `config` record shows the provider's `seed = 42` *as written*, not what is sent.
@@ -234,10 +236,12 @@ what is true for this run. Nothing a component says is written into the conversa
 - **Cache breakpoints.** `CompletionRequest::trailing_notes` says how many trailing blocks are
   notes. A provider that marks a moving cache breakpoint (`provider/anthropic.rs`) puts it on the
   last block *before* them, because a write on a note is never read back.
-- **Taint.** Notes arm taint by the same rule as content (`Taint::arm_for_content`). Memory of the
-  owner arms `private`, and memory first read from outside also arms `untrusted`. Taint stays a
-  property of the conversation and is recorded as before, so a later turn without the note stays
-  armed.
+- **Taint.** `Taint::arm_for_content` cannot see a note, because it reads `messages`. So the loop
+  arms from `RunContext::notes` itself at run start, before the first request, by the same rule
+  (`Taint::arm_for_notes`). Missing it would silently un-arm `private_data` in exactly these chats,
+  with every test over `arm_for_content` still green. Memory of the owner arms `private`, and
+  memory first read from outside also arms `untrusted`. Taint stays a property of the conversation
+  and is recorded as before, so a later turn without the note stays armed.
 - **Audit.** The session records each run's notes in their own record (`Record::Notes`). A build
   from before it skips the line, as with `Record::Extend`.
 - **Guidance and material.**
@@ -250,8 +254,9 @@ what is true for this run. Nothing a component says is written into the conversa
     stretch" no longer applies.
 - **Chats recorded before this.** Their stored messages already hold notes. The persona projection
   drops every recorded persona note from the history it sends: call, variety, edit, identity
-  reminder and memory, but never files or the goal. That replaces `PriorNudges`'s stale-note
-  logic and its re-read cap. The first turn of an old chat after the change re-reads its history
+  reminder and memory, but never files or the goal, and never a block whose removal would leave its
+  message empty (an empty user message is a 400, as an empty assistant one is). That replaces
+  `PriorNudges`'s stale-note logic and its re-read cap, and keeps its empty-message guard. The first turn of an old chat after the change re-reads its history
   once. After that the history is stable. `is_harness_voice` keeps its entries, because old
   transcripts are still read by the miner and the UI.
 
@@ -265,9 +270,11 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
 - A turn the owner interrupted is sent as **its delivered words plus any effect that completed**,
   stated as a fact. A cancelled call goes, with its result. So does the reasoning that chose it.
   A tool that finished before the barge-in, such as a memory write, stays.
-- An assistant message left with no text and no completed call is dropped whole, never sent empty
-  (an empty assistant message is a 400 everywhere). This is `drops_thinking`'s rule for the same
-  reason.
+- No message is ever sent empty: an empty message is a 400 everywhere. An assistant message left
+  with no text and no completed call is dropped whole, which is `drops_thinking`'s rule for the
+  same reason. So is a tool-results message that held only the cancelled result: a Stop-button
+  cancel folds in no owner speech, so nothing is left in it. The owner's words around a dropped
+  turn fold into one user turn, so two user messages never sit in a row.
 - This is a send-time **projection** of the recorded history, like `PriorThinking`. It is not a
   `Rewrite` record. The transcript keeps everything. `wire_bytes` counts the projection.
 - It applies to every tool, not only pictures.
@@ -285,7 +292,8 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   Stop button, or a call's "stop").
 - Built as a core mechanism for any slow side effect, with pictures as the first user.
 - This removes the call's 40 s silence, the cancel-and-retry loop, the in-turn runaway, and the one
-  exception to "a tool is never interrupted mid-call" (§2).
+  image tool's exception to "a tool is never interrupted mid-call" (§2). `document_read` keeps
+  its own.
 
 ### 5.5 Edits only on the owner's initiative
 
