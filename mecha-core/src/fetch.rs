@@ -222,13 +222,39 @@ pub async fn fetch_release_asset(
     fetch_release_asset_from(GITHUB_BASE, repo, tag, asset, sha256, bytes, dir, progress).await
 }
 
+/// F10's one exception to fetching only reviewed pins (FEATURES-DESIGN.md
+/// §10.3): an asset of a release whose **tag the owner confirmed at a
+/// terminal**, checked against the digest the release API gave for it over
+/// TLS. `repo` is still a compiled-in name; the tag must be one llama.cpp's
+/// release tags look like (`b` and digits), and the digest a full sha256 —
+/// nothing a config file, a project or a model can supply reaches here.
+pub async fn fetch_confirmed_release_asset(
+    repo: &'static str,
+    tag: &str,
+    asset: &str,
+    sha256: &str,
+    bytes: u64,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    let plain_tag =
+        tag.len() > 1 && tag.starts_with('b') && tag[1..].bytes().all(|c| c.is_ascii_digit());
+    if !plain_tag {
+        bail!("refusing `{tag}`: an owner-confirmed release tag is `b` and digits");
+    }
+    if sha256.len() != 64 || !sha256.bytes().all(|c| c.is_ascii_hexdigit()) {
+        bail!("refusing {asset}: the release API gave no full sha256 digest for it");
+    }
+    fetch_release_asset_from(GITHUB_BASE, repo, tag, asset, sha256, bytes, dir, progress).await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_release_asset_from(
     base: &str,
-    repo: &'static str,
-    tag: &'static str,
-    asset: &'static str,
-    sha256: &'static str,
+    repo: &str,
+    tag: &str,
+    asset: &str,
+    sha256: &str,
     bytes: u64,
     dir: &Path,
     progress: &mut dyn FnMut(u64),
@@ -434,6 +460,35 @@ fn content_range_start(h: &reqwest::header::HeaderMap) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F10's exception admits only what an owner could have confirmed: a
+    /// `b`-and-digits tag and a full digest. Refused before any request.
+    #[tokio::test]
+    async fn a_confirmed_tag_is_b_and_digits() {
+        let dir = std::env::temp_dir();
+        let sha = "a".repeat(64);
+        for tag in ["v0.5.0", "b11391/../x", "b", "11391", "b1 1"] {
+            let err =
+                fetch_confirmed_release_asset("o/r", tag, "a.tar.gz", &sha, 1, &dir, &mut |_| {})
+                    .await
+                    .unwrap_err()
+                    .to_string();
+            assert!(err.contains("b` and digits"), "{tag}: {err}");
+        }
+        let err = fetch_confirmed_release_asset(
+            "o/r",
+            "b1",
+            "a.tar.gz",
+            "sha256:abc",
+            1,
+            &dir,
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("full sha256"), "{err}");
+    }
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

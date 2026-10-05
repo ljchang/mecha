@@ -182,6 +182,14 @@ impl Target {
         }
     }
 
+    /// Whether the build ships its CUDA runtime as a second archive.
+    pub fn needs_cudart(self) -> bool {
+        matches!(
+            self,
+            Target::LinuxArm64Cuda13 | Target::LinuxX64Cuda13 | Target::LinuxX64Cuda12
+        )
+    }
+
     /// Whether the build must find a GPU to be what was chosen.
     fn wants_gpu(self) -> bool {
         matches!(
@@ -324,53 +332,154 @@ fn lenient_target<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Targe
     Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
+/// What a build must report, and where its bytes come from.
+///
+/// `Source::Pinned` fetches the pin's own archives, so a `Pinned` spec is
+/// built only by [`Spec::pin`], whose tag, build and commit are the pin's.
+pub struct Spec {
+    pub tag: String,
+    pub build: u32,
+    pub commit: String,
+    pub source: Source,
+}
+
+/// A build's archives: the pin's, each by a sha256 a reviewer committed, or
+/// — F10's one exception (§10.3) — a release the owner confirmed by its tag
+/// at a terminal, each by the digest the release API gave for it.
+pub enum Source {
+    Pinned(&'static Asset),
+    OwnerConfirmed(Vec<Archive>),
+}
+
+/// One archive of an owner-confirmed release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archive {
+    pub name: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+impl Spec {
+    /// The shipped pin, for a target.
+    pub fn pin(target: Target) -> Result<Spec> {
+        Ok(Spec {
+            tag: PIN.tag.into(),
+            build: PIN.build,
+            commit: PIN.commit.into(),
+            source: Source::Pinned(
+                asset(target).with_context(|| format!("no asset pinned for {target:?}"))?,
+            ),
+        })
+    }
+
+    /// What the archives download, in bytes.
+    pub fn bytes(&self) -> u64 {
+        match &self.source {
+            Source::Pinned(a) => a.archives.iter().map(|(_, _, b)| b).sum(),
+            Source::OwnerConfirmed(v) => v.iter().map(|a| a.bytes).sum(),
+        }
+    }
+}
+
 /// Install the pinned engine for this machine: fetch, unpack, check, link.
 /// Idempotent — a build already unpacked and answering is linked, not fetched.
 pub async fn install_engine(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
     let target = choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())
         .map_err(anyhow::Error::msg)?;
-    install_target(m, target, say).await
-}
-
-async fn install_target(m: &Machinery, target: Target, say: Say<'_>) -> Result<PathBuf> {
     let id = "llama";
     let home = &m.mecha_home;
-    let asset = asset(target).with_context(|| format!("no asset pinned for {target:?}"))?;
-    let root = engine_root(home);
-    let dir = root.join(PIN.tag);
     let link = current(home);
     Manifest::begin(home, id)?;
-    Manifest::record(home, id, &root)?;
-    Manifest::record(home, id, &dir)?;
+    Manifest::record(home, id, &engine_root(home))?;
+    Manifest::record(home, id, &engine_root(home).join(PIN.tag))?;
     Manifest::record(home, id, &link)?;
+    install_build(m, target, &Spec::pin(target)?, say).await?;
+    settle_current_on_pin(home)?;
+    Manifest::finish(home, id)?;
+    Ok(link.join("llama-server"))
+}
+
+/// `current` is set to the pin only on a first install, when it names
+/// nothing. Any build already there is the gate's to change: an install that
+/// repointed `current` — up from an older pin, down from an upgrade, or over
+/// a deliberate `--to` — would move every adopted unit onto an engine nothing
+/// measured, with no `previous` and no ledger row. `--adopt` points `current`
+/// at the pin itself, as its promotion.
+fn settle_current_on_pin(home: &Path) -> Result<()> {
+    match link_tag(&current(home)) {
+        Some(_) => Ok(()),
+        None => point_current(home, PIN.tag),
+    }
+}
+
+/// Unpack, check and record one build in its own directory under the engine
+/// root — never touching `current`: which build the servers run is the
+/// promotion's to change, after the gate. Idempotent for a build already
+/// unpacked for this target and answering its checks. The engine root is
+/// the recorded path an upgrade's builds live under; each build is recorded
+/// by tag and commit once it has passed (`Entry::builds`).
+pub async fn install_build(
+    m: &Machinery,
+    target: Target,
+    spec: &Spec,
+    say: Say<'_>,
+) -> Result<PathBuf> {
+    let home = &m.mecha_home;
+    let root = engine_root(home);
+    let dir = root.join(&spec.tag);
     std::fs::create_dir_all(&root)?;
 
     // The unpacked tree is this machine's build only when the record says
     // it was unpacked for this target: a tree for another one (installed
     // under an older driver) passes every check under the same tag, and
     // recording it as the new target would make the record lie.
-    if unpacked_target(home)? != Some(target) || health(&dir, target).is_err() {
+    if unpacked_target(home, &spec.tag)? != Some(target) || health(&dir, target, spec).is_err() {
         // Unpacked into a scratch directory and renamed into place, so a
         // run interrupted mid-unpack leaves no tree that looks like a build.
-        let part = root.join(format!("{}.part", PIN.tag));
+        let part = root.join(format!("{}.part", spec.tag));
         let _ = std::fs::remove_dir_all(&part);
         std::fs::create_dir_all(&part)?;
         let downloads = root.join("download");
-        for (name, sha, bytes) in asset.archives {
+        let archives: Vec<(String, u64)> = match &spec.source {
+            Source::Pinned(a) => a
+                .archives
+                .iter()
+                .map(|(n, _, b)| (n.to_string(), *b))
+                .collect(),
+            Source::OwnerConfirmed(v) => v.iter().map(|a| (a.name.clone(), a.bytes)).collect(),
+        };
+        for (i, (name, bytes)) in archives.iter().enumerate() {
             say(&format!(
                 "fetching {name} ({:.0} MiB)",
                 *bytes as f64 / 1_048_576.0
             ));
-            let archive = crate::fetch::fetch_release_asset(
-                REPO,
-                PIN.tag,
-                name,
-                sha,
-                *bytes,
-                &downloads,
-                &mut |_| {},
-            )
-            .await?;
+            let archive = match &spec.source {
+                Source::Pinned(a) => {
+                    let (n, sha, b) = a.archives[i];
+                    crate::fetch::fetch_release_asset(
+                        REPO,
+                        PIN.tag,
+                        n,
+                        sha,
+                        b,
+                        &downloads,
+                        &mut |_| {},
+                    )
+                    .await?
+                }
+                Source::OwnerConfirmed(v) => {
+                    crate::fetch::fetch_confirmed_release_asset(
+                        REPO,
+                        &spec.tag,
+                        &v[i].name,
+                        &v[i].sha256,
+                        v[i].bytes,
+                        &downloads,
+                        &mut |_| {},
+                    )
+                    .await?
+                }
+            };
             // Each archive holds one directory; its contents land side by
             // side, so the CUDA runtime sits beside the libraries that
             // find it through `$ORIGIN`.
@@ -391,52 +500,303 @@ async fn install_target(m: &Machinery, target: Target, say: Say<'_>) -> Result<P
         // that passed, and a repair is never less usable than what it repairs.
         say(&format!(
             "checking llama.cpp {} ({})",
-            PIN.tag,
+            spec.tag,
             target.label()
         ));
-        health(&part, target)?;
+        health(&part, target, spec)?;
         if dir.exists() {
             std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
         }
         std::fs::rename(&part, &dir)?;
         let _ = std::fs::remove_dir_all(&downloads);
     }
-
-    // The link names the build by its directory's name, relative, so the
-    // home can move; swapped in one rename.
-    let tmp = root.join("current.new");
-    let _ = std::fs::remove_file(&tmp);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(PIN.tag, &tmp)?;
-    std::fs::rename(&tmp, &link)?;
-
     Manifest::record_build(
         home,
-        id,
+        "llama",
         Build {
-            tag: PIN.tag.into(),
-            commit: PIN.commit.into(),
+            tag: spec.tag.clone(),
+            commit: spec.commit.clone(),
             target: Some(target),
         },
     )?;
-    Manifest::finish(home, id)?;
-    Ok(link.join("llama-server"))
+    Ok(dir)
 }
 
-/// The target the pinned tag was unpacked for, as the manifest records it;
-/// `None` when no build of the tag is recorded, or its target is one this
-/// mecha does not know.
-fn unpacked_target(home: &Path) -> Result<Option<Target>> {
+/// A llama.cpp release as the release API describes it — the source F10
+/// trusts, and only for a tag the owner then confirms.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Release {
+    pub tag: String,
+    pub build: u32,
+    pub commit: String,
+    pub published: String,
+    /// Every asset, by name, with the digest and size the API gave.
+    pub assets: Vec<Archive>,
+}
+
+impl Release {
+    /// The archives for a target: the main build, and for CUDA its runtime
+    /// archive of the same platform. Asset names carry the CUDA minor
+    /// (`ubuntu-cuda-13.4-arm64`), which moves upstream, so the target is
+    /// matched by its major and architecture, the newest minor first.
+    pub fn archives_for(&self, target: Target) -> Result<Vec<Archive>> {
+        let prefix = format!("llama-{}-bin-", self.tag);
+        let mut platforms: Vec<&str> = self
+            .assets
+            .iter()
+            .filter_map(|a| a.name.strip_prefix(&prefix)?.strip_suffix(".tar.gz"))
+            .filter(|p| platform_is(target, p))
+            .collect();
+        // Newest CUDA minor first, compared as a number: `13.10` is newer
+        // than `13.9`, which a string sort gets backwards.
+        let minor = |p: &str| -> u32 {
+            p.strip_prefix("ubuntu-cuda-")
+                .and_then(|r| r.split(['.', '-']).nth(1))
+                .and_then(|m| m.parse().ok())
+                .unwrap_or(0)
+        };
+        platforms.sort_by_key(|p| std::cmp::Reverse(minor(p)));
+        let platform = platforms.first().with_context(|| {
+            format!(
+                "llama.cpp {} publishes no {} build for this machine",
+                self.tag,
+                target.label()
+            )
+        })?;
+        let find = |name: String| {
+            self.assets
+                .iter()
+                .find(|a| a.name == name)
+                .cloned()
+                .with_context(|| format!("llama.cpp {} has no {name}", self.tag))
+        };
+        let mut out = vec![find(format!("{prefix}{platform}.tar.gz"))?];
+        if target.needs_cudart() {
+            out.push(find(format!("cudart-{prefix}{platform}.tar.gz"))?);
+        }
+        Ok(out)
+    }
+}
+
+/// Whether a release asset's platform (`ubuntu-cuda-13.4-arm64`) is a target's.
+fn platform_is(target: Target, platform: &str) -> bool {
+    let cuda = |major: &str, arch: &str| {
+        platform
+            .strip_prefix(&format!("ubuntu-cuda-{major}."))
+            .and_then(|rest| rest.strip_suffix(&format!("-{arch}")))
+            .is_some_and(|minor| !minor.is_empty() && minor.bytes().all(|c| c.is_ascii_digit()))
+    };
+    match target {
+        Target::LinuxArm64Cuda13 => cuda("13", "arm64"),
+        Target::LinuxX64Cuda13 => cuda("13", "x64"),
+        Target::LinuxX64Cuda12 => cuda("12", "x64"),
+        Target::LinuxArm64Cpu => platform == "ubuntu-arm64",
+        Target::LinuxX64Cpu => platform == "ubuntu-x64",
+        Target::MacArm64 => platform == "macos-arm64",
+        Target::MacX64 => platform == "macos-x64",
+    }
+}
+
+const API_BASE: &str = "https://api.github.com";
+
+/// Resolve a release: the tag given, or the newest `b` release that
+/// publishes a build for `target`. The per-merge `b` releases are marked
+/// prerelease and `releases/latest` names a semver release with no binaries
+/// (§10.3, measured 2026-10-04), so the newest is read from the list, never
+/// from `latest`.
+pub async fn resolve_release(tag: Option<&str>, target: Target) -> Result<Release> {
+    resolve_release_from(API_BASE, tag, target).await
+}
+
+async fn resolve_release_from(base: &str, tag: Option<&str>, target: Target) -> Result<Release> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("mecha/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let get = |url: String| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .get(&url)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .with_context(|| format!("GET {url}"))?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!("{url} answered {status}: {}", text.trim());
+            }
+            serde_json::from_str::<serde_json::Value>(&text)
+                .with_context(|| format!("{url} answered no JSON"))
+        }
+    };
+    let release = match tag {
+        Some(t) => {
+            if !(t.len() > 1 && t.starts_with('b') && t[1..].bytes().all(|c| c.is_ascii_digit())) {
+                bail!(
+                    "`{t}` is not a llama.cpp build tag — they are `b` and digits, like {}",
+                    PIN.tag
+                );
+            }
+            get(format!("{base}/repos/{REPO}/releases/tags/{t}")).await?
+        }
+        None => {
+            let list = get(format!("{base}/repos/{REPO}/releases?per_page=30")).await?;
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter(|r| {
+                    !r["draft"].as_bool().unwrap_or(true)
+                        && parse_release(r).is_ok_and(|rel| rel.archives_for(target).is_ok())
+                })
+                // The highest build, not the first entry: the list is ordered
+                // by creation, and an edited older release can sit on top.
+                .max_by_key(|r| parse_release(r).map(|rel| rel.build).unwrap_or(0))
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "none of llama.cpp's 30 newest releases publishes a {} build for this machine",
+                        target.label()
+                    )
+                })?
+        }
+    };
+    let mut rel = parse_release(&release)?;
+    // The commit the tag names, from the tag itself: `target_commitish` can
+    // be a branch name. An annotated tag is followed to its commit.
+    let mut obj =
+        get(format!("{base}/repos/{REPO}/git/ref/tags/{}", rel.tag)).await?["object"].clone();
+    if obj["type"].as_str() == Some("tag") {
+        let sha = obj["sha"].as_str().unwrap_or_default().to_string();
+        obj = get(format!("{base}/repos/{REPO}/git/tags/{sha}")).await?["object"].clone();
+    }
+    rel.commit = obj["sha"]
+        .as_str()
+        .filter(|s| s.len() == 40 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+        .with_context(|| format!("the tag {} names no commit", rel.tag))?
+        .to_string();
+    Ok(rel)
+}
+
+/// A release object to a `Release`, the commit left to the tag's own lookup.
+fn parse_release(r: &serde_json::Value) -> Result<Release> {
+    let tag = r["tag_name"]
+        .as_str()
+        .context("a release with no tag")?
+        .to_string();
+    let build: u32 = tag
+        .strip_prefix('b')
+        .and_then(|n| n.parse().ok())
+        .with_context(|| format!("`{tag}` is not a build tag"))?;
+    let assets = r["assets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| {
+            Some(Archive {
+                name: a["name"].as_str()?.to_string(),
+                // F10 trusts the API's digest and nothing else: an asset
+                // without one is not offered.
+                sha256: a["digest"].as_str()?.strip_prefix("sha256:")?.to_string(),
+                bytes: a["size"].as_u64()?,
+            })
+        })
+        .collect();
+    Ok(Release {
+        tag,
+        build,
+        commit: String::new(),
+        published: r["published_at"].as_str().unwrap_or("").to_string(),
+        assets,
+    })
+}
+
+/// Swap a link under the engine root to name `tag`'s directory — relative,
+/// so the home can move — in one rename.
+fn swap_link(home: &Path, name: &str, tag: &str) -> Result<()> {
+    let root = engine_root(home);
+    let tmp = root.join(format!("{name}.new"));
+    let _ = std::fs::remove_file(&tmp);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(tag, &tmp)?;
+    std::fs::rename(&tmp, root.join(name)).with_context(|| format!("pointing {name} at {tag}"))?;
+    Ok(())
+}
+
+/// Point `current` — what an adopted unit's drop-in names — at a build.
+pub fn point_current(home: &Path, tag: &str) -> Result<()> {
+    swap_link(home, "current", tag)
+}
+
+/// The link the build before the current one is kept under, for
+/// `--rollback` (today's `.prev` copy, made structural).
+pub fn previous(mecha_home: &Path) -> PathBuf {
+    engine_root(mecha_home).join("previous")
+}
+
+/// Point `previous` at a build.
+pub fn point_previous(home: &Path, tag: &str) -> Result<()> {
+    swap_link(home, "previous", tag)
+}
+
+/// The tag a link under the engine root names, if it is one.
+pub fn link_tag(link: &Path) -> Option<String> {
+    std::fs::read_link(link)
+        .ok()
+        .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// Remove every build that is neither `current` nor `previous`, and its
+/// record — so upgrades keep two builds on disk, not every one ever tried.
+pub fn prune_builds(home: &Path) -> Result<Vec<String>> {
+    // Without a readable `current` nothing is known to be in use, and
+    // pruning would remove every build: refused, never guessed.
+    if link_tag(&current(home)).is_none() {
+        bail!("`current` names no build, so no build is pruned");
+    }
+    let keep: Vec<String> = [current(home), previous(home)]
+        .iter()
+        .filter_map(|l| link_tag(l))
+        .collect();
+    let mut gone = Vec::new();
+    let mut manifest = Manifest::read(home)?;
+    if let Some(e) = manifest.entries.iter_mut().find(|e| e.sidecar == "llama") {
+        for b in e.builds.clone() {
+            if keep.contains(&b.tag) {
+                continue;
+            }
+            let dir = engine_root(home).join(&b.tag);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)
+                    .with_context(|| format!("removing {}", dir.display()))?;
+            }
+            gone.push(b.tag.clone());
+        }
+        e.builds.retain(|b| keep.contains(&b.tag));
+        // The pin's directory is a recorded path of the original install;
+        // gone from disk on purpose, it is forgotten, not "unfinished".
+        e.wrote
+            .retain(|w| !gone.iter().any(|t| *w == engine_root(home).join(t)));
+    }
+    manifest.write(home)?;
+    Ok(gone)
+}
+
+/// The target `tag` was unpacked for, as the manifest records it; `None`
+/// when no build of the tag is recorded, or its target is one this mecha
+/// does not know.
+fn unpacked_target(home: &Path, tag: &str) -> Result<Option<Target>> {
     Ok(Manifest::read(home)?
         .entries
         .iter()
         .find(|e| e.sidecar == "llama")
-        .and_then(|e| e.builds.iter().find(|b| b.tag == PIN.tag))
+        .and_then(|e| e.builds.iter().find(|b| b.tag == tag))
         .and_then(|b| b.target))
 }
 
 /// The three checks a build passes before it counts (module doc).
-fn health(dir: &Path, target: Target) -> Result<()> {
+fn health(dir: &Path, target: Target, spec: &Spec) -> Result<()> {
     let server = dir.join("llama-server");
     if !server.is_file() {
         bail!("{} is not there", server.display());
@@ -447,20 +807,20 @@ fn health(dir: &Path, target: Target) -> Result<()> {
     // The CUDA runtime is the second archive's whole contribution, and a
     // machine with its own CUDA would load that one without a word — so its
     // presence is checked, not inferred from the engine starting.
-    if target.label().starts_with("CUDA") && !ships_cudart(dir) {
+    if target.needs_cudart() && !ships_cudart(dir) {
         bail!(
             "{} has no libcudart beside the engine — the CUDA runtime archive did not land",
             dir.display()
         );
     }
     let version = engine_output(&server, "--version")?;
-    if !reports_the_pin(&version) {
+    if !reports(&version, spec.build, &spec.commit) {
         bail!(
             "{} reports `{}`, not build {} at {}",
             server.display(),
             version.lines().next().unwrap_or("").trim(),
-            PIN.build,
-            &PIN.commit[..9]
+            spec.build,
+            &spec.commit[..spec.commit.len().min(9)]
         );
     }
     if target.wants_gpu() {
@@ -569,18 +929,35 @@ fn run_within(server: &Path, flag: &str, limit: std::time::Duration) -> Result<S
 /// `--version`'s first line names the build and an abbreviated commit:
 /// `version: 0.5.0-dev (build 11391, commit 2bc563573)` from the pinned
 /// release, read on the GB10 on 2026-10-04. The abbreviation's length is the
-/// release builder's `git rev-parse --short`, so any prefix of the pinned
-/// commit of seven or more characters is the pin.
-fn reports_the_pin(text: &str) -> bool {
+/// release builder's `git rev-parse --short`, so any prefix of the expected
+/// commit of seven or more characters is that build.
+pub fn reports(text: &str, build: u32, commit: &str) -> bool {
     let Some(line) = text.lines().find(|l| l.contains("version:")) else {
         return false;
     };
-    let build = format!("build {},", PIN.build);
+    let wanted = format!("build {build},");
     let Some(rest) = line.split_once("commit ").map(|(_, r)| r) else {
         return false;
     };
-    let commit: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
-    line.contains(&build) && commit.len() >= 7 && PIN.commit.starts_with(&commit)
+    let short: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+    line.contains(&wanted) && short.len() >= 7 && commit.starts_with(&short)
+}
+
+/// The pin's own version check.
+#[cfg(test)]
+fn reports_the_pin(text: &str) -> bool {
+    reports(text, PIN.build, PIN.commit)
+}
+
+/// `/props`' `build_info` — `b11391-2bc563573` — names the same build
+/// `--version` does: asked of the router after a promotion, it is the model's
+/// own process saying which engine it runs.
+pub fn build_info_is(info: &str, build: u32, commit: &str) -> bool {
+    let Some(rest) = info.strip_prefix(&format!("b{build}-")) else {
+        return false;
+    };
+    let short: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+    short.len() >= 7 && commit.starts_with(&short)
 }
 
 /// `--list-devices` names each backend device under `Available devices:` —
@@ -839,7 +1216,7 @@ mod tests {
             // A CUDA build ships its runtime in a second archive, and must
             // carry it: the first alone would load whatever CUDA the machine
             // has, or none.
-            if t.label().starts_with("CUDA") {
+            if t.needs_cudart() {
                 assert!(a.archives.iter().any(|(n, ..)| n.starts_with("cudart-")));
             }
         }
@@ -911,9 +1288,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mecha-cudart-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("llama-server"), "#!/bin/sh\n").unwrap();
-        let err = health(&dir, Target::LinuxArm64Cuda13)
-            .unwrap_err()
-            .to_string();
+        let err = health(
+            &dir,
+            Target::LinuxArm64Cuda13,
+            &Spec::pin(Target::LinuxArm64Cuda13).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("libcudart"), "{err}");
         std::fs::write(dir.join("libcudart.so.13"), "").unwrap();
         assert!(ships_cudart(&dir));
@@ -972,7 +1353,7 @@ mod tests {
     #[test]
     fn the_record_decides_which_target_is_unpacked() {
         let home = std::env::temp_dir().join(format!("mecha-target-{}", uuid::Uuid::new_v4()));
-        assert_eq!(unpacked_target(&home).unwrap(), None);
+        assert_eq!(unpacked_target(&home, PIN.tag).unwrap(), None);
         Manifest::begin(&home, "llama").unwrap();
         Manifest::record_build(
             &home,
@@ -985,11 +1366,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            unpacked_target(&home).unwrap(),
+            unpacked_target(&home, PIN.tag).unwrap(),
             Some(Target::LinuxX64Cuda12)
         );
         assert_ne!(
-            unpacked_target(&home).unwrap(),
+            unpacked_target(&home, PIN.tag).unwrap(),
             Some(Target::LinuxX64Cuda13)
         );
         let _ = std::fs::remove_dir_all(&home);
@@ -1043,6 +1424,311 @@ mod tests {
             147_596_012 + 552_521_398
         );
         assert_eq!(download_bytes(Target::LinuxX64Cpu), 17_637_234);
+    }
+
+    fn release(names: &[&str]) -> Release {
+        Release {
+            tag: "b20000".into(),
+            build: 20000,
+            commit: "c".repeat(40),
+            published: String::new(),
+            assets: names
+                .iter()
+                .map(|n| Archive {
+                    name: n.to_string(),
+                    sha256: "a".repeat(64),
+                    bytes: 1,
+                })
+                .collect(),
+        }
+    }
+
+    /// A release's archives for a target: matched by CUDA major and
+    /// architecture, whatever minor upstream ships, with the runtime archive
+    /// of the same platform; a CPU target takes no runtime.
+    #[test]
+    fn a_release_s_archives_are_matched_to_the_target() {
+        let r = release(&[
+            "llama-b20000-bin-ubuntu-cuda-13.6-arm64.tar.gz",
+            "cudart-llama-b20000-bin-ubuntu-cuda-13.6-arm64.tar.gz",
+            "llama-b20000-bin-ubuntu-cuda-12.8-x64.tar.gz",
+            "cudart-llama-b20000-bin-ubuntu-cuda-12.8-x64.tar.gz",
+            "llama-b20000-bin-ubuntu-arm64.tar.gz",
+            "llama-b20000-bin-win-cuda-13.6-arm64.zip",
+        ]);
+        let names = |t| -> Vec<String> {
+            r.archives_for(t)
+                .unwrap()
+                .into_iter()
+                .map(|a| a.name)
+                .collect()
+        };
+        assert_eq!(
+            names(Target::LinuxArm64Cuda13),
+            vec![
+                "llama-b20000-bin-ubuntu-cuda-13.6-arm64.tar.gz",
+                "cudart-llama-b20000-bin-ubuntu-cuda-13.6-arm64.tar.gz"
+            ]
+        );
+        assert_eq!(
+            names(Target::LinuxArm64Cpu),
+            vec!["llama-b20000-bin-ubuntu-arm64.tar.gz"]
+        );
+        assert!(
+            r.archives_for(Target::LinuxX64Cuda13).is_err(),
+            "no 13.x x64 build"
+        );
+        assert!(r.archives_for(Target::MacArm64).is_err());
+        // The newest minor wins as a number: 13.10 over 13.9.
+        let two = release(&[
+            "llama-b20000-bin-ubuntu-cuda-13.9-arm64.tar.gz",
+            "cudart-llama-b20000-bin-ubuntu-cuda-13.9-arm64.tar.gz",
+            "llama-b20000-bin-ubuntu-cuda-13.10-arm64.tar.gz",
+            "cudart-llama-b20000-bin-ubuntu-cuda-13.10-arm64.tar.gz",
+        ]);
+        assert_eq!(
+            two.archives_for(Target::LinuxArm64Cuda13).unwrap()[0].name,
+            "llama-b20000-bin-ubuntu-cuda-13.10-arm64.tar.gz"
+        );
+        // A CUDA build whose runtime archive is missing is not offered.
+        let half = release(&["llama-b20000-bin-ubuntu-cuda-13.6-arm64.tar.gz"]);
+        assert!(half.archives_for(Target::LinuxArm64Cuda13).is_err());
+    }
+
+    /// An asset the API gave no sha256 digest for is not offered: F10 trusts
+    /// the digest, and nothing else.
+    #[test]
+    fn an_asset_without_a_digest_is_dropped() {
+        let r = parse_release(&serde_json::json!({
+            "tag_name": "b20000",
+            "published_at": "2026-10-05T00:00:00Z",
+            "assets": [
+                {"name": "a.tar.gz", "size": 5, "digest": "sha256:abcd"},
+                {"name": "b.tar.gz", "size": 5},
+                {"name": "c.tar.gz", "size": 5, "digest": "md5:ffff"},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(r.build, 20000);
+        assert_eq!(
+            r.assets.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec!["a.tar.gz"]
+        );
+        assert!(parse_release(&serde_json::json!({"tag_name": "v0.5.0", "assets": []})).is_err());
+    }
+
+    #[test]
+    fn build_info_names_its_build() {
+        // Read from the live router on the GB10, 2026-10-05:
+        // `GET /props?model=qwen3.6-35b-a3b-uncensored&autoload=false`
+        // answered `build_info: b1193-95887577`, the binary whose `--version`
+        // says `build 1193, commit 95887577`.
+        let hand = "95887577abcdef0123456789abcdef0123456789";
+        assert!(build_info_is("b1193-95887577", 1193, hand));
+        assert!(reports(
+            "version: 0.5.0-dev (build 1193, commit 95887577)",
+            1193,
+            hand
+        ));
+        let commit = "2bc563573479d53b30b8793039485887bc0fdda8";
+        assert!(build_info_is("b11391-2bc563573", 11391, commit));
+        assert!(build_info_is("b11391-2bc5635", 11391, commit));
+        assert!(!build_info_is("b1193-95887577", 11391, commit));
+        assert!(!build_info_is("b11391-95887577", 11391, commit));
+        assert!(!build_info_is("b113910-2bc563573", 11391, commit));
+        assert!(!build_info_is("", 11391, commit));
+    }
+
+    /// A mock release API: route → JSON, everything else 404.
+    fn mock_api(routes: Vec<(&'static str, serde_json::Value)>) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in l.incoming().flatten() {
+                let mut s = stream;
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("");
+                let hit = routes.iter().find(|(r, _)| *r == path);
+                let (status, body) = match hit {
+                    Some((_, v)) => ("200 OK", v.to_string()),
+                    None => ("404 Not Found", "{}".to_string()),
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        base
+    }
+
+    fn rel(tag: &str, draft: bool) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag, "draft": draft, "published_at": "2026-10-05T00:00:00Z",
+            "assets": [{"name": format!("llama-{tag}-bin-ubuntu-arm64.tar.gz"), "size": 9, "digest": format!("sha256:{}", "a".repeat(64))}],
+        })
+    }
+
+    /// The newest scan skips a draft and a non-`b` release, an annotated tag
+    /// is followed to its commit, and a tag naming no commit is refused —
+    /// before anything could be fetched.
+    #[tokio::test]
+    async fn release_resolution_walks_the_list_and_follows_the_tag() {
+        let commit = "d".repeat(40);
+        let base = mock_api(vec![
+            (
+                "/repos/ggml-org/llama.cpp/releases?per_page=30",
+                serde_json::json!([
+                    rel("b29000", false),
+                    rel("b30001", true),
+                    rel("v0.5.0", false),
+                    rel("b30000", false)
+                ]),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/git/ref/tags/b30000",
+                serde_json::json!({"object": {"type": "tag", "sha": "t".repeat(40)}}),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/git/tags/tttttttttttttttttttttttttttttttttttttttt",
+                serde_json::json!({"object": {"type": "commit", "sha": commit}}),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/releases/tags/b29999",
+                rel("b29999", false),
+            ),
+            (
+                "/repos/ggml-org/llama.cpp/git/ref/tags/b29999",
+                serde_json::json!({"object": {"type": "commit", "sha": "not-a-sha"}}),
+            ),
+        ]);
+        let r = resolve_release_from(&base, None, Target::LinuxArm64Cpu)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.tag, "b30000",
+            "the draft and the v-tag are skipped, and the highest build wins over the first entry"
+        );
+        assert_eq!(
+            r.commit, commit,
+            "the annotated tag is followed to its commit"
+        );
+        let err = resolve_release_from(&base, Some("b29999"), Target::LinuxArm64Cpu)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("names no commit"), "{err}");
+    }
+
+    /// The release API's digests for the pinned tag are the pinned sha256s —
+    /// the check that F10's source and a reviewer's pin agree where both
+    /// exist. Real network.
+    #[tokio::test]
+    #[ignore]
+    async fn the_release_api_agrees_with_the_pin() {
+        let r = resolve_release(Some(PIN.tag), Target::LinuxArm64Cuda13)
+            .await
+            .unwrap();
+        assert_eq!(r.commit, PIN.commit);
+        assert_eq!(r.build, PIN.build);
+        for t in [
+            Target::LinuxArm64Cuda13,
+            Target::LinuxX64Cuda13,
+            Target::LinuxX64Cuda12,
+            Target::LinuxArm64Cpu,
+            Target::LinuxX64Cpu,
+            Target::MacArm64,
+            Target::MacX64,
+        ] {
+            let got: Vec<(String, String, u64)> = r
+                .archives_for(t)
+                .unwrap()
+                .into_iter()
+                .map(|a| (a.name, a.sha256, a.bytes))
+                .collect();
+            let pinned: Vec<(String, String, u64)> = asset(t)
+                .unwrap()
+                .archives
+                .iter()
+                .map(|(n, s, b)| (n.to_string(), s.to_string(), *b))
+                .collect();
+            assert_eq!(got, pinned, "{t:?}");
+        }
+        let newest = resolve_release(None, Target::LinuxArm64Cuda13)
+            .await
+            .unwrap();
+        assert!(newest.build >= PIN.build, "{newest:?}");
+    }
+
+    /// Two builds on disk, not every one tried: `current` and `previous` are
+    /// kept, every other build goes with its record — the pin's own recorded
+    /// directory forgotten, not left reading "unfinished".
+    #[test]
+    fn pruning_keeps_current_and_previous() {
+        let home = std::env::temp_dir().join(format!("mecha-prune-{}", uuid::Uuid::new_v4()));
+        let root = engine_root(&home);
+        Manifest::begin(&home, "llama").unwrap();
+        Manifest::record(&home, "llama", &root).unwrap();
+        Manifest::record(&home, "llama", &root.join("b1")).unwrap();
+        for t in ["b1", "b2", "b3"] {
+            std::fs::create_dir_all(root.join(t)).unwrap();
+            Manifest::record_build(
+                &home,
+                "llama",
+                Build {
+                    tag: t.into(),
+                    commit: "c".repeat(40),
+                    target: None,
+                },
+            )
+            .unwrap();
+        }
+        point_current(&home, "b3").unwrap();
+        point_previous(&home, "b2").unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some("b3"));
+        let gone = prune_builds(&home).unwrap();
+        assert_eq!(gone, vec!["b1".to_string()]);
+        assert!(!root.join("b1").exists() && root.join("b2").exists() && root.join("b3").exists());
+        let m = Manifest::read(&home).unwrap();
+        let e = m.entries.iter().find(|e| e.sidecar == "llama").unwrap();
+        let tags: Vec<&str> = e.builds.iter().map(|b| b.tag.as_str()).collect();
+        assert_eq!(tags, vec!["b2", "b3"]);
+        assert!(
+            !e.wrote.contains(&root.join("b1")),
+            "the pruned pin dir is forgotten"
+        );
+        assert!(e.wrote.contains(&root), "the root stays recorded");
+        // With no readable `current`, nothing is known to be in use: refused,
+        // and nothing removed.
+        std::fs::remove_file(current(&home)).unwrap();
+        assert!(prune_builds(&home).is_err());
+        assert!(root.join("b2").exists() && root.join("b3").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The pin's install sets `current` on a first run and leaves an upgraded
+    /// machine's alone — the link rule `install_engine` follows.
+    #[test]
+    fn the_pin_install_sets_current_only_on_a_first_install() {
+        let home = std::env::temp_dir().join(format!("mecha-demote-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(engine_root(&home)).unwrap();
+        point_current(&home, "b20000").unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some("b20000"));
+        // An older build — an earlier pin, or a `--to` downgrade — is left
+        // too: moving it would be a promotion no gate measured.
+        point_current(&home, "b10000").unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some("b10000"));
+        // A first install gets the pin.
+        std::fs::remove_file(current(&home)).unwrap();
+        settle_current_on_pin(&home).unwrap();
+        assert_eq!(link_tag(&current(&home)).as_deref(), Some(PIN.tag));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -1193,6 +1879,50 @@ mod tests {
             serde_json::from_str(r#"{"tag":"b1","commit":"abc","target":"linux-arm64-cuda13"}"#)
                 .unwrap();
         assert_eq!(b.target, Some(Target::LinuxArm64Cuda13));
+    }
+
+    /// The upgrade's install path, over the network: today's newest `b`
+    /// release resolved through the API, fetched by its published digests,
+    /// unpacked and checked to report the build and the commit its tag names
+    /// — beside, never over, `current`, which stays unset.
+    #[tokio::test]
+    #[ignore]
+    async fn an_owner_confirmed_release_installs_side_by_side() {
+        let target = choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia()).unwrap();
+        let release = resolve_release(None, target).await.unwrap();
+        let root = std::env::temp_dir().join(format!("mecha-upgrade-{}", uuid::Uuid::new_v4()));
+        let m = Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        Manifest::begin(&m.mecha_home, "llama").unwrap();
+        let spec = Spec {
+            tag: release.tag.clone(),
+            build: release.build,
+            commit: release.commit.clone(),
+            source: Source::OwnerConfirmed(release.archives_for(target).unwrap()),
+        };
+        let dir = install_build(&m, target, &spec, &mut |s| eprintln!("{s}"))
+            .await
+            .unwrap();
+        eprintln!(
+            "installed {} ({}) at {}",
+            release.tag,
+            &release.commit[..9],
+            dir.display()
+        );
+        let v = engine_output(&dir.join("llama-server"), "--version").unwrap();
+        assert!(reports(&v, release.build, &release.commit), "{v}");
+        assert!(
+            std::fs::symlink_metadata(current(&m.mecha_home)).is_err(),
+            "current untouched"
+        );
+        let man = Manifest::read(&m.mecha_home).unwrap();
+        assert!(man.entries[0].builds.iter().any(|b| b.tag == release.tag));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The real thing, over the network (~700 MB on a CUDA machine): fetch,

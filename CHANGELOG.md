@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha setup engine --upgrade` moves to a newer llama.cpp — only if it
+  measures no slower.** It finds the newest release with a build for this
+  machine (or `--to <tag>`), asks you to confirm that tag, checks each archive
+  against the digest GitHub publishes for it, and measures it against the build
+  the servers run with the same gate as `--adopt`. A win moves the servers to
+  it and keeps the old build; `--rollback` goes back one build. Two builds stay
+  on disk.
 - **`mecha setup engine` says which llama.cpp each server runs, and `--adopt`
   moves them onto mecha's — only if it measures no slower.** It runs each
   server's own launcher on a private port with the old engine and then the

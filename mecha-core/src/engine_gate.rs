@@ -721,6 +721,10 @@ pub enum Outcome {
         error: String,
         finish: String,
     },
+    /// A `--rollback`: no measurement, the servers moved back to `to`.
+    RolledBack {
+        to: String,
+    },
     /// A variant from a newer mecha: the row still reads.
     #[serde(other)]
     Unknown,
@@ -1099,9 +1103,10 @@ pub fn preflight(holds: &crate::hold::Holds, base: &str) -> Result<()> {
 pub fn take_switch(
     holds: &crate::hold::Holds,
     base: &str,
+    from: &str,
     to: &str,
 ) -> Result<crate::hold::Switching> {
-    let switching = match holds.begin_switch(base, Some("llama.cpp (provided)"), to)? {
+    let switching = match holds.begin_switch(base, Some(from), to)? {
         Ok(s) => s,
         Err(other) => bail!(
             "a switch to {} is already waiting on {base} (pid {}) — nothing was measured; run \
@@ -1153,6 +1158,7 @@ pub fn measured_model(
 /// The ledger row for an adopt whose old engine could not be measured — the
 /// router was stopped, so the attempt happened, and nothing moved.
 fn not_measured(
+    action: &str,
     error: &anyhow::Error,
     back: &Result<()>,
     model: Option<String>,
@@ -1167,7 +1173,7 @@ fn not_measured(
     };
     LedgerRow {
         at: Utc::now(),
-        action: "adopt".into(),
+        action: action.into(),
         model,
         old: failed(
             old_engine,
@@ -1262,9 +1268,93 @@ pub async fn listed_models(
     Ok(None)
 }
 
-/// The command that finishes a promotion a step of which failed.
-const FINISH_ADOPT: &str = "systemctl --user daemon-reload && systemctl --user restart \
-     llama-local.service (and `mecha setup engine --rollback` to undo)";
+/// What a gated change is: the labels its switch and ledger carry, the
+/// candidate the new leg runs, the build the router must report once it is
+/// promoted, and how it is promoted. Adopt and upgrade differ only here.
+pub struct Change {
+    pub action: &'static str,
+    pub from: String,
+    pub to: String,
+    /// The candidate's binary, as the new leg runs it.
+    pub candidate: PathBuf,
+    /// What the router's model must report (`/props` `build_info`) after a
+    /// promotion: the model's own process saying which engine it runs.
+    pub build: u32,
+    pub commit: String,
+    pub promotion: Promotion,
+}
+
+/// How a winning candidate reaches the servers.
+pub enum Promotion {
+    /// A drop-in per unit names the managed engine (`current`).
+    Adopt,
+    /// `current` moves to the new build; `previous` keeps the old one.
+    Upgrade { from_tag: String, to_tag: String },
+}
+
+impl Promotion {
+    /// The command that finishes, or undoes, a promotion a step of which failed.
+    fn finish(&self) -> &'static str {
+        match self {
+            Promotion::Adopt => {
+                "systemctl --user daemon-reload && systemctl --user restart llama-local.service \
+                 (and `mecha setup engine --rollback` to undo)"
+            }
+            Promotion::Upgrade { .. } => {
+                "systemctl --user restart llama-local.service (and `mecha setup engine \
+                 --rollback` to go back to the previous build)"
+            }
+        }
+    }
+}
+
+/// The ledger row a rollback writes: no measurement, both engines named, so
+/// the status's last line never still says "promoted" after one.
+pub fn rollback_row(from: &Path, to: &Path, model: Option<String>) -> LedgerRow {
+    let leg = |e: &Path| Leg {
+        version: version_of(e),
+        engine: e.to_path_buf(),
+        bench: None,
+        smoke: BTreeMap::new(),
+    };
+    LedgerRow {
+        at: Utc::now(),
+        action: "rollback".into(),
+        model,
+        old: leg(from),
+        new: leg(to),
+        outcome: Outcome::RolledBack {
+            to: to.display().to_string(),
+        },
+    }
+}
+
+/// Ask the router which build serves `model` — `/props` with `autoload=false`,
+/// so the question loads nothing — and require it to be the one expected.
+pub async fn verify_build(base: &str, model: &str, build: u32, commit: &str) -> Result<()> {
+    let resp = http(Duration::from_secs(10))?
+        .get(format!("{base}/props"))
+        .query(&[("model", model), ("autoload", "false")])
+        .send()
+        .await
+        .context("asking the router which build serves the model")?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!(
+            "the router answered {status} when asked which build serves {model}: {}",
+            resp.text().await.unwrap_or_default().trim()
+        );
+    }
+    let v: serde_json::Value = resp.json().await.context("reading /props")?;
+    let info = v["build_info"].as_str().unwrap_or("");
+    if !crate::engine::build_info_is(info, build, commit) {
+        bail!(
+            "the router's {model} reports build `{info}`, not b{build} at {}",
+            &commit[..commit.len().min(9)]
+        );
+    }
+    Ok(())
+}
 
 /// `mecha setup engine --adopt` (§10.3): measure the engine the units run
 /// today against the shipped pin, and — when the pin is no slower and passes
@@ -1289,61 +1379,189 @@ pub async fn adopt(
     // The pin, side by side: nothing reads `current` until a drop-in names it.
     // Downloaded before the switch is taken — holding it through a download
     // would make every run that starts meanwhile wait on it.
-    let managed = managed_binary(&m.mecha_home);
     tokio::select! {
         r = crate::engine::install_engine(m, &mut *say) => { r?; }
         () = cancel.cancelled() => bail!(
             "interrupted while fetching — nothing was moved, and the download resumes next time"
         ),
     }
-    let to = format!("llama.cpp {}", crate::engine::PIN.tag);
-    let switching = take_switch(holds, &base, &to)?;
+    let change = Change {
+        action: "adopt",
+        from: "llama.cpp (provided)".into(),
+        to: format!("llama.cpp {}", crate::engine::PIN.tag),
+        // The pin's own build, not whatever `current` names: the pin's
+        // install leaves an upgraded `current` alone, so after upgrades and
+        // rollbacks the link can name another build — and what is measured
+        // must be what the promotion then asserts.
+        candidate: crate::engine::engine_root(&m.mecha_home)
+            .join(crate::engine::PIN.tag)
+            .join("llama-server"),
+        build: crate::engine::PIN.build,
+        commit: crate::engine::PIN.commit.into(),
+        promotion: Promotion::Adopt,
+    };
+    run_gate(
+        m,
+        servers,
+        holds,
+        &base,
+        &old_engine,
+        fallback_model,
+        force,
+        cancel,
+        say,
+        change,
+    )
+    .await
+}
+
+/// Every reason `--upgrade` would refuse before it moves anything: the units
+/// must already run mecha's engine (on a provided engine a promotion no
+/// server reads would record an upgrade that reached nothing — `--adopt` is
+/// that machine's step), and the router must be quiet. The engine the router
+/// runs today and the build `current` names, when it may go ahead.
+pub fn check_upgradable(
+    m: &crate::sidecar::Machinery,
+    servers: &Servers,
+    holds: &crate::hold::Holds,
+    base: &str,
+) -> Result<(PathBuf, String)> {
+    if servers.get(Role::Router).is_none() {
+        bail!("there is no llama-local.service whose engine could be upgraded");
+    }
+    if !adopted(servers, &m.mecha_home) {
+        bail!(
+            "these units run a llama.cpp installed by hand — `mecha setup engine --adopt` moves \
+             them onto mecha's engine first; an upgrade moves mecha's engine, and only once every \
+             unit runs it"
+        );
+    }
+    let old_tag = crate::engine::link_tag(&crate::engine::current(&m.mecha_home))
+        .context("mecha's `current` link names no build")?;
+    let old_engine = servers
+        .engine(Role::Router)
+        .context("the router's unit names no llama-server it can find")?;
+    preflight(holds, base)?;
+    Ok((old_engine, old_tag))
+}
+
+/// `mecha setup engine --upgrade` (§10.3, F10): install the release the owner
+/// confirmed beside the current build, measure it against the current one
+/// under the same gate as an adopt, and promote it — `current` moved to it,
+/// `previous` keeping the old build for `--rollback` — only when it is no
+/// slower and passes every smoke the old one passed, or with `force`.
+#[allow(clippy::too_many_arguments)]
+pub async fn upgrade(
+    m: &crate::sidecar::Machinery,
+    servers: &Servers,
+    holds: &crate::hold::Holds,
+    base_url: &str,
+    spec: &crate::engine::Spec,
+    target: crate::engine::Target,
+    fallback_model: Option<&str>,
+    force: bool,
+    cancel: &tokio_util::sync::CancellationToken,
+    say: &mut dyn FnMut(&str),
+) -> Result<LedgerRow> {
+    let base = crate::provider::router::base(base_url);
+    let (old_engine, old_tag) = check_upgradable(m, servers, holds, &base)?;
+    if spec.tag == old_tag {
+        bail!("the units already run llama.cpp {old_tag}");
+    }
+    let dir = tokio::select! {
+        r = crate::engine::install_build(m, target, spec, &mut *say) => r?,
+        () = cancel.cancelled() => bail!(
+            "interrupted while fetching — nothing was moved, and the download resumes next time"
+        ),
+    };
+    let change = Change {
+        action: "upgrade",
+        from: format!("llama.cpp {old_tag}"),
+        to: format!("llama.cpp {}", spec.tag),
+        candidate: dir.join("llama-server"),
+        build: spec.build,
+        commit: spec.commit.clone(),
+        promotion: Promotion::Upgrade {
+            from_tag: old_tag,
+            to_tag: spec.tag.clone(),
+        },
+    };
+    run_gate(
+        m,
+        servers,
+        holds,
+        &base,
+        &old_engine,
+        fallback_model,
+        force,
+        cancel,
+        say,
+        change,
+    )
+    .await
+}
+
+/// The gate both moves share: take the switch (declining on a busy router),
+/// read the model the owner has loaded, stop the router, measure the old
+/// engine and then the candidate — each leg interruptible on its own — and
+/// promote or keep, recording the result either way. The switch is held from
+/// before the first load to after the router answers on the winner.
+#[allow(clippy::too_many_arguments)]
+async fn run_gate(
+    m: &crate::sidecar::Machinery,
+    servers: &Servers,
+    holds: &crate::hold::Holds,
+    base: &str,
+    old_engine: &Path,
+    fallback_model: Option<&str>,
+    force: bool,
+    cancel: &tokio_util::sync::CancellationToken,
+    say: &mut dyn FnMut(&str),
+    change: Change,
+) -> Result<LedgerRow> {
+    let switching = take_switch(holds, base, &change.from, &change.to)?;
     // What the owner is using is what gets measured, read before anything
     // stops: an answer that cannot be read declines here.
-    let listed = listed_models(&base).await?;
-    let model = Some(measured_model(listed.as_deref(), fallback_model)?);
+    let listed = listed_models(base).await?;
+    let model = measured_model(listed.as_deref(), fallback_model)?;
     say("stopping the router for the measurement");
     systemctl("stop", &["llama-local.service"])?;
     let logs = crate::engine::engine_root(&m.mecha_home).join("gate");
+    let candidate = &change.candidate;
     // Each leg is interruptible on its own, so an interrupt after a good old
     // leg is recorded as that — measured, then abandoned — never as an old
     // engine that could not be measured. Dropping a leg drops its servers,
     // whose guards stop each one's whole group.
     let old_measured = tokio::select! {
-        r = measure(servers, None, model.as_deref(), &logs, "old", say) => r,
+        r = measure(servers, None, Some(&model), &logs, "old", say) => r,
         () = cancel.cancelled() => Err(anyhow::anyhow!("interrupted while measuring the engine the units run today")),
     };
-    let measured = match old_measured {
-        Ok((old, old_v)) => {
-            let new = tokio::select! {
-                r = measure(servers, Some(&managed), model.as_deref(), &logs, "new", say) => r.map(Some),
-                () = cancel.cancelled() => Ok(None),
-            };
-            Ok((old, old_v, new))
-        }
-        Err(e) => Err(e),
-    };
-    let (old, old_v, new) = match measured {
+    let (old, old_v) = match old_measured {
         Ok(x) => x,
         Err(e) => {
-            // The old engine could not be measured: nothing moved, so the
-            // router goes back as it was.
-            // The model that was loaded is loaded again, on the engine it
-            // ran on, rather than whatever the router starts with.
+            // Nothing moved, so the router goes back as it was, with the model
+            // that was loaded — and the attempt is recorded: "never measured"
+            // and "could not be measured" are different findings.
             let back = match systemctl("start", &["llama-local.service"]) {
-                Ok(()) => router_back(&base, model.as_deref(), &old_engine).await,
+                Ok(()) => router_back(base, Some(&model), old_engine).await,
                 Err(e) => Err(e),
             };
-            // An attempt that stopped the router is recorded even when it
-            // measured nothing: "never measured" and "could not be measured"
-            // are different findings.
-            let row = not_measured(&e, &back, model.clone(), &old_engine, &managed);
+            let row = not_measured(
+                change.action,
+                &e,
+                &back,
+                Some(model.clone()),
+                old_engine,
+                candidate,
+            );
             if let Err(le) = append_ledger(&m.mecha_home, &row) {
                 say(&format!(
                     "the attempt could not be written to {}: {le:#}",
                     ledger_path(&m.mecha_home).display()
                 ));
             }
+            // The candidate is kept: nothing was decided about it, and the
+            // next run finds it unpacked rather than fetching it again.
             return Err(e.context(match back {
                 Ok(()) => "measuring the engine the units run today — the router was restarted \
                            on it, and nothing was changed"
@@ -1355,36 +1573,28 @@ pub async fn adopt(
             }));
         }
     };
+    let new = tokio::select! {
+        r = measure(servers, Some(candidate), Some(&model), &logs, "new", say) => r.map(Some),
+        () = cancel.cancelled() => Ok(None),
+    };
     let interrupted = matches!(new, Ok(None));
+    let failed_leg = |smoke: Smoke| Leg {
+        version: version_of(candidate),
+        engine: candidate.clone(),
+        bench: None,
+        smoke: [("chat".to_string(), smoke)].into(),
+    };
     let new = match new {
         Ok(Some((mut leg, new_v))) => {
             compare_embeddings(&mut leg, old_v.as_deref(), new_v.as_deref());
             leg
         }
-        Ok(None) => Leg {
-            version: version_of(&managed),
-            engine: managed.clone(),
-            bench: None,
-            smoke: [(
-                "chat".to_string(),
-                Smoke::NotRun {
-                    why: "interrupted before the new engine was measured".into(),
-                },
-            )]
-            .into(),
-        },
-        Err(e) => Leg {
-            version: version_of(&managed),
-            engine: managed.clone(),
-            bench: None,
-            smoke: [(
-                "chat".to_string(),
-                Smoke::Failed {
-                    error: format!("{e:#}"),
-                },
-            )]
-            .into(),
-        },
+        Ok(None) => failed_leg(Smoke::NotRun {
+            why: "interrupted before the new engine was measured".into(),
+        }),
+        Err(e) => failed_leg(Smoke::Failed {
+            error: format!("{e:#}"),
+        }),
     };
 
     let decision = if interrupted {
@@ -1396,8 +1606,20 @@ pub async fn adopt(
     // produced no bench at all did not start well enough to be measured.
     let promote = decision.is_ok() || (force && new.bench.is_some());
     let outcome = if promote {
-        say("promoting: pointing the units at mecha's engine");
-        match promote_adopt(m, servers, &base, model.as_deref(), &managed).await {
+        say(&format!("promoting: the servers move to {}", change.to));
+        let promoted = match &change.promotion {
+            Promotion::Adopt => promote_adopt(m, servers, base, &model).await,
+            Promotion::Upgrade { from_tag, to_tag } => {
+                promote_upgrade(m, servers, base, &model, from_tag, to_tag).await
+            }
+        };
+        let promoted = match promoted {
+            Ok(()) => verify_build(base, &model, change.build, &change.commit)
+                .await
+                .map_err(|e| ("the router's build after the promotion".to_string(), e)),
+            Err(x) => Err(x),
+        };
+        match promoted {
             Ok(()) => match decision {
                 Ok(()) => Outcome::Promoted,
                 Err(why) => Outcome::PromotedByForce { why },
@@ -1405,14 +1627,14 @@ pub async fn adopt(
             Err((step, e)) => Outcome::Partial {
                 step,
                 error: format!("{e:#}"),
-                finish: FINISH_ADOPT.into(),
+                finish: change.promotion.finish().into(),
             },
         }
     } else {
         let why = decision.err().unwrap_or_default();
         say("keeping the engine the units run today");
         match systemctl("start", &["llama-local.service"]) {
-            Ok(()) => match router_back(&base, model.as_deref(), &old_engine).await {
+            Ok(()) => match router_back(base, Some(&model), old_engine).await {
                 Ok(()) => Outcome::Kept { why },
                 Err(e) => Outcome::Partial {
                     step: "the router on the old engine".into(),
@@ -1427,16 +1649,24 @@ pub async fn adopt(
             },
         }
     };
+    // Two builds on disk, not every one ever tried: a kept candidate goes,
+    // a promoted one's predecessor stays as `previous`. A partial promotion
+    // keeps everything until it is finished.
+    if !matches!(outcome, Outcome::Partial { .. }) {
+        if let Err(e) = crate::engine::prune_builds(&m.mecha_home) {
+            say(&format!("old builds could not be removed: {e:#}"));
+        }
+    }
     let row = LedgerRow {
         at: Utc::now(),
-        action: "adopt".into(),
-        model,
+        action: change.action.into(),
+        model: Some(model),
         old,
         new,
         outcome,
     };
     // The units have already moved (or not) by now: a ledger that cannot be
-    // written is said, never returned as a failed adopt.
+    // written is said, never returned as a failed change.
     if let Err(e) = append_ledger(&m.mecha_home, &row) {
         say(&format!(
             "the measurement could not be written to {}: {e:#}",
@@ -1449,44 +1679,97 @@ pub async fn adopt(
     Ok(row)
 }
 
-/// The promotion itself, each step named on failure: the drop-ins recorded,
+/// The adopt promotion, each step named on failure: the drop-ins recorded,
 /// then written; the units reloaded; the on-demand backends stopped (their
 /// sockets stay, so the next request starts them on the new engine); the
-/// router restarted, and asked which engine it runs.
+/// router restarted with the model it had.
 async fn promote_adopt(
     m: &crate::sidecar::Machinery,
     servers: &Servers,
     base: &str,
-    model: Option<&str>,
-    managed: &Path,
+    model: &str,
 ) -> std::result::Result<(), (String, anyhow::Error)> {
     let step = |s: &str| {
         let s = s.to_string();
         move |e: anyhow::Error| (s, e)
     };
+    // `current` to the pin — the build the gate measured — before any unit
+    // names it.
+    crate::engine::point_current(&m.mecha_home, crate::engine::PIN.tag)
+        .map_err(step("pointing `current` at the pin"))?;
+    // An adopt starts the engine's history: a `previous` left from before a
+    // de-adopt would make this adopt's rollback step onto a stale build
+    // instead of removing its drop-ins.
+    match std::fs::remove_file(crate::engine::previous(&m.mecha_home)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(("clearing a stale `previous`".into(), e.into()))
+        }
+        _ => {}
+    }
+    let managed = managed_binary(&m.mecha_home);
     let dir = unit_dir(m).map_err(step("finding the user unit directory"))?;
     for (s, _) in &servers.present {
         let path = drop_in_path(dir, s.unit);
         crate::sidecar::Manifest::record(&m.mecha_home, "llama", &path)
             .map_err(step("recording the drop-ins"))?;
         std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))
-            .and_then(|()| std::fs::write(&path, drop_in_text(managed)))
+            .and_then(|()| std::fs::write(&path, drop_in_text(&managed)))
             .map_err(|e| (format!("writing {}", path.display()), e.into()))?;
     }
     systemctl("daemon-reload", &[]).map_err(step("systemctl daemon-reload"))?;
+    restart_on(servers, base, model, &managed)
+        .await
+        .map_err(|(s, e)| (s.to_string(), e))
+}
+
+/// The upgrade promotion: `previous` keeps the old build, `current` moves to
+/// the new one — each one rename — then the servers restart on it.
+async fn promote_upgrade(
+    m: &crate::sidecar::Machinery,
+    servers: &Servers,
+    base: &str,
+    model: &str,
+    from_tag: &str,
+    to_tag: &str,
+) -> std::result::Result<(), (String, anyhow::Error)> {
+    crate::engine::point_previous(&m.mecha_home, from_tag)
+        .map_err(|e| ("keeping the old build as `previous`".to_string(), e))?;
+    crate::engine::point_current(&m.mecha_home, to_tag)
+        .map_err(|e| ("pointing `current` at the new build".to_string(), e))?;
+    restart_on(servers, base, model, &managed_binary(&m.mecha_home))
+        .await
+        .map_err(|(s, e)| (s.to_string(), e))
+}
+
+/// Stop the embeddings and OCR services, leaving their sockets: the next
+/// request starts each on whatever engine the units name by then.
+pub fn stop_backends(servers: &Servers) -> Result<()> {
     let backends: Vec<&str> = servers
         .present
         .iter()
         .filter(|(s, _)| s.role != Role::Router)
         .map(|(s, _)| s.unit)
         .collect();
-    if !backends.is_empty() {
-        systemctl("stop", &backends).map_err(step("stopping the on-demand backends"))?;
+    if backends.is_empty() {
+        return Ok(());
     }
-    systemctl("start", &["llama-local.service"]).map_err(step("starting the router"))?;
-    router_back(base, model, managed)
+    systemctl("stop", &backends)
+}
+
+/// The servers onto the engine the units now name: the on-demand backends
+/// stopped (their sockets stay, so the next request starts them on it), the
+/// router restarted, and the model the owner had loaded on it again.
+pub async fn restart_on(
+    servers: &Servers,
+    base: &str,
+    model: &str,
+    engine: &Path,
+) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+    stop_backends(servers).map_err(|e| ("stopping the on-demand backends", e))?;
+    systemctl("restart", &["llama-local.service"]).map_err(|e| ("restarting the router", e))?;
+    router_back(base, Some(model), engine)
         .await
-        .map_err(step("the router on the new engine"))?;
+        .map_err(|e| ("the router on the new engine", e))?;
     Ok(())
 }
 
@@ -1684,7 +1967,12 @@ mod tests {
         let held = h.try_hold(ROUTER, "web chat").unwrap().unwrap();
         let err = preflight(&h, ROUTER).unwrap_err().to_string();
         assert!(err.contains("web chat"), "{err}");
-        let err = refused(take_switch(&h, ROUTER, "llama.cpp b1"));
+        let err = refused(take_switch(
+            &h,
+            ROUTER,
+            "llama.cpp (provided)",
+            "llama.cpp b1",
+        ));
         assert!(err.contains("hold the router"), "{err}");
         assert!(
             h.pending(ROUTER).is_none(),
@@ -1697,11 +1985,11 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("qwen"));
-        assert!(take_switch(&h, ROUTER, "llama.cpp b1").is_err());
+        assert!(take_switch(&h, ROUTER, "llama.cpp (provided)", "llama.cpp b1").is_err());
         assert_eq!(h.pending(ROUTER).map(|s| s.to), Some("qwen".to_string()));
         drop(other);
         // Quiet: the switch is taken and held.
-        let s = take_switch(&h, ROUTER, "llama.cpp b1").unwrap();
+        let s = take_switch(&h, ROUTER, "llama.cpp (provided)", "llama.cpp b1").unwrap();
         assert_eq!(
             h.pending(ROUTER).map(|s| s.to),
             Some("llama.cpp b1".to_string())
@@ -1815,6 +2103,85 @@ mod tests {
             .is_none());
     }
 
+    fn machinery(root: &Path) -> crate::sidecar::Machinery {
+        crate::sidecar::Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        }
+    }
+
+    fn servers_naming(engine: Option<&Path>) -> Servers {
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        if let Some(e) = engine {
+            env.push(("LLAMA_SERVER".into(), e.display().to_string()));
+        }
+        Servers {
+            present: vec![(
+                SERVERS[0],
+                Launcher {
+                    argv: vec!["/x".into()],
+                    env,
+                },
+            )],
+            base_env: vec![],
+        }
+    }
+
+    /// An upgrade moves mecha's engine, so a machine still on a hand-built
+    /// one is sent to `--adopt` — and one already on the tag asked for is
+    /// told so — before anything is fetched or stopped.
+    #[tokio::test]
+    async fn an_upgrade_needs_an_adopted_machine_and_a_new_tag() {
+        let root = std::env::temp_dir().join(format!("mecha-upg-{}", uuid::Uuid::new_v4()));
+        let m = machinery(&root);
+        let (h, dir) = holds();
+        let provided = servers_naming(None);
+        let err = refused(check_upgradable(&m, &provided, &h, ROUTER));
+        assert!(err.contains("--adopt"), "{err}");
+
+        let adopted = servers_naming(Some(&managed_binary(&m.mecha_home)));
+        std::fs::create_dir_all(crate::engine::engine_root(&m.mecha_home)).unwrap();
+        crate::engine::point_current(&m.mecha_home, "b11391").unwrap();
+        let (_, tag) = check_upgradable(&m, &adopted, &h, ROUTER).unwrap();
+        assert_eq!(tag, "b11391");
+        let spec = crate::engine::Spec::pin(crate::engine::Target::LinuxArm64Cuda13).unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let err = refused(
+            upgrade(
+                &m,
+                &adopted,
+                &h,
+                ROUTER,
+                &spec,
+                crate::engine::Target::LinuxArm64Cuda13,
+                Some("q"),
+                false,
+                &cancel,
+                &mut |_| {},
+            )
+            .await,
+        );
+        assert!(err.contains("already run"), "{err}");
+        assert!(h.pending(ROUTER).is_none(), "no switch taken");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rollback_row_names_where_it_went_and_measures_nothing() {
+        let row = rollback_row(
+            Path::new("/m/b20000/llama-server"),
+            Path::new("/m/b11391/llama-server"),
+            None,
+        );
+        assert_eq!(row.action, "rollback");
+        assert!(matches!(&row.outcome, Outcome::RolledBack { to } if to.contains("b11391")));
+        assert!(row.old.bench.is_none() && row.new.smoke.is_empty());
+    }
+
     fn model(id: &str, status: &str) -> crate::provider::router::RouterModel {
         serde_json::from_value(serde_json::json!({"id": id, "status": {"value": status}})).unwrap()
     }
@@ -1853,6 +2220,7 @@ mod tests {
     fn an_old_engine_that_could_not_be_measured_is_recorded() {
         let e = anyhow::anyhow!("the router did not come up");
         let kept = not_measured(
+            "adopt",
             &e,
             &Ok(()),
             Some("q".into()),
@@ -1863,6 +2231,7 @@ mod tests {
         assert!(matches!(kept.old.smoke["chat"], Smoke::Failed { .. }));
         assert!(matches!(kept.new.smoke["chat"], Smoke::NotRun { .. }));
         let stuck = not_measured(
+            "adopt",
             &e,
             &Err(anyhow::anyhow!("unit failed")),
             None,
