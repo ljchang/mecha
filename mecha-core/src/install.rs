@@ -98,17 +98,17 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "router" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
 
-/// Whether a sidecar's install brings the models it serves. Layout's and the
-/// on-demand servers' fetch theirs; the engine's does not — the router's chat
-/// model arrives with the router (7c-2) — so a model gone from the hub is a
-/// reason to run their installs again, never the engine's.
+/// Whether a sidecar's install brings the models it serves. Layout's, the
+/// on-demand servers' and the router's fetch theirs; the engine's does not —
+/// so a model gone from the hub is a reason to run their installs again,
+/// never the engine's.
 fn fetches_models(id: &str) -> bool {
-    matches!(id, "layout" | "embed-server" | "ocr-server")
+    matches!(id, "layout" | "embed-server" | "ocr-server" | "router")
 }
 
 /// Whether the chat model is served from this machine: the default provider
@@ -470,6 +470,18 @@ pub async fn install(
 ) -> Result<()> {
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
+        // The router with the row recommended for this machine: choosing
+        // another, or bringing one's own, is `mecha setup chat`'s.
+        "router" => crate::router_unit::install(
+            m,
+            &crate::router_unit::Choice::Recommended,
+            &crate::router_unit::Naming::shipped(),
+            machine,
+            hub,
+            say,
+        )
+        .await
+        .map(|_| ()),
         "embed-server" | "ocr-server" => {
             let which = if id == "embed-server" {
                 crate::llama_units::Which::Embeddings
@@ -481,9 +493,7 @@ pub async fn install(
         "llama" => {
             let server = crate::engine::install_engine(m, say).await?;
             say(&format!(
-                "the engine is at {} — the embeddings and OCR servers' units name it; the \
-                 router's arrives with step 7c-2, and until then a launcher reads it from \
-                 LLAMA_SERVER",
+                "the engine is at {} — the router's, embeddings' and OCR servers' units name it",
                 server.display()
             ));
             Ok(())
@@ -674,7 +684,7 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1"]
+            &["7a-3", "7b", "7c-1", "7c-2"]
         } else {
             &["7a-3", "7b"]
         };

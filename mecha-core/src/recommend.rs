@@ -224,6 +224,57 @@ const fn qwen36_with_cache_mb(tokens: u32, slots: u32) -> u32 {
     QWEN36_FILES_MB + tokens / 1024 * 22 + 64 * slots
 }
 
+/// How the chat model is served at a tier: the context the router gives it
+/// (`ctx-size`, divided across `parallel` slots) and the host prompt cache.
+/// One table, read by the rows' memory arithmetic and by the router's preset
+/// (`router_unit`), so the figure the plan prices and the server that runs
+/// are the same configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ChatGeometry {
+    pub tier_gb: u32,
+    /// `ctx-size`: every slot's window together.
+    pub ctx: u32,
+    /// `parallel`: the slots `ctx` is divided across.
+    pub slots: u32,
+    /// `cache-ram`, MiB: the router's host prompt cache. 16 GiB is what the
+    /// GB10 runs; the smaller tiers' figures are halved per step down, chosen
+    /// rather than measured — each row names it as left out of its sum.
+    pub cache_ram_mb: u32,
+}
+
+/// The GB10's geometry: a million tokens across four slots.
+const CHAT_128: ChatGeometry = ChatGeometry {
+    tier_gb: 128,
+    ctx: 1_048_576,
+    slots: 4,
+    cache_ram_mb: 16_384,
+};
+/// One 256k slot.
+const CHAT_64: ChatGeometry = ChatGeometry {
+    tier_gb: 64,
+    ctx: 262_144,
+    slots: 1,
+    cache_ram_mb: 8_192,
+};
+/// One 128k slot.
+const CHAT_32: ChatGeometry = ChatGeometry {
+    tier_gb: 32,
+    ctx: 131_072,
+    slots: 1,
+    cache_ram_mb: 4_096,
+};
+
+pub const CHAT_GEOMETRY: &[ChatGeometry] = &[CHAT_128, CHAT_64, CHAT_32];
+
+/// The chat geometry for a tier.
+pub fn chat_geometry(tier_gb: u32) -> Option<ChatGeometry> {
+    CHAT_GEOMETRY.iter().copied().find(|g| g.tier_gb == tier_gb)
+}
+
+const fn geometry_mb(g: ChatGeometry) -> u32 {
+    qwen36_with_cache_mb(g.ctx, g.slots)
+}
+
 const EMBED_SOURCES: &[Source] = &[Source::HuggingFace {
     repo: "mradermacher/harrier-oss-v1-0.6b-GGUF",
     revision: "d79decec1ab9442e969e79804515b9c31683d30e",
@@ -267,7 +318,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 128,
                 memory: Memory::Unified {
-                    peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(1_048_576, 4) },
+                    peak: Peak::Arithmetic { mb: geometry_mb(CHAT_128) },
                 },
                 model: QWEN36_MODEL,
                 counts: "the pinned files and four 262k slots' cache; an uncensored build of the same base read 41.5 GiB on the GB10 before its MTP graft and 44.7 after",
@@ -279,7 +330,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 128,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(1_048_576, 4) },
+                    gpu: Peak::Arithmetic { mb: geometry_mb(CHAT_128) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -290,7 +341,7 @@ pub const SLOTS: &[Slot] = &[
             // The pinned files and one 262,144-token slot's cache.
             Recommendation {
                 tier_gb: 64,
-                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144, 1) } },
+                memory: Memory::Unified { peak: Peak::Arithmetic { mb: geometry_mb(CHAT_64) } },
                 model: QWEN36_MODEL,
                 counts: "weights, one 256k slot's cache and the projector",
                 sources: QWEN36,
@@ -299,7 +350,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 64,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(262_144, 1) },
+                    gpu: Peak::Arithmetic { mb: geometry_mb(CHAT_64) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,
@@ -310,7 +361,7 @@ pub const SLOTS: &[Slot] = &[
             // The pinned files and a 131,072-token cache.
             Recommendation {
                 tier_gb: 32,
-                memory: Memory::Unified { peak: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072, 1) } },
+                memory: Memory::Unified { peak: Peak::Arithmetic { mb: geometry_mb(CHAT_32) } },
                 model: QWEN36_MODEL,
                 counts: "weights, a 128k cache and the projector",
                 sources: QWEN36,
@@ -319,7 +370,7 @@ pub const SLOTS: &[Slot] = &[
             Recommendation {
                 tier_gb: 32,
                 memory: Memory::Discrete {
-                    gpu: Peak::Arithmetic { mb: qwen36_with_cache_mb(131_072, 1) },
+                    gpu: Peak::Arithmetic { mb: geometry_mb(CHAT_32) },
                     host: Peak::Unmeasured,
                 },
                 model: QWEN36_MODEL,

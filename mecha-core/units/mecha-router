@@ -1,0 +1,7 @@
+#!/bin/sh
+# The llama-server router `mecha setup chat` installs: one model resident at a
+# time, the request's `model` field choosing among the presets in
+# MECHA_ROUTER_PRESETS (written by mecha from the chat row it installed). The
+# engine is the unit's LLAMA_SERVER, named in a drop-in.
+exec ${LLAMA_SERVER:-llama-server} --host 127.0.0.1 --port "${MECHA_ROUTER_PORT:-8080}" \
+  --models-preset "${MECHA_ROUTER_PRESETS:?the unit names no presets file}" --models-max 1
