@@ -1,0 +1,23 @@
+# The always-listening door to the document-OCR model (PaddleOCR-VL 1.6).
+# docs/DOCUMENT-EXTRACTION-DESIGN.md §6 is the design; this file is the part
+# that holds no memory. systemd owns 127.0.0.1:8085 from boot, so a request
+# after a reboot or an idle stop is a cold start, never "connection refused"
+# — idle-stopped must never look like absent (the llama-embed incident of
+# 2026-08-19: a reboot restored the consumers and not the server, and a
+# nightly logged SUCCESS having done nothing).
+#
+# The first connection starts llama-ocr-proxy.service, which requires
+# llama-ocr.service (the llama-server) and is ordered after it, and that unit
+# is only "active" once /health answers ok — so the caller's connection waits
+# through the load instead of being forwarded into it.
+[Unit]
+Description=Socket for the on-demand document-OCR llama-server (PaddleOCR-VL 1.6, :8085)
+
+[Socket]
+ListenStream=127.0.0.1:8085
+# Named, because the default would be llama-ocr.service — the backend, which
+# does not speak socket activation.
+Service=llama-ocr-proxy.service
+
+[Install]
+WantedBy=sockets.target

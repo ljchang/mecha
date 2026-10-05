@@ -1,0 +1,45 @@
+#!/bin/bash
+# The document-OCR model: PaddleOCR-VL 1.6 (0.47B language model + a 0.44B
+# vision tower), behind mecha's `document_read` and `mecha document`
+# (docs/DOCUMENT-EXTRACTION-DESIGN.md). Its own llama-server, because
+# llama-server holds one model per process and the router on :8080 swaps its
+# one resident model — an OCR request there would evict the chat model.
+#
+# **On demand, never resident** (owner's ruling, 2026-09-29): llama-ocr.socket
+# holds 127.0.0.1:8085 and costs nothing; the first connection starts the
+# proxy, which starts this server on MECHA_OCR_PORT (18085) and forwards once
+# /health says ok; ten idle minutes later the proxy exits and this server,
+# unneeded, stops. Lives in ~/.local/bin for llama-embed's reason (a unit must
+# not run a working tree); scripts/llama/ is the source.
+#
+# Flags, and why:
+#   --mmproj   the vision tower is a separate file; without it the model is
+#              blind and nothing fails (docs/LLAMA-SERVER.md §Vision).
+#   --temp 0   the model card's setting: transcription, not generation.
+#   -c 32768 -np 2
+#              two slots of 16,384. A page is <= 1,280 image tokens (the
+#              projector caps a page at 1,003,520 px, 28x28 px per token) plus
+#              the transcript; the densest of 48 pages measured wrote 1,678
+#              tokens. KV is 18 KiB/token (18 layers x 2 KV heads x 256 x f16),
+#              so both slots together are 576 MiB.
+#   -cram 0    no prompt cache: no two page images share a prefix worth
+#              keeping, and a cache is memory held for nothing.
+#   --no-webui the port is an API for mecha; nobody browses it.
+#
+# The model is 0.9 GB + 0.9 GB of BF16, from the publisher's own GGUF repo
+# (PaddlePaddle/PaddleOCR-VL-1.6-GGUF); the snapshot directory is resolved
+# rather than pinned so a re-download does not strand the unit.
+D=$(ls -d ${HF_HUB:-${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}}/models--PaddlePaddle--PaddleOCR-VL-1.6-GGUF/snapshots/*/ | head -1)
+M="$D/PaddleOCR-VL-1.6-GGUF.gguf"
+P="$D/PaddleOCR-VL-1.6-GGUF-mmproj.gguf"
+for f in "$M" "$P"; do
+  if [ ! -f "$f" ]; then
+    # Refuse rather than start blind or empty: `hf download` is the fix.
+    echo "mecha-ocr-server: missing $f — run: hf download PaddlePaddle/PaddleOCR-VL-1.6-GGUF" >&2
+    exit 1
+  fi
+done
+exec ${LLAMA_SERVER:-llama-server} -m "$M" --mmproj "$P" \
+  --host 127.0.0.1 --port "${MECHA_OCR_PORT:-18085}" -ngl 999 \
+  -c 32768 -np 2 --temp 0 --jinja -cram 0 --no-webui \
+  --alias paddleocr-vl-1.6

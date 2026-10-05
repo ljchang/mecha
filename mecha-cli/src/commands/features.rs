@@ -181,7 +181,8 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 );
             }
             println!(
-                "Enabling {} installs, from pinned sources into ~/.mecha/sidecars/:",
+                "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, for a \
+                 server, its systemd user units, started once to check them:",
                 ids.join(" ")
             );
             for (_, label, _, bytes) in &todo {
@@ -860,9 +861,9 @@ mod tests {
                     bytes: None,
                 },
                 PlannedSidecar {
-                    id: "ocr-server",
-                    label: "the OCR server",
-                    state: SidecarState::Missing { step: "7c" },
+                    id: "router",
+                    label: "the chat router",
+                    state: SidecarState::Missing { step: "7c-2" },
                     bytes: None,
                 },
                 PlannedSidecar {
@@ -903,7 +904,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7c",
+            "not here — its installer arrives in step 7c-2",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",
