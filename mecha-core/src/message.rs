@@ -742,6 +742,7 @@ fn is_one_turn_nudge(block: &Block) -> bool {
 /// edit turn carries the variety note and the edit note side by side, and
 /// both are its own, but the edit note of a turn three back is stale once a
 /// later turn has carried a variety note, though no edit note has followed it.
+/// The edit note is dropped whatever the re-read costs (see the filter).
 ///
 /// **Cheap** is [`reread_bytes`] within [`NUDGE_REREAD_BYTES`]. Removing a
 /// note rewrites a request already sent, so the slot's cache diverges at
@@ -778,9 +779,16 @@ fn stale_nudges(recorded: &[Message], earlier: &[Message]) -> Vec<(usize, usize)
     };
     all.iter()
         .filter(|&&(i, j, kind)| !kept(i, j, kind))
+        .filter(|&&(i, _, _)| recorded[i].content.iter().any(|b| !is_one_turn_nudge(b)))
+        // The cap is a spoken turn's latency control; the edit note rides
+        // typed turns only, and every edit turn is a tool round trip, the
+        // shape the cap keeps a note ahead of (5 of 30 edit turns measured
+        // past it, 2026-10-05). Kept, it would tell the persona a later
+        // typed message came from the edit panel (review of #566).
+        .filter(|&&(i, _, kind)| {
+            kind == Nudge::Edit || reread_bytes(recorded, earlier, i + 1) <= NUDGE_REREAD_BYTES
+        })
         .map(|&(i, j, _)| (i, j))
-        .filter(|&(i, _)| recorded[i].content.iter().any(|b| !is_one_turn_nudge(b)))
-        .filter(|&(i, _)| reread_bytes(recorded, earlier, i + 1) <= NUDGE_REREAD_BYTES)
         .collect()
 }
 
@@ -1315,6 +1323,42 @@ mod tests {
         let sent = send(&history);
         assert_eq!(kinds(&sent[0]), Vec::<Nudge>::new());
         assert_eq!(kinds(&sent[2]), vec![Nudge::Variety]);
+
+        // An edit turn is a tool round trip, and one past the re-read cap
+        // keeps a variety note ahead of it; the edit note still goes, or the
+        // next typed message would read as the panel's (review of #566).
+        let call = Message::assistant(vec![
+            Block::Thinking {
+                text: "draw it".into(),
+                signature: None,
+            },
+            Block::ToolUse {
+                id: "i1".into(),
+                name: "image_generate".into(),
+                input: serde_json::json!({}),
+            },
+        ]);
+        let drawn = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "i1".into(),
+            content: "r".repeat(NUDGE_REREAD_BYTES + 1),
+            is_error: false,
+        }]);
+        let mut later = Message::user("lovely");
+        later.content.push(variety("Done."));
+        let history = vec![
+            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
+            call,
+            drawn,
+            reply("Done."),
+            later,
+        ];
+        let sent = send(&history);
+        assert_eq!(
+            kinds(&sent[0]),
+            vec![Nudge::Variety],
+            "kept ahead of a big round trip"
+        );
+        assert_eq!(kinds(&sent[4]), vec![Nudge::Variety]);
     }
 
     #[test]

@@ -1723,7 +1723,11 @@ module.
     judged blind 66–59 (a tie), and the edit prompts unchanged. Typed turns
     only: on a call the panel's words go out as speech, and the call note
     already says a picture reaches the owner unseen. A message that steers a
-    run in flight carries no note.
+    run in flight carries no note. Once stale it is dropped whatever the
+    re-read costs, unlike the variety note: the cap is a spoken turn's
+    latency control, every edit turn is a tool round trip (5 of 30 measured
+    past the cap), and a kept edit note would tell the persona the next
+    typed message came from the panel.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,
