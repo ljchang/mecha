@@ -1549,7 +1549,8 @@ mecha setup chat
 `chat` is the other word `setup` reserves: it is how a machine with no model
 server gets one. It shows the chat model recommended for this machine's memory
 tier — its download size and the context and slots it will be served with — or
-takes a GGUF you already have (and its vision projector, if any). On a yes it
+takes a GGUF you already have (and its vision projector, if any; `~/` is
+expanded). On a yes it
 installs mecha's pinned llama.cpp first if the machine has none, then the
 router: a systemd user service on `:8080`, its launcher in
 `~/.mecha/sidecars/bin/`, and its presets in `~/.mecha/sidecars/router/models.ini`.
@@ -1561,8 +1562,11 @@ is how to change it.
 When no local provider is configured yet, it then offers to write one, from
 what the router reports about the model it installed — the same write-and-confirm
 step as `mecha setup --write`, so the model name, context window and vision are
-read off the server, never typed. When one is configured, it leaves the config
-alone and says `mecha setup --write` brings it in line.
+read off the server, never typed. When one already names this router — `setup
+chat` run again to change the model — it shows what the router now reports for
+that table and asks before writing, as `mecha setup --write` does, since the
+model name is what the router routes by. A local provider that names a server on
+another machine is left as it is.
 
 A router you installed yourself is detected and left alone: nothing is installed
 over it. It takes no flags and runs only at a terminal, because it asks. On

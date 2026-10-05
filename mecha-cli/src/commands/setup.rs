@@ -738,6 +738,16 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
+    offer_settings(provider, props)
+}
+
+/// Show what a server reports for an existing provider table, ask, and write
+/// it — `--write`'s step, shared with `mecha setup chat` when the model it
+/// installed replaces one the table already names.
+pub(super) fn offer_settings(
+    provider: &str,
+    props: &mecha_core::provider::preflight::Props,
+) -> Result<()> {
     let settings = onboarding::verified_settings(props);
     println!("Read back from the server, for [providers.{provider}]:\n");
     for (k, v) in &settings {
