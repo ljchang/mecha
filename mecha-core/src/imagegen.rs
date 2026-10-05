@@ -2158,8 +2158,9 @@ impl ImageGenerate {
     /// Does `edited` trace back to a scene whose only person was `character`?
     /// Manifest by manifest through each edit's first reference, to the first
     /// one that drew from the library: true when its cast was that character
-    /// alone, with no extras — the picture the crop's face belongs to. An
-    /// earlier anchored edit of the same character ends the walk as well.
+    /// alone, with no extras — the picture the crop's face belongs to. It
+    /// always walks to that scene, never stopping at an earlier anchored
+    /// edit, so today's rule judges the whole chain (review of #569).
     /// A picture with no manifest (an attached photo), a path that is not a
     /// plain workspace file, a cast of anyone else, extras anywhere on the
     /// way, or an edit on the way that was given a second picture is false:
@@ -2187,9 +2188,6 @@ impl ImageGenerate {
             }
             if let Some(cast) = m.get("cast").and_then(Value::as_array) {
                 return cast.len() == 1 && is(cast[0].get("name"));
-            }
-            if is(m.get("face_anchor").and_then(|a| a.get("name"))) {
-                return true;
             }
             let Some(next) = m
                 .get("reference_images")
@@ -3278,9 +3276,13 @@ impl Tool for ImageGenerate {
             .and_then(|w| w.character.as_deref())
             .map(|c| c.trim().to_lowercase())
             .filter(|c| !c.is_empty());
-        if let (true, true, None, 1, Some(character), Some(dir)) = (
+        // Nobody this edit adds itself, either: an extra is a second person
+        // in this very picture (review of #569).
+        let alone = ask.as_ref().is_none_or(|a| a.extras.is_empty());
+        if let (true, true, true, None, 1, Some(character), Some(dir)) = (
             is_edit,
             self.persona,
+            alone,
             plan.as_ref(),
             req.references.len(),
             character,
@@ -7934,7 +7936,7 @@ mod tests {
     /// the reason.
     #[tokio::test]
     async fn an_edit_is_anchored_only_to_its_own_character_alone() {
-        let (url, seen) = fake(vec![done(); 14], "200 OK").await;
+        let (url, seen) = fake(vec![done(); 16], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
         let faces = stub_faces(crate::face::Anchor::Crop(PNG.to_vec()));
@@ -8016,6 +8018,18 @@ mod tests {
             .unwrap();
         assert!(!joined.is_error && !anchored(), "{}", joined.content);
         let out = edit(Arc::clone(&maya), picture_of(&joined.content)).await;
+        assert!(!out.is_error && !anchored(), "{}", out.content);
+        // An edit that adds someone itself, through `extras`: a second
+        // person in this very picture (found on review of #569).
+        let out = maya
+            .call(
+                json!({"prompt": "Keep the garden unchanged. Have a waiter bring her coffee.",
+                       "reference_images": [picture_of(&hers.content)],
+                       "extras": ["a waiter pouring coffee"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
         assert!(!out.is_error && !anchored(), "{}", out.content);
         // The assistant's own form never anchors.
         let alone = maya
