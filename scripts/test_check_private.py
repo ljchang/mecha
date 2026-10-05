@@ -362,6 +362,53 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, 0, text)
 
+    def test_turns_after_a_mid_run_compaction_are_read_from_the_rewrite(self):
+        # `Session::record_run` writes a run that compacted itself as one
+        # rewrite: the compacted state plus every turn after the compaction,
+        # which appear nowhere else (review of #559, pass 5).
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        typed = "Rerun the benchmark on the release branch before the tag goes out."
+        heard = "Find a free evening next week for dinner with the book club."
+        reply = "Thursday evening is free next week, so the book club dinner fits there."
+        t = lambda x: {"type": "text", "text": x}
+        msg = lambda role, *b: {"role": role, "content": list(b)}
+        voiced = msg("user", t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + heard))
+        call = msg("assistant", {"type": "tool_use", "id": "t1", "name": "cal", "input": {}})
+        result = msg("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"})
+        with open(os.path.join(sessions, "20990109T000000-8c9d0e1f.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "c", "kind": "web"}) + "\n")
+            for m in (msg("user", t(typed)), msg("assistant", t("Benchmark rerun and green.")), voiced, call, result):
+                f.write(json.dumps({"record": "message", **m}) + "\n")
+            head = msg("user", t(typed), t("\n\n[Earlier turns were compacted to fit the context window. What happened in them:]\nA benchmark rerun."))
+            f.write(json.dumps({"record": "rewrite", "messages": [
+                head, msg("assistant", t("Benchmark rerun and green.")), voiced, call, result,
+                msg("assistant", t(reply))]}) + "\n")
+        for text, want in ((reply, 1), (typed, 0)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
+    def test_the_documented_gap_a_later_undirected_turn_is_out_of_reach(self):
+        # The trade spoken_turns makes, pinned so it cannot widen unseen: only
+        # a call's first turn carries the voice block, so a later turn whose
+        # reply was not directed is not in the corpus, either side. If this
+        # starts failing, the gap narrowed — update the docstring with it.
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        later = "Then remind me to water the tomatoes on Sunday evening please."
+        later_reply = "I will remind you to water the tomatoes on Sunday evening."
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990110T000000-9d0e1f2a.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "g", "kind": "web"}) + "\n")
+            for role, text in (("user", "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhi"),
+                               ("assistant", "Hello there."), ("user", later), ("assistant", later_reply)):
+                f.write(json.dumps({"record": "message", "role": role, "content": [t(text)]}) + "\n")
+        for text in (later, later_reply):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, 0, text)
+
     def test_a_picture_sent_without_words_closes_a_spoken_stretch(self):
         sessions = os.path.join(self.home, "sessions")
         os.makedirs(sessions, exist_ok=True)
