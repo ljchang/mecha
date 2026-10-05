@@ -60,10 +60,16 @@
   let muted = $state(false);
   let entries = $state([]);
   let pane = $state(null);
-  // Opened at the bottom: the call starts where it always has, with the
-  // conversation before it a scroll up.
+  // Opened at the bottom, once: the call starts where it always has, with the
+  // conversation before it a scroll up. Armed by `start`, spent on the first
+  // look — never a level, or every streamed word (which rebuilds `history`)
+  // would drag an owner reading back up to the bottom (review of #570).
+  let landAtBottom = false;
   $effect(() => {
-    if (open && pane && history.length) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
+    if (open && pane && landAtBottom) {
+      landAtBottom = false;
+      requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
+    }
   });
   // The picture shown large: the newest, unless the owner tapped an earlier
   // one — and a new picture takes the stage again when it arrives.
@@ -122,6 +128,7 @@
 
   export function start({ keep = false } = {}) {
     if (!keep) entries = [];
+    landAtBottom = true;
     // A line typed into another persona's call must not wait in this one's.
     if (!keep) {
       typed = '';
@@ -322,7 +329,7 @@
     <div class="call-pane" bind:this={pane} inert={!!viewing}>
       {#if history.length}
         {#each history as line}
-          <div class={['past', line.who === 'user' ? 'said' : 'heard']} class:pictured={line.picture}>{line.text}</div>
+          <div class={line.who === 'user' ? 'past said' : 'past heard'} class:pictured={line.picture}>{line.text}</div>
         {/each}
         <div class="call-start" role="separator" aria-label="Call">Call</div>
       {/if}
