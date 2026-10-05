@@ -718,6 +718,55 @@ conversation, so the capabilities do not change. Three rules:
   0.00 s as a duplicate of a finished prompt, kept no new output, and
   `/view` answered 404, which the run read as a failure. The record is
   salted hashes, as for the strikes.
+- **A persona's edit of its own character is anchored to its face**
+  (`face.rs`, the owner's ruling of 2026-10-05). An edit keeps only part of
+  the face it is given — about 0.77 ArcFace similarity per step across the
+  owner's persona edits — so a chain ended as somebody else, on the Q4 and
+  int8 models alike. In a persona chat, an edit of a single picture that
+  traces back, manifest by manifest through each edit's first reference, to
+  a scene whose cast was that persona's own approved character alone — no
+  extras there, on the way or in this edit, and no edit on the way given a
+  second picture, any of which is someone the face could land on (review of
+  #569); the walk always reaches that scene, so today's rule judges the
+  whole chain — gets a tight crop of the character's portrait as `<image2>` and
+  `FACE_ANCHOR_SENTENCE`, which names `<image1>` the canvas. Each of those
+  was measured on two five-step chains (2026-10-05): the whole portrait as
+  the reference copied its outfit and selfie pose into four of six scenes; a
+  crop at 1.6× the face carried hair and pose and flattened asked-for
+  expressions (py-feat action units); a crop shrunk onto a large canvas gave
+  impossible bodies; a masked face-only redraw, even enlarged, did not move
+  identity at all; and without the canvas sentence the crop pulled every
+  scene change into a close-up. The tight crop, the sentence and no crop on
+  a camera move held identity (0.85, 0.44 and 0.57 across the chain's
+  last three steps, where unanchored edits fell to 0.25, 0.21 and 0.13) and kept
+  expressions, hair and full-body framing. So it is skipped, and the
+  manifest says why, when the call sets `camera_moves` — with the crop on, a
+  low angle came back at eye level — and it is never applied to a masked
+  edit, beside references the model chose, to an attached photo with no
+  manifest, or in the assistant's own chats. A crop that cannot be had (the
+  detector not installed, no face in the portrait) is recorded as
+  `face_anchor.skipped`, never refused: the edit draws as it did before. The
+  tool's guidance asks every edit to say what the face does — expression,
+  head angle, gaze — because without it the edit hands the face back as it
+  was, and to describe a camera change by where the camera is and what is
+  nearest it: named, the angle did not move; described, it did.
+  The detector is py-feat's RetinaFace-R34 (`py-feat/retinaface_r34`, MIT,
+  pinned in `face.rs`), run by `face.rs`'s own small network on
+  `matrixmultiply`, its batch norms folded into the convolutions at load:
+  checked against py-feat to within a pixel on six pictures
+  (`face::tests::the_detector_agrees_with_py_feat`, ignored by default: it
+  needs the weights), about 1.9 s a portrait on one CPU thread, once — the
+  crop is cached. A framework was tried first and dropped (the owner's
+  ruling): candle brought 68 crates into mecha-core, `tokenizers` among them
+  with two C and C++ libraries built from source; its 0.9.2 convolution was
+  silently wrong for a 128-channel 3×3 at 128×128 — RetinaFace's layer2 on a
+  1024² picture, mecha's default size — and found no face there; and its
+  matrix kernels would not assemble unoptimised on aarch64 with Rust 1.99.
+  The network's convolution is checked against its definition at every
+  shape it uses, in bands as well as whole
+  (`the_convolution_matches_its_definition_at_every_shape_used`).
+  `mecha imagelib install-face-detector` fetches the weights; wiring them
+  into the image feature's install plan is FEATURES-DESIGN 7e's.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
@@ -965,6 +1014,18 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   files exist to the server only while it is open, so the picture is staged
   now (0700 scratch directory, removed on drop) and `add-character` runs as a
   child. Both library routes that read a chat refuse an incognito key.
+- **A portrait's face crop is derived, cached and disposable**
+  (`imagelib/faces/<generation>/`, `face::cache_paths`), owner-only: named by
+  the portrait's blob, so a new portrait is a new crop and nothing is
+  invalidated, with a `.none` file when the detector found no face so it is
+  not run again. The generation (`CACHE_VERSION`) moves with the weights,
+  thresholds or crop size, or every portrait keeps the old crop. The
+  directory is created on first write — the first cut assumed it and saved
+  nothing, so every edit ran the detector and went unanchored (review of
+  #569). Blob
+  collection never walks it; a crop of a removed portrait is simply never
+  asked for again. The portrait is re-hashed when it is read for a crop, as
+  it is for a cast.
 - **Candidates are a review-queue row, not a `Backlog` field** — `Backlog` is
   recorded per run and a new field moves every older row's comparison (the
   `requests_on_owner` precedent); they are owed to nobody outside.
