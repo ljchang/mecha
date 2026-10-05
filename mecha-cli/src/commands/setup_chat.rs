@@ -60,6 +60,20 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         }
     }
 
+    // A server on :8080 that mecha did not install — a router started from a
+    // terminal, or another program — is the owner's too: the unit check above
+    // cannot see it (found on review of #568).
+    let naming = Naming::shipped();
+    if !router_unit::installed_by_mecha(&m.mecha_home)? && router_unit::port_answers(naming.port) {
+        println!(
+            "Something already answers on :{} and mecha did not install it — nothing is \
+             installed over it. `mecha setup --write` reads a running server's settings into \
+             the config.",
+            naming.port
+        );
+        return Ok(());
+    }
+
     // A machine no pinned engine build fits is told so before it is asked
     // anything — the answer is to fix the driver, not to say yes (found on
     // review of #568). A machine with a llama-server of its own probes no
@@ -162,7 +176,6 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             .await
             .context("installing llama.cpp")?;
     }
-    let naming = Naming::shipped();
     let alias = router_unit::install(&m, &choice, &naming, &machine, &hub, &mut |s| {
         println!("  {s}")
     })

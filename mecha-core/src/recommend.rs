@@ -228,7 +228,8 @@ const fn qwen36_with_cache_mb(tokens: u32, slots: u32) -> u32 {
 /// (`ctx-size`, divided across `parallel` slots) and the host prompt cache.
 /// One table, read by the rows' memory arithmetic and by the router's preset
 /// (`router_unit`), so the figure the plan prices and the server that runs
-/// are the same configuration.
+/// are the same configuration — the prompt cache named beside the figure
+/// rather than in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ChatGeometry {
     pub tier_gb: u32,
@@ -238,7 +239,9 @@ pub struct ChatGeometry {
     pub slots: u32,
     /// `cache-ram`, MiB: the router's host prompt cache. 16 GiB is what the
     /// GB10 runs; the smaller tiers' figures are halved per step down, chosen
-    /// rather than measured — each row names it as left out of its sum.
+    /// rather than measured. It is a cap the cache grows to, not a resident
+    /// cost, so it is left out of the priced peak — and each row's `excludes`
+    /// says how large it may grow, held to this figure by a test.
     pub cache_ram_mb: u32,
 }
 
@@ -345,7 +348,7 @@ pub const SLOTS: &[Slot] = &[
                 model: QWEN36_MODEL,
                 counts: "weights, one 256k slot's cache and the projector",
                 sources: QWEN36,
-                excludes: Some("the chat server's process memory, and the router's prompt cache (`cache-ram`)"),
+                excludes: Some("the chat server's process memory, and the router's prompt cache (`cache-ram`, up to 8 GiB)"),
             },
             Recommendation {
                 tier_gb: 64,
@@ -356,7 +359,7 @@ pub const SLOTS: &[Slot] = &[
                 model: QWEN36_MODEL,
                 counts: "weights, one 256k slot's cache and the projector",
                 sources: QWEN36,
-                excludes: Some("the router's prompt cache (`cache-ram`)"),
+                excludes: Some("the router's prompt cache (`cache-ram`, up to 8 GiB)"),
             },
             // The pinned files and a 131,072-token cache.
             Recommendation {
@@ -365,7 +368,7 @@ pub const SLOTS: &[Slot] = &[
                 model: QWEN36_MODEL,
                 counts: "weights, a 128k cache and the projector",
                 sources: QWEN36,
-                excludes: Some("the chat server's process memory, and the router's prompt cache (`cache-ram`)"),
+                excludes: Some("the chat server's process memory, and the router's prompt cache (`cache-ram`, up to 4 GiB)"),
             },
             Recommendation {
                 tier_gb: 32,
@@ -376,7 +379,7 @@ pub const SLOTS: &[Slot] = &[
                 model: QWEN36_MODEL,
                 counts: "weights, a 128k cache and the projector",
                 sources: QWEN36,
-                excludes: Some("the router's prompt cache (`cache-ram`)"),
+                excludes: Some("the router's prompt cache (`cache-ram`, up to 4 GiB)"),
             },
             // No 16 GB row: the page names a class of model there (an 8B or a
             // 14B at Q4), not one anybody here has pinned or run.
