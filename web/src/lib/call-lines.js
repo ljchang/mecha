@@ -56,7 +56,7 @@ export function historyLines(entries) {
 // The call's own notices (`who: "notice"` — a dead mic, a dropped typed line,
 // an error) show until the call carries on past them: the pane is their only
 // surface, and a silent one over a dead mic is the state #534 was fixed for,
-// but a notice the owner has since spoken after is history, not the call's
+// but a notice the owner has since *spoken* after is history, not the call's
 // state (a reconnect drops them on the page side). Never the persona's
 // speech, which comes from the transcript and the reply streaming in.
 export function pendingSpeech(callEntries, lines) {
@@ -67,7 +67,9 @@ export function pendingSpeech(callEntries, lines) {
     .filter((l) => l.who === 'user')
     .slice(-(finished + 2))
     .map((l) => ` ${norm(l.text)} `);
-  const lastSaid = (callEntries ?? []).findLastIndex((e) => e.who === 'user');
+  // Spoken lines only: a typed line can be sent over a dead mic, so it is
+  // no sign the condition a notice reports has passed (review of #570).
+  const lastSaid = (callEntries ?? []).findLastIndex((e) => e.who === 'user' && !e.typed);
   return said.filter((e) => {
     if (e.who === 'notice') return (callEntries ?? []).indexOf(e) > lastSaid;
     if (e.interim) return true;

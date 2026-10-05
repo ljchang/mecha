@@ -77,6 +77,9 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   // state: it stops showing.
   const after = [...withNotice, { who: 'user', text: 'Is the bakery open?', interim: false }];
   assert.deepEqual(pendingSpeech(after, lines), []);
+  // A typed line is no sign the mic came back: the notice stays.
+  const typedAfter = [...withNotice, { who: 'user', text: 'Hello?', interim: false, typed: true }];
+  assert.deepEqual(pendingSpeech(typedAfter, lines).map((e) => e.who), ['notice', 'user']);
 }
 
 console.log('call-lines: ok');

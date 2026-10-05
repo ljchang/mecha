@@ -72,9 +72,13 @@
   const replying = $derived(streaming ? speakable(streaming).trim() : '');
   const speaking = $derived(pendingSpeech(entries, transcript));
   $effect(() => {
+    // Nothing to follow, and nothing worth computing, with no call open: a
+    // persona reply streaming in a chat must not pay a speakable() pass per
+    // token for a pane that is not drawn (review of #570).
+    if (!open || !pane) return;
     // Read what can grow, so the effect runs when any of it does.
-    void transcript.length, replying, speaking.length, open;
-    if (stick && pane) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
+    void transcript.length, replying, speaking.length;
+    if (stick) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
   });
   // The picture shown large: the newest, unless the owner tapped an earlier
   // one — and a new picture takes the stage again when it arrives.
@@ -120,13 +124,13 @@
   // call that never connected is no minutes at all.
   let since = null;
 
-  function onTranscript({ who, text, interim }) {
+  function onTranscript({ who, text, interim, typed = false }) {
     const last = entries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
     } else {
-      entries.push({ who, text, interim });
+      entries.push({ who, text, interim, typed });
     }
     // A line growing in place changes no length the effect reads: follow it
     // here, while the owner is at the bottom (review of #570).

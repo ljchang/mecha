@@ -4,7 +4,7 @@
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
   import ChatProse from './ChatProse.svelte';
-  import { replyContext } from './speech.js';
+  import { replyContext, speakable } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, downloadPicture } from './picture.js';
@@ -24,7 +24,6 @@
   // the ordinary SSE feed like any other.
   import { createVoiceSession, dropRing, readVoicePrefs } from '../../../scripts/voice/voice-core.js';
   import { historyLines, pendingSpeech } from './call-lines.js';
-  import { speakable } from './speech.js';
 
   let key = $state('main');
   let mode = $state('read_only');
@@ -1126,13 +1125,13 @@
     if (vStick && voicePane) queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
   });
 
-  function onTranscript({ who, text, interim }) {
+  function onTranscript({ who, text, interim, typed = false }) {
     const last = vEntries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
     } else {
-      vEntries.push({ who, text, interim });
+      vEntries.push({ who, text, interim, typed });
     }
     // A line growing in place changes no length the effect reads: follow it
     // here, while the owner is at the bottom (review of #570).
