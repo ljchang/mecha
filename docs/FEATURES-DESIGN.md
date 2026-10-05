@@ -179,7 +179,7 @@ machine runs*, never as advice:
 | Embeddings (graph) | `harrier-oss-v1-0.6b` f16 | `scripts/llama/mecha-embed-server`, `LLAMA-SERVER.md`; `website/docs/features/memory/graph/index.md` names it as of step 6a (#512) |
 | OCR | PaddleOCR-VL 1.6 (GGUF + mmproj) | a comment in `scripts/llama/install.sh`, `DOCUMENT-EXTRACTION-DESIGN.md` §5–6 |
 | Layout | `PP-DocLayoutV3.onnx` | `scripts/layout/install.sh` |
-| Image generation | Qwen-Image 2.1 Q4, `qwen3vl_8b_w4a8`, the 2.1 VAE | `ImageConfig` defaults, `features/tools/image-generation.md` (~15 GB peak, measured) |
+| Image generation | Qwen-Image 2.1 int8 ConvRot (the Q4 GGUF before 2026-10-04), `qwen3vl_8b_w4a8`, the 2.1 VAE | `ImageConfig` defaults, `features/tools/image-generation.md` (peak in `recommend.rs`'s image slot) |
 | Voice | Parakeet TDT 0.6B v3 int8, Breeze TTS 2 Q6_K (Chatterbox Turbo before 2026-10-03), Silero VAD, smart-turn v3 | `features/interfaces/voice.md`, `VOICE-RESEARCH.md` |
 | Vision | the chat model's own `mmproj` | `LLAMA-SERVER.md` §Vision |
 | Personas | the chat model; the judge model is open | `PERSONA-DESIGN.md` §12.2 (R19) |
