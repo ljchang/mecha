@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha setup chat` gives a machine with no model server a local chat
+  model.** It shows the model recommended for the machine's memory tier, or
+  takes a GGUF you have; installs llama.cpp if there is none; installs and
+  starts the router as a systemd user service on `:8080`; waits for the model
+  to load; and offers to write the local provider from what the router reports.
+  A router you set up by hand is left alone. Linux only.
 - **`mecha features enable` installs the embeddings and OCR servers.** On a
   Linux machine without them, enabling a feature that uses one fetches its
   pinned model, writes its launcher and the systemd user units that start it on

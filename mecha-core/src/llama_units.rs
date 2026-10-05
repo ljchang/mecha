@@ -47,8 +47,8 @@ const OCR_SOCKET: &str = include_str!("../units/llama-ocr.socket");
 const OCR_PROXY: &str = include_str!("../units/llama-ocr-proxy.service");
 const OCR_SERVICE: &str = include_str!("../units/llama-ocr.service");
 const OCR_LAUNCHER: &str = include_str!("../units/mecha-ocr-server");
-const WAIT_HEALTHY: &str = include_str!("../units/mecha-wait-healthy");
-const PATH_CONF: &str = include_str!("../units/path.conf");
+pub(crate) const WAIT_HEALTHY: &str = include_str!("../units/mecha-wait-healthy");
+pub(crate) const PATH_CONF: &str = include_str!("../units/path.conf");
 
 /// One on-demand server, as its shipped files name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +166,7 @@ fn render(text: &str, which: Which, naming: &Naming, bin: &Path, proxyd: &str) -
 /// A file mecha writes, unless something it did not write is there already:
 /// the same bytes are left as they are, different ones refuse — a file mecha
 /// did not write is never overwritten (§10.2 item 4).
-fn write_owned(home: &Path, id: &str, path: &Path, text: &str, mode: u32) -> Result<()> {
+pub(crate) fn write_owned(home: &Path, id: &str, path: &Path, text: &str, mode: u32) -> Result<()> {
     let ours = Manifest::read(home)?
         .entries
         .iter()
@@ -240,6 +240,10 @@ pub async fn install(
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let bin = bin_dir(home);
     Manifest::begin(home, id)?;
+
+    // The engine before anything is fetched: a machine with none would
+    // otherwise download a model and write units that cannot start.
+    let engine = Engine::resolve(m)?;
 
     // The model first: a unit that starts before its model is there fails
     // its first request, and the launcher refuses rather than start blind.
@@ -318,33 +322,7 @@ pub async fn install(
         0o644,
     )?;
     // The engine the launcher runs, named in the unit (module doc).
-    let managed = crate::engine_gate::managed_binary(home);
-    if managed.is_file() {
-        write_owned(
-            home,
-            "llama",
-            &dropins.join("mecha-engine.conf"),
-            &crate::engine_gate::drop_in_text(&managed),
-            0o644,
-        )?;
-    } else {
-        let engine = m
-            .path
-            .iter()
-            .map(|d| d.join("llama-server"))
-            .find(|p| p.is_file())
-            .context(
-                "there is no llama-server for these servers to run — `mecha features enable` \
-                 installs mecha's engine where it is offered, or put a llama.cpp build on PATH",
-            )?;
-        write_owned(
-            home,
-            id,
-            &dropins.join("engine-provided.conf"),
-            &provided_engine_text(&engine),
-            0o644,
-        )?;
-    }
+    engine.write(home, id, &dropins)?;
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])?;
@@ -356,8 +334,63 @@ pub async fn install(
     Manifest::finish(home, id)
 }
 
+/// The `llama-server` a unit runs, resolved before anything is installed:
+/// mecha's own engine when it is installed, else a provided one on the PATH
+/// mecha ran with (module doc).
+pub(crate) enum Engine {
+    Mecha(PathBuf),
+    Provided(PathBuf),
+}
+
+impl Engine {
+    pub(crate) fn resolve(m: &Machinery) -> Result<Engine> {
+        let managed = crate::engine_gate::managed_binary(&m.mecha_home);
+        if managed.is_file() {
+            return Ok(Engine::Mecha(managed));
+        }
+        m.path
+            .iter()
+            .map(|d| d.join("llama-server"))
+            .find(|p| p.is_file())
+            .map(Engine::Provided)
+            .context(
+                "there is no llama-server for these servers to run — `mecha features enable` \
+                 installs mecha's engine where it is offered, or put a llama.cpp build on PATH",
+            )
+    }
+
+    /// The drop-in naming it in a unit's `.d` directory: mecha's engine by
+    /// `mecha-engine.conf`, recorded under the engine as an adopt records it;
+    /// a provided one by `engine-provided.conf`, recorded under `id`.
+    pub(crate) fn write(&self, home: &Path, id: &str, dropins: &Path) -> Result<()> {
+        match self {
+            Engine::Mecha(p) => write_owned(
+                home,
+                "llama",
+                &dropins.join("mecha-engine.conf"),
+                &crate::engine_gate::drop_in_text(p),
+                0o644,
+            ),
+            Engine::Provided(p) => write_owned(
+                home,
+                id,
+                &dropins.join("engine-provided.conf"),
+                &provided_engine_text(p),
+                0o644,
+            ),
+        }
+    }
+}
+
+/// Whether a `llama-server` is there for a unit to run — mecha's or a
+/// provided one — so a door that installs units knows whether the engine
+/// must come first.
+pub fn has_engine(m: &Machinery) -> bool {
+    Engine::resolve(m).is_ok()
+}
+
 /// The drop-in naming the hub a server's model was fetched into.
-fn hub_text(hub: &Path) -> String {
+pub(crate) fn hub_text(hub: &Path) -> String {
     format!(
         "# Written by `mecha features enable`: the Hugging Face cache this server's\n\
          # model was fetched into, so the launcher reads the same one under the user\n\
@@ -511,6 +544,30 @@ mod tests {
                 std::fs::read_to_string(dir.join(name)).unwrap(),
                 shipped,
                 "{name} drifted from scripts/llama"
+            );
+        }
+        // And nothing in scripts/llama is left out: a file added there (its
+        // installers aside) must be shipped too, or the two installs diverge.
+        let shipped = [
+            "llama-embed.socket",
+            "llama-embed-proxy.service",
+            "llama-embed.service",
+            "mecha-embed-server",
+            "llama-ocr.socket",
+            "llama-ocr-proxy.service",
+            "llama-ocr.service",
+            "mecha-ocr-server",
+            "mecha-wait-healthy",
+            "path.conf",
+        ];
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("install") {
+                continue;
+            }
+            assert!(
+                shipped.contains(&name.as_str()),
+                "scripts/llama/{name} is not shipped"
             );
         }
     }
