@@ -71,10 +71,16 @@ pub enum Verdict {
 struct Prev {
     system: u64,
     tools: u64,
-    /// One hash per message *as sent*, so the append-only check is a prefix
-    /// comparison rather than a diff.
+    /// One hash per message *as sent*, less the run's notes
+    /// (`CompletionRequest::trailing_notes`), so the append-only check is a
+    /// prefix comparison rather than a diff.
     messages: Vec<u64>,
     total_input: u64,
+    /// The part of `total_input` that was the request's notes, estimated by
+    /// their share of the request's bytes. Notes ride the end of the last
+    /// message and move with each request, so the next one re-reads them by
+    /// design, and that is not reuse failing.
+    notes_input: u64,
 }
 
 #[derive(Default)]
@@ -94,11 +100,18 @@ impl CacheLens {
     /// it. Pure bookkeeping: the caller decides what, if anything, to do
     /// with the verdict.
     pub fn observe(&mut self, request: &CompletionRequest, usage: &Usage) -> Verdict {
+        let (messages, notes_bytes) = history_hashes(request);
+        let total_bytes = request.system.as_ref().map_or(0, String::len)
+            + serde_json::to_string(&request.tools).map_or(0, |t| t.len())
+            + crate::pressure::message_bytes(&request.messages);
+        let total_input = usage.total_input();
         let current = Prev {
             system: hash_of(&request.system),
             tools: hash_of(&request.tools),
-            messages: request.messages.iter().map(hash_of).collect(),
-            total_input: usage.total_input(),
+            messages,
+            total_input,
+            notes_input: (total_input as f64 * notes_bytes as f64 / total_bytes.max(1) as f64)
+                as u64,
         };
         let cached_reported =
             usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0;
@@ -127,7 +140,8 @@ impl CacheLens {
                     // something destabilised the prefix — as stable.
                     let repaid = prev
                         .total_input
-                        .saturating_sub(usage.cache_read_input_tokens);
+                        .saturating_sub(usage.cache_read_input_tokens)
+                        .saturating_sub(prev.notes_input);
                     let repaid_share = repaid as f64 / prev.total_input.max(1) as f64;
                     if repaid > DROP_FLOOR_TOKENS && repaid_share > DROP_FRACTION {
                         Verdict::Drop {
@@ -158,6 +172,35 @@ fn hash_of<T: serde::Serialize>(value: &T) -> u64 {
         .unwrap_or_default()
         .hash(&mut h);
     h.finish()
+}
+
+/// One hash per message, the last with its trailing notes left out, and the
+/// notes' bytes. Within a run the notes move from the owner's turn to the
+/// tool results; hashed in place, every request after the first would read
+/// as a rewritten transcript, and the lens could never call a drop on a run
+/// that carries notes.
+fn history_hashes(request: &CompletionRequest) -> (Vec<u64>, usize) {
+    let mut hashes: Vec<u64> = request.messages.iter().map(hash_of).collect();
+    let Some(last) = request.messages.last() else {
+        return (hashes, 0);
+    };
+    let keep = last.content.len().saturating_sub(request.trailing_notes);
+    if keep == last.content.len() {
+        return (hashes, 0);
+    }
+    let notes_bytes = last.content[keep..]
+        .iter()
+        .map(crate::pressure::block_bytes)
+        .sum();
+    let mut stripped = last.clone();
+    stripped.content.truncate(keep);
+    let n = hashes.len();
+    if stripped.content.is_empty() {
+        hashes.pop();
+    } else {
+        hashes[n - 1] = hash_of(&stripped);
+    }
+    (hashes, notes_bytes)
 }
 
 fn is_prefix(prev: &[u64], current: &[u64]) -> bool {
@@ -213,6 +256,54 @@ mod tests {
                 read: 18_000
             }
         );
+    }
+
+    /// A run's notes ride the last message and move to the tool results
+    /// after a round trip (`message::attach_notes`). The transcript only
+    /// grew, so the lens still judges reuse, and the notes' own re-read is not
+    /// called a drop, while a real drop on such a run still is.
+    #[test]
+    fn a_runs_moving_notes_neither_hide_a_drop_nor_fake_one() {
+        let note = crate::message::Block::text("n".repeat(3_000));
+        let with_note = |mut messages: Vec<Message>| {
+            messages.last_mut().unwrap().content.push(note.clone());
+            CompletionRequest {
+                trailing_notes: 1,
+                ..request(messages)
+            }
+        };
+        let first = with_note(vec![Message::user("hi")]);
+        let second = with_note(vec![
+            Message::user("hi"),
+            Message::assistant(vec![crate::message::Block::text("calling")]),
+            Message::user("tool output"),
+        ]);
+        let mut lens = CacheLens::new();
+        assert_eq!(
+            lens.observe(&first, &usage(10, 2_000, 0)),
+            Verdict::Baseline
+        );
+        // Everything but the note came back: about 3,000 of the first
+        // request's bytes were the note, so ~1,900 tokens re-read is it.
+        assert!(matches!(
+            lens.observe(&second, &usage(2_100, 0, 110)),
+            Verdict::Stable { .. }
+        ));
+        // And a run with notes whose history did not come back is a drop.
+        let mut lens = CacheLens::new();
+        let big = |n| {
+            let mut m = convo(n);
+            m.push(Message::user("x".repeat(40_000)));
+            m
+        };
+        lens.observe(&with_note(big(1)), &usage(10, 12_000, 0));
+        let mut grown = big(1);
+        grown.push(Message::assistant(vec![crate::message::Block::text("ok")]));
+        grown.push(Message::user("more"));
+        assert!(matches!(
+            lens.observe(&with_note(grown), &usage(12_000, 0, 0)),
+            Verdict::Drop { .. }
+        ));
     }
 
     #[test]

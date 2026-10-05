@@ -1427,10 +1427,11 @@ module.
     message. Past the first reply, what the owner's message brings to mind is
     a second note. The two are never joined, because each arms taint by the
     stem it opens with (`recall::stem_of`), and a recall from outside joined
-    after a clean block would hide its own. It holds about-me, the user facts the persona may see (its own,
-    plus `Shared::visible_to` its groups under `user_facts = "shared"`),
-    its own facts and recent episodes, honouring each `[memory]` switch read
-    **live**. Candidates are never recalled, and a copy the owner shared of
+    after a clean block would hide its own. It holds about-me, the user
+    facts the persona may see (its own, plus `Shared::visible_to` its groups
+    under `user_facts = "shared"`), its own facts and recent episodes,
+    honouring each `[memory]` switch as it stands when the block is read
+    (the chat's first turn in this process). Candidates are never recalled, and a copy the owner shared of
     the persona's own fact is not said twice.
     - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
       a third, each note a fair share and cut rather than dropped; recent
@@ -1746,8 +1747,8 @@ module.
       subtracts what the trim cuts.
   - **A persona is told what it keeps repeating** (`persona::variety`,
     owner 2026-10-04). Each turn carries a run note (`variety::is_note`
-    stays in `is_harness_voice` for older chats): the opening word two of its last three replies
-    share, if any, and its last three closing lines, read as the model is
+    stays in `is_harness_voice` for older chats): the opening word two of
+    its last three replies share, if any, and its last three closing lines, read as the model is
     shown them (`PriorTails`). Specific, not general: on seven replayed call
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
