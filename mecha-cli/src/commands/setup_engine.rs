@@ -516,6 +516,17 @@ async fn run_rollback(
                 .find(|e| e.sidecar == "llama")
                 .and_then(|e| e.builds.iter().find(|b| &b.tag == tag))
                 .with_context(|| format!("`previous` names {tag}, which mecha has no record of"))?;
+            // Recorded is not installed: pointing `current` at a tree that is
+            // gone would leave every unit naming a binary that does not exist,
+            // and the retry would do it again.
+            let server = engine::engine_root(&m.mecha_home)
+                .join(tag)
+                .join("llama-server");
+            anyhow::ensure!(
+                server.is_file(),
+                "`previous` names {tag}, but {} is not there — nothing was rolled back",
+                server.display()
+            );
             let n: u32 = tag
                 .strip_prefix('b')
                 .and_then(|n| n.parse().ok())

@@ -333,6 +333,9 @@ fn lenient_target<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Targe
 }
 
 /// What a build must report, and where its bytes come from.
+///
+/// `Source::Pinned` fetches the pin's own archives, so a `Pinned` spec is
+/// built only by [`Spec::pin`], whose tag, build and commit are the pin's.
 pub struct Spec {
     pub tag: String,
     pub build: u32,
@@ -643,10 +646,13 @@ async fn resolve_release_from(base: &str, tag: Option<&str>, target: Target) -> 
             list.as_array()
                 .into_iter()
                 .flatten()
-                .find(|r| {
+                .filter(|r| {
                     !r["draft"].as_bool().unwrap_or(true)
                         && parse_release(r).is_ok_and(|rel| rel.archives_for(target).is_ok())
                 })
+                // The highest build, not the first entry: the list is ordered
+                // by creation, and an edited older release can sit on top.
+                .max_by_key(|r| parse_release(r).map(|rel| rel.build).unwrap_or(0))
                 .cloned()
                 .with_context(|| {
                     format!(
@@ -1577,6 +1583,7 @@ mod tests {
             (
                 "/repos/ggml-org/llama.cpp/releases?per_page=30",
                 serde_json::json!([
+                    rel("b29000", false),
                     rel("b30001", true),
                     rel("v0.5.0", false),
                     rel("b30000", false)
@@ -1602,7 +1609,10 @@ mod tests {
         let r = resolve_release_from(&base, None, Target::LinuxArm64Cpu)
             .await
             .unwrap();
-        assert_eq!(r.tag, "b30000", "the draft and the v-tag are skipped");
+        assert_eq!(
+            r.tag, "b30000",
+            "the draft and the v-tag are skipped, and the highest build wins over the first entry"
+        );
         assert_eq!(
             r.commit, commit,
             "the annotated tag is followed to its commit"
