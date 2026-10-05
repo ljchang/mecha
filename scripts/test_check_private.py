@@ -307,14 +307,16 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
 
-    def test_every_title_counts_and_a_summary_never(self):
-        # A title can be written from a spoken turn whichever turn opened the
-        # chat (`title::due` renames at turns 1, 3 and 8; review of #559,
-        # pass 6); a summary paraphrases typed and spoken turns alike (pass 4).
+    def test_a_title_counts_once_a_turn_was_spoken_and_a_summary_never(self):
+        # A rename after a spoken turn can be written from it, whichever turn
+        # opened the chat (`title::due` renames at turns 1, 3 and 8; review
+        # of #559, passes 6 and 7); one before any spoken turn is typed words.
+        # A summary paraphrases typed and spoken turns alike (pass 4).
         sessions = os.path.join(self.home, "sessions")
         os.makedirs(sessions, exist_ok=True)
-        spoken_title = "Planning the lighthouse open day with the harbour society"
-        typed_title = "Refactoring the compaction cut and rerunning the benchmark suite"
+        spoken_title = "Lighthouse open day with the harbour society"
+        typed_title = "Profiling the release build and slow tests"
+        renamed = "Swim lessons moved to the Saturday morning"
         summary = "The owner asked to move the open day to the last weekend of June."
         voice = "Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\nhello"
         def user(text):
@@ -326,10 +328,56 @@ class Guard(unittest.TestCase):
             f.write(json.dumps({"record": "rewrite", "messages": [{"role": "user", "content": [{"type": "text",
                     "text": "[Earlier turns were compacted to fit the context window. What happened in them:]\n" + summary}]}]}) + "\n")
         with open(os.path.join(sessions, "20990105T000001-4e5f6a7c.jsonl"), "w") as f:
-            f.write(json.dumps({"record": "meta", "id": "u", "kind": "web", "title": typed_title}) + "\n")
-            f.write(user("Refactor the cut, then rerun the benchmark."))
+            f.write(json.dumps({"record": "meta", "id": "u", "kind": "web", "title": "New chat about profiling"}) + "\n")
+            f.write(user("Profile the release build and find the slow tests."))
+            f.write(json.dumps({"record": "title", "title": typed_title}) + "\n")
             f.write(user(voice))
-        for text, want in ((spoken_title, 1), (typed_title, 1), (summary, 0)):
+            f.write(json.dumps({"record": "title", "title": renamed}) + "\n")
+        for text, want in ((spoken_title, 1), (renamed, 1), (typed_title, 0), (summary, 0)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
+    def test_a_call_whose_block_is_only_in_the_system_prompt_is_read_whole(self):
+        # Standalone `mecha voice-serve` carries the voice block in the
+        # system prompt, and under MECHA_SESSION_KIND=test its kind reads
+        # "test": the mark is in a config record and no owner turn (pass 7).
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        heard = "Remind me to collect the dry cleaning on the way home tonight."
+        t = lambda x: {"type": "text", "text": x}
+        with open(os.path.join(sessions, "20990112T000000-1f2a3b4c.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "vs", "kind": "test"}) + "\n")
+            f.write(json.dumps({"record": "config", "system_prompt":
+                    "You are mecha.\n\nVoice mode: everything you write is spoken aloud by a text-to-speech voice."}) + "\n")
+            f.write(json.dumps({"record": "message", "role": "user", "content": [t(heard)]}) + "\n")
+        self.stage("fixture.py", f"X = {heard!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_an_extension_is_replayed_but_not_read_as_said(self):
+        # `Record::Extend` folds harness text onto the last recorded message;
+        # the replay applies it, so a later fold is still recognised, and
+        # never reads it as speech (pass 7).
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        heard = "Order more coffee beans before the weekend please."
+        brief = "Situation brief from the harness: the owner keeps a standing order for oat milk deliveries."
+        barge = "Actually make it two bags of the dark roast this time."
+        t = lambda x: {"type": "text", "text": x}
+        msg = lambda role, *b: {"role": role, "content": list(b)}
+        voiced = msg("user", t("Voice mode: everything you write is spoken aloud by a text-to-speech voice.\n\n" + heard))
+        call = msg("assistant", {"type": "tool_use", "id": "t1", "name": "shop", "input": {}})
+        result = msg("user", {"type": "tool_result", "tool_use_id": "t1", "content": "ok"})
+        with open(os.path.join(sessions, "20990113T000000-2a3b4c5d.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "e", "kind": "web"}) + "\n")
+            f.write(json.dumps({"record": "message", **voiced}) + "\n")
+            f.write(json.dumps({"record": "extend", "index": 0, "blocks": [t(brief)]}) + "\n")
+            for m in (call, result):
+                f.write(json.dumps({"record": "message", **m}) + "\n")
+            extended = msg("user", voiced["content"][0], t(brief))
+            f.write(json.dumps({"record": "rewrite", "messages": [
+                extended, call, msg("user", result["content"][0], t(barge))]}) + "\n")
+        for text, want in ((brief.split(": ", 1)[1], 0), (barge, 1)):
             git(self.repo, "reset", "-q")
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
