@@ -135,6 +135,10 @@ pub enum Cmd {
         #[arg(long)]
         seed: Option<u64>,
     },
+    /// Fetch the face detector a persona's edits are anchored with
+    /// (py-feat's RetinaFace-R34, 89 MB, checked against its pin). Without
+    /// it those edits draw as before and their manifests say why.
+    InstallFaceDetector,
 }
 
 /// One y/N question, where EOF is "no" — the outbox's rule: a review surface
@@ -270,8 +274,37 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     ) {
         super::features::require(mecha_core::feature::Feature::Library)?;
     }
+    if let Cmd::InstallFaceDetector = args.cmd {
+        super::features::require(mecha_core::feature::Feature::Image)?;
+        return install_face_detector().await;
+    }
     let dir = Library::default_dir()?;
     run(&dir, args.cmd)
+}
+
+async fn install_face_detector() -> Result<()> {
+    use mecha_core::face;
+    if let Some(path) = face::weights()? {
+        println!("The face detector is already installed: {}", path.display());
+        return Ok(());
+    }
+    let total = face::WEIGHTS.bytes;
+    let mut shown = 0u64;
+    let path = face::install(&mut |got| {
+        // A line per tenth, not per chunk: this is a terminal, not a bar.
+        if got >= shown + total / 10 || got == total {
+            shown = got;
+            eprintln!("  {} of {} MB", got / 1_000_000, total / 1_000_000);
+        }
+    })
+    .await?;
+    println!(
+        "Installed the face detector ({} {}): {}",
+        face::REPO,
+        &face::REVISION[..8],
+        path.display()
+    );
+    Ok(())
 }
 
 fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
@@ -280,6 +313,8 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
         eprintln!("mecha: {} did not load — {}", e.path.display(), e.why);
     }
     match cmd {
+        // Async, so `execute` runs it before reaching here.
+        Cmd::InstallFaceDetector => anyhow::bail!("install-face-detector runs from `execute`"),
         Cmd::List { all, json } => {
             let entries: Vec<&Entry> = lib
                 .all()
