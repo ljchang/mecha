@@ -48,6 +48,7 @@ something shipped.
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
 | [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what the university's token policy makes impossible |
 | [`CLASSIFIER-RESEARCH.md`](CLASSIFIER-RESEARCH.md) | Whether a learned classifier (a detector, a monitor, Jev or Laya) can decide when the interlock's restriction is unnecessary — and the roles it may and may not play |
+| [`BACKGROUND-JOBS-DESIGN.md`](BACKGROUND-JOBS-DESIGN.md) | How a slow side effect (a picture first) outlives the turn: the call answers at once, a job owned by the conversation does the work, and the same call's result arrives late — talking never kills it, Stop does, one at a time (PERSONA-CONTEXT-DESIGN §5.4, R3; 2026-10-05) |
 | [`CLOUD-HOSTING-RESEARCH.md`](CLOUD-HOSTING-RESEARCH.md) | What it would cost to run the model somewhere other than this box |
 | [`CODE-MODE-RESEARCH.md`](CODE-MODE-RESEARCH.md) | Which embeddable interpreter should run the model's tool-calling programs, and what contract the model sees |
 | [`CONTEXT-RESEARCH.md`](CONTEXT-RESEARCH.md) | What is actually established about context management, compaction and distractors |
