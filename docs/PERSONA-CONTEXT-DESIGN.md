@@ -1,6 +1,7 @@
 # Persona context: what the model reads
 
-**Status:** proposed 2026-10-05. Rulings pending (§7). Nothing here is built.
+**Status:** accepted 2026-10-05 with the amendments below (§7). Being built in the order in §8.
+§5.4 (pictures as jobs) is a separate build. It is built against the run notes of §5.1.
 
 **The question:** why does a persona keep doing what the owner asked it to stop, chain edits of
 its own pictures, run away inside one turn, and claim things it cannot do? And what is the fix at
@@ -10,6 +11,15 @@ the root, rather than one more note in the prompt?
 persona's own past machinery, with the owner's words at 2–4% of it. The model continues whatever
 dominates its context. Each symptom below is that one behaviour. Each earlier fix added more text
 to the same context, so each one also added to the cause.
+
+**Why the fix lives in core:** the harness has no place for its own words except the owner's
+message. Everything after that is repair work: a registry of text prefixes to tell harness text
+from the owner's (`agent::is_harness_voice`, nine voices), and wire views that remove some of it
+again on the way out (`PriorNudges`, beside `PriorThinking` and `PriorTails`). The assistant's
+chat adds the calendar reference and the situation brief to user turns the same way. Personas show
+the cost first because their chats are long, mostly talk, and run on a small local model. So the
+context rules in §5.1–§5.3 are built in `mecha-core`, for every conversation. They are not built
+as one more persona patch in the serve layer.
 
 Privacy: this document carries no conversation text, no persona names and no session ids. The
 personas are A (has `image_generate`) and B (does not). The measurements are counts and
@@ -24,7 +34,10 @@ the repository (§8).
    over. 9 turns were stopped by the owner speaking and 7 pictures were cancelled mid-render. After
    the owner asked it to stop sending pictures, it called `image_generate` four more times.
 2. **A runaway inside one turn (persona A, text chat).** One turn made 12 picture calls, about 40 s
-   each, around 8 minutes in all. It stopped only because the run hit `max_turns = 12`.
+   each, around 8 minutes in all. It stopped only because the run hit `max_turns = 12`. That cap
+   was an operator override in `[agent]`, not the repository default of 40. The owner ruled
+   against a low cap (§7, R6) and it is gone. The runaway is fixed structurally by §5.4's
+   one-job rule, not by a turn cap.
 3. **"The same picture again" (persona A).** 75% of the persona's edits came back as near-copies of
    their reference, both before and after the 2026-10-04/05 image changes (§3.4).
 4. **Edits nobody asked for (persona A).** Of the persona's picture calls on 10-05, 77% were edits
@@ -39,17 +52,20 @@ the repository (§8).
   (`message.rs`, #517) removes earlier reasoning only from *plain replies*. A turn that called a
   tool keeps it, because stripping it in 2026-08 produced bare, empty tool calls (6/6).
 - **Harness notes** are written *into the owner's message* for the turn: the call note
-  (`persona::call::note`), the variety note (`persona::variety`), the identity reminder
-  (`persona::safety`) and the memory block (`persona::recall`). Because they live in the message,
-  they stay in the history and are re-sent on every later turn.
+  (`persona::call::note`), the variety note (`persona::variety`), the edit note
+  (`persona::edit`), the identity reminder (`persona::safety`) and the memory block
+  (`persona::recall`). Because they live in the message, they stay in the history and are
+  re-sent on every later turn. `PriorNudges::Drop` takes the stale variety and edit notes back
+  out at send time. The rest stay.
 - **Tool results** carry guidance as well as facts. An image result is about 900 characters:
   where the file is, not to overwrite the original, "To change it further, edit … next", and the
   near-copy notice with its recovery advice (`imagegen.rs`).
 - **A call's barge-in** (`persona_chat::speak`) cancels the run in flight (`CancelReason::Stopped`).
   `image_generate` honours that cancel and stops the ComfyUI job, because the chat's Stop button
   needs exactly that. The result is "Cancelled — the generation was stopped and nothing was
-  saved." (`ARCHITECTURE.md` §Interruption and steering says tools are never interrupted
-  mid-call; the image tool is the exception.) Steered owner speech is folded in after that result.
+  saved." This is the one exception to "a tool is never interrupted mid-call", and
+  `ARCHITECTURE.md` §Interruption and steering records it. Steered owner speech is folded in
+  after that result.
 - **Persona chats are unseeded** (`setup::persona_provider_config`, `PersonaUse::Converse`). The
   session's `config` record shows the provider's `seed = 42` *as written*, not what is sent.
 
@@ -72,6 +88,9 @@ The wire as sent (live-faithful encoding, §3.2), split by source, for persona A
 
 The harness notes at M1 break down as: 3 copies of the memory block (7,486 chars), 18 "From the
 harness" notes (4,325), and 2 identity reminders (988). All of them are re-sent on every turn.
+
+The two M1 totals, 32,852 here and 32,941 in §3.2, are two captures of the same moment. Each
+percentage is of its own row's total.
 
 ### 3.2 The replay
 
@@ -111,6 +130,11 @@ An earlier run, the V-series, is superseded:
 **Limits:**
 - Two moments from one call, eight samples per cell. That is strong for direction, not for exact
   rates.
+- **L6 removed more than §5.1 does.** It dropped every parenthesised harness block from past
+  turns, including the files block, the memory block and the session goal. It did not move them.
+  The build keeps the files and the goal in the first turn and moves memory into the run's notes
+  (§5.1). So L7 is the direction, not a measurement of the build. Each step's gate replays the
+  projection *as built* (§8).
 - The replay tests what the model *reads* (changes 1–3 in §5). Changes 4–6 alter what *happens*,
   so they cannot be replayed and each needs its own measurement once built.
 
@@ -160,6 +184,9 @@ on the owner's screen during the call … say you sent it"), whether or not the 
 
 ## 4. Root causes
 
+0. **The harness has no channel of its own.** A `Message` is the only thing a request is built
+   from, so harness text goes into the owner's message and then has to be recognised and removed
+   again. Causes 1 and 2 follow from this.
 1. **Guidance for one turn is stored as history.** Notes and the memory block are written into the
    owner's message, so they accumulate (§3.1).
 2. **Tool results carry instructions as well as facts**, and those instructions accumulate too.
@@ -169,7 +196,7 @@ on the owner's screen during the call … say you sent it"), whether or not the 
    tool call, so:
    - the turn blocks;
    - a barge-in kills the render;
-   - one turn can chain pictures up to `max_turns`.
+   - one turn can chain pictures until the run's turn budget runs out.
 5. **The persona keeps its look by editing its last picture.** Edits cannot change a pose, so new
    poses come back as near-copies and drift across chains. #569's face anchor treats the drift.
    The cause is that the persona edits at all when the owner did not point at a picture.
@@ -178,76 +205,163 @@ on the owner's screen during the call … say you sent it"), whether or not the 
 
 ## 5. Design
 
-Each change is a rule about the context or the conversation, not a new prompt.
+Each change is a rule about the context or the conversation, not a new prompt. The general shape:
+**every component that has something to tell the model (a tool, call mode, the safety layer,
+memory) says it only while it is active, and in one of two places.** The stable prefix (the
+system prompt or a tool's description) holds what is true for the whole chat. The run's notes hold
+what is true for this run. Nothing a component says is written into the conversation.
 
-1. **Ephemeral guidance.**
-   - Harness notes and the memory block go on the **current request only**, after the history.
-     They are never written into a message, and the transcript records them in their own record,
-     so nothing is lost for audit.
-   - The history the model sees is the conversation: owner words, persona replies, delivered
-     pictures.
-   - Cache: the history is byte-stable between turns, so it stays a prefix of the next request.
-     Only the tail is new.
-2. **Factual tool results.** A result says what happened (path, edit or new, time; for an edit,
-   the similarity). How to use the tool, and what to do next, lives **once**, in the tool's
-   description.
-3. **The history is what reached the owner.** A turn the owner interrupted leaves its delivered
-   words in the history and nothing else: no reasoning, no unanswered call, no "Cancelled"
-   result. The transcript keeps the full record. This applies to every tool, not only pictures.
-4. **Pictures are jobs, not turns.**
-   - `image_generate` queues a job and returns at once ("being made").
-   - The picture is delivered into the conversation as an event when it is ready: the owner sees
-     it, and the model is told at its next turn.
-   - **One job per conversation at a time**: a second request while one is pending is refused
-     structurally.
-   - A barge-in cancels the *talking*, never the job. The owner can still stop a job explicitly
-     (the Stop button, or a call's "stop").
-   - This removes the call's 40 s silence, the cancel-and-retry loop, and the in-turn runaway.
-5. **Edits only on the owner's initiative.**
-   - `reference_images` in the persona form accepts only a picture the owner pointed at in the
-     turn being answered: the Edit button's message, a picture they attached, or one they named.
-   - Every other picture is new, with `cast` carrying identity (the persona's linked character,
-     §8.6 of `PERSONA-DESIGN.md`).
-   - This is the owner's stated intent (2026-10-05). It also removes edit-chain drift at its
-     source.
-6. **Guidance travels with capability.** A note about a tool is part of that tool, its description
-   or its own contribution to the call note, so a persona without the tool never hears about it.
-   (The call note's `PICTURES` sentence is the instance.)
+### 5.1 Run notes
+
+- **What they are.** `RunContext::notes` is the harness's text for one run. The loop adds it to
+  every request of that run and never writes it into `Conversation::messages`.
+- **Where they go on the wire.** The notes are extra text blocks at the end of the request's
+  **last user message**, added at send time after every other wire view. They are never a message
+  of their own, because two user messages in a row are invalid. On a run's first request the last
+  user message is the owner's turn. After a tool round trip it is the message carrying the tool
+  results, which is the slot steering already uses.
+- **Why the end, not the owner's turn.** The notes move to the newest message with each request, so
+  each request re-reads only the notes and the step before them. A note pinned to the owner's
+  turn would be cached for the run, but the next turn would then re-read the whole of the
+  previous run from the point where the note no longer is. That costs most after a tool-heavy turn
+  and lands on a spoken reply's latency. At the end, the next turn's history is a prefix of what
+  the server already holds, up to the previous reply.
+- **The views run on the recorded history.** `message::answering` (the turn being answered,
+  which `PriorThinking::Drop` cuts at) is found before the notes are added, so a trailing note
+  never moves the cut.
+- **Accounting.** `Agent::wire_bytes` counts the notes, so a pressure reading and the request
+  describe the same bytes.
+- **Cache breakpoints.** `CompletionRequest::trailing_notes` says how many trailing blocks are
+  notes. A provider that marks a moving cache breakpoint (`provider/anthropic.rs`) puts it on the
+  last block *before* them, because a write on a note is never read back.
+- **Taint.** Notes arm taint by the same rule as content (`Taint::arm_for_content`). Memory of the
+  owner arms `private`, and memory first read from outside also arms `untrusted`. Taint stays a
+  property of the conversation and is recorded as before, so a later turn without the note stays
+  armed.
+- **Audit.** The session records each run's notes in their own record (`Record::Notes`). A build
+  from before it skips the line, as with `Record::Extend`.
+- **Guidance and material.**
+  - *Guidance* changes per run and becomes notes: the call note, the variety note, the edit note,
+    the identity reminder, and memory (the chat-start block and per-turn recall, joined into one
+    memory note per run).
+  - *Material* is read once and kept: the files block stays in the first turn, where it is cached
+    and compaction keeps it. The session goal stays too, because it is the owner's words.
+  - The call note goes on **every** spoken turn. It no longer persists, so "first spoken turn of a
+    stretch" no longer applies.
+- **Chats recorded before this.** Their stored messages already hold notes. The persona projection
+  drops every recorded persona note from the history it sends: call, variety, edit, identity
+  reminder and memory, but never files or the goal. That replaces `PriorNudges`'s stale-note
+  logic and its re-read cap. The first turn of an old chat after the change re-reads its history
+  once. After that the history is stable. `is_harness_voice` keeps its entries, because old
+  transcripts are still read by the miner and the UI.
+
+### 5.2 Factual tool results
+
+A result says what happened: the path, edit or new, the time, and for an edit the similarity. How
+to use the tool, and what to do next, lives **once**, in the tool's description.
+
+### 5.3 The history is what happened, not what was attempted
+
+- A turn the owner interrupted is sent as **its delivered words plus any effect that completed**,
+  stated as a fact. A cancelled call goes, with its result. So does the reasoning that chose it.
+  A tool that finished before the barge-in, such as a memory write, stays.
+- An assistant message left with no text and no completed call is dropped whole, never sent empty
+  (an empty assistant message is a 400 everywhere). This is `drops_thinking`'s rule for the same
+  reason.
+- This is a send-time **projection** of the recorded history, like `PriorThinking`. It is not a
+  `Rewrite` record. The transcript keeps everything. `wire_bytes` counts the projection.
+- It applies to every tool, not only pictures.
+
+### 5.4 Pictures as jobs (separate build)
+
+- `image_generate` queues a job and returns at once ("being made").
+- When the picture is ready, the owner sees it. The model learns of it through the next run's notes
+  (§5.1), and the history gains a durable record that it was delivered. That record is **text
+  only**: the model is told a picture reached the owner, never shown its pixels. `image_view`
+  stays the separate step, and images stay user turns only.
+- **One job per conversation at a time.** A second request while one is pending is refused
+  structurally.
+- A barge-in cancels the *talking*, never the job. The owner can still stop a job explicitly (the
+  Stop button, or a call's "stop").
+- Built as a core mechanism for any slow side effect, with pictures as the first user.
+- This removes the call's 40 s silence, the cancel-and-retry loop, the in-turn runaway, and the one
+  exception to "a tool is never interrupted mid-call" (§2).
+
+### 5.5 Edits only on the owner's initiative
+
+- `reference_images` in the persona form accepts only a picture the owner **pointed at, by a typed
+  reference** in the turn being answered: the Edit button's message, a picture they attached, or a
+  "reply to this picture" action. Nothing is parsed out of the owner's words.
+- Every other picture is new, with `cast` carrying identity (the persona's linked character,
+  `PERSONA-DESIGN.md` §8.6).
+- A persona with no linked character draws itself from its description, as today. This rule adds
+  no identity source it does not have. The tool's description says so, and linking a character is
+  the owner's way to fix it.
+- This is the owner's stated intent (2026-10-05). It also removes edit-chain drift at its source.
+
+### 5.6 Guidance travels with capability
+
+A note about a tool is part of that tool: its description, or its own contribution to a note. A
+persona without the tool never hears about it. The call note's `PICTURES` sentence is the
+instance: it is sent only to a persona whose registry holds `image_generate`.
 
 ## 6. What these make unnecessary
 
 Each of these was right for its symptom. Under §5 the symptom has no cause left. Retire each one
-only with a before/after measurement on the replay (§8) and on the repetition harness
-(`persona/variety`'s echo readings), never by assumption:
+only with a before/after measurement on the replay and the regression panel (§8), never by
+assumption:
 
+- `PriorNudges`'s stale-note logic and its re-read cap (§5.1: there is nothing stale to drop once
+  notes are not stored; the projection of old chats drops all of them);
+- `recall::carries_now`'s first-turn placement of memory, and the call note's
+  "first spoken turn of a stretch" gating (§5.1);
 - the near-copy notice's recovery advice and the "To change it further, edit … next" line (§5.2,
   §5.5);
-- the variety note written into each turn (`persona::variety`; its guidance becomes ephemeral under
-  §5.1, so whether it is still needed is a measurement);
+- the variety note itself (`persona::variety`). Under §5.1 it is one note for one run, never a
+  stack, which is the condition it was measured in. Whether it is still needed once the history
+  is lean is a measurement;
 - the repeat guard's retry wording around repeated new pictures (#543), under §5.4's one-job rule;
 - `PriorThinking::Drop`'s tool-turn exemption, re-examined once §5.3 removes interrupted tool turns.
   The 2026-08 empty-call finding is still to be honoured.
 
-## 7. Rulings needed
+Not retired: `is_harness_voice`'s persona entries (old transcripts carry those notes), and
+`PriorTails` (a cut-off reply is what the owner heard, and the trim is about how the model reads
+it, not about harness text).
 
-- **R1. Ephemeral guidance (§5.1):** the notes move out of the stored conversation.
-- **R2. The history is what reached the owner (§5.3)**, for every tool.
-- **R3. Pictures as jobs (§5.4).** The visible change: the persona answers before the picture
-  arrives, and one picture is in flight at a time.
-- **R4. Edits only on the owner's initiative (§5.5)**, with `cast` for every other picture.
-- **R5. Retire superseded fixes by measurement (§6).** Each one is removed only when the replay and
-  echo readings show no regression.
+## 7. Rulings (owner, 2026-10-05)
+
+The owner accepted the design with the amendments made in this revision ("Revise the doc and then
+get started").
+
+- **R1. Run notes (§5.1):** accepted, built in core as `RunContext::notes`.
+- **R2. The history is what happened (§5.3)**, for every tool, keeping completed effects.
+- **R3. Pictures as jobs (§5.4)**, as a core job mechanism, built separately on §5.1's notes.
+- **R4. Edits only on the owner's initiative (§5.5)**, by typed reference only, with `cast` for
+  every other picture.
+- **R5. Retire superseded fixes by measurement (§6).**
+- **R6. No low turn cap.** "We don't need to set a max turns … if we do it should be much longer."
+  The operator's `max_turns = 12` override is removed. Runs use the default of 40.
 
 ## 8. Build order and measurement
 
-- **Order:** §5.1 and §5.2, then §5.3, then §5.6, then §5.5, then §5.4. The first three are what
-  L7 measured; §5.6 is small; §5.5 and §5.4 change behaviour the owner sees.
-- **Gate for each step:** rerun the replay. L0 must move toward L7 for M1 and M2, with no empty
-  replies. Read the echo/repetition readings before and after. §5.4 and §5.5 each need a new
-  measurement:
-  - picture latency and loops on a scripted call;
-  - the near-copy rate and pose success of new-with-cast against edit, scored with ArcFace as in
-    `IMAGE-COMPILER-RESEARCH.md`.
+- **Order:**
+  1. §5.1 run notes, with §5.6 (the call note is rewritten in the same place anyway);
+  2. §5.2 factual tool results;
+  3. §5.3 the projection of interrupted turns;
+  4. §5.5 edits only on the owner's initiative;
+  5. §5.4 pictures as jobs, separately, once step 1's notes have landed.
+- **Gate for each step:**
+  - Rerun the replay against the projection as built. L0 must move toward L7 for M1 and M2, with
+    no empty replies.
+  - Read the echo and repetition readings before and after.
+  - Run a **regression panel** over at least three personas, one of them without
+    `image_generate`. It covers repetition and copying (`persona::echo`), the picture loop, the
+    claimed picture, and identity in self-portraits. One persona's chats are too small a sample
+    to tune on (`PERSONA-DESIGN.md` §12.7).
+  - §5.4 and §5.5 each need a new measurement:
+    - picture latency and loops on a scripted call;
+    - the near-copy rate and pose success of new-with-cast against edit, scored with ArcFace as in
+      `IMAGE-COMPILER-RESEARCH.md`.
 - **Harness:** `~/.mecha/research/persona-context-2026-10-05/` on the operator's machine, mode
   0700, never committed, because it reads real sessions.
   - `replay_live.py` is the live-faithful replay, and `replay_lean.py` holds L6/L7.
