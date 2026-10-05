@@ -73,7 +73,9 @@ pub struct Args {
 
     /// With `engine --adopt` or `--upgrade`: move the servers even if the
     /// new engine measures slower, or fails a check the old one passes.
-    #[arg(long)]
+    /// Refused with `--rollback` here, at the parser; "only with one of two
+    /// verbs" is the half clap cannot say, checked in `setup_engine::run`.
+    #[arg(long, conflicts_with = "rollback")]
     pub force: bool,
 
     /// With `engine`: move an adopted machine back onto the engine it ran
