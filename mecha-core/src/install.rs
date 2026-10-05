@@ -103,11 +103,10 @@ pub fn installable(id: &str) -> bool {
     }
 }
 
-/// Whether a sidecar's install brings the models it serves. Layout's fetches
-/// its model; the engine's does not — the router's chat model, and the
-/// embeddings and OCR models, arrive with their servers (7c) — so a model
-/// gone from the hub is a reason to run layout's install again, never the
-/// engine's.
+/// Whether a sidecar's install brings the models it serves. Layout's and the
+/// on-demand servers' fetch theirs; the engine's does not — the router's chat
+/// model arrives with the router (7c-2) — so a model gone from the hub is a
+/// reason to run their installs again, never the engine's.
 fn fetches_models(id: &str) -> bool {
     matches!(id, "layout" | "embed-server" | "ocr-server")
 }

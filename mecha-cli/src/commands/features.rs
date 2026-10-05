@@ -181,7 +181,8 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 );
             }
             println!(
-                "Enabling {} installs, from pinned sources into ~/.mecha/sidecars/:",
+                "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, for a \
+                 server, its systemd user units, started once to check them:",
                 ids.join(" ")
             );
             for (_, label, _, bytes) in &todo {

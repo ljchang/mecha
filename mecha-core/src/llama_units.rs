@@ -17,10 +17,16 @@
 //!
 //! **Rendered, not copied verbatim.** The installed units name the launchers
 //! by absolute path under this mecha home (`MECHA_HOME` honoured), name
-//! `systemd-socket-proxyd` where this distribution keeps it, and — only when
-//! mecha's own engine is installed — carry the drop-in that points
-//! `LLAMA_SERVER` at it. The unit names and ports are parameters, so a test
-//! can install a pair beside the live one without touching it.
+//! `systemd-socket-proxyd` where this distribution keeps it, and carry two
+//! drop-ins: the hub directory the model was fetched into (`mecha-hub.conf`,
+//! so the launcher, under the user manager's environment, reads the same
+//! cache), and the engine. mecha's own engine is named by `mecha-engine.conf`,
+//! recorded under the engine as `setup engine --adopt` records it; a provided
+//! `llama-server` — found on the PATH mecha ran with, which can be wider than
+//! the unit's fixed one — is named by `engine-provided.conf`, which sorts
+//! before it, so a later adopt's drop-in wins and its rollback never touches
+//! this one. The unit names and ports are parameters, so a test can install
+//! a pair beside the live one without touching it.
 //!
 //! **Linux only.** The units are systemd user units (§10.5): on macOS the
 //! engine and the models install, and starting the servers stays manual
@@ -297,22 +303,43 @@ pub async fn install(
     )?;
     let dropins = units.join(format!("{stem}.service.d"));
     write_owned(home, id, &dropins.join("path.conf"), PATH_CONF, 0o644)?;
-    // The engine the launcher runs, named in the unit: mecha's when it is
-    // installed, else the provided `llama-server` found where the engine's
-    // own check found it — the shell's PATH, which can be wider than the
-    // unit's fixed one (a Nix profile, Homebrew, a build tree). Left alone
-    // either way: the drop-in only names it.
-    let engine = engine_for_units(m).context(
-        "there is no llama-server for these servers to run — `mecha features enable` installs \
-         mecha's engine where it is offered, or put a llama.cpp build on PATH",
-    )?;
+    // Where the model was fetched: the launcher resolves the hub again under
+    // the user manager's environment, which has none of the shell's `HF_*`.
     write_owned(
         home,
         id,
-        &dropins.join("mecha-engine.conf"),
-        &crate::engine_gate::drop_in_text(&engine),
+        &dropins.join("mecha-hub.conf"),
+        &hub_text(hub),
         0o644,
     )?;
+    // The engine the launcher runs, named in the unit (module doc).
+    let managed = crate::engine_gate::managed_binary(home);
+    if managed.is_file() {
+        write_owned(
+            home,
+            "llama",
+            &dropins.join("mecha-engine.conf"),
+            &crate::engine_gate::drop_in_text(&managed),
+            0o644,
+        )?;
+    } else {
+        let engine = m
+            .path
+            .iter()
+            .map(|d| d.join("llama-server"))
+            .find(|p| p.is_file())
+            .context(
+                "there is no llama-server for these servers to run — `mecha features enable` \
+                 installs mecha's engine where it is offered, or put a llama.cpp build on PATH",
+            )?;
+        write_owned(
+            home,
+            id,
+            &dropins.join("engine-provided.conf"),
+            &provided_engine_text(&engine),
+            0o644,
+        )?;
+    }
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])?;
@@ -324,17 +351,30 @@ pub async fn install(
     Manifest::finish(home, id)
 }
 
-/// The `llama-server` the units should run: mecha's own engine when it is
-/// installed, else the first one on the machinery's PATH.
-fn engine_for_units(m: &Machinery) -> Option<PathBuf> {
-    let managed = crate::engine_gate::managed_binary(&m.mecha_home);
-    if managed.is_file() {
-        return Some(managed);
-    }
-    m.path
-        .iter()
-        .map(|d| d.join("llama-server"))
-        .find(|p| p.is_file())
+/// The drop-in naming the hub a server's model was fetched into.
+fn hub_text(hub: &Path) -> String {
+    format!(
+        "# Written by `mecha features enable`: the Hugging Face cache this server's\n\
+         # model was fetched into, so the launcher reads the same one under the user\n\
+         # manager's environment.\n\
+         [Service]\n\
+         Environment=\"HF_HUB={}\"\n",
+        hub.display()
+    )
+}
+
+/// The drop-in naming a provided `llama-server`: the one found on the PATH
+/// mecha ran with, left where it is.
+fn provided_engine_text(engine: &Path) -> String {
+    format!(
+        "# Written by `mecha features enable`: the llama-server this server runs, found\n\
+         # on the PATH mecha ran with, which can be wider than the unit's own. The\n\
+         # binary is left alone; mecha's engine, once adopted, is named by\n\
+         # mecha-engine.conf, which sorts after this file and wins.\n\
+         [Service]\n\
+         Environment=\"LLAMA_SERVER={}\"\n",
+        engine.display()
+    )
 }
 
 /// One request through the public port, waited out across the cold start the
@@ -378,46 +418,61 @@ async fn check(which: Which, port: u16) -> Result<()> {
 /// Stop and remove a server installed under `naming` — what the ignored test
 /// cleans up with; `mecha setup <feature> --remove` will stand on it.
 pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
+    let home = &m.mecha_home;
+    let id = which.sidecar();
     let stem = &naming.stem;
     let _ = crate::engine_gate::systemctl("disable", &["--now", &format!("{stem}.socket")]);
     let _ = crate::engine_gate::systemctl(
         "stop",
         &[&format!("{stem}-proxy.service"), &format!("{stem}.service")],
     );
+    // A record is forgotten only after its file is gone: a removal that
+    // fails keeps the record, so the next install does not refuse mecha's
+    // own file as someone else's.
+    let gone = |p: &Path, ids: &[&str]| -> Result<()> {
+        match std::fs::remove_file(p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", p.display())),
+        }
+        for id in ids {
+            Manifest::unrecord(home, id, p)?;
+        }
+        Ok(())
+    };
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     for p in [
         units.join(format!("{stem}.socket")),
         units.join(format!("{stem}-proxy.service")),
         units.join(format!("{stem}.service")),
     ] {
-        let _ = std::fs::remove_file(&p);
-        Manifest::unrecord(&m.mecha_home, which.sidecar(), &p)?;
+        gone(&p, &[id])?;
     }
     let dropins = units.join(format!("{stem}.service.d"));
-    for f in ["path.conf", "mecha-engine.conf"] {
-        let p = dropins.join(f);
-        let _ = std::fs::remove_file(&p);
-        Manifest::unrecord(&m.mecha_home, which.sidecar(), &p)?;
+    for f in ["path.conf", "mecha-hub.conf", "engine-provided.conf"] {
+        gone(&dropins.join(f), &[id])?;
     }
+    // mecha's engine drop-in is the engine's record (as an adopt's is).
+    gone(&dropins.join("mecha-engine.conf"), &["llama", id])?;
     let _ = std::fs::remove_dir(&dropins);
-    // The launchers too, or the record would still read installed with no
-    // unit on the machine. `mecha-wait-healthy` is shared: each server keeps
-    // its own record of it, and the file goes only when no record is left.
-    let bin = bin_dir(&m.mecha_home);
+    let bin = bin_dir(home);
     let (_, _, _, _, launcher_name) = which.files();
-    let launcher = bin.join(launcher_name);
-    let _ = std::fs::remove_file(&launcher);
-    Manifest::unrecord(&m.mecha_home, which.sidecar(), &launcher)?;
+    gone(&bin.join(launcher_name), &[id])?;
+    // `mecha-wait-healthy` is shared: each server keeps its own record of it,
+    // and the file goes only when no other record names it.
     let wait = bin.join("mecha-wait-healthy");
-    Manifest::unrecord(&m.mecha_home, which.sidecar(), &wait)?;
-    let still_used = Manifest::read(&m.mecha_home)?
+    let others = Manifest::read(home)?
         .entries
         .iter()
-        .any(|e| e.wrote.contains(&wait));
-    if !still_used {
-        let _ = std::fs::remove_file(&wait);
+        .any(|e| e.sidecar != id && e.wrote.contains(&wait));
+    if others {
+        Manifest::unrecord(home, id, &wait)?;
+    } else {
+        gone(&wait, &[id])?;
     }
-    crate::engine_gate::systemctl("daemon-reload", &[])
+    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    // Removed whole: the entry goes too, so the plan reads the machine again.
+    Manifest::forget_if_empty(home, id)
 }
 
 #[cfg(test)]
@@ -567,17 +622,22 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn an_ocr_server_installs_and_answers_beside_the_live_one() {
-        let free = || {
-            std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port()
-        };
+        // Both ports held until both are taken: a port released and reused
+        // would point the proxy back at its own socket.
+        let (a, b) = (
+            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+            std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        );
+        let (public, backend) = (
+            a.local_addr().unwrap().port(),
+            b.local_addr().unwrap().port(),
+        );
+        drop((a, b));
+        assert_ne!(public, backend);
         let naming = Naming {
             stem: format!("mecha-test-ocr-{}", std::process::id()),
-            public: free(),
-            backend: free(),
+            public,
+            backend,
         };
         let root = std::env::temp_dir().join(format!("mecha-7c1-{}", uuid::Uuid::new_v4()));
         let mut m = Machinery::real().unwrap();
@@ -593,15 +653,15 @@ mod tests {
         eprintln!("{said:#?}");
         r.unwrap();
         cleaned.unwrap();
-        // Removed is removed from the record too: nothing left for the plan
-        // to read as installed.
+        // Removed is removed from the record too: the entry goes, so the plan
+        // reads the machine again rather than an empty record it would call
+        // unknown and never offer over.
         let man = Manifest::read(&m.mecha_home).unwrap();
-        let entry = man
-            .entries
-            .iter()
-            .find(|e| e.sidecar == "ocr-server")
-            .unwrap();
-        assert!(entry.wrote.is_empty(), "{:?}", entry.wrote);
+        assert!(
+            !man.entries.iter().any(|e| e.sidecar == "ocr-server"),
+            "{:?}",
+            man.entries
+        );
         let unit = crate::engine_gate::unit_dir(&m)
             .unwrap()
             .join(format!("{}.socket", naming.stem));
