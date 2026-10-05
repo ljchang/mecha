@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
-  fileUrl, uploadUrl, historyLines, beforeTurn, turnsSaid,
+  fileUrl, uploadUrl, historyLines, pendingSpeech,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
 
@@ -546,29 +546,25 @@ console.log('persona: ok');
   assert.deepEqual(historyLines(undefined), []);
 }
 
-// Where a call begins, as a count of the owner's lines: a re-read that adds a
-// page-only notice does not move it, an undelivered line does not count, and
-// the reply to the last line before the call joins the history when it lands.
+// The owner's speech below the transcript: still being heard, or finished
+// and not yet in the transcript — never twice once the transcript has it,
+// and never the persona's words, which come from the transcript.
 {
-  const atCall = [
-    { kind: 'user', text: 'Is the bakery open?' },
-    { kind: 'assistant', text: 'Until six.' },
-    { kind: 'user', text: 'And tomorrow?' },
-    { kind: 'user', text: 'Never sent.', queued: true, delivery: 'discarded' },
+  const lines = [{ who: 'user', text: 'Is the bakery open?' }, { who: 'persona', text: 'Until six.' }];
+  const call = [
+    { who: 'user', text: 'Is the bakery open?', interim: false, heardAt: 0 },
+    { who: 'persona', text: 'Until six.', interim: false, heardAt: null },
+    { who: 'user', text: 'And tomor', interim: true, heardAt: null },
   ];
-  const n = turnsSaid(atCall);
-  assert.equal(n, 2);
-  const later = [
-    { kind: 'notice', text: 'the model changed' },
-    { kind: 'user', text: 'Is the bakery open?' },
-    { kind: 'assistant', text: 'Until six.' },
-    { kind: 'user', text: 'And tomorrow?' },
-    { kind: 'assistant', text: 'From eight.' },
-    { kind: 'user', text: 'Great, thanks.' },
-    { kind: 'assistant', text: 'Any time.' },
-  ];
-  assert.deepEqual(historyLines(beforeTurn(later, n)).map((l) => l.text),
-    ['Is the bakery open?', 'Until six.', 'And tomorrow?', 'From eight.']);
-  assert.deepEqual(beforeTurn(later, 0).map((e) => e.kind), ['notice']);
+  // The first line is in the transcript (one owner line now, heard at zero):
+  // only the line still being heard is drawn.
+  assert.deepEqual(pendingSpeech(call, lines).map((e) => e.text), ['And tomor']);
+  // Finished, and the transcript has not taken it yet: still drawn.
+  call[2] = { who: 'user', text: 'And tomorrow?', interim: false, heardAt: 1 };
+  assert.deepEqual(pendingSpeech(call, lines).map((e) => e.text), ['And tomorrow?']);
+  // The transcript takes it: gone from below, drawn once, above.
+  const taken = [...lines, { who: 'user', text: 'And tomorrow?' }];
+  assert.deepEqual(pendingSpeech(call, taken), []);
+  assert.deepEqual(pendingSpeech(undefined, undefined), []);
 }
 
