@@ -267,14 +267,17 @@ fn speak(out: &mut String, piece: &str, line_start: bool, eol: bool) -> bool {
 /// (2026-10-06). Nothing to say: the picture card is the picture. Narrow on
 /// purpose, as Listen's `PICTURE_REF` is: a bracketed description stays.
 fn is_picture_ref(line: &str) -> bool {
+    // Exactly `PICTURE_REF`'s shape (review of #578): only spaces or tabs
+    // before the bracket, and the path runs straight into the `]`.
     let Some(inner) = line
-        .trim()
+        .trim_start_matches([' ', '\t'])
+        .trim_end()
         .strip_prefix('[')
         .and_then(|l| l.strip_suffix(']'))
     else {
         return false;
     };
-    let inner = inner.trim();
+    let inner = inner.trim_start();
     let Some(rest) = inner
         .get(..5)
         .filter(|w| w.eq_ignore_ascii_case("image"))
