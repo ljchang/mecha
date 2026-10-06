@@ -4076,9 +4076,10 @@ agree.
   the echo gate (`echoes_the_last_reply`) counts a span of either form. The
   mic hears "a link" or "There is a code block here", which are no span of
   the text as written, and the union of the two only ever narrows.
-- **A sentence left unfinished when the server stops is not spoken.** It
-  waits in the tidier for an end that never comes. The transcript still
-  records it, so the loss is audio only.
+- **A sentence left unfinished waits for its turn's end.** A reply cut
+  off mid-sentence is heard only when the run ends and the tidier flushes,
+  so on a server stop it is not heard *before* the stop, and not at all if
+  the stream is gone by then. The transcript records it either way.
 - **Vocal tags are the engine's** (`(laugh)`, `fragments.py` `EVENTS`), so
   the tidier leaves parentheses alone.
 

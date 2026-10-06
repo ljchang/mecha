@@ -34,7 +34,9 @@ export function speakable(text) {
   s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => (alt ? `a picture: ${alt}` : 'a picture'));
   s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
   // A bare URL is "a link", not its spelling.
-  s = s.replace(/\bhttps?:\/\/\S+/g, 'a link');
+  // Less the punctuation that ends it: the sentence's own stop is not the
+  // address's ("Read https://a.io/x. It's good." is two sentences).
+  s = s.replace(/\bhttps?:\/\/\S*[^\s.,!?;:'")\]”’]/g, 'a link');
   // Inline code keeps its words; the marks go.
   s = s.replace(/`([^`\n]+)`/g, '$1');
   const lines = s.split('\n').map((line) =>

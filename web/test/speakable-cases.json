@@ -3,6 +3,7 @@
   {"why": "code is never read out", "text": "Run this:\n```bash\nrm -rf /tmp/x\n```\nThen wait.", "spoken": "Run this: There is a code block here. Then wait."},
   {"why": "a fence left open is still not read out", "text": "Here:\n```\nnever closed", "spoken": "Here: There is a code block here."},
   {"why": "a link is its words, a bare URL is \"a link\"", "text": "See [the guide](https://example.com/g) or https://example.com/x.", "spoken": "See the guide or a link."},
+  {"why": "an address keeps the stop after it out of the link", "text": "Read https://a.io/x. It's good (see http://b.io).", "spoken": "Read a link. It's good (see a link)."},
   {"why": "a picture is said to be one", "text": "![a heron](x.png) by the pier.", "spoken": "a picture: a heron by the pier."},
   {"why": "a persona's citation is where it came from", "text": "Urchins graze kelp [urchin-barrens.pdf, p. 4: \"grazing fronts move\"] in winter.", "spoken": "Urchins graze kelp (from urchin barrens) in winter."},
   {"why": "a citation without a page", "text": "As noted [@kelp/field_guide.md: \"low tide\"].", "spoken": "As noted (from field guide)."},
