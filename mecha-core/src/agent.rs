@@ -1579,7 +1579,10 @@ impl Agent {
         notes: &[String],
     ) -> std::borrow::Cow<'a, [Message]> {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        crate::message::attach_notes(self.prior_nudges.wire(earlier), notes)
+        // What an interrupted turn never delivered goes last among the views
+        // (it removes whole messages), and before the run's notes.
+        let delivered = crate::message::without_undelivered(self.prior_nudges.wire(earlier));
+        crate::message::attach_notes(delivered, notes)
     }
 
     /// The size of the history as this agent sends it — what every pressure
@@ -1589,7 +1592,25 @@ impl Agent {
         self.prior_thinking.wire_bytes(messages)
             - self.prior_tails.dropped_bytes(messages)
             - self.prior_nudges.dropped_bytes(messages)
+            - self.undelivered_bytes(messages)
             + crate::message::notes_bytes(notes)
+    }
+
+    /// What `without_undelivered` leaves out, measured on the history as the
+    /// earlier views left it — a thinking block `PriorThinking` already
+    /// dropped is not counted twice. Free when no call is marked, which is
+    /// nearly every request.
+    fn undelivered_bytes(&self, messages: &[Message]) -> usize {
+        let marked = messages.iter().any(|m| {
+            m.cancelled
+                .values()
+                .any(|c| *c == crate::message::Cancelled::Nothing)
+        });
+        if !marked {
+            return 0;
+        }
+        let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
+        crate::message::undelivered_bytes(&self.prior_nudges.wire(earlier))
     }
 
     /// What this agent thinks the time is, now.
@@ -2932,7 +2953,7 @@ impl Agent {
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
-                    let (results, provenance) = self
+                    let (results, provenance, cancelled) = self
                         .run_tools(
                             cx,
                             &response.message,
@@ -3074,6 +3095,7 @@ impl Agent {
 
                     let mut result_message = Message::tool_results(results);
                     result_message.tool_provenance = provenance;
+                    result_message.cancelled = cancelled;
                     messages.push(result_message);
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
@@ -3129,7 +3151,7 @@ impl Agent {
                         // Preserve refused checks in their trace, without reporting
                         // harness dispatch as a model-initiated send attempt.
                         let mut check_blocks = 0;
-                        let (results, provenance) = self
+                        let (results, provenance, cancelled) = self
                             .run_tools(
                                 cx,
                                 &request,
@@ -3187,6 +3209,7 @@ impl Agent {
                         }
                         let mut answer = Message::tool_results(results);
                         answer.tool_provenance = provenance;
+                        answer.cancelled = cancelled;
                         messages.push(answer);
                         if trace[start..].iter().any(|c| c.is_error && !c.denied) {
                             // The executor knows which step this check belongs to.
@@ -4064,7 +4087,11 @@ impl Agent {
         blocked_sends: &mut u32,
         output_budget: usize,
         context: Option<crate::pressure::Forecast>,
-    ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
+    ) -> (
+        Vec<Block>,
+        std::collections::BTreeMap<String, bool>,
+        std::collections::BTreeMap<String, crate::message::Cancelled>,
+    ) {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
             .into_iter()
@@ -4952,8 +4979,15 @@ impl Agent {
         // `tool_result` blocks first, and the OpenAI dialect lifts them out
         // into `role: "tool"` messages ahead of the parts array anyway.
         let mut pictures = Vec::new();
+        // How each call a cancel stopped ended, in the tool's word: the
+        // results message carries it for the projection of interrupted
+        // turns (`message::without_undelivered`).
+        let mut cancelled = std::collections::BTreeMap::new();
         for (i, id, name, mut out) in executed {
             provenance.insert(id.clone(), out.external);
+            if let Some(how) = out.cancelled {
+                cancelled.insert(id.clone(), how);
+            }
             out.content = crate::tool::cap_result(
                 out.content,
                 result_cap,
@@ -5057,7 +5091,7 @@ impl Agent {
 
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
-        (blocks, provenance)
+        (blocks, provenance, cancelled)
     }
 }
 
@@ -6463,6 +6497,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("hello"),
@@ -6618,6 +6653,108 @@ mod tests {
             self.0.advance(self.1);
             Ok(ToolOutput::ok("time passed"))
         }
+    }
+
+    /// A tool the owner cut off with nothing to show for it — what
+    /// `image_generate` answers when a cancel stops a render.
+    struct CutOff;
+
+    #[async_trait]
+    impl Tool for CutOff {
+        fn name(&self) -> &str {
+            "draw"
+        }
+        fn description(&self) -> &str {
+            "Draw something."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("Cancelled — nothing was saved.")
+                .cancelled(crate::message::Cancelled::Nothing))
+        }
+    }
+
+    /// PERSONA-CONTEXT-DESIGN §5.3, through the loop: a call a cancel stopped
+    /// with nothing delivered is recorded, marked, and left out of every
+    /// later request — the call, its result and the reasoning that chose it
+    /// — while the transcript keeps all of it. Before, the next request
+    /// carried the reasoning, the call and "Cancelled", and the model took
+    /// its picture as unfinished work.
+    #[tokio::test]
+    async fn a_call_cut_off_with_nothing_delivered_stays_out_of_later_requests() {
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![
+                        Block::Thinking {
+                            text: "a picture would answer this".into(),
+                            signature: None,
+                        },
+                        Block::ToolUse {
+                            id: "d1".into(),
+                            name: "draw".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("Here you are.")], StopReason::EndTurn),
+                assistant(vec![Block::text("Of course.")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(CutOff)],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("show me the harbour");
+        agent.run(&mut convo, None).await.unwrap();
+        // Recorded, and marked by the tool's own word.
+        let marked = convo
+            .messages
+            .iter()
+            .find(|m| !m.cancelled.is_empty())
+            .expect("the results message carries the mark");
+        assert_eq!(marked.cancelled["d1"], crate::message::Cancelled::Nothing);
+
+        convo.push(Message::user("just talk to me instead"));
+        agent.run(&mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        let later = &seen[2];
+        let carries =
+            |f: &dyn Fn(&Block) -> bool| later.messages.iter().any(|m| m.content.iter().any(f));
+        assert!(
+            !carries(&|b| matches!(b, Block::ToolUse { id, .. } if id == "d1")),
+            "the call was sent"
+        );
+        assert!(
+            !carries(
+                &|b| matches!(b, Block::ToolResult { tool_use_id, .. } if tool_use_id == "d1")
+            ),
+            "its result was sent"
+        );
+        assert!(
+            !carries(&|b| matches!(b, Block::Thinking { text, .. } if text.contains("a picture"))),
+            "the reasoning that chose it was sent"
+        );
+        // Two user messages never sit in a row.
+        for pair in later.messages.windows(2) {
+            assert_ne!(pair[0].role, pair[1].role, "{:?}", later.messages);
+        }
+        // The record keeps everything.
+        assert!(convo.messages.iter().any(|m| m
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolUse { id, .. } if id == "d1"))));
+        drop(seen);
+        // And the pressure reading measures what is sent.
+        assert_eq!(
+            agent.wire_bytes(&convo.messages, &[]),
+            crate::pressure::message_bytes(&agent.wire(&convo.messages, &[])),
+            "wire_bytes must be the size of what wire sends"
+        );
     }
 
     /// Advances the clock on its **first** call only: the case is one
@@ -8086,6 +8223,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("what is wrong here?"),

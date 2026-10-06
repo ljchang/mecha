@@ -1727,6 +1727,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role,
             content: vec![Block::Text { text: text.into() }],
         }

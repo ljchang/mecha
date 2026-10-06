@@ -3487,7 +3487,8 @@ impl Tool for ImageGenerate {
             Err(Failure::Cancelled) => {
                 return Ok(ToolOutput::err(format!(
                     "Cancelled — the generation was stopped and nothing was saved.{left}"
-                )))
+                ))
+                .cancelled(crate::message::Cancelled::Nothing))
             }
             Err(Failure::Other(e)) => {
                 let reach = if e.chain().any(|c| c.is::<reqwest::Error>()) {

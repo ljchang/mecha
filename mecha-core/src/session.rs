@@ -110,6 +110,7 @@ fn lenient_message(v: &serde_json::Value) -> Option<Message> {
         );
     }
     Some(Message {
+        cancelled: Default::default(),
         harness: v.get("harness").and_then(|v| v.as_bool()).unwrap_or(false),
         planning: v
             .get("planning")
@@ -2223,6 +2224,7 @@ impl Session {
                                 harness: false,
                                 planning: None,
                                 tool_provenance: Default::default(),
+                                cancelled: Default::default(),
                                 role,
                                 content: blocks,
                             },

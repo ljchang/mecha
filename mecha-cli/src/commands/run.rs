@@ -251,6 +251,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: mecha_core::message::Role::User,
             content,
         }

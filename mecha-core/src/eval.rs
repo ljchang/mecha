@@ -2128,6 +2128,7 @@ mod grounding_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
         }];
         let evidence = tool_evidence(&messages).unwrap();
         assert!(evidence.contains("owner_mailbox"));
@@ -2161,6 +2162,7 @@ mod grounding_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
         }];
         assert!(
             tool_evidence(&huge).is_err(),

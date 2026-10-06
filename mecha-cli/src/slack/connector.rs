@@ -1098,6 +1098,7 @@ impl State {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: mecha_core::message::Role::User,
             content,
         });

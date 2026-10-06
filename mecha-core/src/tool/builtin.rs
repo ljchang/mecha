@@ -700,6 +700,7 @@ impl Tool for Shell {
             body = format!("exit status {code}\n{body}");
         }
         Ok(ToolOutput {
+            cancelled: None,
             content: body,
             is_error: code != 0,
             external: false,
@@ -887,6 +888,7 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
     // The body is third-party content even on a 4xx — an injection hides
     // just as well in an error page.
     Ok(Fetched::Done(ToolOutput {
+        cancelled: None,
         content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
         is_error: !status.is_success(),
         external: true,
