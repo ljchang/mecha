@@ -94,7 +94,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
   - an **owned claim**: today's `Claim<'a>` borrows the tool and releases on `Drop` unless
     `keep()` ran, so it becomes a claim holding an `Arc` of the claim table. A job that is
     cancelled or fails drops it and releases the repeat guard at once, instead of leaving it
-    stuck for `REPEAT_WINDOW`;
+    stuck for `REPEAT_WINDOW`. **And the table's keying changes with it**: one slot per
+    workspace held both "last drawn" and "drawing now", so a second request claimed while the
+    first was out overwrote its slot, and refused as busy, dropped its claim and erased the
+    first. A workspace keeps the request that last drew *and a set* of those drawing now, each
+    claim releasing only its own (review of #573, pass 15);
   - the output path, **resolved through `ToolCtx::resolve` before the split** and moved into the
     job as a resolved path, plus an owned clone of the context fields `save` reads. The job never
     resolves a model-supplied path, so the jail is proved in the call, as today.
@@ -319,6 +323,12 @@ reaches no hook (review of #583).
 - Images reach the model only as user turns.
 - The path jail is unchanged: the job writes through the same `save`, within the same workspace,
   to a path resolved in the call (§2.1).
+- **A sender is never deferred.** The gate below covers the sends *after* a deferral; it
+  cannot cover the deferred job's own send, which the interlock cleared against the taint of
+  the turn that made the call. So the core hands a job to a sink only when the tool's declared
+  egress is not `Chosen` (and its reach is known); a `Chosen` tool's job is awaited inline,
+  inside the turn that cleared it. `image_generate` is `Egress::None` and defers; the rule is
+  for the next tool (review of #573, pass 15).
 - **The in-flight window is gated, not tainted.** Until a job from an `untrusted_input` tool is
   **delivered** — not merely finished: a job that ends mid-run waits for that run's hand-back,
   so the queue keeps it pending until the host says it landed (review of #573, pass 9) —
@@ -383,6 +393,10 @@ reaches no hook (review of #583).
   still classify `Clean`: the wait gated sends per turn and armed nothing.
 - An `Egress::Chosen` call between a deferred `untrusted_input` call and its delivery is
   refused.
+- A deferring tool whose egress is `Chosen` is awaited inline even with a sink: the queue never
+  sees it.
+- Two requests claimed in one workspace at once: the second dropped leaves the first claimed,
+  and the first's `keep` is the one a repeat is refused against.
 - Restart repair with a picture at the reserved path whose manifest names another call (or
   none): `not made: the server restarted`; with the job's own manifest at the numbered name
   `save` took instead, the picture (review of #573, pass 14).
