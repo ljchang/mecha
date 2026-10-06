@@ -103,11 +103,17 @@ pub fn is_per_turn(text: &str) -> bool {
 /// the request a standing preference inside it outweighed the owner's own
 /// ask (2026-10-06: 6/8 picture calls against 8/8 in the first turn).
 pub fn is_chat_start(text: &str) -> bool {
-    after_stem(text).is_some() && !is_per_turn(text)
+    after_stem(text).is_some_and(|rest| rest.starts_with(CHAT_START_MARK))
 }
 
 /// Whether a conversation already carries its chat-start memory block, in an
 /// owner turn, so it is never stored twice.
+///
+/// Stored only before the chat's first reply, so it lands in `messages[0]`,
+/// the one message `compact::rebuild` keeps whole: the files block's rule
+/// and reason (review of #459, pass 8). Stored later, a compaction would
+/// summarise it away and the next turn would store it again just after
+/// context ran short.
 pub fn carries_chat_start(messages: &[Message]) -> bool {
     messages.iter().any(|m| {
         m.role == Role::User

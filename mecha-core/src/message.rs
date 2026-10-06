@@ -738,7 +738,12 @@ pub fn is_recorded_note(block: &Block) -> bool {
         || text
             .trim_start()
             .starts_with(crate::persona::safety::REANCHOR_STEM)
-        || crate::persona::recall::is_per_turn(text)
+        // Every memory block but the chat-start one, matched by its own
+        // fixed text: per-turn recall, and any memory-stemmed text in a
+        // wording this build does not know, which goes as a stale note
+        // rather than staying on the wire for good.
+        || (crate::persona::recall::stem_of(text).is_some()
+            && !crate::persona::recall::is_chat_start(text))
 }
 
 /// The recorded notes [`PriorNudges::Drop`] leaves out, as (message, block)
