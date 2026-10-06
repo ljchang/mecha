@@ -38,7 +38,8 @@
  *                          // of the call is logged (`refusesAnswer`) — set
  *                          // for a call into an incognito chat
  *     onState,             // (name, label) — idle|connecting|listening|thinking|speaking|paused
- *     onTranscript,        // ({who: "user"|"bot", text, interim})
+ *     onTranscript,        // ({who: "user"|"bot"|"notice", text, interim}) - "notice" is the
+ *                          //   call's own state (a dead mic, a dropped line, an error), never speech
  *     onLevel,             // (0..1) real mic level, for state rings
  *     onLink,              // (live: bool)
  *     onBotTurnEnd,        // () — the open bot utterance is complete
@@ -843,10 +844,10 @@ export function createVoiceSession(opts = {}) {
         else if (msg.data?.t === "call-ending") endLabel = endingLabel(msg.data);
         // A typed line the worker could not take (too many waiting): it was
         // shown as sent, so the call says it was not.
-        else if (msg.data?.t === "typed-dropped") cfg.onTranscript({ who: "bot", text: "(that typed line was not sent — too many were waiting)", interim: false });
+        else if (msg.data?.t === "typed-dropped") cfg.onTranscript({ who: "notice", text: "(that typed line was not sent — too many were waiting)", interim: false });
         break;
       case "error":
-        cfg.onTranscript({ who: "bot", text: "something went wrong: " + (msg.data?.message || "unknown error"), interim: false });
+        cfg.onTranscript({ who: "notice", text: "something went wrong: " + (msg.data?.message || "unknown error"), interim: false });
         break;
     }
   }
@@ -919,7 +920,7 @@ export function createVoiceSession(opts = {}) {
     // and it says so.
     if (uplinkMode !== "channel" && insertable) {
       const sender = pc.getSenders().find(s => s.track && s.track.kind === "audio");
-      const deaf = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false }); };
+      const deaf = () => { if (!ended) cfg.onTranscript({ who: "notice", text: "voice: your microphone could not be connected to the call - tap to reconnect", interim: false }); };
       if (sender && !passThrough(sender, deaf)) deaf();
     }
     ring.restart();
@@ -934,7 +935,7 @@ export function createVoiceSession(opts = {}) {
     pc.ontrack = (e) => {
       if (insertable && !seen.has(e.receiver)) {
         seen.add(e.receiver);
-        const mute = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false }); };
+        const mute = () => { if (!ended) cfg.onTranscript({ who: "notice", text: "voice: incoming audio could not be piped through - you may not hear the reply; tap to reconnect", interim: false }); };
         if (!passThrough(e.receiver, mute)) mute();
       }
       speaker.srcObject = e.streams[0];
@@ -1141,7 +1142,7 @@ export function createVoiceSession(opts = {}) {
       uplinkWorker.onmessage = null;
       // Kept, not dropped: every outgoing frame passes through this worker
       // now, so its death is the call going silent and must be said.
-      uplinkWorker.onerror = () => { if (!ended) cfg.onTranscript({ who: "bot", text: "voice: the microphone path stopped - tap to reconnect", interim: false }); };
+      uplinkWorker.onerror = () => { if (!ended) cfg.onTranscript({ who: "notice", text: "voice: the microphone path stopped - tap to reconnect", interim: false }); };
       try { uplinkWorker.postMessage({ stop: true }); } catch { /* gone */ }
     }
     behindShownS = 0; behind = { sounded: false };
@@ -1157,7 +1158,7 @@ export function createVoiceSession(opts = {}) {
     // `createEncodedStreams` tap (Chromium before `RTCRtpScriptTransform`)
     // the pipe ends in an unconditional enqueue and the direct path works.
     const tapDead = !fromWorker && insertable && !!uplinkWorker;
-    cfg.onTranscript({ who: "bot", text: tapDead
+    cfg.onTranscript({ who: "notice", text: tapDead
       ? `voice: the microphone path stopped (${why}) - tap to reconnect`
       : `voice: the buffered microphone path failed (${why}) — using the direct path for this call`, interim: false });
     if (!pausedBy.any) cfg.onState(lastState.name, lastState.label);
