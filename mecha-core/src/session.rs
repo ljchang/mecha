@@ -270,8 +270,11 @@ pub enum Record {
     /// [`Session::read`] leaves it out of the conversation it rebuilds, which
     /// is the point, but arms the taint from it by the content rule: notes are
     /// no longer in the messages, and the transcript is how a torn taint
-    /// record is re-derived. A build from before this record skips the line as
-    /// one it cannot parse, as with [`Record::Extend`].
+    /// record is re-derived. `TaintTimeline::from_records` does not read it:
+    /// the run's own `Record::Taint`, written after it, already carries what
+    /// the notes armed, and a torn one reads as unknown, never clean. A build
+    /// from before this record skips the line as one it cannot parse, as with
+    /// [`Record::Extend`].
     Notes {
         notes: Vec<String>,
     },

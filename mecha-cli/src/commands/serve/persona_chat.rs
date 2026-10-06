@@ -3134,13 +3134,14 @@ impl PersonaChats {
         // mind. Two notes, never joined, because each arms taint by the stem
         // it opens with (`recall::stem_of`), and a recall from outside joined
         // after a clean block would hide its own.
+        let anchored = anchor.is_some();
         let notes: Vec<String> = [
-            memory_block.clone(),
-            recall_block.clone(),
-            anchor.clone(),
-            call_note.clone(),
-            variety_note.clone(),
-            edit_note.clone(),
+            memory_block,
+            recall_block,
+            anchor,
+            call_note,
+            variety_note,
+            edit_note,
         ]
         .into_iter()
         .flatten()
@@ -3218,7 +3219,6 @@ impl PersonaChats {
                 .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
                 .map_err(|e| format!("the judge could not be reached: {e:#}"))
         });
-        let anchored = anchor.is_some();
         if anchored {
             ps.turns_since_anchor = 0;
             ps.anchor_due = false;
@@ -4926,6 +4926,42 @@ mod tests {
 
     /// A world whose config the test adjusts — a document reader, say.
     fn world_tuned(mode: Mode, tune: impl FnOnce(&mut mecha_core::config::Config)) -> World {
+        world_built(mode, tune, false)
+    }
+
+    /// A stand-in `image_generate`: there to be in a persona's registry, for
+    /// what the harness says to a persona that can draw (§5.6).
+    struct DrawStub;
+
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for DrawStub {
+        fn name(&self) -> &str {
+            "image_generate"
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn for_persona(self: Arc<Self>) -> Option<Arc<dyn mecha_core::tool::Tool>> {
+            Some(self)
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &mecha_core::tool::ToolCtx,
+        ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+            Ok(mecha_core::tool::ToolOutput::ok("drawn"))
+        }
+    }
+
+    /// `world_tuned`, and with `draws` the persona has `image_generate`.
+    fn world_built(
+        mode: Mode,
+        tune: impl FnOnce(&mut mecha_core::config::Config),
+        draws: bool,
+    ) -> World {
         let root = std::env::temp_dir().join(format!("mecha-pchat-{}", uuid::Uuid::new_v4()));
         let dir = root.join("personas");
         let lib = mecha_core::imagelib::Library::load(&root.join("imagelib")).0;
@@ -4944,7 +4980,11 @@ mod tests {
         let toml = dir.join("mara/persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap().replace(
             "allow = [\"web_search\"]",
-            "allow = [\"fs_read\", \"image_view\", \"web_search\"]",
+            if draws {
+                "allow = [\"fs_read\", \"image_generate\", \"image_view\", \"web_search\"]"
+            } else {
+                "allow = [\"fs_read\", \"image_view\", \"web_search\"]"
+            },
         );
         std::fs::write(&toml, text).unwrap();
         let id = dir.join("mara/identity.md");
@@ -4978,6 +5018,9 @@ mod tests {
         let mut pool = mecha_core::tool::Registry::new();
         pool.insert(Arc::new(mecha_core::tool::builtin::FsRead));
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
+        if draws {
+            pool.insert(Arc::new(DrawStub));
+        }
         let mut config = mecha_core::config::Config::default();
         tune(&mut config);
         config.agent.system_prompt = Some("ASSISTANT-ONLY: the owner's charter".into());
@@ -8793,53 +8836,59 @@ mod tests {
     }
 
     /// A call on a streaming speech engine gets the note without its length
-    /// rule; the note is still the harness's, never the owner's words.
+    /// rule; the note is still the harness's, never the owner's words. And
+    /// it speaks of pictures only to a persona that can make them (§5.6): a
+    /// persona with no image tool, told its pictures reach the screen, said
+    /// it had sent one.
     #[tokio::test]
-    async fn a_streaming_call_is_noted_without_the_length_rule() {
-        let w = world_with(Mode::Say("The dig went well.".into()));
-        let key = open_chat(&w).await;
-        w.personas()
-            .bind_call(&w.library, &key, None)
-            .await
-            .unwrap();
-        match w
-            .personas()
-            .speak(&w.chat, &w.library, &key, "how was the dig", true)
-            .await
-        {
-            crate::voice::Hosted::Started(turn) => {
-                tokio::time::timeout(std::time::Duration::from_secs(10), turn.done)
-                    .await
-                    .expect("the call was never answered")
-                    .expect("the answer was dropped")
-                    .expect("the turn failed");
-            }
-            _ => panic!("the call did not start"),
-        }
-        let seen = w.seen.lock().unwrap().clone();
-        let user = seen[0]
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == mecha_core::message::Role::User)
-            .unwrap();
-        let notes: Vec<&str> = user
-            .content
-            .iter()
-            .filter_map(|b| match b {
-                Block::Text { text } if mecha_core::persona::call::is_note(text) => {
-                    Some(text.as_str())
+    async fn a_streaming_call_is_noted_without_the_length_rule_and_pictures_only_if_it_draws() {
+        for draws in [false, true] {
+            let w = world_built(Mode::Say("The dig went well.".into()), |_| {}, draws);
+            let key = open_chat(&w).await;
+            w.personas()
+                .bind_call(&w.library, &key, None)
+                .await
+                .unwrap();
+            match w
+                .personas()
+                .speak(&w.chat, &w.library, &key, "how was the dig", true)
+                .await
+            {
+                crate::voice::Hosted::Started(turn) => {
+                    tokio::time::timeout(std::time::Duration::from_secs(10), turn.done)
+                        .await
+                        .expect("the call was never answered")
+                        .expect("the answer was dropped")
+                        .expect("the turn failed");
                 }
-                _ => None,
-            })
-            .collect();
-        let pictures = mecha_core::persona::call::note(true, true);
-        let plain = mecha_core::persona::call::note(true, false);
-        assert!(
-            notes == [pictures.as_str()] || notes == [plain.as_str()],
-            "{notes:?}"
-        );
-        assert_eq!(mecha_core::agent::owner_text(user), "how was the dig");
+                _ => panic!("the call did not start"),
+            }
+            let seen = w.seen.lock().unwrap().clone();
+            let tools: Vec<&str> = seen[0].tools.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(tools.contains(&"image_generate"), draws, "{tools:?}");
+            let user = seen[0]
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == mecha_core::message::Role::User)
+                .unwrap();
+            let notes: Vec<&str> = user
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Text { text } if mecha_core::persona::call::is_note(text) => {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                notes,
+                [mecha_core::persona::call::note(true, draws).as_str()],
+                "draws: {draws}"
+            );
+            assert_eq!(mecha_core::agent::owner_text(user), "how was the dig");
+        }
     }
 
     /// A call is behind the persona's lock: placed only with an unlock that
