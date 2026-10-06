@@ -2385,11 +2385,11 @@ impl ImageGenerate {
             // local model once retried without it, a whole-picture edit of a
             // picture the owner had painted a region on (#429).
             Some(mask) => format!(
-                " Inside the painted area of {mask} its layout came back nearly the same as \
-                 {edited}'s (similarity {similarity:.2})."
+                " Inside the painted area of {mask}, the new picture's layout came back nearly \
+                 the same as {edited}'s (similarity {similarity:.2})."
             ),
             None => format!(
-                " Its layout came back nearly the same as {edited}'s (similarity \
+                " The new picture's layout came back nearly the same as {edited}'s (similarity \
                  {similarity:.2})."
             ),
         };
@@ -3742,7 +3742,7 @@ impl Tool for ImageGenerate {
         });
         let manifest_note = match write_manifest(ctx, &path, &manifest).await {
             Ok(()) => String::new(),
-            Err(e) => format!(" (Its manifest was not written: {e:#}.)"),
+            Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
         };
         let mut text = format!("image: {path}\n");
         if !is_edit {
@@ -3791,7 +3791,7 @@ impl Tool for ImageGenerate {
                 .unwrap_or_default();
             text.push_str(&format!(
                 "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
-                 {} unchanged. It is on the owner's screen; you have not seen it.",
+                 The new picture is on the owner's screen; you have not seen it. {} unchanged.",
                 sources.join(", "),
                 req.seed,
                 req.steps,
@@ -5047,6 +5047,18 @@ mod tests {
             out.content.contains("An edit of inbox/me.jpg")
                 && out.content.contains("inbox/me.jpg is unchanged.")
                 && out.content.contains("you have not seen it."),
+            "{}",
+            out.content
+        );
+        // The new picture's status comes first, so "it" never reads as the
+        // original (review of #581).
+        let at = |needle: &str| {
+            out.content
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} not in: {}", out.content))
+        };
+        assert!(
+            at("The new picture is on the owner's screen") < at("inbox/me.jpg is unchanged."),
             "{}",
             out.content
         );
@@ -7151,10 +7163,10 @@ mod tests {
         // Facts only (§5.2): what came back, never what to do about it; the
         // description says the retry is the owner's to ask for.
         assert!(
-            out.content
-                .contains("Its layout came back nearly the same as images/orig.png's")
-                && !out.content.contains("say so")
-                && !out.content.contains("again")
+            out.content.contains(
+                "The new picture's layout came back nearly the same as images/orig.png's"
+            ) && !out.content.contains("say so")
+                && !out.content.contains(" again")
                 && !out.content.contains("If they ask"),
             "{}",
             out.content
@@ -7767,7 +7779,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content.contains(
-                "Inside the painted area of inbox/mask.png its layout came back nearly the same"
+                "Inside the painted area of inbox/mask.png, the new picture's layout came back nearly the same"
             ),
             "{}",
             out.content
