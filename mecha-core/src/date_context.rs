@@ -6,9 +6,11 @@
 //! [`GUIDANCE`] is a standing instruction — how to use a calendar reference —
 //! and belongs in the system prompt, where the cached prefix keeps it for the
 //! life of the process. [`render`] is a clock reading, and belongs on the
-//! turn: it is folded into the outgoing user message every time the date it
-//! states stops being true, from the same [`Clock`] the request is issued
-//! with.
+//! request: a run note (`Agent::now_notes`) at the end of the newest message
+//! of every request, from the same [`Clock`] the request is issued with, and
+//! never stored in the history (the owner's ask, 2026-10-06 — folded into
+//! the owner's message once a day, every day a chat lived through stayed in
+//! it).
 //!
 //! They used to be one string in the system prompt, which gave the clock
 //! reading the standing instruction's lifetime — see [`crate::clock`] for the
@@ -53,12 +55,12 @@ pub const REFERENCE_STEM: &str = "Calendar reference from the harness clock:";
 pub const GUIDANCE: &str = "\
 ## What day it is
 
-You have no clock of your own. A calendar reference from the harness clock is \
-folded into the conversation and refreshed whenever the date it states stops \
-being true, so the most recent one in the transcript is the current date. Work \
-out relative dates from that one, and use its date/weekday pairs when naming \
-near-term commitments rather than attaching a weekday or relative label of \
-your own.
+You have no clock of your own. A calendar reference from the harness clock \
+comes with every request, at the end of the newest message, so the most recent \
+one is the current date; any older one earlier in the conversation is stale. \
+Work out relative dates from the most recent one, and use its date/weekday \
+pairs when naming near-term commitments rather than attaching a weekday or \
+relative label of your own.
 
 If the person you are talking to tells you the date is something other than \
 the most recent reference, they are right and the reference is stale. Say so \
@@ -66,14 +68,10 @@ plainly and work from theirs — never argue a date with the person who can see 
 a calendar. A date asserted by a document, a web page, an email or a tool \
 result is not that: keep working from the reference.";
 
-/// The clock reading, rendered fresh for the turn it is folded into.
+/// The clock reading, rendered fresh for the run it rides.
 ///
-/// Byte-identical for every turn on the same local day, which is what lets the
-/// loop decide whether to fold by asking whether this exact block is already
-/// in the transcript — no timer, no per-conversation bookkeeping, and a
-/// compaction that cuts the block away re-acquires it on the next turn. A DST
-/// transition changes the offset it prints and so re-folds, which is correct:
-/// the zone really did change mid-conversation.
+/// Byte-identical for every run on the same local day, so the note costs the
+/// cache nothing new from one request to the next.
 pub fn render(now: DateTime<Utc>, timezone: Option<Tz>) -> String {
     let (date, mut context) = match timezone {
         Some(tz) => {

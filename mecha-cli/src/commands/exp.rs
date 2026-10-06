@@ -2123,6 +2123,7 @@ async fn run_one(
             )?;
             let evidence = mecha_core::eval::grounding_evidence(
                 &transcript.convo.messages,
+                &transcript.notes,
                 &transcript.configs,
             )?;
             let judge = experiment_judge(manifest, &world.config)?;

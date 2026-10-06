@@ -2707,11 +2707,11 @@ text = "Leave work better than you found it."
             .as_deref()
             .is_some_and(|s| s.contains("`replies`")));
 
-        // Delivered: the words are in the run's first user turn, exactly
-        // once in every request (run two resumes a transcript that already
-        // states the same situation, so nothing is re-folded), and never in
-        // the system prompt. Not delivered: the scan below carries the words
-        // and the stem as needles.
+        // Delivered: the words are a run note at the end of each request's
+        // last user message, exactly once in every request (a note is sent,
+        // never stored, so run two's resumed transcript holds none), and
+        // never in the system prompt. Not delivered: the scan below carries
+        // the words and the stem as needles.
         let words = crate::brief::render(&world.brief);
         for (i, req) in requests.iter().enumerate() {
             let briefs: Vec<&str> = req
@@ -2731,11 +2731,9 @@ text = "Leave work better than you found it."
             if delivered {
                 assert_eq!(briefs, vec![words.as_str()], "request {i}");
                 assert!(
-                    req.messages[0]
-                        .content
-                        .iter()
-                        .any(|b| matches!(b, Block::Text { text } if text.trim_start() == words)),
-                    "request {i}: the brief rides the run's first user turn"
+                    matches!(req.messages.last().unwrap().content.last(),
+                        Some(Block::Text { text }) if text.trim_start() == words),
+                    "request {i}: the brief rides the end of the last user message"
                 );
             } else {
                 assert!(briefs.is_empty(), "request {i} carried the brief");
@@ -2769,7 +2767,8 @@ text = "Leave work better than you found it."
     /// every request's messages are a prefix of the next, so the moving
     /// cache breakpoint still reads the whole history from cache.
     #[tokio::test]
-    async fn the_brief_rides_the_user_turn_and_the_cached_prefix_is_the_same_bytes_on_and_off() {
+    async fn the_brief_rides_the_last_user_turn_and_the_cached_prefix_is_the_same_bytes_on_and_off()
+    {
         let world = world();
         let root = crate::mismatch::Workspace::new().unwrap();
         let charter_block = crate::charter::prompt_block(&world.charter).unwrap();
@@ -2856,23 +2855,18 @@ text = "Leave work better than you found it."
                     "the brief is never in the prefix"
                 );
             }
-            // The one difference: the brief, last in the run's first user
-            // message, in the same number of messages.
-            assert_eq!(a.messages.len(), b.messages.len(), "request {i}");
-            let mut expected = a.messages[0].clone();
+            // The one difference: the brief, a run note at the end of the
+            // request's last user message (since 2026-10-06; it used to be
+            // folded into the run's first), in the same number of messages.
+            let n = a.messages.len();
+            assert_eq!(n, b.messages.len(), "request {i}");
+            let mut expected = a.messages[n - 1].clone();
             expected
                 .content
                 .push(Block::text(crate::brief::block(&world.brief)));
-            assert_eq!(b.messages[0], expected, "request {i}");
-            assert_eq!(b.messages[0].role, Role::User);
-            assert_eq!(&a.messages[1..], &b.messages[1..], "request {i}");
-        }
-        for w in on.windows(2) {
-            assert_eq!(
-                &w[1].messages[..w[0].messages.len()],
-                &w[0].messages[..],
-                "each request is a prefix of the next"
-            );
+            assert_eq!(b.messages[n - 1], expected, "request {i}");
+            assert_eq!(b.messages[n - 1].role, Role::User);
+            assert_eq!(&a.messages[..n - 1], &b.messages[..n - 1], "request {i}");
         }
     }
 

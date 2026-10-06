@@ -185,9 +185,9 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                 // The situation brief, for the same reason (3a): a snapshot of
                 // the run's start rather than an event in the stretch, and a
                 // summariser asked for "the specific values" would copy its
-                // counts into `messages[0]` as prose no stem can strip.
-                // `Agent::fold_situation_brief` puts the run's own back after
-                // the cut.
+                // counts into `messages[0]` as prose no stem can strip. Only
+                // an old transcript holds one: since 2026-10-06 the brief is a
+                // run note (`Agent::brief_note`), in no stored message.
                 Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
                 }
                 Block::Text { text } if !text.trim().is_empty() => {
@@ -206,10 +206,9 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                     // Relabelled rather than dropped, because each of these
                     // *is* something that happened in the stretch and a
                     // summary that loses "a peer sent you this" loses a fact.
-                    // Role-scoped for the reason
-                    // `Agent::fold_calendar_reference` is: only a user-role
-                    // block can be the harness speaking here, and a model
-                    // echoing a nudge back is the model's own words.
+                    // Role-scoped: only a user-role block can be the harness
+                    // speaking here, and a model echoing a nudge back is the
+                    // model's own words.
                     let who = if message.role == Role::User && crate::agent::is_harness_voice(text)
                     {
                         "harness"
@@ -353,9 +352,9 @@ pub fn rebuild(
     // midnight kept "today is Sunday" in `messages[0]` for the rest of its
     // life while the fresher reference — folded at some later index when the
     // day actually changed — was dropped by the very cut that runs here, so
-    // the stale one became the most recent in the transcript. `Agent::
-    // fold_calendar_reference` runs again after this and puts the current one
-    // back, so dropping it here leaves no gap.
+    // the stale one became the most recent in the transcript. Since
+    // 2026-10-06 the current reading is a note on every request
+    // (`Agent::calendar_note`), so dropping an old one here leaves no gap.
     head.content.retain(|block| match block {
         Block::Text { text } => {
             let t = text.trim_start();

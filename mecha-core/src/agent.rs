@@ -251,9 +251,9 @@ pub struct RunContext {
     /// ([`crate::brief::assemble_for_run`]). **Always recorded**: the loop
     /// copies it onto the outcome after every exit, beside the homeostat.
     /// **Delivered only behind its lever** (built as 3a): with
-    /// `[agent] situation_brief` on, `fold_situation_brief` puts its words
-    /// (`brief::render`) into the run's first user turn, `date_context`'s
-    /// slot; off — the default — no request is built from it, and
+    /// `[agent] situation_brief` on, `Agent::now_notes` sends its words
+    /// (`brief::render`) as a run note beside the calendar reference, never
+    /// stored in the history; off — the default — no request is built from it, and
     /// `provider/anthropic.rs`'s G4 scan fails if any of it reaches one.
     /// `None` on every context a front-end did not assemble one for —
     /// `eval`, `batch` and the replay probes among them, on the homeostat's
@@ -711,6 +711,19 @@ pub struct Conversation {
     /// a board task, a trigger, a front-door request
     /// (`APPRAISAL-WIRING-DESIGN.md` S1). Never a pointer a model named alone.
     pub goal_anchor: Option<crate::goal::GoalRef>,
+    /// The harness's own notes the last run sent with every request — the
+    /// calendar reference and the situation brief ([`Agent::now_notes`]) —
+    /// set at run start and recorded by [`Session::record_run`] as a
+    /// `Record::Notes`, so every door keeps them without threading them.
+    /// Never part of `messages`: what the date is and how things stand are
+    /// true of a request, not of the turn it happened to ride, and stored
+    /// they piled up in the history (the owner's ask, 2026-10-06).
+    ///
+    /// On the conversation for `rewritten`'s reason: the recording call
+    /// receives the conversation and cannot skip what it carries.
+    ///
+    /// [`Session::record_run`]: crate::session::Session::record_run
+    pub harness_notes: Vec<String>,
 }
 
 impl Conversation {
@@ -726,6 +739,7 @@ impl Conversation {
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            harness_notes: Vec::new(),
         }
     }
 
@@ -741,6 +755,7 @@ impl Conversation {
             // and predicts from its second turn on.
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            harness_notes: Vec::new(),
         }
     }
 
@@ -835,6 +850,7 @@ impl From<Vec<Message>> for Conversation {
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            harness_notes: Vec::new(),
         }
     }
 }
@@ -1576,20 +1592,30 @@ impl Agent {
     fn wire<'a>(
         &self,
         messages: &'a [Message],
-        notes: &[String],
+        cx: &RunContext,
     ) -> std::borrow::Cow<'a, [Message]> {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        crate::message::attach_notes(self.prior_nudges.wire(earlier), notes)
+        crate::message::attach_notes(self.prior_nudges.wire(earlier), &self.request_notes(cx))
+    }
+
+    /// What one request carries beside the history: the calendar reference,
+    /// read now, then the run's notes (`RunContext::notes`, the brief among
+    /// them).
+    fn request_notes(&self, cx: &RunContext) -> Vec<String> {
+        self.calendar_note()
+            .into_iter()
+            .chain(cx.notes.iter().cloned())
+            .collect()
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
-    fn wire_bytes(&self, messages: &[Message], notes: &[String]) -> usize {
+    fn wire_bytes(&self, messages: &[Message], cx: &RunContext) -> usize {
         self.prior_thinking.wire_bytes(messages)
             - self.prior_tails.dropped_bytes(messages)
             - self.prior_nudges.dropped_bytes(messages)
-            + crate::message::notes_bytes(notes)
+            + crate::message::notes_bytes(&self.request_notes(cx))
     }
 
     /// What this agent thinks the time is, now.
@@ -1597,147 +1623,65 @@ impl Agent {
         self.clock.now()
     }
 
-    /// Make sure the transcript states the current local date, folding a
-    /// fresh calendar reference in when it does not.
+    /// The harness's notes for one run: what day it is, and — when
+    /// delivery is on — how things stand (the owner's ask, 2026-10-06).
     ///
-    /// **The decision is an equality check against the rendered block, not a
-    /// timer and not a field.** `date_context::render` is byte-identical for
-    /// every turn on one local day, so "has the transcript already been told
-    /// this" and "is the date still what it was" are the same question. No
-    /// refresh cadence to get wrong, no per-conversation state to forget to
-    /// reset on resume, and no way for the fold to be skipped because a
-    /// summary dropped the only copy — the walk covers every message, so a
-    /// cut re-acquires on the next call.
+    /// **Sent, never stored.** Both used to be folded into the owner's
+    /// message (`append_user_text`) and kept: the calendar reference once a
+    /// local day, the situation brief whenever its words changed. Each fold
+    /// was cheap on the cache and permanent in the history, so a long chat
+    /// carried every day and every board change it had lived through, and
+    /// the model read them all. As run notes (`RunContext::notes`, attached
+    /// at the end of the last user message of every request) the model
+    /// reads the current reading and only that, and the transcript holds
+    /// what was said. `Conversation::harness_notes` carries them to
+    /// `Session::record_run`, which records them (`Record::Notes`).
     ///
-    /// Append-only survives it, which is what keeps the cache free: a folded
-    /// block stays in the position it was folded into, so every request is
-    /// still a byte prefix of the next. Re-rendering the reading into the
-    /// *same* trailing position each turn would instead change bytes the
-    /// previous request had already cached and pay for the tail every turn —
-    /// the trap this placement avoids rather than the cost it accepts.
+    /// **The calendar reference only for a role whose prompt explains it.**
+    /// Every role that *overwrites* the system prompt — `gossip`'s asker,
+    /// extractor, verifier and reader, `vet`, and any subagent, whose
+    /// `child_cfg` takes the profile's prompt — would otherwise be handed
+    /// harness-authored calendar assertions with nothing saying what they
+    /// are, and the extractor is the sharp case: a no-tools role whose whole
+    /// job is a faithful list of claims from the text it was handed. Keyed
+    /// on `GUIDANCE` rather than a flag so the two cannot drift.
     ///
-    /// One visible consequence: on a conversation's first run this edits a
-    /// message the session has already written, so
-    /// `Session::record_transition` sees the recorded list change. It
-    /// compares before to after instead of trusting a flag, and since 3a-3
-    /// it recognises blocks appended to the last recorded message and
-    /// writes them as a `Record::Extend` rather than a whole-transcript
-    /// rewrite — `ARCHITECTURE.md §Timezones` says what the rewrite used to
-    /// cost.
-    fn fold_calendar_reference(&self, messages: &mut Vec<Message>) {
-        // **Only for a role whose prompt explains what the block is.** The
-        // reading used to live in `cfg.agent.system_prompt`, so every role
-        // that *overwrites* that prompt — `gossip`'s asker, extractor,
-        // verifier and reader, `vet`, and any subagent, whose `child_cfg`
-        // takes the profile's prompt — never carried a date. An unconditional
-        // fold hands all of them eight lines of harness-authored calendar
-        // assertions with nothing saying what they are, and the extractor is
-        // the sharp case: a no-tools role whose whole job is returning a
-        // faithful list of claims from the text it was handed.
-        // `ARCHITECTURE.md §gossip` makes a reader's narrowness the reason
-        // its agreement means anything, and widening all of them at once is a
-        // decision, not a side effect.
-        //
-        // Keyed on `GUIDANCE` rather than a flag so the two cannot drift: the
-        // prompt that explains the reading is exactly what earns it, and a
-        // role that wants the date says so by carrying the block.
-        if !self
-            .system
-            .as_deref()
-            .is_some_and(|s| s.contains(crate::date_context::GUIDANCE))
-        {
-            return;
-        }
-        let reference = crate::date_context::render(self.clock.now(), self.cfg.timezone());
-        // User-role only. The question this equality stands in for is "has
-        // the *harness* said this", and only a user-role block can be the
-        // harness speaking here — a model that quotes the reference back
-        // verbatim (it is in the transcript, and `GUIDANCE` points at it)
-        // would otherwise satisfy the check and let a later turn skip the
-        // fold, leaving a model-authored string as the transcript's most
-        // recent calendar reference. Harmless while the bytes match, and the
-        // property is what is being protected, not the bytes.
-        if !messages.iter().filter(|m| m.role == Role::User).any(|m| {
-            m.content
-                .iter()
-                .any(|b| matches!(b, Block::Text { text } if text == &reference))
-        }) {
-            append_user_text(messages, reference);
-        }
+    /// **The situation brief only when delivery is on** (`[agent]
+    /// situation_brief`, `Lever::SituationBrief`, which `mecha eval` forces
+    /// off) **and a front-end assembled one** (`RunContext::brief`). It
+    /// arms `private` (R35) through `Taint::arm_for_notes`, by its stem, as
+    /// every note arms: the words are the owner's board, commitments, quiet
+    /// hours and runs in flight.
+    ///
+    /// The date is read per request ([`Self::calendar_note`]); the brief per
+    /// run, as its header says. This is both, read at run start, for the
+    /// recording.
+    pub(crate) fn now_notes(&self, cx: &RunContext) -> Vec<String> {
+        self.calendar_note()
+            .into_iter()
+            .chain(self.brief_note(cx))
+            .collect()
     }
 
-    /// Fold this run's situation brief into its user turn, when delivery is
-    /// on (`[agent] situation_brief`, `Lever::SituationBrief`) and a
-    /// front-end assembled one (`RunContext::brief`) —
-    /// `APPRAISAL-WIRING-DESIGN.md` B1, built as 3a.
-    ///
-    /// **The slot and the lifecycle are the calendar reference's**
-    /// ([`Self::fold_calendar_reference`]), called beside it at each of its
-    /// three sites: the words ([`crate::brief::render`]) go into the
-    /// outgoing user message through [`append_user_text`] — the run's own
-    /// first user turn at the top of the run, never the system prompt and
-    /// never a second user message — and the decision is an equality
-    /// check, not a timer or a field. The one difference is which block the
-    /// equality is against: the **latest** brief in the transcript, where
-    /// the calendar asks whether its exact block is anywhere. A date never
-    /// returns, but a situation does (a seat frees, then fills again), and
-    /// an earlier identical block would leave a stale one as the latest.
-    ///
-    /// What that means on each shape of conversation:
-    /// - **One run** folds once, at its first turn; every later turn finds
-    ///   the latest brief equal to its rendering and does nothing.
-    /// - **A long-lived conversation** (a web chat) is handed a fresh brief
-    ///   per turn by its front-end, and folds it only when its words
-    ///   changed. Time, voice, context used and model-server occupancy are
-    ///   bands, so their drift re-folds nothing; the board's counts and ids,
-    ///   seat holders and runs in flight are exact, so a task starting or
-    ///   ending, or the board moving, is a new block in that turn's message
-    ///   — a change the run would act on — and the old ones stay where they
-    ///   are, each saying a later one replaces it.
-    /// - **After a compaction cut**, `compact::rebuild` has dropped any brief
-    ///   from the head and the summariser never saw one, so the call after
-    ///   the cut puts this run's brief back — into the tail message, as the
-    ///   calendar reference is put back. Its header says it describes the
-    ///   run's start, which is still what it is.
-    ///
-    /// Append-only either way: a folded block never moves, so each request
-    /// is still a byte prefix of the next, and nothing here touches the
-    /// tools or the system prompt — the cached prefix is the same bytes
-    /// with the lever on and off. **Append-only on disk too** (3a-3): the
-    /// message folded into was already recorded by the door, and
-    /// `Session::record_transition` writes the new blocks as a
-    /// `Record::Extend` of it rather than rewriting the transcript.
-    ///
-    /// **Returns whether this run is delivering a brief**, so the caller
-    /// arms `private` (R35): the words are the owner's board, commitments,
-    /// quiet hours and runs in flight, and reading the same through
-    /// `kg_task_list` arms it. `true` whether the block was folded now or
-    /// was already the latest — taint only grows, so re-arming is a no-op.
-    fn fold_situation_brief(&self, cx: &RunContext, messages: &mut Vec<Message>) -> bool {
+    /// The calendar reference, read from the clock now — **per request**,
+    /// never per run: one agent outlives the day it was built on, and a run
+    /// can cross midnight (the 2026-09-14 voice call told it was Sunday on a
+    /// Monday). `wire` and `wire_bytes` add it, so every request site — the
+    /// turn, the overflow retry, the final answer — carries the current one.
+    fn calendar_note(&self) -> Option<String> {
+        self.system
+            .as_deref()
+            .is_some_and(|s| s.contains(crate::date_context::GUIDANCE))
+            .then(|| crate::date_context::render(self.clock.now(), self.cfg.timezone()))
+    }
+
+    /// The situation brief's words, when delivery is on and a front-end
+    /// assembled one: per run, carried on the run's stamped context.
+    fn brief_note(&self, cx: &RunContext) -> Option<String> {
         if !self.cfg.situation_brief {
-            return false;
+            return None;
         }
-        let Some(brief) = cx.brief.as_deref() else {
-            return false;
-        };
-        let block = crate::brief::block(brief);
-        // User-role only, for the calendar's reason: a model quoting the
-        // brief back must not stand in for the harness having said it.
-        let latest = messages
-            .iter()
-            .rev()
-            .filter(|m| m.role == Role::User)
-            .flat_map(|m| m.content.iter().rev())
-            .find_map(|b| match b {
-                Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
-                    Some(text)
-                }
-                _ => None,
-            });
-        if latest != Some(&block) {
-            append_user_text(messages, block);
-        }
-        true
+        cx.brief.as_deref().map(crate::brief::block)
     }
 
     /// The context a bare [`Agent::run`] will use.
@@ -2076,8 +2020,8 @@ impl Agent {
             .clone()
             .map(|h| h.finish(&pressure, self.context_window));
         // Recorded whatever the delivery lever says: the brief is assembled
-        // before the run and recorded after it; `fold_situation_brief` is
-        // the only reader in between, and only renders it.
+        // before the run and recorded after it; `now_notes` is the only
+        // reader in between, and only renders it.
         outcome.brief = cx.brief.as_deref().cloned();
         Ok(outcome)
     }
@@ -2134,6 +2078,7 @@ impl Agent {
         context_overflows: &mut u32,
         pressure: &mut crate::pressure::ContextTracker,
     ) -> Result<RunOutcome> {
+        let harness_notes = self.now_notes(cx);
         // Run-scoped state a tool cannot otherwise see, stamped onto the
         // `ToolCtx` once here rather than at every call site that builds a
         // `RunContext`. A tool that *contains* a run — a subagent — reads
@@ -2157,6 +2102,17 @@ impl Agent {
                 work: Some(crate::step::Work::default().in_run(crate::step::next_run())),
                 ..(*cx.tools).clone()
             }),
+            // The situation brief (`brief_note`) ahead of the caller's
+            // notes, a persona's guidance for this run; the calendar note is
+            // added per request by `wire`. Every request of the run sends
+            // them, the overflow retry and the final answer included,
+            // because each builds its request from this context.
+            notes: self
+                .brief_note(cx)
+                .into_iter()
+                .chain(cx.notes.iter().cloned())
+                .collect::<Vec<_>>()
+                .into(),
             ..cx.clone()
         };
         let cx = &stamped;
@@ -2228,6 +2184,8 @@ impl Agent {
         // record at all. Without this, a `--no-session` chat accumulates
         // every compacted state it ever passed through.
         convo.rewritten.clear();
+        // What this run sends beside the history, for the recording.
+        convo.harness_notes = harness_notes;
         // Whatever happens below, including an early return, the conversation
         // keeps what it learned. `RunOutcome.taint` reports the same thing for
         // callers that want it without reaching into the conversation.
@@ -2261,20 +2219,6 @@ impl Agent {
                     sensors_of(cx),
                 );
                 return Ok(outcome);
-            }
-
-            // What day it is (`fold_calendar_reference`). Here so a steer,
-            // when there is one, is still the last thing in the turn — and
-            // again below, after compaction, because a summary can cut this
-            // one away before the request goes out.
-            self.fold_calendar_reference(messages);
-            // And the situation brief, in the same slot, for the same
-            // reason: a steer stays the last thing in the turn. Delivering
-            // it arms `private` (R35), written back at once like the
-            // mailbox's merge below, so no early exit can drop it.
-            if self.fold_situation_brief(cx, messages) {
-                taint.private = true;
-                convo.taint = taint;
             }
 
             // Anything the user typed while the previous turn was running.
@@ -2396,7 +2340,7 @@ impl Agent {
                     && (asked
                         || pressure.over_by(
                             limit,
-                            self.wire_bytes(messages, &cx.notes),
+                            self.wire_bytes(messages, cx),
                             self.cfg.predictive_compaction,
                         ))
                 {
@@ -2492,7 +2436,7 @@ impl Agent {
                     if !asked
                         && pressure.freed_enough(
                             limit,
-                            self.wire_bytes(messages, &cx.notes),
+                            self.wire_bytes(messages, cx),
                             self.cfg.predictive_compaction,
                         )
                     {
@@ -2632,45 +2576,16 @@ impl Agent {
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
-            // Again, now that nothing else will rewrite history before the
-            // send. **The first call is not enough**, and the gap it leaves is
-            // the incident's own shape with a one-turn window: the fold runs
-            // at the top of the loop, `compact` runs below it, and
-            // `compact::rebuild` keeps `messages[0]` while dropping
-            // `messages[1..cut]` — so a reference folded when the day actually
-            // changed sits at some index the cut passes, gets dropped, and the
-            // head's older one is left as the *most recent* reference in the
-            // transcript, which is exactly what `GUIDANCE` tells the model to
-            // read the date from. `rebuild` now drops a reference from the
-            // head too, so after a summary there is none and this call puts
-            // the current one back.
-            //
-            // Idempotent, which is why it can sit in two places: the check is
-            // an equality against the rendered block, so a turn where nothing
-            // moved finds it already there and does nothing. One definition,
-            // called wherever the answer matters this turn — the
-            // `stopping_now` rule two hundred lines up.
-            self.fold_calendar_reference(messages);
-            if self.fold_situation_brief(cx, messages) {
-                taint.private = true;
-                convo.taint = taint;
-            }
-            // Ahead of `sent_bytes`, which the comment below calls "exactly
-            // what is about to go on the wire" — folding after it measured a
-            // transcript one block shorter than the one that gets priced, and
-            // `pressure.observe` would anchor its bytes→tokens ratio on the
-            // difference. Small, and free to get right.
-
             // The size of exactly what is about to go on the wire. Taken here
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
             // one request.
-            let mut sent_bytes = self.wire_bytes(messages, &cx.notes);
+            let mut sent_bytes = self.wire_bytes(messages, cx);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: self.wire(messages, &cx.notes).into_owned(),
+                messages: self.wire(messages, cx).into_owned(),
                 tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
@@ -2678,7 +2593,7 @@ impl Agent {
                 cache_prompt: self.cfg.cache_prompt,
                 think: None,
                 think_budget: cx.think_budget,
-                trailing_notes: cx.notes.len(),
+                trailing_notes: self.request_notes(cx).len(),
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -2750,31 +2665,16 @@ impl Agent {
                     if *messages != pre_rewrite {
                         convo.rewritten.push(pre_rewrite);
                     }
-                    // The third site, for the reason the second one exists —
-                    // and the one this branch's own `rebuild` change made
-                    // reachable. The recovery compaction above runs
-                    // `rebuild`, which now strips the reference from the head;
-                    // the retained tail has none either when the conversation
-                    // never crossed a day, because nothing was ever folded
-                    // there. So the retry went out with **no** calendar
-                    // reference at all while `GUIDANCE` told the model the
-                    // most recent one in the transcript is the date — on the
-                    // turn a large-context run is likeliest to be answering a
-                    // calendar question. Ahead of the clone and the
-                    // measurement, so the request and `sent_bytes` describe
-                    // the same list.
-                    self.fold_calendar_reference(messages);
-                    if self.fold_situation_brief(cx, messages) {
-                        taint.private = true;
-                        convo.taint = taint;
-                    }
-                    request.messages = self.wire(messages, &cx.notes).into_owned();
+                    // The calendar reference and the brief ride the run's
+                    // notes (`now_notes`), so the retry carries them as every
+                    // request does: nothing to put back after the cut.
+                    request.messages = self.wire(messages, cx).into_owned();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
                     // prediction is measured from a transcript that was never
                     // sent.
                     pressure.invalidate();
-                    sent_bytes = self.wire_bytes(messages, &cx.notes);
+                    sent_bytes = self.wire_bytes(messages, cx);
                     self.complete(cx, &request, &events).await?
                 }
                 other => other?,
@@ -2928,7 +2828,7 @@ impl Agent {
                     // check above orders its cheap guards first. Measuring it
                     // twice in one expression pays that twice on every
                     // tool-calling turn.
-                    let transcript_bytes = self.wire_bytes(messages, &cx.notes);
+                    let transcript_bytes = self.wire_bytes(messages, cx);
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
@@ -3137,11 +3037,7 @@ impl Agent {
                                 &mut trace,
                                 &mut taint,
                                 &mut check_blocks,
-                                self.output_budget(
-                                    cx,
-                                    pressure,
-                                    self.wire_bytes(messages, &cx.notes),
-                                ),
+                                self.output_budget(cx, pressure, self.wire_bytes(messages, cx)),
                                 None,
                             )
                             .await;
@@ -3680,7 +3576,7 @@ impl Agent {
             response_schema: None,
             model: self.model.clone(),
             system: self.system.clone(),
-            messages: self.wire(messages, &cx.notes).into_owned(),
+            messages: self.wire(messages, cx).into_owned(),
             // The load-bearing line.
             tools: Vec::new(),
             max_tokens: self.cfg.max_tokens,
@@ -3689,7 +3585,7 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
             think: None,
             think_budget: cx.think_budget,
-            trailing_notes: cx.notes.len(),
+            trailing_notes: self.request_notes(cx).len(),
         };
 
         let response = match self.complete(cx, &request, events).await? {
@@ -6259,11 +6155,11 @@ mod tests {
     }
 
     /// A long-lived conversation (a web chat) is handed a fresh brief each
-    /// turn: the same situation is said once, and a changed one is a new
-    /// block in the turn it changed on, the old one left where it was — so
-    /// every request is still a prefix of the next.
+    /// turn, and each request carries that one alone: the current situation,
+    /// never the history of situations the chat lived through (2026-10-06,
+    /// when the brief stopped being folded into the owner's turns).
     #[tokio::test]
-    async fn a_long_conversation_folds_a_new_brief_only_when_its_words_change() {
+    async fn a_long_conversation_sends_only_the_current_brief() {
         let (mut agent, provider) = agent_with_tools(
             vec![
                 assistant(vec![Block::text("one")], StopReason::EndTurn),
@@ -6303,37 +6199,40 @@ mod tests {
             crate::brief::render(&a_brief(1)),
             crate::brief::render(&a_brief(0)),
         );
+        // Each request carries its own run's brief, and only that one: a
+        // note is sent, never folded, so no earlier situation rides along
+        // (2026-10-06).
         assert_eq!(brief_blocks(&seen[0]), vec![held.clone()]);
-        assert_eq!(
-            brief_blocks(&seen[1]),
-            vec![held.clone()],
-            "the same situation is not said twice"
-        );
-        assert_eq!(brief_blocks(&seen[2]), vec![held.clone(), freed.clone()]);
+        assert_eq!(brief_blocks(&seen[1]), vec![held.clone()]);
+        assert_eq!(brief_blocks(&seen[2]), vec![freed.clone()]);
         assert_eq!(
             brief_blocks(&seen[3]),
-            vec![held.clone(), freed.clone(), held],
-            "a situation that came back is said again"
+            vec![held],
+            "a situation that came back is said again, alone"
         );
         assert!(
             matches!(seen[2].messages.last().unwrap().content.last(), Some(Block::Text { text }) if text.trim_start() == freed),
-            "the changed brief rides the turn it changed on"
+            "the brief rides the end of the newest message"
         );
-        for w in seen.windows(2) {
-            assert_eq!(&w[1].messages[..w[0].messages.len()], &w[0].messages[..]);
-        }
+        drop(seen);
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| !m.content.iter().any(|b| matches!(b,
+                Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM)))),
+            "the brief was written into the history"
+        );
     }
 
-    /// **A compaction cut puts the run's brief back, and never hands it to
-    /// the summariser.** `rebuild` strips a brief from the head like the
-    /// calendar reference, the summariser's input drops it outright (a
-    /// summary asked for "the specific values" would copy its counts into
-    /// the head as prose no stem can strip), and the fold after the cut
-    /// re-states it in the tail. Fails on each half: with no re-fold the
-    /// requests after the cut carry no brief; with no head strip the rebuilt
-    /// head keeps it; with no summariser drop the summariser sees it.
+    /// **Every request across a compaction cut carries the run's brief, and
+    /// the summariser never sees it.** The brief is a run note (2026-10-06),
+    /// so it is in no message a cut or a summary can reach; the summariser's
+    /// input still drops one outright from an older transcript that stored
+    /// it (a summary asked for "the specific values" would copy its counts
+    /// into the head as prose no stem can strip).
     #[tokio::test]
-    async fn a_compaction_cut_puts_the_runs_brief_back_and_the_summariser_never_sees_it() {
+    async fn a_compaction_cut_keeps_the_runs_brief_and_the_summariser_never_sees_it() {
         let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z"));
         let mut turns: Vec<CompletionResponse> = (0..8)
             .map(|i| {
@@ -6399,12 +6298,16 @@ mod tests {
                 if text.trim_start().starts_with(crate::brief::BRIEF_STEM))),
             "the rebuilt head keeps no brief"
         );
+        // Since 2026-10-06 the brief is a run note: every request above
+        // carried it, the history holds none, and there is nothing to put
+        // back after a cut.
         assert!(
-            convo.messages[1..].iter().any(|m| m
-                .content
+            convo
+                .messages
                 .iter()
-                .any(|b| matches!(b, Block::Text { text } if text.trim_start() == words))),
-            "the brief was put back after the cut"
+                .all(|m| !m.content.iter().any(|b| matches!(b,
+                Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM)))),
+            "the brief was written into the history"
         );
     }
 
@@ -6710,17 +6613,30 @@ mod tests {
             first[0]
         );
 
-        // Eleven hours later it is the 14th, and the turn says so.
+        // Eleven hours later it is the 14th, and the request says so —
+        // with the current reading alone, never yesterday's beside it: the
+        // reference is a note on each request (`calendar_note`), not a fold
+        // into the history (2026-10-06).
         let second = calendar_blocks(&seen[1]);
-        assert_eq!(second.len(), 2, "the new day is folded in beside the old");
-        assert_eq!(
-            second[0], first[0],
-            "the earlier block is untouched — every request stays a byte              prefix of the next, which is what keeps the cache"
+        assert_eq!(second.len(), 1, "one reading per request, the current one");
+        assert!(
+            second[0].contains("today is Monday, 14 September 2026"),
+            "the turn the owner was answered on: {}",
+            second[0]
+        );
+        drop(seen);
+        // And never stored: the history holds what was said.
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| m.content.iter().all(|b| !matches!(b,
+                Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM)))),
+            "a reading was written into the history"
         );
         assert!(
-            second[1].contains("today is Monday, 14 September 2026"),
-            "the turn the owner was answered on: {}",
-            second[1]
+            convo.harness_notes[0].contains("Sunday, 13 September 2026"),
+            "the run's notes, for the recording, are read at its start"
         );
     }
 
@@ -6786,9 +6702,10 @@ mod tests {
     /// the most recent one, so that is the original incident again, on the
     /// turn a run is likeliest to be answering from a summary.
     ///
-    /// Fails on either half alone: without the post-compaction fold the last
-    /// reference states the 13th, and without `rebuild` dropping the head's
-    /// the 13th is still in the request.
+    /// Since 2026-10-06 the reading is a note read per request
+    /// (`calendar_note`), so no request can carry a stale one and no summary
+    /// can keep one: kept because a compaction across midnight is still the
+    /// sharpest case to state that on.
     #[tokio::test]
     async fn a_compaction_after_midnight_does_not_leave_yesterday_as_the_newest_date() {
         let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T02:37:12Z"));
@@ -6894,15 +6811,13 @@ mod tests {
                 _ => None,
             })
             .collect();
+        // Since 2026-10-06 the reading is a note on each request, never in
+        // the history, so a summary has nothing to hoard and nothing to put
+        // back: the requests above carried today's, and the transcript
+        // carries none.
         assert!(
-            !surviving.iter().any(|b| b.contains("today is Sunday, 13")),
-            "the rebuilt head still hoards yesterday: {surviving:?}"
-        );
-        assert!(
-            surviving
-                .iter()
-                .any(|b| b.contains("today is Monday, 14 September 2026")),
-            "the live transcript must still state today: {surviving:?}"
+            surviving.is_empty(),
+            "a reading was written into the history: {surviving:?}"
         );
     }
 
@@ -6971,7 +6886,7 @@ mod tests {
         let mut registry = Registry::new();
         registry.insert(Arc::new(EchoTool));
         let mut cfg = AgentConfig {
-            // What earns the fold; see `fold_calendar_reference`.
+            // What earns the note; see `calendar_note`.
             system_prompt: Some(crate::date_context::GUIDANCE.into()),
             timezone: Some("America/New_York".into()),
             // 2, not 1: at 1 the target is `len - 1`, which splits a
@@ -16048,10 +15963,11 @@ justification = "this box never sends from an armed conversation"
             .with_prior_thinking(PriorThinking::Drop)
             .with_prior_tails(PriorTails::Trim)
             .with_prior_nudges(PriorNudges::Drop);
-        let notes = ["(From the harness: this run's note.)".to_string()];
-        let sent = agent.wire(&history, &notes);
+        let mut cx = (**agent.context()).clone();
+        cx.notes = Arc::from(vec!["(From the harness: this run's note.)".to_string()]);
+        let sent = agent.wire(&history, &cx);
         assert_eq!(
-            agent.wire_bytes(&history, &notes),
+            agent.wire_bytes(&history, &cx),
             crate::pressure::message_bytes(&sent),
             "wire_bytes must be the size of what wire sends"
         );
