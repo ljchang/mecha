@@ -356,6 +356,23 @@ pub struct RunContext {
     pub notes: Arc<[String]>,
 }
 
+/// What one request carries beside its history, never stored in it.
+///
+/// **`head`**: the calendar reference, attached to the conversation's
+/// *first* message. It is identical for every request on one local day, so
+/// there it stays inside the cached prefix: no request re-reads it until the
+/// date changes (the owner's ruling, 2026-10-06, on #577's M2 — at the tail
+/// it cost +0.23–0.34 s per tool round on llama-server, the median, by
+/// re-reading the previous step with it).
+///
+/// **`tail`**: the run's notes (`RunContext::notes`), at the end of the last
+/// user message, the slot `trailing_notes` names for the provider.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestNotes {
+    pub head: Vec<String>,
+    pub tail: Vec<String>,
+}
+
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
 /// caller overrides only what it actually means to change.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1593,31 +1610,35 @@ impl Agent {
     fn wire<'a>(
         &self,
         messages: &'a [Message],
-        notes: &[String],
+        notes: &RequestNotes,
     ) -> std::borrow::Cow<'a, [Message]> {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        crate::message::attach_notes(self.prior_nudges.wire(earlier), notes)
+        let headed =
+            crate::message::attach_head_notes(self.prior_nudges.wire(earlier), &notes.head);
+        crate::message::attach_notes(headed, &notes.tail)
     }
 
     /// What one request carries beside the history: the calendar reference,
-    /// read now, then the run's notes (`RunContext::notes`). Read **once per
-    /// request** and handed to both `wire` and `wire_bytes`, so a request
-    /// sent across midnight is measured as the bytes it carries.
-    fn request_notes(&self, cx: &RunContext) -> Vec<String> {
-        self.calendar_note()
-            .into_iter()
-            .chain(cx.notes.iter().cloned())
-            .collect()
+    /// read now, at its head, and the run's notes (`RunContext::notes`) at
+    /// its tail. Read **once per request** and handed to both `wire` and
+    /// `wire_bytes`, so a request sent across midnight is measured as the
+    /// bytes it carries.
+    fn request_notes(&self, cx: &RunContext) -> RequestNotes {
+        RequestNotes {
+            head: self.calendar_note().into_iter().collect(),
+            tail: cx.notes.to_vec(),
+        }
     }
 
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
-    fn wire_bytes(&self, messages: &[Message], notes: &[String]) -> usize {
+    fn wire_bytes(&self, messages: &[Message], notes: &RequestNotes) -> usize {
         self.prior_thinking.wire_bytes(messages)
             - self.prior_tails.dropped_bytes(messages)
             - self.prior_nudges.dropped_bytes(messages)
-            + crate::message::notes_bytes(notes)
+            + crate::message::notes_bytes(&notes.head)
+            + crate::message::notes_bytes(&notes.tail)
     }
 
     /// What this agent thinks the time is, now.
@@ -1631,8 +1652,9 @@ impl Agent {
     /// **Sent, never stored.** The calendar reference used to be folded into
     /// the owner's message (`append_user_text`) once a local day and kept, so
     /// a long chat carried every day it had lived through and the model read
-    /// them all. As a run note (attached at the end of the last user message
-    /// of every request) the model reads the current reading and only that,
+    /// them all. As a note on every request — on its first message, where an
+    /// all-day-identical block stays in the cached prefix (`RequestNotes`) —
+    /// the model reads the current reading and only that,
     /// and the transcript holds what was said. `Conversation::harness_notes`
     /// carries it to `Session::record_run`, which records it
     /// (`Record::Notes`).
@@ -2658,7 +2680,7 @@ impl Agent {
             // The harness's part of them is what the recording keeps: the
             // reading this request carried, so a run that crosses midnight
             // records the date the model last saw.
-            convo.harness_notes = notes[..notes.len() - cx.notes.len()].to_vec();
+            convo.harness_notes = notes.head.clone();
             let mut sent_bytes = self.wire_bytes(messages, &notes);
             let mut request = CompletionRequest {
                 response_schema: None,
@@ -2672,7 +2694,7 @@ impl Agent {
                 cache_prompt: self.cfg.cache_prompt,
                 think: None,
                 think_budget: cx.think_budget,
-                trailing_notes: notes.len(),
+                trailing_notes: notes.tail.len(),
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -3676,7 +3698,7 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
             think: None,
             think_budget: cx.think_budget,
-            trailing_notes: notes.len(),
+            trailing_notes: notes.tail.len(),
         };
 
         let response = match self.complete(cx, &request, events).await? {
@@ -6722,6 +6744,33 @@ mod tests {
             convo.harness_notes[0].contains("Monday, 14 September 2026"),
             "the recording keeps the reading the model last saw, not the run's first"
         );
+    }
+
+    /// The owner's ruling on #577's M2 (2026-10-06): the calendar reference
+    /// rides the conversation's first message, so within a day every request
+    /// is a byte prefix of the next and a tool round re-reads nothing it has
+    /// already read. At the tail it broke the prefix before each previous
+    /// step, +0.23–0.34 s per tool round (median) on llama-server.
+    #[tokio::test]
+    async fn within_a_day_each_request_is_a_prefix_of_the_next() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z"));
+        let (agent, provider) =
+            agent_on_a_clock(&clock, chrono::Duration::minutes(20), sleep_then_answer());
+        let mut convo = Conversation::from(vec![Message::user("what day is it?")]);
+        agent.run(&mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            &seen[1].messages[..seen[0].messages.len()],
+            &seen[0].messages[..],
+            "the second request does not extend the first"
+        );
+        assert!(
+            matches!(seen[1].messages[0].content.last(), Some(Block::Text { text })
+                if text.starts_with(crate::date_context::REFERENCE_STEM)),
+            "the reading rides the first message"
+        );
+        assert_eq!(seen[1].trailing_notes, 0, "nothing rides the tail");
     }
 
     /// A replay or a probe builds its agent from a *recorded* system prompt,
@@ -16076,11 +16125,8 @@ justification = "this box never sends from an armed conversation"
         let mut cx = (**agent.context()).clone();
         cx.notes = Arc::from(vec!["(From the harness: this run's note.)".to_string()]);
         let notes = agent.request_notes(&cx);
-        assert_eq!(
-            notes.len(),
-            2,
-            "the calendar reference, then the run's note"
-        );
+        assert_eq!(notes.head.len(), 1, "the calendar reference, at the head");
+        assert_eq!(notes.tail.len(), 1, "the run's note, at the tail");
         let sent = agent.wire(&history, &notes);
         assert_eq!(
             agent.wire_bytes(&history, &notes),
@@ -16088,21 +16134,24 @@ justification = "this box never sends from an armed conversation"
             "wire_bytes must be the size of what wire sends"
         );
         let last = &sent.last().unwrap().content;
-        assert_eq!(last.len(), 3, "{last:?}");
-        assert_eq!(last[0], Block::text("mm"));
-        assert!(
-            matches!(&last[1], Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM)),
-            "the calendar reference rides ahead of the run's note"
-        );
         assert_eq!(
-            last[2],
-            Block::text("(From the harness: this run's note.)"),
+            *last,
+            vec![
+                Block::text("mm"),
+                Block::text("(From the harness: this run's note.)")
+            ],
             "the recorded note goes, the run's note rides last"
+        );
+        assert!(
+            matches!(sent[0].content.last(), Some(Block::Text { text }) if text.starts_with(crate::date_context::REFERENCE_STEM)),
+            "the calendar reference rides the first message, inside the cached prefix"
         );
         // And both views did something, so the equality is not vacuous.
         assert!(
             crate::pressure::message_bytes(&sent)
-                < crate::pressure::message_bytes(&history) + crate::message::notes_bytes(&notes)
+                < crate::pressure::message_bytes(&history)
+                    + crate::message::notes_bytes(&notes.head)
+                    + crate::message::notes_bytes(&notes.tail)
         );
         let texts: Vec<String> = sent.iter().map(Message::text).collect();
         assert_eq!(texts[1], "Hello there.");

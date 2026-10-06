@@ -830,6 +830,35 @@ pub fn attach_notes<'a>(
     std::borrow::Cow::Owned(owned)
 }
 
+/// `messages` with the harness's head notes — the calendar reference — added
+/// as text blocks at the end of the **first** message: inside the cached
+/// prefix, where a block identical all day costs no request anything until
+/// the date changes (`agent::RequestNotes`). After a compaction the first
+/// message is the summary head, and the note rides there. Never a message of
+/// its own: a first message is the owner's, so the note joins it.
+pub fn attach_head_notes<'a>(
+    messages: std::borrow::Cow<'a, [Message]>,
+    notes: &[String],
+) -> std::borrow::Cow<'a, [Message]> {
+    if notes.is_empty() {
+        return messages;
+    }
+    let mut owned = messages.into_owned();
+    let blocks = notes.iter().map(|n| Block::text(n.clone()));
+    match owned.first_mut() {
+        Some(first) if first.role == Role::User => first.content.extend(blocks),
+        // Not a request any caller makes (a conversation opens on the
+        // owner's turn), but the note still reaches the model and
+        // alternation still holds.
+        _ => {
+            let mut m = Message::user("");
+            m.content = blocks.collect();
+            owned.insert(0, m);
+        }
+    }
+    std::borrow::Cow::Owned(owned)
+}
+
 /// The bytes [`attach_notes`] adds, for `wire_bytes`.
 pub fn notes_bytes(notes: &[String]) -> usize {
     notes.iter().map(String::len).sum()

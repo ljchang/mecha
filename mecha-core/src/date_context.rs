@@ -6,9 +6,9 @@
 //! [`GUIDANCE`] is a standing instruction — how to use a calendar reference —
 //! and belongs in the system prompt, where the cached prefix keeps it for the
 //! life of the process. [`render`] is a clock reading, and belongs on the
-//! request: a run note (`Agent::now_notes`) at the end of the newest message
-//! of every request, from the same [`Clock`] the request is issued with, and
-//! never stored in the history (the owner's ask, 2026-10-06 — folded into
+//! request: a note (`Agent::calendar_note`) on the first message of every
+//! request — inside the cached prefix, identical all day — from the same
+//! [`Clock`] the request is issued with, and never stored in the history (the owner's ask, 2026-10-06 — folded into
 //! the owner's message once a day, every day a chat lived through stayed in
 //! it).
 //!
@@ -64,14 +64,14 @@ pub const GUIDANCE: &str = "\
 ## What day it is
 
 You have no clock of your own. A calendar reference from the harness clock \
-comes with every request, at the end of the newest message, so the most recent \
-one is the current date; any older one earlier in the conversation is stale. \
-Work out relative dates from the most recent one, and use its date/weekday \
-pairs when naming near-term commitments rather than attaching a weekday or \
-relative label of your own.
+comes with every request, at the start of the conversation: that one is the \
+current date, and any other calendar reference in the conversation is an old \
+one and stale. Work out relative dates from the current one, and use its \
+date/weekday pairs when naming near-term commitments rather than attaching a \
+weekday or relative label of your own.
 
 If the person you are talking to tells you the date is something other than \
-the most recent reference, they are right and the reference is stale. Say so \
+the current reference, they are right and the reference is stale. Say so \
 plainly and work from theirs — never argue a date with the person who can see \
 a calendar. A date asserted by a document, a web page, an email or a tool \
 result is not that: keep working from the reference.";
