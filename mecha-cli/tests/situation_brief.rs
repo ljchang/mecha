@@ -273,13 +273,13 @@ fn recorded_brief(home: &Path, prefix: &str) -> SituationBrief {
         .unwrap_or_else(|| panic!("the `{prefix}` run recorded no brief"))
 }
 
-/// How the door recorded the run (R35, and run notes since 2026-10-06): the
-/// harness's own text — the calendar reference, and the brief when it is
-/// delivered — is sent beside the history as run notes and recorded as a
-/// `notes` line, never folded into the owner's turn, so nothing extends or
-/// rewrites the transcript; and the run's taint checkpoint has `private`
-/// armed exactly when the brief was delivered (the fixture model calls no
-/// tool, so nothing else can arm it).
+/// How the door recorded the run (3a-3, R35): the brief, when it is
+/// delivered, is folded into the owner's already-recorded turn and lands as
+/// an extension, never a whole-transcript rewrite; the calendar reference is
+/// a run note since 2026-10-06, recorded as a `notes` line and folded into
+/// nothing; and the run's taint checkpoint has `private` armed exactly when
+/// the brief was delivered (the fixture model calls no tool, so nothing
+/// else can arm it).
 fn recorded_shape(home: &Path, prefix: &str, deliver: bool, what: &str) {
     let listed = Session::list(&home.join("sessions")).unwrap();
     let (_, path) = listed
@@ -296,15 +296,18 @@ fn recorded_shape(home: &Path, prefix: &str, deliver: bool, what: &str) {
         .iter()
         .map(|r| r["record"].as_str().unwrap_or("?"))
         .collect();
-    for fold in ["rewrite", "extend"] {
-        assert!(
-            !kinds.contains(&fold),
-            "{what}: the harness's text was folded into the transcript: {kinds:?}"
-        );
-    }
+    assert!(
+        !kinds.contains(&"rewrite"),
+        "{what}: a fold rewrote the transcript: {kinds:?}"
+    );
+    assert_eq!(
+        kinds.contains(&"extend"),
+        deliver,
+        "{what}: only a delivered brief is folded: {kinds:?}"
+    );
     assert!(
         kinds.contains(&"notes"),
-        "{what}: the run's notes went unrecorded: {kinds:?}"
+        "{what}: the calendar reference went unrecorded: {kinds:?}"
     );
     let taint = records
         .iter()
@@ -316,21 +319,16 @@ fn recorded_shape(home: &Path, prefix: &str, deliver: bool, what: &str) {
         deliver,
         "{what}: `private` is armed by the brief's delivery and nothing else here"
     );
-    // And the file reads back with the brief among the recorded notes when
-    // it was delivered, and in no message either way.
-    let read = Session::read(path).unwrap();
-    let is_brief = |t: &str| t.trim_start().starts_with(BRIEF_STEM);
-    let in_messages = read.convo.messages.iter().any(|m| {
-        m.content
-            .iter()
-            .any(|b| matches!(b, mecha_core::message::Block::Text { text } if is_brief(text)))
+    // And the file reads back with the brief in the owner's turn.
+    let (_, convo) = Session::load(path).unwrap();
+    let briefed = convo.messages.iter().any(|m| {
+        m.content.iter().any(|b| {
+            matches!(b, mecha_core::message::Block::Text { text }
+                if text.trim_start().starts_with(BRIEF_STEM))
+        })
     });
-    assert!(
-        !in_messages,
-        "{what}: the brief was written into the history"
-    );
-    assert_eq!(read.notes.iter().any(|n| is_brief(n)), deliver, "{what}");
-    assert_eq!(read.convo.taint.private, deliver, "{what}");
+    assert_eq!(briefed, deliver, "{what}");
+    assert_eq!(convo.taint.private, deliver, "{what}");
 }
 
 /// What every run in this fixture home should read, whatever its kind.
@@ -429,9 +427,10 @@ fn leaves(v: &Value, out: &mut String) {
 }
 
 /// The door's delivery, by the lever: with it on, the words of exactly the
-/// recorded brief are in a user message of every request, once each (a run
-/// note at the end of the request's last user message), never in the system
-/// message; with it off, nothing of the brief is anywhere.
+/// recorded brief are in a user message of every request (once each — the
+/// run's first user turn states it, and no later turn re-states an unchanged
+/// situation), never in the system message; with it off, nothing of the
+/// brief is anywhere.
 fn delivery(seen: &[String], b: &SituationBrief, deliver: bool, what: &str) {
     assert!(!seen.is_empty(), "{what}: the fixture model saw no request");
     if !deliver {
