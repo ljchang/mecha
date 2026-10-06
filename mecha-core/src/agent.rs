@@ -5063,7 +5063,19 @@ impl Agent {
             };
             if let Some(job) = out.deferred.take() {
                 job.set_terms(terms.clone());
-                out = match &cx.jobs {
+                // **A sender is never deferred.** The interlock cleared this
+                // call against this turn's taint; a job of a tool whose
+                // destination the model names, run past the turn, would send
+                // against that snapshot whatever entered the conversation
+                // since. So a `Chosen` tool — or one whose reach is unknown —
+                // is awaited here, inside the turn that cleared it (review of
+                // #573, pass 15).
+                let may_defer = terms
+                    .caps
+                    .as_ref()
+                    .is_some_and(|c| c.egress != Egress::Chosen);
+                let sink = cx.jobs.as_ref().filter(|_| may_defer);
+                out = match sink {
                     Some(sink) => match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
                         Ok(()) => out,
                         Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
@@ -14840,6 +14852,53 @@ mod tests {
             .find(|c| c.name == "read_secret")
             .unwrap();
         assert!(!read.denied);
+    }
+
+    /// A tool that sends where the model chooses is never deferred, even
+    /// with a host: its job is awaited inside the turn whose interlock
+    /// cleared it, never run later against a stale picture of the
+    /// conversation (review of #573, pass 15).
+    #[tokio::test]
+    async fn a_sender_is_awaited_inline_even_with_a_host() {
+        struct SendLater;
+        #[async_trait]
+        impl Tool for SendLater {
+            fn name(&self) -> &str {
+                "draw"
+            }
+            fn description(&self) -> &str {
+                "Send something, slowly."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                let job = crate::jobs::DeferredJob::new(
+                    async { ToolOutput::ok("sent") },
+                    CancellationToken::new(),
+                    "busy",
+                );
+                Ok(ToolOutput::deferred("sending", job))
+            }
+        }
+        let queue = crate::jobs::JobQueue::new(|_| panic!("a sender reached the queue"));
+        let (agent, _) = agent_with_tools(
+            draw_then("done"),
+            vec![Arc::new(SendLater)],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("send it");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(result_of(&convo, "d1"), "sent");
+        assert_eq!(queue.pending("chat"), None);
     }
 
     /// While a deferred call of an untrusted-input tool is still out, its

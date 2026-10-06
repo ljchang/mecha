@@ -4506,6 +4506,10 @@ invariants:
   never the picture; the owner's Stop cancels both (`/cancel`, two calls),
   and the call screen's picture slot cancels the picture alone
   (`{"picture": true}`).
+- **A sender is never deferred.** A tool whose destination the model names
+  (`Egress::Chosen`), or whose reach is unknown, has its job awaited inline
+  even with a sink: the interlock cleared it against this turn's taint, and
+  a job run later would send against that snapshot.
 - **One job per conversation, refused in the tool's words.** A second is a
   `refusal: true` result with the tool's own busy text, never a tool failure.
 - **A late result is finished by the loop's own rule** — the turn's cap, the

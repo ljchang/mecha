@@ -1690,7 +1690,18 @@ const REPEAT_IN_FLIGHT: &str = "Another call in this turn is drawing exactly thi
 struct Drawn {
     key: u64,
     at: Instant,
-    done: bool,
+}
+
+/// One workspace's repeat state: the request that last drew there, and every
+/// request drawing there now — a set, not one slot, because a picture is
+/// drawn past its turn (§5.4) and a second request can be claimed while the
+/// first is still out. In one slot, a second request refused as busy
+/// dropped its claim over the running one's and erased it (review of #573,
+/// pass 15).
+#[derive(Default)]
+struct Place {
+    last: Option<Drawn>,
+    flying: std::collections::HashSet<u64>,
 }
 
 /// How alike two pictures' layouts are, from -1 to 1: the correlation of
@@ -2113,7 +2124,7 @@ pub struct ImageGenerate {
     /// that had just drawn, word for word, four times in one run; the image
     /// server skipped each as a duplicate, returned nothing, and the run read
     /// that as a failure. Hashes only, as for `near_copies`.
-    last_drawn: Arc<std::sync::Mutex<std::collections::HashMap<u64, Drawn>>>,
+    last_drawn: Arc<std::sync::Mutex<std::collections::HashMap<u64, Place>>>,
     /// The persona form (`for_persona`): a cast name the library does not
     /// hold is refused, as before, rather than drawn as an extra.
     persona: bool,
@@ -2144,7 +2155,7 @@ struct NearCopy {
 /// deferred render can carry it, and a job that is cancelled or fails drops
 /// it and lets go at once.
 struct Claim {
-    owner: Arc<std::sync::Mutex<std::collections::HashMap<u64, Drawn>>>,
+    owner: Arc<std::sync::Mutex<std::collections::HashMap<u64, Place>>>,
     place: u64,
     key: u64,
     kept: bool,
@@ -2155,10 +2166,13 @@ impl Claim {
     /// now as a picture that exists.
     fn keep(mut self) {
         self.kept = true;
-        let mut last = self.owner.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(d) = last.get_mut(&self.place).filter(|d| d.key == self.key) {
-            d.done = true;
-        }
+        let mut places = self.owner.lock().unwrap_or_else(|p| p.into_inner());
+        let place = places.entry(self.place).or_default();
+        place.flying.remove(&self.key);
+        place.last = Some(Drawn {
+            key: self.key,
+            at: Instant::now(),
+        });
     }
 }
 
@@ -2167,9 +2181,9 @@ impl Drop for Claim {
         if self.kept {
             return;
         }
-        let mut last = self.owner.lock().unwrap_or_else(|p| p.into_inner());
-        if last.get(&self.place).is_some_and(|d| d.key == self.key) {
-            last.remove(&self.place);
+        let mut places = self.owner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(place) = places.get_mut(&self.place) {
+            place.flying.remove(&self.key);
         }
     }
 }
@@ -2252,21 +2266,23 @@ impl ImageGenerate {
     /// cancelled request can be sent again as it was.
     fn claim(&self, ctx: &ToolCtx, req: &Request) -> Result<Claim, &'static str> {
         let (place, key) = self.repeat_keys(ctx, req);
-        let mut last = self.last_drawn.lock().unwrap_or_else(|p| p.into_inner());
-        last.retain(|_, d| d.at.elapsed() < REPEAT_WINDOW);
-        match last.get(&place) {
-            Some(d) if d.key == key && d.done => return Err(REPEAT_REFUSED),
-            Some(d) if d.key == key => return Err(REPEAT_IN_FLIGHT),
-            _ => {}
+        let mut places = self.last_drawn.lock().unwrap_or_else(|p| p.into_inner());
+        places.retain(|_, p| {
+            if p.last
+                .as_ref()
+                .is_some_and(|d| d.at.elapsed() >= REPEAT_WINDOW)
+            {
+                p.last = None;
+            }
+            p.last.is_some() || !p.flying.is_empty()
+        });
+        let here = places.entry(place).or_default();
+        if here.last.as_ref().is_some_and(|d| d.key == key) {
+            return Err(REPEAT_REFUSED);
         }
-        last.insert(
-            place,
-            Drawn {
-                key,
-                at: Instant::now(),
-                done: false,
-            },
-        );
+        if !here.flying.insert(key) {
+            return Err(REPEAT_IN_FLIGHT);
+        }
         Ok(Claim {
             owner: Arc::clone(&self.last_drawn),
             place,
@@ -4804,6 +4820,41 @@ mod tests {
             .request(&json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": ["inbox/me.jpg"]}))
             .unwrap();
         assert_eq!((r.size, paths), (None, vec!["inbox/me.jpg".to_string()]));
+    }
+
+    /// Two requests out in one workspace at once — a picture drawn past its
+    /// turn, and another asked for meanwhile — keep separate claims: the
+    /// second refused (as busy) and dropped leaves the first still claimed,
+    /// and the first's `keep` makes it the one a repeat is refused against
+    /// (review of #573, pass 15).
+    #[test]
+    fn a_dropped_second_claim_leaves_the_running_one_claimed() {
+        let t = tool("http://127.0.0.1:9");
+        let dir = tempdir();
+        let c = ctx(&dir);
+        let req = |seed| Request {
+            prompt: "a lighthouse".into(),
+            negative: String::new(),
+            size: None,
+            steps: 40,
+            seed,
+            references: Vec::new(),
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+        };
+        let first = t.claim(&c, &req(1)).expect("the first is claimed");
+        let second = t
+            .claim(&c, &req(2))
+            .expect("another request is its own claim");
+        drop(second);
+        assert_eq!(t.claim(&c, &req(1)).err(), Some(REPEAT_IN_FLIGHT));
+        first.keep();
+        assert_eq!(t.claim(&c, &req(1)).err(), Some(REPEAT_REFUSED));
+        assert!(
+            t.claim(&c, &req(2)).is_ok(),
+            "the dropped one may be sent again"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
