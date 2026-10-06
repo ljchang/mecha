@@ -126,7 +126,13 @@ when: with the chat idle, the record (2) is written before the event (1) goes, w
 ordering guarantee (1) states (review of #573, pass 10).
 1. **Sends `WireEvent::ToolResult{name, id, is_error, preview}`**, with the call's original id
    and name. The page updates the existing tool entry, so the picture appears where the call is,
-   in the chat and on the call screen, even while another run is in flight. **A failed job sends
+   in the chat and on the call screen, even while another run is in flight. **Both pages need
+   a change for it**: the persona page's fold matches a row by id at any time, but the
+   assistant page's `openCall` takes only a still-pending row, and the call answered at once, so
+   its row is closed — it gains a branch that lands the result on a closed row whose result is
+   "being made". And a row read back from the transcript must carry its call's id
+   (`chat::transcript_entries`), or a page reloaded while the picture was drawn has nothing to
+   match (reviews of #573 pass 14, #583 pass 4). **A failed job sends
    `is_error: true`**, or the page's `turnsWithoutPicture` would read the turn as drawn.
    **The live entry lasts only until the page next reads the transcript**: both chats rebuild
    their entries from the server's history on settle and on load, carrying over only page-only
@@ -175,7 +181,8 @@ ordering guarantee (1) states (review of #573, pass 10).
    - The rewrite touches a recent message, so the cached prefix is re-read from that point once.
 3. **Adds a run note for the next run** (§5.1, `RunContext::notes` + `Record::Notes`): "the
    picture you started (images/x.png) has reached the owner; you have not seen it". Written at
-   delivery as its own pending-note record, which the next run takes and the file keeps across
+   delivery as its own record, `Record::PendingNote` — a new one, not `Record::Notes`, which is
+   what the next run writes when it takes the note — and the file keeps it across
    a restart: never only re-derived from the rewritten result, which a compaction may have cut
    (review of #573, pass 5).
 4. **Books a failed job as a tool error** of the run that made the call. The run closed before
@@ -221,9 +228,10 @@ line does not survive a re-read on this path is a known limit, not a promise (re
 pass 8). The summary's own wording, if it mentions the picture, stays what it was.
 
 A server restart loses in-flight jobs. When a session is loaded, any `being made: <path>` result
-with no job behind it is repaired by **asking the artifact, not the absent job**: if the path
-§2.1 reserved holds a picture, the job finished before the restart and the result becomes the
-finished one (`image: <path>`, without the measurements the job did not get to record); if it
+with no job behind it is repaired by **asking the artifact, not the absent job**: if a manifest
+in `images/` names the call — at the path §2.1 reserved, or at the numbered name beside it that
+`save` takes when something already sits there — the job finished before the restart and the
+result becomes the finished one (`image: <path>`, without the measurements the job did not get to record); if it
 does not, the result becomes `not made: the server restarted`. Either way no result claims a
 picture is still coming, and none denies one the owner already saw.
 - **The manifest gains the call's `tool_use_id`** — a change, not today's shape: the manifest
@@ -376,7 +384,10 @@ reaches no hook (review of #583).
 - An `Egress::Chosen` call between a deferred `untrusted_input` call and its delivery is
   refused.
 - Restart repair with a picture at the reserved path whose manifest names another call (or
-  none): `not made: the server restarted`.
+  none): `not made: the server restarted`; with the job's own manifest at the numbered name
+  `save` took instead, the picture (review of #573, pass 14).
+- A page that read the transcript while the picture was out gets it when it lands: the
+  re-read row names its call.
 - A late failure adds one tool error to the run that made the call, and no run to the corpus;
   `sessions show` and the corpus report the same count for that run.
 - A live picture entry survives the page's next re-read of the transcript: the record was written
@@ -396,7 +407,9 @@ reaches no hook (review of #583).
    repair on load; and the page: the still-out state in the chat and on the call screen
    (`picture.js`, `call-lines.js`), with the call screen's picture-only Stop (review of #573,
    pass 9).
-4. The assistant chat host, the same way.
+4. The assistant chat host, the same way — and its page's `openCall`, which takes only a
+   pending row, gains the closed "being made" row as a place a late result lands (review of
+   #573, pass 14).
 5. The scripted-call measurement.
 
 ## 7. Rulings (owner, 2026-10-05)
