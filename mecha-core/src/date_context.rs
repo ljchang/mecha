@@ -33,6 +33,14 @@ use chrono_tz::Tz;
 /// `mailbox::DELIVERY_STEM` precedent, one tier over.
 pub const REFERENCE_STEM: &str = "Calendar reference from the harness clock:";
 
+/// The heading [`GUIDANCE`] opens with, and what earns a role the calendar
+/// note (`Agent::calendar_note`). Keyed on the heading rather than the whole
+/// text because a replay or a probe builds its agent from a *recorded*
+/// system prompt, which carries the wording of its day: every version of the
+/// guidance has opened with this line, so an old recording still gets its
+/// date (review of the run-notes change, 2026-10-06).
+pub const GUIDANCE_HEADING: &str = "## What day it is";
+
 /// The standing instruction. Static, cached, and says nothing about *when*.
 ///
 /// The last paragraph is the expensive half, twice over. The wording it
@@ -52,14 +60,6 @@ pub const REFERENCE_STEM: &str = "Calendar reference from the harness clock:";
 /// learning store; a wrong date premise then steers every calendar and mail
 /// window the run opens. Found on review, and the rule that used to resist it
 /// was the sentence being replaced.
-/// The heading [`GUIDANCE`] opens with, and what earns a role the calendar
-/// note (`Agent::calendar_note`). Keyed on the heading rather than the whole
-/// text because a replay or a probe builds its agent from a *recorded*
-/// system prompt, which carries the wording of its day: every version of the
-/// guidance has opened with this line, so an old recording still gets its
-/// date (review of the run-notes change, 2026-10-06).
-pub const GUIDANCE_HEADING: &str = "## What day it is";
-
 pub const GUIDANCE: &str = "\
 ## What day it is
 
