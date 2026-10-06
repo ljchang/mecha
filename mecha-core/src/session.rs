@@ -1487,6 +1487,13 @@ pub struct Session {
 pub struct Transcript {
     pub meta: SessionMeta,
     pub convo: Conversation,
+    /// Every note a run was sent, as recorded (`Record::Notes`), in order:
+    /// a persona's guidance, and the calendar reference and situation brief
+    /// the loop sends beside the history rather than in it
+    /// (`Agent::now_notes`). What a run read that its messages do not hold,
+    /// for the readers that need it as evidence — `eval::grounding_evidence`'s
+    /// date, `mismatch::validate_transcript`'s brief.
+    pub notes: Vec<String>,
     /// Every `RunConfig` recorded, in order. The first is the run the session
     /// began under; a `/model` switch appends another.
     pub configs: Vec<RunConfig>,
@@ -1725,6 +1732,16 @@ impl Session {
             prev = state;
         }
         self.record_transition(prev, &convo.messages)?;
+        // The harness's notes the run sent — the calendar reference and the
+        // brief (`Agent::now_notes`) — which are no longer in the messages:
+        // what the run read, kept beside what it said, and the stem `read`
+        // re-arms from (the brief's `private`). After the messages, which
+        // `Session::read` allows: a notes line pushes no taint checkpoint.
+        if !convo.harness_notes.is_empty() {
+            self.append(&Record::Notes {
+                notes: convo.harness_notes.clone(),
+            })?;
+        }
         self.append(&Record::GoalAnchor {
             goal: convo.goal_anchor.clone(),
         })
@@ -1949,6 +1966,7 @@ impl Session {
         // before the record, and raises `anchor_floor`.
         let mut anchored_since_outcome = false;
         let mut messages = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
         let mut taint = Taint::default();
         // Built here with `TaintTimeline::from_records`'s exact state
         // machine (a `Rewrite` drops checkpoints — see that function for
@@ -2117,7 +2135,10 @@ impl Session {
                 // `Record::Taint` (`Session::taint_timeline`'s ordering rule),
                 // under-tainting it and turning a torn transcript's `None`
                 // (fail closed) into a clean reading.
-                Ok(Record::Notes { notes }) => taint.arm_for_notes(&notes),
+                Ok(Record::Notes { notes: sent }) => {
+                    taint.arm_for_notes(&sent);
+                    notes.extend(sent);
+                }
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
@@ -2138,6 +2159,7 @@ impl Session {
         }
         Ok(Transcript {
             meta,
+            notes,
             convo: Conversation {
                 goal_anchor,
                 ..Conversation::resumed(messages, taint)
@@ -5440,6 +5462,59 @@ mod extension_tests {
             .iter()
             .all(|m| !m.text().contains("a note")));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `record_run` writes the harness's own notes for every door — the
+    /// calendar reference and the brief the loop sent beside the history
+    /// (`Conversation::harness_notes`) — and the file reads them back as
+    /// `Transcript::notes`, with a delivered brief re-arming `private` when
+    /// no taint record is on file. Before 2026-10-06 they were folded into
+    /// the messages; now nothing else on disk says the run had them.
+    #[test]
+    fn record_run_keeps_the_harness_notes_and_reading_re_arms_the_brief() {
+        let (dir, s) = session();
+        let opening = Message::user("what's waiting?");
+        s.append(&Record::Message(opening.clone())).unwrap();
+        let reading = crate::date_context::render(
+            "2026-09-16T13:21:33Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        let brief = format!("\n\n{}, as things stood.", crate::brief::BRIEF_STEM);
+        let mut convo = Conversation::from(vec![
+            opening.clone(),
+            Message::assistant(vec![Block::text("Two replies.")]),
+        ]);
+        convo.harness_notes = vec![reading.clone(), brief.clone()];
+        s.record_run(std::slice::from_ref(&opening), &convo)
+            .unwrap();
+
+        let read = Session::read(&s.path).unwrap();
+        assert_eq!(read.notes, vec![reading, brief]);
+        assert_eq!(read.convo.messages.len(), 2);
+        assert!(
+            read.convo
+                .messages
+                .iter()
+                .all(|m| !m.text().contains("harness")),
+            "a note was rebuilt into the conversation"
+        );
+        assert!(
+            read.convo.taint.private,
+            "the recorded brief re-arms `private`"
+        );
+
+        // And a run that sent none records none.
+        let (dir2, s2) = session();
+        s2.append(&Record::Message(opening.clone())).unwrap();
+        s2.record_run(
+            std::slice::from_ref(&opening),
+            &Conversation::from(vec![opening.clone()]),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&s2.path).unwrap();
+        assert!(!text.contains(r#""record":"notes""#), "{text}");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir2).ok();
     }
 
     /// A memory note armed the chat when it ran. With no taint record on file

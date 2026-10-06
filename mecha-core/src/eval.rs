@@ -874,8 +874,14 @@ pub fn tool_evidence(messages: &[crate::message::Message]) -> Result<String> {
 
 /// The judge needs the factual context the assistant had, including its date
 /// and timezone. Tool evidence alone falsely rejects contextual facts as invented.
+///
+/// `notes` are the run notes the session recorded (`Transcript::notes`):
+/// since 2026-10-06 the calendar reference rides one, never the messages,
+/// so the reading the assistant had is there. Both are read, so an older
+/// recording with the reference folded into a message still hands it over.
 pub fn grounding_evidence(
     messages: &[crate::message::Message],
+    notes: &[String],
     configs: &[crate::session::RunConfig],
 ) -> Result<String> {
     anyhow::ensure!(!configs.is_empty(), "no recorded run context for grounding");
@@ -916,6 +922,15 @@ pub fn grounding_evidence(
             }
             _ => None,
         })
+        .chain(
+            notes
+                .iter()
+                .filter(|n| {
+                    n.trim_start()
+                        .starts_with(crate::date_context::REFERENCE_STEM)
+                })
+                .map(String::as_str),
+        )
         .collect();
     let text = serde_json::to_string(&serde_json::json!({
         "recorded_run_context": context,
@@ -2070,9 +2085,9 @@ mod grounding_tests {
             system_prompt: Some("Today is October 13, 2026; user timezone is UTC.".into()),
             ..Default::default()
         };
-        let evidence = grounding_evidence(&[], &[config]).unwrap();
+        let evidence = grounding_evidence(&[], &[], &[config]).unwrap();
         assert!(evidence.contains("user timezone is UTC"));
-        assert!(grounding_evidence(&[], &[]).is_err());
+        assert!(grounding_evidence(&[], &[], &[]).is_err());
     }
 
     /// The date is no longer in the system prompt, and this function's own
@@ -2098,7 +2113,7 @@ mod grounding_tests {
                 "2026-09-16T13:21:33Z".parse().unwrap(),
                 Some(chrono_tz::America::New_York),
             )));
-        let evidence = grounding_evidence(&[task], &[config]).unwrap();
+        let evidence = grounding_evidence(&[task], &[], &[config]).unwrap();
         assert!(
             evidence.contains("2026-09-16"),
             "the recorded reading must reach the judge: {evidence}"
@@ -2110,6 +2125,23 @@ mod grounding_tests {
         assert!(
             evidence.contains("in 2 days = Friday 2026-09-18"),
             "the weekday pairs are what a Thursday rubric is graded against"
+        );
+        // Since 2026-10-06 the reading rides a run note and is recorded as
+        // one, never in the messages: it reaches the judge from there.
+        let reading = crate::date_context::render(
+            "2026-09-16T13:21:33Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        let config = crate::session::RunConfig {
+            system_prompt: Some(crate::date_context::GUIDANCE.into()),
+            clock: Some("2026-09-16T13:21:33Z".parse().unwrap()),
+            ..Default::default()
+        };
+        let task = Message::user("what is on my calendar on Thursday?");
+        let evidence = grounding_evidence(&[task], &[reading], &[config]).unwrap();
+        assert!(
+            evidence.contains("in 2 days = Friday 2026-09-18"),
+            "a reading sent as a note must reach the judge: {evidence}"
         );
     }
 

@@ -305,15 +305,19 @@ pub fn de_lenient<'de, D: serde::Deserializer<'de>>(
 /// list — and requiring it there refused every stored artifact case, none
 /// of which could have had a brief (found on review of #309). The block in
 /// the transcript is the artifact; the record of the switch is not.
-pub fn validate_transcript(messages: &[crate::message::Message]) -> Result<()> {
+///
+/// **And of the notes it recorded** (`Transcript::notes`): since 2026-10-06
+/// the brief rides a run note, never the messages, so a recording made
+/// since then carries it only there. Both are read, so an older recording
+/// with the brief folded into a message is still refused.
+pub fn validate_transcript(messages: &[crate::message::Message], notes: &[String]) -> Result<()> {
+    let is_brief = |text: &str| text.trim_start().starts_with(crate::brief::BRIEF_STEM);
     let briefed = messages
         .iter()
         .filter(|m| m.role == crate::message::Role::User)
         .flat_map(|m| &m.content)
-        .any(|b| {
-            matches!(b, crate::message::Block::Text { text }
-                if text.trim_start().starts_with(crate::brief::BRIEF_STEM))
-        });
+        .any(|b| matches!(b, crate::message::Block::Text { text } if is_brief(text)))
+        || notes.iter().any(|n| is_brief(n));
     ensure!(
         !briefed,
         "artifact task repeat does not reproduce a situation brief the recording was handed"
@@ -480,7 +484,7 @@ mod brief_gate_tests {
     #[test]
     fn a_recording_is_refused_for_a_brief_it_was_handed_and_not_for_its_age() {
         let plain = vec![Message::user("fix the report")];
-        assert!(super::validate_transcript(&plain).is_ok());
+        assert!(super::validate_transcript(&plain, &[]).is_ok());
         let old = crate::session::RunConfig {
             levers_off: Some(vec![
                 crate::harness::Lever::Mcp,
@@ -502,10 +506,20 @@ mod brief_gate_tests {
             "\n\n{}, as things stood when this run started.",
             crate::brief::BRIEF_STEM
         )));
-        assert!(super::validate_transcript(&[briefed])
+        assert!(super::validate_transcript(&[briefed], &[])
             .unwrap_err()
             .to_string()
             .contains("situation brief"));
+        // Since the brief became a run note it is recorded beside the
+        // messages, never in them: a recording briefed that way is refused
+        // too.
+        let note = format!("{}, as things stood.", crate::brief::BRIEF_STEM);
+        assert!(
+            super::validate_transcript(&[Message::user("fix the report")], &[note])
+                .unwrap_err()
+                .to_string()
+                .contains("situation brief")
+        );
     }
 }
 
