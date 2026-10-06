@@ -1842,11 +1842,11 @@
               {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
             {/if}
             <!-- Still being drawn past the turn that asked for it (§5.4): it
-                 lands here when done. Stop is the owner's, and ends only the
-                 picture when no reply is running. -->
+                 lands here when done. Its Stop ends the picture alone, never
+                 a reply that is running (review of #583). -->
             {#if stillOut(entry)}
               <span class="genwait">drawing a picture…</span>
-              <button class="genedit" onclick={stop}>Stop</button>
+              <button class="genedit" onclick={stopPicture}>Stop</button>
             {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>

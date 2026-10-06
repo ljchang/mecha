@@ -4186,12 +4186,26 @@ impl Agent {
             .as_ref()
             .map(|j| j.pending_tools())
             .unwrap_or_default();
-        for name in calls.iter().map(|(_, name, _)| name).chain(pending.iter()) {
+        for name in calls.iter().map(|(_, name, _)| name) {
             if let Some(tool) = self.registry.get(name) {
                 let caps = tool.capabilities();
                 turn_taint.private |= caps.private_data;
                 turn_taint.untrusted |= caps.untrusted_input;
             }
+        }
+        // A pending job's tool this registry no longer holds (a binding
+        // switch rebuilt it) is unknown reach, and unknown is the widest —
+        // as `jobs::settle` reads unset terms (review of #583).
+        for name in &pending {
+            let caps = self.registry.get(name).map(|t| t.capabilities()).unwrap_or(
+                crate::tool::Capabilities {
+                    private_data: true,
+                    untrusted_input: true,
+                    ..Default::default()
+                },
+            );
+            turn_taint.private |= caps.private_data;
+            turn_taint.untrusted |= caps.untrusted_input;
         }
 
         for (i, (id, name, input)) in calls.iter().enumerate() {
