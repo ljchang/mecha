@@ -687,9 +687,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A persona's harness notes last one run and are no longer stored in the
-  chat.** Its memory, a recall, the reminder of who it is, and the call,
-  variety and edit notes used to be written into the owner's message, where
-  they stayed and were re-sent on every later turn. At one measured moment
+  chat.** A recall, the reminder of who it is, and the call, variety and edit
+  notes used to be written into the owner's message, where they stayed and
+  were re-sent on every later turn. At one measured moment
   they were 39% of what the model read, against the owner's 3.5%. They now
   ride the request they are for and nothing after it (`RunContext::notes`),
   and the session records them separately for audit. Chats recorded before
@@ -697,7 +697,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the change re-reads its history once. The call note now goes on
   every spoken turn, and tells only a persona that can make pictures that
   its pictures reach the owner's screen
-  (`docs/PERSONA-CONTEXT-DESIGN.md` §5.1, §5.6).
+  (`docs/PERSONA-CONTEXT-DESIGN.md` §5.1, §5.6). What the persona remembers at
+  the start of a chat is stored once in the chat's first turn and kept there,
+  as before: sent as a note it added about a second to every reply and made
+  the persona skip pictures it was asked for.
 
 - **Pictures take about half as long: the image model is now the int8 file.**
   `[image] diffusion_model` defaults to `qwen_image_2.1_int8_convrot.safetensors`

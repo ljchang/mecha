@@ -258,13 +258,24 @@ what is true for this run. Nothing a component says is written into the conversa
   - Re-attaching notes is owed before either reader is pointed at a chat that carries them.
 - **Guidance and material.**
   - *Guidance* changes per run and becomes notes: the call note, the variety note, the edit note,
-    the identity reminder, and memory: the chat-start block and the per-turn recall.
-  - **Memory and recall are two notes, never joined.** `recall::stem_of` reads only a note's
-    leading stem. A clean chat-start block joined ahead of a recall from outside would arm
-    `private` and never `untrusted`. That is why `arm_for_content` has two stems, and a test
-    caught exactly this in #572.
-  - *Material* is read once and kept: the files block stays in the first turn, where it is cached
-    and compaction keeps it. The session goal stays too, because it is the owner's words.
+    the identity reminder, and the per-turn recall.
+  - **A recall is its own note, never joined.** `recall::stem_of` reads only a note's leading
+    stem. A recall from outside joined after a clean block would arm `private` and never
+    `untrusted`. A test caught exactly this in #572.
+  - *Material* is read once and kept: the files block and the **chat-start memory block** are
+    stored once, in the first owner turn that does not carry them yet, where they are cached and
+    compaction keeps them. The session goal stays too, because it is the owner's words.
+  - **Why chat-start memory is material, not a note (2026-10-06).** #572 first sent it as a note.
+    Measured on the live server:
+    - At the end of every request, it was re-read every time: ~1,800 tokens, ~1.1–1.6 s of
+      prefill per request, against ~230 tokens (~0.3 s) stored once in the first turn.
+    - It was also the most salient text in the request. A standing preference inside it ("prefers
+      talk over pictures") outweighed the owner's explicit ask: on the two picture requests of one
+      chat, 6/8 and 6/8 calls with memory at the end, against 8/8 and 7/8 from the first turn.
+    - Its effect on the picture loop (M1/M2) was no worse: 1/8 and 4/8 from the first turn, against
+      3/8 and 4/8 at the end, in the same session.
+  - **The rule this leaves:** the tail is for short, per-run guidance. Anything large or standing
+    is material.
   - The call note goes on **every** spoken turn. It no longer persists, so "first spoken turn of a
     stretch" no longer applies.
 - **Chats recorded before this.** Their stored messages already hold notes. The persona projection
@@ -375,6 +386,13 @@ Not retired: `is_harness_voice`'s persona entries (old transcripts carry those n
 `PriorTails` (a cut-off reply is what the owner heard, and the trim is about how the model reads
 it, not about harness text).
 
+### Open: a fake picture in the history
+
+A reply that narrates a picture it never made is a claim, like §1.5's. Under §5.3 ("the history is
+what happened") such a reply would arguably be sent back without the fake picture, so the model
+cannot copy it. That needs a way to recognise the narration that is not a wording match, and is
+not built. Recorded here because the replay showed the copying (§8).
+
 ## 7. Rulings (owner, 2026-10-05)
 
 The owner accepted the design with the amendments made in this revision ("Revise the doc and then
@@ -401,6 +419,14 @@ get started").
   - Rerun the replay against the projection as built. L0 must move toward L7 for M1 and M2, with
     no empty replies.
   - Read the echo and repetition readings before and after.
+  - **Always replay a positive control beside M1/M2:** a moment where the owner asks for a
+    picture, where the right reply calls `image_generate`. M1/M2 count calls the model should
+    not make, so on their own they reward a change that just suppresses tool calls. #572's first
+    gate had only them, and missed that memory at the tail cost a quarter of the calls the owner
+    asked for (§5.1).
+  - Count **fake pictures** as well: a reply that narrates a picture ("[image: …]") without a
+    call. Once one is in the history the model copies it (4/8 on the next request, with no notes
+    at all), so a fake is a claimed picture with a lasting cost, the same family as §1.5.
   - Run a **regression panel** over at least three personas, one of them without
     `image_generate`. It covers repetition and copying (`persona::echo`), the picture loop, the
     claimed picture, and identity in self-portraits. One persona's chats are too small a sample
