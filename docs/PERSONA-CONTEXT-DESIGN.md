@@ -258,8 +258,11 @@ what is true for this run. Nothing a component says is written into the conversa
   - Re-attaching notes is owed before either reader is pointed at a chat that carries them.
 - **Guidance and material.**
   - *Guidance* changes per run and becomes notes: the call note, the variety note, the edit note,
-    the identity reminder, and memory (the chat-start block and per-turn recall, joined into one
-    memory note per run).
+    the identity reminder, and memory: the chat-start block and the per-turn recall.
+  - **Memory and recall are two notes, never joined.** `recall::stem_of` reads only a note's
+    leading stem. A clean chat-start block joined ahead of a recall from outside would arm
+    `private` and never `untrusted`. That is why `arm_for_content` has two stems, and a test
+    caught exactly this in #572.
   - *Material* is read once and kept: the files block stays in the first turn, where it is cached
     and compaction keeps it. The session goal stays too, because it is the owner's words.
   - The call note goes on **every** spoken turn. It no longer persists, so "first spoken turn of a
@@ -268,9 +271,17 @@ what is true for this run. Nothing a component says is written into the conversa
   drops every recorded persona note from the history it sends: call, variety, edit, identity
   reminder and memory, but never files or the goal, and never a block whose removal would leave its
   message empty (an empty user message is a 400, as an empty assistant one is). That replaces
-  `PriorNudges`'s stale-note logic and its re-read cap, and keeps its empty-message guard. The first turn of an old chat after the change re-reads its history
-  once. After that the history is stable. `is_harness_voice` keeps its entries, because old
-  transcripts are still read by the miner and the UI.
+  `PriorNudges`'s stale-note logic and keeps its empty-message guard.
+  - **The cost, once per old chat.** Dropping every recorded note makes the server's cache diverge
+    at the first note, which is in the chat's first turn. So an old chat's first turn after the
+    change re-reads its whole history: roughly 8,000 tokens for a long chat, about 4–5 s at the
+    router's measured ~1,800 tokens/s, on a spoken reply if that turn is spoken. After that the
+    history is stable and each request repeats the one before.
+  - The re-read cap this retires (`NUDGE_REREAD_BYTES`, owner ruling 2026-10-04) bounded a cost
+    paid on every turn. This one is paid once per chat, and it is the owner's to weigh against
+    keeping the old notes on the wire for good.
+  - `is_harness_voice` keeps its entries, because old transcripts are still read by the miner and
+    the UI.
 
 ### 5.2 Factual tool results
 
@@ -301,8 +312,8 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   last among them, after `PriorNudges` and before the run's notes are attached. Any view that
   locates blocks by position must run on the history before it does.
   - Before #572, `PriorNudges` indexed the recorded history and its views' output in step, on the
-    stated precondition that no view removes a message. #572 makes it compute on its own input.
-    The ordering still holds for any later view.
+    stated precondition that no view removes a message. #572 removes that computation along with
+    the stale-note rule it served. The ordering still holds for any later view.
 - **Its accounting.** `Agent::wire_bytes` gets its own subtraction for the messages it removes,
   beside its addition for the notes (#572). A pressure reading and the request it predicts must
   describe the same bytes.
