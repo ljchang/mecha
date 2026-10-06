@@ -1,11 +1,11 @@
 //! A persona on a call (PERSONA-DESIGN.md §11): what the harness tells the
 //! persona when the owner starts speaking rather than typing.
 //!
-//! The assistant's chat prefixes its voice preamble onto the owner's words
-//! (`voice::open_spoken_turn`), and every reader of those words has to strip
-//! it again (`title::owner_turns` says so). A persona's call note is one of
-//! the run's notes instead (`RunContext::notes`), so it never enters a stored
-//! message. Its stem stays registered in `agent::is_harness_voice` for the
+//! The assistant's chat used to prefix its voice preamble onto the owner's
+//! words, and every reader of those words had to strip it again
+//! (`title::owner_turns` says so); since 2026-10-06 it is a run note too
+//! (`voice::VOICE_NOTE`). A persona's call note is one of the run's notes
+//! (`RunContext::notes`), so it never enters a stored message. Its stem stays registered in `agent::is_harness_voice` for the
 //! chats recorded before, where it sits beside the owner's words.
 
 /// What every call note opens with; registered as the harness's voice.

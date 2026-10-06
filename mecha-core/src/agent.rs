@@ -1593,15 +1593,16 @@ impl Agent {
     fn wire<'a>(
         &self,
         messages: &'a [Message],
-        cx: &RunContext,
+        notes: &[String],
     ) -> std::borrow::Cow<'a, [Message]> {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        crate::message::attach_notes(self.prior_nudges.wire(earlier), &self.request_notes(cx))
+        crate::message::attach_notes(self.prior_nudges.wire(earlier), notes)
     }
 
     /// What one request carries beside the history: the calendar reference,
-    /// read now, then the run's notes (`RunContext::notes`, the brief among
-    /// them).
+    /// read now, then the run's notes (`RunContext::notes`). Read **once per
+    /// request** and handed to both `wire` and `wire_bytes`, so a request
+    /// sent across midnight is measured as the bytes it carries.
     fn request_notes(&self, cx: &RunContext) -> Vec<String> {
         self.calendar_note()
             .into_iter()
@@ -1612,11 +1613,11 @@ impl Agent {
     /// The size of the history as this agent sends it — what every pressure
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
-    fn wire_bytes(&self, messages: &[Message], cx: &RunContext) -> usize {
+    fn wire_bytes(&self, messages: &[Message], notes: &[String]) -> usize {
         self.prior_thinking.wire_bytes(messages)
             - self.prior_tails.dropped_bytes(messages)
             - self.prior_nudges.dropped_bytes(messages)
-            + crate::message::notes_bytes(&self.request_notes(cx))
+            + crate::message::notes_bytes(notes)
     }
 
     /// What this agent thinks the time is, now.
@@ -1665,7 +1666,7 @@ impl Agent {
     fn calendar_note(&self) -> Option<String> {
         self.system
             .as_deref()
-            .is_some_and(|s| s.contains(crate::date_context::GUIDANCE))
+            .is_some_and(|s| s.contains(crate::date_context::GUIDANCE_HEADING))
             .then(|| crate::date_context::render(self.clock.now(), self.cfg.timezone()))
     }
 
@@ -2400,7 +2401,7 @@ impl Agent {
                     && (asked
                         || pressure.over_by(
                             limit,
-                            self.wire_bytes(messages, cx),
+                            self.wire_bytes(messages, &self.request_notes(cx)),
                             self.cfg.predictive_compaction,
                         ))
                 {
@@ -2496,7 +2497,7 @@ impl Agent {
                     if !asked
                         && pressure.freed_enough(
                             limit,
-                            self.wire_bytes(messages, cx),
+                            self.wire_bytes(messages, &self.request_notes(cx)),
                             self.cfg.predictive_compaction,
                         )
                     {
@@ -2651,12 +2652,19 @@ impl Agent {
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
             // one request.
-            let mut sent_bytes = self.wire_bytes(messages, cx);
+            // This request's notes, read once: the bytes measured, the bytes
+            // sent and the count the provider marks are one reading.
+            let notes = self.request_notes(cx);
+            // The harness's part of them is what the recording keeps: the
+            // reading this request carried, so a run that crosses midnight
+            // records the date the model last saw.
+            convo.harness_notes = notes[..notes.len() - cx.notes.len()].to_vec();
+            let mut sent_bytes = self.wire_bytes(messages, &notes);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: self.wire(messages, cx).into_owned(),
+                messages: self.wire(messages, &notes).into_owned(),
                 tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
@@ -2664,7 +2672,7 @@ impl Agent {
                 cache_prompt: self.cfg.cache_prompt,
                 think: None,
                 think_budget: cx.think_budget,
-                trailing_notes: self.request_notes(cx).len(),
+                trailing_notes: notes.len(),
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -2746,13 +2754,13 @@ impl Agent {
                         taint.private = true;
                         convo.taint = taint;
                     }
-                    request.messages = self.wire(messages, cx).into_owned();
+                    request.messages = self.wire(messages, &notes).into_owned();
                     // The retry carries a different list; the anchor has to
                     // describe the one that was actually priced, or the next
                     // prediction is measured from a transcript that was never
                     // sent.
                     pressure.invalidate();
-                    sent_bytes = self.wire_bytes(messages, cx);
+                    sent_bytes = self.wire_bytes(messages, &notes);
                     self.complete(cx, &request, &events).await?
                 }
                 other => other?,
@@ -2906,7 +2914,7 @@ impl Agent {
                     // check above orders its cheap guards first. Measuring it
                     // twice in one expression pays that twice on every
                     // tool-calling turn.
-                    let transcript_bytes = self.wire_bytes(messages, cx);
+                    let transcript_bytes = self.wire_bytes(messages, &self.request_notes(cx));
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
@@ -3115,7 +3123,11 @@ impl Agent {
                                 &mut trace,
                                 &mut taint,
                                 &mut check_blocks,
-                                self.output_budget(cx, pressure, self.wire_bytes(messages, cx)),
+                                self.output_budget(
+                                    cx,
+                                    pressure,
+                                    self.wire_bytes(messages, &self.request_notes(cx)),
+                                ),
                                 None,
                             )
                             .await;
@@ -3650,11 +3662,12 @@ impl Agent {
         // matches the block's text, not the message's position.
         append_user_text(messages, FINAL_ANSWER_NUDGE.to_string());
 
+        let notes = self.request_notes(cx);
         let request = CompletionRequest {
             response_schema: None,
             model: self.model.clone(),
             system: self.system.clone(),
-            messages: self.wire(messages, cx).into_owned(),
+            messages: self.wire(messages, &notes).into_owned(),
             // The load-bearing line.
             tools: Vec::new(),
             max_tokens: self.cfg.max_tokens,
@@ -3663,7 +3676,7 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
             think: None,
             think_budget: cx.think_budget,
-            trailing_notes: self.request_notes(cx).len(),
+            trailing_notes: notes.len(),
         };
 
         let response = match self.complete(cx, &request, events).await? {
@@ -6706,8 +6719,8 @@ mod tests {
             "a reading was written into the history"
         );
         assert!(
-            convo.harness_notes[0].contains("Sunday, 13 September 2026"),
-            "the run's notes, for the recording, are read at its start"
+            convo.harness_notes[0].contains("Monday, 14 September 2026"),
+            "the recording keeps the reading the model last saw, not the run's first"
         );
     }
 
@@ -6842,18 +6855,13 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert!(first[0].contains("today is Sunday, 13 September 2026"));
 
-        // Every request after the crossing states today as its *newest*
-        // reference, which is the contract `GUIDANCE` gives the model.
-        //
-        // Not "yesterday is absent": before a compaction rewrites the head,
-        // the block folded at 22:37 on the 13th is still in `messages[0]`,
-        // and it has to be. Removing it would rewrite bytes the previous
-        // request already cached — the trap the placement avoids. It stops
-        // being the *newest*, which is what matters, and goes away when a
-        // summary rebuilds the head.
+        // Every request after the crossing carries today's reading and only
+        // that: the reading is a note on each request, never in the history,
+        // so yesterday's has nowhere to remain (since 2026-10-06; it used to
+        // be folded and only outvoted).
         for (i, req) in turns_sent.iter().enumerate().skip(1) {
             let blocks = calendar_blocks(req);
-            assert!(!blocks.is_empty(), "request {i} states no date at all");
+            assert_eq!(blocks.len(), 1, "request {i}: one reading, the current one");
             assert!(
                 blocks
                     .last()
@@ -16029,29 +16037,45 @@ justification = "this box never sends from an armed conversation"
                 ..Message::user("")
             },
         ];
-        let (agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        // A role whose prompt explains the calendar reference, so its bytes
+        // are in the equality too (review of the run-notes change).
+        agent.system = Some(crate::date_context::GUIDANCE.into());
         let agent = agent
             .with_prior_thinking(PriorThinking::Drop)
             .with_prior_tails(PriorTails::Trim)
             .with_prior_nudges(PriorNudges::Drop);
         let mut cx = (**agent.context()).clone();
         cx.notes = Arc::from(vec!["(From the harness: this run's note.)".to_string()]);
-        let sent = agent.wire(&history, &cx);
+        let notes = agent.request_notes(&cx);
         assert_eq!(
-            agent.wire_bytes(&history, &cx),
+            notes.len(),
+            2,
+            "the calendar reference, then the run's note"
+        );
+        let sent = agent.wire(&history, &notes);
+        assert_eq!(
+            agent.wire_bytes(&history, &notes),
             crate::pressure::message_bytes(&sent),
             "wire_bytes must be the size of what wire sends"
         );
+        let last = &sent.last().unwrap().content;
+        assert_eq!(last.len(), 3, "{last:?}");
+        assert_eq!(last[0], Block::text("mm"));
+        assert!(
+            matches!(&last[1], Block::Text { text } if text.starts_with(crate::date_context::REFERENCE_STEM)),
+            "the calendar reference rides ahead of the run's note"
+        );
         assert_eq!(
-            sent.last().unwrap().content,
-            vec![
-                Block::text("mm"),
-                Block::text("(From the harness: this run's note.)")
-            ],
+            last[2],
+            Block::text("(From the harness: this run's note.)"),
             "the recorded note goes, the run's note rides last"
         );
         // And both views did something, so the equality is not vacuous.
-        assert!(crate::pressure::message_bytes(&sent) < crate::pressure::message_bytes(&history));
+        assert!(
+            crate::pressure::message_bytes(&sent)
+                < crate::pressure::message_bytes(&history) + crate::message::notes_bytes(&notes)
+        );
         let texts: Vec<String> = sent.iter().map(Message::text).collect();
         assert_eq!(texts[1], "Hello there.");
         assert_eq!(

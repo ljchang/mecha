@@ -52,6 +52,14 @@ pub const REFERENCE_STEM: &str = "Calendar reference from the harness clock:";
 /// learning store; a wrong date premise then steers every calendar and mail
 /// window the run opens. Found on review, and the rule that used to resist it
 /// was the sentence being replaced.
+/// The heading [`GUIDANCE`] opens with, and what earns a role the calendar
+/// note (`Agent::calendar_note`). Keyed on the heading rather than the whole
+/// text because a replay or a probe builds its agent from a *recorded*
+/// system prompt, which carries the wording of its day: every version of the
+/// guidance has opened with this line, so an old recording still gets its
+/// date (review of the run-notes change, 2026-10-06).
+pub const GUIDANCE_HEADING: &str = "## What day it is";
+
 pub const GUIDANCE: &str = "\
 ## What day it is
 
@@ -117,6 +125,12 @@ fn calendar_reference(date: NaiveDate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_guidance_opens_with_the_heading_the_note_is_keyed_on() {
+        assert!(GUIDANCE.trim_start().starts_with(GUIDANCE_HEADING));
+    }
+
     fn at(s: &str, tz: Tz) -> String {
         render(s.parse().unwrap(), Some(tz))
     }

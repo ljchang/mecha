@@ -2350,8 +2350,7 @@ fn begin_turn(
     // notes are, so the record marks the owner's message that follows as
     // spoken: the voice block inside the message used to say so, and
     // `scripts/check-private.py` reads which turns of a chat were spoken
-    // from it. It arms nothing, so a write that fails costs the record of
-    // it and not the turn.
+    // from it.
     let text = text.to_string();
 
     let Some(mut conversation) = ws.conversation.take() else {
@@ -2360,10 +2359,15 @@ fn begin_turn(
 
     if opts.spoken {
         if let Some(session) = ws.session.kept() {
+            // Fail-closed, as the message's own record is: the note is what
+            // marks the owner's turn as spoken on disk, and the privacy
+            // guard reads which turns were spoken from it, so a turn whose
+            // note did not land would be stored as if typed.
             if let Err(e) = session.append(&Record::Notes {
                 notes: vec![crate::voice::voice_note(opts.tts_streams).to_string()],
             }) {
-                tracing::warn!("a spoken turn's note was not recorded: {e:#}");
+                ws.conversation = Some(conversation);
+                return Err(TurnError::Failed(format!("recording: {e:#}")));
             }
         }
     }
