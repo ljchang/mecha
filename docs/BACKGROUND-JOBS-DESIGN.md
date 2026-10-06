@@ -250,6 +250,14 @@ in `images/` names the call — at the path §2.1 reserved, or at the numbered n
 result becomes the finished one (`image: <path>`, without the measurements the job did not get to record); if it
 does not, the result becomes `not made: the server restarted`. Either way no result claims a
 picture is still coming, and none denies one the owner already saw.
+**The repair does delivery's step 2 alone, deliberately.** No run note (step 3): the repaired
+result's own words say what happened ("finished before the server restarted"), and it sits in
+the history the next run reads whole; a note that a live delivery leaves exists because the
+result changed under a conversation already in flight, which a resumed one is not. No late
+failure (step 4): the run that made the call is not known from the file — its outcome, if any,
+does not name its calls — and a guess would book against the wrong run, which step 4 exists to
+prevent. And the page event (step 1) has no page to go to: the chat is being opened (review of
+#573, pass 17).
 - **The manifest gains the call's `tool_use_id`** — a change, not today's shape: the manifest
   JSON has no such key, and `write_manifest` runs on `run`'s path after the near-copy check,
   not inside `save`. `ToolCtx::call_id` is stamped on every call, so the value is there.
@@ -360,10 +368,15 @@ reaches no hook (review of #583).
   outside and came back `external` therefore arms `untrusted` exactly as the inline call would
   have. `image_generate` talks to a loopback server and arms nothing today, but the mechanism is
   generic, and this is the rule that would otherwise be found missing later.
-- **And taint is one of four things the loop does to a result; delivery does all four.**
-  After a call executes, `run_tools` records its provenance (`Message::tool_provenance`, read by
-  `replay.rs`), caps it to the turn's byte budget (`cap_result`), wraps an `external` result
-  from an `untrusted_input` tool in the untrusted-content envelope, and arms taint. A late
+- **And taint is one of five things the loop does to a result; delivery does four, and drops
+  the fifth.** After a call executes, `run_tools` records its provenance
+  (`Message::tool_provenance`, read by `replay.rs`), caps it to the turn's byte budget
+  (`cap_result`), wraps an `external` result from an `untrusted_input` tool in the
+  untrusted-content envelope, and arms taint — and the fifth: a picture the tool returned
+  (`ToolOutput::image`) goes into the turn as an image block, arming `private_data` from its
+  pixels. A late result carries no image: delivery drops it, so the late picture reaches the
+  model only as its path, and `image_view` stays the one way it is seen, as §4 already says.
+  Nothing to arm, then, because nothing entered (review of #573, pass 17). A late
   result goes through the same steps, by one function factored out of `run_tools` and called
   from both, with the cap the call's own turn had. A rewrite that changed only the content
   would replay an `external` late result as not-external (review of #573, pass 4).
@@ -421,6 +434,10 @@ reaches no hook (review of #583).
 - A late failure books by its ordinal wherever it sits in the file (the readers apply them
   after their walk).
 - A job whose run ended in error is cancelled at the hand-back.
+- A late result whose output carried an image lands as text only: no image block enters the
+  conversation, and nothing is armed from pixels.
+- The restart repair writes the late result and its taint and nothing else: no note, no late
+  failure.
 - An incognito chat's run gets no sink: its picture is drawn inline.
 - A live picture entry survives the page's next re-read of the transcript: the record was written
   before the event.
