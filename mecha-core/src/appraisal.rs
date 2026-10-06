@@ -4271,6 +4271,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: crate::message::Role::User,
                 content: vec![
                     crate::message::Block::ToolResult {
@@ -4326,6 +4327,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: crate::message::Role::User,
                 content: vec![
                     crate::message::Block::ToolResult {

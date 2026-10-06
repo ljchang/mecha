@@ -619,6 +619,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "a.md b.md", false),
@@ -687,6 +688,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),
@@ -713,6 +715,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),
@@ -774,6 +777,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),

@@ -4139,6 +4139,7 @@ mod rollback_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t1".into(),
@@ -4187,6 +4188,7 @@ mod rollback_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t1".into(),
@@ -4323,6 +4325,7 @@ mod wire_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role,
             content,
         };
@@ -4381,6 +4384,7 @@ mod wire_tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::Text { text: "hi".into() }],
             },
@@ -4388,6 +4392,7 @@ mod wire_tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![
                     Block::Text {
@@ -4404,6 +4409,7 @@ mod wire_tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4498,6 +4504,7 @@ mod wire_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![Block::Text {
                 text: crate::voice::open_spoken_turn("book the room", false, false),
@@ -4522,6 +4529,7 @@ mod wire_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::Text {
@@ -4742,6 +4750,7 @@ mod wire_tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -4753,6 +4762,7 @@ mod wire_tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4790,6 +4800,7 @@ mod wire_tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: "t9".into(),

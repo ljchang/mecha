@@ -589,6 +589,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![Block::text(text)],
         }
@@ -992,6 +993,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("hello"),
@@ -1016,6 +1018,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::Assistant,
             content: vec![
                 Block::Text { text: "ab".into() },

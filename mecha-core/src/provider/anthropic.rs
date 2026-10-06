@@ -1227,6 +1227,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![block],
             },

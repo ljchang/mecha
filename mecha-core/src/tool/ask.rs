@@ -618,6 +618,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::Assistant,
             content: vec![Block::ToolUse {
                 id: id.into(),
@@ -646,6 +647,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "d".into(),

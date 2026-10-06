@@ -4482,6 +4482,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),
@@ -4511,6 +4512,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![result("t1", "ok", false), Block::text("skip the rest")],
             },
@@ -5069,6 +5071,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -5147,6 +5150,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -5178,6 +5182,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -5235,6 +5240,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     Block::ToolResult {
@@ -5622,6 +5628,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::ToolResult {
@@ -5654,6 +5661,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("actually, use the other file"),
@@ -6475,6 +6483,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![
                     result("t1", "ok", false),

@@ -679,6 +679,7 @@ pub(crate) fn fixture_session(dir: &Path, id: &str, n: u32, serves: Option<&str>
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: results,
         },
@@ -779,6 +780,7 @@ mod tests {
                     harness: false,
                     planning: None,
                     tool_provenance: Default::default(),
+                    cancelled: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: vec![Block::ToolResult {
                         tool_use_id: "t1".into(),
@@ -950,6 +952,7 @@ mod tests {
                     harness: false,
                     planning: None,
                     tool_provenance: Default::default(),
+                    cancelled: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: results,
                 },
@@ -1074,6 +1077,7 @@ mod tests {
                     harness: false,
                     planning: None,
                     tool_provenance: Default::default(),
+                    cancelled: Default::default(),
                     role: mecha_core::message::Role::User,
                     content: vec![Block::ToolResult {
                         tool_use_id: "t1".into(),

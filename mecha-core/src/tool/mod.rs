@@ -72,6 +72,14 @@ pub struct ToolOutput {
     /// `Taint::arm_for_content` would read them at the next run's start
     /// (`docs/ARCHITECTURE.md` §Images).
     pub image: Option<crate::message::Block>,
+    /// The run was cancelled while this call ran, and this is how it ended:
+    /// with nothing delivered, or with what it had done so far
+    /// ([`Cancelled`](crate::message::Cancelled)). Set by the tool, the one
+    /// party that knows; `None` for a call that ran to its end. The loop
+    /// records it on the result's message, and the send-time projection of
+    /// interrupted turns drops a call that delivered nothing
+    /// (PERSONA-CONTEXT-DESIGN §5.3).
+    pub cancelled: Option<crate::message::Cancelled>,
 }
 
 impl ToolOutput {
@@ -83,6 +91,7 @@ impl ToolOutput {
             refusal: false,
             not_dispatched: false,
             image: None,
+            cancelled: None,
         }
     }
 
@@ -94,6 +103,7 @@ impl ToolOutput {
             refusal: false,
             not_dispatched: false,
             image: None,
+            cancelled: None,
         }
     }
 
@@ -107,12 +117,19 @@ impl ToolOutput {
             refusal: true,
             not_dispatched: false,
             image: None,
+            cancelled: None,
         }
     }
 
     /// Hand the model a picture beside this result — see the `image` field.
     pub fn with_image(mut self, image: crate::message::Block) -> Self {
         self.image = Some(image);
+        self
+    }
+
+    /// Mark this call as stopped by a cancel — see the `cancelled` field.
+    pub fn cancelled(mut self, how: crate::message::Cancelled) -> Self {
+        self.cancelled = Some(how);
         self
     }
 

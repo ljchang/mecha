@@ -337,6 +337,7 @@ impl Tool for ReplayTool {
         // std mutex must not be held across an await point.
         match self.decide(&input) {
             Action::Recorded(content, is_error, external) => Ok(ToolOutput {
+                cancelled: None,
                 content,
                 is_error,
                 external: external.unwrap_or(true),
@@ -1729,6 +1730,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
         }];
         let cx = RunContext::new(ToolCtx::default(), approver).with_cancel(cancel);
         let report = drive_branch(&agent, &cx, seed, &Trajectory::default(), 0)

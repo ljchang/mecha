@@ -2070,6 +2070,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::Assistant,
             content: vec![Block::ToolUse {
                 id: id.into(),
@@ -2084,6 +2085,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![Block::ToolResult {
                 tool_use_id: id.into(),
@@ -2151,6 +2153,7 @@ mod tests {
             harness: false,
             planning: None,
             tool_provenance: Default::default(),
+            cancelled: Default::default(),
             role: Role::User,
             content: vec![
                 Block::text("the original task"),
@@ -2180,6 +2183,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::text(format!(
                     "{CARRIED_HEADER}\n\n## todo\n0/1 done\n[ ] stale\n"
@@ -3956,6 +3960,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -3967,6 +3972,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4032,6 +4038,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -4043,6 +4050,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4054,6 +4062,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t2".into(),
@@ -4065,6 +4074,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t2".into(),
@@ -4151,6 +4161,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -4162,6 +4173,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4282,6 +4294,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -4293,6 +4306,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4304,6 +4318,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t2".into(),
@@ -4315,6 +4330,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t2".into(),
@@ -4402,6 +4418,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t1".into(),
@@ -4413,6 +4430,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t1".into(),
@@ -4470,6 +4488,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::Text { text: carried }],
             },
@@ -4477,6 +4496,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::Assistant,
                 content: vec![Block::ToolUse {
                     id: "t2".into(),
@@ -4488,6 +4508,7 @@ mod tests {
                 harness: false,
                 planning: None,
                 tool_provenance: Default::default(),
+                cancelled: Default::default(),
                 role: Role::User,
                 content: vec![Block::ToolResult {
                     tool_use_id: "t2".into(),

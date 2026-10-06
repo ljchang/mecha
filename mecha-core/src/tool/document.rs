@@ -124,7 +124,18 @@ impl Tool for DocumentRead {
             .await
         {
             // The document's words: third-party content, whatever the page.
-            Ok(ex) => Ok(ToolOutput::ok(ex.render(&shown)).from_outside()),
+            // Stopped by a cancel partway, it still delivered the pages it
+            // finished, and says so (`Cancelled::Part`): a reply may already
+            // quote them, so they stay in what is sent.
+            Ok(ex) => {
+                let cut_short = ex.cancelled;
+                let out = ToolOutput::ok(ex.render(&shown)).from_outside();
+                Ok(if cut_short {
+                    out.cancelled(crate::message::Cancelled::Part)
+                } else {
+                    out
+                })
+            }
             // A parser's diagnostics quote the document, so they are its
             // words and taint like its pages (found on review) — the taint
             // bit and `mark_untrusted_output` both key off `external`.
