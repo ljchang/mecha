@@ -54,9 +54,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 ### 2.1 A deferred tool output (core, `mecha-core`)
 
-- A tool may answer `ToolOutput::deferred(now, job, cancel)`. `now` is the immediate result
-  text. `job` is a boxed future yielding the finished `ToolOutput`. `cancel` is **the job's own
-  cancellation token, carried beside it**: the tool creates it and builds the job to watch it,
+- A tool may answer `ToolOutput::deferred(now, job)`. `now` is the immediate result text. `job`
+  is a `DeferredJob` — a boxed future yielding the finished `ToolOutput`, its busy text, and
+  `cancel`, **the job's own cancellation token, carried beside it** — held behind an `Arc` in
+  an `Option` field, so `ToolOutput` keeps its `Debug` and `Clone` derives (review of #573,
+  pass 9). The tool creates the token and builds the job to watch it,
   because a boxed future can be dropped but not handed a token afterwards, and the tool cannot
   know whether the run has a sink (review of #573, pass 4). Whoever runs the job holds `cancel`:
   the loop, linked to the run's token when it awaits inline; the host's queue otherwise.
@@ -76,6 +78,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
   never counts a picture in progress as drawn (review of #573, pass 6). The change lands in the
   counter itself, which reads an `image_generate` row as drawn on `is_error === false` alone;
   `pictureOf`'s `^image: ` pattern already rejects a `being made:` line (review of #573, pass 8).
+  **The call screen draws the same third state** (`call-lines.js` `historyLines`): a
+  still-out row holds its place in the call's transcript as "drawing a picture…", which the
+  picture takes when it lands, and the stage holds the picture slot with its own Stop
+  (ruling Q2). That Stop asks `/cancel` for the picture alone, so it never cuts off the reply
+  the persona is speaking (review of #573, pass 9).
 - **The job is `'static`, so it owns what it uses.** `Tool::call` keeps its signature (`&self`,
   `&ToolCtx`); the tool builds the job from owned parts before returning:
   - an `Arc` of what `generate` and `save` need (the backend handle and the settings), never a
@@ -96,7 +103,7 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 - A second deferred call while one is pending gets an immediate refusal, which is factual and
   structural, not advice. This bounds the in-turn runaway without any turn cap (R6).
   - **The words are the tool's, not the queue's.** A deferring tool says what its refusal reads
-    (`ToolOutput::deferred(now, job, cancel).busy(text)`; `image_generate`'s is `not made: a picture is
+    (`DeferredJob::new(job, cancel, busy)`; `image_generate`'s is `not made: a picture is
     already being made`). The core queue stays generic, holds no picture prose, and builds the
     refusal from that text alone.
   - **It is a refusal, not a failure:** the core builds it with `ToolOutput::refusal`, so it
@@ -156,8 +163,13 @@ When a job finishes, the host:
    error rate would grow quieter as more work is deferred (review of #573, pass 5). Not a
    second `Record::Outcome`, which `runlog` would read as an extra run: a
    `Record::LateFailure { run, tool_use_id }`, where `run` is the ordinal of the run that made
-   the call among the file's `Record::Outcome`s, which the host knows when the job is submitted
-   (the outcomes already written). The corpus reader, `Session::outcomes_attributed`, keeps no
+   the call among the file's `Record::Outcome`s. **Bound when that run hands back, not when it
+   submits**: the hosts write an outcome only for a run that ended `Ok`, so an ordinal reserved
+   at submit would land a failed run's error on the next run. The sink carries the run's number
+   in this process; the hand-back maps it to the outcome it wrote. A run that ended in error
+   maps to nothing: it was rolled back, call and all, so its job's late result has no message
+   to rewrite, no run to book against and no note to leave; its taint is still armed (review
+   of #573, pass 9). The corpus reader, `Session::outcomes_attributed`, keeps no
    messages and no positions, only its rows in file order, so the ordinal is the one join it can
    make: one more arm adds a tool error to row `run`. A message index would have no reader there
    (`outcome_positions` is `Transcript`'s, and a summarising rewrite nulls it), and an id alone
@@ -243,8 +255,10 @@ get the same behaviour.
 - Images reach the model only as user turns.
 - The path jail is unchanged: the job writes through the same `save`, within the same workspace,
   to a path resolved in the call (§2.1).
-- **The in-flight window is gated, not tainted.** While a job from an `untrusted_input` tool is
-  pending, every run of that conversation folds the tool's declared capability into its
+- **The in-flight window is gated, not tainted.** Until a job from an `untrusted_input` tool is
+  **delivered** — not merely finished: a job that ends mid-run waits for that run's hand-back,
+  so the queue keeps it pending until the host says it landed (review of #573, pass 9) —
+  every run of that conversation folds the tool's declared capability into its
   per-turn gate — the `turn_taint` mechanism, extended by the conversation's pending jobs — so
   an `Egress::Chosen` call between the deferral and the delivery is refused as it would be
   after the result had arrived. It does **not** arm `convo.taint`: that is permanent, and would
@@ -319,7 +333,9 @@ get the same behaviour.
    unit tests with a fake slow tool.
 2. `image_generate` split. This lands after the parent doc's §5.2 and §5.5 have changed this file.
 3. The persona chat host: sink, delivery (event, rewrite, run note), Stop vs barge-in, orphan
-   repair on load.
+   repair on load; and the page: the still-out state in the chat and on the call screen
+   (`picture.js`, `call-lines.js`), with the call screen's picture-only Stop (review of #573,
+   pass 9).
 4. The assistant chat host, the same way.
 5. The scripted-call measurement.
 
