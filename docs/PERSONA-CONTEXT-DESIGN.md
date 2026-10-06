@@ -64,9 +64,9 @@ the repository (§8).
 - **A call's barge-in** (`persona_chat::speak`) cancels the run in flight (`CancelReason::Stopped`).
   `image_generate` honours that cancel and stops the ComfyUI job, because the chat's Stop button
   needs exactly that. The result is "Cancelled — the generation was stopped and nothing was
-  saved." This is one of two exceptions to "a tool is never interrupted mid-call"
-  (`document_read` is the other), and `ARCHITECTURE.md` §Interruption and steering records
-  both. Steered owner speech is folded in
+  saved." It is one of the tools that do slow work under the run's token and so are interrupted
+  mid-call (`document_read` and `subagent` are the others). `ARCHITECTURE.md` §Interruption and
+  steering keeps that set. Steered owner speech is folded in
   after that result.
 - **Persona chats are unseeded** (`setup::persona_provider_config`, `PersonaUse::Converse`). The
   session's `config` record shows the provider's `seed = 42` *as written*, not what is sent.
@@ -279,16 +279,32 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
 
 ### 5.3 The history is what happened, not what was attempted
 
-- A turn the owner interrupted is sent as **its delivered words plus any effect that completed**,
-  stated as a fact. A cancelled call goes, with its result. So does the reasoning that chose it.
-  A tool that finished before the barge-in, such as a memory write, stays.
+- A turn the owner interrupted is sent as **its delivered words plus whatever its tools delivered**,
+  stated as a fact. A tool that finished before the barge-in, such as a memory write, stays.
+- **The test is whether a result carries content, not whether its call was cancelled.**
+  - A cancelled call that delivered nothing goes, with its result and the reasoning that chose
+    it. `image_generate` is the case: a cancel saves nothing.
+  - A cancelled call that delivered part of its work stays, as that part. A cancelled
+    `document_read` returns the pages it already transcribed, and a reply may already quote them.
+    So may a subagent's partial run.
+  - The tool says which it was, by a typed mark on its result. The projection never matches
+    the result's wording.
 - No message is ever sent empty: an empty message is a 400 everywhere. An assistant message left
   with no text and no completed call is dropped whole, which is `drops_thinking`'s rule for the
   same reason. So is a tool-results message that held only the cancelled result: a Stop-button
   cancel folds in no owner speech, so nothing is left in it. The owner's words around a dropped
   turn fold into one user turn, so two user messages never sit in a row.
 - This is a send-time **projection** of the recorded history, like `PriorThinking`. It is not a
-  `Rewrite` record. The transcript keeps everything. `wire_bytes` counts the projection.
+  `Rewrite` record. The transcript keeps everything.
+- **Its place among the views.** It is the first view that removes whole messages, so it runs
+  last among them, after `PriorNudges` and before the run's notes are attached. Any view that
+  locates blocks by position must run on the history before it does.
+  - On main before #572, `PriorNudges` indexed the recorded history and its views' output in
+    step, on the stated precondition that no view removes a message. #572 makes it compute on its
+    own input. The ordering still holds for any later view.
+- **Its accounting.** `Agent::wire_bytes` gets its own subtraction for the messages it removes,
+  beside its addition for the notes (#572). A pressure reading and the request it predicts must
+  describe the same bytes.
 - It applies to every tool, not only pictures.
 
 ### 5.4 Pictures as jobs (separate build)
@@ -304,8 +320,7 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   Stop button, or a call's "stop").
 - Built as a core mechanism for any slow side effect, with pictures as the first user.
 - This removes the call's 40 s silence, the cancel-and-retry loop, the in-turn runaway, and the one
-  image tool's exception to "a tool is never interrupted mid-call" (§2). `document_read` keeps
-  its own.
+  image tool from the set of tools a cancel interrupts mid-call (§2). The others stay in it.
 
 ### 5.5 Edits only on the owner's initiative
 
