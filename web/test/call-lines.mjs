@@ -23,7 +23,7 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   assert.deepEqual(historyLines(before), [
     { who: 'user', text: 'Did the ferry sail on time?' },
     { who: 'persona', text: 'It **did** — it left at [half past nine](https://example.com).' },
-    { who: 'persona', picture: true, text: 'a picture' },
+    { who: 'persona', picture: 'images/20261005-1.png', text: 'a picture' },
     { who: 'user', text: 'Good to know, thanks.' },
     // Dropped: drawn, and marked, since the call covers the chat's tag.
     // Steered in: an ordinary line.

@@ -48,6 +48,19 @@ fn fact(text: &str, kind: Kind, origin: Origin) -> NewFact {
 fn block(w: &World, p: &Persona) -> Option<MemoryBlock> {
     let r = chat_start(&w.store(), p, None).unwrap();
     assert!(r.problems.is_empty(), "{:?}", r.problems);
+    // Every chat-start block is material, stored once and kept: never taken
+    // for a per-turn recall, which the projection of an old chat drops.
+    if let Some(b) = &r.block {
+        assert!(
+            is_chat_start(&b.text) && !is_per_turn(&b.text),
+            "{}",
+            b.text
+        );
+        assert!(carries_chat_start(&[Message::user(b.text.clone())]));
+        assert!(!crate::message::is_recorded_note(
+            &crate::message::Block::text(b.text.clone())
+        ));
+    }
     r.block
 }
 
@@ -517,6 +530,14 @@ fn a_message_recalls_what_it_names_and_not_what_the_chat_already_holds() {
     .unwrap()
     .unwrap();
     assert!(b.text.starts_with(MEMORY_STEM), "{}", b.text);
+    // A run's note, never material: the projection of an old chat leaves it
+    // off the wire, and a chat never counts it as its chat-start block.
+    assert!(
+        is_per_turn(&b.text) && !is_chat_start(&b.text),
+        "{}",
+        b.text
+    );
+    assert!(!carries_chat_start(&[Message::user(b.text.clone())]));
     assert!(b
         .text
         .contains("between you: We call the kelp project Holdfast."));
