@@ -3197,6 +3197,9 @@ impl PersonaChats {
         } else {
             ps.late.take_notes()
         };
+        // Owed again if the run fails: it is rolled back, and the file still
+        // owes them.
+        let arrived_back = arrived.clone();
         let notes: Vec<String> = [
             memory_note,
             recall_block,
@@ -3584,6 +3587,10 @@ impl PersonaChats {
                 // against no run; and they land before `Done` (sent below,
                 // after the lock), so the page's re-read finds them on file.
                 ps.late.ended(turn, run_ok, outcome_recorded);
+                if !run_ok {
+                    ps.late.owe(arrived_back);
+                    chats.jobs.queue.cancel_run(&key, turn);
+                }
                 // Pictures that finished while this run held the chat: into
                 // the record now, before `Done` sends the page to re-read.
                 for late in std::mem::take(&mut ps.late.held) {
@@ -7797,6 +7804,42 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         panic!("the picture was not stopped");
+    }
+
+    /// The restart repair goes by the call, not the words: a result of
+    /// another tool that happens to begin "being made: " is not a render
+    /// and is left as it was (review of #583, pass 6).
+    #[tokio::test]
+    async fn the_restart_repair_leaves_another_tools_words_alone() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let (path, id) = {
+            let mut sessions = w.chat.personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            let turn = vec![
+                Message::user("echo it"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "s1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "s1".into(),
+                    content: "being made: images/a.png".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("Done.")]),
+            ];
+            ps.session.append_messages(&turn).unwrap();
+            (ps.session.path.clone(), ps.session.meta.id.clone())
+        };
+        w.chat.personas.sessions.lock().await.clear();
+        w.personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains(r#""record":"late_result""#), "{text}");
     }
 
     /// A chat resumed after a restart holds a "being made" result with no
