@@ -366,7 +366,13 @@
             </div>
           {/if}
         {:else if line.picture}
-          <div class="heard pictured">{line.text}</div>
+          <!-- The picture itself, where it was made in the conversation (the
+               owner's ask, 2026-10-06). A tap opens it full screen inside the
+               call, with Download and Edit, never in a new tab: on a phone
+               that backgrounds the call page and drops the call. -->
+          <button class="inlineshot" onclick={() => view(line.picture)} aria-label="look at the picture full screen">
+            <img src={pictureUrl(line.picture)} alt={line.text} loading="lazy" />
+          </button>
         {:else}
           <div class="heard"><ChatProse text={line.text} /></div>
         {/if}
@@ -672,9 +678,20 @@
   .call-pane:empty {
     display: none;
   }
-  /* A picture in the transcript, as a line. */
-  .pictured {
-    font-style: italic;
+  /* A picture in the transcript, drawn where it was made. */
+  .inlineshot {
+    align-self: flex-start;
+    width: min(92%, 320px);
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+  .inlineshot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
   }
   /* The call's own state — a dead mic, a dropped line — never speech. */
   .callnote {
