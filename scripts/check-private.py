@@ -65,6 +65,9 @@ VOICE_MARK = "Voice mode: everything you write is spoken aloud"
 # (`voice::VOICE_NOTE`), recorded as a `notes` line ahead of the owner's
 # message, and the message holds only what was said: the note's opening is
 # what marks the turn as spoken now.
+# A hand copy of the opening of `voice::VOICE_NOTE` and
+# `VOICE_NOTE_STREAMING` in mecha-cli/src/voice/mod.rs, whose test pins the
+# literal: reword one and reword the other.
 VOICE_NOTE_STEM = "(From the harness: this turn is spoken."
 # The calendar reference's opening (`date_context::REFERENCE_STEM`).
 REFERENCE_STEM = "Calendar reference from the harness clock:"
