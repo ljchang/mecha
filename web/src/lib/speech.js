@@ -23,9 +23,26 @@ function fileWords(file) {
     .trim();
 }
 
+// A whole line that only points at a picture the chat already draws —
+// "[Image: images/20261006-….png]", which a persona sometimes types after
+// making one, echoing the tool's own "image: <path>" line. Nothing to read
+// and nothing to say: the picture card is the picture (2026-10-06). Narrow
+// on purpose — a bracketed description in the persona's own words stays.
+const PICTURE_REF = /^[ \t]*\[\s*image\s*:\s*images\/[^\]\s]+\]\s*$/i;
+
+/** `text` without its picture-reference lines (`PICTURE_REF`), for display. */
+export function withoutPictureRefs(text) {
+  const s = String(text ?? '');
+  if (!s.includes('[')) return s;
+  return s
+    .split('\n')
+    .filter((line) => !PICTURE_REF.test(line))
+    .join('\n');
+}
+
 /** `text` (a reply's Markdown) as plain sentences to speak. */
 export function speakable(text) {
-  let s = String(text ?? '');
+  let s = withoutPictureRefs(text);
   // Code blocks: never read out.
   s = s.replace(/```[\s\S]*?(```|$)/g, '\nThere is a code block here.\n');
   // Citations, before links (both are bracketed).

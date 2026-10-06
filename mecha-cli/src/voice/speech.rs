@@ -227,6 +227,9 @@ fn underscore_marks(s: &str) -> (usize, usize) {
 /// the line, so a marker is a mark. `eol`: it ends the line, so it ends a
 /// sentence when heard.
 fn speak(out: &mut String, piece: &str, line_start: bool, eol: bool) -> bool {
+    if line_start && eol && is_picture_ref(piece) {
+        return false;
+    }
     let mut s = citations(piece);
     s = images_and_links(&s);
     s = bare_urls(&s);
@@ -257,6 +260,34 @@ fn speak(out: &mut String, piece: &str, line_start: bool, eol: bool) -> bool {
     }
     out.push(' ');
     true
+}
+
+/// A whole line that only points at a picture the chat already draws —
+/// `[Image: images/….png]`, which a persona sometimes types after making one
+/// (2026-10-06). Nothing to say: the picture card is the picture. Narrow on
+/// purpose, as Listen's `PICTURE_REF` is: a bracketed description stays.
+fn is_picture_ref(line: &str) -> bool {
+    let Some(inner) = line
+        .trim()
+        .strip_prefix('[')
+        .and_then(|l| l.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let inner = inner.trim();
+    let Some(rest) = inner
+        .get(..5)
+        .filter(|w| w.eq_ignore_ascii_case("image"))
+        .map(|_| inner[5..].trim_start())
+    else {
+        return false;
+    };
+    let Some(path) = rest.strip_prefix(':').map(str::trim_start) else {
+        return false;
+    };
+    path.starts_with("images/")
+        && path.len() > "images/".len()
+        && !path.contains(|c: char| c.is_whitespace() || c == ']')
 }
 
 fn collapse(s: &str) -> String {
