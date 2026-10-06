@@ -3995,6 +3995,35 @@ and never written. The chat page once kept a second copy of this machinery
 under a different key while claiming to share the first, so a voice picked
 mid-call was saved where nothing else looked.
 
+## What a call says aloud
+
+**A reply is written once, for the chat, and tidied for the ear where it
+leaves mecha.** Every call's words go to the worker through `voice::pump`,
+in both chats, and `voice::speech::Tidier` sits there. It drops Markdown's
+marks and keeps their words. A link is spoken as its label and a bare URL as
+"a link". A code block is announced once, when it opens, and never read. A
+persona's citation becomes "(from the file's words)". The rule is Listen's
+(`web/src/lib/speech.js` `speakable`), and `web/test/speakable-cases.json`
+holds both to it, since the two suites read that one file. Change a rule in
+one tidier and the other's test fails until the fixture and the other tidier
+agree.
+
+- **Streamed, never held for the reply.** A line goes out as it ends, and
+  within a line each sentence end with no mark left open (a link, a
+  citation, bold, code). The speech engine waits for a sentence end anyway,
+  so nothing is heard later than before. A mark the model never closes holds
+  its line for at most `speech::MAX_HELD` bytes.
+- **A turn's text ends its sentence** (`AgentEvent::AssistantText` flushes
+  the tidier). Before this, the narration ahead of a tool call ran straight
+  into the next turn's first word.
+- **The echo window holds what was spoken**, not what was written.
+- **Vocal tags are the engine's** (`(laugh)`, `fragments.py` `EVENTS`), so
+  the tidier leaves parentheses alone.
+
+The voice preamble's "no Markdown" rule predates this, when the model's raw
+text was the speech. It is now redundant for the ear, and still shapes what
+the chat shows.
+
 ## The voice director
 
 **Every spoken sentence is directed by a separate one-shot call, and every

@@ -1,8 +1,15 @@
 // A reply tidied for speech, and cut into pieces the player can ask for one
 // at a time (`speech.js`; the owner's ask, 2026-10-01).
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { ownWords } from '../src/lib/persona.js';
 import { replyContext, replyKey, speakable, speechPieces, speechSentences } from '../src/lib/speech.js';
+
+// The rule a call shares (`speakable-cases.json`, read by the Rust tidier's
+// test too): every case, spoken as the call would say it.
+const cases = JSON.parse(readFileSync(new URL('./speakable-cases.json', import.meta.url), 'utf8'));
+assert.ok(cases.length > 0);
+for (const c of cases) assert.equal(speakable(c.text), c.spoken, c.why);
 
 // Marks go, words stay.
 assert.equal(speakable('## Plan\n\n- **first**, check the *traps*\n- then `count` them'), 'Plan. first, check the traps. then count them.');
