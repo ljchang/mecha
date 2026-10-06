@@ -686,6 +686,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The picture tool's results report facts only.** A result gives the
+  picture's path, size, time and seed, and for an edit whether its layout
+  barely changed. The suggestions each result used to carry about what to
+  try next now appear once, in the tool's description, so they no longer
+  pile up in a chat's history (`docs/PERSONA-CONTEXT-DESIGN.md` §5.2).
+
 - **Picture edits are described in parts, and the tool writes the edit
   model's instruction.** An edit now names the one change (and, if it
   matters, what stays, what a face does, or where the camera goes), never a
