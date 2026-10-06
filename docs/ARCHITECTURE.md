@@ -1296,9 +1296,9 @@ module.
       on every turn, so switching a protection back on reaches an open chat.
       The prompt stays pinned to the chat's version.
     - The Core is re-anchored every `REANCHOR_EVERY` turns, after a
-      compaction, and on a resumed chat's first turn. It is sent as a separate
-      block in the harness's registered voice (`REANCHOR_STEM` in
-      `is_harness_voice`), so no reader or page takes it for the owner's words.
+      compaction, and on a resumed chat's first turn. It is one of that run's
+      notes (`RunContext::notes`, below), so it is never stored in a message.
+      `REANCHOR_STEM` stays in `is_harness_voice` for chats recorded before.
     - Dose records go to `dose.jsonl`, never with the words.
     - `persona::agent::DISCLOSED` rides in the prompt only while
       `disclosure` is on.
@@ -1441,14 +1441,18 @@ module.
     an unknown status is a candidate.
   - Read paths (`open_existing`) never create a file — what recall and an
     incognito chat will use.
-  - **Recall at chat start** (`persona::recall`, §9.7): one block, folded into
-    the first turn beside the files block and only before the first reply
-    (`carries_now`), so it lands in `messages[0]`, which compaction keeps
-    whole. It holds about-me, the user facts the persona may see (its own,
-    plus `Shared::visible_to` its groups under `user_facts = "shared"`),
-    its own facts and recent episodes, honouring each `[memory]` switch read
-    **live**. Candidates are never recalled, and a copy the owner shared of
-    the persona's own fact is not said twice.
+  - **Recall at chat start** (`persona::recall`, §9.7): one block, read once
+    per chat in this process and sent as one of every run's notes
+    (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1), never stored in a
+    message. Past the first reply, what the owner's message brings to mind is
+    a second note. The two are never joined, because each arms taint by the
+    stem it opens with (`recall::stem_of`), and a recall from outside joined
+    after a clean block would hide its own. It holds about-me, the user
+    facts the persona may see (its own, plus `Shared::visible_to` its groups
+    under `user_facts = "shared"`), its own facts and recent episodes,
+    honouring each `[memory]` switch as it stands when the block is read
+    (the chat's first turn in this process). Candidates are never recalled,
+    and a copy the owner shared of the persona's own fact is not said twice.
     - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
       a third, each note a fair share and cut rather than dropped; recent
       episodes have a third of their own, so facts can never price them out,
@@ -1630,11 +1634,13 @@ module.
     - It never steers. A run in flight is `Refusal::Busy`; `speak` cancels it
       and tries again, because the facade is owed an answer of its own to
       speak.
-    - The call note (`persona::call::note`) is a separate block in the
-      harness's voice, registered in `is_harness_voice`. It rides on the
-      first spoken turn of a stretch. It is not a prefix on the owner's
-      words, as the assistant's `VOICE_BLOCK` is, so no reader has to strip
-      it.
+    - The call note (`persona::call::note`) is one of the run's notes
+      (`RunContext::notes`), on every spoken turn and on no typed one, and
+      never stored, so no reader has to strip it from the owner's words, as
+      they must the assistant's `VOICE_BLOCK`. It ends on the sentence about
+      pictures reaching the owner's screen only for a persona whose registry
+      holds `image_generate` (PERSONA-CONTEXT-DESIGN.md §5.6): sent to one
+      without, it was followed, and the persona said it had sent a picture.
     - A pause is heard. A streaming call speaks only what arrives as
       `AgentEvent::TextDelta` on the tap; `HostedAnswer.text` is never
       spoken there. So the persona door sends `SAFE_MESSAGE` as a delta: in
@@ -1647,8 +1653,7 @@ module.
       owner's ruling of 2026-10-01.
     - The lock and approval are checked before the barge-in (the
       assistant's #376 order), so a refused call never stops the reply in
-      flight. A spoken turn that fails is rolled back with its call note,
-      and the next spoken turn carries the note again.
+      flight.
 - **Serve vouches for a persona call at the offer** (`persona_offer`).
   The worker names a chat by key alone, so the page offers with its unlock
   token. Serve checks it (`check_call`) and strips it, so the worker never
@@ -1699,6 +1704,34 @@ module.
     the config as written before it unseeds, so a config the provider
     refuses (Anthropic refuses any `seed`) is refused for the chat and the
     judge alike. A chat whose crisis judge cannot be built must not open.
+  - **Run notes** (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1). The
+    harness's per-run words to a persona (its memory, a recall, the identity
+    reminder, the call, variety and edit notes) are not written into the
+    owner's message. Folded there, they stayed and were re-sent on every later
+    turn: at one measured moment they were 39% of what the model read,
+    against the owner's 3.5%, and the model followed the larger share.
+    - `Agent::wire` adds them last (`message::attach_notes`), as text blocks
+      at the end of the request's last user message: the owner's turn on a
+      run's first request, the tool results after a round trip. Never a
+      message of their own, since two user messages in a row are invalid.
+      Every other view runs on the recorded history first, so `answering`
+      never sees a note.
+    - At the end, not pinned to the owner's turn, so each request re-reads
+      only the notes and the step before them, and the next turn's history is
+      a prefix of what the slot already holds up to the previous reply.
+    - `wire_bytes` counts them. `CompletionRequest::trailing_notes` says how
+      many there are, and the Anthropic provider's moving breakpoint goes on
+      the block before them.
+    - They arm taint by the content rule (`Taint::arm_for_notes`), at run
+      start and in the live snapshot a steer is judged by. The taint is the
+      conversation's, so it stays armed on later turns that carry no note.
+    - The run's notes are recorded as `Record::Notes`. `Session::read`
+      leaves them out of the conversation it rebuilds and arms the taint
+      from them, since the transcript is how a torn taint record is
+      re-derived and the notes are no longer in the messages.
+    - Material is not a note: the files block and the session goal ride in
+      the first turn and stay there.
+    - A subagent never inherits its parent's notes.
   - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
     the newest user message that carries no tool result, which is the cut
     Qwen's own templates use. A tool result is a user message too, so "the
@@ -1735,11 +1768,10 @@ module.
     - The transcript keeps every reply as written or heard; `wire_bytes`
       subtracts what the trim cuts.
   - **A persona is told what it keeps repeating** (`persona::variety`,
-    owner 2026-10-04). Each turn folds a note beside the owner's words, in
-    the harness's registered voice (`variety::is_note` in
-    `is_harness_voice`): the opening word two of its last three replies
-    share, if any, and its last three closing lines, read as the model is
-    shown them (`PriorTails`). Specific, not general: on seven replayed call
+    owner 2026-10-04). Each turn carries a run note (`variety::is_note`
+    stays in `is_harness_voice` for older chats): the opening word two of
+    its last three replies share, if any, and its last three closing lines,
+    read as the model is shown them (`PriorTails`). Specific, not general: on seven replayed call
     turns judged blind, this note cut "opens like a recent reply" 6/14 → 2/14
     and "repeats a closing line" 3/14 → 1/14, and won 17–9, while one general
     "vary how you open" line lost 12–14. Typed turns carry it too, unmeasured.
@@ -1754,45 +1786,21 @@ module.
       (judged 75–50). The passage goes back as lowercase words only, so it
       can close neither the quote nor the note. A note can be this clause
       alone, so it has its own stem (`COPY_STEM`).
-    - Only the newest variety note goes on the wire (`PriorNudges::Drop`,
-      set in `persona_agent` beside the other two views), wherever it sits:
-      a turn folded into an earlier message after a cancelled tool call can
-      hold two. An edit note goes on the wire only while it is the last note
-      of all and its message is the turn being answered (`answering`, which
-      a steer folded into a tool result never moves): the edit turn appends
-      it after its variety note, so any note after it is a later turn's,
-      folded or not. So an edit turn keeps both its notes through its tool
-      round trip, a steer included, and a later turn drops the edit note.
-      Each note names what is repeating now, and kept, forty turns in
-      would be forty stale "don't end on X" lines, which is not the condition
-      it was measured in. The transcript keeps every note; `wire_bytes`
-      subtracts the dropped ones. **This is the first view that rewrites
-      a request already sent**, and the server re-reads from the dropped
-      note up to the first message that goes out altered anyway (thinking
-      stripped by `PriorThinking::Drop`, or a tail trimmed), judged against
-      the recorded history and the earlier views' output together
-      (`Agent::wire`). Ahead of a plain reply that is nothing. A turn that
-      called a tool keeps its thinking and, under the router's
-      `reasoning-preserve`, goes back byte-identical, so the note ahead of
-      one costs that round trip, once, on the turn after. **The owner's
-      ruling (2026-10-04): drop it when that re-read is within
-      `NUDGE_REREAD_BYTES` (8 KiB, ~2,000 tokens, ~1 s at the measured
-      ~1,800 tokens/s prefill), keep it ahead of a larger one.** Measured on
-      the last 12 persona chats: a quarter of turns call a tool, so keeping
-      every such note would carry ~10 stale ones in 40 turns, and re-reading
-      every trip costs 0.4 s at the median, ~3 s at p90, ~12 s at the worst.
-      The stretch ends at the next owner message, so a note's fate never
-      changes as the chat grows, since flipping it would itself re-read
-      everything after. The price is per note, not set by the oldest one
-      dropped: the slot matches each request against the previous one,
-      which lacked every note dropped before, so a request diverges only at
-      the note that just went stale (tested turn by turn in
-      `only_the_turn_being_answered_keeps_its_one_turn_nudge`). **The
-      precondition is a llama-server slot** that holds what it generated; a
-      provider whose cache is keyed on the previous request's bytes has no
-      free divergence point after a reply. A later view that rewrites
-      earlier text pays from its own position on, unless it makes the same
-      check.
+    - The variety note is a run note: one note for one run, never a stack,
+      which is the condition it was measured in.
+    - **Chats recorded before run notes** hold their notes in stored owner
+      messages. `PriorNudges::Drop` (set in `persona_agent` beside the other
+      two views) leaves every recorded persona note off the wire: call,
+      variety, edit, identity reminder and memory (`is_recorded_note`), but
+      never the files block or the goal, and never a block whose removal
+      would empty its message. The cut depends on the recorded history
+      alone, so an old chat re-reads its history once, on its first turn
+      after the change, and every request after repeats the one before. This
+      replaced a newest-note-only rule with a re-read cap
+      (`NUDGE_REREAD_BYTES`, owner ruling 2026-10-04) that existed only
+      because the notes were stored. The lesson it carried still holds: a
+      view that rewrites a request already sent makes the server re-read
+      from that point on.
     - A turn that called a tool is not a reply: its text is a preamble
       ("Let me look that up."), the turns `PriorTails` leaves alone too. A
       reply with no whole sentence ("Mmm, I was just", barged in on) has no
@@ -1805,8 +1813,7 @@ module.
   - **A turn the picture edit panel sent is answered in a line**
     (`persona::edit`, 2026-10-05). The page marks the turn
     (`SendBody::edit`), so it is known by the door it came through, never by
-    parsing `Edit <picture>: …`; the server folds a one-turn note in the
-    harness's registered voice beside the owner's words: make the edit,
+    parsing `Edit <picture>: …`; the server adds a run note: make the edit,
     answer in a sentence or two, and don't describe a picture you have not
     seen (`image_generate` never shows the persona its result). Unmarked,
     edit replies retold the scene and then reused the rest of the previous
@@ -1817,11 +1824,9 @@ module.
     judged blind 66–59 (a tie), and the edit prompts unchanged. Typed turns
     only: on a call the panel's words go out as speech, and the call note
     already says a picture reaches the owner unseen. A message that steers a
-    run in flight carries no note. Once stale it is dropped whatever the
-    re-read costs, unlike the variety note: the cap is a spoken turn's
-    latency control, every edit turn is a tool round trip (5 of 30 measured
-    past the cap), and a kept edit note would tell the persona the next
-    typed message came from the panel.
+    run in flight adds no note of its own. As a run note it lasts exactly the
+    edit's run, so a later typed message is never told it came from the
+    panel.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,

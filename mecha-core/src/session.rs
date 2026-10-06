@@ -262,6 +262,22 @@ pub enum Record {
         index: usize,
         blocks: Vec<crate::message::Block>,
     },
+    /// The harness's notes for the run that follows (`RunContext::notes`,
+    /// PERSONA-CONTEXT-DESIGN.md §5.1): sent on every request of that run,
+    /// never part of the conversation. Recorded so a reader can still see
+    /// what the model was told, since the messages no longer carry it.
+    ///
+    /// [`Session::read`] leaves it out of the conversation it rebuilds, which
+    /// is the point, but arms the taint from it by the content rule: notes are
+    /// no longer in the messages, and the transcript is how a torn taint
+    /// record is re-derived. `TaintTimeline::from_records` does not read it:
+    /// the run's own `Record::Taint`, written after it, already carries what
+    /// the notes armed, and a torn one reads as unknown, never clean. A build
+    /// from before this record skips the line as one it cannot parse, as with
+    /// [`Record::Extend`].
+    Notes {
+        notes: Vec<String>,
+    },
     /// A better name for this conversation than the one it was created with.
     ///
     /// **Appended, never patched.** The header is the first line of the file
@@ -2087,6 +2103,21 @@ impl Session {
                 Ok(Record::Summary { .. }) => {}
                 // For the corpus, not the conversation: nothing to rebuild.
                 Ok(Record::SpokenDirection(_)) => {}
+                // A run's notes are never part of the conversation it rebuilds,
+                // but what they carried armed it, and the transcript is how a
+                // torn taint record is re-derived (`Taint::arm_for_content`'s
+                // reason for reading it). Notes are no longer in the messages,
+                // so they arm here by the same rule, from the point they were
+                // recorded: a memory note re-arms `private` even after the
+                // store it came from is gone.
+                //
+                // No checkpoint, though. A note is recorded *before* its run,
+                // and a checkpoint there would cover the owner's message with
+                // the pre-run taint instead of the run's cumulative
+                // `Record::Taint` (`Session::taint_timeline`'s ordering rule),
+                // under-tainting it and turning a torn transcript's `None`
+                // (fail closed) into a clean reading.
+                Ok(Record::Notes { notes }) => taint.arm_for_notes(&notes),
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
@@ -5386,6 +5417,99 @@ mod extension_tests {
         let ever = Session::messages_ever(&std::fs::read_to_string(&s.path).unwrap());
         assert_eq!(ever.len(), 3, "{ever:?}");
         assert!(ever.iter().all(|m| m.role == Role::User));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A run's notes are recorded for audit and never rebuilt into the
+    /// conversation, or a resume would store what §5.1 keeps out.
+    #[test]
+    fn a_runs_notes_are_recorded_and_left_out_of_the_conversation() {
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("hello"))).unwrap();
+        s.append(&Record::Notes {
+            notes: vec!["(From the harness: a note.)".into()],
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&s.path).unwrap();
+        assert!(text.contains(r#""record":"notes""#), "{text}");
+        let (_, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(convo.messages.len(), 1);
+        assert_eq!(convo.messages[0].content, vec![Block::text("hello")]);
+        assert!(!convo.taint.private, "a plain note arms nothing");
+        assert!(Session::messages_ever(&text)
+            .iter()
+            .all(|m| !m.text().contains("a note")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A memory note armed the chat when it ran. With no taint record on file
+    /// (torn, or a crash before it was written), the rebuild still arms from
+    /// the recorded note, as it would from a memory block in the messages.
+    #[test]
+    fn a_recorded_memory_note_re_arms_a_chat_whose_taint_record_is_missing() {
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("hello"))).unwrap();
+        s.append(&Record::Notes {
+            notes: vec![format!(
+                "{}: the owner likes tea.)",
+                crate::persona::recall::MEMORY_STEM
+            )],
+        })
+        .unwrap();
+        let (_, convo) = Session::load(&s.path).unwrap();
+        assert!(convo.taint.private);
+        assert!(!convo.taint.untrusted);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A note is recorded before its run, so it is never the checkpoint that
+    /// covers the run's owner message: that stays the run's own
+    /// `Record::Taint`, written after it. With that record torn off, the
+    /// owner message is still unknown (fail closed), never clean, in both
+    /// readers of the file.
+    #[test]
+    fn a_recorded_note_is_never_the_checkpoint_covering_its_turn() {
+        let memory = format!(
+            "{}: the owner likes tea.)",
+            crate::persona::recall::MEMORY_STEM
+        );
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("look this up")))
+            .unwrap();
+        s.append(&Record::Notes {
+            notes: vec![memory.clone()],
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            "found it",
+        )])))
+        .unwrap();
+        let torn = std::fs::read_to_string(&s.path).unwrap();
+        s.append(&Record::Taint(Taint {
+            private: true,
+            untrusted: true,
+        }))
+        .unwrap();
+        for timeline in [
+            Session::read(&s.path).unwrap().taint_timeline,
+            Session::taint_timeline(&s.path).unwrap(),
+        ] {
+            assert_eq!(
+                timeline.covering(0),
+                Some(Taint {
+                    private: true,
+                    untrusted: true
+                }),
+                "the run's own record covers its owner message"
+            );
+        }
+        std::fs::write(&s.path, torn).unwrap();
+        for timeline in [
+            Session::read(&s.path).unwrap().taint_timeline,
+            Session::taint_timeline(&s.path).unwrap(),
+        ] {
+            assert_eq!(timeline.covering(0), None, "torn reads unknown");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -2,6 +2,7 @@ use super::super::memory::{Audience, Kind, NewEpisode, NewFact, Source};
 use super::super::tests_support::{fill_core, new, no_lib, scratch};
 use super::*;
 use crate::agent::Taint;
+use crate::message::Message;
 use std::path::PathBuf;
 
 struct World {
@@ -287,18 +288,7 @@ fn the_block_stays_within_its_budget() {
 }
 
 #[test]
-fn the_block_rides_once_before_the_first_reply_and_a_typed_stem_only_arms_more() {
-    let block = Message::user(format!("{MEMORY_STEM} — notes.)"));
-    assert!(carries_now(&[Message::user("hi")]));
-    assert!(!carries_now(std::slice::from_ref(&block)));
-    assert!(!carries_now(&[
-        Message::user("hi"),
-        Message::assistant(vec![Block::text("hello")])
-    ]));
-    // In the persona's own words it is not the harness's block.
-    assert!(!carries(&[Message::assistant(vec![Block::text(
-        MEMORY_STEM
-    )])]));
+fn a_typed_stem_only_arms_more() {
     // The owner typing the clean stem arms private — never disarms anything.
     let mut t = Taint {
         private: false,
