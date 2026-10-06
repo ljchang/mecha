@@ -21,7 +21,8 @@ Two different things, and the difference is the point:
   turn boundary or mid-stream — and keeps the partial turn. Cancellation is a
   dropped future; that is what aborts the HTTP request. A cancellable run
   always streams, because otherwise there is no partial answer to keep. Tools
-  are never interrupted mid-call, with two exceptions, both slow:
+  are never interrupted mid-call, except a tool that does slow work under the
+  run's own token. That is a set, not a fixed number; the members today:
   - `image_generate` honours the cancel, takes its job off the image server,
     and returns "Cancelled — the generation was stopped and nothing was
     saved." (`imagegen.rs`, `Failure::Cancelled`). The chat's Stop button
@@ -30,8 +31,11 @@ Two different things, and the difference is the point:
     `PERSONA-CONTEXT-DESIGN.md` §5.4 removes this one by making a picture a
     job that the barge-in does not touch.
   - `document_read` passes the cancel into the extractor (`tool/document.rs`,
-    `Extractor::extract`), which drops the page in flight and records that it
-    stopped early (`Extraction::cancelled`).
+    `Extractor::extract`), which drops the page in flight and returns the
+    pages already transcribed, recording that it stopped early
+    (`Extraction::cancelled`).
+  - `subagent` runs its child on the caller's token, so cancelling the parent
+    cancels the child mid-call and the tool returns the child's partial run.
 - **Steer** (`RunContext::queued_input`) redirects a run *without* stopping it.
   Text queued mid-run is folded into the message carrying the tool results, so
   the model sees the results and the new instruction as one user turn and keeps
