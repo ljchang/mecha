@@ -56,9 +56,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 - A tool may answer `ToolOutput::deferred(now, job)`. `now` is the immediate result text. `job`
   is a `DeferredJob` — a boxed future yielding the finished `ToolOutput`, its busy text, and
-  `cancel`, **the job's own cancellation token, carried beside it** — held behind an `Arc` in
-  an `Option` field, so `ToolOutput` keeps its `Debug` and `Clone` derives (review of #573,
-  pass 9). The tool creates the token and builds the job to watch it,
+  `cancel`, **the job's own cancellation token, carried beside it** — held as an
+  `Option<Arc<DeferredJob>>` field. The `Arc` keeps `ToolOutput`'s `Clone`; `Debug` takes a
+  hand-written impl on `DeferredJob`, since a boxed future has none; and the future sits in a
+  `Mutex<Option<…>>` that whoever runs it takes exactly once, because a future behind a
+  shared `Arc` cannot be moved out to be awaited (review of #573, passes 9 and 10). The tool creates the token and builds the job to watch it,
   because a boxed future can be dropped but not handed a token afterwards, and the tool cannot
   know whether the run has a sink (review of #573, pass 4). Whoever runs the job holds `cancel`:
   the loop, linked to the run's token when it awaits inline; the host's queue otherwise.
@@ -117,7 +119,9 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 ### 2.3 Delivery: the call's result arrives late
 
-When a job finishes, the host:
+When a job finishes, the host does the four steps below. They are listed by what they do, not
+when: with the chat idle, the record (2) is written before the event (1) goes, which is the
+ordering guarantee (1) states (review of #573, pass 10).
 1. **Sends `WireEvent::ToolResult{name, id, is_error, preview}`**, with the call's original id
    and name. The page updates the existing tool entry, so the picture appears where the call is,
    in the chat and on the call screen, even while another run is in flight. **A failed job sends
@@ -178,6 +182,10 @@ When a job finishes, the host:
    function, or `sessions show` and the corpus would count the same run's errors differently.
    `doctor`'s trigger-ledger arm and `exp_report` read stores written at run end on paths with no
    chat host, so they are out of scope by construction (review of #573, passes 6–8).
+   **A late failure is appended after its run's outcome**, always: the readers walk the file
+   in order and add to a row that exists, and one written before its row would find none. The
+   hand-back numbers the run before it lands held results, so the order holds (review of
+   #573, pass 10).
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
@@ -210,21 +218,35 @@ picture is still coming, and none denies one the owner already saw.
   record — until its manifest is written, so a picture without one is a picture nobody was
   shown. The file stays in `images/` as an orphan, harmless and visible in the gallery (review
   of #573, pass 8).
-- **The repair fails closed on taint and provenance.** It has no job `ToolOutput` to read, so it
-  takes the tool's declared capabilities in its place: a tool that *can* return untrusted
-  content is treated as having done so — provenance recorded `external`, `untrusted` armed and
-  a `Record::Taint` written — exactly the conservative stand-in the loop uses before a call
-  runs (`turn_taint`). Never a content-only rewrite (review of #573, pass 5).
+- **The repair fails closed on taint and provenance, by branch.** It has no job `ToolOutput`
+  to read. On the picture branch the result *is* the tool's output, so the tool's declared
+  capability stands in for its provenance: a tool that can return untrusted content is
+  recorded `external`, `untrusted` armed, and a `Record::Taint` written — a mark on the
+  conversation, which is not what `turn_taint` does (that one only ever blocks a send, and is
+  not cited here). On the `not made: the server restarted` branch nothing came from outside:
+  the words are the harness's, recorded not external, which is `ToolOutput::external`'s own
+  rule. `image_generate` declares no outside reach, so both of its branches record not
+  external. Never a content-only rewrite (review of #573, passes 5 and 10).
+- **`Session::messages_ever` does not read the late records**, deliberately: its two readers
+  that key on a result's id, `outbox_source` and grounding, are first-seen-wins, so a late
+  result admitted there would be shadowed by the "being made" result it replaces, which
+  already names the reserved path. Admitting one is a decision for the first deferring tool
+  whose late content a claim could cite (review of #573, pass 10).
 
 ### 2.4 Talking never kills a job; Stop does
 
 - **The job's token is not the run's.** A barge-in cancels the run, meaning the talking, and the
   job carries on.
-- **The Stop button** (`/cancel` in both chats) cancels the run **and** the conversation's jobs:
-  two calls at the call site, so no new `CancelReason` is needed.
+- **`/cancel` has three meanings, and only these.** A barge-in cancels the run only. The Stop
+  button cancels the run **and** the conversation's job (at most one, §2.2): two calls at the
+  call site, so no new `CancelReason` is needed. The call screen's picture slot (ruling Q2)
+  sends `{"picture": true}` and cancels the job alone, so the reply being spoken goes on
+  (review of #573, pass 10).
 - **Hang-up, leaving the chat, a model switch and a client disconnect** cancel the run only. A
   picture asked for is still delivered to the chat.
-- **Server shutdown** cancels everything (`Shutdown`).
+- **Server shutdown** cancels the runs (`Shutdown`) and drops the job with the process, without
+  abandoning the image server's render; the next resume settles its result from the
+  workspace (§2.3, the restart repair).
 
 ### 2.5 Both chats
 
