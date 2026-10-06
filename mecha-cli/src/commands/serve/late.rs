@@ -115,6 +115,15 @@ impl LateState {
         std::mem::take(&mut self.notes)
     }
 
+    /// Put back notes a run took and did not deliver: it ended in error and
+    /// was rolled back, and the file still owes them (`Record::PendingNote`
+    /// retires only at an outcome), so memory owes them too.
+    pub(super) fn owe(&mut self, notes: Vec<String>) {
+        let mut notes = notes;
+        notes.append(&mut self.notes);
+        self.notes = notes;
+    }
+
     /// Forget how every run ended, as a reopened chat would.
     #[cfg(test)]
     pub(super) fn forget_outcomes(&mut self) {
@@ -233,17 +242,32 @@ pub(super) fn land(
 /// instead. No failure is booked: the run that made the call is not known
 /// from here.
 pub(super) fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Conversation) {
+    use mecha_core::message::Block;
+    // The calls that could have deferred: an orphan is identified by its
+    // call, never by its words, which any tool's result can carry — a shell
+    // echo, a file read (review of #583, pass 6).
+    let renders: std::collections::HashSet<&str> = convo
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolUse { id, name, .. } if name == "image_generate" => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
     let orphans: Vec<(String, String)> = convo
         .messages
         .iter()
         .filter(|m| m.role == mecha_core::message::Role::User)
         .flat_map(|m| &m.content)
         .filter_map(|b| match b {
-            mecha_core::message::Block::ToolResult {
+            Block::ToolResult {
                 tool_use_id,
                 content,
                 ..
-            } if content.starts_with(mecha_core::imagegen::BEING_MADE) => {
+            } if renders.contains(tool_use_id.as_str())
+                && content.starts_with(mecha_core::imagegen::BEING_MADE) =>
+            {
                 Some((tool_use_id.clone(), content.clone()))
             }
             _ => None,
@@ -271,4 +295,24 @@ pub(super) fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Co
         }
     }
     let _ = session.append(&Record::Taint(convo.taint));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed run's notes are owed again, ahead of any that arrived while
+    /// it ran.
+    #[test]
+    fn a_failed_runs_notes_are_owed_again_first() {
+        let mut state = LateState::default();
+        state.notes.push("older".into());
+        let taken = state.take_notes();
+        state.notes.push("newer".into());
+        state.owe(taken);
+        assert_eq!(
+            state.take_notes(),
+            vec!["older".to_string(), "newer".to_string()]
+        );
+    }
 }

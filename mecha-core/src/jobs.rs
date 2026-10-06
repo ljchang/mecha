@@ -210,6 +210,7 @@ type Deliver = dyn Fn(Delivered) + Send + Sync;
 struct Running {
     call_id: String,
     tool: String,
+    run: usize,
     cancel: CancellationToken,
 }
 
@@ -260,6 +261,7 @@ impl JobQueue {
             Running {
                 call_id: call_id.to_string(),
                 tool: tool.to_string(),
+                run,
                 cancel: job.cancel_token().clone(),
             },
         );
@@ -300,6 +302,21 @@ impl JobQueue {
     pub fn cancel(&self, key: &str) -> bool {
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         match running.get(key) {
+            Some(r) => {
+                r.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Cancel `key`'s job if run `run` submitted it — a run that ended in
+    /// error was rolled back, call and all, so nothing is left to show its
+    /// picture to, and drawing on would only hold the slot (review of #573,
+    /// pass 16).
+    pub fn cancel_run(&self, key: &str, run: usize) -> bool {
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        match running.get(key).filter(|r| r.run == run) {
             Some(r) => {
                 r.cancel.cancel();
                 true
@@ -457,6 +474,25 @@ mod tests {
             queue.pending("chat"),
             None,
             "the slot frees when the job ends"
+        );
+    }
+
+    /// A failed run's job is cancelled by its run number only: a later run's
+    /// job in the same conversation is not its to stop.
+    #[tokio::test]
+    async fn a_failed_runs_job_is_cancelled_by_its_run_alone() {
+        let (queue, got) = collecting();
+        let job = gated(
+            Arc::new(tokio::sync::Notify::new()),
+            CancellationToken::new(),
+        );
+        queue.submit("chat", 7, "c1", "draw", job).unwrap();
+        assert!(!queue.cancel_run("chat", 6), "another run's job");
+        assert!(queue.cancel_run("chat", 7));
+        delivered(&got, 1).await;
+        assert_eq!(
+            got.lock().unwrap()[0].output.content,
+            "stopped, nothing made"
         );
     }
 

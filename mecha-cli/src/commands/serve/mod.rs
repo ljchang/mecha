@@ -4504,6 +4504,11 @@ mod boundary_tests {
         assert_eq!(opened.status(), StatusCode::OK);
         let key = body(opened).await["key"].as_str().unwrap().to_string();
         converse(&app, &key, "draw the sign").await;
+        // Drawn inside the turn, never deferred: an incognito chat keeps no
+        // record to land a late result in, so its run gets no sink (§2.5) —
+        // deferred, this would read "being made" for good.
+        let drawn = chat::test_first_result(&chat, &key).await.unwrap();
+        assert!(drawn.starts_with("image: images/"), "{drawn}");
 
         // While open: the picture is in the room, and the server has already
         // been asked to forget the job and has lost its preview.

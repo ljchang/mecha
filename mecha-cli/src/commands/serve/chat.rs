@@ -2694,12 +2694,15 @@ fn begin_turn(
     // run hands it to the chat's slot in the queue and answers at once, and
     // is told what arrived since its last reply. An incognito chat has no
     // record to land a late result in, so it draws inline, as before.
+    // Notes a failed run took, owed again at its hand-back.
+    let mut owed_back = Vec::new();
     let turn = match ws.session.kept() {
         Some(session) => {
             start_delivery(chat);
             let turn = chat.jobs.number();
             cx.jobs = Some(chat.jobs.queue.sink(key, turn));
             let owed = ws.late.take_notes();
+            owed_back = owed.clone();
             if !owed.is_empty() {
                 // Recorded ahead of the run, as every door records its notes.
                 if let Err(e) = session.append(&Record::Notes {
@@ -3066,6 +3069,10 @@ fn begin_turn(
             // before held pictures land, and they land before `Done`.
             if let Some(turn) = turn {
                 ws.late.ended(turn, outcome.is_ok(), outcome_recorded);
+                if outcome.is_err() {
+                    ws.late.owe(std::mem::take(&mut owed_back));
+                    state_for_task.jobs.queue.cancel_run(&key_for_task, turn);
+                }
             }
             // Pictures that finished while this run held the chat: into the
             // record now, before `Done` sends the page to re-read.
@@ -5176,6 +5183,22 @@ pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::Can
         .submit(key, 0, "c1", "image_generate", job)
         .unwrap();
     token
+}
+
+/// The first tool result `key`'s conversation holds, as it stands.
+#[cfg(test)]
+pub(super) async fn test_first_result(chat: &ChatState, key: &str) -> Option<String> {
+    let sessions = chat.sessions.lock().await;
+    sessions[key]
+        .conversation
+        .as_ref()?
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
 }
 
 /// The transcript `key`'s kept session records into.
