@@ -144,9 +144,13 @@ ordering guarantee (1) states (review of #573, pass 10).
      **an appended `Record::LateResult { index, tool_use_id, content, is_error }`** that
      `Session::read` applies to message `index`, the one holding that call's result.
      **`index` is what keeps it honest on taint**: `TaintTimeline::from_records` keeps no
-     messages, so the record must say where it lands, and it follows `Record::Extend`'s own
-     rule — the checkpoints covering `index` and after are dropped, so an `external` late result
-     never sits in a message `mecha learn` still classifies clean (review of #573, pass 7). Never a
+     messages, so the record must say where it lands, and it takes `Record::Extend`'s *drop*
+     — the checkpoints covering `index` and after go — but **unconditionally**, for any `index`
+     the reader holds, in **both** timelines (`Session::parse` and
+     `TaintTimeline::from_records`). `Extend` gates its drop on `index + 1 == messages`, which a
+     mid-history late result never satisfies: borrowed whole, the rule would drop nothing, and an
+     `external` late result would sit in a message `mecha learn` still classifies clean (review of
+     #573, passes 7 and 12). Never a
      `Record::Rewrite`: `read` clears the taint checkpoints on a rewrite, which would cost every
      conversation that made a picture its provenance-gated learning (`Record::Extend` exists for
      the same reason). An older build skips the unknown record and shows "being made" (review of
@@ -178,7 +182,9 @@ ordering guarantee (1) states (review of #573, pass 10).
    the call among the file's `Record::Outcome`s. **Bound when that run hands back, not when it
    submits**: the hosts write an outcome only for a run that ended `Ok`, so an ordinal reserved
    at submit would land a failed run's error on the next run. The sink carries the run's number
-   in this process; the hand-back maps it to the outcome it wrote. A run that ended in error
+   in this process; the hand-back maps it to the outcome it wrote, counted on from the outcomes
+   the loaded file already holds — a resumed chat's ordinals continue its file's, never restart
+   at zero (review of #573, pass 12). A run that ended in error
    maps to nothing: it was rolled back, call and all, so its job's late result has no message
    to rewrite, no run to book against and no note to leave; its taint is still armed (review
    of #573, pass 9). The corpus reader, `Session::outcomes_attributed`, keeps no
@@ -186,8 +192,10 @@ ordering guarantee (1) states (review of #573, pass 10).
    make: one more arm adds a tool error to row `run`. A message index would have no reader there
    (`outcome_positions` is `Transcript`'s, and a summarising rewrite nulls it), and an id alone
    would need that reader to walk every message; the id stays for audit. The same increment
-   lands in `Session::read`'s `episode` fold and `Session::outcomes`, through one shared
-   function, or `sessions show` and the corpus would count the same run's errors differently.
+   lands in all three outcome readers — `Session::outcomes_attributed` (the corpus),
+   `Session::outcomes`, and `Session::read`'s `Transcript::outcomes`, from which its `episode`
+   fold is derived — through one shared function, or `sessions show` and the corpus would count
+   the same run's errors differently (review of #573, pass 12).
    `doctor`'s trigger-ledger arm and `exp_report` read stores written at run end on paths with no
    chat host, so they are out of scope by construction (review of #573, passes 6–8).
    **A late failure resolves against the whole file's rows, not the rows read so far**: every
@@ -354,8 +362,9 @@ reaches no hook (review of #583).
   tool failure.
 - A late result is an appended `Record::LateResult`: checkpoints before the patched message
   stand, every checkpoint at or after it drops, and `covering` that message reports the
-  delivery's taint (or none), never clean; an older build reads the file with the call still
-  "being made".
+  delivery's taint (or none), never clean — asserted in both `Session::parse`'s timeline and
+  `TaintTimeline::from_records`, for a message that is not the last; an older build reads the
+  file with the call still "being made".
 - A `Record::LateResult` whose `index` does not hold a result with its `tool_use_id` is skipped,
   and the message's taint still reads unknown, never clean.
 - After delivery of a *clean* late result, the conversation is not untrusted and its reflections
