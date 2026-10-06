@@ -73,7 +73,9 @@ from records. A new `Record` variant would be invisible without endpoint and pag
   `being made: images/<will-be>.png`. The path is reserved, so a later reference can name it.
   `now` is `is_error: false`, and the page reads a `being made:` first line as **still out** —
   `picture.js` gains that third state beside drawn and not drawn — so `turnsWithoutPicture`
-  never counts a picture in progress as drawn (review of #573, pass 6).
+  never counts a picture in progress as drawn (review of #573, pass 6). The change lands in the
+  counter itself, which reads an `image_generate` row as drawn on `is_error === false` alone;
+  `pictureOf`'s `^image: ` pattern already rejects a `being made:` line (review of #573, pass 8).
 - **The job is `'static`, so it owns what it uses.** `Tool::call` keeps its signature (`&self`,
   `&ToolCtx`); the tool builds the job from owned parts before returning:
   - an `Arc` of what `generate` and `save` need (the backend handle and the settings), never a
@@ -109,11 +111,16 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 ### 2.3 Delivery: the call's result arrives late
 
 When a job finishes, the host:
-1. **Sends `WireEvent::ToolResult{name, id, is_error, preview}` at once**, with the call's
-   original id and name. The page updates the existing tool entry, so the picture appears where
-   the call is, in the chat and on the call screen. This happens even while another run is in
-   flight, because the live entry is the page's. **A failed job sends `is_error: true`**, or the
-   page's `turnsWithoutPicture` would read the turn as drawn.
+1. **Sends `WireEvent::ToolResult{name, id, is_error, preview}`**, with the call's original id
+   and name. The page updates the existing tool entry, so the picture appears where the call is,
+   in the chat and on the call screen, even while another run is in flight. **A failed job sends
+   `is_error: true`**, or the page's `turnsWithoutPicture` would read the turn as drawn.
+   **The live entry lasts only until the page next reads the transcript**: both chats rebuild
+   their entries from the server's history on settle and on load, carrying over only page-only
+   lines, which a tool row never is. So the event is a preview of the record, not a substitute
+   for it: when the chat is idle the record (2) is written *before* the event goes, and when a
+   run holds the conversation it is written at that run's end, before the run's own end event
+   sends the page to re-read (review of #573, pass 8).
 2. **Rewrites the stored result** at the next point it holds the conversation: **at once when no
    run holds it** (the chat is idle — the common case, since a picture outlasts the reply that
    started it), else at the end of the current run (the `pending_crisis` pattern). Never
@@ -131,6 +138,11 @@ When a job finishes, the host:
      conversation that made a picture its provenance-gated learning (`Record::Extend` exists for
      the same reason). An older build skips the unknown record and shows "being made" (review of
      #573, pass 6).
+   - **`Session::read` checks the record before applying it**, the guard `Record::Extend` gets
+     from its `index + 1 == messages` check: message `index` must be a user message holding a
+     `ToolResult` with that `tool_use_id`. A record that does not match is skipped with a
+     warning; its taint rule (checkpoints from `index` dropped) still applies, so a bad record
+     fails toward unknown, never clean (review of #573, pass 8).
    - No `Block::Image` is added: the model is told a picture reached the owner, never shown its
      pixels (`image_view` stays the separate step).
    - The rewrite touches a recent message, so the cached prefix is re-read from that point once.
@@ -143,19 +155,28 @@ When a job finishes, the host:
    the failure arrived, so without it `doctor`'s tool-error threshold and the candidate gate's
    error rate would grow quieter as more work is deferred (review of #573, pass 5). Not a
    second `Record::Outcome`, which `runlog` would read as an extra run: a
-   `Record::LateFailure { index }`, where `index` is the results message holding the call, which
-   `runlog` attributes to the outcome covering that index (`outcome_positions`, as
-   `outcomes_attributed` already reads positions), adding one to its tool errors. A bare
-   `tool_use_id` would have no reader: `outcomes_attributed` keeps no messages (review of #573,
-   passes 6 and 7).
+   `Record::LateFailure { run, tool_use_id }`, where `run` is the ordinal of the run that made
+   the call among the file's `Record::Outcome`s, which the host knows when the job is submitted
+   (the outcomes already written). The corpus reader, `Session::outcomes_attributed`, keeps no
+   messages and no positions, only its rows in file order, so the ordinal is the one join it can
+   make: one more arm adds a tool error to row `run`. A message index would have no reader there
+   (`outcome_positions` is `Transcript`'s, and a summarising rewrite nulls it), and an id alone
+   would need that reader to walk every message; the id stays for audit. The same increment
+   lands in `Session::read`'s `episode` fold and `Session::outcomes`, through one shared
+   function, or `sessions show` and the corpus would count the same run's errors differently.
+   `doctor`'s trigger-ledger arm and `exp_report` read stores written at run end on paths with no
+   chat host, so they are out of scope by construction (review of #573, passes 6–8).
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
-**The rewrite finds its result by `tool_use_id`, never by position.** A compaction can cut the
-message holding the "being made" result before the job finishes, the in-session counterpart of
-the restart below. When no result with that id is left in the history, there is nothing to
-rewrite: the page event (1) and the run note (3) still go, so the owner sees the picture and the
-model is told; the summary's own wording, if it mentions the picture, stays what it was.
+**The rewrite finds its result by `tool_use_id`, and `index` only records where it landed.** A
+compaction can cut the message holding the "being made" result before the job finishes, the
+in-session counterpart of the restart below. When no result with that id is left in the history,
+there is nothing to rewrite: the page event (1) and the run note (3) still go, so the model is
+told and the owner sees the picture, **until the page next re-reads the transcript**, which no
+longer holds the call (1). The picture itself stays in `images/` and the gallery; that the chat
+line does not survive a re-read on this path is a known limit, not a promise (review of #573,
+pass 8). The summary's own wording, if it mentions the picture, stays what it was.
 
 A server restart loses in-flight jobs. When a session is loaded, any `being made: <path>` result
 with no job behind it is repaired by **asking the artifact, not the absent job**: if the path
@@ -169,9 +190,14 @@ picture is still coming, and none denies one the owner already saw.
 - **A picture at the path counts only if it is the job's own.** The reserved name is told to
   the model 40 s before the bytes exist, and a run in the same jail can write that path
   (`fs_write`, `shell`), so a file there proves nothing alone. The job's manifest
-  (`write_manifest`, written by `save` after a completed render) names the call's
+  (`write_manifest`, written on the job's path after `save` and the near-copy check) names the call's
   `tool_use_id`, and the repair accepts the picture only when the manifest beside it does;
   anything else is `not made: the server restarted` (review of #573, pass 6).
+- **The manifest lands after the bytes**, so a restart between the two leaves a picture with no
+  manifest. That case reads `not made` and is honest: the job sends nothing — no page event, no
+  record — until its manifest is written, so a picture without one is a picture nobody was
+  shown. The file stays in `images/` as an orphan, harmless and visible in the gallery (review
+  of #573, pass 8).
 - **The repair fails closed on taint and provenance.** It has no job `ToolOutput` to read, so it
   takes the tool's declared capabilities in its place: a tool that *can* return untrusted
   content is treated as having done so — provenance recorded `external`, `untrusted` armed and
@@ -268,13 +294,22 @@ get the same behaviour.
   job is abandoned, as today.
 - A queue collision is a `refusal: true` result with the tool's own busy text, and books as no
   tool failure.
-- A late result is an appended `Record::LateResult`: the earlier taint checkpoints stand after
-  delivery, and an older build reads the file with the call still "being made".
+- A late result is an appended `Record::LateResult`: checkpoints before the patched message
+  stand, every checkpoint at or after it drops, and `covering` that message reports the
+  delivery's taint (or none), never clean; an older build reads the file with the call still
+  "being made".
+- A `Record::LateResult` whose `index` does not hold a result with its `tool_use_id` is skipped,
+  and the message's taint still reads unknown, never clean.
+- After delivery of a *clean* late result, the conversation is not untrusted and its reflections
+  still classify `Clean`: the wait gated sends per turn and armed nothing.
 - An `Egress::Chosen` call between a deferred `untrusted_input` call and its delivery is
   refused.
 - Restart repair with a picture at the reserved path whose manifest names another call (or
   none): `not made: the server restarted`.
-- A late failure adds one tool error to the run that made the call, and no run to the corpus.
+- A late failure adds one tool error to the run that made the call, and no run to the corpus;
+  `sessions show` and the corpus report the same count for that run.
+- A live picture entry survives the page's next re-read of the transcript: the record was written
+  before the event.
 - The page draws a `being made:` result as still out, never as drawn.
 
 
