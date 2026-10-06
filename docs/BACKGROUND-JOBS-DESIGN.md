@@ -89,7 +89,7 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 - A second deferred call while one is pending gets an immediate refusal, which is factual and
   structural, not advice. This bounds the in-turn runaway without any turn cap (R6).
   - **The words are the tool's, not the queue's.** A deferring tool says what its refusal reads
-    (`ToolOutput::deferred(now, job).busy(text)`; `image_generate`'s is `not made: a picture is
+    (`ToolOutput::deferred(now, job, cancel).busy(text)`; `image_generate`'s is `not made: a picture is
     already being made`). The core queue stays generic, holds no picture prose, and builds the
     refusal from that text alone.
   - **It is a refusal, not a failure:** the core builds it with `ToolOutput::refusal`, so it
@@ -121,9 +121,14 @@ When a job finishes, the host:
      pixels (`image_view` stays the separate step).
    - The rewrite touches a recent message, so the cached prefix is re-read from that point once.
 3. **Adds a run note for the next run** (§5.1, `RunContext::notes` + `Record::Notes`): "the
-   picture you started (images/x.png) has reached the owner; you have not seen it". Held with
-   the conversation until a run takes it, and re-derived from the rewritten result after a
-   restart, so it is never lost with the process.
+   picture you started (images/x.png) has reached the owner; you have not seen it". Written at
+   delivery as its own pending-note record, which the next run takes and the file keeps across
+   a restart: never only re-derived from the rewritten result, which a compaction may have cut
+   (review of #573, pass 5).
+4. **Books a failed job as a tool error** of the run that made the call, in a record the
+   run-quality corpus folds into that run's error count. The run closed before the failure
+   arrived, so without it `doctor`'s tool-error threshold and the candidate gate's error rate
+   would grow quieter as more work is deferred (review of #573, pass 5).
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
@@ -139,6 +144,14 @@ with no job behind it is repaired by **asking the artifact, not the absent job**
 finished one (`image: <path>`, without the measurements the job did not get to record); if it
 does not, the result becomes `not made: the server restarted`. Either way no result claims a
 picture is still coming, and none denies one the owner already saw.
+- **A file at the path means a finished job**, because `save` writes the reserved path only
+  once a render has completed, never a partial or placeholder file: the name is fixed at the
+  split, the bytes arrive at the end.
+- **The repair fails closed on taint and provenance.** It has no job `ToolOutput` to read, so it
+  takes the tool's declared capabilities in its place: a tool that *can* return untrusted
+  content is treated as having done so — provenance recorded `external`, `untrusted` armed and
+  a `Record::Taint` written — exactly the conservative stand-in the loop uses before a call
+  runs (`turn_taint`). Never a content-only rewrite (review of #573, pass 5).
 
 ### 2.4 Talking never kills a job; Stop does
 
