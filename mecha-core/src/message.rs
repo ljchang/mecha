@@ -737,7 +737,7 @@ impl PriorTails {
 ///
 /// Before run notes (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1) a
 /// persona chat wrote its notes into the owner's message: the call note, the
-/// variety and edit notes, the identity reminder, and the memory block. They
+/// variety and edit notes, the identity reminder, and per-turn recall. They
 /// stayed there and were re-sent on every later turn. At one measured moment
 /// they were 39% of what the model read, against the owner's 3.5%. A chat
 /// recorded since stores none, so this view is for the chats recorded before.
@@ -748,9 +748,9 @@ pub enum PriorNudges {
     Keep,
     /// Every recorded persona note left out ([`is_recorded_note`]): a persona
     /// chat. The newest goes too, because the turn being answered gets its
-    /// notes from the run, never from the record. The files block and the
-    /// session goal stay: they are material and the owner's words, read once
-    /// and kept.
+    /// notes from the run, never from the record. The files block, the
+    /// chat-start memory block and the session goal stay: they are material
+    /// and the owner's words, read once and kept.
     ///
     /// The cut depends on the recorded history alone, so each request
     /// repeats the one before it. An old chat re-reads its history once, on
@@ -770,22 +770,48 @@ pub fn is_recorded_note(block: &Block) -> bool {
         || text
             .trim_start()
             .starts_with(crate::persona::safety::REANCHOR_STEM)
-        || crate::persona::recall::stem_of(text).is_some()
+        // Every memory block but the chat-start one, matched by its own
+        // fixed text: per-turn recall, and any memory-stemmed text in a
+        // wording this build does not know, which goes as a stale note
+        // rather than staying on the wire for good.
+        || (crate::persona::recall::stem_of(text).is_some()
+            && !crate::persona::recall::is_chat_start(text))
 }
 
 /// The recorded notes [`PriorNudges::Drop`] leaves out, as (message, block)
 /// positions: user messages only, and never a message the removal would
 /// leave empty (a 400 on every provider).
 fn recorded_notes(messages: &[Message]) -> Vec<(usize, usize)> {
-    messages
+    // The first chat-start memory block is the chat's material; any later one
+    // goes as a stale note. The old placement stored it only before the first
+    // reply, and every recorded persona chat holds at most one (2026-10-06,
+    // all sessions read), so this is a guard, not a cleanup (review of #575).
+    let mut chat_start_seen = false;
+    let mut stale = |b: &Block| {
+        let chat_start = matches!(b, Block::Text { text }
+            if crate::persona::recall::is_chat_start(text));
+        let later_copy = chat_start && std::mem::replace(&mut chat_start_seen, true);
+        is_recorded_note(b) || later_copy
+    };
+    let flagged: Vec<Vec<bool>> = messages
+        .iter()
+        .map(|m| {
+            if m.role == Role::User {
+                m.content.iter().map(&mut stale).collect()
+            } else {
+                vec![false; m.content.len()]
+            }
+        })
+        .collect();
+    flagged
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.role == Role::User && m.content.iter().any(|b| !is_recorded_note(b)))
-        .flat_map(|(i, m)| {
-            m.content
-                .iter()
+        // Never a message the removal would leave empty.
+        .filter(|(_, f)| f.iter().any(|stale| !stale))
+        .flat_map(|(i, f)| {
+            f.iter()
                 .enumerate()
-                .filter(|(_, b)| is_recorded_note(b))
+                .filter(|(_, stale)| **stale)
                 .map(move |(j, _)| (i, j))
         })
         .collect()
@@ -1540,9 +1566,17 @@ mod tests {
             "{} (\"See you.\").)",
             crate::persona::variety::CLOSING_STEM
         ));
+        // The chat-start block is material and stays; a per-turn recall is a
+        // run's note and goes.
         let memory = Block::text(format!(
-            "{}: the owner likes tea.)",
-            crate::persona::recall::MEMORY_STEM
+            "{}{}: the owner likes tea.)",
+            crate::persona::recall::MEMORY_STEM,
+            crate::persona::recall::CHAT_START_MARK
+        ));
+        let recall = Block::text(format!(
+            "{}{}: the owner keeps bees.)",
+            crate::persona::recall::UNTRUSTED_MEMORY_STEM,
+            crate::persona::recall::PER_TURN_MARK
         ));
         let anchor = Block::text(format!(
             "{}: a calm archivist.)",
@@ -1550,15 +1584,21 @@ mod tests {
         ));
         let files = Block::text(format!("{}: notes.md)", crate::persona::files::FILES_STEM));
         let mut first = Message::user("hi");
-        first.content.extend([files.clone(), memory, anchor]);
+        first
+            .content
+            .extend([files.clone(), memory.clone(), anchor]);
         let mut second = Message::user("and now");
         second.content.extend([
+            recall,
             Block::text(crate::persona::call::note(true, true)),
             variety.clone(),
         ]);
         let mut edit = Message::user("Edit images/a.png: make the sky pink");
         edit.content
             .extend([variety.clone(), Block::text(crate::persona::edit::note())]);
+        // A second chat-start block, which no recorded chat holds, goes as a
+        // stale copy; the first stays.
+        second.content.push(memory.clone());
         // A message that is only a note is never emptied.
         let mut lone = Message::user("");
         lone.content = vec![variety];
@@ -1578,8 +1618,8 @@ mod tests {
             .into_owned();
         assert_eq!(
             sent[0].content,
-            vec![Block::text("hi"), files],
-            "the files block is material and stays"
+            vec![Block::text("hi"), files, memory],
+            "the files and chat-start memory blocks are material and stay"
         );
         assert_eq!(sent[2].content, vec![Block::text("and now")]);
         assert_eq!(sent[4].content.len(), 1, "never emptied");
