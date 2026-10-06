@@ -81,6 +81,10 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   assert.deepEqual(pendingSpeech([{ who: 'user', text: 'pack the umbrella', interim: false }], lost), []);
   // A word inside another word is not the line ("art" is not in "start").
   assert.deepEqual(pendingSpeech([{ who: 'user', text: 'Art', interim: false }], [{ who: 'user', text: 'Start now' }]).map((e) => e.text), ['Art']);
+  // A line in another script is words: drawn until taken, then not.
+  const greek = [{ who: 'user', text: 'Καλημέρα σας', interim: false }];
+  assert.deepEqual(pendingSpeech(greek, []).map((e) => e.text), ['Καλημέρα σας']);
+  assert.deepEqual(pendingSpeech(greek, [{ who: 'user', text: 'Καλημέρα σας.' }]), []);
   // A finished line with nothing in it is never drawn.
   assert.deepEqual(pendingSpeech([{ who: 'user', text: ' … ', interim: false }], []), []);
   assert.deepEqual(pendingSpeech(undefined, undefined), []);
@@ -105,7 +109,10 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
 {
   const core = readFileSync(new URL('../../scripts/voice/voice-core.js', import.meta.url), 'utf8');
   const emits = [...core.matchAll(/onTranscript\(\{\s*who:\s*"([a-z]+)"/g)].map((m) => m[1]);
-  assert.ok(emits.length >= 5, `found only ${emits.length} emissions`);
+  // Every call is one the pattern reads, so an emission spelled another way
+  // (quotes, `who` not first) fails here rather than going unchecked.
+  const calls = (core.match(/\bcfg\.onTranscript\(/g) ?? []).length;
+  assert.equal(emits.length, calls, 'an onTranscript call this test cannot read');
   assert.deepEqual([...new Set(emits)].sort(), ['bot', 'notice', 'user']);
   const bots = [...core.matchAll(/case "([a-z-]+)":\s*\n\s*cfg\.onTranscript\(\{\s*who:\s*"bot"/g)].map((m) => m[1]);
   assert.equal(emits.filter((w) => w === 'bot').length, 1, 'one emission speaks for the persona');

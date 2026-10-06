@@ -82,7 +82,9 @@ export function historyLines(entries) {
 // Never the persona's speech, which comes from the transcript and the reply
 // streaming in.
 export function pendingSpeech(callEntries, lines) {
-  const norm = (t) => (t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  // Letters and digits of any script: a line in Greek or Japanese is words,
+  // never "nothing in it" (review of #570).
+  const norm = (t) => (t ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   const shown = (callEntries ?? []).filter((e) => e.who === 'user' || e.who === 'notice');
   const recent = (lines ?? []).filter((l) => l.who === 'user').map((l) => ` ${norm(l.text)} `);
   return shown.filter((e) => {
