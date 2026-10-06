@@ -701,7 +701,8 @@ conversation, so the capabilities do not change. Three rules:
   states facts only (PERSONA-CONTEXT-DESIGN.md §5.2): that the layout barely
   moved, with its similarity score; whether this picture has now done so
   twice running; which original a near-copy descends from; and, for an
-  original made from the library, the names it was made with. Guidance lives
+  original made from the library, the names it was made with (never under a
+  mask, which would redraw the whole picture, #429). Guidance lives
   once in the description: fine after a recolour or a small detail; after a
   move or a pose, tell the owner it probably failed; retry only on request,
   from the original; after two running, stop and explain. A retry is never
