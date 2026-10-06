@@ -2349,7 +2349,7 @@
       <div class="voice-pane" bind:this={voicePane} onscroll={vScrolled}>
         {#each vTranscript as line}
           {#if line.who === 'user'}
-            <div class="vbubble">{line.text}</div>
+            <div class="vbubble" class:vlost={line.undelivered}>{line.text}{#if line.undelivered}<span class="queued-tag">not delivered — send again</span>{/if}</div>
           {:else if line.picture}
             <div class="vanswer vpicture">{line.text}</div>
           {:else}
@@ -3584,6 +3584,11 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  /* A line the chat dropped: shown, and said so, since the call covers the
+     chat's own tag. */
+  .vbubble.vlost {
+    color: var(--text-muted);
   }
   .vbubble {
     white-space: pre-wrap;

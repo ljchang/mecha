@@ -1,5 +1,6 @@
 // What a call screen draws, in both chats (`call-lines.js`).
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
 
 // The conversation as a call screen shows it (the owner's ask, 2026-10-05):
@@ -24,14 +25,16 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
     { who: 'persona', text: 'It **did** — it left at [half past nine](https://example.com).' },
     { who: 'persona', picture: true, text: 'a picture' },
     { who: 'user', text: 'Good to know, thanks.' },
-    // Never received: not part of the conversation. Steered in: it was.
+    // Dropped: drawn, and marked, since the call covers the chat's tag.
+    // Steered in: an ordinary line.
+    { who: 'user', text: 'Pack the blue umbrella.', undelivered: true },
     { who: 'user', text: 'And the red one.' },
   ]);
   // A crisis pause is part of what the call shows: the call screen covers
   // the chat's card, and the pause reaches the call only as speech.
   assert.deepEqual(historyLines([{ kind: 'user', text: 'Hello.' }, { kind: 'crisis', text: 'Pausing here.', id: 'crisis-1' }]), [
     { who: 'user', text: 'Hello.' },
-    { who: 'crisis', text: 'Pausing here.' },
+    { who: 'crisis', text: 'Pausing here.', id: 'crisis-1' },
   ]);
   // A picture made and then viewed is one picture, as the chat draws it once.
   const twice = [
@@ -52,7 +55,7 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   const lines = [{ who: 'user', text: 'Is the bakery open?' }, { who: 'persona', text: 'Until six.' }];
   const call = [
     { who: 'user', text: 'is the bakery open', interim: false },
-    { who: 'persona', text: 'Until six.', interim: false },
+    { who: 'bot', text: 'Until six.', interim: false },
     { who: 'user', text: 'And tomor', interim: true },
   ];
   // The first line is in the transcript (case and marks aside): only the
@@ -68,6 +71,14 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   // neither is drawn again — where a count of owner lines would have shrunk.
   const folded = [{ who: 'user', text: 'Is the bakery open?\n\nAnd tomorrow?' }, { who: 'persona', text: 'Until six.' }];
   assert.deepEqual(pendingSpeech(call, folded), []);
+  // Lines typed on another device join the transcript between the call's
+  // own: an early spoken line is still found, and never drawn again.
+  const busy = ['Is the bakery open?', 'from the phone', 'from the laptop', 'one more', 'And tomorrow?']
+    .map((text) => ({ who: 'user', text }));
+  assert.deepEqual(pendingSpeech(call, busy), []);
+  // A dropped line is in the transcript, marked: not drawn below as sent.
+  const lost = [{ who: 'user', text: 'Pack the umbrella.', undelivered: true }];
+  assert.deepEqual(pendingSpeech([{ who: 'user', text: 'pack the umbrella', interim: false }], lost), []);
   // A word inside another word is not the line ("art" is not in "start").
   assert.deepEqual(pendingSpeech([{ who: 'user', text: 'Art', interim: false }], [{ who: 'user', text: 'Start now' }]).map((e) => e.text), ['Art']);
   // A finished line with nothing in it is never drawn.
@@ -85,6 +96,20 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   const later = [...withNotice, { who: 'user', text: 'Is the bakery open?', interim: false },
     { who: 'user', text: 'Hello?', interim: false }];
   assert.deepEqual(pendingSpeech(later, lines).map((e) => e.who), ['notice', 'user']);
+}
+
+// The producer side: `pendingSpeech` keeps only `user` and `notice`, so a
+// page-only notice sent as `bot` would vanish from the one surface that can
+// show it. Every emission's `who` is one of the three, and `bot` is the
+// persona's own speech alone — the `bot-transcription` arm (review of #570).
+{
+  const core = readFileSync(new URL('../../scripts/voice/voice-core.js', import.meta.url), 'utf8');
+  const emits = [...core.matchAll(/onTranscript\(\{\s*who:\s*"([a-z]+)"/g)].map((m) => m[1]);
+  assert.ok(emits.length >= 5, `found only ${emits.length} emissions`);
+  assert.deepEqual([...new Set(emits)].sort(), ['bot', 'notice', 'user']);
+  const bots = [...core.matchAll(/case "([a-z-]+)":\s*\n\s*cfg\.onTranscript\(\{\s*who:\s*"bot"/g)].map((m) => m[1]);
+  assert.equal(emits.filter((w) => w === 'bot').length, 1, 'one emission speaks for the persona');
+  assert.deepEqual(bots, ['bot-transcription']);
 }
 
 console.log('call-lines: ok');

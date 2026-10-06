@@ -3982,6 +3982,32 @@ the room gone on End, the key dead on both doors — and the same turn in an
 ordinary chat, which must find the canary, so the scan is known to look where
 a trace would be.
 
+## The call screen
+
+**A call screen shows the chat's own transcript, from one source.** This
+holds in both chats (`web/src/lib/call-lines.js`, the owner's ask of
+2026-10-05). The pane draws three things in order: `historyLines` over the
+chat's entries, the reply streaming in, and `pendingSpeech`, which is the
+owner's speech the transcript has not taken yet. Nothing marks where the
+call began. Three revisions of #570 tried to anchor a "Call" divider (an
+index, a snapshot, a count of owner lines), and each drifted when a re-read
+folded two lines into one.
+
+- **"Taken" is matched by text, against every owner line**, never the last
+  few. Lines typed on another device reach every observer and shift any
+  count.
+- **A reply is drawn by `ChatProse`, as in the chat.** What the voice says is
+  tidied on the speech path, never on this screen.
+- **The screen covers the chat, so it draws everything the chat would
+  otherwise have to show:**
+  - a dropped line, marked "not delivered";
+  - a crisis pause (`kind: 'crisis'`), as a card that honours the chat's
+    closed cards, with the support resources one tap away;
+  - the call's own notices (`who: "notice"`), which last until a reconnect.
+- **`pendingSpeech` keeps only `user` and `notice` lines**, so a notice sent
+  as `bot` would vanish silently. `test/call-lines.mjs` pins the producer
+  side: `bot` is emitted only by `bot-transcription`.
+
 ## Voice preferences in the browser
 
 **One preference store, read and written only through `voice-core.js`.**

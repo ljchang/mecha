@@ -2041,6 +2041,8 @@
       transcript={callTranscript}
       streaming={run.streaming}
       resources={safety?.resources && (crisisShown || callEntries.some((e) => e.kind === 'crisis')) ? safety.resources : null}
+      {dismissed}
+      ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
       ondownload={savePicture}
       onedit={editInCall}
