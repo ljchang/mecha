@@ -262,6 +262,20 @@ pub async fn read(
     pages: &str,
     cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String, ReadError> {
+    read_marked(src, extractor, pages, cancel)
+        .await
+        .map(|(text, _)| text)
+}
+
+/// [`read`], and whether a cancel cut the extraction short — the pages it
+/// finished are still the result, and the tool says so
+/// (`Cancelled::Part`, PERSONA-CONTEXT-DESIGN §5.3).
+async fn read_marked(
+    src: &Source,
+    extractor: Option<&Extractor>,
+    pages: &str,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<(String, bool), ReadError> {
     match src.kind {
         Kind::Text => {
             if src.bytes > MAX_TEXT_BYTES {
@@ -274,10 +288,9 @@ pub async fn read(
                 .map_err(|e| ReadError::ours(format!("{}: {e}", src.name)))?;
             let text = String::from_utf8(bytes)
                 .map_err(|_| ReadError::ours(format!("{} is not UTF-8 text.", src.name)))?;
-            Ok(format!(
-                "document: {} · text\n\n{}",
-                src.name,
-                text.trim_end()
+            Ok((
+                format!("document: {} · text\n\n{}", src.name, text.trim_end()),
+                false,
             ))
         }
         Kind::Document => {
@@ -297,7 +310,7 @@ pub async fn read(
                     if pages == "all" && ex.ocr_deferred.is_empty() && !ex.cancelled {
                         mark_read(&ex.sha256);
                     }
-                    ex.render(&src.name)
+                    (ex.render(&src.name), ex.cancelled)
                 })
                 .map_err(|e| ReadError {
                     why: format!("{}: {e:#}", src.name),
@@ -821,8 +834,12 @@ impl Tool for FileRead {
             Err(why) => return Ok(ToolOutput::err(why)),
         };
         Ok(
-            match read(src, self.extractor.as_deref(), pages, ctx.cancel.as_ref()).await {
-                Ok(text) => ToolOutput::ok(text).from_outside(),
+            match read_marked(src, self.extractor.as_deref(), pages, ctx.cancel.as_ref()).await {
+                Ok((text, false)) => ToolOutput::ok(text).from_outside(),
+                // Cut short by a cancel: the pages it finished are the result.
+                Ok((text, true)) => ToolOutput::ok(text)
+                    .from_outside()
+                    .cancelled(crate::message::Cancelled::Part),
                 Err(e) if e.outside => ToolOutput::err(e.why).from_outside(),
                 Err(e) => ToolOutput::err(e.why),
             },
