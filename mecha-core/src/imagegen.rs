@@ -1419,9 +1419,8 @@ impl ComfyUi {
 /// return the workspace-relative path. Never overwrites: the name is new or
 /// the write fails, so a generation cannot replace an earlier one or follow a
 /// link planted where its file will go.
-async fn save(ctx: &ToolCtx, seed: u64, bytes: &[u8]) -> Result<String> {
+async fn save(ctx: &ToolCtx, stamp: &str, seed: u64, bytes: &[u8]) -> Result<String> {
     use tokio::io::AsyncWriteExt;
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     for n in 0..100u32 {
         let name = if n == 0 {
             format!("images/{stamp}-{seed}.png")
@@ -2079,6 +2078,11 @@ async fn read_manifest(ctx: &ToolCtx, png: &str) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
+/// Cheap to clone: every piece of state a call shares with the next is
+/// behind an `Arc`, so a clone is the same tool — which is how a deferred
+/// render owns what it uses while it outlives the call that started it
+/// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1).
+#[derive(Clone)]
 pub struct ImageGenerate {
     cfg: ImageConfig,
     backend: Arc<ComfyUi>,
@@ -2096,7 +2100,7 @@ pub struct ImageGenerate {
     /// the same original again (review of #408). The key is a salted hash of
     /// the resolved path, so no path — an incognito room's included — is
     /// held here, only a number and a time.
-    near_copies: std::sync::Mutex<std::collections::HashMap<u64, Instant>>,
+    near_copies: Arc<std::sync::Mutex<std::collections::HashMap<u64, Instant>>>,
     near_copy_salt: std::collections::hash_map::RandomState,
     /// The last request that drew a picture, per workspace: a salted hash of
     /// the workspace, of the request as it went to the server — prompt,
@@ -2109,7 +2113,7 @@ pub struct ImageGenerate {
     /// that had just drawn, word for word, four times in one run; the image
     /// server skipped each as a duplicate, returned nothing, and the run read
     /// that as a failure. Hashes only, as for `near_copies`.
-    last_drawn: std::sync::Mutex<std::collections::HashMap<u64, Drawn>>,
+    last_drawn: Arc<std::sync::Mutex<std::collections::HashMap<u64, Drawn>>>,
     /// The persona form (`for_persona`): a cast name the library does not
     /// hold is refused, as before, rather than drawn as an extra.
     persona: bool,
@@ -2136,39 +2140,34 @@ struct NearCopy {
 
 /// A request claimed as the one a workspace is drawing ([`ImageGenerate::claim`]).
 /// Dropped without [`Claim::keep`], it lets go: the request drew nothing.
-struct Claim<'a> {
-    owner: &'a ImageGenerate,
+/// It owns its share of the record rather than borrowing the tool, so a
+/// deferred render can carry it, and a job that is cancelled or fails drops
+/// it and lets go at once.
+struct Claim {
+    owner: Arc<std::sync::Mutex<std::collections::HashMap<u64, Drawn>>>,
     place: u64,
     key: u64,
     kept: bool,
 }
 
-impl Claim<'_> {
+impl Claim {
     /// The request drew: it stays the one an identical request repeats,
     /// now as a picture that exists.
     fn keep(mut self) {
         self.kept = true;
-        let mut last = self
-            .owner
-            .last_drawn
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut last = self.owner.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(d) = last.get_mut(&self.place).filter(|d| d.key == self.key) {
             d.done = true;
         }
     }
 }
 
-impl Drop for Claim<'_> {
+impl Drop for Claim {
     fn drop(&mut self) {
         if self.kept {
             return;
         }
-        let mut last = self
-            .owner
-            .last_drawn
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut last = self.owner.lock().unwrap_or_else(|p| p.into_inner());
         if last.get(&self.place).is_some_and(|d| d.key == self.key) {
             last.remove(&self.place);
         }
@@ -2251,7 +2250,7 @@ impl ImageGenerate {
     /// run concurrently — are one picture, not two (review of #543); the
     /// claim lapses unless [`Claim::keep`] is called, so a failed or
     /// cancelled request can be sent again as it was.
-    fn claim(&self, ctx: &ToolCtx, req: &Request) -> Result<Claim<'_>, &'static str> {
+    fn claim(&self, ctx: &ToolCtx, req: &Request) -> Result<Claim, &'static str> {
         let (place, key) = self.repeat_keys(ctx, req);
         let mut last = self.last_drawn.lock().unwrap_or_else(|p| p.into_inner());
         last.retain(|_, d| d.at.elapsed() < REPEAT_WINDOW);
@@ -2269,7 +2268,7 @@ impl ImageGenerate {
             },
         );
         Ok(Claim {
-            owner: self,
+            owner: Arc::clone(&self.last_drawn),
             place,
             key,
             kept: false,
@@ -3576,277 +3575,323 @@ impl Tool for ImageGenerate {
             Ok(claim) => claim,
             Err(why) => return Ok(refused(why)),
         };
-        // A call that starts invalidates any idle timer already armed, so a
-        // `/free` cannot land while this job is loading or running.
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        let started = Instant::now();
-        let timeout = Duration::from_secs(self.cfg.timeout_secs);
-        let Outcome { image, left } = self
-            .backend
-            .generate(
-                &self.cfg,
-                &req,
-                ctx.cancel.as_ref(),
-                timeout,
-                ctx.image_trail.as_deref(),
-            )
-            .await;
-        // Armed whatever the outcome: a job that failed or was cancelled
-        // mid-graph has already loaded the models, and the memory it holds is
-        // the reason the timer exists (found on review of #303). The counter
-        // makes a timer armed by an earlier call a no-op.
-        self.arm_unload();
-        // A copy the server confirmed and the configured directory does not
-        // hold is said, whatever else happened: a wrong `server_temp_dir` is
-        // otherwise a deletion that quietly never happens.
-        let left = left.map(|left| {
-            // Said in the result either way. In the log, at the default level
-            // for an ordinary chat; at debug for a run that keeps a trail —
-            // an incognito chat's — where a line per picture would be the
-            // count R1 rules out (found on review of #331).
-            if ctx.image_trail.is_some() {
-                tracing::debug!("image server temp copies not removed: {left}");
-            } else {
-                tracing::warn!("image server temp copies not removed: {left}");
-            }
-            format!(
-                " The image server's temp copies could not all be removed: {left}. Check \
-                 [image] server_temp_dir — for ComfyUI, the --temp-directory path with `temp` \
-                 appended."
-            )
-        });
-        let left = left.unwrap_or_default();
-        let bytes = match image {
-            Ok(bytes) => bytes,
-            Err(Failure::Cancelled) => {
-                return Ok(ToolOutput::err(format!(
-                    "Cancelled — the generation was stopped and nothing was saved.{left}"
-                )))
-            }
-            Err(Failure::Other(e)) => {
-                let reach = if e.chain().any(|c| c.is::<reqwest::Error>()) {
-                    format!(
-                        " Is the image server running at {}? The operator starts it; \
-                         you cannot.",
-                        self.cfg.url
-                    )
+        // The split (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1): validation, the
+        // claim and the casting ran in the call; the render, the save, the
+        // near-copy measurement and the manifest are the job. Its name is
+        // reserved here, so "being made" can name it; `save` takes it unless
+        // something already sits there, and then a numbered one beside it,
+        // which the finished result names.
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let reserved = format!("images/{stamp}-{}.png", req.seed);
+        // The job's own token: a chat host keeps it apart from the run's, so
+        // talking never stops a picture and Stop does (§2.4); inline, the
+        // loop links the run's cancellation to it (`jobs::run_inline`).
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut job_ctx = ctx.clone();
+        job_ctx.cancel = Some(cancel.clone());
+        let input = input.clone();
+        let me = self.clone();
+        let job = async move {
+            let (me, ctx, input) = (&me, &job_ctx, &input);
+            // A call that starts invalidates any idle timer already armed, so a
+            // `/free` cannot land while this job is loading or running.
+            me.generation.fetch_add(1, Ordering::SeqCst);
+            let started = Instant::now();
+            let timeout = Duration::from_secs(me.cfg.timeout_secs);
+            let Outcome { image, left } = me
+                .backend
+                .generate(
+                    &me.cfg,
+                    &req,
+                    ctx.cancel.as_ref(),
+                    timeout,
+                    ctx.image_trail.as_deref(),
+                )
+                .await;
+            // Armed whatever the outcome: a job that failed or was cancelled
+            // mid-graph has already loaded the models, and the memory it holds is
+            // the reason the timer exists (found on review of #303). The counter
+            // makes a timer armed by an earlier call a no-op.
+            me.arm_unload();
+            // A copy the server confirmed and the configured directory does not
+            // hold is said, whatever else happened: a wrong `server_temp_dir` is
+            // otherwise a deletion that quietly never happens.
+            let left = left.map(|left| {
+                // Said in the result either way. In the log, at the default level
+                // for an ordinary chat; at debug for a run that keeps a trail —
+                // an incognito chat's — where a line per picture would be the
+                // count R1 rules out (found on review of #331).
+                if ctx.image_trail.is_some() {
+                    tracing::debug!("image server temp copies not removed: {left}");
                 } else {
-                    String::new()
-                };
-                return Ok(ToolOutput::err(format!(
-                    "Image generation failed: {e:#}.{reach}{left}"
-                )));
-            }
-        };
-        // A masked edit keeps everything the owner did not paint: the result
-        // is laid over the original here, in mecha's code, not the server's.
-        let bytes = match &plan {
-            None => bytes,
-            Some(plan) => {
-                let plan = plan.clone();
-                match tokio::task::spawn_blocking(move || composite_masked(&bytes, &plan)).await {
-                    Ok(Ok(bytes)) => bytes,
-                    Ok(Err(why)) => {
-                        return Ok(ToolOutput::err(format!(
-                            "The image was made but could not be laid over the original: \
-                             {why}. Nothing was saved.{left}"
-                        )))
-                    }
-                    Err(e) => {
-                        return Ok(ToolOutput::err(format!(
-                            "The image was made but could not be laid over the original: \
-                             {e}. Nothing was saved.{left}"
-                        )))
+                    tracing::warn!("image server temp copies not removed: {left}");
+                }
+                format!(
+                    " The image server's temp copies could not all be removed: {left}. Check \
+                     [image] server_temp_dir — for ComfyUI, the --temp-directory path with `temp` \
+                     appended."
+                )
+            });
+            let left = left.unwrap_or_default();
+            let bytes = match image {
+                Ok(bytes) => bytes,
+                Err(Failure::Cancelled) => {
+                    return ToolOutput::err(format!(
+                        "Cancelled — the generation was stopped and nothing was saved.{left}"
+                    ))
+                }
+                Err(Failure::Other(e)) => {
+                    let reach = if e.chain().any(|c| c.is::<reqwest::Error>()) {
+                        format!(
+                            " Is the image server running at {}? The operator starts it; \
+                             you cannot.",
+                            me.cfg.url
+                        )
+                    } else {
+                        String::new()
+                    };
+                    return ToolOutput::err(format!(
+                        "Image generation failed: {e:#}.{reach}{left}"
+                    ));
+                }
+            };
+            // A masked edit keeps everything the owner did not paint: the result
+            // is laid over the original here, in mecha's code, not the server's.
+            let bytes = match &plan {
+                None => bytes,
+                Some(plan) => {
+                    let plan = plan.clone();
+                    match tokio::task::spawn_blocking(move || composite_masked(&bytes, &plan)).await
+                    {
+                        Ok(Ok(bytes)) => bytes,
+                        Ok(Err(why)) => {
+                            return ToolOutput::err(format!(
+                                "The image was made but could not be laid over the original: \
+                                 {why}. Nothing was saved.{left}"
+                            ))
+                        }
+                        Err(e) => {
+                            return ToolOutput::err(format!(
+                                "The image was made but could not be laid over the original: \
+                                 {e}. Nothing was saved.{left}"
+                            ))
+                        }
                     }
                 }
-            }
-        };
-        let path = match save(ctx, req.seed, &bytes).await {
-            Ok(path) => path,
-            Err(e) => {
-                return Ok(ToolOutput::err(format!(
-                    "The image was made but not saved: {e:#}{left}"
-                )))
-            }
-        };
-        let secs = started.elapsed().as_secs();
-        // Did the edit change the layout? A near-copy is the edit model's
-        // known failure on a move or a new pose (Qwen's "under-editing"), and
-        // the model cannot see it: in the first test it reported "Maya is now
-        // standing" of pictures it never looked at (2026-09-29). Measured and
-        // said, never retried here — only the model knows whether it asked
-        // for a move, or for a recolour that keeps the layout on purpose.
-        let similarity = if is_edit {
-            let (was, now) = (req.references[0].bytes.clone(), bytes.clone());
-            let painted = plan.as_ref().map(|p| (p.soft.clone(), p.bounds));
-            tokio::task::spawn_blocking(move || match painted {
-                Some((soft, bounds)) => layout_similarity_painted(&was, &now, &soft, bounds),
-                None => layout_similarity(&was, &now),
-            })
-            .await
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
-        let near = match similarity {
-            Some(r) if r >= NEAR_COPY_LAYOUT => Some(
-                self.near_copy(ctx, &paths[0], r, mask_path.as_deref())
-                    .await,
-            ),
-            // A changed layout ends the row for the picture it was made from.
-            Some(_) => {
-                let key = self.near_copy_key(ctx, &paths[0]);
-                self.strikes().remove(&key);
-                None
-            }
-            None => None,
-        };
-        let size = match req.size {
-            Some((w, h)) => format!("{w}×{h}"),
-            None => "reference-shaped".to_string(),
-        };
-        let manifest = json!({
-            "image": path,
-            "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "prompt": scene_prompt,
-            // An edit's typed fields as the model gave them, beside the
-            // prompt the tool wrote from them (`EditAsk`).
-            "edit": input.get("edit").filter(|v| !v.is_null()),
-            "compiled_prompt": (req.prompt != scene_prompt).then_some(&req.prompt),
-            "negative_prompt": req.negative,
-            "seed": req.seed,
-            "steps": req.steps,
-            "size": req.size,
-            "reference_size": req.reference_size,
-            "reference_images": if is_edit { json!(paths) } else { Value::Null },
-            "mask": mask_path,
-            "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
-            "same_layout_as": near.as_ref().map(|n| &n.original),
-            "cast": (!drawn_cast.is_empty()).then(|| drawn_cast.iter()
-                .zip(used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character))
-                .map(|(m, u)| json!({
-                "name": u.name, "version": u.version, "portrait": u.portrait,
-                "wearing": m.wearing.trim(), "doing": m.doing.trim(),
-            })).collect::<Vec<_>>()),
-            "extras": (!drawn_extras.is_empty()).then_some(&drawn_extras),
-            "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
-                .map(|u| json!({"name": u.name, "version": u.version})),
-            "face_anchor": face_anchor,
-            "model": {
-                "backend": "comfyui",
-                "diffusion_model": self.cfg.diffusion_model,
-                "text_encoder": self.cfg.text_encoder,
-                "vae": self.cfg.vae,
-            },
-        });
-        let manifest_note = match write_manifest(ctx, &path, &manifest).await {
-            Ok(()) => String::new(),
-            Err(e) => format!(" (Its manifest was not written: {e:#}.)"),
-        };
-        let mut text = format!("image: {path}\n");
-        if !is_edit {
-            let of = if used.is_empty() {
-                String::new()
-            } else {
-                let names: Vec<String> = used
-                    .iter()
-                    .map(|u| format!("{} {} (v{})", u.kind.label(), u.name, u.version))
-                    .collect();
-                format!(" with {}", names.join(", "))
             };
-            // Facts only (PERSONA-CONTEXT-DESIGN.md §5.2): how to use the
-            // result lives once, in the description.
-            text.push_str(&format!(
-                "A new {size} picture{of}, drawn in {secs} s (seed {}, {} steps). It is on the \
-                 owner's screen; you have not seen it.",
-                req.seed, req.steps
-            ));
-            if !drawn_as_extras.is_empty() {
-                let names: Vec<String> = drawn_as_extras.iter().map(|n| format!("`{n}`")).collect();
+            let path = match save(ctx, &stamp, req.seed, &bytes).await {
+                Ok(path) => path,
+                Err(e) => {
+                    return ToolOutput::err(format!(
+                        "The image was made but not saved: {e:#}{left}"
+                    ))
+                }
+            };
+            let secs = started.elapsed().as_secs();
+            // Did the edit change the layout? A near-copy is the edit model's
+            // known failure on a move or a new pose (Qwen's "under-editing"), and
+            // the model cannot see it: in the first test it reported "Maya is now
+            // standing" of pictures it never looked at (2026-09-29). Measured and
+            // said, never retried here — only the model knows whether it asked
+            // for a move, or for a recolour that keeps the layout on purpose.
+            let similarity = if is_edit {
+                let (was, now) = (req.references[0].bytes.clone(), bytes.clone());
+                let painted = plan.as_ref().map(|p| (p.soft.clone(), p.bounds));
+                tokio::task::spawn_blocking(move || match painted {
+                    Some((soft, bounds)) => layout_similarity_painted(&was, &now, &soft, bounds),
+                    None => layout_similarity(&was, &now),
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            let near = match similarity {
+                Some(r) if r >= NEAR_COPY_LAYOUT => {
+                    Some(me.near_copy(ctx, &paths[0], r, mask_path.as_deref()).await)
+                }
+                // A changed layout ends the row for the picture it was made from.
+                Some(_) => {
+                    let key = me.near_copy_key(ctx, &paths[0]);
+                    me.strikes().remove(&key);
+                    None
+                }
+                None => None,
+            };
+            let size = match req.size {
+                Some((w, h)) => format!("{w}×{h}"),
+                None => "reference-shaped".to_string(),
+            };
+            let manifest = json!({
+                "image": path,
+                "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "prompt": scene_prompt,
+                // An edit's typed fields as the model gave them, beside the
+                // prompt the tool wrote from them (`EditAsk`).
+                "edit": input.get("edit").filter(|v| !v.is_null()),
+                "compiled_prompt": (req.prompt != scene_prompt).then_some(&req.prompt),
+                "negative_prompt": req.negative,
+                "seed": req.seed,
+                "steps": req.steps,
+                "size": req.size,
+                "reference_size": req.reference_size,
+                "reference_images": if is_edit { json!(paths) } else { Value::Null },
+                "mask": mask_path,
+                "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
+                "same_layout_as": near.as_ref().map(|n| &n.original),
+                "cast": (!drawn_cast.is_empty()).then(|| drawn_cast.iter()
+                    .zip(used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character))
+                    .map(|(m, u)| json!({
+                    "name": u.name, "version": u.version, "portrait": u.portrait,
+                    "wearing": m.wearing.trim(), "doing": m.doing.trim(),
+                })).collect::<Vec<_>>()),
+                "extras": (!drawn_extras.is_empty()).then_some(&drawn_extras),
+                "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
+                    .map(|u| json!({"name": u.name, "version": u.version})),
+                "face_anchor": face_anchor,
+                "model": {
+                    "backend": "comfyui",
+                    "diffusion_model": me.cfg.diffusion_model,
+                    "text_encoder": me.cfg.text_encoder,
+                    "vae": me.cfg.vae,
+                },
+            });
+            let manifest_note = match write_manifest(ctx, &path, &manifest).await {
+                Ok(()) => String::new(),
+                Err(e) => format!(" (Its manifest was not written: {e:#}.)"),
+            };
+            let mut text = format!("image: {path}\n");
+            if !is_edit {
+                let of = if used.is_empty() {
+                    String::new()
+                } else {
+                    let names: Vec<String> = used
+                        .iter()
+                        .map(|u| format!("{} {} (v{})", u.kind.label(), u.name, u.version))
+                        .collect();
+                    format!(" with {}", names.join(", "))
+                };
+                // Facts only (PERSONA-CONTEXT-DESIGN.md §5.2): how to use the
+                // result lives once, in the description.
                 text.push_str(&format!(
-                    " {} {} not in the image library, so {} drawn as {} from what you wrote, \
-                     not from a portrait.",
-                    names.join(", "),
-                    if names.len() == 1 { "is" } else { "are" },
-                    if names.len() == 1 { "was" } else { "were" },
-                    if names.len() == 1 {
-                        "an extra"
+                    "A new {size} picture{of}, drawn in {secs} s (seed {}, {} steps). It is on the \
+                     owner's screen; you have not seen it.",
+                    req.seed, req.steps
+                ));
+                if !drawn_as_extras.is_empty() {
+                    let names: Vec<String> =
+                        drawn_as_extras.iter().map(|n| format!("`{n}`")).collect();
+                    text.push_str(&format!(
+                        " {} {} not in the image library, so {} drawn as {} from what you wrote, \
+                         not from a portrait.",
+                        names.join(", "),
+                        if names.len() == 1 { "is" } else { "are" },
+                        if names.len() == 1 { "was" } else { "were" },
+                        if names.len() == 1 {
+                            "an extra"
+                        } else {
+                            "extras"
+                        },
+                    ));
+                }
+            } else {
+                let sources: Vec<&str> = req
+                    .references
+                    .iter()
+                    .map(|r| r.path.as_str())
+                    .filter(|p| !p.starts_with(FACE_REFERENCE))
+                    .collect();
+                let styled = used
+                    .iter()
+                    .find(|u| u.kind == crate::imagelib::Kind::Style)
+                    .map(|u| format!(" in style {} (v{})", u.name, u.version))
+                    .unwrap_or_default();
+                text.push_str(&format!(
+                    "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
+                     {} unchanged. It is on the owner's screen; you have not seen it.",
+                    sources.join(", "),
+                    req.seed,
+                    req.steps,
+                    if sources.len() > 1 {
+                        "All of them are".to_string()
                     } else {
-                        "extras"
+                        format!("{} is", sources.first().copied().unwrap_or("The original"))
                     },
                 ));
+                if mask_path.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
+                    text.push_str(
+                        " (The size asked for was not used: a masked edit keeps the picture's own \
+                         shape.)",
+                    );
+                }
+                if let (Some(mask), Some(plan)) = (&mask_path, &plan) {
+                    let (cw, ch) = plan.picture.dimensions();
+                    text.push_str(&if plan.source == (cw, ch) {
+                        format!(
+                            " Only the area painted in {mask} was redrawn, blended over a narrow \
+                             edge around it; everything beyond that edge is the original, pixel for \
+                             pixel."
+                        )
+                    } else {
+                        let (pw, ph) = plan.source;
+                        format!(
+                            " Only the area painted in {mask} was redrawn. The picture is \
+                             {pw}×{ph} and was edited at {cw}×{ch}, its edit size, as any edit of it \
+                             is; outside the painted area the result is the original at that size."
+                        )
+                    });
+                }
+                if let Some(near) = &near {
+                    text.push_str(&near.notice);
+                }
             }
-        } else {
-            let sources: Vec<&str> = req
-                .references
-                .iter()
-                .map(|r| r.path.as_str())
-                .filter(|p| !p.starts_with(FACE_REFERENCE))
-                .collect();
-            let styled = used
-                .iter()
-                .find(|u| u.kind == crate::imagelib::Kind::Style)
-                .map(|u| format!(" in style {} (v{})", u.name, u.version))
-                .unwrap_or_default();
-            text.push_str(&format!(
-                "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
-                 {} unchanged. It is on the owner's screen; you have not seen it.",
-                sources.join(", "),
-                req.seed,
-                req.steps,
-                if sources.len() > 1 {
-                    "All of them are".to_string()
-                } else {
-                    format!("{} is", sources.first().copied().unwrap_or("The original"))
-                },
-            ));
-            if mask_path.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
-                text.push_str(
-                    " (The size asked for was not used: a masked edit keeps the picture's own \
-                     shape.)",
-                );
+            if let Some(asked) = portrait_seed {
+                text.push_str(&format!(
+                    " (Seed {asked} was not used: it drew a cast member's portrait, and sampling at \
+                     it redraws the portrait instead of placing the person. Seed {} was used.)",
+                    req.seed
+                ));
             }
-            if let (Some(mask), Some(plan)) = (&mask_path, &plan) {
-                let (cw, ch) = plan.picture.dimensions();
-                text.push_str(&if plan.source == (cw, ch) {
-                    format!(
-                        " Only the area painted in {mask} was redrawn, blended over a narrow \
-                         edge around it; everything beyond that edge is the original, pixel for \
-                         pixel."
-                    )
-                } else {
-                    let (pw, ph) = plan.source;
-                    format!(
-                        " Only the area painted in {mask} was redrawn. The picture is \
-                         {pw}×{ph} and was edited at {cw}×{ch}, its edit size, as any edit of it \
-                         is; outside the painted area the result is the original at that size."
-                    )
-                });
+            if let Some(asked) = reseeded {
+                text.push_str(&format!(
+                    " (Seed {asked} was not used: an edit always starts from a fresh seed, because \
+                     the seed that drew a picture redraws it instead of editing it. Seed {} was \
+                     used.)",
+                    req.seed
+                ));
             }
-            if let Some(near) = &near {
-                text.push_str(&near.notice);
-            }
-        }
-        if let Some(asked) = portrait_seed {
-            text.push_str(&format!(
-                " (Seed {asked} was not used: it drew a cast member's portrait, and sampling at \
-                 it redraws the portrait instead of placing the person. Seed {} was used.)",
-                req.seed
-            ));
-        }
-        if let Some(asked) = reseeded {
-            text.push_str(&format!(
-                " (Seed {asked} was not used: an edit always starts from a fresh seed, because \
-                 the seed that drew a picture redraws it instead of editing it. Seed {} was \
-                 used.)",
-                req.seed
-            ));
-        }
-        text.push_str(&manifest_note);
-        text.push_str(&left);
-        claim.keep();
-        Ok(ToolOutput::ok(text))
+            text.push_str(&manifest_note);
+            text.push_str(&left);
+            claim.keep();
+            ToolOutput::ok(text)
+        };
+        Ok(ToolOutput::deferred(
+            format!("being made: {reserved}"),
+            crate::jobs::DeferredJob::new(job, cancel, BUSY),
+        ))
+    }
+}
+
+/// What a second picture in the same conversation is told while one is being
+/// made (`jobs::DeferredJob::busy`): a refusal before any GPU time, with
+/// `refused`'s lead.
+const BUSY: &str = "Nothing was drawn. A picture is already being made in this conversation; it \
+                    appears on the owner's screen when it is done.";
+
+/// The tests call the tool directly and read the finished picture: an
+/// inherent `call`, which the concrete type resolves before the trait's,
+/// awaits a deferred render inline as a host-less run does
+/// (`jobs::run_inline`). Production calls go through `dyn Tool` and get the
+/// deferral.
+#[cfg(test)]
+impl ImageGenerate {
+    pub(crate) async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        let out = <Self as Tool>::call(self, input, ctx).await?;
+        Ok(match out.deferred.clone() {
+            Some(job) => crate::jobs::run_inline(&job, ctx.cancel.as_ref()).await,
+            None => out,
+        })
     }
 }
 
@@ -6144,13 +6189,11 @@ mod tests {
                 .count()
         };
         for character in ["ghost", "wren"] {
-            let persona = Arc::clone(&base)
-                .for_persona_as(&crate::tool::PersonaSelf {
-                    name: character.into(),
-                    display: String::new(),
-                    character: Some(character.into()),
-                })
-                .unwrap();
+            let persona = Arc::clone(&base).persona_form(Some(crate::tool::PersonaSelf {
+                name: character.into(),
+                display: String::new(),
+                character: Some(character.into()),
+            }));
             let before = draws();
             let out = persona
                 .call(
@@ -6190,13 +6233,11 @@ mod tests {
         let dir = tempdir();
         let lib = library_with(&["maya", "john", "ann", "bea", "cy"]);
         let base = Arc::new(tool(&url).with_library_dir(lib.clone()));
-        let mara = Arc::clone(&base)
-            .for_persona_as(&crate::tool::PersonaSelf {
-                name: "mara".into(),
-                display: "Mara O'Brien".into(),
-                character: Some("maya".into()),
-            })
-            .unwrap();
+        let mara = Arc::clone(&base).persona_form(Some(crate::tool::PersonaSelf {
+            name: "mara".into(),
+            display: "Mara O'Brien".into(),
+            character: Some("maya".into()),
+        }));
         let draws = || {
             seen.lock()
                 .unwrap()
@@ -6471,9 +6512,7 @@ mod tests {
         };
 
         // The first live chat's call: its own name in the prompt, no cast.
-        let maya = Arc::clone(&base)
-            .for_persona_as(&who("maya", "Maya", Some("maya")))
-            .unwrap();
+        let maya = Arc::clone(&base).persona_form(Some(who("maya", "Maya", Some("maya"))));
         let out = maya
             .call(
                 json!({"prompt": "Maya reading on a park bench, wearing a rain jacket, warm light", "seed": 7}),
@@ -6493,9 +6532,7 @@ mod tests {
         assert_eq!(cast["wearing"], "a rain jacket", "{cast}");
 
         // A persona whose name is not its character's: "Mara" is priya.
-        let mara = Arc::clone(&base)
-            .for_persona_as(&who("mara", "Mara Quinn", Some("priya")))
-            .unwrap();
+        let mara = Arc::clone(&base).persona_form(Some(who("mara", "Mara Quinn", Some("priya"))));
         let out = mara
             .call(
                 json!({"prompt": "Mara Quinn on a beach at dusk"}),
@@ -6543,9 +6580,7 @@ mod tests {
 
         // Whole words only: "planning" does not name a persona called Ann,
         // so nothing is cast and the scene draws as written.
-        let ann = Arc::clone(&base)
-            .for_persona_as(&who("ann", "Ann", Some("priya")))
-            .unwrap();
+        let ann = Arc::clone(&base).persona_form(Some(who("ann", "Ann", Some("priya"))));
         let out = ann
             .call(
                 json!({"prompt": "a planning meeting, whiteboard"}),
@@ -6584,9 +6619,7 @@ mod tests {
             out.content
         );
         // `self` on a persona with no character: an expected failure.
-        let plain = Arc::clone(&base)
-            .for_persona_as(&who("rook", "Rook", None))
-            .unwrap();
+        let plain = Arc::clone(&base).persona_form(Some(who("rook", "Rook", None)));
         let out = plain
             .call(
                 json!({"prompt": "a portrait", "cast": [{"name": "self", "wearing": "", "doing": ""}]}),
@@ -8144,7 +8177,7 @@ mod tests {
                 .with_library_dir(lib.clone())
                 .with_faces(faces.clone()),
         );
-        let maya = base.for_persona_as(&persona_maya()).unwrap();
+        let maya = base.persona_form(Some(persona_maya()));
         let last_prompt = || {
             seen.lock()
                 .unwrap()
@@ -8247,7 +8280,7 @@ mod tests {
                 .with_library_dir(lib.clone())
                 .with_faces(faces.clone()),
         );
-        let maya = Arc::clone(&base).for_persona_as(&persona_maya()).unwrap();
+        let maya = Arc::clone(&base).persona_form(Some(persona_maya()));
         let anchored = || {
             seen.lock()
                 .unwrap()
@@ -8257,7 +8290,7 @@ mod tests {
                 .unwrap()
                 .contains("facial identity from <image2>")
         };
-        let edit = |tool: Arc<dyn Tool>, picture: String| {
+        let edit = |tool: ImageGenerate, picture: String| {
             let dir = dir.clone();
             async move {
                 tool.call(
@@ -8278,7 +8311,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let out = edit(Arc::clone(&maya), picture_of(&john.content)).await;
+        let out = edit(maya.clone(), picture_of(&john.content)).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         assert!(manifest_of(&dir, &out.content)["face_anchor"].is_null());
         // Her own scene, with a stranger in it.
@@ -8291,12 +8324,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let out = edit(Arc::clone(&maya), picture_of(&crowd.content)).await;
+        let out = edit(maya.clone(), picture_of(&crowd.content)).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         // An attached photo: no manifest, no lineage.
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::write(dir.join("inbox/me.png"), PNG).unwrap();
-        let out = edit(Arc::clone(&maya), "inbox/me.png".into()).await;
+        let out = edit(maya.clone(), "inbox/me.png".into()).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         // Someone brought in from a second picture by an earlier edit: that
         // edit is unanchored (it has two references), and so is every edit
@@ -8319,7 +8352,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!joined.is_error && !anchored(), "{}", joined.content);
-        let out = edit(Arc::clone(&maya), picture_of(&joined.content)).await;
+        let out = edit(maya.clone(), picture_of(&joined.content)).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         // An edit that adds someone itself, through `extras`: a second
         // person in this very picture (found on review of #569).
@@ -8342,7 +8375,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let out = edit(base.clone() as Arc<dyn Tool>, picture_of(&alone.content)).await;
+        let out = edit((*base).clone(), picture_of(&alone.content)).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         assert_eq!(
             faces.asked.load(Ordering::SeqCst),
@@ -8355,7 +8388,7 @@ mod tests {
             .with_faces(stub_faces(crate::face::Anchor::Unavailable(
                 "the face detector is not installed".into(),
             )));
-        let maya = Arc::new(missing).for_persona_as(&persona_maya()).unwrap();
+        let maya = Arc::new(missing).persona_form(Some(persona_maya()));
         let out = edit(maya, picture_of(&alone.content)).await;
         assert!(!out.is_error && !anchored(), "{}", out.content);
         assert_eq!(
