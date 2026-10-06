@@ -4,7 +4,8 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
 
 // The conversation as a call screen shows it (the owner's ask, 2026-10-05):
 // what was said and drawn, in order, with the owner's words as their bubble
-// shows them and replies as plain text.
+// shows them and replies as written: the screen formats them as the chat
+// does (the owner's ask, 2026-10-06).
 {
   const before = [
     { kind: 'user', text: '(What I want from this conversation: rest)\n\nDid the ferry sail on time?' },
@@ -20,7 +21,7 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   ];
   assert.deepEqual(historyLines(before), [
     { who: 'user', text: 'Did the ferry sail on time?' },
-    { who: 'persona', text: 'It did — it left at half past nine.' },
+    { who: 'persona', text: 'It **did** — it left at [half past nine](https://example.com).' },
     { who: 'persona', picture: true, text: 'a picture' },
     { who: 'user', text: 'Good to know, thanks.' },
     // Never received: not part of the conversation. Steered in: it was.

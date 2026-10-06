@@ -4,7 +4,7 @@
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
   import ChatProse from './ChatProse.svelte';
-  import { replyContext, speakable } from './speech.js';
+  import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
   import { pictureOf, repeatedPictures, downloadPicture } from './picture.js';
@@ -1112,7 +1112,7 @@
   // conversation under the chip that names this one (review of #570).
   const vSame = $derived(voiceOpen && !!vKey && key === vKey);
   const vTranscript = $derived(vSame ? historyLines(entries) : []);
-  const vReplying = $derived(vSame && streaming ? speakable(streaming).trim() : '');
+  const vReplying = $derived(vSame && streaming ? streaming.trim() : '');
   const vSpeaking = $derived(vSame ? pendingSpeech(vEntries, vTranscript) : vEntries);
   // Held at the bottom while the owner is there, left alone once they scroll
   // up to read: nothing arriving drags a reader back down.
@@ -2350,12 +2350,16 @@
         {#each vTranscript as line}
           {#if line.who === 'user'}
             <div class="vbubble">{line.text}</div>
+          {:else if line.picture}
+            <div class="vanswer vpicture">{line.text}</div>
           {:else}
-            <div class="vanswer" class:vpicture={line.picture}>{line.text}</div>
+            <!-- The chat's own renderer, so a call formats a reply the way
+                 the chat does (the owner's ask, 2026-10-06). -->
+            <div class="vanswer"><ChatProse text={line.text} /></div>
           {/if}
         {/each}
         {#if vReplying}
-          <div class="vanswer">{vReplying}</div>
+          <div class="vanswer"><ChatProse text={vReplying} /></div>
         {/if}
         {#each vSpeaking as entry}
           {#if entry.who === 'notice'}

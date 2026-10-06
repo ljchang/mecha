@@ -3,7 +3,6 @@
 // alike). Pure, so `web/test/call-lines.mjs` imports it.
 
 import { pictureOf } from './picture.js';
-import { speakable } from './speech.js';
 import { ownWords } from './persona.js';
 
 // A line of the owner's that the chat received: not one still queued or
@@ -17,9 +16,12 @@ function said(e) {
 // the call began, and nothing a re-read rebuilds can draw a line twice. Only
 // what was said and drawn: the owner's words as their bubble shows them
 // (`ownWords`, which drops a persona chat's goal preamble and leaves any
-// other line as it is), the persona's replies as plain text (`speakable`, so no
-// Markdown marks), and a picture as a line saying so — once, as the chat
-// draws it once (`image_view` of a picture just made is the same picture).
+// other line as it is), the persona's replies as written — the screen draws
+// them with the chat's own renderer, so a call and the chat format a reply
+// the same way (the owner's ask, 2026-10-06; what the voice says is tidied
+// on the speech path, never here) — and a picture as a line saying so —
+// once, as the chat draws it once (`image_view` of a picture just made is
+// the same picture).
 // Tool rows, notices, empty replies and lines the persona never received are
 // the chat's detail, not the conversation.
 export function historyLines(entries) {
@@ -31,7 +33,7 @@ export function historyLines(entries) {
       const text = ownWords(e.text).trim();
       if (text) lines.push({ who: 'user', text });
     } else if (e.kind === 'assistant') {
-      const text = speakable(e.text).trim();
+      const text = (e.text ?? '').trim();
       if (text) lines.push({ who: 'persona', text });
     } else if (e.kind === 'tool') {
       const picture = pictureOf(e);
