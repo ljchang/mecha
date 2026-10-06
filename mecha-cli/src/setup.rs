@@ -1131,9 +1131,10 @@ async fn prepare_tools_carrying(
     // This block used to carry the date, which gave a value that changes daily
     // the lifetime of a prompt that never changes — fine for a one-shot, and
     // wrong for a daemon, which is what `mecha serve` is. It told a Monday
-    // morning voice call it was Sunday. `Agent::run_loop` now asks
-    // `Agent::now` per turn and folds the reading into the turn; see
-    // `mecha_core::clock` and `mecha_core::date_context`.
+    // morning voice call it was Sunday. The loop now reads the clock per
+    // request and sends the reading as a run note, never stored
+    // (`Agent::calendar_note`); see `mecha_core::clock` and
+    // `mecha_core::date_context`.
     {
         let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
         let guidance = mecha_core::date_context::GUIDANCE;

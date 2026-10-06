@@ -1488,11 +1488,11 @@ pub struct Transcript {
     pub meta: SessionMeta,
     pub convo: Conversation,
     /// Every note a run was sent, as recorded (`Record::Notes`), in order:
-    /// a persona's guidance, and the calendar reference and situation brief
-    /// the loop sends beside the history rather than in it
+    /// a persona's guidance, a spoken turn's voice note, and the calendar
+    /// reference the loop sends beside the history rather than in it
     /// (`Agent::now_notes`). What a run read that its messages do not hold,
     /// for the readers that need it as evidence — `eval::grounding_evidence`'s
-    /// date, `mismatch::validate_transcript`'s brief.
+    /// date; `mismatch::validate_transcript` reads it too, for any brief.
     pub notes: Vec<String>,
     /// Every `RunConfig` recorded, in order. The first is the run the session
     /// began under; a `/model` switch appends another.
@@ -1732,10 +1732,9 @@ impl Session {
             prev = state;
         }
         self.record_transition(prev, &convo.messages)?;
-        // The harness's notes the run sent — the calendar reference and the
-        // brief (`Agent::now_notes`) — which are no longer in the messages:
-        // what the run read, kept beside what it said, and the stem `read`
-        // re-arms from (the brief's `private`). After the messages, which
+        // The harness's notes the run sent — the calendar reference
+        // (`Agent::now_notes`), which is no longer in the messages: what the
+        // run read, kept beside what it said. After the messages, which
         // `Session::read` allows: a notes line pushes no taint checkpoint.
         if !convo.harness_notes.is_empty() {
             self.append(&Record::Notes {
@@ -5465,13 +5464,13 @@ mod extension_tests {
     }
 
     /// `record_run` writes the harness's own notes for every door — the
-    /// calendar reference and the brief the loop sent beside the history
+    /// calendar reference the loop sent beside the history
     /// (`Conversation::harness_notes`) — and the file reads them back as
-    /// `Transcript::notes`, with a delivered brief re-arming `private` when
-    /// no taint record is on file. Before 2026-10-06 they were folded into
-    /// the messages; now nothing else on disk says the run had them.
+    /// `Transcript::notes`. Before 2026-10-06 it was folded into the
+    /// messages; now nothing else on disk says what date the run was told.
+    /// A reading arms nothing.
     #[test]
-    fn record_run_keeps_the_harness_notes_and_reading_re_arms_the_brief() {
+    fn record_run_keeps_the_harness_notes_beside_the_messages() {
         let (dir, s) = session();
         let opening = Message::user("what's waiting?");
         s.append(&Record::Message(opening.clone())).unwrap();
@@ -5479,17 +5478,16 @@ mod extension_tests {
             "2026-09-16T13:21:33Z".parse().unwrap(),
             Some(chrono_tz::America::New_York),
         );
-        let brief = format!("\n\n{}, as things stood.", crate::brief::BRIEF_STEM);
         let mut convo = Conversation::from(vec![
             opening.clone(),
             Message::assistant(vec![Block::text("Two replies.")]),
         ]);
-        convo.harness_notes = vec![reading.clone(), brief.clone()];
+        convo.harness_notes = vec![reading.clone()];
         s.record_run(std::slice::from_ref(&opening), &convo)
             .unwrap();
 
         let read = Session::read(&s.path).unwrap();
-        assert_eq!(read.notes, vec![reading, brief]);
+        assert_eq!(read.notes, vec![reading]);
         assert_eq!(read.convo.messages.len(), 2);
         assert!(
             read.convo
@@ -5498,10 +5496,7 @@ mod extension_tests {
                 .all(|m| !m.text().contains("harness")),
             "a note was rebuilt into the conversation"
         );
-        assert!(
-            read.convo.taint.private,
-            "the recorded brief re-arms `private`"
-        );
+        assert!(!read.convo.taint.private, "a calendar reading arms nothing");
 
         // And a run that sent none records none.
         let (dir2, s2) = session();

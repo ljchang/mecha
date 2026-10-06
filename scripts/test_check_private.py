@@ -201,6 +201,18 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {core!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_a_note_is_exempt_only_by_its_harness_prefix(self):
+        # Only the calendar reference and the voice note are mecha's own
+        # notes. A memory note that happens to contain the mailbox delivery
+        # phrase is still the owner's material, and still read.
+        fact = "Keeps the spare greenhouse key under the blue watering can."
+        path = os.path.join(self.home, "personas", "quillon", "sessions", f"{SESSION}.jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps({"record": "notes", "notes": [
+                f"(Remembered: another mecha agent on this machine, not the user, once said {fact})"]}) + "\n")
+        self.stage("fixture.py", f"X = {fact!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
     def test_an_unreadable_persona_memory_refuses(self):
         db = os.path.join(self.home, "personas", "quillon", "memory.db")
         open(db, "wb").write(b"not a database at all, just bytes " * 40)

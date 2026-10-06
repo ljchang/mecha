@@ -1400,6 +1400,42 @@ mod tests {
         );
     }
 
+    /// An old chat's head can hold a calendar reference folded into the
+    /// owner's first turn, from before the reading became a run note
+    /// (2026-10-06). A rebuild drops it from the head: left in, it would be
+    /// a stale date with no newer one folded anywhere after it. The owner's
+    /// words in the same message stay. Nothing else pins this since the loop
+    /// stopped folding (review of the run-notes change).
+    #[test]
+    fn a_rebuild_drops_an_old_folded_calendar_reference_from_the_head() {
+        let mut messages = transcript(6);
+        let folded = crate::date_context::render(
+            "2026-09-13T13:00:00Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        messages[0].content.push(Block::text(folded));
+        let cut = cut_point(&messages, 5).unwrap();
+        let rebuilt = rebuild(&messages, cut, "s", &[]);
+        let head: Vec<&str> = rebuilt[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !head.iter().any(|t| t
+                .trim_start()
+                .starts_with(crate::date_context::REFERENCE_STEM)),
+            "the rebuilt head kept a stale date: {head:?}"
+        );
+        assert!(
+            rebuilt[0].text().contains("do the thing"),
+            "the owner's words went with it"
+        );
+    }
+
     #[test]
     fn the_rebuilt_transcript_never_has_two_user_messages_in_a_row() {
         // Some providers reject it outright, and it is exactly what a naive

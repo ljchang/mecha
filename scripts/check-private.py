@@ -66,6 +66,8 @@ VOICE_MARK = "Voice mode: everything you write is spoken aloud"
 # message, and the message holds only what was said: the note's opening is
 # what marks the turn as spoken now.
 VOICE_NOTE_STEM = "(From the harness: this turn is spoken."
+# The calendar reference's opening (`date_context::REFERENCE_STEM`).
+REFERENCE_STEM = "Calendar reference from the harness clock:"
 # The header a compaction summary opens with (`compact::SUMMARY_HEADER`).
 SUMMARY_HEADER = "[Earlier turns were compacted to fit the context window. What happened in them:]"
 # Harness text that can ride in a user message of a chat that is not a
@@ -80,7 +82,7 @@ SUMMARY_HEADER = "[Earlier turns were compacted to fit the context window. What 
 # (`mailbox::DELIVERY_STEM`). Matched as prefixes; a stale one fails toward
 # refusing, never toward passing.
 DERIVED_STEMS = (SUMMARY_HEADER, "[Live state, carried past the compaction", "[picture returned by ",
-                 "Calendar reference from the harness clock:", "Situation brief from the harness",
+                 REFERENCE_STEM, "Situation brief from the harness",
                  "Nothing is being learned here:", "A second opinion on your plan:",
                  "Harness check feedback: ", "Harness observations of owner-bound task criteria.",
                  "You have used your entire tool budget", "Your previous turn ended without producing anything",
@@ -130,9 +132,12 @@ def spoken(o):
         # ride the owner's message, among it the persona's `## Core`
         # (`safety::reanchor_text`), which no other source here covers.
         if o.get("record") == "notes":
-            # Less the harness's own readings and guidance (the calendar
-            # reference, a spoken turn's voice note): those are mecha's words.
-            yield from (n for n in o.get("notes") or [] if isinstance(n, str) and not derived(n))
+            # Less the harness's own reading and guidance — the calendar
+            # reference and a spoken turn's voice note, by their prefixes
+            # alone: `derived()` also matches a delivery phrase anywhere in a
+            # text, which would let a memory note quoting it go unread.
+            yield from (n for n in o.get("notes") or []
+                        if isinstance(n, str) and not n.startswith((VOICE_NOTE_STEM, REFERENCE_STEM)))
             return
         if o.get("role") in ("user", "assistant", "tool") and "content" in o:
             yield from strings(o["content"])
@@ -270,9 +275,9 @@ def spoken_turns(records):
 
     - every spoken direction's sentence — a direction is only ever written
       for a sentence that was spoken;
-    - each turn that carries the voice block — the first of a call, since
-      `voice::open_spoken_turn` adds it only when the turn before was not
-      spoken: the owner's words, the assistant's replies and the arguments
+    - each spoken turn — one that carries the voice block (recorded before
+      2026-10-06, the first turn of a stretch only) or follows a voice-note
+      `notes` line (since): the owner's words, the assistant's replies and the arguments
       it passed to tools, through its tool turns, a turn folded into its
       tail (a barge-in) and any of it recorded only inside a compaction's
       rewrite — but
