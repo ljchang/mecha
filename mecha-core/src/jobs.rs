@@ -45,12 +45,28 @@ pub struct DeferredJob {
 /// reach, where a cut result spills, and whether an outside one is wrapped.
 /// A late result is finished by these, by [`settle`], so it enters the
 /// conversation exactly as the same result inline would have (§4).
-#[derive(Debug, Clone, Default)]
+///
+/// **Unset terms fail closed.** `caps: None` — a job submitted without the
+/// loop's terms, which only a caller outside `run_tools` could do — reads as
+/// the widest reach: private, untrusted, and wrapped when it came from
+/// outside (review of #583).
+#[derive(Debug, Clone)]
 pub struct Terms {
     pub cap: usize,
     pub caps: Option<Capabilities>,
     pub spill_dir: Option<std::path::PathBuf>,
     pub mark_untrusted: bool,
+}
+
+impl Default for Terms {
+    fn default() -> Self {
+        Terms {
+            cap: crate::tool::SPILL_FLOOR_BYTES,
+            caps: None,
+            spill_dir: None,
+            mark_untrusted: true,
+        }
+    }
 }
 
 impl DeferredJob {
@@ -158,7 +174,14 @@ pub(crate) fn settle(
 ) -> ToolOutput {
     out.content =
         crate::tool::cap_result(out.content, terms.cap, terms.spill_dir.as_deref(), name, id);
-    if let Some(caps) = &terms.caps {
+    // Unknown reach is the widest, never none (`Terms`).
+    let unknown = Capabilities {
+        private_data: true,
+        untrusted_input: true,
+        ..Capabilities::default()
+    };
+    {
+        let caps = terms.caps.as_ref().unwrap_or(&unknown);
         taint.private |= caps.private_data;
         taint.untrusted |= caps.untrusted_input && out.external;
         // Defense in depth, and weak on its own: tell the model that what
@@ -528,6 +551,20 @@ mod tests {
         let out = late(ToolOutput::ok("our own words")).settle(&mut taint);
         assert_eq!(out.content, "our own words");
         assert!(!taint.untrusted, "only what came from outside arms it");
+
+        // Terms never set: the widest reach, never none.
+        let mut taint = Taint::default();
+        let unset = Delivered {
+            terms: Terms::default(),
+            ..late(ToolOutput::ok("a page").from_outside())
+        };
+        let out = unset.settle(&mut taint);
+        assert!(
+            out.content.contains("<untrusted-content"),
+            "{}",
+            out.content
+        );
+        assert!(taint.untrusted && taint.private);
 
         let mut taint = Taint::default();
         let long = "x".repeat(5000);

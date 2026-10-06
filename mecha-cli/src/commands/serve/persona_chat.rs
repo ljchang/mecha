@@ -3587,8 +3587,13 @@ impl PersonaChats {
                 }
                 ps.conversation = Some(conversation);
                 ps.live = None;
-                if outcome_recorded {
-                    ps.late.recorded(turn);
+                // Two orderings this block depends on, which no test reaches
+                // through a live run: the run's outcome is numbered *before*
+                // its held pictures land, or a late failure of its own books
+                // against no run; and they land before `Done` (sent below,
+                // after the lock), so the page's re-read finds them on file.
+                if run_ok {
+                    ps.late.ended_ok(turn, outcome_recorded);
                 }
                 // Pictures that finished while this run held the chat: into
                 // the record now, before `Done` sends the page to re-read.
@@ -7556,7 +7561,7 @@ mod tests {
             .append(&Record::Outcome(Default::default()))
             .unwrap();
         let run = ps.late.next_turn();
-        ps.late.recorded(run);
+        ps.late.ended_ok(run, true);
         ps.conversation.as_mut().unwrap().messages.extend(turn);
         ps.session.path.clone()
     }
@@ -7739,6 +7744,36 @@ mod tests {
             vec![0]
         );
         assert!(t.pending_notes.is_empty());
+    }
+
+    /// A run that ended `Ok` but whose outcome did not write: its call is
+    /// still in the conversation, so its picture still lands and the next
+    /// turn is still told; only the failure has no run to book against
+    /// (review of #583).
+    #[tokio::test]
+    async fn a_picture_from_a_run_whose_outcome_did_not_write_still_lands() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        {
+            let mut sessions = w.chat.personas.sessions.lock().await;
+            let late = &mut sessions.get_mut(&key).unwrap().late;
+            late.forget_outcomes();
+            late.ended_ok(0, false);
+        }
+        w.personas()
+            .deliver(late(
+                &key,
+                mecha_core::tool::ToolOutput::err("Image generation failed: the server went away."),
+            ))
+            .await;
+        assert!(result_on_file(&path).starts_with("Image generation failed"));
+        let t = Session::read(&path).unwrap();
+        assert_eq!(
+            t.outcomes.iter().map(|o| o.tool_errors).collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(t.pending_notes.len(), 1);
     }
 
     /// The owner's Stop ends the chat's picture even when no reply is

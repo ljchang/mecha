@@ -63,13 +63,15 @@ pub(super) struct LateState {
     runs_recorded: usize,
     /// The turns this process has started on the conversation, numbered: a
     /// run's jobs carry its number (`JobQueue::sink`), and `outcome_of` maps
-    /// it to the ordinal of the outcome the run wrote when it handed back —
-    /// which a late failure books against (`Record::LateFailure`). A run
-    /// that ended in error wrote none, and its call was rolled back with it,
-    /// so it has no entry, and its job's late result books and notes nothing
-    /// (review of #573, pass 9).
+    /// each run that handed back `Ok` to the ordinal of the outcome it wrote
+    /// — which a late failure books against (`Record::LateFailure`) — or to
+    /// `None` when that write failed: its call is still in the conversation,
+    /// so its picture still lands, and only the booking has nowhere to go
+    /// (review of #583). A run that ended in error has no entry: it was
+    /// rolled back, call and all, so its job's late result books and notes
+    /// nothing (review of #573, pass 9).
     turns: usize,
-    outcome_of: HashMap<usize, usize>,
+    outcome_of: HashMap<usize, Option<usize>>,
 }
 
 impl LateState {
@@ -98,10 +100,13 @@ impl LateState {
         turn
     }
 
-    /// Run `turn` handed back having written its outcome.
-    pub(super) fn recorded(&mut self, turn: usize) {
-        self.outcome_of.insert(turn, self.runs_recorded);
-        self.runs_recorded += 1;
+    /// Run `turn` handed back `Ok`, and `wrote` its outcome or did not.
+    pub(super) fn ended_ok(&mut self, turn: usize, wrote: bool) {
+        let ordinal = wrote.then_some(self.runs_recorded);
+        self.outcome_of.insert(turn, ordinal);
+        if wrote {
+            self.runs_recorded += 1;
+        }
     }
 
     /// The notes owed to the run about to start.
@@ -173,7 +178,7 @@ pub(super) fn land(
     if let Err(e) = session.append(&Record::Taint(convo.taint)) {
         tracing::warn!("a late result's taint was not recorded: {e:#}");
     }
-    if out.is_error {
+    if let (true, Some(run)) = (out.is_error, run) {
         let _ = session.append(&Record::LateFailure {
             run,
             tool_use_id: late.call_id.clone(),
