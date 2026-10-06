@@ -263,8 +263,12 @@ what is true for this run. Nothing a component says is written into the conversa
     stem. A recall from outside joined after a clean block would arm `private` and never
     `untrusted`. A test caught exactly this in #572.
   - *Material* is read once and kept: the files block and the **chat-start memory block** are
-    stored once, in the first owner turn that does not carry them yet, where they are cached and
-    compaction keeps them. The session goal stays too, because it is the owner's words.
+    stored once, in the chat's first turn before its first reply, where they are cached and
+    compaction keeps them (it keeps `messages[0]` whole). A chat already past a reply that never
+    stored the memory block gets it as a note. The session goal stays too, because it is the
+    owner's words.
+  - Once stored, the memory block stays with its chat. A memory switch turned off reaches the
+    next chat, not an open one, as before #572.
   - **Why chat-start memory is material, not a note (2026-10-06).** #572 first sent it as a note.
     Measured on the live server:
     - At the end of every request, it was re-read every time: ~1,800 tokens, ~1.1–1.6 s of
