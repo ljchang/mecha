@@ -22,6 +22,9 @@ function said(e) {
 // on the speech path, never here) — and a picture as a line saying so —
 // once, as the chat draws it once (`image_view` of a picture just made is
 // the same picture).
+// A crisis pause is drawn too, as itself (`who: 'crisis'`): the plain voice
+// says it on the call, and the call screen covers the chat's card, so the
+// pane is the only place it can be read (review of #570).
 // Tool rows, notices, empty replies and lines the persona never received are
 // the chat's detail, not the conversation.
 export function historyLines(entries) {
@@ -35,6 +38,9 @@ export function historyLines(entries) {
     } else if (e.kind === 'assistant') {
       const text = (e.text ?? '').trim();
       if (text) lines.push({ who: 'persona', text });
+    } else if (e.kind === 'crisis') {
+      const text = (e.text ?? '').trim();
+      if (text) lines.push({ who: 'crisis', text });
     } else if (e.kind === 'tool') {
       const picture = pictureOf(e);
       if (picture && !pictures.has(picture)) {

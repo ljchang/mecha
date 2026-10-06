@@ -2040,6 +2040,7 @@
       pictures={callPictures}
       transcript={callTranscript}
       streaming={run.streaming}
+      resources={safety?.resources && (crisisShown || callEntries.some((e) => e.kind === 'crisis')) ? safety.resources : null}
       {pictureUrl}
       ondownload={savePicture}
       onedit={editInCall}

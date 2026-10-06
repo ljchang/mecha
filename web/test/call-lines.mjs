@@ -27,6 +27,12 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
     // Never received: not part of the conversation. Steered in: it was.
     { who: 'user', text: 'And the red one.' },
   ]);
+  // A crisis pause is part of what the call shows: the call screen covers
+  // the chat's card, and the pause reaches the call only as speech.
+  assert.deepEqual(historyLines([{ kind: 'user', text: 'Hello.' }, { kind: 'crisis', text: 'Pausing here.', id: 'crisis-1' }]), [
+    { who: 'user', text: 'Hello.' },
+    { who: 'crisis', text: 'Pausing here.' },
+  ]);
   // A picture made and then viewed is one picture, as the chat draws it once.
   const twice = [
     { kind: 'tool', name: 'image_generate', preview: 'image: images/a.png' },
