@@ -305,8 +305,9 @@ A result says what happened: the path, edit or new, the time, and for an edit th
 to use the tool, and what to do next, lives **once**, in the tool's description.
 
 - **Built for `image_generate`** (2026-10-06). A new picture's result is its path, size, cast, time
-  and seed, and "It is on the owner's screen; you have not seen it." An edit's says "The new picture is on
-  the owner's screen; you have not seen it." and then that the original is unchanged. A near-copy adds the similarity, whether it is the second in a
+  and seed, and "It is on the owner's screen; you have not seen it." An edit's says what it edited, then
+  "The new picture is on the owner's screen; you have not seen it.", then that the original is
+  unchanged; a near-copy's sentences name "the new picture" as their subject. A near-copy adds the similarity, whether it is the second in a
   row, which original it came from, and the library names it was drawn from. Gone from every result:
   the suggestions about revising a picture, editing it further and leaving the original alone, and
   the near-copy notice's retry advice. Those now sit once in the description.
