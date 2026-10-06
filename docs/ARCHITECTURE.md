@@ -4066,7 +4066,9 @@ agree.
   within a line each sentence end with no mark left open (a link, a
   citation, bold, code). The speech engine waits for a sentence end anyway,
   so nothing is heard later than before. A mark the model never closes holds
-  its line for at most `speech::MAX_HELD` bytes.
+  its line for at most `speech::MAX_HELD` bytes, with or without a space to
+  cut at. Full-width `。！？` end a sentence too, so a script written
+  without spaces is released by the sentence, not at the end of the turn.
 - **A turn's text ends its sentence** (`AgentEvent::AssistantText` flushes
   the tidier). Before this, the narration ahead of a tool call ran straight
   into the next turn's first word.

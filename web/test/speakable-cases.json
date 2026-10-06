@@ -23,5 +23,7 @@
   {"why": "an ellipsis is left as written", "text": "Hmm... let me think.", "spoken": "Hmm... let me think."},
   {"why": "a vocal tag is the speech engine's, never touched", "text": "(laugh) That was close.", "spoken": "(laugh) That was close."},
   {"why": "a smile is not a link", "text": "Nice to see you :) How was the ferry? It ran late.", "spoken": "Nice to see you :) How was the ferry? It ran late."},
-  {"why": "spacing is one space", "text": "Two.  Spaces   here.", "spoken": "Two. Spaces here."}
+  {"why": "spacing is one space", "text": "Two.  Spaces   here.", "spoken": "Two. Spaces here."},
+  {"why": "a script without spaces ends a sentence at its own mark", "text": "你好。再见", "spoken": "你好。再见."},
+  {"why": "and its full-width marks end a line as a full stop does", "text": "今天很好。明天呢？", "spoken": "今天很好。明天呢？"}
 ]
