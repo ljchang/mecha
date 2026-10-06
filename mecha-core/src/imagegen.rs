@@ -3890,7 +3890,10 @@ const BUSY: &str = "Nothing was drawn. A picture is already being made in this c
 /// inherent `call`, which the concrete type resolves before the trait's,
 /// awaits a deferred render inline as a host-less run does
 /// (`jobs::run_inline`). Production calls go through `dyn Tool` and get the
-/// deferral.
+/// deferral — so a new test written here exercises the inline path, and one
+/// that means the deferred path must call through `<dyn Tool>` or a host
+/// (`the_manifest_names_the_call_it_answers` is the one that carries the
+/// deferred render to its manifest; review of #583).
 #[cfg(test)]
 impl ImageGenerate {
     pub(crate) async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -3911,10 +3914,18 @@ pub const BEING_MADE: &str = "being made: ";
 /// it drew — settled by **asking the artifact, not the absent job**
 /// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.3). A picture counts only if a
 /// manifest in the chat's `images/` names this call: the reserved name was
-/// told to the model before the bytes existed, and a run in the same jail
-/// can write that path, so a file there proves nothing alone. The manifest
-/// is the job's last write, after the bytes and the near-copy check, so a
-/// picture without one is a picture nobody was shown, and reads `not made`.
+/// told to the model before the bytes existed, so a file at that path alone
+/// is not even this call's. The manifest is the job's last write, after the
+/// bytes and the near-copy check, so a picture without one is a picture
+/// nobody was shown, and reads `not made`.
+///
+/// **What this does not prove.** The manifest sits in the same jail as the
+/// picture, and the call's id is the model's own, so a run that writes both
+/// files with `fs_write` can plant a "finished" picture for a render a
+/// restart cut short (review of #583). The cost is bounded — a picture in
+/// the chat's gallery the image server did not draw, no reach anywhere — and
+/// a model that wants to show a fake picture has plainer routes; a manifest
+/// out of the jail's reach would be the fix if that ever matters.
 ///
 /// `workspace` is the chat's own directory, never a model-supplied path,
 /// and every name read is one the directory listing returned. `None` when

@@ -4437,6 +4437,31 @@ mod boundary_tests {
         std::fs::remove_dir_all(server_temp).ok();
     }
 
+    /// A conversation whose picture is still being drawn is not let go of —
+    /// archived, deleted or handed over — until it lands or is stopped: the
+    /// result lands in this process's copy (review of #583).
+    #[tokio::test]
+    async fn a_chat_with_a_picture_out_is_not_released() {
+        let _home = crate::testenv::HomeGuard::new("release-with-job");
+        let chat = chat::test_chat_answering("hi", true);
+        let app = app(chat.clone());
+        converse(&app, "main", "hello").await;
+        let id = mecha_core::session::Session::read(&chat::test_transcript(&chat, "main").await)
+            .unwrap()
+            .meta
+            .id;
+        let stop = chat::test_job_out(&chat, "main");
+        assert!(chat.release_recorded(&id).await.is_err());
+        stop.cancel();
+        for _ in 0..200 {
+            if chat.release_recorded(&id).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("released only while the picture was out");
+    }
+
     #[tokio::test]
     async fn an_incognito_picture_leaves_nothing_here_or_on_the_image_server() {
         let home = crate::testenv::HomeGuard::new("incognito-image");

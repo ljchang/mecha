@@ -482,6 +482,12 @@ impl ChatState {
         if sessions.get(&key).is_some_and(|ws| ws.live.is_some()) {
             return Err("a run is in flight in this conversation — stop it first");
         }
+        // A picture still being drawn lands in this conversation's record:
+        // letting go of it first would leave the result "being made" for
+        // good (review of #583).
+        if self.jobs.queue.pending(&key).is_some() {
+            return Err("a picture is being made in this conversation — stop it first");
+        }
         let ws = sessions.remove(&key).expect("found above");
         ws.questions.shutdown();
         if let Ok(mut routes) = self.routes.lock() {
@@ -1378,6 +1384,14 @@ pub(super) async fn release_task_conversation(
         // hand-over mid-turn would take a transcript out from under it.
         anyhow::bail!(
             "it is working right now — let it finish, or stop it first, then hand it over"
+        );
+    }
+    // Nor while a picture it asked for is still being drawn: the result
+    // lands in this process's copy, which the hand-over gives up, and a
+    // reopen would settle it as never made (review of #583).
+    if chat.jobs.queue.pending(&key).is_some() {
+        anyhow::bail!(
+            "a picture is being made in it right now — let it finish, or stop it first, then hand it over"
         );
     }
     let id = ws.session.id().to_string();
@@ -2329,6 +2343,7 @@ async fn deliver(chat: &Arc<ChatState>, late: mecha_core::jobs::Delivered) {
     let mut sessions = chat.sessions.lock().await;
     let Some(ws) = sessions.get_mut(&late.key) else {
         tracing::warn!(key = %late.key, "a finished job's chat is gone");
+        chat.jobs.queue.landed(&late.key, &late.call_id);
         return;
     };
     let Some(session) = ws.session.kept().cloned() else {
@@ -2673,7 +2688,7 @@ fn begin_turn(
     let turn = match ws.session.kept() {
         Some(session) => {
             start_delivery(chat);
-            let turn = ws.late.next_turn();
+            let turn = chat.jobs.number();
             cx.jobs = Some(chat.jobs.queue.sink(key, turn));
             let owed = ws.late.take_notes();
             if !owed.is_empty() {
@@ -3040,8 +3055,8 @@ fn begin_turn(
             ws.live = None;
             // Two orderings, as in the persona host: the outcome is numbered
             // before held pictures land, and they land before `Done`.
-            if let (Some(turn), true) = (turn, outcome.is_ok()) {
-                ws.late.ended_ok(turn, outcome_recorded);
+            if let Some(turn) = turn {
+                ws.late.ended(turn, outcome.is_ok(), outcome_recorded);
             }
             // Pictures that finished while this run held the chat: into the
             // record now, before `Done` sends the page to re-read.
@@ -5102,6 +5117,26 @@ pub(super) fn test_chat_planned(
         answering_config(true),
         Some(todo),
     )
+}
+
+/// A picture still being drawn for `key`, until the returned token stops it.
+#[cfg(test)]
+pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::CancellationToken {
+    let token = tokio_util::sync::CancellationToken::new();
+    let watched = token.clone();
+    let job = mecha_core::jobs::DeferredJob::new(
+        async move {
+            watched.cancelled().await;
+            mecha_core::tool::ToolOutput::err("stopped")
+        },
+        token.clone(),
+        "busy",
+    );
+    chat.jobs
+        .queue
+        .submit(key, 0, "c1", "image_generate", job)
+        .unwrap();
+    token
 }
 
 /// The transcript `key`'s kept session records into.

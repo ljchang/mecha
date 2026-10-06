@@ -5697,6 +5697,52 @@ mod extension_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A late failure resolves against the whole file's rows, not the rows
+    /// read so far: every reader applies them after its walk, so one written
+    /// before its run's outcome — which the hosts never do — still books
+    /// against that run, and the order cannot misattribute it.
+    #[test]
+    fn a_late_failure_books_by_ordinal_whatever_its_place_in_the_file() {
+        let (dir, s) = session();
+        deferred_turn(&s);
+        s.append(&Record::LateFailure {
+            run: 0,
+            tool_use_id: "c1".into(),
+        })
+        .unwrap();
+        s.append(&Record::Outcome(RunStats::default())).unwrap();
+        assert_eq!(Session::outcomes(&s.path).unwrap()[0].tool_errors, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `messages_ever` does not read the late records, deliberately: its
+    /// id-keyed readers are first-seen-wins, so the "being made" result is
+    /// the one they keep either way (`BACKGROUND-JOBS-DESIGN.md` §2.3). A
+    /// refactor that starts reading them changes those readers, and should
+    /// meet this test first.
+    #[test]
+    fn messages_ever_leaves_the_late_records_out() {
+        let (dir, s) = session();
+        deferred_turn(&s);
+        s.append(&Record::LateResult {
+            index: 2,
+            tool_use_id: "c1".into(),
+            content: "image: images/a.png".into(),
+            is_error: false,
+            external: false,
+        })
+        .unwrap();
+        s.append(&Record::PendingNote {
+            note: "it arrived".into(),
+        })
+        .unwrap();
+        let ever = Session::messages_ever(&std::fs::read_to_string(&s.path).unwrap());
+        assert_eq!(ever.len(), 4, "{ever:?}");
+        assert!(ever.iter().all(|m| !m.text().contains("it arrived")));
+        assert!(!format!("{ever:?}").contains("image: images/a.png"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A note a delivery left is owed until a run records an outcome.
     #[test]
     fn a_pending_note_is_owed_until_a_run_takes_it() {
