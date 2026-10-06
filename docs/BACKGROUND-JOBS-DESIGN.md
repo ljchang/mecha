@@ -54,8 +54,12 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 ### 2.1 A deferred tool output (core, `mecha-core`)
 
-- A tool may answer `ToolOutput::deferred(now, job)`. `now` is the immediate result text. `job`
-  is a boxed future yielding the finished `ToolOutput`, run with **its own** cancellation token.
+- A tool may answer `ToolOutput::deferred(now, job, cancel)`. `now` is the immediate result
+  text. `job` is a boxed future yielding the finished `ToolOutput`. `cancel` is **the job's own
+  cancellation token, carried beside it**: the tool creates it and builds the job to watch it,
+  because a boxed future can be dropped but not handed a token afterwards, and the tool cannot
+  know whether the run has a sink (review of #573, pass 4). Whoever runs the job holds `cancel`:
+  the loop, linked to the run's token when it awaits inline; the host's queue otherwise.
 - The agent loop hands the job to `RunContext::jobs` when the run has one (a `JobSink`, given by
   a chat host) and records `now` as the call's result.
 - With no sink (the CLI, a subagent, an eval, a batch), the loop **awaits the job inline**. Every
@@ -105,15 +109,21 @@ When a job finishes, the host:
    the call is, in the chat and on the call screen. This happens even while another run is in
    flight, because the live entry is the page's. **A failed job sends `is_error: true`**, or the
    page's `turnsWithoutPicture` would read the turn as drawn.
-2. **Rewrites the stored result** at the next point it holds the conversation: the end of the
-   current run, or before the next one starts (the `pending_crisis` pattern).
+2. **Rewrites the stored result** at the next point it holds the conversation: **at once when no
+   run holds it** (the chat is idle — the common case, since a picture outlasts the reply that
+   started it), else at the end of the current run (the `pending_crisis` pattern). Never
+   "before the next run starts": an idle chat may have no next run for hours, and a restart in
+   that window would find a finished picture with nothing recorded about it (review of #573,
+   pass 4).
    - "being made: …" becomes the finished, text-only result (`image: <path> …`), recorded as a
      `Record::Rewrite`.
    - No `Block::Image` is added: the model is told a picture reached the owner, never shown its
      pixels (`image_view` stays the separate step).
    - The rewrite touches a recent message, so the cached prefix is re-read from that point once.
 3. **Adds a run note for the next run** (§5.1, `RunContext::notes` + `Record::Notes`): "the
-   picture you started (images/x.png) has reached the owner; you have not seen it".
+   picture you started (images/x.png) has reached the owner; you have not seen it". Held with
+   the conversation until a run takes it, and re-derived from the rewritten result after a
+   restart, so it is never lost with the process.
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
@@ -123,8 +133,12 @@ the restart below. When no result with that id is left in the history, there is 
 rewrite: the page event (1) and the run note (3) still go, so the owner sees the picture and the
 model is told; the summary's own wording, if it mentions the picture, stays what it was.
 
-A server restart loses in-flight jobs. When a session is loaded, any `being made: …` result with no job behind it is
-rewritten to `not made: the server restarted`, so no result claims a picture is still coming.
+A server restart loses in-flight jobs. When a session is loaded, any `being made: <path>` result
+with no job behind it is repaired by **asking the artifact, not the absent job**: if the path
+§2.1 reserved holds a picture, the job finished before the restart and the result becomes the
+finished one (`image: <path>`, without the measurements the job did not get to record); if it
+does not, the result becomes `not made: the server restarted`. Either way no result claims a
+picture is still coming, and none denies one the owner already saw.
 
 ### 2.4 Talking never kills a job; Stop does
 
@@ -173,6 +187,13 @@ get the same behaviour.
   outside and came back `external` therefore arms `untrusted` exactly as the inline call would
   have. `image_generate` talks to a loopback server and arms nothing today, but the mechanism is
   generic, and this is the rule that would otherwise be found missing later.
+- **And taint is one of four things the loop does to a result; delivery does all four.**
+  After a call executes, `run_tools` records its provenance (`Message::tool_provenance`, read by
+  `replay.rs`), caps it to the turn's byte budget (`cap_result`), wraps an `external` result
+  from an `untrusted_input` tool in the untrusted-content envelope, and arms taint. A late
+  result goes through the same steps, by one function factored out of `run_tools` and called
+  from both, with the cap the call's own turn had. A rewrite that changed only the content
+  would replay an `external` late result as not-external (review of #573, pass 4).
 - The manifest, the near-copy measurement and the face anchor run as they do now, inside the job.
 
 ## 5. Tests (each fails on today's behaviour)
@@ -186,7 +207,12 @@ get the same behaviour.
   touching the backend.
 - Delivery while another run holds the conversation: the page event goes at once, and the
   rewrite and run note apply at that run's end.
-- Loading a session with an orphaned `being made` result rewrites it to `not made: …`.
+- Loading a session with an orphaned `being made: <path>` result: with a picture at the path,
+  the result becomes `image: <path>`; with none, `not made: the server restarted`.
+- A job that finishes while the chat is idle rewrites its result at once, so a restart right
+  after leaves the record already true.
+- A late `external` result from an `untrusted_input` tool is stored with its provenance, capped,
+  and wrapped in the envelope, exactly as the same result inline.
 - The persona and assistant chats both deliver.
 - Measurement (parent doc §8): picture latency and loops on a scripted call, before and after.
 - A late result that came back `external` arms `untrusted` on the conversation, and records it,
