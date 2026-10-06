@@ -3791,7 +3791,7 @@ impl Tool for ImageGenerate {
                 .unwrap_or_default();
             text.push_str(&format!(
                 "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
-                 {} unchanged. It is on the owner's screen; you have not seen it.",
+                 The new picture is on the owner's screen; you have not seen it. {} unchanged.",
                 sources.join(", "),
                 req.seed,
                 req.steps,
@@ -7154,7 +7154,7 @@ mod tests {
             out.content
                 .contains("Its layout came back nearly the same as images/orig.png's")
                 && !out.content.contains("say so")
-                && !out.content.contains("again")
+                && !out.content.contains("call image_generate again")
                 && !out.content.contains("If they ask"),
             "{}",
             out.content
