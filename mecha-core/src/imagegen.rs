@@ -2381,9 +2381,12 @@ impl ImageGenerate {
         // that said "call again now" had a persona redraw after every later
         // edit, the ones that worked included (2026-10-03).
         let mut notice = match mask {
-            Some(_) => format!(
-                " Inside the painted area its layout came back nearly the same as {edited}'s \
-                 (similarity {similarity:.2})."
+            // The mask is named: a retry of a masked edit needs it, and the
+            // local model once retried without it, a whole-picture edit of a
+            // picture the owner had painted a region on (#429).
+            Some(mask) => format!(
+                " Inside the painted area of {mask} its layout came back nearly the same as \
+                 {edited}'s (similarity {similarity:.2})."
             ),
             None => format!(
                 " Its layout came back nearly the same as {edited}'s (similarity \
@@ -2392,7 +2395,8 @@ impl ImageGenerate {
         };
         if again {
             notice.push_str(&format!(
-                " It is the second edit of {edited} in a row whose layout came back the same."
+                " It is at least the second edit of {edited} in a row whose layout came back the \
+                 same."
             ));
         }
         if original != edited {
@@ -3036,7 +3040,8 @@ impl Tool for ImageGenerate {
          draw it again with its seed. An edit whose result reports a near-copy is normal for a \
          recolour, an outfit or a small detail; if the user wanted someone moved, posed or \
          rearranged, tell them it probably did not work, and try once more only when they want \
-         you to, from the original the result names. After two near-copies in a row, stop and \
+         you to, from the original the result names and with the mask it names, if any. After \
+         two near-copies in a row, stop and \
          explain; a picture first drawn from the library can be drawn afresh with cast, which \
          repositions people better. Do not draw the same picture twice unless the user wants \
          it. If image_view is among your tools, look at it only when the \
@@ -3790,9 +3795,10 @@ impl Tool for ImageGenerate {
                 sources.join(", "),
                 req.seed,
                 req.steps,
-                match sources.len() {
-                    0 | 1 => format!("{} is", sources.first().copied().unwrap_or("the original")),
-                    _ => format!("{} are", sources.join(" and ")),
+                if sources.len() > 1 {
+                    "All of them are".to_string()
+                } else {
+                    format!("{} is", sources.first().copied().unwrap_or("The original"))
                 },
             ));
             if mask_path.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
@@ -7196,7 +7202,7 @@ mod tests {
             .unwrap();
         assert!(
             out.content.contains(
-                "It is the second edit of images/orig.png in a row whose layout came back the same."
+                "It is at least the second edit of images/orig.png in a row whose layout came back the same."
             ) && !out.content.contains("stop"),
             "{}",
             out.content
@@ -7723,8 +7729,10 @@ mod tests {
     #[tokio::test]
     async fn a_masked_near_copy_retries_with_the_same_mask() {
         // The server hands back the picture unchanged: inside the painted
-        // area nothing moved. The notice must keep the mask, and offer no
-        // whole-picture retry or library redraw (review of #429).
+        // area nothing moved. The notice must name the mask, so a retry the
+        // owner asks for can keep it, and must offer no library redraw, which
+        // would redraw the whole picture (review of #429). The original is
+        // library-drawn, so the redraw guard is what keeps it out.
         let original = picture(8, [240, 220, 40]);
         let (url, _) = fake_with(Fake {
             history: vec![done(), done()],
@@ -7737,11 +7745,17 @@ mod tests {
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::write(dir.join("images/orig.png"), &original).unwrap();
         std::fs::write(
+            dir.join("images/orig.json"),
+            json!({"cast": [{"name": "maya", "wearing": "a coat", "doing": "sitting"}]})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
             dir.join("inbox/mask.png"),
             mask_png(64, 64, (0, 16, 16, 56)),
         )
         .unwrap();
-        let t = tool(&url);
+        let t = tool(&url).with_library_dir(library_with(&["maya"]));
         let out = t
             .call(
                 json!({"edit": {"change": "Have her stand up.", "keep": "the rest"}, "reference_images": ["images/orig.png"],
@@ -7752,16 +7766,16 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content
-                .contains("Inside the painted area its layout came back nearly the same"),
+            out.content.contains(
+                "Inside the painted area of inbox/mask.png its layout came back nearly the same"
+            ),
             "{}",
             out.content
         );
-        // A masked edit's notice offers no library redraw, which would redraw
-        // the whole frame the owner painted a region to protect (review of
-        // #429), and no retry: that is the owner's to ask for.
         assert!(
-            !out.content.contains("drawn from the library") && !out.content.contains("again"),
+            !out.content.contains("drawn from the library")
+                && !out.content.contains("If they ask")
+                && !out.content.contains("call image_generate"),
             "{}",
             out.content
         );
@@ -7776,8 +7790,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content
-                .contains("It is the second edit of images/orig.png in a row whose layout"),
+            out.content.contains(
+                "It is at least the second edit of images/orig.png in a row whose layout"
+            ),
             "{}",
             out.content
         );
