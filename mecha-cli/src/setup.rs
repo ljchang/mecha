@@ -2136,9 +2136,10 @@ pub fn persona_agent(
     // Nor from earlier replies cut off mid-sentence, which it otherwise
     // learns to write: "…\n\nI", spoken as a dangling word.
     .with_prior_tails(mecha_core::message::PriorTails::Trim)
-    // And none of the notes a chat recorded into its owner turns before run
-    // notes (`RunContext::notes`) existed: a turn's notes now ride its own run
-    // only, so every recorded one is stale (`message::is_recorded_note`).
+    // And none of the per-run notes a chat recorded into its owner turns
+    // before run notes (`RunContext::notes`) existed: those now ride their own
+    // run only, so each recorded copy is stale (`message::is_recorded_note`).
+    // The first chat-start memory block is material and stays (#575).
     .with_prior_nudges(mecha_core::message::PriorNudges::Drop);
     Ok((agent, tools.refused))
 }

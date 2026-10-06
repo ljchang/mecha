@@ -1523,6 +1523,131 @@ pub const NEAR_COPY_LAYOUT: f64 = 0.78;
 /// never a workspace file, and left out of what the result says was edited.
 const FACE_REFERENCE: &str = "library:face:";
 
+/// An edit, as typed fields (PERSONA-CONTEXT-DESIGN.md §5.5): the tool writes
+/// the edit model's prompt itself, in the one shape measured to work.
+///
+/// The edit model reads a caption of the whole scene as the picture it
+/// already has and returns it (2026-09-29: a caption stood a sitting woman up
+/// 0 times in 12 seeds; "Keep … unchanged. Have Maya stand up." 12). That
+/// rule lived in the guidance for a week and the persona model still wrote
+/// captions: on 2026-10-06 a live chat's three edits all came back unchanged
+/// (layout similarity 0.99–1.00), and replayed, its caption made the
+/// asked-for change 3 times in 8 where an instruction did 8 in 8, face anchor
+/// on or off. A caption cannot be written into these fields. Naming what stays
+/// took a measured edit from 8/12 to 12/12 (2026-09-29), so `keep` is asked
+/// for, but optional: a generic stand-in did worse than none.
+#[derive(Debug, Clone, PartialEq)]
+struct EditAsk {
+    /// The one change, as an instruction.
+    change: String,
+    /// What stays, named, when the model names it. Ignored on a masked edit,
+    /// whose mask keeps everything outside it.
+    keep: Option<String>,
+    /// What each face does after the change. Without it the edit hands the
+    /// face back as it was (2026-10-05), which is right when the change is not
+    /// about faces.
+    face: Option<String>,
+    /// Where the camera goes and what is nearest it; set, the edit moves the
+    /// camera, so the face anchor stays off (a low angle came back at eye
+    /// level with it on, 2026-10-05).
+    camera: Option<String>,
+}
+
+/// Refused: an edit sent as free text.
+const EDIT_REQUIRED: &str = "An edit is described in `edit`, never in \
+     `prompt`: put the one change in edit.change as an instruction (\"Give the man a red \
+     umbrella.\"), name what stays in edit.keep (\"the street, the lighting and both faces\"), \
+     and add edit.face or edit.camera only when the change is about them. The tool writes the \
+     edit model's prompt from these.";
+/// Refused: both `edit` and `prompt` on one call.
+const EDIT_NOT_PROMPT: &str = "An edit takes `edit` alone: leave `prompt` \
+     out, since the tool writes the edit model's prompt from edit.change and edit.keep.";
+/// Refused: `edit` with no picture to edit.
+const EDIT_NEEDS_PICTURE: &str = "`edit` changes a picture: pass it in \
+     reference_images. A new picture takes `prompt` (or `cast`), not `edit`.";
+
+impl EditAsk {
+    /// The call's `edit`, or `None` when it has none.
+    fn parse(input: &Value) -> std::result::Result<Option<Self>, String> {
+        let edit = match input.get("edit") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::Object(m)) => m,
+            Some(_) => return Err("`edit` must be an object with at least `change`.".into()),
+        };
+        let field = |k: &str| -> std::result::Result<Option<String>, String> {
+            match edit.get(k) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+                Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+                Some(_) => Err(format!("`edit.{k}` must be text.")),
+            }
+        };
+        let change = field("change")?.ok_or(
+            "`edit.change` is required: the one change to make, as an instruction \
+             (\"Give the man a red umbrella.\").",
+        )?;
+        Ok(Some(EditAsk {
+            change,
+            keep: field("keep")?,
+            face: field("face")?,
+            camera: field("camera")?,
+        }))
+    }
+
+    /// Whether the call's edit moves the camera.
+    fn moves_camera(input: &Value) -> bool {
+        Self::parse(input)
+            .ok()
+            .flatten()
+            .is_some_and(|e| e.camera.is_some())
+    }
+
+    /// The edit model's prompt: the kept parts named, then the change, then
+    /// what the face and the camera do. A masked edit writes only the change:
+    /// the mask keeps the rest exactly.
+    fn prompt(&self, masked: bool) -> String {
+        let sentence = |s: &str| {
+            let s = s.trim();
+            if s.ends_with(['.', '!', '?', '"', '\u{201d}']) {
+                s.to_string()
+            } else {
+                format!("{s}.")
+            }
+        };
+        let mut out = String::new();
+        // Named when given; left out otherwise. A stand-in for a missing
+        // `keep` measured worse than none (2026-10-06, one edit, 4 seeds):
+        // the change alone 4/4, "Keep everything else unchanged." 3/4, a
+        // generic list of face, hair, pose, background and light 2/4.
+        if let (false, Some(keep)) = (masked, self.keep.as_deref()) {
+            out.push_str(&format!("Keep {} unchanged. ", keep_phrase(keep)));
+        }
+        out.push_str(&sentence(&self.change));
+        for extra in [&self.face, &self.camera].into_iter().flatten() {
+            out.push(' ');
+            out.push_str(&sentence(extra));
+        }
+        out
+    }
+}
+
+/// `keep` as a phrase that reads inside "Keep … unchanged.": a model that
+/// wrote the whole sentence has its own "Keep" and "unchanged" taken off.
+fn keep_phrase(keep: &str) -> String {
+    let mut k = keep.trim().trim_end_matches('.').trim().to_string();
+    for prefix in ["keep ", "Keep "] {
+        if let Some(rest) = k.strip_prefix(prefix) {
+            k = rest.trim().to_string();
+        }
+    }
+    for suffix in [" unchanged", " the same", " as is", " as it is"] {
+        if let Some(rest) = k.strip_suffix(suffix) {
+            k = rest.trim().to_string();
+        }
+    }
+    k
+}
+
 /// What a face-anchored edit adds to its prompt. The canvas half is what lets
 /// the crop ride along without dragging the framing to its own close-up
 /// (2026-10-05, chain B: without it the anchored edits zoomed in).
@@ -1555,7 +1680,7 @@ const REPEAT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const REPEAT_REFUSED: &str = "This call would draw exactly the picture last drawn in this \
      chat — the same prompt, seed and size — and it is already in the chat, where the user \
      sees it. Do not call image_generate again for it. If the user asked for \
-     another version, change the prompt, or leave out the seed for a new picture.";
+     another version, change what you asked for, or leave out the seed for a new picture.";
 
 /// What an identical request gets while the first is still drawing: it
 /// cannot say the picture exists, since that render may yet fail (review of
@@ -2276,7 +2401,7 @@ impl ImageGenerate {
                     "{expected} If the user asked to move someone or change a pose, the change \
                      may not have taken: say so rather than that it did, and offer to try again. \
                      {NO_RETRY_UNASKED} If they ask: {original} in reference_images, the same \
-                     mask, {mask}, and the prompt rewritten as an instruction naming the change."
+                     mask, {mask}, and edit.change naming the change as an instruction."
                 )
             };
             return NearCopy { original, notice };
@@ -2315,10 +2440,8 @@ impl ImageGenerate {
                 "{expected} If the user asked to move someone, change a pose or rearrange the \
                  picture, the change may not have taken: say so rather than that it did, and \
                  offer to try again. {NO_RETRY_UNASKED} If they ask: edit {original} rather \
-                 than this result, with the prompt rewritten as the parts to keep, named, and \
-                 an instruction naming the change — e.g. \"Keep the style, the background and \
-                 the man unchanged. Have Maya stand up.\" A description of the scene, or \
-                 keeping the whole picture unchanged, returns it unchanged.{offer}"
+                 than this result, with edit.change naming the change as an instruction \
+                 (\"Have Maya stand up.\") and edit.keep naming what stays.{offer}"
             )
         };
         NearCopy { original, notice }
@@ -2706,19 +2829,12 @@ impl ImageGenerate {
     /// reading needs the run's workspace, which [`Self::call`] has — and what
     /// it asks of the image library, compiled there too.
     fn request(&self, input: &Value) -> std::result::Result<Parsed, String> {
-        let prompt = input
+        let written = input
             .get("prompt")
             .and_then(Value::as_str)
             .map(str::trim)
             .unwrap_or_default();
-        if prompt.is_empty() {
-            return Err("`prompt` is required: describe the image.".into());
-        }
-        if prompt.chars().count() > PROMPT_CAP {
-            return Err(format!(
-                "`prompt` is over {PROMPT_CAP} characters; shorten it."
-            ));
-        }
+        let edit = EditAsk::parse(input)?;
         let negative = input
             .get("negative_prompt")
             .and_then(Value::as_str)
@@ -2800,6 +2916,25 @@ impl ImageGenerate {
                         reference_images too."
                     .into(),
             );
+        }
+        // An edit is typed fields, and the tool writes its prompt
+        // (`EditAsk`): a free-text edit is refused, because the model wrote
+        // scene captions there however the guidance put it, and the edit
+        // model returns a caption as the picture it already has.
+        let prompt = match (&edit, references.is_empty()) {
+            (Some(_), true) => return Err(EDIT_NEEDS_PICTURE.into()),
+            (None, false) => return Err(EDIT_REQUIRED.into()),
+            (Some(_), false) if !written.is_empty() => return Err(EDIT_NOT_PROMPT.into()),
+            (Some(edit), false) => edit.prompt(mask.is_some()),
+            (None, true) if written.is_empty() => {
+                return Err("`prompt` is required: describe the image.".into())
+            }
+            (None, true) => written.to_string(),
+        };
+        if prompt.chars().count() > PROMPT_CAP {
+            return Err(format!(
+                "`prompt` is over {PROMPT_CAP} characters; shorten it."
+            ));
         }
         // A masked edit keeps the picture's own shape, so a `size` beside a
         // mask is set aside and said, as a seed on an edit is — never refused:
@@ -2904,19 +3039,19 @@ impl Tool for ImageGenerate {
         "Generate an image with the local image model, or edit one, and save the result as a \
          PNG in the workspace. Takes about a minute. It renders text inside images well — put \
          the exact words in quotes. To edit, pass the picture's path in reference_images (one \
-         the user attached, or an earlier result) and write the prompt as the parts to keep, \
-         named, then an instruction naming the change, e.g. \"Keep the style, the background \
-         and the man unchanged. Have the woman stand up.\" Never describe the whole \
-         scene or keep the whole picture unchanged: the edit model reads either as the picture \
-         it already has, and returns it unchanged. Say what each face does — expression, head \
-         angle, where the eyes look — or it comes back as it was. Describe a camera change by \
+         the user attached, or an earlier result) and describe the edit in `edit`, never in \
+         prompt; the tool writes the edit model's prompt from it. edit.change is the one change, \
+         as an instruction (\"Give the man a red umbrella.\"); when the user's message \
+         came from the picture edit panel, use their words for it as given. edit.keep names what \
+         stays (\"the street, the lighting and both faces\"). edit.face says what each face does \
+         after the change — expression, head angle, where the eyes look — when the change is \
+         about faces; left out, faces stay as they are. edit.camera is only for a camera move: \
          where the camera is and what is nearest it (\"from a low camera near the floor, her \
-         boots closest to the lens\") and set camera_moves. For a view from behind, say whether \
-         the face shows. Do not describe a person's looks in an edit: the picture carries them. \
-         If the user's message names a mask (a picture \
-         they painted over the part to change), pass it as mask, with the picture in \
-         reference_images, and write only the change: everything outside the mask is kept \
-         exactly. The result is not shown to you. If image_view is among your tools, look at it only when the \
+         boots closest to the lens\"); for a view from behind, say whether the face shows. Do \
+         not describe a person's looks in an edit: the picture carries them. If the user's \
+         message names a mask (a picture they painted over the part to change), pass it as \
+         mask, with the picture in reference_images, and put only the change in edit.change: \
+         everything outside the mask is kept exactly. The result is not shown to you. If image_view is among your tools, look at it only when the \
          task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
          what is where — not to confirm that it worked. To draw the owner's recurring characters, name \
          them in cast, left to right, with what each is wearing and doing (image_library lists who \
@@ -2931,7 +3066,18 @@ impl Tool for ImageGenerate {
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "A new image: what it shows, as descriptive prose — subject, setting, style, lighting. An edit: the parts to keep, named, then an instruction naming the change — never a description of the scene — and what each face does: expression, head angle, gaze. Quote any text that should appear in it."
+                    "description": "A new image: what it shows, as descriptive prose — subject, setting, style, lighting. Quote any text that should appear in it. Never for an edit: an edit takes `edit`."
+                },
+                "edit": {
+                    "type": "object",
+                    "description": "An edit of the first of reference_images, as parts the tool turns into the edit model's prompt. Use it for every edit, and leave prompt out.",
+                    "properties": {
+                        "change": {"type": "string", "description": "The one change, as an instruction: \"Give the man a red umbrella.\" From the picture edit panel, the user's words as given."},
+                        "keep": {"type": "string", "description": "What must stay as it is, named, when it matters: \"the street, the lighting and both faces\". Leave it out rather than writing \"everything else\"."},
+                        "face": {"type": "string", "description": "Only when the change is about faces: what each face does after it — expression, head angle, gaze. Left out, faces stay as they are."},
+                        "camera": {"type": "string", "description": "Only when the camera moves: where it is and what is nearest it."}
+                    },
+                    "required": ["change"]
                 },
                 "negative_prompt": {
                     "type": "string",
@@ -2946,15 +3092,11 @@ impl Tool for ImageGenerate {
                     "type": "array",
                     "items": {"type": "string"},
                     "maxItems": MAX_REFERENCES,
-                    "description": "Workspace paths of images to edit or draw from — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in the prompt."
+                    "description": "Workspace paths of images to edit — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in edit.change. Any reference makes the call an edit, described in `edit`."
                 },
                 "mask": {
                     "type": "string",
                     "description": "Workspace path of a mask the user painted over the first reference: white is redrawn, the rest is kept pixel for pixel. Pass it exactly as the user's message names it; never make one up, never drop it on a retry, and do not open it with image_view — it is for this tool, not for you to look at."
-                },
-                "camera_moves": {
-                    "type": "boolean",
-                    "description": "An edit only: true when it moves the camera — a new angle, height or distance, such as a low angle, a view from above or a wider shot. Leave it out otherwise."
                 },
                 "seed": {
                     "type": "integer",
@@ -2986,7 +3128,7 @@ impl Tool for ImageGenerate {
                     "description": "A stored style's name from image_library, applied verbatim."
                 }
             },
-            "required": ["prompt"]
+            "required": []
         })
     }
 
@@ -3265,10 +3407,9 @@ impl Tool for ImageGenerate {
         // framing still, and a low angle came back at eye level with it on
         // (2026-10-05). A crop that cannot be had is recorded, never refused:
         // the edit draws as it did before the anchor existed.
-        let camera_moves = input
-            .get("camera_moves")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        // Said by `edit.camera`: an edit that describes where the camera goes
+        // moves it, so no separate flag can disagree with the words.
+        let camera_moves = EditAsk::moves_camera(&input);
         let mut face_anchor = Value::Null;
         let character = self
             .self_as
@@ -3576,6 +3717,9 @@ impl Tool for ImageGenerate {
             "image": path,
             "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "prompt": scene_prompt,
+            // An edit's typed fields as the model gave them, beside the
+            // prompt the tool wrote from them (`EditAsk`).
+            "edit": input.get("edit").filter(|v| !v.is_null()),
             "compiled_prompt": (req.prompt != scene_prompt).then_some(&req.prompt),
             "negative_prompt": req.negative,
             "seed": req.seed,
@@ -4214,7 +4358,8 @@ mod tests {
         // anywhere.
         // `cast` and `style` name library entries, resolved by this code in
         // the owner's store — names, never paths or addresses.
-        // `camera_moves` is a boolean: it only turns the face anchor off.
+        // `edit` is words for the edit model's prompt; its `camera` only
+        // turns the face anchor off.
         let schema = t.input_schema();
         let props = schema["properties"].as_object().unwrap();
         let mut keys: Vec<_> = props.keys().map(String::as_str).collect();
@@ -4222,8 +4367,8 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "camera_moves",
                 "cast",
+                "edit",
                 "extras",
                 "mask",
                 "negative_prompt",
@@ -4351,6 +4496,140 @@ mod tests {
         assert_eq!(parse_vm_stat("not vm_stat output"), None);
     }
 
+    /// PERSONA-CONTEXT-DESIGN.md §5.5: an edit is typed fields, and the tool
+    /// writes the edit model's prompt in the measured shape — the kept parts
+    /// named, then the change, then what the face and camera do. A caption
+    /// cannot be sent: a free-text edit is refused, and so is `edit` beside
+    /// `prompt` or without a picture.
+    #[test]
+    fn an_edit_is_typed_fields_and_the_tool_writes_its_prompt() {
+        let t = tool("http://127.0.0.1:1");
+        let prompt_of = |input: Value| t.request(&input).map(|(r, ..)| r.prompt);
+        assert_eq!(
+            prompt_of(json!({"edit": {"change": "Give the man a red umbrella",
+                                      "keep": "the street, the lighting and both faces"},
+                             "reference_images": ["images/a.png"]})),
+            Ok(
+                "Keep the street, the lighting and both faces unchanged. Give the man a red \
+                umbrella."
+                    .into()
+            )
+        );
+        // A model that wrote the whole keep sentence has it read as a phrase,
+        // and the face and camera follow the change.
+        assert_eq!(
+            prompt_of(json!({"edit": {"change": "Have her stand up.",
+                                      "keep": "Keep the park and her dress unchanged.",
+                                      "face": "she laughs, chin up, eyes on the camera",
+                                      "camera": "From a low camera near the grass"},
+                             "reference_images": ["images/a.png"]})),
+            // The fields go in as written: `sentence` adds the full stop,
+            // never a capital.
+            Ok(
+                "Keep the park and her dress unchanged. Have her stand up. she laughs, chin \
+                up, eyes on the camera. From a low camera near the grass."
+                    .into()
+            )
+        );
+        // A masked edit writes only the change: the mask keeps the rest.
+        assert_eq!(
+            prompt_of(json!({"edit": {"change": "a red scarf"},
+                             "reference_images": ["images/a.png"], "mask": "inbox/m.png"})),
+            Ok("a red scarf.".into())
+        );
+        // Refused, each saying what to send instead.
+        let refused = |input: Value| t.request(&input).unwrap_err();
+        assert_eq!(
+            refused(
+                json!({"prompt": "a man on a rainy street at dusk, neon light",
+                           "reference_images": ["images/a.png"]})
+            ),
+            EDIT_REQUIRED
+        );
+        assert_eq!(
+            refused(json!({"prompt": "x", "edit": {"change": "y", "keep": "z"},
+                           "reference_images": ["images/a.png"]})),
+            EDIT_NOT_PROMPT
+        );
+        assert_eq!(
+            refused(json!({"edit": {"change": "y", "keep": "z"}})),
+            EDIT_NEEDS_PICTURE
+        );
+        // `keep` left out: the change alone, measured better than a stand-in.
+        assert_eq!(
+            prompt_of(json!({"edit": {"change": "Give the man a red umbrella"},
+                             "reference_images": ["images/a.png"]})),
+            Ok("Give the man a red umbrella.".into())
+        );
+        assert!(
+            refused(json!({"edit": {"keep": "z"}, "reference_images": ["images/a.png"]}))
+                .contains("edit.change")
+        );
+        assert!(
+            refused(json!({"edit": "add an umbrella", "reference_images": ["images/a.png"]}))
+                .contains("object")
+        );
+        // Only a described camera move turns the face anchor off.
+        assert!(EditAsk::moves_camera(
+            &json!({"edit": {"change": "y", "keep": "z", "camera": "from above"}})
+        ));
+        assert!(!EditAsk::moves_camera(
+            &json!({"edit": {"change": "y", "keep": "z", "camera": "  "}})
+        ));
+    }
+
+    /// The server gets the prompt the tool wrote, the manifest keeps the fields
+    /// the model gave beside it, and a refused free-text edit costs no upload.
+    #[tokio::test]
+    async fn an_edit_sends_the_written_prompt_and_records_its_fields() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/me.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        let t = tool(&url);
+        let caption = t
+            .call(
+                json!({"prompt": "a man on a rainy street at dusk, neon light",
+                       "reference_images": ["inbox/me.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            caption.is_error && caption.content == format!("Nothing was drawn. {EDIT_REQUIRED}"),
+            "{}",
+            caption.content
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a refused edit reached the server"
+        );
+        let out = t
+            .call(
+                json!({"edit": {"change": "Give the man a red umbrella.",
+                                "keep": "the street and both faces"},
+                       "reference_images": ["inbox/me.jpg"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted
+                .contains("Keep the street and both faces unchanged. Give the man a red umbrella."),
+            "{submitted}"
+        );
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(m["edit"]["change"], "Give the man a red umbrella.");
+        assert_eq!(
+            m["prompt"],
+            "Keep the street and both faces unchanged. Give the man a red umbrella."
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn bad_input_is_named_back_to_the_model() {
         let t = tool("http://127.0.0.1:1");
@@ -4362,14 +4641,16 @@ mod tests {
             .request(&json!({"prompt": "x".repeat(PROMPT_CAP + 1)}))
             .is_err());
         assert!(t
-            .request(&json!({"prompt": "x", "reference_images": "images/a.png"}))
+            .request(&json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": "images/a.png"}))
             .is_err());
         assert!(t
-            .request(&json!({"prompt": "x", "reference_images": [1]}))
+            .request(&json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": [1]}))
             .is_err());
         let five = vec!["images/a.png"; MAX_REFERENCES + 1];
         assert!(t
-            .request(&json!({"prompt": "x", "reference_images": five}))
+            .request(
+                &json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": five})
+            )
             .is_err());
         let (r, paths, _, _) = t
             .request(&json!({"prompt": " a fox ", "size": "portrait", "seed": 3}))
@@ -4383,7 +4664,7 @@ mod tests {
         let (r, _, _, _) = t.request(&json!({"prompt": "x"})).unwrap();
         assert_eq!(r.size, Some((1024, 1024)));
         let (r, paths, _, _) = t
-            .request(&json!({"prompt": "x", "reference_images": ["inbox/me.jpg"]}))
+            .request(&json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": ["inbox/me.jpg"]}))
             .unwrap();
         assert_eq!((r.size, paths), (None, vec!["inbox/me.jpg".to_string()]));
     }
@@ -4743,7 +5024,7 @@ mod tests {
         std::fs::write(dir.join("inbox/me.jpg"), [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
         let out = tool(&url)
             .call(
-                json!({"prompt": "Keep <image1> unchanged except: a sunset sky",
+                json!({"edit": {"change": "Keep <image1> unchanged except: a sunset sky", "keep": "the rest"},
                        "reference_images": ["inbox/me.jpg"]}),
                 &ctx(&dir),
             )
@@ -4792,7 +5073,7 @@ mod tests {
         let out = tool(&url)
             .with_reference_pixels(10_000)
             .call(
-                json!({"prompt": "Keep <image1> unchanged except: a sunset sky",
+                json!({"edit": {"change": "Keep <image1> unchanged except: a sunset sky", "keep": "the rest"},
                        "reference_images": ["inbox/big.jpg"]}),
                 &ctx(&dir),
             )
@@ -4829,7 +5110,7 @@ mod tests {
         ] {
             let out = t
                 .call(
-                    json!({"prompt": "x", "reference_images": [bad]}),
+                    json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": [bad]}),
                     &ctx(&dir),
                 )
                 .await
@@ -4864,7 +5145,7 @@ mod tests {
             let (url, seen) = fake(vec![done()], "200 OK").await;
             let out = tool(&url)
                 .call(
-                    json!({"prompt": "same fox, yellow raincoat", "seed": 7,
+                    json!({"edit": {"change": "same fox, yellow raincoat", "keep": "the rest"}, "seed": 7,
                            "reference_images": [reference]}),
                     &ctx(&dir),
                 )
@@ -5078,7 +5359,7 @@ mod tests {
         .await;
         let out = tool_in(&url, &temp)
             .call(
-                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                json!({"edit": {"change": "a hat", "keep": "the rest"}, "reference_images": ["inbox/me.jpg"]}),
                 &ctx(&dir),
             )
             .await
@@ -5174,7 +5455,7 @@ mod tests {
         let (dir, temp) = edit_scene();
         let out = tool_in(&url, &temp)
             .call(
-                json!({"prompt": "Keep <image1> unchanged except: a hat",
+                json!({"edit": {"change": "Keep <image1> unchanged except: a hat", "keep": "the rest"},
                        "reference_images": ["inbox/me.jpg"]}),
                 &ctx(&dir),
             )
@@ -5231,7 +5512,7 @@ mod tests {
         let t = tool_in(&url, &temp);
         let call = tokio::spawn(async move {
             t.call(
-                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                json!({"edit": {"change": "a hat", "keep": "the rest"}, "reference_images": ["inbox/me.jpg"]}),
                 &c,
             )
             .await
@@ -5280,7 +5561,7 @@ mod tests {
         c.image_trail = Some(trail.clone());
         let out = tool_in(&url, &temp)
             .call(
-                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                json!({"edit": {"change": "a hat", "keep": "the rest"}, "reference_images": ["inbox/me.jpg"]}),
                 &c,
             )
             .await
@@ -5342,7 +5623,7 @@ mod tests {
         c.image_trail = Some(dir.join("gone-room").join("image-trail"));
         let out = tool_in(&url, &temp)
             .call(
-                json!({"prompt": "a hat", "reference_images": ["inbox/me.jpg"]}),
+                json!({"edit": {"change": "a hat", "keep": "the rest"}, "reference_images": ["inbox/me.jpg"]}),
                 &c,
             )
             .await
@@ -5477,7 +5758,7 @@ mod tests {
         let t = tool(&url);
         let c = ctx(&dir);
         let call = t.call(
-            json!({"prompt": "edit", "reference_images": ["pipe.png"]}),
+            json!({"edit": {"change": "edit", "keep": "the rest"}, "reference_images": ["pipe.png"]}),
             &c,
         );
         let out = match tokio::time::timeout(Duration::from_secs(5), call).await {
@@ -5507,7 +5788,7 @@ mod tests {
         std::fs::write(dir.join("me.png"), PNG).unwrap();
         let out = tool(&url)
             .call(
-                json!({"prompt": "edit", "reference_images": ["me.png"]}),
+                json!({"edit": {"change": "edit", "keep": "the rest"}, "reference_images": ["me.png"]}),
                 &ctx(&dir),
             )
             .await
@@ -6772,7 +7053,7 @@ mod tests {
         let dir = tempdir();
         let out = t
             .call(
-                json!({"prompt": "x", "cast": two_people(), "reference_images": ["images/a.png"]}),
+                json!({"edit": {"change": "x", "keep": "the rest"}, "cast": two_people(), "reference_images": ["images/a.png"]}),
                 &ctx(&dir),
             )
             .await
@@ -6849,7 +7130,7 @@ mod tests {
         let t = tool(&url);
         let out = t
             .call(
-                json!({"prompt": "Keep <image1> unchanged except: she stands",
+                json!({"edit": {"change": "Keep <image1> unchanged except: she stands", "keep": "the rest"},
                        "reference_images": ["images/orig.png"]}),
                 &ctx(&dir),
             )
@@ -6883,7 +7164,7 @@ mod tests {
         let copy = out.content.lines().next().unwrap()["image: ".len()..].to_string();
         let out = t
             .call(
-                json!({"prompt": "Maya stands on the right", "reference_images": [copy]}),
+                json!({"edit": {"change": "Maya stands on the right", "keep": "the rest"}, "reference_images": [copy]}),
                 &ctx(&dir),
             )
             .await
@@ -6902,7 +7183,7 @@ mod tests {
         // The retry as told, of the original, keeps it again: stop.
         let out = t
             .call(
-                json!({"prompt": "Keep the background unchanged. Have Maya stand up.",
+                json!({"edit": {"change": "Keep the background unchanged. Have Maya stand up.", "keep": "the rest"},
                        "reference_images": ["images/orig.png"]}),
                 &ctx(&dir),
             )
@@ -6932,7 +7213,7 @@ mod tests {
         std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
         let out = tool(&url)
             .call(
-                json!({"prompt": "She stands on the right",
+                json!({"edit": {"change": "She stands on the right", "keep": "the rest"},
                        "reference_images": ["images/orig.png"]}),
                 &ctx(&dir),
             )
@@ -6978,7 +7259,7 @@ mod tests {
         let t = tool(&url).with_library_dir(lib.clone());
         let out = t
             .call(
-                json!({"prompt": "Maya stands", "reference_images": ["images/drawn.png"]}),
+                json!({"edit": {"change": "Maya stands", "keep": "the rest"}, "reference_images": ["images/drawn.png"]}),
                 &ctx(&dir),
             )
             .await
@@ -6997,7 +7278,7 @@ mod tests {
         // A name the library does not hold offers no redraw at all.
         let out = t
             .call(
-                json!({"prompt": "Mallory stands", "reference_images": ["images/stranger.png"]}),
+                json!({"edit": {"change": "Mallory stands", "keep": "the rest"}, "reference_images": ["images/stranger.png"]}),
                 &ctx(&dir),
             )
             .await
@@ -7026,7 +7307,7 @@ mod tests {
         let t = tool(&url);
         let out = t
             .call(
-                json!({"prompt": "Keep the background unchanged. Make her dress green.",
+                json!({"edit": {"change": "Keep the background unchanged. Make her dress green.", "keep": "the rest"},
                        "reference_images": ["images/orig.png"]}),
                 &ctx(&dir),
             )
@@ -7036,7 +7317,7 @@ mod tests {
         assert!(out.content.contains("nothing is wrong"), "{}", out.content);
         let out = t
             .call(
-                json!({"prompt": "Keep the background unchanged. Make her dress orange.",
+                json!({"edit": {"change": "Keep the background unchanged. Make her dress orange.", "keep": "the rest"},
                        "reference_images": [green]}),
                 &ctx(&dir),
             )
@@ -7076,7 +7357,7 @@ mod tests {
         // input is another picture, never a repeat (review of #543).
         let edit = || {
             t.call(
-                json!({"prompt": "Keep the background unchanged. Have her stand up.",
+                json!({"edit": {"change": "Keep the background unchanged. Have her stand up.", "keep": "the rest"},
                        "reference_images": ["images/orig.png"]}),
                 &c,
             )
@@ -7156,16 +7437,20 @@ mod tests {
         // A size beside a mask is set aside, never refused: a refusal read as
         // "the mask is the problem" and was retried without it (live run).
         let (r, _, _, mask) = t
-            .request(&json!({"prompt": "x", "mask": "inbox/m.png",
-                             "reference_images": ["images/a.png"], "size": "square"}))
+            .request(
+                &json!({"edit": {"change": "x", "keep": "the rest"}, "mask": "inbox/m.png",
+                             "reference_images": ["images/a.png"], "size": "square"}),
+            )
             .unwrap();
         assert_eq!((r.size, mask.as_deref()), (None, Some("inbox/m.png")));
         assert!(t
-            .request(&json!({"prompt": "x", "mask": 3, "reference_images": ["images/a.png"]}))
+            .request(&json!({"edit": {"change": "x", "keep": "the rest"}, "mask": 3, "reference_images": ["images/a.png"]}))
             .is_err());
         let (_, _, _, mask) = t
-            .request(&json!({"prompt": "x", "mask": " inbox/m.png ",
-                             "reference_images": ["images/a.png"]}))
+            .request(
+                &json!({"edit": {"change": "x", "keep": "the rest"}, "mask": " inbox/m.png ",
+                             "reference_images": ["images/a.png"]}),
+            )
             .unwrap();
         assert_eq!(mask.as_deref(), Some("inbox/m.png"));
     }
@@ -7242,7 +7527,7 @@ mod tests {
         .unwrap();
         let out = tool(&url)
             .call(
-                json!({"prompt": "Make her dress green.", "reference_images": ["images/orig.png"],
+                json!({"edit": {"change": "Make her dress green.", "keep": "the rest"}, "reference_images": ["images/orig.png"],
                        "mask": "inbox/mask.png", "size": "landscape"}),
                 &ctx(&dir),
             )
@@ -7295,7 +7580,7 @@ mod tests {
         std::fs::write(dir.join("inbox/mask.png"), mask_png(64, 64, (0, 0, 0, 0))).unwrap();
         let out = tool(&url)
             .call(
-                json!({"prompt": "x", "reference_images": ["images/orig.png"],
+                json!({"edit": {"change": "x", "keep": "the rest"}, "reference_images": ["images/orig.png"],
                        "mask": "inbox/mask.png"}),
                 &ctx(&dir),
             )
@@ -7452,7 +7737,7 @@ mod tests {
         let t = tool(&url);
         let out = t
             .call(
-                json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
+                json!({"edit": {"change": "Have her stand up.", "keep": "the rest"}, "reference_images": ["images/orig.png"],
                        "mask": "inbox/mask.png"}),
                 &ctx(&dir),
             )
@@ -7481,7 +7766,7 @@ mod tests {
         // says stop, and still leaves the retry to the owner.
         let out = t
             .call(
-                json!({"prompt": "Have her stand up.", "reference_images": ["images/orig.png"],
+                json!({"edit": {"change": "Have her stand up.", "keep": "the rest"}, "reference_images": ["images/orig.png"],
                        "mask": "inbox/mask.png"}),
                 &ctx(&dir),
             )
@@ -7597,7 +7882,7 @@ mod tests {
         let c = ctx(&dir);
         let edit = || {
             t.call(
-                json!({"prompt": "Keep the background unchanged. Have her stand up.",
+                json!({"edit": {"change": "Keep the background unchanged. Have her stand up.", "keep": "the rest"},
                        "reference_images": ["images/orig.png"]}),
                 &c,
             )
@@ -7867,7 +8152,7 @@ mod tests {
         );
         let first = maya
             .call(
-                json!({"prompt": "Keep the bench and the park unchanged. Have her laugh.",
+                json!({"edit": {"change": "Keep the bench and the park unchanged. Have her laugh.", "keep": "the rest"},
                        "reference_images": [picture_of(&scene.content)]}),
                 &ctx(&dir),
             )
@@ -7886,7 +8171,7 @@ mod tests {
         // An edit of the edit: the walk reaches the cast scene through it.
         let second = maya
             .call(
-                json!({"prompt": "Keep the park unchanged. Have her look down at a book.",
+                json!({"edit": {"change": "Keep the park unchanged. Have her look down at a book.", "keep": "the rest"},
                        "reference_images": [picture_of(&first.content)]}),
                 &ctx(&dir),
             )
@@ -7900,10 +8185,9 @@ mod tests {
         // A camera move: no crop, and the manifest says why.
         let moved = maya
             .call(
-                json!({"prompt": "Keep the park unchanged. Have her stand, seen from a low \
-                                  camera near the ground.",
-                       "reference_images": [picture_of(&second.content)],
-                       "camera_moves": true}),
+                json!({"edit": {"change": "Have her stand.", "keep": "the park",
+                                "camera": "From a low camera near the ground."},
+                       "reference_images": [picture_of(&second.content)]}),
                 &ctx(&dir),
             )
             .await
@@ -7959,7 +8243,7 @@ mod tests {
             let dir = dir.clone();
             async move {
                 tool.call(
-                    json!({"prompt": "Keep the room unchanged. Have them smile.",
+                    json!({"edit": {"change": "Keep the room unchanged. Have them smile.", "keep": "the rest"},
                            "reference_images": [picture]}),
                     &ctx(&dir),
                 )
@@ -8010,7 +8294,7 @@ mod tests {
             .unwrap();
         let joined = maya
             .call(
-                json!({"prompt": "Keep <image1> unchanged. Add the man from <image2> beside her.",
+                json!({"edit": {"change": "Keep <image1> unchanged. Add the man from <image2> beside her.", "keep": "the rest"},
                        "reference_images": [picture_of(&hers.content), "inbox/me.png"]}),
                 &ctx(&dir),
             )
@@ -8023,7 +8307,7 @@ mod tests {
         // person in this very picture (found on review of #569).
         let out = maya
             .call(
-                json!({"prompt": "Keep the garden unchanged. Have a waiter bring her coffee.",
+                json!({"edit": {"change": "Keep the garden unchanged. Have a waiter bring her coffee.", "keep": "the rest"},
                        "reference_images": [picture_of(&hers.content)],
                        "extras": ["a waiter pouring coffee"]}),
                 &ctx(&dir),

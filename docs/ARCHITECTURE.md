@@ -673,10 +673,26 @@ conversation, so the capabilities do not change. Three rules:
   stand up…" alone, 8 (3 near-copies, 1 partial); the same after "Keep the
   watercolor style, the lake, willow tree, and red checkered blanket
   unchanged.", 12. The seed only decides which way an ambiguous prompt tips,
-  which is why the failure looked random. The tool description and the
-  `prompt` field ask for the kept parts named, then the instruction; a
-  guidance that said "describe the finished picture" produced the caption
-  that failed.
+  which is why the failure looked random. A guidance that said "describe the
+  finished picture" produced the caption that failed.
+  - **So an edit is typed fields, and the tool writes its prompt**
+    (`EditAsk`, PERSONA-CONTEXT-DESIGN.md §5.5). Asking for the right shape
+    in the description was not enough: on 2026-10-06 a live persona chat's
+    three edits were all scene captions, all came back unchanged (layout
+    similarity 0.99–1.00), and replayed, the caption made the asked-for change
+    3 times in 8 where an instruction did 8 in 8, face anchor on or off. An
+    edit now takes `edit.change` (the one change, as an instruction),
+    `edit.keep` (what stays, named, optional), and `edit.face` and
+    `edit.camera` only when the change is about them. The tool writes "Keep
+    {keep} unchanged. {change} {face} {camera}", leaving the keep sentence out
+    when `keep` is absent or a mask keeps the rest. No stand-in for a missing
+    `keep`: on one edit, 4 seeds, the change alone made it 4/4, "Keep
+    everything else unchanged." 3/4, and a generic list of face, hair, pose,
+    background and light 2/4. A free-text
+    `prompt` with references is refused (`EDIT_REQUIRED`), as is `edit`
+    beside `prompt` or without a picture, each saying what to send instead,
+    so a caption can never reach the edit model. The manifest keeps the
+    fields beside the prompt they became.
 - **An edit that kept the layout says so, and never retries by itself.**
   The model never sees the result, and reported a near-copy as the change
   made, so a retry in the same chat repeated the edit. Each edit's
@@ -760,16 +776,18 @@ conversation, so the capabilities do not change. Three rules:
   a camera move held identity (0.85, 0.44 and 0.57 across the chain's
   last three steps, where unanchored edits fell to 0.25, 0.21 and 0.13) and kept
   expressions, hair and full-body framing. So it is skipped, and the
-  manifest says why, when the call sets `camera_moves` — with the crop on, a
-  low angle came back at eye level — and it is never applied to a masked
+  manifest says why, when the edit says where the camera goes
+  (`edit.camera`) — with the crop on, a low angle came back at eye level —
+  and it is never applied to a masked
   edit, beside references the model chose, to an attached photo with no
   manifest, or in the assistant's own chats. A crop that cannot be had (the
   detector not installed, no face in the portrait) is recorded as
-  `face_anchor.skipped`, never refused: the edit draws as it did before. The
-  tool's guidance asks every edit to say what the face does — expression,
-  head angle, gaze — because without it the edit hands the face back as it
-  was, and to describe a camera change by where the camera is and what is
-  nearest it: named, the angle did not move; described, it did.
+  `face_anchor.skipped`, never refused: the edit draws as it did before.
+  `edit.face` says what the face does — expression, head angle, gaze — when
+  the change is about faces, because without it the edit hands the face back
+  as it was (which is right when it is not), and `edit.camera` describes a
+  camera change by where the camera is and what is nearest it: named, the
+  angle did not move; described, it did.
   The detector is py-feat's RetinaFace-R34 (`py-feat/retinaface_r34`, MIT,
   pinned in `face.rs`), run by `face.rs`'s own small network on
   `matrixmultiply`, its batch norms folded into the convolutions at load:
@@ -1441,17 +1459,28 @@ module.
     an unknown status is a candidate.
   - Read paths (`open_existing`) never create a file — what recall and an
     incognito chat will use.
-  - **Recall at chat start** (`persona::recall`, §9.7): one block, read once
-    per chat in this process and sent as one of every run's notes
-    (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1), never stored in a
-    message. Past the first reply, what the owner's message brings to mind is
-    a second note. The two are never joined, because each arms taint by the
-    stem it opens with (`recall::stem_of`), and a recall from outside joined
-    after a clean block would hide its own. It holds about-me, the user
+  - **Recall at chat start** (`persona::recall`, §9.7): one block, material,
+    stored once in the chat's first turn, before its first reply
+    (`recall::carries_chat_start`), and kept there, cached with the history,
+    like the files block (PERSONA-CONTEXT-DESIGN.md §5.1). `messages[0]` is
+    the one message compaction keeps whole; stored later, a compaction would
+    summarise it away and the next turn would store it again. A chat already
+    past a reply that never stored it (begun under #572, or a first turn whose
+    read failed and was retried after a restart) gets it as a run note
+    instead. A failed read is not retried within one process, so the owner is
+    not told about it on every turn. As a run note at the end of every request
+    (#572) it cost ~1.1–1.6 s of prefill per request, and as the most salient text in
+    the request a standing preference inside it outweighed the owner's ask:
+    6/8 picture calls against 8/8 from the first turn (2026-10-06). Past the
+    first reply, what the owner's message brings to mind is a run note
+    (`is_per_turn`, told apart by the fixed text after the stem), never
+    joined to anything, because each block arms taint by the stem it opens
+    with (`recall::stem_of`). It holds about-me, the user
     facts the persona may see (its own, plus `Shared::visible_to` its groups
     under `user_facts = "shared"`), its own facts and recent episodes,
-    honouring each `[memory]` switch as it stands when the block is read
-    (the chat's first turn in this process). Candidates are never recalled,
+    honouring each `[memory]` switch as it stands when the block is stored.
+    Once stored it stays with that chat, as before #572: a switch turned off
+    reaches the next chat, not an open one. Candidates are never recalled,
     and a copy the owner shared of the persona's own fact is not said twice.
     - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
       a third, each note a fair share and cut rather than dropped; recent
@@ -1705,8 +1734,8 @@ module.
     refuses (Anthropic refuses any `seed`) is refused for the chat and the
     judge alike. A chat whose crisis judge cannot be built must not open.
   - **Run notes** (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1). The
-    harness's per-run words to a persona (its memory, a recall, the identity
-    reminder, the call, variety and edit notes) are not written into the
+    harness's per-run words to a persona (a recall, the identity reminder,
+    the call, variety and edit notes) are not written into the
     owner's message. Folded there, they stayed and were re-sent on every later
     turn: at one measured moment they were 39% of what the model read,
     against the owner's 3.5%, and the model followed the larger share.
@@ -1729,8 +1758,10 @@ module.
       leaves them out of the conversation it rebuilds and arms the taint
       from them, since the transcript is how a torn taint record is
       re-derived and the notes are no longer in the messages.
-    - Material is not a note: the files block and the session goal ride in
-      the first turn and stay there.
+    - Material is not a note: the files block, the chat-start memory block
+      and the session goal are stored once and stay. A large note at the end
+      of every request is re-read every time and is the most salient text
+      the model sees, so the tail is for short, per-run guidance.
     - A subagent never inherits its parent's notes.
   - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
     the newest user message that carries no tool result, which is the cut
