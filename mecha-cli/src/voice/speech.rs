@@ -92,9 +92,12 @@ impl Tidier {
                     self.line_start = true;
                 }
                 (_, None) => {
-                    if let Some(cut) = safe_cut(&self.held, self.line_start) {
+                    if let Some((cut, spaced)) = safe_cut(&self.held, self.line_start) {
                         let part = self.held[..cut].to_string();
-                        speak(&mut out, &part, self.line_start, false);
+                        // Cut where the text had no space: join as written.
+                        if speak(&mut out, &part, self.line_start, false) && !spaced {
+                            out.pop();
+                        }
                         self.held.drain(..cut);
                         self.line_start = false;
                     }
@@ -127,23 +130,44 @@ pub(crate) fn speakable(text: &str) -> String {
     collapse(&s)
 }
 
-/// Where `held` (one line, no newline yet) may be cut: just past the last
+/// Sentence ends, in scripts with spaces and the full-width marks of those
+/// without (Chinese, Japanese), which end a sentence with no space after.
+const ENDS: [char; 6] = ['.', '!', '?', '。', '！', '？'];
+const WIDE_ENDS: [char; 3] = ['。', '！', '？'];
+
+/// Where `held` (one line, no newline yet) may be cut, and whether the cut
+/// falls at a space (so the pieces join with one): just past the last
 /// sentence end with nothing open before it, beyond any line marker. Past
-/// [`MAX_HELD`], the last space instead.
-fn safe_cut(held: &str, line_start: bool) -> Option<usize> {
+/// [`MAX_HELD`], the last space, or with none — a script written without
+/// spaces — all of it (review of #574: the valve needed a space to open, so
+/// such a reply was silent to its end).
+fn safe_cut(held: &str, line_start: bool) -> Option<(usize, bool)> {
     let min = if line_start { marker_len(held) } else { 0 };
-    let spaces = held
-        .char_indices()
-        .rev()
-        .filter(|&(i, c)| c.is_whitespace() && i > min);
-    for (i, c) in spaces.clone() {
-        let before = held[..i].trim_end_matches(['"', '\'', '”', '’', ')', ']']);
-        if before.ends_with(['.', '!', '?']) && closed(&held[..i]) {
-            return Some(i + c.len_utf8());
+    for (i, c) in held.char_indices().rev().filter(|&(i, _)| i > min) {
+        if c.is_whitespace() {
+            let before = held[..i].trim_end_matches(['"', '\'', '”', '’', ')', ']']);
+            if before.ends_with(ENDS) && closed(&held[..i]) {
+                return Some((i + c.len_utf8(), true));
+            }
+        } else if WIDE_ENDS.contains(&c) {
+            // Only with words after it: a mark that ends what is held may
+            // still have a closing quote or a space to come.
+            let end = i + c.len_utf8();
+            if end < held.len()
+                && !held[end..].starts_with(char::is_whitespace)
+                && closed(&held[..end])
+            {
+                return Some((end, false));
+            }
         }
     }
     if held.len() > MAX_HELD {
-        return spaces.map(|(i, c)| i + c.len_utf8()).next();
+        let space = held
+            .char_indices()
+            .rev()
+            .find(|&(i, c)| c.is_whitespace() && i > min)
+            .map(|(i, c)| (i + c.len_utf8(), true));
+        return space.or(Some((held.len(), false)));
     }
     None
 }
@@ -198,10 +222,11 @@ fn underscore_marks(s: &str) -> (usize, usize) {
     (pairs, lone)
 }
 
-/// Tidy one piece of a line and append it to `out`. `line_start`: it begins
+/// Tidy one piece of a line and append it to `out`, saying whether it
+/// wrote anything (a piece of marks alone writes nothing). `line_start`: it begins
 /// the line, so a marker is a mark. `eol`: it ends the line, so it ends a
 /// sentence when heard.
-fn speak(out: &mut String, piece: &str, line_start: bool, eol: bool) {
+fn speak(out: &mut String, piece: &str, line_start: bool, eol: bool) -> bool {
     let mut s = citations(piece);
     s = images_and_links(&s);
     s = bare_urls(&s);
@@ -224,13 +249,14 @@ fn speak(out: &mut String, piece: &str, line_start: bool, eol: bool) {
     s = s.replace('|', " ");
     let s = collapse(&s);
     if s.is_empty() || s.chars().all(|c| c == '-' || c == ':' || c == ' ') {
-        return;
+        return false;
     }
     out.push_str(&s);
-    if eol && !s.ends_with(['.', '!', '?', ':', ';', ')']) {
+    if eol && !s.ends_with(['.', '!', '?', ':', ';', ')', '。', '！', '？']) {
         out.push('.');
     }
     out.push(' ');
+    true
 }
 
 fn collapse(s: &str) -> String {
@@ -533,6 +559,22 @@ mod tests {
         let long = format!("A lone * opens nothing. {}", "word ".repeat(MAX_HELD / 5));
         let out = t.push(&long);
         assert!(!out.is_empty(), "a never-closed mark silenced the line");
+    }
+
+    /// A script written without spaces ends a sentence at its own mark and
+    /// is released there, joined as written; and a long run of it with no
+    /// mark at all still goes once it passes [`MAX_HELD`] (review of #574).
+    #[test]
+    fn a_reply_without_spaces_is_not_held_to_its_end() {
+        let mut t = Tidier::default();
+        assert_eq!(t.push("你好。再"), "你好。");
+        assert_eq!(t.push("见"), "");
+        assert_eq!(t.finish(), "再见. ");
+        let mut t = Tidier::default();
+        assert!(
+            !t.push(&"字".repeat(MAX_HELD)).is_empty(),
+            "the valve never opened"
+        );
     }
 
     /// A list's number is a marker, never a sentence end of its own.

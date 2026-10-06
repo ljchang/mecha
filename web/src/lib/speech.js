@@ -56,7 +56,7 @@ export function speakable(text) {
   // ends a sentence when heard.
   return lines
     .filter((l) => l && !/^[-:\s]+$/.test(l))
-    .map((l) => (/[.!?:;)]$/.test(l) ? l : `${l}.`))
+    .map((l) => (/[.!?:;)。！？]$/.test(l) ? l : `${l}.`))
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
