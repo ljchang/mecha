@@ -137,7 +137,7 @@ pub fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
 
 /// How a tool call that a cancel stopped ended, in the tool's own word
 /// (`ToolOutput::cancelled`): the typed mark the send-time projection of
-/// interrupted turns reads (`InterruptedTurns`, PERSONA-CONTEXT-DESIGN §5.3),
+/// interrupted turns reads (`without_undelivered`, PERSONA-CONTEXT-DESIGN §5.3),
 /// never the result's wording.
 ///
 /// A closed enum written to an append-only store is a wire format, so a mark
@@ -880,39 +880,46 @@ impl PriorNudges {
 /// run on the history before it does.
 pub fn without_undelivered<'a>(
     messages: std::borrow::Cow<'a, [Message]>,
+    tails: PriorTails,
 ) -> std::borrow::Cow<'a, [Message]> {
     let gone = undelivered_calls(&messages);
     if gone.is_empty() {
         return messages;
     }
     let mut out: Vec<Message> = Vec::with_capacity(messages.len());
-    for m in messages.iter() {
+    // Replies this view made plain, by their place in `out`.
+    let mut made_plain: Vec<usize> = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
         let mut m = m.clone();
-        let before = m.content.len();
-        match m.role {
-            Role::Assistant => {
-                m.content
-                    .retain(|b| !matches!(b, Block::ToolUse { id, .. } if gone.contains(id)));
-                if m.content.len() != before {
-                    // The reasoning that chose the call goes with it.
-                    m.content.retain(|b| !matches!(b, Block::Thinking { .. }));
-                    let delivered = m.content.iter().any(|b| match b {
-                        Block::Text { text } => !text.trim().is_empty(),
-                        Block::ToolUse { .. } => true,
-                        _ => false,
-                    });
-                    if !delivered {
+        if let Some(ids) = gone.get(&i) {
+            match m.role {
+                Role::Assistant => {
+                    m.content
+                        .retain(|b| !matches!(b, Block::ToolUse { id, .. } if ids.contains(id)));
+                    let calls_left = m.content.iter().any(|b| matches!(b, Block::ToolUse { .. }));
+                    // The reasoning that chose the cut-off call goes with it —
+                    // unless a call it also chose survives: a tool turn is
+                    // never sent without its reasoning (`drops_thinking`).
+                    if !calls_left {
+                        m.content.retain(|b| !matches!(b, Block::Thinking { .. }));
+                    }
+                    let said = m
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, Block::Text { text } if !text.trim().is_empty()));
+                    if !said && !calls_left {
                         continue;
                     }
+                    if !calls_left && out.last().is_none_or(|p| p.role != Role::Assistant) {
+                        made_plain.push(out.len());
+                    }
                 }
-            }
-            Role::User => {
-                m.content.retain(
-                    |b| !matches!(b, Block::ToolResult { tool_use_id, .. } if gone.contains(tool_use_id)),
-                );
-                if m.content.len() != before {
-                    m.cancelled.retain(|id, _| !gone.contains(id));
-                    m.tool_provenance.retain(|id, _| !gone.contains(id));
+                Role::User => {
+                    m.content.retain(
+                        |b| !matches!(b, Block::ToolResult { tool_use_id, .. } if ids.contains(tool_use_id)),
+                    );
+                    m.cancelled.retain(|id, _| !ids.contains(id));
+                    m.tool_provenance.retain(|id, _| !ids.contains(id));
                     if m.content.is_empty() {
                         continue;
                     }
@@ -920,7 +927,8 @@ pub fn without_undelivered<'a>(
             }
         }
         match out.last_mut() {
-            // Only a drop can bring two of one role together: fold them.
+            // In a valid history, only a drop brings two of one role
+            // together: fold them, so alternation holds.
             Some(prev) if prev.role == m.role => {
                 // Set the later words off from the earlier: the
                 // OpenAI-compatible encoder joins a message's text blocks with
@@ -944,28 +952,65 @@ pub fn without_undelivered<'a>(
             _ => out.push(m),
         }
     }
+    // A reply this made plain is trimmed as any earlier plain reply is, by
+    // `PriorTails`' own rule, read on what is sent — where the owner's words
+    // around the dropped call have become the turn being answered: "Here's
+    // the garden:" with its call gone is the dangling tail it exists for
+    // (review of §5.3).
+    if tails == PriorTails::Trim {
+        if let Some(cut) = answering(&out) {
+            for &i in made_plain.iter().filter(|&&i| i < cut) {
+                if let Some(Block::Text { text }) = out[i]
+                    .content
+                    .iter_mut()
+                    .rev()
+                    .find(|b| matches!(b, Block::Text { .. }))
+                {
+                    if let Some(len) = dangling_tail(text) {
+                        text.truncate(len);
+                    }
+                }
+            }
+        }
+    }
     std::borrow::Cow::Owned(out)
 }
 
-/// The calls [`without_undelivered`] leaves out: every one a tool marked as
-/// stopped with nothing delivered.
-fn undelivered_calls(messages: &[Message]) -> std::collections::BTreeSet<String> {
-    messages
-        .iter()
-        .flat_map(|m| m.cancelled.iter())
-        .filter(|(_, how)| **how == Cancelled::Nothing)
-        .map(|(id, _)| id.clone())
-        .collect()
+/// The calls [`without_undelivered`] leaves out, by message index: every
+/// one a results message marks as stopped with nothing delivered, matched
+/// within its own pair — the results message and the assistant message just
+/// before it — never across the history, so a repeated or empty id from a
+/// server cannot reach another turn's call (review of §5.3).
+fn undelivered_calls(
+    messages: &[Message],
+) -> std::collections::BTreeMap<usize, std::collections::BTreeSet<String>> {
+    let mut gone = std::collections::BTreeMap::new();
+    for (j, m) in messages.iter().enumerate() {
+        let ids: std::collections::BTreeSet<String> = m
+            .cancelled
+            .iter()
+            .filter(|(id, how)| **how == Cancelled::Nothing && !id.is_empty())
+            .map(|(id, _)| id.clone())
+            .collect();
+        if ids.is_empty() || m.role != Role::User || j == 0 {
+            continue;
+        }
+        if messages[j - 1].role == Role::Assistant {
+            gone.insert(j - 1, ids.clone());
+            gone.insert(j, ids);
+        }
+    }
+    gone
 }
 
 /// The bytes [`without_undelivered`] leaves out of `messages` — the history
 /// as the earlier views left it — for `wire_bytes`. Nothing to measure, and
 /// nothing measured, when no call is marked.
-pub fn undelivered_bytes(messages: &[Message]) -> usize {
+pub fn undelivered_bytes(messages: &[Message], tails: PriorTails) -> usize {
     if undelivered_calls(messages).is_empty() {
         return 0;
     }
-    let kept = without_undelivered(std::borrow::Cow::Borrowed(messages));
+    let kept = without_undelivered(std::borrow::Cow::Borrowed(messages), tails);
     crate::pressure::message_bytes(messages).saturating_sub(crate::pressure::message_bytes(&kept))
 }
 
@@ -1057,7 +1102,7 @@ mod tests {
     }
 
     fn sent(history: &[Message]) -> Vec<Message> {
-        without_undelivered(std::borrow::Cow::Borrowed(history)).into_owned()
+        without_undelivered(std::borrow::Cow::Borrowed(history), PriorTails::Keep).into_owned()
     }
 
     /// The barge-in the persona loops came from: the owner asked, the
@@ -1117,8 +1162,13 @@ mod tests {
         assert_eq!(out.len(), 4, "{out:?}");
         assert_eq!(
             out[1].content,
-            vec![Block::text("Noted."), call("m1", "memory_write")],
-            "the words and the finished call stay; the reasoning that chose the cut-off call goes"
+            vec![
+                think("save the date, then draw"),
+                Block::text("Noted."),
+                call("m1", "memory_write")
+            ],
+            "the words and the finished call stay, and so does the reasoning: a tool turn is \
+             never sent without it"
         );
         assert_eq!(out[2].content, vec![result("m1", "saved")]);
     }
@@ -1146,6 +1196,56 @@ mod tests {
         assert_eq!(read.cancelled["d1"], Cancelled::Unknown);
     }
 
+    /// A reply the projection makes plain is trimmed as any earlier plain
+    /// reply is, when the agent trims: "…Here's the garden:" with its call
+    /// gone is the dangling tail `PriorTails` exists for.
+    #[test]
+    fn a_reply_made_plain_is_trimmed_like_any_other() {
+        let mut spoken_over = results(
+            vec![result("p1", "Cancelled")],
+            &[("p1", Cancelled::Nothing)],
+        );
+        spoken_over.content.push(Block::text("never mind"));
+        let history = [
+            Message::user("draw the garden"),
+            Message::assistant(vec![
+                Block::text("I love that garden. Here's how it looks:"),
+                call("p1", "image_generate"),
+            ]),
+            spoken_over,
+        ];
+        let trimmed =
+            without_undelivered(std::borrow::Cow::Borrowed(&history[..]), PriorTails::Trim);
+        assert_eq!(trimmed[1].content, vec![Block::text("I love that garden.")]);
+        let kept = without_undelivered(std::borrow::Cow::Borrowed(&history[..]), PriorTails::Keep);
+        assert_eq!(
+            kept[1].content,
+            vec![Block::text("I love that garden. Here's how it looks:")]
+        );
+    }
+
+    /// A mark reaches only the call in its own pair: a server that reused an
+    /// id, or sent an empty one, cannot take another turn's call with it.
+    #[test]
+    fn a_mark_reaches_only_its_own_turn() {
+        let history = vec![
+            Message::user("first"),
+            Message::assistant(vec![call("x", "image_generate")]),
+            results(vec![result("x", "image: images/a.png")], &[]),
+            Message::assistant(vec![Block::text("Sent.")]),
+            Message::user("again"),
+            Message::assistant(vec![call("x", "image_generate")]),
+            results(vec![result("x", "Cancelled")], &[("x", Cancelled::Nothing)]),
+        ];
+        let out = sent(&history);
+        assert!(
+            out[1].content.contains(&call("x", "image_generate")),
+            "{out:?}"
+        );
+        assert_eq!(out[2].content, vec![result("x", "image: images/a.png")]);
+        assert_eq!(out.len(), 5, "{out:?}");
+    }
+
     /// Nearly every request has nothing marked, and pays nothing for it.
     #[test]
     fn an_unmarked_history_is_sent_as_it_is() {
@@ -1153,9 +1253,9 @@ mod tests {
             Message::user("hi"),
             Message::assistant(vec![Block::text("hello")]),
         ];
-        let out = without_undelivered(std::borrow::Cow::Borrowed(&history[..]));
+        let out = without_undelivered(std::borrow::Cow::Borrowed(&history[..]), PriorTails::Trim);
         assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
-        assert_eq!(undelivered_bytes(&history), 0);
+        assert_eq!(undelivered_bytes(&history, PriorTails::Trim), 0);
     }
 
     #[test]

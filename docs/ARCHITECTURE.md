@@ -84,6 +84,37 @@ Any caller owning its input gets the same behaviour from
 `RunContext`, which is how one agent serves the web surface's concurrent
 conversations under different jails and permission modes.
 
+**What an interrupted turn never delivered is not sent again**
+(PERSONA-CONTEXT-DESIGN §5.3, `message::without_undelivered`). A tool the
+owner's cancel stopped says how it ended, by a typed mark on its result
+(`ToolOutput::cancelled`: `Nothing` or `Part`), recorded on the results message
+(`Message::cancelled`, local, never encoded). A call marked `Nothing` —
+`image_generate`'s cancel saves nothing — is left out of every later request
+with its result, and with the reasoning that chose it unless another call it
+chose survived. What the turn did deliver stays: its words, a finished
+sibling call, and a call stopped partway (`Part`: `document_read`'s pages, a
+persona's `file_read`, a subagent's partial run).
+
+- **A projection, never a rewrite.** The transcript keeps everything; this is
+  the last view in `Agent::wire`, after `PriorNudges` and before the run's
+  notes, with its own `wire_bytes` term measured on the earlier views' output.
+- **Never a guess from wording.** A recording from before the mark keeps its
+  cancelled calls as they were, and an unknown mark is kept.
+- **Only across runs.** `Nothing` is recorded only when the run really was
+  cancelled, so the run stops at its next safe point and no request of the
+  same run hides the call it is answering.
+- **No empty message, no two of one role in a row.** An assistant message
+  left with nothing is dropped whole, and so is a results message; the
+  owner's words around a dropped turn fold into one message, set off by a
+  blank line (the OpenAI-dialect encoder joins text blocks with nothing).
+- **A reply it makes plain is trimmed** by `PriorTails`' rule, read on what
+  is sent.
+
+Measured on the replay of the persona loop (2026-10-06, 8 samples each): picture
+attempts after a turn the owner had cut off fell from 2/8 to 1/8 and from 3/8
+to 0/8, and an explicit picture request after the same history was still
+answered with a picture (5/8 on main, 7/8 with the projection).
+
 ## Provider notes (Claude 5 family)
 
 **Two HTTP clients per provider, chosen per request by whether the body

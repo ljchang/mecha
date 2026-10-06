@@ -1581,7 +1581,8 @@ impl Agent {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
         // What an interrupted turn never delivered goes last among the views
         // (it removes whole messages), and before the run's notes.
-        let delivered = crate::message::without_undelivered(self.prior_nudges.wire(earlier));
+        let delivered =
+            crate::message::without_undelivered(self.prior_nudges.wire(earlier), self.prior_tails);
         crate::message::attach_notes(delivered, notes)
     }
 
@@ -1610,7 +1611,7 @@ impl Agent {
             return 0;
         }
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        crate::message::undelivered_bytes(&self.prior_nudges.wire(earlier))
+        crate::message::undelivered_bytes(&self.prior_nudges.wire(earlier), self.prior_tails)
     }
 
     /// What this agent thinks the time is, now.
@@ -4985,8 +4986,15 @@ impl Agent {
         let mut cancelled = std::collections::BTreeMap::new();
         for (i, id, name, mut out) in executed {
             provenance.insert(id.clone(), out.external);
+            // `Nothing` only when the run really was cancelled: the
+            // projection drops such a call from every later request, which is
+            // safe only across runs — a run that went on would send the model
+            // the request it had just answered, minus its own call (review of
+            // §5.3). A cancelled run stops at its next safe point.
             if let Some(how) = out.cancelled {
-                cancelled.insert(id.clone(), how);
+                if how != crate::message::Cancelled::Nothing || cx.cancelled() {
+                    cancelled.insert(id.clone(), how);
+                }
             }
             out.content = crate::tool::cap_result(
                 out.content,
@@ -6656,8 +6664,10 @@ mod tests {
     }
 
     /// A tool the owner cut off with nothing to show for it — what
-    /// `image_generate` answers when a cancel stops a render.
-    struct CutOff;
+    /// `image_generate` answers when a cancel stops a render. `.0` says
+    /// whether the run is really cancelled (the owner's Stop), as it is for
+    /// `image_generate`, or the tool claims it alone.
+    struct CutOff(bool);
 
     #[async_trait]
     impl Tool for CutOff {
@@ -6673,7 +6683,10 @@ mod tests {
         fn read_only(&self) -> bool {
             true
         }
-        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+        async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            if self.0 {
+                ctx.cancel_run(CancelReason::Stopped);
+            }
             Ok(ToolOutput::err("Cancelled — nothing was saved.")
                 .cancelled(crate::message::Cancelled::Nothing))
         }
@@ -6687,30 +6700,35 @@ mod tests {
     /// its picture as unfinished work.
     #[tokio::test]
     async fn a_call_cut_off_with_nothing_delivered_stays_out_of_later_requests() {
+        let think = |t: &str| Block::Thinking {
+            text: t.into(),
+            signature: None,
+        };
+        let draw = Block::ToolUse {
+            id: "d1".into(),
+            name: "draw".into(),
+            input: json!({}),
+        };
         let (agent, provider) = agent_with_tools(
             vec![
                 assistant(
-                    vec![
-                        Block::Thinking {
-                            text: "a picture would answer this".into(),
-                            signature: None,
-                        },
-                        Block::ToolUse {
-                            id: "d1".into(),
-                            name: "draw".into(),
-                            input: json!({}),
-                        },
-                    ],
+                    vec![think("a picture would answer this"), draw],
                     StopReason::ToolUse,
                 ),
-                assistant(vec![Block::text("Here you are.")], StopReason::EndTurn),
                 assistant(vec![Block::text("Of course.")], StopReason::EndTurn),
             ],
-            vec![Arc::new(CutOff)],
+            vec![Arc::new(CutOff(true))],
             PermissionMode::Allow,
         );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_cancel(CancellationToken::new());
         let mut convo = Conversation::user("show me the harbour");
-        agent.run(&mut convo, None).await.unwrap();
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        // The cancel ended the run at its next safe point: one request.
+        assert_eq!(provider.seen.lock().unwrap().len(), 1);
         // Recorded, and marked by the tool's own word.
         let marked = convo
             .messages
@@ -6722,7 +6740,7 @@ mod tests {
         convo.push(Message::user("just talk to me instead"));
         agent.run(&mut convo, None).await.unwrap();
         let seen = provider.seen.lock().unwrap();
-        let later = &seen[2];
+        let later = &seen[1];
         let carries =
             |f: &dyn Fn(&Block) -> bool| later.messages.iter().any(|m| m.content.iter().any(f));
         assert!(
@@ -6754,6 +6772,44 @@ mod tests {
             agent.wire_bytes(&convo.messages, &[]),
             crate::pressure::message_bytes(&agent.wire(&convo.messages, &[])),
             "wire_bytes must be the size of what wire sends"
+        );
+    }
+
+    /// The projection is safe only across runs, so a `Nothing` mark is
+    /// recorded only when the run really was cancelled (review of §5.3). A
+    /// tool that claims it while the run goes on is not believed: the loop's
+    /// next request still carries the call it is answering.
+    #[tokio::test]
+    async fn a_nothing_mark_without_a_cancel_is_not_recorded() {
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "d1".into(),
+                        name: "draw".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::text("It did not come out.")],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(CutOff(false))],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("draw the harbour");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo.messages.iter().all(|m| m.cancelled.is_empty()));
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "the run went on");
+        assert!(
+            seen[1].messages.iter().any(|m| m
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolUse { id, .. } if id == "d1"))),
+            "the request being answered must carry its own call"
         );
     }
 
