@@ -390,6 +390,11 @@ pub struct CompletionRequest {
     /// `--reasoning-budget`). `None` sends nothing. Anthropic's adaptive
     /// thinking takes no budget, so it is not sent there.
     pub think_budget: Option<u32>,
+    /// How many blocks at the end of the last message are a run's notes
+    /// (`RunContext::notes`, [`attach_notes`]). This request alone carries
+    /// them, so a provider that marks a moving cache breakpoint puts it on
+    /// the block before them: a cache write on a note is never read back.
+    pub trailing_notes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -694,185 +699,140 @@ impl PriorTails {
     }
 }
 
-/// What happens to a one-turn harness nudge folded into an earlier owner turn
-/// when the history goes back to the model. The transcript keeps every one;
-/// this decides only what is sent.
+/// What happens to the harness notes recorded inside earlier owner turns when
+/// the history goes back to the model. The transcript keeps every one; this
+/// decides only what is sent.
+///
+/// Before run notes (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1) a
+/// persona chat wrote its notes into the owner's message: the call note, the
+/// variety and edit notes, the identity reminder, and the memory block. They
+/// stayed there and were re-sent on every later turn. At one measured moment
+/// they were 39% of what the model read, against the owner's 3.5%. A chat
+/// recorded since stores none, so this view is for the chats recorded before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PriorNudges {
     /// Sent as recorded.
     #[default]
     Keep,
-    /// Every one but the newest left out, where that costs the cache nothing
-    /// (`stale_nudges`): a persona chat.
-    /// `persona::variety`'s note is folded each turn and names what is
-    /// repeating *now*; kept, forty turns in the prefix would be forty stale,
-    /// contradictory "don't end on X" lines, which is not the condition the
-    /// note was measured in (one note, a clean history; review of #550).
+    /// Every recorded persona note left out ([`is_recorded_note`]): a persona
+    /// chat. The newest goes too, because the turn being answered gets its
+    /// notes from the run, never from the record. The files block and the
+    /// session goal stay: they are material and the owner's words, read once
+    /// and kept.
+    ///
+    /// The cut depends on the recorded history alone, so each request
+    /// repeats the one before it. An old chat re-reads its history once, on
+    /// its first turn after the change, and never again.
     Drop,
 }
 
-/// Which one-turn nudge `block` is, if any: `persona::variety`'s note and
-/// `persona::edit`'s. `persona::call::note` also lives one turn but is not
-/// dropped, and a new one-turn nudge is not covered until it is added here.
-fn one_turn_nudge(block: &Block) -> Option<Nudge> {
-    match block {
-        Block::Text { text } if crate::persona::variety::is_note(text) => Some(Nudge::Variety),
-        Block::Text { text } if crate::persona::edit::is_note(text) => Some(Nudge::Edit),
-        _ => None,
-    }
+/// Whether `block` is a note a persona chat recorded into an owner turn
+/// before run notes existed.
+pub fn is_recorded_note(block: &Block) -> bool {
+    let Block::Text { text } = block else {
+        return false;
+    };
+    crate::persona::variety::is_note(text)
+        || crate::persona::edit::is_note(text)
+        || crate::persona::call::is_note(text)
+        || text
+            .trim_start()
+            .starts_with(crate::persona::safety::REANCHOR_STEM)
+        || crate::persona::recall::stem_of(text).is_some()
 }
 
-/// The kinds of one-turn nudge, each kept or dropped on its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Nudge {
-    Variety,
-    Edit,
-}
-
-fn is_one_turn_nudge(block: &Block) -> bool {
-    one_turn_nudge(block).is_some()
-}
-
-/// The one-turn nudges [`PriorNudges::Drop`] leaves out, as (message, block)
-/// positions in `recorded`, when leaving it out is cheap: every variety note
-/// but the newest, wherever it sits ("newest", not "the turn being answered":
-/// a turn folded into an earlier owner message, a turn that died before a
-/// reply, can put two notes in one message; review of #550), and every edit
-/// note but one that is still its turn's (see `kept`). The edit note is
-/// dropped whatever the re-read costs, and so is the rest of a message that
-/// loses one (see the filters).
-///
-/// **Cheap** is [`reread_bytes`] within [`NUDGE_REREAD_BYTES`]. Removing a
-/// note rewrites a request already sent, so the slot's cache diverges at
-/// it, and the server re-reads what follows up to the point it would have
-/// re-read anyway. That is nothing when the reply after the note goes out
-/// *altered* — its thinking stripped (`PriorThinking::Drop`) or its tail
-/// trimmed (`PriorTails::Trim`) — since the slot holds it as generated. A
-/// reply that goes out as recorded matches the slot straight through: a turn
-/// that called a tool keeps its thinking, byte-identical under the router's
-/// `reasoning-preserve`, and so does a reply that came back with none
-/// (review of #550). So a note ahead of a tool round trip costs that round
-/// trip, once, on a spoken turn's latency path; the cap keeps the note
-/// ahead of a large one. `earlier` is the history after the views that run
-/// first: they alter assistant messages only and never remove one, so
-/// positions in `recorded` hold in it. A block whose removal would leave its
-/// message empty stays too.
-fn stale_nudges(recorded: &[Message], earlier: &[Message]) -> Vec<(usize, usize)> {
-    let all: Vec<(usize, usize, Nudge)> = recorded
+/// The recorded notes [`PriorNudges::Drop`] leaves out, as (message, block)
+/// positions: user messages only, and never a message the removal would
+/// leave empty (a 400 on every provider).
+fn recorded_notes(messages: &[Message]) -> Vec<(usize, usize)> {
+    messages
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.role == Role::User)
+        .filter(|(_, m)| m.role == Role::User && m.content.iter().any(|b| !is_recorded_note(b)))
         .flat_map(|(i, m)| {
             m.content
                 .iter()
                 .enumerate()
-                .filter_map(move |(j, b)| one_turn_nudge(b).map(|kind| (i, j, kind)))
+                .filter(|(_, b)| is_recorded_note(b))
+                .map(move |(j, _)| (i, j))
         })
-        .collect();
-    let Some(&last) = all.last() else {
-        return Vec::new();
-    };
-    // The variety note: the newest one stays, wherever it sits (#550). The
-    // edit note: only while it is the last note of all, since the edit turn
-    // folds it after its variety note and any note after it is a later
-    // turn's, folded or not; and while its message is the turn being
-    // answered or later, so a later turn that earned no note drops it too.
-    // `answering` is the turn's own message mid-run: a steer folded into a
-    // tool result never moves it (review of #566).
-    let answering = answering(recorded).unwrap_or(last.0);
-    let newest_variety = all.iter().rev().find(|n| n.2 == Nudge::Variety).copied();
-    let kept = |n: (usize, usize, Nudge)| match n.2 {
-        Nudge::Variety => Some(n) == newest_variety,
-        Nudge::Edit => n == last && n.0 >= answering,
-    };
-    let stale: Vec<(usize, usize, Nudge)> = all
-        .iter()
-        .copied()
-        .filter(|&n| !kept(n))
-        .filter(|&(i, _, _)| recorded[i].content.iter().any(|b| !is_one_turn_nudge(b)))
-        .collect();
-    // A message that loses its edit note already diverges there, so the rest
-    // of its stale notes go free (review of #566).
-    let diverges = |i: usize| stale.iter().any(|n| n.0 == i && n.2 == Nudge::Edit);
-    stale
-        .iter()
-        // The cap is a spoken turn's latency control; the edit note rides
-        // typed turns only, and every edit turn is a tool round trip, the
-        // shape the cap keeps a note ahead of (5 of 30 edit turns measured
-        // past it, 2026-10-05). Kept, it would tell the persona a later
-        // typed message came from the edit panel (review of #566).
-        .filter(|&&(i, _, kind)| {
-            kind == Nudge::Edit
-                || diverges(i)
-                || reread_bytes(recorded, earlier, i + 1) <= NUDGE_REREAD_BYTES
-        })
-        .map(|&(i, j, _)| (i, j))
         .collect()
 }
 
-/// The most a stale nudge's removal may make the server re-read, once, on
-/// the turn after: about 2,000 tokens, ~1 s of prefill at the router's
-/// measured ~1,800 tokens/s (2026-10-04). The owner's ruling (2026-10-04)
-/// between keeping every note ahead of a tool turn — a quarter of persona
-/// turns call one, so a 40-turn chat would carry ~10 stale notes — and
-/// re-reading every round trip in full (0.4 s at the median, ~3 s at p90,
-/// ~12 s at the largest of 57 measured): this drops the note ahead of about
-/// three round trips in four.
-const NUDGE_REREAD_BYTES: usize = 8 * 1024;
-
-/// What removing a nudge from the message before `from` makes the server
-/// re-read: the messages from `from` on that go out as recorded, up to the
-/// first one that goes out altered (the slot re-reads from there anyway) or
-/// the next owner message (the turn's end). Bounded by the turn so the
-/// answer never changes as the chat grows: a note dropped once stays
-/// dropped, and one kept stays kept, since flipping either way would itself
-/// re-read everything after it.
-fn reread_bytes(recorded: &[Message], earlier: &[Message], from: usize) -> usize {
-    let bytes = |m: &Message| crate::pressure::message_bytes(std::slice::from_ref(m));
-    let mut total = 0;
-    for (next, sent) in recorded.iter().zip(earlier).skip(from) {
-        if next.is_plain_user_text() || bytes(sent) < bytes(next) {
-            break;
-        }
-        total += bytes(sent);
-    }
-    total
-}
-
 impl PriorNudges {
-    /// `earlier` (the history after the views that run first) with every
-    /// one-turn nudge but the newest left out, where that is free, judged
-    /// against `recorded` (`stale_nudges`).
+    /// `messages` with every recorded note left out. The views that run first
+    /// alter assistant messages only, so the notes are found in their output.
     pub fn wire<'a>(
         self,
-        recorded: &[Message],
-        earlier: std::borrow::Cow<'a, [Message]>,
+        messages: std::borrow::Cow<'a, [Message]>,
     ) -> std::borrow::Cow<'a, [Message]> {
         if self == PriorNudges::Keep {
-            return earlier;
+            return messages;
         }
-        let stale = stale_nudges(recorded, &earlier);
-        if stale.is_empty() {
-            return earlier;
+        let notes = recorded_notes(&messages);
+        if notes.is_empty() {
+            return messages;
         }
-        let mut owned = earlier.into_owned();
+        let mut owned = messages.into_owned();
         // From the back, so earlier block indices stay valid.
-        for &(i, j) in stale.iter().rev() {
+        for &(i, j) in notes.iter().rev() {
             owned[i].content.remove(j);
         }
         std::borrow::Cow::Owned(owned)
     }
 
     /// The bytes [`PriorNudges::wire`] leaves out, for `wire_bytes`.
-    pub fn dropped_bytes(self, recorded: &[Message], earlier: &[Message]) -> usize {
+    pub fn dropped_bytes(self, messages: &[Message]) -> usize {
         if self == PriorNudges::Keep {
             return 0;
         }
-        stale_nudges(recorded, earlier)
+        recorded_notes(messages)
             .into_iter()
-            .map(|(i, j)| crate::pressure::block_bytes(&recorded[i].content[j]))
+            .map(|(i, j)| crate::pressure::block_bytes(&messages[i].content[j]))
             .sum()
     }
+}
+
+/// `messages` with a run's notes (`RunContext::notes`) added as text blocks
+/// at the end of the last user message.
+///
+/// That message is the request's newest: the owner's turn on a run's first
+/// request, and the tool results after a round trip, which is the slot
+/// steering already uses. Never a message of their own, because two user
+/// messages in a row are invalid. Applied after every other view, so none of
+/// them (`answering` above all) ever sees a note.
+///
+/// **The end, not the owner's turn, on purpose.** Each request re-reads only
+/// the notes and the step before them. A note pinned to the owner's turn
+/// would make the next turn re-read the whole previous run from where the
+/// note no longer is, which is costliest after a tool-heavy turn and lands
+/// on a spoken reply's latency.
+pub fn attach_notes<'a>(
+    messages: std::borrow::Cow<'a, [Message]>,
+    notes: &[String],
+) -> std::borrow::Cow<'a, [Message]> {
+    if notes.is_empty() {
+        return messages;
+    }
+    let mut owned = messages.into_owned();
+    let blocks = notes.iter().map(|n| Block::text(n.clone()));
+    match owned.last_mut() {
+        Some(last) if last.role == Role::User => last.content.extend(blocks),
+        // Not a request any caller makes (every request ends on a user
+        // message), but the notes still reach the model and alternation
+        // still holds.
+        _ => {
+            let mut m = Message::user("");
+            m.content = blocks.collect();
+            owned.push(m);
+        }
+    }
+    std::borrow::Cow::Owned(owned)
+}
+
+/// The bytes [`attach_notes`] adds, for `wire_bytes`.
+pub fn notes_bytes(notes: &[String]) -> usize {
+    notes.iter().map(String::len).sum()
 }
 
 #[cfg(test)]
@@ -1298,363 +1258,117 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_turn_keeps_both_its_notes_and_a_later_turn_drops_them() {
-        let variety = |closer: &str| {
-            Block::text(format!(
-                "{} (\"{closer}\").)",
-                crate::persona::variety::CLOSING_STEM
-            ))
-        };
-        let edit_turn = |said: &str, closer: &str| {
-            let mut m = Message::user(said);
-            m.content.push(variety(closer));
-            m.content.push(Block::text(crate::persona::edit::note()));
-            m
-        };
-        let reply = |text: &str| Message::assistant(vec![Block::text(text)]);
-        let kinds =
-            |m: &Message| -> Vec<Nudge> { m.content.iter().filter_map(one_turn_nudge).collect() };
-        // `wire_bytes` relies on `dropped_bytes` measuring what goes.
-        let send = |history: &[Message]| -> Vec<Message> {
-            let dropped = PriorNudges::Drop.dropped_bytes(history, history);
-            let sent = PriorNudges::Drop
-                .wire(history, std::borrow::Cow::Borrowed(history))
-                .into_owned();
-            assert_eq!(
-                dropped,
-                crate::pressure::message_bytes(history) - crate::pressure::message_bytes(&sent),
-                "wire_bytes must measure what is sent"
-            );
-            sent
-        };
-
-        // The edit turn being answered carries both, and both go out: one
-        // newest-of-all would drop its own variety note.
-        let history = vec![
-            Message::user("hi"),
-            reply("Hello."),
-            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
-        ];
-        assert_eq!(kinds(&send(&history)[2]), vec![Nudge::Variety, Nudge::Edit]);
-
-        // A later turn that carries only a variety note: the edit note is
-        // stale with it, though no edit note followed.
-        let mut later = Message::user("lovely");
-        later.content.push(variety("Done."));
-        let history = vec![
-            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
-            reply("Done."),
-            later,
-        ];
-        let sent = send(&history);
-        assert_eq!(kinds(&sent[0]), Vec::<Nudge>::new());
-        assert_eq!(kinds(&sent[2]), vec![Nudge::Variety]);
-
-        // An edit turn is a tool round trip, and one past the re-read cap
-        // keeps a variety note ahead of it; the edit note still goes, or the
-        // next typed message would read as the panel's (review of #566).
-        let call = Message::assistant(vec![
-            Block::Thinking {
-                text: "draw it".into(),
-                signature: None,
-            },
-            Block::ToolUse {
-                id: "i1".into(),
-                name: "image_generate".into(),
-                input: serde_json::json!({}),
-            },
+    fn every_recorded_persona_note_leaves_the_wire_and_material_stays() {
+        let variety = Block::text(format!(
+            "{} (\"See you.\").)",
+            crate::persona::variety::CLOSING_STEM
+        ));
+        let memory = Block::text(format!(
+            "{}: the owner likes tea.)",
+            crate::persona::recall::MEMORY_STEM
+        ));
+        let anchor = Block::text(format!(
+            "{}: a calm archivist.)",
+            crate::persona::safety::REANCHOR_STEM
+        ));
+        let files = Block::text(format!("{}: notes.md)", crate::persona::files::FILES_STEM));
+        let mut first = Message::user("hi");
+        first.content.extend([files.clone(), memory, anchor]);
+        let mut second = Message::user("and now");
+        second.content.extend([
+            Block::text(crate::persona::call::note(true, true)),
+            variety.clone(),
         ]);
-        let drawn = Message::tool_results(vec![Block::ToolResult {
-            tool_use_id: "i1".into(),
-            content: "r".repeat(NUDGE_REREAD_BYTES + 1),
-            is_error: false,
-        }]);
-        let mut later = Message::user("lovely");
-        later.content.push(variety("Done."));
+        let mut edit = Message::user("Edit images/a.png: make the sky pink");
+        edit.content
+            .extend([variety.clone(), Block::text(crate::persona::edit::note())]);
+        // A message that is only a note is never emptied.
+        let mut lone = Message::user("");
+        lone.content = vec![variety];
+        let reply = |t: &str| Message::assistant(vec![Block::text(t)]);
         let history = vec![
-            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
-            call,
-            drawn,
-            reply("Done."),
-            later,
+            first,
+            reply("Hello."),
+            second,
+            reply("Sure."),
+            lone,
+            reply("Hm?"),
+            edit,
         ];
-        let sent = send(&history);
+
+        let sent = PriorNudges::Drop
+            .wire(std::borrow::Cow::Borrowed(&history[..]))
+            .into_owned();
         assert_eq!(
-            kinds(&sent[0]),
-            Vec::<Nudge>::new(),
-            "the edit note goes, and the variety note with it: the message diverges anyway"
+            sent[0].content,
+            vec![Block::text("hi"), files],
+            "the files block is material and stays"
         );
-        assert_eq!(kinds(&sent[4]), vec![Nudge::Variety]);
-
-        // A later turn that earned no note of its own: the edit note is an
-        // earlier turn's all the same (review of #566); the variety note
-        // keeps #550's rule, the newest wherever it sits.
-        let history = vec![
-            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
-            reply("Done."),
-            Message::user("lovely"),
-        ];
-        assert_eq!(kinds(&send(&history)[0]), vec![Nudge::Variety]);
-
-        // Mid-turn, after the tool result, the edit turn is still the turn
-        // being answered: its notes stay for the reply.
-        let history = vec![
-            Message::user("hi"),
-            reply("Hello."),
-            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
-            Message::assistant(vec![Block::ToolUse {
-                id: "i2".into(),
-                name: "image_generate".into(),
-                input: serde_json::json!({}),
-            }]),
-            Message::tool_results(vec![Block::ToolResult {
-                tool_use_id: "i2".into(),
-                content: "Saved images/b.png.".into(),
-                is_error: false,
-            }]),
-        ];
-        assert_eq!(kinds(&send(&history)[2]), vec![Nudge::Variety, Nudge::Edit]);
-
-        // A steer during the edit turn's round trip folds the owner's words
-        // into the tool results; the turn being answered is still the edit
-        // turn, and its notes stay for the reply (review of #566).
-        let mut steered = Message::tool_results(vec![Block::ToolResult {
-            tool_use_id: "i3".into(),
-            content: "Saved images/c.png.".into(),
-            is_error: false,
-        }]);
-        steered.content.push(Block::text("and make it blue"));
-        let history = vec![
-            Message::user("hi"),
-            reply("Hello."),
-            edit_turn("Edit images/a.png: make the sky pink", "Hello."),
-            Message::assistant(vec![Block::ToolUse {
-                id: "i3".into(),
-                name: "image_generate".into(),
-                input: serde_json::json!({}),
-            }]),
-            steered,
-        ];
-        assert_eq!(kinds(&send(&history)[2]), vec![Nudge::Variety, Nudge::Edit]);
-
-        // A turn cancelled after the tool ran folds the next typed turn, and
-        // its variety note, beside the tool result: the edit note goes.
-        let mut folded_beside = Message::tool_results(vec![Block::ToolResult {
-            tool_use_id: "i4".into(),
-            content: "Saved images/d.png.".into(),
-            is_error: false,
-        }]);
-        folded_beside.content.push(Block::text("never mind"));
-        folded_beside.content.push(variety("Newest."));
-        let history = vec![
-            edit_turn("Edit images/a.png: make the sky pink", "Older."),
-            Message::assistant(vec![Block::ToolUse {
-                id: "i4".into(),
-                name: "image_generate".into(),
-                input: serde_json::json!({}),
-            }]),
-            folded_beside,
-        ];
-        let sent = send(&history);
-        assert_eq!(kinds(&sent[0]), Vec::<Nudge>::new());
-        assert_eq!(kinds(&sent[2]), vec![Nudge::Variety]);
-
-        // The fold path: an edit turn that died before a reply takes the
-        // next typed turn into the same message. Its edit note now precedes
-        // the owner's newest words and goes; the new variety note stays.
-        let mut folded = edit_turn("Edit images/a.png: make the sky pink", "Older.");
-        folded.content.push(Block::text("never mind, how are you"));
-        folded.content.push(variety("Newest."));
-        let sent = send(std::slice::from_ref(&folded));
-        assert_eq!(kinds(&sent[0]), vec![Nudge::Variety]);
-        assert!(
-            matches!(sent[0].content.last(), Some(Block::Text { text }) if text.contains("Newest.")),
-            "the newer variety note is the one kept"
+        assert_eq!(sent[2].content, vec![Block::text("and now")]);
+        assert_eq!(sent[4].content.len(), 1, "never emptied");
+        assert_eq!(
+            sent[6].content,
+            vec![Block::text("Edit images/a.png: make the sky pink")],
+            "the newest note goes too: the run carries the current one"
         );
+        // `wire_bytes` relies on `dropped_bytes` measuring what goes.
+        assert_eq!(
+            PriorNudges::Drop.dropped_bytes(&history),
+            crate::pressure::message_bytes(&history) - crate::pressure::message_bytes(&sent)
+        );
+        // Keep is the identity, and a cut that depends on the record alone
+        // repeats itself: the next request is a prefix-extension of this one.
+        let kept = PriorNudges::Keep.wire(std::borrow::Cow::Borrowed(&history[..]));
+        assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
+        let mut longer = history.clone();
+        longer.push(reply("Done."));
+        longer.push(Message::user("lovely"));
+        let next = PriorNudges::Drop
+            .wire(std::borrow::Cow::Borrowed(&longer[..]))
+            .into_owned();
+        assert_eq!(next[..sent.len()], sent[..]);
     }
 
     #[test]
-    fn only_the_turn_being_answered_keeps_its_one_turn_nudge() {
-        let note = |closer: &str| {
-            Block::text(format!(
-                "{} (\"{closer}\").)",
-                crate::persona::variety::CLOSING_STEM
-            ))
+    fn run_notes_ride_the_last_user_message_and_are_counted() {
+        let call = Block::ToolUse {
+            id: "t1".into(),
+            name: "echo".into(),
+            input: json!({}),
         };
-        let owner = |said: &str, closer: &str| {
-            let mut m = Message::user(said);
-            m.content.push(note(closer));
-            m
-        };
-        // A reply as the persona model returns one: with its reasoning.
-        let reply = |text: &str| {
-            Message::assistant(vec![
-                Block::Thinking {
-                    text: "they asked again".into(),
-                    signature: None,
-                },
-                Block::text(text),
-            ])
-        };
-        let tool_turn = |id: &str| {
-            Message::assistant(vec![
-                Block::Thinking {
-                    text: "look it up".into(),
-                    signature: None,
-                },
-                Block::ToolUse {
-                    id: id.into(),
-                    name: "echo".into(),
-                    input: serde_json::json!({}),
-                },
-            ])
-        };
-        let result = |id: &str, bytes: usize| {
-            Message::tool_results(vec![Block::ToolResult {
-                tool_use_id: id.into(),
-                content: "r".repeat(bytes),
-                is_error: false,
-            }])
-        };
-        // The views in `Agent::wire`'s order, and the bytes check
-        // `wire_bytes` relies on.
-        let send = |history: &[Message]| -> Vec<Message> {
-            let earlier = PriorTails::Trim.wire(PriorThinking::Drop.wire(history));
-            let dropped = PriorNudges::Drop.dropped_bytes(history, &earlier);
-            let before = crate::pressure::message_bytes(&earlier);
-            let sent = PriorNudges::Drop.wire(history, earlier).into_owned();
-            assert_eq!(
-                dropped,
-                before - crate::pressure::message_bytes(&sent),
-                "wire_bytes must measure what is sent"
-            );
-            sent
-        };
-        let with_note = |sent: &[Message]| -> Vec<usize> {
-            sent.iter()
-                .enumerate()
-                .filter(|(_, m)| m.content.iter().any(is_one_turn_nudge))
-                .map(|(i, _)| i)
-                .collect()
-        };
-
-        let history = vec![
-            owner("hi", "Old one."),
-            reply("Hello."),
-            owner("and now", "Older two."),
-            reply("Sure."),
-            owner("again", "Current."),
-        ];
-        let sent = send(&history);
+        let notes = vec!["(From the harness: one.)".to_string(), "two".to_string()];
+        let history = vec![Message::user("hi")];
+        let sent = attach_notes(std::borrow::Cow::Borrowed(&history[..]), &notes).into_owned();
+        assert_eq!(sent.len(), 1, "never a message of their own");
         assert_eq!(
-            with_note(&sent),
-            vec![4],
-            "only the turn being answered keeps its note"
-        );
-        assert_eq!(sent[0].text(), "hi", "the owner's words stay");
-        let kept = PriorNudges::Keep.wire(&history, std::borrow::Cow::Borrowed(&history[..]));
-        assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
-
-        // A message that is only a (stale) nudge is never emptied.
-        let mut lone = Message::user("");
-        lone.content = vec![note("Lone.")];
-        let sent = send(&[lone, reply("Hm?"), owner("now", "Newer.")]);
-        assert!(!sent[0].content.is_empty());
-
-        // The fold path: a turn that died before a reply leaves the next
-        // turn's note folded into the same owner message, so one message
-        // carries two. Only the newer goes out.
-        let mut folded = owner("hello, and hello again", "Older.");
-        folded.content.push(note("Newest."));
-        let sent = send(std::slice::from_ref(&folded));
-        let left: Vec<&Block> = sent[0]
-            .content
-            .iter()
-            .filter(|b| is_one_turn_nudge(b))
-            .collect();
-        assert_eq!(left.len(), 1);
-        assert!(matches!(left[0], Block::Text { text } if text.contains("Newest.")));
-
-        // Removing a note makes the server re-read what follows it up to the
-        // first message that goes out altered (review of #550). A tool turn
-        // keeps its thinking and goes back as the slot holds it, as does a
-        // reply that came back with no reasoning, so the note ahead of one
-        // costs that stretch: dropped when it is small, kept ahead of a
-        // round trip past `NUDGE_REREAD_BYTES`.
-        let history = vec![
-            owner("hi", "Before a reply."),
-            reply("Hello."),
-            owner("look it up", "Before a small tool."),
-            tool_turn("t1"),
-            result("t1", 2_000),
-            reply("Found it."),
-            owner("and?", "Before a bare reply."),
-            Message::assistant(vec![Block::text("Mm.")]),
-            owner("read it all", "Before a big tool."),
-            tool_turn("t2"),
-            result("t2", NUDGE_REREAD_BYTES + 1),
-            reply("That's long."),
-            owner("thanks", "Current."),
-        ];
-        assert_eq!(with_note(&send(&history)), vec![8, 12]);
-        // The stretch ends at the turn: a later turn never adds to it, so a
-        // note's fate does not change as the chat grows.
-        let earlier = PriorTails::Trim.wire(PriorThinking::Drop.wire(&history));
-        assert_eq!(
-            reread_bytes(&history, &earlier, 9),
-            crate::pressure::message_bytes(&history[9..11]),
-            "the call and its result, not the altered reply after them"
-        );
-        assert_eq!(
-            reread_bytes(&history, &earlier, 7),
-            crate::pressure::message_bytes(&history[7..8]),
-            "the bare reply, and not the next turn"
-        );
-
-        // A turn cancelled after a small tool ran folds the next note beside
-        // the tool result: one note goes out.
-        let mut results = result("t0", 100);
-        results.content.push(Block::text("and now?"));
-        results.content.push(note("Newest."));
-        let history = vec![owner("look it up", "Older."), tool_turn("t0"), results];
-        assert_eq!(with_note(&send(&history)), vec![2]);
-
-        // What the cap is priced against: the slot matches each request
-        // against the *previous* one (and what it generated), not against
-        // the recorded history. Grown turn by turn, every request repeats
-        // the one before it exactly, up to the owner message whose note has
-        // just gone stale — an older note dropped long ago diverges nothing,
-        // because the previous request lacked it too (review of #550).
-        let turns: Vec<Vec<Message>> = vec![
-            vec![owner("hi", "One.")],
-            vec![reply("Hello."), owner("read it all", "Two.")],
+            sent[0].content,
             vec![
-                tool_turn("t2"),
-                result("t2", NUDGE_REREAD_BYTES + 1),
-                reply("That's long."),
-                owner("and?", "Three."),
-            ],
-            vec![reply("Mm, yes."), owner("thanks", "Four.")],
+                Block::text("hi"),
+                Block::text("(From the harness: one.)"),
+                Block::text("two")
+            ]
+        );
+        assert_eq!(
+            crate::pressure::message_bytes(&sent),
+            crate::pressure::message_bytes(&history) + notes_bytes(&notes)
+        );
+        // After a round trip they ride the tool results, and the owner's turn
+        // goes out as recorded.
+        let history = [
+            Message::user("look it up"),
+            Message::assistant(vec![call]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]),
         ];
-        let mut history: Vec<Message> = Vec::new();
-        let mut previous: Option<(Vec<Message>, usize)> = None;
-        for turn in turns {
-            history.extend(turn);
-            let sent = send(&history);
-            let answering = history.len() - 1;
-            if let Some((before, stale)) = &previous {
-                assert_eq!(
-                    sent[..*stale],
-                    before[..*stale],
-                    "a request rewrote more than the note that just went stale"
-                );
-            }
-            previous = Some((sent, answering));
-        }
-        // And the final request: "One." and "Three." dropped (a plain reply
-        // after each), "Two." kept ahead of the large round trip — the state
-        // the review read as "diverged at 0, so 8 KiB spent anyway".
-        let sent = send(&history);
-        assert_eq!(with_note(&sent), vec![2, 8]);
+        let sent = attach_notes(std::borrow::Cow::Borrowed(&history[..]), &notes).into_owned();
+        assert_eq!(sent[0].content, history[0].content);
+        assert_eq!(sent[2].content.len(), 3);
+        assert!(matches!(
+            attach_notes(std::borrow::Cow::Borrowed(&history[..]), &[]),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 }
