@@ -306,10 +306,9 @@ pub fn de_lenient<'de, D: serde::Deserializer<'de>>(
 /// of which could have had a brief (found on review of #309). The block in
 /// the transcript is the artifact; the record of the switch is not.
 ///
-/// **And of the notes it recorded** (`Transcript::notes`): since 2026-10-06
-/// the brief rides a run note, never the messages, so a recording made
-/// since then carries it only there. Both are read, so an older recording
-/// with the brief folded into a message is still refused.
+/// **And of the notes it recorded** (`Transcript::notes`): the brief is
+/// folded into the messages, but a run's notes reach the model too, so a
+/// brief recorded among them is refused the same way.
 pub fn validate_transcript(messages: &[crate::message::Message], notes: &[String]) -> Result<()> {
     let is_brief = |text: &str| text.trim_start().starts_with(crate::brief::BRIEF_STEM);
     let briefed = messages
@@ -510,9 +509,7 @@ mod brief_gate_tests {
             .unwrap_err()
             .to_string()
             .contains("situation brief"));
-        // Since the brief became a run note it is recorded beside the
-        // messages, never in them: a recording briefed that way is refused
-        // too.
+        // A brief among the recorded notes reached the model too: refused.
         let note = format!("{}, as things stood.", crate::brief::BRIEF_STEM);
         assert!(
             super::validate_transcript(&[Message::user("fix the report")], &[note])

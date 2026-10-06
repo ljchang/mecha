@@ -185,9 +185,9 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                 // The situation brief, for the same reason (3a): a snapshot of
                 // the run's start rather than an event in the stretch, and a
                 // summariser asked for "the specific values" would copy its
-                // counts into `messages[0]` as prose no stem can strip. Only
-                // an old transcript holds one: since 2026-10-06 the brief is a
-                // run note (`Agent::brief_note`), in no stored message.
+                // counts into `messages[0]` as prose no stem can strip.
+                // `Agent::fold_situation_brief` puts the run's own back after
+                // the cut.
                 Block::Text { text } if text.trim_start().starts_with(crate::brief::BRIEF_STEM) => {
                 }
                 Block::Text { text } if !text.trim().is_empty() => {

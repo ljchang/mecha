@@ -1431,9 +1431,9 @@ impl SituationBrief {
 pub const BRIEF_STEM: &str = "Situation brief from the harness";
 
 /// The brief as the words a run is handed (`APPRAISAL-WIRING-DESIGN.md`
-/// B1, built as 3a). Delivered by the loop as a run note on every request
-/// when `[agent] situation_brief` is on (`Agent::now_notes`), never the
-/// prefix and never stored in the history (2026-10-06).
+/// B1, built as 3a). Delivered by the loop into the run's first user turn
+/// when `[agent] situation_brief` is on (`Agent`'s
+/// `fold_situation_brief`), never the prefix.
 ///
 /// **R21 is the rule, field by field.** Budget facts are numbers — turns,
 /// token and cost ceilings, the context window — and so are the background
@@ -1464,8 +1464,9 @@ pub const BRIEF_STEM: &str = "Situation brief from the harness";
 ///
 /// **Stable across turns when the situation is.** Bands rather than
 /// instants, so a web conversation whose situation did not change renders
-/// the same bytes turn after turn, so an unchanged situation's note costs
-/// the cache nothing new.
+/// the same bytes turn after turn — the loop folds a brief only when its
+/// rendering differs from the latest one in the transcript, so an unchanged
+/// situation costs nothing.
 pub fn render(brief: &SituationBrief) -> String {
     let mut lines = vec![format!(
         "{BRIEF_STEM}, as things stood when this run started; a later situation brief in this conversation replaces it. It describes; it asks nothing of you."
