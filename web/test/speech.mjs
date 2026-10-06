@@ -1,7 +1,7 @@
 // A reply tidied for speech, and cut into pieces the player can ask for one
 // at a time (`speech.js`; the owner's ask, 2026-10-01).
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { ownWords } from '../src/lib/persona.js';
 import { replyContext, replyKey, speakable, speechPieces, speechSentences, withoutPictureRefs } from '../src/lib/speech.js';
 
@@ -109,7 +109,9 @@ assert.equal(replyContext([...framed, { kind: 'assistant', text: 'Well.' }], 1, 
 {
   const read = (f) => readFileSync(new URL(`../src/lib/${f}`, import.meta.url), 'utf8');
   const calls = (f) => [...read(f).matchAll(/<ChatProse\b[^>]*\/>/g)].map((m) => m[0]);
-  const sites = ['Chat.svelte', 'Personas.svelte', 'PersonaCall.svelte'].flatMap(calls);
+  // Every component, so a new one is counted too (review of #578, pass 3).
+  const components = readdirSync(new URL('../src/lib/', import.meta.url)).filter((f) => f.endsWith('.svelte'));
+  const sites = components.flatMap(calls);
   const review = sites.filter((c) => /text=\{review\./.test(c));
   const replies = sites.filter((c) => !/text=\{review\./.test(c));
   assert.equal(review.length, 2, review.join('\n'));
@@ -117,5 +119,17 @@ assert.equal(replyContext([...framed, { kind: 'assistant', text: 'Well.' }], 1, 
   for (const c of review) assert.ok(!/hidePictureRefs/.test(c), `an approval hides text: ${c}`);
   for (const c of replies) assert.match(c, /\shidePictureRefs\b/, c);
 }
+
+// The renderer's fence rule, not a copy (review of #578, pass 3): a fence
+// opened with a tab is a code block, whose picture line is shown as
+// written; a close indented four spaces still closes it.
+assert.equal(
+  withoutPictureRefs('Like this:\n\t```\n[Image: images/a.png]\n\t```'),
+  'Like this:\n\t```\n[Image: images/a.png]\n\t```',
+);
+assert.equal(
+  withoutPictureRefs('```\n[Image: images/a.png]\n    ```\nHere:\n[Image: images/b.png]'),
+  '```\n[Image: images/a.png]\n    ```\nHere:',
+);
 
 console.log('speech: ok');
