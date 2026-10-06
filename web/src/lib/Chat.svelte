@@ -2351,7 +2351,12 @@
           {#if line.who === 'user'}
             <div class="vbubble" class:vlost={line.undelivered}>{line.text}{#if line.undelivered}<span class="queued-tag">not delivered — send again</span>{/if}</div>
           {:else if line.picture}
-            <div class="vanswer vpicture">{line.text}</div>
+            <!-- The picture itself, as the chat draws it (the owner's ask,
+                 2026-10-06). Not a link: opening a tab on a phone drops the
+                 call. -->
+            <!-- No height until it loads: follow the bottom again once it
+                 does (review of #576). -->
+            <span class="vanswer vshot"><img src={workspaceFile(line.picture)} alt={line.text} loading="lazy" onload={() => vStick && voicePane?.scrollTo({ top: voicePane.scrollHeight })} /></span>
           {:else}
             <!-- The chat's own renderer, so a call formats a reply the way
                  the chat does (the owner's ask, 2026-10-06). -->
@@ -3610,9 +3615,16 @@
   .vanswer.interim {
     color: var(--text-muted);
   }
-  /* A picture in the transcript, as a line. */
-  .vpicture {
-    font-style: italic;
+  /* A picture in the transcript, drawn where it was made. */
+  .vshot {
+    display: block;
+    width: min(92%, 320px);
+  }
+  .vshot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
   }
   /* The call's own state — a dead mic, a dropped line — never speech. */
   .vnote {
