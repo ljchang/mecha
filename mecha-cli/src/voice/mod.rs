@@ -1568,12 +1568,18 @@ async fn hosted_completion(
     // way. Found on review. (A turn that never *started* — a 503 — keeps
     // it for the retry; see `completion`.)
     let carry = shared.confirmations.take_carry(confirm_key).await;
+    // The blocking path's answer, tidied for the ear as `pump` tidies the
+    // stream: the body is what the speaker plays (`speech.rs`).
+    let heard = match &answer {
+        Ok(a) if !want_stream => speech::speakable(&a.text),
+        _ => String::new(),
+    };
     let offer = match &answer {
         // Everything the speaker played, which on the streaming path is
         // every turn's deltas and not just the last one's text. The blocking
         // path speaks a single JSON body, so its reply *is* the final turn.
-        Ok(a) => {
-            let spoken = if want_stream { &said } else { &a.text };
+        Ok(_) => {
+            let spoken = if want_stream { &said } else { &heard };
             offer_for_turn(shared, baseline, spoken, carry).await
         }
         Err(_) => None,
@@ -1601,8 +1607,8 @@ async fn hosted_completion(
     match answer {
         Ok(a) => {
             let content = match &offer {
-                Some(offer) => format!("{} {}", a.text, offer.speech),
-                None => a.text,
+                Some(offer) => format!("{heard} {}", offer.speech),
+                None => heard,
             };
             let written = write_json(
                 stream,
@@ -2417,9 +2423,14 @@ async fn completion(
     // after the answer, and only when there was one.
     // Consumed whatever the outcome, as on the hosted path.
     let carry = shared.confirmations.take_carry(&confirm_key).await;
+    // As on the hosted path: the blocking answer is what is heard.
+    let heard = match &outcome {
+        Ok(o) if !want_stream => speech::speakable(&o.text),
+        _ => String::new(),
+    };
     let offer = match &outcome {
-        Ok(o) => {
-            let spoken = if want_stream { &said } else { &o.text };
+        Ok(_) => {
+            let spoken = if want_stream { &said } else { &heard };
             offer_for_turn(shared, &outbox_baseline, spoken, carry).await
         }
         Err(_) => None,
@@ -2442,8 +2453,8 @@ async fn completion(
         match &outcome {
             Ok(o) => {
                 let content = match &offer {
-                    Some(offer) => format!("{} {}", o.text, offer.speech),
-                    None => o.text.clone(),
+                    Some(offer) => format!("{heard} {}", offer.speech),
+                    None => heard.clone(),
                 };
                 let written = write_json(
                     stream,
@@ -3325,6 +3336,35 @@ mod the_reply_reaches_the_wire {
             bytes.iter().all(|byte| *byte == 0),
             "a failed chunk was followed by more bytes"
         );
+    }
+
+    /// The blocking door speaks by the same rule as the stream: both
+    /// completions that answer with a JSON body (the hosted chat's and the
+    /// facade's own) send the tidied text, and seed the offer's window from
+    /// it, never the model's raw reply (review of #574: only `pump` was
+    /// tidied, so a client that left `stream` off heard the formatting).
+    #[test]
+    fn a_blocking_answer_is_tidied_too() {
+        let src = include_str!("mod.rs");
+        // Needles assembled at run time, so this test's own text never
+        // matches them (the self-match trap noted above).
+        let tidy = ["speech::", "speakable("].concat();
+        assert_eq!(
+            src.matches(&tidy).count(),
+            2,
+            "each blocking door must tidy its answer"
+        );
+        for who in ["a", "o"] {
+            for raw in [
+                format!("\"{{}} {{}}\", {who}.text"),
+                format!("None => {who}.text"),
+            ] {
+                assert!(
+                    !src.contains(&raw),
+                    "a blocking answer is built from the raw reply: {raw}"
+                );
+            }
+        }
     }
 
     /// What reaches the worker is what the owner should hear: a reply

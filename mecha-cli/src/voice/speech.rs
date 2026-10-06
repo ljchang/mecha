@@ -118,8 +118,8 @@ impl Tidier {
     }
 }
 
-/// `text` whole, as a call would say it: the rule the fixture states.
-#[cfg(test)]
+/// `text` whole, as a call would say it: the rule the fixture states, and
+/// what a blocking (non-streaming) completion answers with.
 pub(crate) fn speakable(text: &str) -> String {
     let mut t = Tidier::default();
     let mut s = t.push(text);
