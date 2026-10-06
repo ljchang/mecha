@@ -58,9 +58,9 @@ the repository (§8).
   (`persona::recall`). Because they live in the message, they stay in the history and are
   re-sent on every later turn. `PriorNudges::Drop` takes the stale variety and edit notes back
   out at send time. The rest stay.
-- **Tool results** carry guidance as well as facts. An image result is about 900 characters:
-  where the file is, not to overwrite the original, "To change it further, edit … next", and the
-  near-copy notice with its recovery advice (`imagegen.rs`).
+- **Tool results** carry guidance as well as facts. An image result was about 900 characters:
+  where the file is, an instruction about the original, a suggestion of what to edit next, and
+  the near-copy notice with its recovery advice (`imagegen.rs`; facts only since §5.2 was built).
 - **A call's barge-in** (`persona_chat::speak`) cancels the run in flight (`CancelReason::Stopped`).
   `image_generate` honours that cancel and stops the ComfyUI job, because the chat's Stop button
   needs exactly that. The result is "Cancelled — the generation was stopped and nothing was
@@ -324,7 +324,7 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   The same deployed setup scored 3/8 at M2 in that earlier run, so these cells vary between runs,
   and only comparisons within one run are read.
 - The leading `image: <path>` line stays exactly as it was: the page reads it to draw the picture
-  (`web/src/lib/picture.js`). A reply that repeats it is hidden from the chat and from speech by
+  (`web/src/lib/picture.js`). A reply that repeats it is to be hidden from the chat and from speech by
   #578.
 
 ### 5.3 The history is what happened, not what was attempted
@@ -428,8 +428,8 @@ assumption:
 - the call note's "first spoken turn of a stretch" gating (§5.1). (The chat-start memory's
   first-turn placement was retired with #572 and reinstated, as `recall::carries_chat_start`, by
   #575: as a note it was slower and outweighed the owner's asks.)
-- the near-copy notice's recovery advice and the "To change it further, edit … next" line (§5.2,
-  §5.5);
+- the near-copy notice's recovery advice and the edit-next line (§5.2, §5.5): retired by #581, with
+  the replay in §5.2;
 - the variety note itself (`persona::variety`). Under §5.1 it is one note for one run, never a
   stack, which is the condition it was measured in. Whether it is still needed once the history
   is lean is a measurement;

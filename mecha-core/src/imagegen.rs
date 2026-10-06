@@ -2357,9 +2357,8 @@ impl ImageGenerate {
     /// a persona redrew after every later edit — the ones that worked included
     /// — reasoning that the result said it had not taken.
     ///
-    /// A masked edit's notice keeps the mask: its retry passes the same mask
-    /// again, and it offers no library redraw, which would redraw the whole
-    /// frame the owner painted a region to protect (review of #429).
+    /// A masked edit's notice names no library redraw, which would redraw the
+    /// whole frame the owner painted a region to protect (review of #429).
     async fn near_copy(
         &self,
         ctx: &ToolCtx,
@@ -2892,11 +2891,23 @@ impl ImageGenerate {
         if prompt.chars().count() > PROMPT_CAP {
             // An edit is told which fields to shorten: "shorten `prompt`"
             // would point it at the one field it may not send (review of #579).
-            return Err(if edit.is_some() {
+            return Err(if let Some(edit) = &edit {
+                // Named as they went in: a masked edit's `keep` added nothing.
+                let mut fields = vec!["edit.change"];
+                if edit.keep.is_some() && mask.is_none() {
+                    fields.push("edit.keep");
+                }
+                if edit.face.is_some() {
+                    fields.push("edit.face");
+                }
+                if edit.camera.is_some() {
+                    fields.push("edit.camera");
+                }
                 format!(
                     "The edit model's prompt, written from `edit`, is over {PROMPT_CAP} \
-                     characters; shorten edit.change and edit.keep: the change is one \
-                     instruction, not a description of the picture."
+                     characters; shorten {}: the change is one instruction, not a \
+                     description of the picture.",
+                    fields.join(", ")
                 )
             } else {
                 format!("`prompt` is over {PROMPT_CAP} characters; shorten it.")
@@ -3019,9 +3030,9 @@ impl Tool for ImageGenerate {
          mask, with the picture in reference_images, and put only the change in edit.change: \
          everything outside the mask is kept exactly. The first line of a result is the new \
          picture's file path: edit that path to change the picture, and leave the path out of \
-         replies, since the owner is shown the picture. Results are not shown to you, so do not \
-         guess at what a picture looks like; an edit always makes a new file and leaves the \
-         original as it was. To keep a new picture's composition while changing its prompt, \
+         replies, since the owner is shown the picture. Results are not shown to you, so never \
+         say what a picture shows. An edit always makes a new file and leaves the original as \
+         it was: never write or copy a result over the picture it was edited from. To keep a new picture's composition while changing its prompt, \
          draw it again with its seed. An edit whose result reports a near-copy is normal for a \
          recolour, an outfit or a small detail; if the user wanted someone moved, posed or \
          rearranged, tell them it probably did not work, and try once more only when they want \
@@ -3775,11 +3786,14 @@ impl Tool for ImageGenerate {
                 .unwrap_or_default();
             text.push_str(&format!(
                 "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
-                 {} is unchanged. It is on the owner's screen; you have not seen it.",
+                 {} unchanged. It is on the owner's screen; you have not seen it.",
                 sources.join(", "),
                 req.seed,
                 req.steps,
-                sources.first().copied().unwrap_or("The original"),
+                match sources.len() {
+                    0 | 1 => format!("{} is", sources.first().copied().unwrap_or("the original")),
+                    _ => format!("{} are", sources.join(" and ")),
+                },
             ));
             if mask_path.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
                 text.push_str(
@@ -4608,6 +4622,20 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// §5.2 moved the result's guidance into the description; these two
+    /// prohibitions answer measured failures and must not be dropped on the
+    /// way: a model copied the result over the original in 3 of 4 live chats
+    /// (#429), and described pictures it had not seen (review of #581).
+    #[test]
+    fn the_description_keeps_the_two_prohibitions() {
+        let d = tool("http://127.0.0.1:1").description().to_string();
+        assert!(
+            d.contains("never write or copy a result over the picture it was edited from"),
+            "{d}"
+        );
+        assert!(d.contains("never say what a picture shows"), "{d}");
+    }
+
     #[test]
     fn bad_input_is_named_back_to_the_model() {
         let t = tool("http://127.0.0.1:1");
@@ -4754,8 +4782,9 @@ mod tests {
         assert_eq!(std::fs::read(dir.join(path)).unwrap(), PNG);
         assert!(!out.external, "our own output is not third-party content");
         // For a run with no `image_view` — a blind provider, `--tool`, or
-        // `[tools] disabled` — this line is the only guard against it
-        // describing a picture it never saw.
+        // `[tools] disabled` — this fact and the description's rule (pinned in
+        // `the_description_keeps_the_two_prohibitions`) are the guard against
+        // it describing a picture it never saw.
         assert!(
             out.content.contains("you have not seen it."),
             "{}",
