@@ -393,9 +393,10 @@ pub const REANCHOR_STEM: &str = "(A reminder from the harness of who you are";
 /// How many owner turns between re-anchors (§12.5).
 pub const REANCHOR_EVERY: u32 = 8;
 
-/// The re-anchor: the persona's `## Core`, handed back in the message stream
-/// near the newest turn — never the system prompt, so the cached prefix is
-/// untouched. `None` when there is no Core to hand back.
+/// The re-anchor: the persona's `## Core`, handed back as one of the run's
+/// notes (`RunContext::notes`), at the end of the newest message and never
+/// stored; never the system prompt, so the cached prefix is untouched. `None`
+/// when there is no Core to hand back.
 pub fn reanchor_text(identity: &str) -> Option<String> {
     let core = sections(identity)
         .into_iter()
