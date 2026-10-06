@@ -1441,17 +1441,26 @@ module.
     an unknown status is a candidate.
   - Read paths (`open_existing`) never create a file — what recall and an
     incognito chat will use.
-  - **Recall at chat start** (`persona::recall`, §9.7): one block, read once
-    per chat in this process and sent as one of every run's notes
-    (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1), never stored in a
-    message. Past the first reply, what the owner's message brings to mind is
-    a second note. The two are never joined, because each arms taint by the
-    stem it opens with (`recall::stem_of`), and a recall from outside joined
-    after a clean block would hide its own. It holds about-me, the user
+  - **Recall at chat start** (`persona::recall`, §9.7): one block, material,
+    stored once in the chat's first turn, before its first reply
+    (`recall::carries_chat_start`), and kept there, cached with the history,
+    like the files block (PERSONA-CONTEXT-DESIGN.md §5.1). `messages[0]` is
+    the one message compaction keeps whole; stored later, a compaction would
+    summarise it away and the next turn would store it again. A chat already
+    past a reply that never stored it (begun under #572, or a first turn whose
+    read failed) gets it as a run note instead. As a run note at the end of every request (#572) it
+    cost ~1.1–1.6 s of prefill per request, and as the most salient text in
+    the request a standing preference inside it outweighed the owner's ask:
+    6/8 picture calls against 8/8 from the first turn (2026-10-06). Past the
+    first reply, what the owner's message brings to mind is a run note
+    (`is_per_turn`, told apart by the fixed text after the stem), never
+    joined to anything, because each block arms taint by the stem it opens
+    with (`recall::stem_of`). It holds about-me, the user
     facts the persona may see (its own, plus `Shared::visible_to` its groups
     under `user_facts = "shared"`), its own facts and recent episodes,
-    honouring each `[memory]` switch as it stands when the block is read
-    (the chat's first turn in this process). Candidates are never recalled,
+    honouring each `[memory]` switch as it stands when the block is stored.
+    Once stored it stays with that chat, as before #572: a switch turned off
+    reaches the next chat, not an open one. Candidates are never recalled,
     and a copy the owner shared of the persona's own fact is not said twice.
     - `BUDGET_CHARS` is split, not shared first-come: about-me takes at most
       a third, each note a fair share and cut rather than dropped; recent
@@ -1705,8 +1714,8 @@ module.
     refuses (Anthropic refuses any `seed`) is refused for the chat and the
     judge alike. A chat whose crisis judge cannot be built must not open.
   - **Run notes** (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1). The
-    harness's per-run words to a persona (its memory, a recall, the identity
-    reminder, the call, variety and edit notes) are not written into the
+    harness's per-run words to a persona (a recall, the identity reminder,
+    the call, variety and edit notes) are not written into the
     owner's message. Folded there, they stayed and were re-sent on every later
     turn: at one measured moment they were 39% of what the model read,
     against the owner's 3.5%, and the model followed the larger share.
@@ -1729,8 +1738,10 @@ module.
       leaves them out of the conversation it rebuilds and arms the taint
       from them, since the transcript is how a torn taint record is
       re-derived and the notes are no longer in the messages.
-    - Material is not a note: the files block and the session goal ride in
-      the first turn and stay there.
+    - Material is not a note: the files block, the chat-start memory block
+      and the session goal are stored once and stay. A large note at the end
+      of every request is re-read every time and is the most salient text
+      the model sees, so the tail is for short, per-run guidance.
     - A subagent never inherits its parent's notes.
   - `persona_agent` sets `PriorThinking::Drop` (`message.rs`). The cut is
     the newest user message that carries no tool result, which is the cut

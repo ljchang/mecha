@@ -104,19 +104,28 @@
   // failed, when it did.
   let viewing = $state(null);
   let viewNote = $state(null);
-  function view(path) {
+  // What opened the viewer — the stage picture, or one drawn in the
+  // transcript — so closing returns there (review of #576).
+  let opener = null;
+  function view(path, from = null) {
+    opener = from;
     viewing = path;
     viewNote = null;
   }
-  // Focus goes into the viewer when it opens and back to the picture when
-  // it closes, so a keyboard owner is never left on what it covers, or on
-  // nothing.
+  // Focus goes into the viewer when it opens and back to the picture that
+  // opened it when it closes — or the stage's, or the pane, when that one is
+  // gone — so a keyboard owner is never left on what it covers, or on
+  // nothing. A picture from before the call has no stage button.
   let shotButton = $state(null);
   let backButton = $state(null);
   let wasViewing = false;
   $effect(() => {
     if (viewing && !wasViewing) backButton?.focus();
-    else if (!viewing && wasViewing) shotButton?.focus();
+    else if (!viewing && wasViewing) {
+      const back = opener?.isConnected ? opener : (shotButton ?? pane);
+      back?.focus();
+      opener = null;
+    }
     wasViewing = !!viewing;
   });
   async function download() {
@@ -351,7 +360,7 @@
         {/if}
       {/if}
     </div>
-    <div class="call-pane" bind:this={pane} inert={!!viewing} onscroll={scrolled}>
+    <div class="call-pane" bind:this={pane} inert={!!viewing} onscroll={scrolled} tabindex="-1">
       <!-- Replies through the chat's own renderer, so a call formats one the
            way the chat does (the owner's ask, 2026-10-06). -->
       {#each transcript as line}
@@ -366,7 +375,16 @@
             </div>
           {/if}
         {:else if line.picture}
-          <div class="heard pictured">{line.text}</div>
+          <!-- The picture itself, where it was made in the conversation (the
+               owner's ask, 2026-10-06). A tap opens it full screen inside the
+               call, with Download and Edit, never in a new tab: on a phone
+               that backgrounds the call page and drops the call. -->
+          <button class="inlineshot" onclick={(e) => view(line.picture, e.currentTarget)} aria-label="look at the picture full screen">
+            <!-- It has no height until it loads, so the scroll that followed
+                 its line ran short: follow again once it does (review of
+                 #576). -->
+            <img src={pictureUrl(line.picture)} alt={line.text} loading="lazy" onload={() => stick && pane && (pane.scrollTop = pane.scrollHeight)} />
+          </button>
         {:else}
           <div class="heard"><ChatProse text={line.text} /></div>
         {/if}
@@ -672,9 +690,20 @@
   .call-pane:empty {
     display: none;
   }
-  /* A picture in the transcript, as a line. */
-  .pictured {
-    font-style: italic;
+  /* A picture in the transcript, drawn where it was made. */
+  .inlineshot {
+    align-self: flex-start;
+    width: min(92%, 320px);
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+  .inlineshot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 8px;
   }
   /* The call's own state — a dead mic, a dropped line — never speech. */
   .callnote {
