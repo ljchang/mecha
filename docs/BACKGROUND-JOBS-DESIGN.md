@@ -68,8 +68,10 @@ from records. A new `Record` variant would be invisible without endpoint and pag
   a chat host) and records `now` as the call's result.
 - With no sink (the CLI, a subagent, an eval, a batch), the loop **awaits the job inline**. Every
   path without a conversation host behaves exactly as today, **cancellation included**: awaited
-  inline, the job is given the run's own cancellation token, so a Stop or a Ctrl-C stops the
-  render and `abandon`s the server's job exactly as the tool's own watch does now. Only a host's
+  inline, the run's cancellation is **linked** to the job's own token — a run's Stop cancels
+  it — so a Stop or a Ctrl-C stops the render and `abandon`s the server's job exactly as the
+  tool's own watch does now. Never by dropping the future: a dropped job leaves the render
+  running on the server (review of #573, pass 11). Only a host's
   sink hands a job a token of its own (`subagent.rs`'s rule: a stop that left work running would
   be a lie). (Review of #573, pass 2.)
 - `image_generate` splits at `backend.generate`: validation, claim and casting run before the
@@ -149,6 +151,12 @@ ordering guarantee (1) states (review of #573, pass 10).
      conversation that made a picture its provenance-gated learning (`Record::Extend` exists for
      the same reason). An older build skips the unknown record and shows "being made" (review of
      #573, pass 6).
+   - **The late result is appended before the delivery's `Record::Taint`, never after.** Its
+     rule drops every checkpoint covering `index` and after, which is every one a
+     `Record::Taint` pushed for a message mid-history; written the other way round, the
+     delivery's own checkpoint is the one dropped, `covering` reads unknown for the whole tail,
+     and `classify_origin` takes that as untrusted — the provenance-gated learning a rewrite
+     would have cost, by another route (review of #573, pass 11).
    - **`Session::read` checks the record before applying it**, the guard `Record::Extend` gets
      from its `index + 1 == messages` check: message `index` must be a user message holding a
      `ToolResult` with that `tool_use_id`. A record that does not match is skipped with a
@@ -182,10 +190,12 @@ ordering guarantee (1) states (review of #573, pass 10).
    function, or `sessions show` and the corpus would count the same run's errors differently.
    `doctor`'s trigger-ledger arm and `exp_report` read stores written at run end on paths with no
    chat host, so they are out of scope by construction (review of #573, passes 6–8).
-   **A late failure is appended after its run's outcome**, always: the readers walk the file
-   in order and add to a row that exists, and one written before its row would find none. The
-   hand-back numbers the run before it lands held results, so the order holds (review of
-   #573, pass 10).
+   **A late failure resolves against the whole file's rows, not the rows read so far**: every
+   reader collects them in its walk and applies them after it, so the ordinal books against
+   its run wherever the record sits, and the order cannot misattribute it. (Pass 10 of this
+   review said "always after its outcome, or it finds no row"; the build made the readers
+   order-free instead, which is the sturdier of the two, and a test pins it — review of #573,
+   pass 11.)
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
@@ -251,8 +261,20 @@ picture is still coming, and none denies one the owner already saw.
 ### 2.5 Both chats
 
 The mechanism is core, and each chat's host supplies the sink and the delivery (its session
-lookup, its `events` sender, its conversation ownership). The assistant chat and persona chats
-get the same behaviour.
+lookup, its `events` sender, its conversation ownership). **Three kinds of conversation, two
+behaviours.** A kept assistant chat and a persona chat defer, the same way. An incognito chat
+does not: it has no `Session`, so neither the record half of delivery nor the restart repair
+exists there, and its run gets no sink — its picture is drawn inline, as before this design
+(review of #573, pass 11).
+
+**A conversation with a job out is not let go of.** The assistant host removes a chat from its
+map on archive, delete and a task hand-over; each refuses while the chat's job runs, as each
+refuses while a run does, because the result lands in this process's copy and a reopened one
+would settle it as never made. Run numbers are process-wide, so a reopened chat's runs never
+meet an earlier incarnation's job (review of #583).
+
+**A `post_tool` hook sees the immediate answer only** ("being made: …"); the late result
+reaches no hook (review of #583).
 
 ## 3. What this removes
 
