@@ -2135,8 +2135,9 @@ pub fn persona_agent(
     // Nor from earlier replies cut off mid-sentence, which it otherwise
     // learns to write: "…\n\nI", spoken as a dangling word.
     .with_prior_tails(mecha_core::message::PriorTails::Trim)
-    // And the harness's note on what it repeats, from this turn only: kept,
-    // the earlier turns' notes would stack up stale (`persona::variety`).
+    // And none of the notes a chat recorded into its owner turns before run
+    // notes (`RunContext::notes`) existed: a turn's notes now ride its own run
+    // only, so every recorded one is stale (`message::is_recorded_note`).
     .with_prior_nudges(mecha_core::message::PriorNudges::Drop);
     Ok((agent, tools.refused))
 }
