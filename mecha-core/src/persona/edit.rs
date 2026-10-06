@@ -32,8 +32,9 @@ pub const EDIT_STEM: &str = "(From the harness: this message came from the pictu
 /// (`RunContext::notes`), so it lasts exactly the edit's run.
 pub fn note() -> String {
     format!(
-        "{EDIT_STEM}. Make the edit, then answer in a sentence or two, in your own \
-voice. You have not seen the result, so don't describe the picture or retell the scene.)"
+        "{EDIT_STEM}. Make the edit with their words as edit.change, then answer in a \
+sentence or two, in your own voice. You have not seen the result, so don't describe the \
+picture or retell the scene.)"
     )
 }
 
