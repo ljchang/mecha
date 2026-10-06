@@ -2354,7 +2354,9 @@
             <!-- The picture itself, as the chat draws it (the owner's ask,
                  2026-10-06). Not a link: opening a tab on a phone drops the
                  call. -->
-            <span class="vanswer vshot"><img src={workspaceFile(line.picture)} alt={line.text} loading="lazy" /></span>
+            <!-- No height until it loads: follow the bottom again once it
+                 does (review of #576). -->
+            <span class="vanswer vshot"><img src={workspaceFile(line.picture)} alt={line.text} loading="lazy" onload={() => vStick && voicePane?.scrollTo({ top: voicePane.scrollHeight })} /></span>
           {:else}
             <!-- The chat's own renderer, so a call formats a reply the way
                  the chat does (the owner's ask, 2026-10-06). -->
