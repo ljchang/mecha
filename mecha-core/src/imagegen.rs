@@ -3592,6 +3592,11 @@ impl Tool for ImageGenerate {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut job_ctx = ctx.clone();
         job_ctx.cancel = Some(cancel.clone());
+        // Never the run's event sender: the hosts hand the conversation back
+        // when the run's event stream closes, and a job holding a sender
+        // would hold the whole chat until the picture is done — the coupling
+        // a job exists to break (review of #583, pass 3). Nothing here sends.
+        job_ctx.events = None;
         let input = input.clone();
         let me = self.clone();
         let job = async move {
@@ -4953,6 +4958,33 @@ mod tests {
             let json = png.replace(".png", ".json");
             assert!(names.contains(&json), "{json} missing from {names:?}");
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A deferred render holds nothing of the run that started it: once the
+    /// caller lets go of the run's event sender, the stream closes while the
+    /// job is still waiting to run — which is when a host hands its
+    /// conversation back. Fails while the job holds a clone of it.
+    #[tokio::test]
+    async fn a_deferred_render_does_not_hold_the_runs_events() {
+        let (url, _) = fake(vec![], "200 OK").await;
+        let dir = tempdir();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut c = ctx(&dir);
+        c.events = Some(tx);
+        let out = <ImageGenerate as Tool>::call(&tool(&url), json!({"prompt": "a fox"}), &c)
+            .await
+            .unwrap();
+        let job = out.deferred.clone().expect("deferred");
+        drop((out, c));
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ),
+            "the job still holds the run's event sender"
+        );
+        drop(job);
         std::fs::remove_dir_all(dir).ok();
     }
 

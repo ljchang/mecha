@@ -72,7 +72,10 @@ impl Default for Terms {
 impl DeferredJob {
     /// `job` must watch `cancel` and end with an output saying it stopped
     /// when it fires; `busy` is the refusal a second job of the same
-    /// conversation gets while this one runs — the tool's words.
+    /// conversation gets while this one runs — the tool's words. And it must
+    /// hold nothing of the run that started it — above all not the run's
+    /// `ToolCtx::events` sender, whose closing is what tells a host the run
+    /// has ended: a job holding one keeps the conversation until it is done.
     pub fn new(
         job: impl Future<Output = ToolOutput> + Send + 'static,
         cancel: CancellationToken,

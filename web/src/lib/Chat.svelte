@@ -1969,9 +1969,9 @@
           {:else if stillOut(entry)}<span class="tool-state">drawing a picture…</span>{/if}
         </div>
         <!-- Still being drawn past the turn that asked for it (§5.4): it
-             lands on this row when done. Stop is the owner's, and ends only
-             the picture when no reply is running. -->
-        {#if stillOut(entry)}<button class="qmore" onclick={cancel}>Stop the picture</button>{/if}
+             lands on this row when done. Its Stop ends the picture alone,
+             never a reply that is running (review of #583). -->
+        {#if stillOut(entry)}<button class="qmore" onclick={stopPicture}>Stop the picture</button>{/if}
         {#if entry.open}
           <div class="toolpanel">
             {#if entry.draft}
