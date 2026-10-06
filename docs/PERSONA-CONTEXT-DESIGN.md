@@ -304,6 +304,16 @@ what is true for this run. Nothing a component says is written into the conversa
 A result says what happened: the path, edit or new, the time, and for an edit the similarity. How
 to use the tool, and what to do next, lives **once**, in the tool's description.
 
+- **Built for `image_generate`** (2026-10-06). A new picture's result is its path, size, cast, time
+  and seed, and "It is on the owner's screen; you have not seen it." An edit's adds what it edited
+  and that the original is unchanged. A near-copy adds the similarity, whether it is the second in a
+  row, which original it came from, and the library names it was drawn from. Gone from every result:
+  the suggestions about revising a picture, editing it further and leaving the original alone, and
+  the near-copy notice's retry advice. Those now sit once in the description.
+- The leading `image: <path>` line stays exactly as it was: the page reads it to draw the picture
+  (`web/src/lib/picture.js`). A reply that repeats it is hidden from the chat and from speech by
+  #578.
+
 ### 5.3 The history is what happened, not what was attempted
 
 - A turn the owner interrupted is sent as **its delivered words plus whatever its tools delivered**,

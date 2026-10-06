@@ -1664,10 +1664,6 @@ const MAX_LINEAGE: usize = 64;
 /// retry lands within a couple of minutes; a new request later starts over.
 const NEAR_COPY_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// What a near-copy notice says instead of "call again": the retry is the
-/// owner's to ask for.
-const NO_RETRY_UNASKED: &str = "Do not call image_generate again for this unless the user asks.";
-
 /// How long the last picture drawn in a workspace answers an identical call
 /// that would draw it again. The repeats it is for arrive within seconds of
 /// the picture they copy.
@@ -2352,17 +2348,14 @@ impl ImageGenerate {
         (original, own)
     }
 
-    /// What an edit that kept the layout of `edited` tells the model. It
-    /// cannot say the edit failed: a recolour keeps the layout too, and only
-    /// the model knows which it asked for — so both notices lead with that,
-    /// and "stop" is only ever for a move or a pose (review of #408: a
-    /// second successful recolour was told it had not taken).
-    ///
-    /// It never tells the model to call again: the owner decides
-    /// ([`NO_RETRY_UNASKED`]). Each picture is a minute of GPU, and in a
-    /// chat where an earlier notice had said "call image_generate again
-    /// now", a persona redrew after every later edit — the ones that worked
-    /// included — reasoning that the result said it had not taken.
+    /// What an edit that kept the layout of `edited` tells the model: facts
+    /// only. It cannot say the edit failed — a recolour keeps the layout too,
+    /// and only the model knows which it asked for (review of #408: a second
+    /// successful recolour was told it had not taken). What to do lives in the
+    /// description, which says the retry is the owner's to ask for: in a
+    /// chat where an earlier notice had said "call image_generate again now",
+    /// a persona redrew after every later edit — the ones that worked included
+    /// — reasoning that the result said it had not taken.
     ///
     /// A masked edit's notice keeps the mask: its retry passes the same mask
     /// again, and it offers no library redraw, which would redraw the whole
@@ -2383,67 +2376,32 @@ impl ImageGenerate {
             read_manifest(ctx, &original).await
         };
         let redraw = drawn.and_then(|m| self.library_redraw(&m));
-        if let Some(mask) = mask {
-            let expected = format!(
+        // Facts only (PERSONA-CONTEXT-DESIGN.md §5.2): what came back, whether
+        // it is the second in a row, where the original is, and how it was
+        // drawn. What to do about it is in the description, once: a notice
+        // that said "call again now" had a persona redraw after every later
+        // edit, the ones that worked included (2026-10-03).
+        let mut notice = match mask {
+            Some(_) => format!(
                 " Inside the painted area its layout came back nearly the same as {edited}'s \
-                 (similarity {similarity:.2}). After a change of colour, clothing or a small \
-                 detail that is expected, and nothing is wrong."
-            );
-            let notice = if again {
-                format!(
-                    "{expected} If the user asked to move someone or change a pose, the painted \
-                     area has now kept its layout through two edits in a row: stop, tell the user \
-                     the change may not have taken, and offer a plain edit without the mask, or a \
-                     redraw from the library. {NO_RETRY_UNASKED}"
-                )
-            } else {
-                format!(
-                    "{expected} If the user asked to move someone or change a pose, the change \
-                     may not have taken: say so rather than that it did, and offer to try again. \
-                     {NO_RETRY_UNASKED} If they ask: {original} in reference_images, the same \
-                     mask, {mask}, and edit.change naming the change as an instruction."
-                )
-            };
-            return NearCopy { original, notice };
-        }
-        let expected = format!(
-            " Its layout came back nearly the same as {edited}'s (similarity {similarity:.2}). \
-             After a change of colour, clothing or a small detail that is expected, and nothing \
-             is wrong."
-        );
-        let notice = if again {
-            let offer = redraw
-                .map(|r| {
-                    format!(
-                        "; offer to redraw it from the library instead — {r}, reordered left to \
-                         right as they should now stand, each with their new doing"
-                    )
-                })
-                .unwrap_or_default();
-            format!(
-                "{expected} If the user asked to move someone, change a pose or rearrange the \
-                 picture, {edited} has now kept its layout through two edits in a row: stop \
-                 editing it, and tell the user the change may not have taken{offer}. \
-                 {NO_RETRY_UNASKED}"
-            )
-        } else {
-            let offer = redraw
-                .map(|r| {
-                    format!(
-                        " Or redraw it from the library, which moves people more reliably: {r}, \
-                         reordered left to right as they should now stand, each with their new \
-                         doing, and no reference_images or seed."
-                    )
-                })
-                .unwrap_or_default();
-            format!(
-                "{expected} If the user asked to move someone, change a pose or rearrange the \
-                 picture, the change may not have taken: say so rather than that it did, and \
-                 offer to try again. {NO_RETRY_UNASKED} If they ask: edit {original} rather \
-                 than this result, with edit.change naming the change as an instruction \
-                 (\"Have Maya stand up.\") and edit.keep naming what stays.{offer}"
-            )
+                 (similarity {similarity:.2})."
+            ),
+            None => format!(
+                " Its layout came back nearly the same as {edited}'s (similarity \
+                 {similarity:.2})."
+            ),
         };
+        if again {
+            notice.push_str(&format!(
+                " It is the second edit of {edited} in a row whose layout came back the same."
+            ));
+        }
+        if original != edited {
+            notice.push_str(&format!(" {edited} is itself an edit of {original}."));
+        }
+        if let (None, Some(r)) = (mask, redraw) {
+            notice.push_str(&format!(" {original} was drawn from the library: {r}."));
+        }
         NearCopy { original, notice }
     }
 
@@ -2932,9 +2890,17 @@ impl ImageGenerate {
             (None, true) => written.to_string(),
         };
         if prompt.chars().count() > PROMPT_CAP {
-            return Err(format!(
-                "`prompt` is over {PROMPT_CAP} characters; shorten it."
-            ));
+            // An edit is told which fields to shorten: "shorten `prompt`"
+            // would point it at the one field it may not send (review of #579).
+            return Err(if edit.is_some() {
+                format!(
+                    "The edit model's prompt, written from `edit`, is over {PROMPT_CAP} \
+                     characters; shorten edit.change and edit.keep: the change is one \
+                     instruction, not a description of the picture."
+                )
+            } else {
+                format!("`prompt` is over {PROMPT_CAP} characters; shorten it.")
+            });
         }
         // A masked edit keeps the picture's own shape, so a `size` beside a
         // mask is set aside and said, as a seed on an edit is — never refused:
@@ -3051,7 +3017,18 @@ impl Tool for ImageGenerate {
          not describe a person's looks in an edit: the picture carries them. If the user's \
          message names a mask (a picture they painted over the part to change), pass it as \
          mask, with the picture in reference_images, and put only the change in edit.change: \
-         everything outside the mask is kept exactly. The result is not shown to you. If image_view is among your tools, look at it only when the \
+         everything outside the mask is kept exactly. The first line of a result is the new \
+         picture's file path: edit that path to change the picture, and leave the path out of \
+         replies, since the owner is shown the picture. Results are not shown to you, so do not \
+         guess at what a picture looks like; an edit always makes a new file and leaves the \
+         original as it was. To keep a new picture's composition while changing its prompt, \
+         draw it again with its seed. An edit whose result reports a near-copy is normal for a \
+         recolour, an outfit or a small detail; if the user wanted someone moved, posed or \
+         rearranged, tell them it probably did not work, and try once more only when they want \
+         you to, from the original the result names. After two near-copies in a row, stop and \
+         explain; a picture first drawn from the library can be drawn afresh with cast, which \
+         repositions people better. Do not draw the same picture twice unless the user wants \
+         it. If image_view is among your tools, look at it only when the \
          task needs you to see it — the user asked you to check, compare or describe it, or an edit depends on \
          what is where — not to confirm that it worked. To draw the owner's recurring characters, name \
          them in cast, left to right, with what each is wearing and doing (image_library lists who \
@@ -3762,17 +3739,12 @@ impl Tool for ImageGenerate {
                     .collect();
                 format!(" with {}", names.join(", "))
             };
-            let same_cast = if ask.as_ref().is_some_and(|a| !a.cast.is_empty()) {
-                " the same cast,"
-            } else {
-                ""
-            };
+            // Facts only (PERSONA-CONTEXT-DESIGN.md §5.2): how to use the
+            // result lives once, in the description.
             text.push_str(&format!(
-                "Generated a {size} image{of} in {secs} s (seed {}, {} steps) and saved it to {path} \
-                 in the workspace. To revise it, call image_generate again with{same_cast} an edited prompt and seed {} \
-                 to keep the composition, or edit it by passing {path} in reference_images. You have \
-                 not seen it, so do not describe what it shows.",
-                req.seed, req.steps, req.seed
+                "A new {size} picture{of}, drawn in {secs} s (seed {}, {} steps). It is on the \
+                 owner's screen; you have not seen it.",
+                req.seed, req.steps
             ));
             if !drawn_as_extras.is_empty() {
                 let names: Vec<String> = drawn_as_extras.iter().map(|n| format!("`{n}`")).collect();
@@ -3802,14 +3774,12 @@ impl Tool for ImageGenerate {
                 .map(|u| format!(" in style {} (v{})", u.name, u.version))
                 .unwrap_or_default();
             text.push_str(&format!(
-                "Edited {}{styled} into a {size} image in {secs} s (seed {}, {} steps) and saved \
-                 it to {path} in the workspace; the original is unchanged — leave it so, and do not \
-                 copy the result over it: the user sees the new picture in the chat. To change it \
-                 further, edit {path} next. You have not seen it, so do not describe what it \
-                 shows.",
+                "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
+                 {} is unchanged. It is on the owner's screen; you have not seen it.",
                 sources.join(", "),
                 req.seed,
-                req.steps
+                req.steps,
+                sources.first().copied().unwrap_or("The original"),
             ));
             if mask_path.is_some() && input.get("size").is_some_and(|v| !v.is_null()) {
                 text.push_str(
@@ -4537,6 +4507,14 @@ mod tests {
                              "reference_images": ["images/a.png"], "mask": "inbox/m.png"})),
             Ok("a red scarf.".into())
         );
+        // And a `keep` the model sent anyway stays out (review of #579).
+        assert_eq!(
+            prompt_of(
+                json!({"edit": {"change": "a red scarf", "keep": "the wall"},
+                             "reference_images": ["images/a.png"], "mask": "inbox/m.png"})
+            ),
+            Ok("a red scarf.".into())
+        );
         // Refused, each saying what to send instead.
         let refused = |input: Value| t.request(&input).unwrap_err();
         assert_eq!(
@@ -4779,8 +4757,7 @@ mod tests {
         // `[tools] disabled` — this line is the only guard against it
         // describing a picture it never saw.
         assert!(
-            out.content
-                .contains("You have not seen it, so do not describe what it shows."),
+            out.content.contains("you have not seen it."),
             "{}",
             out.content
         );
@@ -5032,10 +5009,9 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content.contains("Edited inbox/me.jpg")
-                && out
-                    .content
-                    .contains("You have not seen it, so do not describe what it shows."),
+            out.content.contains("An edit of inbox/me.jpg")
+                && out.content.contains("inbox/me.jpg is unchanged.")
+                && out.content.contains("you have not seen it."),
             "{}",
             out.content
         );
@@ -7137,21 +7113,21 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
+        // Facts only (§5.2): what came back, never what to do about it; the
+        // description says the retry is the owner's to ask for.
         assert!(
             out.content
                 .contains("Its layout came back nearly the same as images/orig.png's")
-                && out
-                    .content
-                    .contains("edit images/orig.png rather than this result")
-                && out.content.contains("say so rather than that it did")
-                && out.content.contains(NO_RETRY_UNASKED)
-                && !out.content.contains("again now"),
+                && !out.content.contains("say so")
+                && !out.content.contains("again")
+                && !out.content.contains("If they ask"),
             "{}",
             out.content
         );
-        // A recolour keeps the layout too, so the result stays the next base.
+        // A recolour keeps the layout too, so nothing calls it a failure: the
+        // result says what came back and never what to do.
         assert!(
-            out.content.contains("To change it further"),
+            !out.content.contains("not have taken") && !out.content.contains("To change it"),
             "{}",
             out.content
         );
@@ -7171,7 +7147,7 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("edit images/orig.png rather than this result")
+                .contains(" is itself an edit of images/orig.png.")
                 && !out.content.contains("stop editing it"),
             "{}",
             out.content
@@ -7190,10 +7166,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content
-                .contains("images/orig.png has now kept its layout through two edits in a row")
-                && out.content.contains("stop editing it")
-                && out.content.contains(NO_RETRY_UNASKED),
+            out.content.contains(
+                "It is the second edit of images/orig.png in a row whose layout came back the same."
+            ) && !out.content.contains("stop"),
             "{}",
             out.content
         );
@@ -7220,7 +7195,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content.contains("To change it further")
+            out.content.contains("An edit of images/orig.png")
                 && !out.content.contains("nearly the same"),
             "{}",
             out.content
@@ -7266,7 +7241,7 @@ mod tests {
             .unwrap();
         assert!(
             out.content
-                .contains("redraw it from the library, which moves people more reliably: cast [\"maya\"] (left to right as first drawn), the same extras,"),
+                .contains("images/drawn.png was drawn from the library: cast [\"maya\"] (left to right as first drawn), the same extras."),
             "{}",
             out.content
         );
@@ -7314,7 +7289,11 @@ mod tests {
             .await
             .unwrap();
         let green = out.content.lines().next().unwrap()["image: ".len()..].to_string();
-        assert!(out.content.contains("nothing is wrong"), "{}", out.content);
+        assert!(
+            out.content.contains("nearly the same") && !out.content.contains("not have taken"),
+            "{}",
+            out.content
+        );
         let out = t
             .call(
                 json!({"edit": {"change": "Keep the background unchanged. Make her dress orange.", "keep": "the rest"},
@@ -7324,13 +7303,12 @@ mod tests {
             .await
             .unwrap();
         let orange = out.content.lines().next().unwrap()["image: ".len()..].to_string();
+        // The second recolour edits the first's result, a new picture, so it
+        // is never counted as the second near-copy of one picture.
         assert!(
-            out.content
-                .contains("that is expected, and nothing is wrong")
-                && out
-                    .content
-                    .contains(&format!("To change it further, edit {orange} next"))
-                && !out.content.contains("stop editing it"),
+            out.content.contains(&format!("image: {orange}"))
+                && out.content.contains("nearly the same")
+                && !out.content.contains("in a row"),
             "{}",
             out.content
         );
@@ -7362,11 +7340,11 @@ mod tests {
                 &c,
             )
         };
-        assert!(edit().await.unwrap().content.contains("may not have taken"));
+        assert!(edit().await.unwrap().content.contains("nearly the same"));
         assert!(!edit().await.unwrap().content.contains("nearly the same"));
         let out = edit().await.unwrap();
         assert!(
-            out.content.contains("may not have taken") && !out.content.contains("in a row"),
+            out.content.contains("nearly the same") && !out.content.contains("in a row"),
             "{}",
             out.content
         );
@@ -7746,20 +7724,16 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content
-                .contains("Inside the painted area its layout came back nearly the same")
-                && out.content.contains("the same mask, inbox/mask.png"),
+                .contains("Inside the painted area its layout came back nearly the same"),
             "{}",
             out.content
         );
+        // A masked edit's notice offers no library redraw, which would redraw
+        // the whole frame the owner painted a region to protect (review of
+        // #429), and no retry: that is the owner's to ask for.
         assert!(
-            !out.content.contains("no reference_images or seed")
-                && !out.content.contains("Or redraw it from the library"),
+            !out.content.contains("drawn from the library") && !out.content.contains("again"),
             "{}",
-            out.content
-        );
-        assert!(
-            out.content.contains(NO_RETRY_UNASKED) && !out.content.contains("again now"),
-            "the retry is the owner's to ask for: {}",
             out.content
         );
         // The same masked edit holds its layout again: the second in a row
@@ -7773,8 +7747,8 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content.contains("two edits in a row: stop,")
-                && out.content.contains(NO_RETRY_UNASKED),
+            out.content
+                .contains("It is the second edit of images/orig.png in a row whose layout"),
             "{}",
             out.content
         );
@@ -7887,11 +7861,11 @@ mod tests {
                 &c,
             )
         };
-        assert!(edit().await.unwrap().content.contains("may not have taken"));
+        assert!(edit().await.unwrap().content.contains("nearly the same"));
         t.forget_conversation_state();
         let out = edit().await.unwrap();
         assert!(
-            out.content.contains("may not have taken") && !out.content.contains("in a row"),
+            out.content.contains("nearly the same") && !out.content.contains("in a row"),
             "{}",
             out.content
         );
