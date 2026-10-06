@@ -705,7 +705,7 @@ impl PriorTails {
 ///
 /// Before run notes (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1) a
 /// persona chat wrote its notes into the owner's message: the call note, the
-/// variety and edit notes, the identity reminder, and the memory block. They
+/// variety and edit notes, the identity reminder, and per-turn recall. They
 /// stayed there and were re-sent on every later turn. At one measured moment
 /// they were 39% of what the model read, against the owner's 3.5%. A chat
 /// recorded since stores none, so this view is for the chats recorded before.
@@ -716,9 +716,9 @@ pub enum PriorNudges {
     Keep,
     /// Every recorded persona note left out ([`is_recorded_note`]): a persona
     /// chat. The newest goes too, because the turn being answered gets its
-    /// notes from the run, never from the record. The files block and the
-    /// session goal stay: they are material and the owner's words, read once
-    /// and kept.
+    /// notes from the run, never from the record. The files block, the
+    /// chat-start memory block and the session goal stay: they are material
+    /// and the owner's words, read once and kept.
     ///
     /// The cut depends on the recorded history alone, so each request
     /// repeats the one before it. An old chat re-reads its history once, on
@@ -738,7 +738,7 @@ pub fn is_recorded_note(block: &Block) -> bool {
         || text
             .trim_start()
             .starts_with(crate::persona::safety::REANCHOR_STEM)
-        || crate::persona::recall::stem_of(text).is_some()
+        || crate::persona::recall::is_per_turn(text)
 }
 
 /// The recorded notes [`PriorNudges::Drop`] leaves out, as (message, block)
@@ -1263,9 +1263,17 @@ mod tests {
             "{} (\"See you.\").)",
             crate::persona::variety::CLOSING_STEM
         ));
+        // The chat-start block is material and stays; a per-turn recall is a
+        // run's note and goes.
         let memory = Block::text(format!(
-            "{}: the owner likes tea.)",
-            crate::persona::recall::MEMORY_STEM
+            "{}{}: the owner likes tea.)",
+            crate::persona::recall::MEMORY_STEM,
+            crate::persona::recall::CHAT_START_MARK
+        ));
+        let recall = Block::text(format!(
+            "{}{}: the owner keeps bees.)",
+            crate::persona::recall::UNTRUSTED_MEMORY_STEM,
+            crate::persona::recall::PER_TURN_MARK
         ));
         let anchor = Block::text(format!(
             "{}: a calm archivist.)",
@@ -1273,9 +1281,12 @@ mod tests {
         ));
         let files = Block::text(format!("{}: notes.md)", crate::persona::files::FILES_STEM));
         let mut first = Message::user("hi");
-        first.content.extend([files.clone(), memory, anchor]);
+        first
+            .content
+            .extend([files.clone(), memory.clone(), anchor]);
         let mut second = Message::user("and now");
         second.content.extend([
+            recall,
             Block::text(crate::persona::call::note(true, true)),
             variety.clone(),
         ]);
@@ -1301,8 +1312,8 @@ mod tests {
             .into_owned();
         assert_eq!(
             sent[0].content,
-            vec![Block::text("hi"), files],
-            "the files block is material and stays"
+            vec![Block::text("hi"), files, memory],
+            "the files and chat-start memory blocks are material and stay"
         );
         assert_eq!(sent[2].content, vec![Block::text("and now")]);
         assert_eq!(sent[4].content.len(), 1, "never emptied");

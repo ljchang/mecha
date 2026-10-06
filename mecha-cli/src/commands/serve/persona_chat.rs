@@ -185,12 +185,13 @@ struct PersonaSession {
     /// the chat's life in this process — a restart forgets it, since the
     /// safety record is content-free and names no chat by design.
     crisis_shown: bool,
-    /// What the persona remembers at chat start (§9.7): read once per chat
-    /// in this process and sent as one of every run's notes
-    /// (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1), never stored in
-    /// a message. `None` until read; `Some(None)` when there is nothing to
-    /// send (it remembers nothing, its memory is off, or the store was
-    /// unreadable, which the first turn said on the page).
+    /// What the persona remembers at chat start (§9.7), as read for this
+    /// chat in this process: `None` until read; `Some(None)` when there was
+    /// nothing to store (it remembers nothing, its memory is off, or the
+    /// store was unreadable, which the turn that read it said on the page).
+    /// Kept so a chat with nothing to remember is not re-read, and re-noticed,
+    /// on every turn. What is read is stored once in an owner turn
+    /// (`recall::carries_chat_start`), never sent as a note.
     memory: Option<Option<String>>,
     /// The reply being read aloud, while a Listen tap speaks it
     /// (`listen::Reply`): here so it goes when this chat does.
@@ -2840,9 +2841,18 @@ impl PersonaChats {
                 .conversation
                 .as_ref()
                 .is_some_and(|c| carries_files_now(&c.messages));
-            // What it remembers at chat start (§9.7): read once per chat, then
-            // sent with every run as a note, never stored (§5.1).
-            let remembered = ps.memory.clone();
+            // What it remembers at chat start (§9.7): material, stored once
+            // in the first owner turn that does not carry it yet (§5.1), so
+            // a chat that carries it needs no read at all.
+            let carried = ps
+                .conversation
+                .as_ref()
+                .is_some_and(|c| mecha_core::persona::recall::carries_chat_start(&c.messages));
+            let remembered = if carried {
+                Some(None)
+            } else {
+                ps.memory.clone()
+            };
             // After the first reply, each turn also recalls what the owner's
             // message brings to mind (§9.7). What the conversation already
             // holds is not recalled again, so its text is read here; the
@@ -2929,11 +2939,13 @@ impl PersonaChats {
             _ => None,
         };
         // What the persona remembers, read off its store outside the lock,
-        // with the memory switches as the persona stands at that read. Read
-        // on the chat's first turn in this process and kept, so a switch
-        // turned off mid-chat reaches it on the next resume. A chat recorded
-        // before run notes has its stored copy left off the wire
-        // (`PriorNudges::Drop`).
+        // with the memory switches as the persona stands at that read: on a
+        // chat's first turn, or the first turn of one begun under run notes
+        // that never stored it. Stored once in the owner's turn below, where
+        // it is cached with the history. As a note at the end of every
+        // request it cost ~1.1–1.6 s of prefill each time and, as the most
+        // salient text in the request, outweighed the owner's own asks
+        // (PERSONA-CONTEXT-DESIGN.md §5.1, measured 2026-10-06).
         let remembered = match (remembered, &ready, &live) {
             (Some(kept), _, _) => Some(kept),
             (None, Some((bound, _)), Some(persona)) => Some(
@@ -3010,6 +3022,10 @@ impl PersonaChats {
         if ps.memory.is_none() {
             ps.memory = remembered;
         }
+        // Asked again with the conversation in hand: a turn that finished in
+        // between may have stored it already (the files block's rule).
+        let memory_block = memory_block
+            .filter(|_| !mecha_core::persona::recall::carries_chat_start(&conversation.messages));
         // The call note (§11): on every spoken turn, never on a typed one. It
         // speaks of pictures only to a persona that can make them (§5.6).
         let pictures = ready
@@ -3075,25 +3091,17 @@ impl PersonaChats {
         // review of #409; `chat::begin_turn` folds for the same reason). The
         // fold is recorded as a `Rewrite`, or the file would hold the
         // invalid shape and a resume would replay it.
-        // The run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): sent with every
-        // request of this run and stored in no message, so none of them is
-        // re-sent on the turns after. Memory first, as it rode first before:
-        // what it remembers at chat start, then what this message brings to
-        // mind. Two notes, never joined, because each arms taint by the stem
-        // it opens with (`recall::stem_of`), and a recall from outside joined
-        // after a clean block would hide its own.
+        // The run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): short, per-run
+        // guidance, sent with every request of this run and stored in no
+        // message, so none of them is re-sent on the turns after. The recall
+        // is its own note, never joined to anything: it arms taint by the
+        // stem it opens with (`recall::stem_of`), and joined after a clean
+        // block a recall from outside would hide its own.
         let anchored = anchor.is_some();
-        let notes: Vec<String> = [
-            memory_block,
-            recall_block,
-            anchor,
-            call_note,
-            variety_note,
-            edit_note,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let notes: Vec<String> = [recall_block, anchor, call_note, variety_note, edit_note]
+            .into_iter()
+            .flatten()
+            .collect();
         // Recorded with the turn, and ahead of it: the notes carry what used
         // to ride inside the owner's message (the memory, the Core), and the
         // transcript is how a torn taint record is re-derived, so a notes line
@@ -3128,6 +3136,9 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
             }
+            if let Some(memory) = &memory_block {
+                mecha_core::agent::append_user_text(&mut conversation.messages, memory.clone());
+            }
             record_notes(&ps.session)
                 .and_then(|()| {
                     ps.session.append(&Record::Rewrite {
@@ -3144,6 +3155,13 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 user.content.push(mecha_core::message::Block::Text {
                     text: files.clone(),
+                });
+            }
+            // What it remembers at chat start, stored once like the files: the
+            // stem it opens with is what arms the chat (§9.7).
+            if let Some(memory) = &memory_block {
+                user.content.push(mecha_core::message::Block::Text {
+                    text: memory.clone(),
                 });
             }
             conversation.push(user.clone());
@@ -5529,15 +5547,15 @@ mod tests {
         let t = chat("Hello again.").await;
         let seen = w.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 2);
-        // One of the run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): on every
-        // request, at the end of its newest message, and stored nowhere, so
-        // no request carries an earlier turn's copy.
+        // Material (PERSONA-CONTEXT-DESIGN.md §5.1): stored once, in the
+        // chat's first owner turn, and sent from there as history on every
+        // later request, one copy, never re-sent at the tail as a note.
         for req in &seen {
-            let newest = req.messages.last().unwrap().text();
+            let first = req.messages[0].text();
             assert!(
-                newest.contains(mecha_core::persona::recall::MEMORY_STEM)
-                    && newest.contains("Teaches a methods seminar on Thursdays."),
-                "{newest}"
+                first.contains(mecha_core::persona::recall::MEMORY_STEM)
+                    && first.contains("Teaches a methods seminar on Thursdays."),
+                "{first}"
             );
             let copies: usize = req
                 .messages
@@ -5546,6 +5564,15 @@ mod tests {
                 .sum();
             assert_eq!(copies, 1, "one copy a request, never a stack");
         }
+        assert!(
+            !seen[1]
+                .messages
+                .last()
+                .unwrap()
+                .text()
+                .contains("methods seminar"),
+            "not at the tail of a later request"
+        );
         let bubbles: Vec<String> = t["entries"]
             .as_array()
             .unwrap()
