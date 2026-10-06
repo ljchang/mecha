@@ -5618,6 +5618,59 @@ mod tests {
         assert_eq!(t["taint"]["untrusted"], true, "{t}");
     }
 
+    /// §5.1: a chat that stored its chat-start memory keeps it through a
+    /// restart: the rebuilt conversation carries the block, so nothing is read
+    /// again and nothing rides as a note — one copy, still in `messages[0]`
+    /// (review of #575). If the rebuild ever lost it, the block would be read
+    /// again and sent at the tail of every request, slower than before #572.
+    #[tokio::test]
+    async fn stored_memory_survives_a_restart_as_one_copy_in_the_first_turn() {
+        use mecha_core::persona::memory::{Memory, NewEpisode, Source};
+        use mecha_core::persona::Origin;
+        let w = world();
+        Memory::open(&w.store(), "mara")
+            .unwrap()
+            .add_episode(NewEpisode {
+                source: Some(Source {
+                    chat: "earlier".into(),
+                    from: 0,
+                    to: 1,
+                }),
+                summary: "Walked the tide pools at dawn.".into(),
+                origin: Origin::ModelClean,
+                model: "m".into(),
+                ..NewEpisode::default()
+            })
+            .unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello there.").await;
+        // Out of memory, as after a restart.
+        w.personas().sessions.lock().await.clear();
+        let resumed = w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        turn(&w, resumed["key"].as_str().unwrap(), "And then?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        for req in &seen {
+            assert!(req.messages[0].text().contains("tide pools"));
+            let copies: usize = req
+                .messages
+                .iter()
+                .map(|m| m.text().matches("tide pools").count())
+                .sum();
+            assert_eq!(copies, 1);
+        }
+    }
+
     /// §5.1: a chat already past its first reply that never stored its
     /// chat-start memory (begun under #572, or a first turn whose read
     /// failed) gets it as a run note, never folded into a later owner turn:
