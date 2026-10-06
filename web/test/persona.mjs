@@ -287,6 +287,13 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   const asked = (row) => [{ kind: 'user', text: 'draw it' }, row, { kind: 'assistant', text: 'On its way.' }];
   assert.deepEqual([...turnsWithoutPicture(asked(making))], [], 'a picture being made is still out');
   assert.deepEqual([...turnsWithoutPicture(asked(failed))], [2], 'one that failed late was not drawn');
+  // A row the page read back from the transcript (a reload while the picture
+  // was drawn) carries its call's id, and the late result lands on it.
+  const { applyEvent, emptyRun } = await import('../src/lib/persona.js');
+  const reread = emptyRun([{ kind: 'user', text: 'draw it' }, { ...making, id: 'c1' }]);
+  const landed = applyEvent(reread, { type: 'tool_result', id: 'c1', name: 'image_generate', is_error: false, preview: 'image: images/a.png' });
+  assert.equal(landed.entries[1].preview, 'image: images/a.png');
+  assert.ok(!stillOut(landed.entries[1]));
   // The same steered turn as a reload reads it: the steer after the tool
   // rows, marked `steered` by the server (`transcript_entries`).
   const reloaded = [
