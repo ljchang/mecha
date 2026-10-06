@@ -1637,6 +1637,7 @@ impl Agent {
         self.prior_thinking.wire_bytes(messages)
             - self.prior_tails.dropped_bytes(messages)
             - self.prior_nudges.dropped_bytes(messages)
+            - crate::message::superseded_head_bytes(messages, &notes.head)
             + crate::message::notes_bytes(&notes.head)
             + crate::message::notes_bytes(&notes.tail)
     }
@@ -6798,6 +6799,51 @@ mod tests {
             calendar_blocks(&seen[0]).len(),
             1,
             "the replay was told no date"
+        );
+    }
+
+    /// A chat recorded before the reference became a note holds its first
+    /// day's reference in `messages[0]`, and the note lands in the same
+    /// message: the old one is left out, or two references "at the start of
+    /// the conversation" reach the model with the stale one first (review
+    /// of #577). The count of what was sent leaves it out too.
+    #[tokio::test]
+    async fn a_resumed_chat_sends_only_todays_reference() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-20T13:21:33Z"));
+        let (agent, provider) = agent_on_a_clock(
+            &clock,
+            chrono::Duration::zero(),
+            vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+        );
+        let mut first = Message::user("what day is it?");
+        first.content.push(Block::text(format!(
+            "{} Sunday, 13 September 2026",
+            crate::date_context::REFERENCE_STEM
+        )));
+        let history = vec![
+            first,
+            Message::assistant(vec![Block::text("Sunday.")]),
+            Message::user("and now?"),
+        ];
+        let notes = RequestNotes {
+            head: agent.calendar_note().into_iter().collect(),
+            tail: Vec::new(),
+        };
+        let sent = crate::pressure::message_bytes(&agent.wire(&history, &notes));
+        assert_eq!(
+            agent.wire_bytes(&history, &notes),
+            sent,
+            "the count includes the stale reference"
+        );
+
+        let mut convo = Conversation::from(history);
+        agent.run(&mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        let refs = calendar_blocks(&seen[0]);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert!(
+            !refs[0].contains("13 September"),
+            "the stale reference was sent: {refs:?}"
         );
     }
 
