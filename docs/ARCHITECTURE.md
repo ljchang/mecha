@@ -30,12 +30,18 @@ Two different things, and the difference is the point:
     picture into a cancel-and-retry loop on calls.
     `PERSONA-CONTEXT-DESIGN.md` §5.4 removes this one by making a picture a
     job that the barge-in does not touch.
-  - `document_read` passes the cancel into the extractor (`tool/document.rs`,
-    `Extractor::extract`), which drops the page in flight and returns the
-    pages already transcribed, recording that it stopped early
-    (`Extraction::cancelled`).
+  - `document_read` passes the cancel into the extractor (`tool/document.rs`;
+    `Extractor::extract` is in `document.rs`), which drops the page in flight
+    and returns the pages already transcribed, recording that it stopped
+    early (`Extraction::cancelled`).
+  - A persona's `file_read` (`persona::files::FileRead`) passes it into the
+    same extractor, so a call's barge-in stops an OCR pass the same way and
+    the pages already read come back.
   - `subagent` runs its child on the caller's token, so cancelling the parent
     cancels the child mid-call and the tool returns the child's partial run.
+
+  The set is every tool that hands `ctx.cancel` to its work: a grep for it
+  outside tests finds them.
 - **Steer** (`RunContext::queued_input`) redirects a run *without* stopping it.
   Text queued mid-run is folded into the message carrying the tool results, so
   the model sees the results and the new instruction as one user turn and keeps

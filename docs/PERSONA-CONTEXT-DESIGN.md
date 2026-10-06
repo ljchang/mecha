@@ -64,8 +64,7 @@ the repository (§8).
 - **A call's barge-in** (`persona_chat::speak`) cancels the run in flight (`CancelReason::Stopped`).
   `image_generate` honours that cancel and stops the ComfyUI job, because the chat's Stop button
   needs exactly that. The result is "Cancelled — the generation was stopped and nothing was
-  saved." It is one of the tools that do slow work under the run's token and so are interrupted
-  mid-call (`document_read` and `subagent` are the others). `ARCHITECTURE.md` §Interruption and
+  saved." It is one of the tools a cancel interrupts mid-call. `ARCHITECTURE.md` §Interruption and
   steering keeps that set. Steered owner speech is folded in
   after that result.
 - **Persona chats are unseeded** (`setup::persona_provider_config`, `PersonaUse::Converse`). The
@@ -245,7 +244,8 @@ what is true for this run. Nothing a component says is written into the conversa
   (`Taint::arm_for_notes`). Missing it would silently un-arm `private_data` in exactly these chats,
   with every test over `arm_for_content` still green. Memory of the owner arms `private`, and
   memory first read from outside also arms `untrusted`. Taint stays a property of the conversation
-  and is recorded as before, so a later turn without the note stays armed. The transcript is also
+  and is recorded as before, so a later turn without the note stays armed. A subagent never
+  inherits its parent's notes: they speak to the run that set them. The transcript is also
   how a torn taint record is re-derived, and the notes are no longer in its messages. So
   `Session::read` arms from the recorded notes (`Record::Notes`) by the same rule.
 - **The record.** The session records each run's notes in their own record (`Record::Notes`). A
@@ -286,7 +286,8 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
     it. `image_generate` is the case: a cancel saves nothing.
   - A cancelled call that delivered part of its work stays, as that part. A cancelled
     `document_read` returns the pages it already transcribed, and a reply may already quote them.
-    So may a subagent's partial run.
+    So does a persona's `file_read`, whose replies cite pages by number, and a subagent's partial
+    run.
   - The tool says which it was, by a typed mark on its result. The projection never matches
     the result's wording.
 - No message is ever sent empty: an empty message is a 400 everywhere. An assistant message left
@@ -299,9 +300,9 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
 - **Its place among the views.** It is the first view that removes whole messages, so it runs
   last among them, after `PriorNudges` and before the run's notes are attached. Any view that
   locates blocks by position must run on the history before it does.
-  - On main before #572, `PriorNudges` indexed the recorded history and its views' output in
-    step, on the stated precondition that no view removes a message. #572 makes it compute on its
-    own input. The ordering still holds for any later view.
+  - Before #572, `PriorNudges` indexed the recorded history and its views' output in step, on the
+    stated precondition that no view removes a message. #572 makes it compute on its own input.
+    The ordering still holds for any later view.
 - **Its accounting.** `Agent::wire_bytes` gets its own subtraction for the messages it removes,
   beside its addition for the notes (#572). A pressure reading and the request it predicts must
   describe the same bytes.
