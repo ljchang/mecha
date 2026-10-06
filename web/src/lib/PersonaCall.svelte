@@ -47,7 +47,12 @@
     // conversation as the chat shows it (the owner's ask, 2026-10-05).
     transcript = [],
     streaming = null,
+    // The chat's support resources once it has shown a crisis card, else
+    // null: the call screen covers the chat, so it offers them itself, one
+    // tap away, as the chat does (owner ruling, 2026-09-30).
+    resources = null,
   } = $props();
+  let showResources = $state(false);
 
   let open = $state(false);
   let session = null;
@@ -345,12 +350,22 @@
       {#each transcript as line}
         {#if line.who === 'user'}
           <div class="said">{line.text}</div>
+        {:else if line.who === 'crisis'}
+          <!-- The plain voice, not the persona: what the call just said. -->
+          <div class="crisis" role="alert">{line.text}</div>
         {:else if line.picture}
           <div class="heard pictured">{line.text}</div>
         {:else}
           <div class="heard"><ChatProse text={line.text} /></div>
         {/if}
       {/each}
+      {#if resources}
+        {#if showResources}
+          <div class="crisis" role="note">{resources}</div>
+        {:else}
+          <button class="resources" onclick={() => (showResources = true)}>support resources</button>
+        {/if}
+      {/if}
       {#if replying}
         <div class="heard"><ChatProse text={replying} /></div>
       {/if}
@@ -651,7 +666,29 @@
     color: var(--text-muted);
     font-style: italic;
   }
+  /* A crisis pause and the support resources, as the chat's card draws them. */
+  .crisis {
+    background: var(--surface);
+    border: 1px solid var(--accent-500);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+  .resources {
+    align-self: flex-start;
+    background: none;
+    border: 0;
+    padding: 4px 0;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12.5px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   .said {
+    white-space: pre-wrap;
     align-self: flex-end;
     max-width: 84%;
     background: var(--surface);

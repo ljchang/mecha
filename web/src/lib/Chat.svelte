@@ -3586,6 +3586,7 @@
     gap: 10px;
   }
   .vbubble {
+    white-space: pre-wrap;
     align-self: flex-end;
     max-width: 84%;
     background: var(--surface);
