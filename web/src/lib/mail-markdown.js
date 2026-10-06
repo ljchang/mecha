@@ -285,7 +285,9 @@ const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const BULLET = /^\s{0,3}[-*+•]\s+(.*)$/;
 const ORDERED = /^\s{0,3}(\d{1,3})[.)]\s+(.*)$/;
 const QUOTE = /^\s{0,3}>\s?(.*)$/;
-const FENCE = /^\s{0,3}(```|~~~)/;
+// Exported so a reader that must agree with the renderer about what is a
+// code block (`speech.js` `withoutPictureRefs`) uses this rule, not a copy.
+export const FENCE = /^\s{0,3}(```|~~~)/;
 
 /** Below this, a line ended where its writer ended it; at or above, a mail client wrapped it. */
 const WRAP_AT = 60;
