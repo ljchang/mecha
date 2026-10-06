@@ -18,6 +18,10 @@ pub(super) struct Jobs {
     pub(super) queue: std::sync::Arc<mecha_core::jobs::JobQueue>,
     delivered: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Delivered>>>,
     started: std::sync::Once,
+    /// Run numbers, unique across the process: a chat removed from the map
+    /// and opened again gets a fresh `LateState`, and its numbers must never
+    /// meet an earlier incarnation's job (review of #583).
+    next_run: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for Jobs {
@@ -29,11 +33,18 @@ impl Default for Jobs {
             }),
             delivered: std::sync::Mutex::new(Some(rx)),
             started: std::sync::Once::new(),
+            next_run: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
 
 impl Jobs {
+    /// Number the run about to start, for its sink and its `LateState`.
+    pub(super) fn number(&self) -> usize {
+        self.next_run
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Hand the finished jobs to `deliver`, once: the first call takes the
     /// receiver, every later one does nothing.
     pub(super) fn start(
@@ -61,17 +72,9 @@ pub(super) struct LateState {
     /// How many runs the transcript holds an outcome for: the ordinal the
     /// next run's outcome takes.
     runs_recorded: usize,
-    /// The turns this process has started on the conversation, numbered: a
-    /// run's jobs carry its number (`JobQueue::sink`), and `outcome_of` maps
-    /// each run that handed back `Ok` to the ordinal of the outcome it wrote
-    /// — which a late failure books against (`Record::LateFailure`) — or to
-    /// `None` when that write failed: its call is still in the conversation,
-    /// so its picture still lands, and only the booking has nowhere to go
-    /// (review of #583). A run that ended in error has no entry: it was
-    /// rolled back, call and all, so its job's late result books and notes
-    /// nothing (review of #573, pass 9).
-    turns: usize,
-    outcome_of: HashMap<usize, Option<usize>>,
+    /// How each of this conversation's runs ended, by its number
+    /// (`Jobs::number`, which its jobs carry): what a late result may do.
+    ended: HashMap<usize, RunEnd>,
 }
 
 impl LateState {
@@ -93,20 +96,18 @@ impl LateState {
             .unwrap_or_default()
     }
 
-    /// Number the run about to start.
-    pub(super) fn next_turn(&mut self) -> usize {
-        let turn = self.turns;
-        self.turns += 1;
-        turn
-    }
-
-    /// Run `turn` handed back `Ok`, and `wrote` its outcome or did not.
-    pub(super) fn ended_ok(&mut self, turn: usize, wrote: bool) {
-        let ordinal = wrote.then_some(self.runs_recorded);
-        self.outcome_of.insert(turn, ordinal);
-        if wrote {
-            self.runs_recorded += 1;
-        }
+    /// Run `run` handed back: `ok` or rolled back, and whether it `wrote`
+    /// its outcome.
+    pub(super) fn ended(&mut self, run: usize, ok: bool, wrote: bool) {
+        let end = match (ok, wrote) {
+            (false, _) => RunEnd::RolledBack,
+            (true, false) => RunEnd::Unwritten,
+            (true, true) => {
+                self.runs_recorded += 1;
+                RunEnd::Wrote(self.runs_recorded - 1)
+            }
+        };
+        self.ended.insert(run, end);
     }
 
     /// The notes owed to the run about to start.
@@ -114,11 +115,27 @@ impl LateState {
         std::mem::take(&mut self.notes)
     }
 
-    /// Forget which outcome each run wrote, as if each had failed.
+    /// Forget how every run ended, as a reopened chat would.
     #[cfg(test)]
     pub(super) fn forget_outcomes(&mut self) {
-        self.outcome_of.clear();
+        self.ended.clear();
     }
+}
+
+/// How a run handed its conversation back, for its jobs' late results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunEnd {
+    /// It wrote its outcome, this ordinal among the file's: a late failure
+    /// books against it.
+    Wrote(usize),
+    /// It ended `Ok` but its outcome did not write: its call is still in the
+    /// conversation, so its picture still lands, and only the booking has
+    /// nowhere to go (review of #583).
+    Unwritten,
+    /// It ended in error and was rolled back, call and all: its job's late
+    /// result has no message to land in, no run and no note (review of #573,
+    /// pass 9).
+    RolledBack,
 }
 
 /// What the next run is told when a late result has arrived since the last
@@ -153,16 +170,23 @@ pub(super) fn land(
     convo: &mut Conversation,
     late: &Delivered,
 ) {
-    let run = state.outcome_of.get(&late.run).copied();
+    let end = state.ended.get(&late.run).copied();
     // What came back entered whatever happened to the call, so its taint is
     // armed and recorded on every path below.
     let out = late.settle(&mut convo.taint);
-    // The run that made the call ended in error: it was rolled back, call
-    // and all, so there is no result to rewrite, no run to book a failure
-    // against, and no picture the model knows it asked for.
-    let Some(run) = run else {
-        let _ = session.append(&Record::Taint(convo.taint));
-        return;
+    let run = match end {
+        Some(RunEnd::Wrote(ordinal)) => Some(ordinal),
+        Some(RunEnd::Unwritten) => None,
+        // Rolled back, call and all: no result to rewrite, no run to book a
+        // failure against, no picture the model knows it asked for. And a
+        // run this conversation never saw — an earlier incarnation's, which
+        // its removal should have stopped (`release_*` refuse while a job is
+        // out) — is no answer to anything here either: whatever settled that
+        // call on reopening stands.
+        Some(RunEnd::RolledBack) | None => {
+            let _ = session.append(&Record::Taint(convo.taint));
+            return;
+        }
     };
     if let Some(index) = convo.apply_late(&late.call_id, &out.content, out.is_error, out.external) {
         if let Err(e) = session.append(&Record::LateResult {

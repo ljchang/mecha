@@ -4527,6 +4527,15 @@ invariants:
   hand-back, because a run that ended in error writes none and was rolled
   back, call and all. `Record::PendingNote` is the next run's "it arrived",
   owed until a run records an outcome.
+- **A `post_tool` hook sees the immediate answer only.** It fires in
+  `run_tools` with "being made: …"; the late result reaches no hook, so a
+  hook that watched `image_generate` for the finished path no longer sees it
+  (review of #583).
+- **A conversation with a job out is not let go of.** Archive, delete and a
+  task hand-over refuse while its job runs, as they refuse while a run does:
+  the result lands in this process's copy, and a reopened one would settle
+  it as never made. Run numbers are process-wide (`late::Jobs::number`), and
+  a late result from a run its conversation never saw changes nothing.
 - **A restart is repaired from the artifact, not the absent job.** A resumed
   chat's "being made" result becomes the picture only when a manifest in
   `images/` names the call's `tool_use_id`; anything else is

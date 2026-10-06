@@ -112,9 +112,7 @@ pub struct PersonaChats {
     /// picture drawn past the turn that asked for it, one in flight per chat
     /// key. A finished one comes back through `delivered`, drained by the
     /// task the first turn starts (`start_delivery`).
-    jobs: Arc<mecha_core::jobs::JobQueue>,
-    delivered: StdMutex<Option<tokio::sync::mpsc::UnboundedReceiver<mecha_core::jobs::Delivered>>>,
-    delivering: std::sync::Once,
+    jobs: super::late::Jobs,
 }
 
 /// A spoken turn's other end (§11): the voice facade's tap on the run's
@@ -539,7 +537,6 @@ impl PersonaChats {
     }
 
     fn with(store: PathBuf, work: PathBuf, provider: ProviderFactory) -> Self {
-        let (deliver, delivered) = tokio::sync::mpsc::unbounded_channel();
         PersonaChats {
             store,
             work,
@@ -550,11 +547,7 @@ impl PersonaChats {
             reading: Arc::new(tokio::sync::Semaphore::new(1)),
             calls: StdMutex::new(HashMap::new()),
             next_call: std::sync::atomic::AtomicU64::new(1),
-            jobs: mecha_core::jobs::JobQueue::new(move |d| {
-                let _ = deliver.send(d);
-            }),
-            delivered: StdMutex::new(Some(delivered)),
-            delivering: std::sync::Once::new(),
+            jobs: Default::default(),
         }
     }
 
@@ -2437,7 +2430,7 @@ impl PersonaChats {
         // two calls here, so no new `CancelReason`. The call screen's picture
         // slot stops the picture alone (ruling Q2), and leaves the persona
         // speaking.
-        let job = self.jobs.cancel(key);
+        let job = self.jobs.queue.cancel(key);
         if picture_only {
             return Ok(job);
         }
@@ -2454,10 +2447,7 @@ impl PersonaChats {
     /// the first turn, which is when there is a runtime and a job to wait
     /// for. It holds the chats weakly, so it ends with them.
     fn start_delivery(self: &Arc<Self>) {
-        self.delivering.call_once(|| {
-            let Some(mut rx) = self.delivered.lock().ok().and_then(|mut r| r.take()) else {
-                return;
-            };
+        self.jobs.start(|mut rx| {
             let chats = Arc::downgrade(self);
             tokio::spawn(async move {
                 while let Some(late) = rx.recv().await {
@@ -2478,6 +2468,7 @@ impl PersonaChats {
         let mut sessions = self.sessions.lock().await;
         let Some(ps) = sessions.get_mut(&late.key) else {
             tracing::warn!(key = %late.key, "a finished job's chat is gone");
+            self.jobs.queue.landed(&late.key, &late.call_id);
             return;
         };
         let event = WireEvent::ToolResult {
@@ -2490,7 +2481,7 @@ impl PersonaChats {
             super::late::land(&mut ps.late, &ps.session, convo, &late);
             // In the conversation now, taint and all: the send gate lets
             // it go. Held for a hand-back, it stays pending until then.
-            self.jobs.landed(&late.key, &late.call_id);
+            self.jobs.queue.landed(&late.key, &late.call_id);
         } else {
             ps.late.held.push(late);
         }
@@ -3431,8 +3422,8 @@ impl PersonaChats {
         // A picture outlives the turn that asked for it (§5.4): the run hands
         // it to this chat's slot in the queue and answers at once.
         self.start_delivery();
-        let turn = ps.late.next_turn();
-        cx.jobs = Some(self.jobs.sink(key, turn));
+        let turn = self.jobs.number();
+        cx.jobs = Some(self.jobs.queue.sink(key, turn));
         // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
         if spoken_turn {
             cx = cx.with_think_budget(SPOKEN_THINK_BUDGET);
@@ -3592,16 +3583,14 @@ impl PersonaChats {
                 // its held pictures land, or a late failure of its own books
                 // against no run; and they land before `Done` (sent below,
                 // after the lock), so the page's re-read finds them on file.
-                if run_ok {
-                    ps.late.ended_ok(turn, outcome_recorded);
-                }
+                ps.late.ended(turn, run_ok, outcome_recorded);
                 // Pictures that finished while this run held the chat: into
                 // the record now, before `Done` sends the page to re-read.
                 for late in std::mem::take(&mut ps.late.held) {
                     if let Some(convo) = ps.conversation.as_mut() {
                         super::late::land(&mut ps.late, &ps.session, convo, &late);
                     }
-                    chats.jobs.landed(&key, &late.call_id);
+                    chats.jobs.queue.landed(&key, &late.call_id);
                 }
                 // A compaction may have summarised the Core away (§12.5).
                 if compacted || owed_anchor {
@@ -7560,8 +7549,7 @@ mod tests {
         ps.session
             .append(&Record::Outcome(Default::default()))
             .unwrap();
-        let run = ps.late.next_turn();
-        ps.late.ended_ok(run, true);
+        ps.late.ended(0, true, true);
         ps.conversation.as_mut().unwrap().messages.extend(turn);
         ps.session.path.clone()
     }
@@ -7759,7 +7747,7 @@ mod tests {
             let mut sessions = w.chat.personas.sessions.lock().await;
             let late = &mut sessions.get_mut(&key).unwrap().late;
             late.forget_outcomes();
-            late.ended_ok(0, false);
+            late.ended(0, true, false);
         }
         w.personas()
             .deliver(late(
@@ -7794,6 +7782,7 @@ mod tests {
         );
         w.personas()
             .jobs
+            .queue
             .submit(&key, 0, "c1", "image_generate", job)
             .unwrap();
         assert!(w
@@ -7802,7 +7791,7 @@ mod tests {
             .await
             .unwrap());
         for _ in 0..200 {
-            if w.personas().jobs.pending(&key).is_none() {
+            if w.personas().jobs.queue.pending(&key).is_none() {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
