@@ -424,7 +424,11 @@ fn images_and_links(s: &str) -> String {
     out
 }
 
-/// A bare `http(s)://` address, up to the next space, as "a link".
+/// What may close a sentence or a bracket right after an address.
+const URL_TAIL: [char; 12] = ['.', ',', '!', '?', ';', ':', '\'', '"', ')', ']', '”', '’'];
+
+/// A bare `http(s)://` address, up to the next space less the punctuation
+/// that ends it, as "a link".
 fn bare_urls(s: &str) -> String {
     let mut out = String::new();
     let mut i = 0;
@@ -444,10 +448,26 @@ fn bare_urls(s: &str) -> String {
             continue;
         }
         out.push_str(&s[i..at]);
-        out.push_str("a link");
-        i = s[at..]
+        let end = s[at..]
             .find(char::is_whitespace)
             .map_or(s.len(), |k| at + k);
+        // Up to the next space, less the punctuation that ends it: the
+        // sentence's own stop is not the address's (review of #574 — "Read
+        // https://a.io/x. It's good." was one sentence with "a link" in it).
+        let scheme = if s[at..].starts_with("https://") {
+            8
+        } else {
+            7
+        };
+        let url = s[at..end].trim_end_matches(URL_TAIL);
+        if url.len() > scheme {
+            out.push_str("a link");
+            i = at + url.len();
+        } else {
+            // A scheme with nothing after it is no address.
+            out.push_str(&s[at..end]);
+            i = end;
+        }
     }
     out.push_str(&s[i..]);
     out
