@@ -24,6 +24,7 @@
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
+  import { historyLines } from './call-lines.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
   // 2026-09-29: a tab of its own, not a mode of the assistant's chat).
   //
@@ -148,6 +149,13 @@
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
   const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
+  // The call screen shows the chat's own transcript, which the call's turns
+  // join as they happen (the owner's ask, 2026-10-05): one conversation, read
+  // from one place, so a re-read can never draw a line twice.
+  // Through `callEntries`, so a streamed token — which replaces `run` but not
+  // its entries — does not rebuild the call's transcript (review of #570).
+  const callEntries = $derived(run.entries);
+  const callTranscript = $derived(historyLines(callEntries));
   function placeCall() {
     callBefore = new Set(picturesIn(run.entries));
     caller?.start();
@@ -2030,6 +2038,11 @@
       display={chosen.display}
       face={callFace}
       pictures={callPictures}
+      transcript={callTranscript}
+      streaming={run.streaming}
+      resources={safety?.resources && (crisisShown || callEntries.some((e) => e.kind === 'crisis')) ? safety.resources : null}
+      {dismissed}
+      ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
       ondownload={savePicture}
       onedit={editInCall}

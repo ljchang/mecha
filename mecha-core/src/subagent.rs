@@ -396,6 +396,10 @@ impl Tool for Subagent {
             // whose agent has no subagents; a child's reasoning is its own
             // profile's business, like its `max_turns`.
             think_budget: None,
+            // Nor the parent's notes: they speak to the run that set them (a
+            // persona's call note to the persona), not to a child doing one
+            // of its calls.
+            notes: Arc::from(Vec::new()),
         };
 
         // If somebody is watching the parent run, forward the child's events

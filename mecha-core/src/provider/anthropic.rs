@@ -98,11 +98,16 @@ impl Anthropic {
         // transcript is append-only between turns, so each request is a strict
         // prefix of the next: this turn's cache write is next turn's cache
         // read, which is exactly the trade the write premium is for. Never on
-        // a thinking block — the API rejects the marker there.
+        // a thinking block — the API rejects the marker there. Nor on a run's
+        // notes (`req.trailing_notes`, the last blocks of the last message):
+        // this request alone carries them, so a write there is never read
+        // back, and the history before them is what the next request repeats.
         if req.cache_prompt {
+            let mut skip = req.trailing_notes;
             let last_block = messages.iter_mut().rev().find_map(|m| {
-                m.get_mut("content")?
-                    .as_array_mut()?
+                let blocks = m.get_mut("content")?.as_array_mut()?;
+                let take = blocks.len().saturating_sub(std::mem::take(&mut skip));
+                blocks[..take]
                     .iter_mut()
                     .rev()
                     .find(|b| b.get("type").and_then(Value::as_str) != Some("thinking"))
@@ -875,6 +880,7 @@ mod tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            trailing_notes: 0,
         }
     }
 
@@ -991,6 +997,56 @@ mod tests {
         let last = messages[2]["content"].as_array().unwrap();
         assert_eq!(
             last.last().unwrap()["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    /// A run's notes (`RunContext::notes`) ride the end of the last message
+    /// and this request alone: the marker goes on the block before them, the
+    /// last one the next request repeats. Notes that fill the whole message
+    /// push it back to the message before.
+    #[test]
+    fn the_moving_breakpoint_skips_a_runs_notes() {
+        let mut last = Message::user("second");
+        last.content
+            .push(Block::text("(From the harness: a note.)"));
+        last.content
+            .push(Block::text("(From the harness: another.)"));
+        let r = CompletionRequest {
+            cache_prompt: true,
+            messages: vec![
+                Message::user("first"),
+                Message::assistant(vec![Block::text("ok")]),
+                last,
+            ],
+            trailing_notes: 2,
+            ..req()
+        };
+        let body = client().body(&r, false).unwrap();
+        let blocks = body["messages"].as_array().unwrap()[2]["content"]
+            .as_array()
+            .unwrap();
+        assert_eq!(blocks[0]["cache_control"], json!({"type": "ephemeral"}));
+        assert!(blocks[1].get("cache_control").is_none());
+        assert!(blocks[2].get("cache_control").is_none());
+
+        let mut only = Message::user("");
+        only.content = vec![Block::text("(From the harness: a note.)")];
+        let r = CompletionRequest {
+            cache_prompt: true,
+            messages: vec![
+                Message::user("first"),
+                Message::assistant(vec![Block::text("ok")]),
+                only,
+            ],
+            trailing_notes: 1,
+            ..req()
+        };
+        let body = client().body(&r, false).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert!(!mentions_key(&messages[2], "cache_control"));
+        assert_eq!(
+            messages[1]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
     }
@@ -1266,6 +1322,7 @@ mod retry_tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            trailing_notes: 0,
         }
     }
 
@@ -2852,6 +2909,7 @@ text = "Leave work better than you found it."
                 cache_prompt: false,
                 think: None,
                 think_budget: None,
+                trailing_notes: 0,
             }
         };
         let plain_result = "1. [>] Draft a reply".to_string();

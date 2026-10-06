@@ -862,6 +862,7 @@ mod tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            trailing_notes: 0,
         }
     }
 
@@ -892,6 +893,7 @@ mod tests {
             .is_none());
         let capped = CompletionRequest {
             think_budget: Some(1024),
+            trailing_notes: 0,
             ..plain_req()
         };
         let body = local.body(&capped, false);
@@ -945,6 +947,7 @@ mod tests {
             &CompletionRequest {
                 think: Some(false),
                 think_budget: None,
+                trailing_notes: 0,
                 ..plain_req()
             },
             false,

@@ -15,11 +15,12 @@
 //!
 //! So the note names what is actually repeating rather than asking for
 //! variety in general: the opening word two of the last three replies share,
-//! if any, and the last three closing lines. It is folded beside the owner's
-//! words in the harness's voice ([`is_note`], registered in
-//! `agent::is_harness_voice`), so it is never drawn as theirs or mined as
-//! their correction. Measured on call turns; typed turns carry it too,
-//! unmeasured.
+//! if any, and the last three closing lines. It is one of the run's notes
+//! (`RunContext::notes`), so it is never stored beside the owner's words, and
+//! one note for one run is the condition it was measured in. [`is_note`] stays
+//! registered in `agent::is_harness_voice` for chats recorded before, so it is
+//! never drawn as the owner's or mined as their correction. Measured on call
+//! turns; typed turns carry it too, unmeasured.
 //!
 //! The openings and closers miss a passage lifted from the middle of an
 //! earlier reply, which is how a persona repeats itself around pictures: a
