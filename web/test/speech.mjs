@@ -24,6 +24,10 @@ const fenced = 'Like this:\n```\n[Image: images/a.png]\n```';
 assert.equal(withoutPictureRefs(fenced), fenced);
 const tilded = 'Like this:\n~~~\n[Image: images/a.png]\n~~~';
 assert.equal(withoutPictureRefs(tilded), tilded);
+// Only the same marker closes a fence: a ~~~ line inside a backtick block
+// leaves it open.
+const mixed = 'Like this:\n```\n~~~\n[Image: images/a.png]\n```';
+assert.equal(withoutPictureRefs(mixed), mixed);
 // Only the path a picture card stands in for.
 assert.equal(withoutPictureRefs('[Image: images/a b.png]'), '[Image: images/a b.png]');
 assert.equal(withoutPictureRefs('[Image: images/notes.txt]'), '[Image: images/notes.txt]');
