@@ -5,6 +5,11 @@
 // What a listener should not hear: Markdown's marks, a URL spelled out, a
 // code block read character by character, a persona's bracketed citation.
 // What they should: the words, a link's label, "from the field guide".
+//
+// A call speaks by the same rule, applied as the reply streams
+// (`mecha-cli/src/voice/speech.rs`); `test/speakable-cases.json` holds the
+// two to it, read by both suites — change a rule here and that file, and the
+// Rust test says whether the call still agrees.
 
 // A persona's citation, as the page parses it (`citeSegments`): `[file, p. N:
 // "quote"]` or `[file: "quote"]`. Spoken as where it came from.
@@ -29,7 +34,9 @@ export function speakable(text) {
   s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, alt) => (alt ? `a picture: ${alt}` : 'a picture'));
   s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
   // A bare URL is "a link", not its spelling.
-  s = s.replace(/\bhttps?:\/\/\S+/g, 'a link');
+  // Less the punctuation that ends it: the sentence's own stop is not the
+  // address's ("Read https://a.io/x. It's good." is two sentences).
+  s = s.replace(/\bhttps?:\/\/\S*[^\s.,!?;:'")\]”’]/g, 'a link');
   // Inline code keeps its words; the marks go.
   s = s.replace(/`([^`\n]+)`/g, '$1');
   const lines = s.split('\n').map((line) =>
@@ -39,7 +46,10 @@ export function speakable(text) {
       .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '') // list markers
       .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/, '') // rules
       .replace(/(\*\*|__)(.+?)\1/g, '$2') // bold
-      .replace(/(\*|_)(?=\S)(.+?)(?<=\S)\1/g, '$2') // italics
+      .replace(/\*(?=\S)(.+?)(?<=\S)\*/g, '$1') // italics
+      // Underscores only around words: one inside a word (snake_case) is
+      // the word's, as CommonMark has it.
+      .replace(/(?<![\p{L}\p{N}])_(?=\S)(.+?)(?<=\S)_(?![\p{L}\p{N}])/gu, '$1')
       .replace(/~~(.+?)~~/g, '$1')
       .replace(/\|/g, ' ') // table pipes
       .trim(),
@@ -48,7 +58,7 @@ export function speakable(text) {
   // ends a sentence when heard.
   return lines
     .filter((l) => l && !/^[-:\s]+$/.test(l))
-    .map((l) => (/[.!?:;)]$/.test(l) ? l : `${l}.`))
+    .map((l) => (/[.!?:;)。！？]$/.test(l) ? l : `${l}.`))
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();

@@ -52,6 +52,7 @@ use crate::GlobalOpts;
 
 pub mod confirm;
 mod direct;
+mod speech;
 
 pub use direct::DirectorSeed;
 pub(crate) use direct::{ask_on as ask_director_on, last_reply, Asked as DirectorAsked};
@@ -342,9 +343,21 @@ const MIN_SPAN_WORDS: usize = 2;
 /// The gate is cheap to be wrong about only because being wrong is rare,
 /// never because the consequence is mild — which is the argument for
 /// replacing it with the timing signal rather than loosening it.
+///
+/// **Against the reply as written and as spoken.** A call and Listen speak
+/// the reply tidied for the ear (`speech::speakable`): marks go — which
+/// `spoken_words` already ignored — but a URL is said as "a link", a code
+/// block as "There is a code block here.", a citation as "(from …)". The mic
+/// hears those words, which are no span of the text as written, so an echo
+/// of them kept the standing yes (review of #574). Either form counts: the
+/// union only ever finds more echoes, which only ever narrows.
 pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
+    is_a_span(utterance, last_reply) || is_a_span(utterance, &speech::speakable(last_reply))
+}
+
+fn is_a_span(utterance: &str, reply: &str) -> bool {
     let heard = spoken_words(utterance);
-    let said = spoken_words(last_reply);
+    let said = spoken_words(reply);
     if heard.len() < MIN_SPAN_WORDS || said.len() < heard.len() {
         return false;
     }
@@ -526,6 +539,23 @@ mod echo_span_tests {
     fn punctuation_and_case_do_not_hide_it() {
         assert!(echoes_the_last_reply("Delete it.", OFFER));
         assert!(echoes_the_last_reply("  DELETE  IT  ", OFFER));
+    }
+
+    /// The speaker plays the reply tidied for the ear, so what comes back
+    /// through the mic is the spoken form: the words the tidier says for a
+    /// code block or an address, which are in no span of the text as
+    /// written (review of #574).
+    #[test]
+    fn an_echo_of_what_was_spoken_is_our_own_voice() {
+        let reply = "Run this:\n```\nrm -rf old\n```\nOr read https://example.com/notes first.";
+        for heard in ["there is a code block here", "or read a link"] {
+            assert!(
+                echoes_the_last_reply(heard, reply),
+                "{heard:?} is what the speaker played"
+            );
+        }
+        // And the text as written still counts.
+        assert!(echoes_the_last_reply("rm rf old", reply));
     }
 
     #[test]
@@ -1459,16 +1489,30 @@ async fn pump(
     if disconnected {
         cancel.cancel(mecha_core::agent::CancelReason::Stopped);
     }
+    // The reply is written as the chat shows it, and tidied for the ear
+    // here, as it streams: no mark is ever spoken (`speech.rs`, the rule
+    // Listen applies on the page).
+    let mut tidy = speech::Tidier::default();
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     keepalive.reset();
     loop {
         tokio::select! {
-            ev = rx.recv() => match ev {
-                Some(AgentEvent::TextDelta(t)) if !disconnected => {
+            ev = rx.recv() => {
+                let (spoken, over) = match ev {
+                    Some(AgentEvent::TextDelta(t)) => (tidy.push(&t), false),
+                    // A turn's text is complete: what is held is the end of
+                    // a sentence, never the start of the next turn's.
+                    Some(AgentEvent::AssistantText(_)) => (tidy.finish(), false),
+                    Some(_) => (String::new(), false),
+                    // The run dropped its sender: it is over. The caller
+                    // collects the outcome.
+                    None => (tidy.finish(), true),
+                };
+                if !spoken.is_empty() && !disconnected {
                     // Kept because the speaker plays it: every delta of every
                     // turn is spoken, not just the final one, and all of it
                     // can echo. See `Streamed::said`.
-                    said.push_str(&t);
+                    said.push_str(&spoken);
                     // A memory bound, and deliberately in bytes: this one
                     // is about how large the buffer may grow, not about how
                     // much speech the window holds. The trim at return is
@@ -1476,16 +1520,15 @@ async fn pump(
                     if said.len() > 4 * crate::review_policy::SPOKEN_UNPROMPTED_CHARS {
                         keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
                     }
-                    let chunk = sse_chunk(id, model, json!({"content": t}), None);
+                    let chunk = sse_chunk(id, model, json!({"content": spoken}), None);
                     if write_chunk(stream, chunk.as_bytes()).await.is_err() {
                         cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                         disconnected = true;
                     }
                 }
-                Some(_) => {}
-                // The run dropped its sender: it is over. The caller
-                // collects the outcome.
-                None => break,
+                if over {
+                    break;
+                }
             },
             _ = keepalive.tick() => {
                 if !disconnected
@@ -1581,12 +1624,18 @@ async fn hosted_completion(
     // way. Found on review. (A turn that never *started* — a 503 — keeps
     // it for the retry; see `completion`.)
     let carry = shared.confirmations.take_carry(confirm_key).await;
+    // The blocking path's answer, tidied for the ear as `pump` tidies the
+    // stream: the body is what the speaker plays (`speech.rs`).
+    let heard = match &answer {
+        Ok(a) if !want_stream => speech::speakable(&a.text),
+        _ => String::new(),
+    };
     let offer = match &answer {
         // Everything the speaker played, which on the streaming path is
         // every turn's deltas and not just the last one's text. The blocking
         // path speaks a single JSON body, so its reply *is* the final turn.
-        Ok(a) => {
-            let spoken = if want_stream { &said } else { &a.text };
+        Ok(_) => {
+            let spoken = if want_stream { &said } else { &heard };
             offer_for_turn(shared, baseline, spoken, carry).await
         }
         Err(_) => None,
@@ -1614,8 +1663,8 @@ async fn hosted_completion(
     match answer {
         Ok(a) => {
             let content = match &offer {
-                Some(offer) => format!("{} {}", a.text, offer.speech),
-                None => a.text,
+                Some(offer) => format!("{heard} {}", offer.speech),
+                None => heard,
             };
             let written = write_json(
                 stream,
@@ -2432,9 +2481,14 @@ async fn completion(
     // after the answer, and only when there was one.
     // Consumed whatever the outcome, as on the hosted path.
     let carry = shared.confirmations.take_carry(&confirm_key).await;
+    // As on the hosted path: the blocking answer is what is heard.
+    let heard = match &outcome {
+        Ok(o) if !want_stream => speech::speakable(&o.text),
+        _ => String::new(),
+    };
     let offer = match &outcome {
-        Ok(o) => {
-            let spoken = if want_stream { &said } else { &o.text };
+        Ok(_) => {
+            let spoken = if want_stream { &said } else { &heard };
             offer_for_turn(shared, &outbox_baseline, spoken, carry).await
         }
         Err(_) => None,
@@ -2457,8 +2511,8 @@ async fn completion(
         match &outcome {
             Ok(o) => {
                 let content = match &offer {
-                    Some(offer) => format!("{} {}", o.text, offer.speech),
-                    None => o.text.clone(),
+                    Some(offer) => format!("{heard} {}", offer.speech),
+                    None => heard.clone(),
                 };
                 let written = write_json(
                     stream,
@@ -3343,6 +3397,87 @@ mod the_reply_reaches_the_wire {
             bytes.iter().all(|byte| *byte == 0),
             "a failed chunk was followed by more bytes"
         );
+    }
+
+    /// The blocking door speaks by the same rule as the stream: both
+    /// completions that answer with a JSON body (the hosted chat's and the
+    /// facade's own) send the tidied text, and seed the offer's window from
+    /// it, never the model's raw reply (review of #574: only `pump` was
+    /// tidied, so a client that left `stream` off heard the formatting).
+    #[test]
+    fn a_blocking_answer_is_tidied_too() {
+        let src = include_str!("mod.rs");
+        // Each door's own body, sliced at its signature and the closing brace
+        // at column zero, so a legitimate call elsewhere (the echo gate's)
+        // neither satisfies nor trips this. Needles assembled at run time,
+        // so this test's own text never matches them.
+        let tidy = ["speech::", "speakable("].concat();
+        for (door, who) in [("hosted_completion", "a"), ("completion", "o")] {
+            let sig = format!("\nasync fn {door}(");
+            let at = src.find(&sig).unwrap_or_else(|| panic!("`{door}` moved")) + 1;
+            let body = &src[at..][..src[at..].find("\n}\n").expect("a closing brace")];
+            assert!(
+                body.contains(&tidy),
+                "`{door}` answers a blocking request untidied"
+            );
+            for raw in [
+                format!("\"{{}} {{}}\", {who}.text"),
+                format!("None => {who}.text"),
+            ] {
+                assert!(
+                    !body.contains(&raw),
+                    "`{door}` builds its answer from the raw reply: {raw}"
+                );
+            }
+        }
+    }
+
+    /// What reaches the worker is what the owner should hear: a reply
+    /// written with Markdown goes out without its marks, and a turn's last
+    /// words end their sentence before the next turn's begin (the owner's
+    /// ask, 2026-10-06; `speech.rs`). Before the tidier, `**` and the link's
+    /// address went to the speech engine as written.
+    #[tokio::test]
+    async fn a_call_never_speaks_the_formatting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut sock = VoiceStream::new(sock, CancellationToken::new());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            for ev in [
+                AgentEvent::TextDelta("Let me **check**".into()),
+                AgentEvent::AssistantText("Let me **check**".into()),
+                AgentEvent::TextDelta("It sailed at [nine](https://example.com/t).".into()),
+            ] {
+                tx.send(ev).unwrap();
+            }
+            drop(tx);
+            let cancel = mecha_core::agent::CancelHandle::new();
+            let streamed = pump(&mut sock, "cmpl-test", "a-model", &mut rx, &cancel, true).await;
+            finish_stream(&mut sock, "cmpl-test", "a-model", None).await;
+            streamed.said
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        let said = server.await.unwrap();
+        let got = String::from_utf8_lossy(&got);
+        let spoken: String = got
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+            .filter_map(|v| {
+                v["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+
+        assert_eq!(spoken.trim(), "Let me check. It sailed at nine.", "{got:?}");
+        // The echo window holds what was heard, not what was written.
+        assert_eq!(said.trim(), spoken.trim());
     }
 
     #[tokio::test]
