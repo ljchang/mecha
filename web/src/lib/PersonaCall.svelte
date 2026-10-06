@@ -24,6 +24,8 @@
   import { apiFetch as fetch } from './api.js';
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
   import { chatUrl, hangUpReport } from './persona.js';
+  import { pendingSpeech } from './call-lines.js';
+  import ChatProse from './ChatProse.svelte';
 
   let {
     chatKey,
@@ -40,7 +42,21 @@
     // the edit as a line typed into the call: `say`). Null hides the button.
     ondownload = null,
     onedit = null,
+    // The chat's own transcript (`call-lines.js` `historyLines`), which the
+    // call's turns join as they happen, and the reply streaming in: the
+    // conversation as the chat shows it (the owner's ask, 2026-10-05).
+    transcript = [],
+    streaming = null,
+    // The chat's support resources once it has shown a crisis card, else
+    // null: the call screen covers the chat, so it offers them itself, one
+    // tap away, as the chat does (owner ruling, 2026-09-30).
+    resources = null,
+    // The chat's closed crisis cards (ids) and how to close one: a card
+    // closed in the chat stays closed here, and Close here closes it there.
+    dismissed = new Set(),
+    ondismiss = null,
   } = $props();
+  let showResources = $state(false);
 
   let open = $state(false);
   let session = null;
@@ -55,6 +71,24 @@
   let muted = $state(false);
   let entries = $state([]);
   let pane = $state(null);
+  // Held at the bottom while the owner is there, and left alone once they
+  // scroll up to read: what arrives (speech, a reply streaming in, a
+  // transcript re-read) never drags a reader back down (review of #570).
+  let stick = true;
+  function scrolled() {
+    if (pane) stick = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+  }
+  const replying = $derived(streaming ? streaming.trim() : '');
+  const speaking = $derived(pendingSpeech(entries, transcript));
+  $effect(() => {
+    // Nothing to follow, and nothing worth computing, with no call open: a
+    // persona reply streaming in a chat must not pay a pane's work per token
+    // for a pane that is not drawn (review of #570).
+    if (!open || !pane) return;
+    // Read what can grow, so the effect runs when any of it does.
+    void transcript.length, replying, speaking.length;
+    if (stick) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
+  });
   // The picture shown large: the newest, unless the owner tapped an earlier
   // one — and a new picture takes the stage again when it arrives.
   let picked = $state(null);
@@ -107,16 +141,24 @@
     } else {
       entries.push({ who, text, interim });
     }
-    requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
+    // A line growing in place changes no length the effect reads: follow it
+    // here, while the owner is at the bottom (review of #570).
+    if (stick) requestAnimationFrame(() => pane && (pane.scrollTop = pane.scrollHeight));
   }
 
   export function start({ keep = false } = {}) {
     if (!keep) entries = [];
+    // A reconnect supersedes the notices that led to it: keep the speech.
+    else entries = entries.filter((e) => e.who !== 'notice');
+    stick = true;
     // A line typed into another persona's call must not wait in this one's.
     if (!keep) {
       typed = '';
       typing = false;
       viewing = null;
+      // One screen serves every persona's call: resources opened on one
+      // are not left open on the next.
+      showResources = false;
     }
     // No hold outlives the call that took it. Unreachable today — the edit
     // modal's scrim covers the call button, and leaving the chat closes the
@@ -309,9 +351,45 @@
         {/if}
       {/if}
     </div>
-    <div class="call-pane" bind:this={pane} inert={!!viewing}>
-      {#each entries as entry}
-        <div class={entry.who === 'user' ? 'said' : 'heard'} class:interim={entry.interim}>{entry.text}</div>
+    <div class="call-pane" bind:this={pane} inert={!!viewing} onscroll={scrolled}>
+      <!-- Replies through the chat's own renderer, so a call formats one the
+           way the chat does (the owner's ask, 2026-10-06). -->
+      {#each transcript as line}
+        {#if line.who === 'user'}
+          <div class="said" class:undelivered={line.undelivered}>{line.text}{#if line.undelivered}<span class="lost">not delivered — send again</span>{/if}</div>
+        {:else if line.who === 'crisis'}
+          {#if !dismissed.has(line.id)}
+            <!-- The plain voice, not the persona: what the call just said. -->
+            <div class="crisis" role="alert">
+              <div class="crisistext">{line.text}</div>
+              {#if ondismiss}<button class="crisisclose" onclick={() => ondismiss(line.id)}>Close</button>{/if}
+            </div>
+          {/if}
+        {:else if line.picture}
+          <div class="heard pictured">{line.text}</div>
+        {:else}
+          <div class="heard"><ChatProse text={line.text} /></div>
+        {/if}
+      {/each}
+      {#if resources}
+        {#if showResources}
+          <div class="crisis" role="note">
+            <div class="crisistext">{resources}</div>
+            <button class="crisisclose" onclick={() => (showResources = false)}>Close</button>
+          </div>
+        {:else}
+          <button class="resources" onclick={() => (showResources = true)}>support resources</button>
+        {/if}
+      {/if}
+      {#if replying}
+        <div class="heard"><ChatProse text={replying} /></div>
+      {/if}
+      {#each speaking as entry}
+        {#if entry.who === 'notice'}
+          <div class="heard callnote">{entry.text}</div>
+        {:else}
+          <div class="said" class:interim={entry.interim}>{entry.text}</div>
+        {/if}
       {/each}
     </div>
     <form class="typerow" inert={!!viewing} onsubmit={(e) => { e.preventDefault(); sendTyped(); }}>
@@ -594,7 +672,66 @@
   .call-pane:empty {
     display: none;
   }
+  /* A picture in the transcript, as a line. */
+  .pictured {
+    font-style: italic;
+  }
+  /* The call's own state — a dead mic, a dropped line — never speech. */
+  .callnote {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  /* A crisis pause and the support resources, as the chat's card draws them. */
+  .crisis {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--accent-500);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+  }
+  .crisistext {
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+  .crisisclose {
+    align-self: flex-start;
+    min-height: 32px;
+    padding: 0 12px;
+    background: transparent;
+    border: 1px solid var(--accent-900);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  /* A line the chat dropped: shown, and said so. */
+  .said.undelivered {
+    color: var(--text-muted);
+  }
+  .lost {
+    display: block;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-muted);
+  }
+  .resources {
+    align-self: flex-start;
+    background: none;
+    border: 0;
+    padding: 4px 0;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12.5px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   .said {
+    white-space: pre-wrap;
     align-self: flex-end;
     max-width: 84%;
     background: var(--surface);
