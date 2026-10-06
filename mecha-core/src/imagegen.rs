@@ -5050,6 +5050,14 @@ mod tests {
             "{}",
             out.content
         );
+        // The new picture's status comes first, so "it" never reads as the
+        // original (review of #581).
+        let screen = out
+            .content
+            .find("The new picture is on the owner's screen")
+            .unwrap();
+        let original = out.content.find("inbox/me.jpg is unchanged.").unwrap();
+        assert!(screen < original, "{}", out.content);
         let seen = seen.lock().unwrap().clone();
         let upload = seen
             .iter()
@@ -7154,7 +7162,7 @@ mod tests {
             out.content
                 .contains("Its layout came back nearly the same as images/orig.png's")
                 && !out.content.contains("say so")
-                && !out.content.contains("call image_generate again")
+                && !out.content.contains(" again")
                 && !out.content.contains("If they ask"),
             "{}",
             out.content
