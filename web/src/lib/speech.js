@@ -33,20 +33,26 @@ function fileWords(file) {
 // (review of #578).
 const PICTURE_REF = /^[ \t]*\[\s*image\s*:\s*images\/[A-Za-z0-9._-]+\.png\]\s*$/i;
 
+// The renderer's own fence rule (`mail-markdown.js` `parseBlocks`): a fence
+// opens on ``` or ~~~ indented at most three spaces, and only the same
+// marker closes it (review of #578).
+const DISPLAY_FENCE = /^ {0,3}(```|~~~)/;
+// Speech's: the call's tidier (`voice::speech::Tidier`) knows only ```, so
+// Listen keeps to the same rule, or a `~~~` block would be read on one and
+// silent on the other (review of #578, pass 2; `speakable-cases.json`).
+const SPOKEN_FENCE = /^ {0,3}(```)/;
+
 /** `text` without its picture-reference lines (`PICTURE_REF`), for display.
  * Never inside a fenced code block: a block shows what was written, whole
  * (review of #578). */
-export function withoutPictureRefs(text) {
+export function withoutPictureRefs(text, fenceRule = DISPLAY_FENCE) {
   const s = String(text ?? '');
   if (!s.includes('[')) return s;
-  // The renderer's own fence rule (`mail-markdown.js` `parseBlocks`): a
-  // fence opens on ``` or ~~~ indented at most three spaces, and only the
-  // same marker closes it (review of #578).
   let fence = null;
   return s
     .split('\n')
     .filter((line) => {
-      const m = /^ {0,3}(```|~~~)/.exec(line);
+      const m = fenceRule.exec(line);
       if (m && (fence === null || m[1] === fence)) {
         fence = fence === null ? m[1] : null;
         return true;
@@ -58,7 +64,7 @@ export function withoutPictureRefs(text) {
 
 /** `text` (a reply's Markdown) as plain sentences to speak. */
 export function speakable(text) {
-  let s = withoutPictureRefs(text);
+  let s = withoutPictureRefs(text, SPOKEN_FENCE);
   // Code blocks: never read out.
   s = s.replace(/```[\s\S]*?(```|$)/g, '\nThere is a code block here.\n');
   // Citations, before links (both are bracketed).

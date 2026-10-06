@@ -1918,7 +1918,7 @@
              (`reply-export.js`), so the server keeps no trace, and a reply
              saved to the device is the owner's own act, like text copied
              out (INCOGNITO-DESIGN §1, R2's refinement). -->
-        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, ...ownerVoice(), ...replyContext(entries, i) } : null} download /></div>
+        <div class="answer"><ChatProse text={entry.text} actions="mecha" listen={isShown(features.rows, 'calls') ? { chat: key, ...ownerVoice(), ...replyContext(entries, i) } : null} hidePictureRefs download /></div>
       {:else if entry.kind === 'tool'}
         <!-- The chip names the call and says which one it was; the tap opens
              the whole of it — what it was called with, then what came back,
@@ -2215,7 +2215,7 @@
       {/if}
     {/each}
     {#if streaming}
-      <div class="answer"><ChatProse text={streaming} /></div>
+      <div class="answer"><ChatProse text={streaming} hidePictureRefs /></div>
     {/if}
     {#if running && !streaming}
       <div class="thinking">
@@ -2360,11 +2360,11 @@
           {:else}
             <!-- The chat's own renderer, so a call formats a reply the way
                  the chat does (the owner's ask, 2026-10-06). -->
-            <div class="vanswer"><ChatProse text={line.text} /></div>
+            <div class="vanswer"><ChatProse text={line.text} hidePictureRefs /></div>
           {/if}
         {/each}
         {#if vReplying}
-          <div class="vanswer"><ChatProse text={vReplying} /></div>
+          <div class="vanswer"><ChatProse text={vReplying} hidePictureRefs /></div>
         {/if}
         {#each vSpeaking as entry}
           {#if entry.who === 'notice'}

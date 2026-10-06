@@ -386,7 +386,7 @@
             <img src={pictureUrl(line.picture)} alt={line.text} loading="lazy" onload={() => stick && pane && (pane.scrollTop = pane.scrollHeight)} />
           </button>
         {:else}
-          <div class="heard"><ChatProse text={line.text} /></div>
+          <div class="heard"><ChatProse text={line.text} hidePictureRefs /></div>
         {/if}
       {/each}
       {#if resources}
@@ -400,7 +400,7 @@
         {/if}
       {/if}
       {#if replying}
-        <div class="heard"><ChatProse text={replying} /></div>
+        <div class="heard"><ChatProse text={replying} hidePictureRefs /></div>
       {/if}
       {#each speaking as entry}
         {#if entry.who === 'notice'}
