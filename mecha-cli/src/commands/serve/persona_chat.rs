@@ -204,25 +204,9 @@ struct PersonaSession {
     /// The reply being read aloud, while a Listen tap speaks it
     /// (`listen::Reply`): here so it goes when this chat does.
     listen: Option<Arc<super::listen::Reply>>,
-    /// Late results that arrived while a run held the conversation, applied
-    /// when it hands the conversation back, before its end event sends the
-    /// page to re-read (`docs/BACKGROUND-JOBS-DESIGN.md` §2.3).
-    late: Vec<mecha_core::jobs::Delivered>,
-    /// Notes owed to the next run — a late result's "it has arrived" —
-    /// recorded as `Record::PendingNote` and taken by the next turn.
-    late_notes: Vec<String>,
-    /// How many runs this transcript holds an outcome for: the ordinal the
-    /// next run's outcome takes.
-    runs_recorded: usize,
-    /// The turns this process has started on the chat, numbered: a run's
-    /// jobs carry its number (`JobQueue::sink`), and `outcome_of` maps it to
-    /// the ordinal of the outcome the run wrote when it handed back — which
-    /// a late failure books against (`Record::LateFailure`). A run that
-    /// ended in error wrote none, and its call was rolled back with it, so
-    /// it has no entry and its job's late result books and notes nothing
-    /// (review of #573, pass 9).
-    turns: usize,
-    outcome_of: HashMap<usize, usize>,
+    /// Pictures that finished after the turn that asked for them, and what
+    /// the next run is owed about them (`late`).
+    late: super::late::LateState,
 }
 
 struct Live {
@@ -240,121 +224,6 @@ struct Live {
     /// picture… 1:24" rather than "typing" (review of #431). Set and cleared
     /// by the run's event forwarder ([`track_working`]).
     working: Arc<StdMutex<Vec<serde_json::Value>>>,
-}
-
-/// What the next run is told when a late result has arrived since the last
-/// reply: the call and what its result now reads, facts only (§5.2) — what
-/// to do about it is the tool description's. Capped, since it rides every
-/// request of that run.
-fn arrived_note(tool: &str, content: &str) -> String {
-    const MAX: usize = 800;
-    let mut said = content.trim();
-    if said.len() > MAX {
-        let mut at = MAX;
-        while !said.is_char_boundary(at) {
-            at -= 1;
-        }
-        said = &said[..at];
-    }
-    format!("The {tool} call from an earlier turn has finished since your last reply. Its result now reads:\n{said}")
-}
-
-/// A late result into a chat whose conversation is in hand (§2.3): settled
-/// by the loop's own rule (cap, envelope, taint armed from what came back),
-/// put where its "being made" result is and recorded there, the taint
-/// recorded whether or not a result was left to rewrite — a compaction may
-/// have cut it, and what came back still entered — a failure booked against
-/// the run that made the call, and a note owed to the next run.
-fn land(ps: &mut PersonaSession, late: &mecha_core::jobs::Delivered) {
-    let run = ps.outcome_of.get(&late.run).copied();
-    let Some(convo) = ps.conversation.as_mut() else {
-        return;
-    };
-    // What came back entered whatever happened to the call, so its taint
-    // is armed and recorded on every path below.
-    let out = late.settle(&mut convo.taint);
-    let session = &ps.session;
-    // The run that made the call ended in error: it was rolled back, call
-    // and all, so there is no result to rewrite, no run to book a failure
-    // against, and no picture the model knows it asked for.
-    let Some(run) = run else {
-        let _ = session.append(&Record::Taint(convo.taint));
-        return;
-    };
-    if let Some(index) = convo.apply_late(&late.call_id, &out.content, out.is_error, out.external) {
-        if let Err(e) = session.append(&Record::LateResult {
-            index,
-            tool_use_id: late.call_id.clone(),
-            content: out.content.clone(),
-            is_error: out.is_error,
-            external: out.external,
-        }) {
-            tracing::warn!("a late result was not recorded: {e:#}");
-        }
-    }
-    if let Err(e) = session.append(&Record::Taint(convo.taint)) {
-        tracing::warn!("a late result's taint was not recorded: {e:#}");
-    }
-    if out.is_error {
-        let _ = session.append(&Record::LateFailure {
-            run,
-            tool_use_id: late.call_id.clone(),
-        });
-    }
-    let note = arrived_note(&late.tool, &out.content);
-    if let Err(e) = session.append(&Record::PendingNote { note: note.clone() }) {
-        tracing::warn!("a late result's note was not recorded: {e:#}");
-    }
-    ps.late_notes.push(note);
-}
-
-/// Settle every "being made" result a resumed chat holds, when no job can be
-/// behind it (§2.3, the restart repair): by what the workspace holds, never
-/// by the absent job (`imagegen::repair_orphan`). Recorded as late results,
-/// then one taint checkpoint covering them. Only `image_generate` writes a
-/// "being made" result, and it declares no outside reach, so its repair is
-/// recorded as not external; a deferring tool that could return untrusted
-/// content would take its declared capability here instead. No failure is
-/// booked: the run that made the call is not known from here.
-fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Conversation) {
-    let orphans: Vec<(String, String)> = convo
-        .messages
-        .iter()
-        .filter(|m| m.role == mecha_core::message::Role::User)
-        .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
-            mecha_core::message::Block::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            } if content.starts_with(mecha_core::imagegen::BEING_MADE) => {
-                Some((tool_use_id.clone(), content.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-    if orphans.is_empty() {
-        return;
-    }
-    for (id, content) in orphans {
-        let Some((settled, is_error)) =
-            mecha_core::imagegen::repair_orphan(workspace, &id, &content)
-        else {
-            continue;
-        };
-        if let Some(index) = convo.apply_late(&id, &settled, is_error, false) {
-            if let Err(e) = session.append(&Record::LateResult {
-                index,
-                tool_use_id: id,
-                content: settled,
-                is_error,
-                external: false,
-            }) {
-                tracing::warn!("a repaired picture result was not recorded: {e:#}");
-            }
-        }
-    }
-    let _ = session.append(&Record::Taint(convo.taint));
 }
 
 /// Keep `slot` naming the tool a run is waiting on: every call that has
@@ -1465,11 +1334,7 @@ impl PersonaChats {
                 pending_crisis: None,
                 judge_answered: None,
                 listen: None,
-                late: Vec::new(),
-                late_notes: Vec::new(),
-                runs_recorded: 0,
-                turns: 0,
-                outcome_of: HashMap::new(),
+                late: Default::default(),
             },
         );
         Ok(serde_json::json!({
@@ -1764,8 +1629,8 @@ impl PersonaChats {
             return Err(Refusal::NotFound);
         }
         let transcript = Session::read(&path).map_err(failed)?;
+        let late = super::late::LateState::resumed(&transcript);
         let (meta, mut conversation) = (transcript.meta, transcript.convo);
-        let (late_notes, runs_recorded) = (transcript.pending_notes, transcript.outcomes.len());
         let pin: PinRecord = std::fs::read(pin_path(&dir, &meta.id))
             .map_err(anyhow::Error::from)
             .and_then(|b| serde_json::from_slice(&b).map_err(anyhow::Error::from))
@@ -1818,7 +1683,7 @@ impl PersonaChats {
         // A picture still "being made" when the server stopped: no job is
         // behind it now (a chat leaves this map only with the process), so
         // the result is settled by what the workspace holds.
-        repair_orphans(&session, &workspace, &mut conversation);
+        super::late::repair_orphans(&session, &workspace, &mut conversation);
         sessions.insert(
             key.clone(),
             PersonaSession {
@@ -1839,11 +1704,7 @@ impl PersonaChats {
                 pending_crisis: None,
                 judge_answered: None,
                 listen: None,
-                late: Vec::new(),
-                late_notes,
-                runs_recorded,
-                turns: 0,
-                outcome_of: HashMap::new(),
+                late,
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -2625,13 +2486,13 @@ impl PersonaChats {
             is_error: late.output.is_error,
             preview: chat::result_preview(&late.output.content),
         };
-        if ps.conversation.is_some() {
-            land(ps, &late);
+        if let Some(convo) = ps.conversation.as_mut() {
+            super::late::land(&mut ps.late, &ps.session, convo, &late);
             // In the conversation now, taint and all: the send gate lets
             // it go. Held for a hand-back, it stays pending until then.
             self.jobs.landed(&late.key, &late.call_id);
         } else {
-            ps.late.push(late);
+            ps.late.held.push(late);
         }
         let _ = ps.events.send(event);
     }
@@ -3343,7 +3204,7 @@ impl PersonaChats {
         let arrived = if pause {
             Vec::new()
         } else {
-            std::mem::take(&mut ps.late_notes)
+            ps.late.take_notes()
         };
         let notes: Vec<String> = [
             memory_note,
@@ -3570,8 +3431,7 @@ impl PersonaChats {
         // A picture outlives the turn that asked for it (§5.4): the run hands
         // it to this chat's slot in the queue and answers at once.
         self.start_delivery();
-        let turn = ps.turns;
-        ps.turns += 1;
+        let turn = ps.late.next_turn();
         cx.jobs = Some(self.jobs.sink(key, turn));
         // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
         if spoken_turn {
@@ -3728,13 +3588,14 @@ impl PersonaChats {
                 ps.conversation = Some(conversation);
                 ps.live = None;
                 if outcome_recorded {
-                    ps.outcome_of.insert(turn, ps.runs_recorded);
-                    ps.runs_recorded += 1;
+                    ps.late.recorded(turn);
                 }
                 // Pictures that finished while this run held the chat: into
                 // the record now, before `Done` sends the page to re-read.
-                for late in std::mem::take(&mut ps.late) {
-                    land(ps, &late);
+                for late in std::mem::take(&mut ps.late.held) {
+                    if let Some(convo) = ps.conversation.as_mut() {
+                        super::late::land(&mut ps.late, &ps.session, convo, &late);
+                    }
                     chats.jobs.landed(&key, &late.call_id);
                 }
                 // A compaction may have summarised the Core away (§12.5).
@@ -7694,9 +7555,8 @@ mod tests {
         ps.session
             .append(&Record::Outcome(Default::default()))
             .unwrap();
-        ps.outcome_of.insert(ps.turns, ps.runs_recorded);
-        ps.turns += 1;
-        ps.runs_recorded += 1;
+        let run = ps.late.next_turn();
+        ps.late.recorded(run);
         ps.conversation.as_mut().unwrap().messages.extend(turn);
         ps.session.path.clone()
     }
@@ -7814,11 +7674,16 @@ mod tests {
         assert_eq!(result_on_file(&path), "being made: images/a.png");
         let mut sessions = w.chat.personas.sessions.lock().await;
         let ps = sessions.get_mut(&key).unwrap();
-        assert_eq!(ps.late.len(), 1);
+        assert_eq!(ps.late.held.len(), 1);
         // The hand-back's own steps.
         ps.conversation = held;
-        for l in std::mem::take(&mut ps.late) {
-            land(ps, &l);
+        for l in std::mem::take(&mut ps.late.held) {
+            super::super::late::land(
+                &mut ps.late,
+                &ps.session,
+                ps.conversation.as_mut().unwrap(),
+                &l,
+            );
         }
         assert_eq!(result_on_file(&path), FINISHED);
     }
@@ -7860,8 +7725,8 @@ mod tests {
             .await
             .get_mut(&key)
             .unwrap()
-            .outcome_of
-            .clear();
+            .late
+            .forget_outcomes();
         w.personas()
             .deliver(late(
                 &key,

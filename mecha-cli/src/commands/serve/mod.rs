@@ -46,6 +46,7 @@ mod files;
 mod frontdoor;
 mod gate;
 pub(crate) mod incognito;
+mod late;
 mod library;
 mod listen;
 mod mail;
@@ -4375,6 +4376,65 @@ mod boundary_tests {
                 None => std::env::remove_var("TMPDIR"),
             }
         }
+    }
+
+    /// A kept chat's picture is drawn past its turn (§5.4): the turn answers
+    /// "being made" and ends, the picture lands where its call is, on file,
+    /// and the next turn takes the note that it arrived.
+    #[tokio::test]
+    async fn a_kept_chats_picture_lands_after_its_turn() {
+        let _home = crate::testenv::HomeGuard::new("late-picture");
+        let server_temp = std::env::temp_dir().join(format!("mecha-late-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&server_temp).unwrap();
+        let (url, _) = fake_image_server(server_temp.clone()).await;
+        let chat = chat::test_chat_drawing(
+            "a lighthouse",
+            mecha_core::imagegen::ImageConfig {
+                url,
+                min_available_mb: 0,
+                unload_after_secs: 0,
+                server_temp_dir: Some(server_temp.clone()),
+                ..Default::default()
+            },
+        );
+        let app = app(chat.clone());
+        converse(&app, "main", "draw a lighthouse").await;
+        let path = chat::test_transcript(&chat, "main").await;
+        let result = |path: &std::path::Path| {
+            mecha_core::session::Session::read(path)
+                .unwrap()
+                .convo
+                .messages
+                .iter()
+                .flat_map(|m| m.content.clone())
+                .find_map(|b| match b {
+                    mecha_core::message::Block::ToolResult { content, .. } => Some(content),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let mut landed = String::new();
+        for _ in 0..400 {
+            landed = result(&path);
+            if landed.starts_with("image: ") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(landed.starts_with("image: images/"), "{landed}");
+        let t = mecha_core::session::Session::read(&path).unwrap();
+        assert_eq!(t.pending_notes.len(), 1, "the next turn is owed the news");
+
+        converse(&app, "main", "is it done?").await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(r#""record":"notes""#)
+                && text.contains("has finished since your last reply"),
+            "the next turn was not told"
+        );
+        let after = mecha_core::session::Session::read(&path).unwrap();
+        assert!(after.pending_notes.is_empty(), "{:?}", after.pending_notes);
+        std::fs::remove_dir_all(server_temp).ok();
     }
 
     #[tokio::test]
