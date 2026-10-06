@@ -9507,9 +9507,11 @@ is a trait object on the `Agent` (`clock.rs`), and `date_context::render`'s
 reading is a run note (`Agent::calendar_note`, added by `wire` to the end of
 the newest message of every request), so each request carries exactly the
 current date and the history carries none. It is ~0.5 KB and identical bytes
-for every request on one local day, so it costs the cache nothing new; it
-rides the tail the moving `cache_control` breakpoint re-pays anyway, and the
-tools→system prefix is untouched. `date_context::GUIDANCE` is the standing
+for every request on one local day. On Anthropic it costs the cache nothing
+new (the moving `cache_control` breakpoint sits before the notes, and the
+tools→system prefix is untouched). On llama-server it is not free: the tail
+note breaks the prefix at the previous step, so each tool round re-reads that
+step plus the note (§The local model server; measured on #577). `date_context::GUIDANCE` is the standing
 half, names no date, and tells the model the most recent reference is the
 date. The run's reading is recorded as a `notes` line
 (`Conversation::harness_notes`, written by `Session::record_run` for every

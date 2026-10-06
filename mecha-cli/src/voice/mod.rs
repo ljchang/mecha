@@ -152,6 +152,11 @@ calls for. ",
 ///
 /// Whole-sentence engine: the short-first-sentence rule stays, as the
 /// latency control [`VOICE_BLOCK`] explains.
+///
+/// Its opening, "(From the harness: this turn is spoken.", is copied by hand
+/// into `scripts/check-private.py` as `VOICE_NOTE_STEM`, which marks a
+/// spoken turn by it: reword one and reword the other
+/// (`a_spoken_run_carries_the_note_its_engine_needs` pins this side).
 pub(crate) const VOICE_NOTE: &str = concat!(
     "(From the harness: this turn is spoken. A synthetic voice reads your \
 reply to the owner, who hears it rather than sees it. Keep sentences short \
@@ -2366,9 +2371,15 @@ async fn completion(
     // message (`voice_note`, 2026-10-06).
     if shared.mount.inject_voice_block {
         let note = voice_note(head.tts_streams).to_string();
-        let _ = slot.session.append(&Record::Notes {
+        // Best-effort, as every write on this surface is (a facade slot's
+        // session is `kind: voice`, which the privacy guard reads whole), but
+        // never silent: the note is what marks a spoken turn on disk (review
+        // of #577).
+        if let Err(e) = slot.session.append(&Record::Notes {
             notes: vec![note.clone()],
-        });
+        }) {
+            tracing::warn!("a spoken turn's note was not recorded: {e:#}");
+        }
         cx.notes = Arc::from(vec![note]);
     }
     // Folded, not pushed, when the tail is already a user message — a
