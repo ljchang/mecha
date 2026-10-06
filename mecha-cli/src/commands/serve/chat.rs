@@ -485,7 +485,7 @@ impl ChatState {
         // A picture still being drawn lands in this conversation's record:
         // letting go of it first would leave the result "being made" for
         // good (review of #583).
-        if self.jobs.queue.pending(&key).is_some() {
+        if !self.jobs.queue.pending_tools(&key).is_empty() {
             return Err("a picture is being made in this conversation — stop it first");
         }
         let ws = sessions.remove(&key).expect("found above");
@@ -1054,6 +1054,12 @@ pub enum Entry {
     },
     Tool {
         name: String,
+        /// The call this row answers. A late result (a picture drawn past its
+        /// turn) finds its row by it, so a page that read the transcript
+        /// while the picture was out still gets the picture when it lands
+        /// (review of #583).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         is_error: Option<bool>,
         /// What the call was made with, shaped and clipped exactly as
         /// [`WireEvent::Tool`] sends it live. A reload that showed less
@@ -1165,6 +1171,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             };
                             entries.push(Entry::Tool {
                                 name,
+                                id: Some(tool_use_id.clone()),
                                 is_error: Some(*is_error),
                                 draft,
                                 args,
@@ -1389,7 +1396,7 @@ pub(super) async fn release_task_conversation(
     // Nor while a picture it asked for is still being drawn: the result
     // lands in this process's copy, which the hand-over gives up, and a
     // reopen would settle it as never made (review of #583).
-    if chat.jobs.queue.pending(&key).is_some() {
+    if !chat.jobs.queue.pending_tools(&key).is_empty() {
         anyhow::bail!(
             "a picture is being made in it right now — let it finish, or stop it first, then hand it over"
         );
@@ -2347,7 +2354,9 @@ async fn deliver(chat: &Arc<ChatState>, late: mecha_core::jobs::Delivered) {
         return;
     };
     let Some(session) = ws.session.kept().cloned() else {
-        // Never submitted from one (`begin_turn`); nothing to record into.
+        // Never submitted from one (`begin_turn`); nothing to record into,
+        // and nothing left pending to the send gate.
+        chat.jobs.queue.landed(&late.key, &late.call_id);
         return;
     };
     let event = WireEvent::ToolResult {
@@ -4561,6 +4570,7 @@ mod wire_tests {
                 },
                 Entry::Tool {
                     name: "mail_search".into(),
+                    id: Some("t1".into()),
                     is_error: Some(false),
                     // An empty call has no shape to read, and the arguments
                     // beside it are `{}` — shown, because "called with
@@ -4920,6 +4930,34 @@ mod wire_tests {
         }
     }
 
+    /// A row read back from the transcript names its call, so a picture
+    /// that lands after the page read it — a reload while it was drawn —
+    /// finds its row (review of #583).
+    #[test]
+    fn a_picture_being_made_names_its_call_on_a_reread() {
+        let messages = vec![
+            Message::user("draw it"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "c1".into(),
+                name: "image_generate".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "being made: images/a.png".into(),
+                is_error: false,
+            }]),
+        ];
+        let wire = serde_json::to_value(transcript_entries(&messages)).unwrap();
+        let row = wire
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool")
+            .unwrap();
+        assert_eq!(row["id"], "c1", "{row}");
+    }
+
     #[test]
     fn a_tool_result_only_message_adds_no_empty_user_entry() {
         let messages = vec![Message {
@@ -4938,6 +4976,7 @@ mod wire_tests {
             entries,
             vec![Entry::Tool {
                 name: "tool".into(),
+                id: Some("t9".into()),
                 is_error: Some(true),
                 draft: None,
                 args: None,

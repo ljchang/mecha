@@ -131,10 +131,10 @@ pub trait JobSink: Send + Sync {
 
     /// The tools whose jobs are still out for this conversation. The loop
     /// folds their declared reach into each turn's send gate, so the wait
-    /// is gated as the result would be, and armed by nothing (§4).
-    fn pending_tools(&self) -> Vec<String> {
-        Vec::new()
-    }
+    /// is gated as the result would be, and armed by nothing (§4). Required,
+    /// with no default: an empty answer silently lifts a send gate, so a new
+    /// sink has to say so (review of #583).
+    fn pending_tools(&self) -> Vec<String>;
 }
 
 /// A finished job, handed to the host's delivery: the call it answers, and
