@@ -492,6 +492,17 @@ impl Tool for Subagent {
         }
 
         let output = ToolOutput::ok(content);
+        // A child the parent's cancel stopped returns its partial run, and
+        // says so (`Cancelled::Part`, PERSONA-CONTEXT-DESIGN §5.3): what it
+        // did is still the result, and stays in what the parent sends.
+        let output = match outcome.stop_cause {
+            crate::agent::StopCause::Interrupted
+            | crate::agent::StopCause::Stopped
+            | crate::agent::StopCause::Shutdown => {
+                output.cancelled(crate::message::Cancelled::Part)
+            }
+            _ => output,
+        };
         // Marking the answer as external is what keeps the parent's interlock
         // honest — see the module docs on why a summary is not laundering.
         // The loop's taint rule needs `untrusted_input && external`, so a
