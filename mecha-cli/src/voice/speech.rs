@@ -163,22 +163,39 @@ fn closed(s: &str) -> bool {
         && even(doubles)
         && even(singles)
         && even(s.matches("~~").count())
-        && even(word_underscores(s))
+        && {
+            let (pairs, lone) = underscore_marks(s);
+            even(pairs) && even(lone)
+        }
         && !open_bracket
         && !open_target
 }
 
-/// Underscores that can be emphasis: not inside a word.
-fn word_underscores(s: &str) -> usize {
+/// Underscore marks that can be emphasis, as `__` pairs and lone `_`, the
+/// way `*` is counted: an open `__` is one pair, never two lone marks that
+/// look closed (review of #574). A run inside a word (`snake_case`) is the
+/// word's and counts as neither.
+fn underscore_marks(s: &str) -> (usize, usize) {
     let chars: Vec<char> = s.chars().collect();
-    (0..chars.len())
-        .filter(|&i| chars[i] == '_')
-        .filter(|&i| {
-            let before = i > 0 && chars[i - 1].is_alphanumeric();
-            let after = chars.get(i + 1).is_some_and(|c| c.is_alphanumeric());
-            !(before && after)
-        })
-        .count()
+    let (mut pairs, mut lone) = (0, 0);
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '_' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i] == '_' {
+            i += 1;
+        }
+        let before = start > 0 && chars[start - 1].is_alphanumeric();
+        let after = chars.get(i).is_some_and(|c| c.is_alphanumeric());
+        if !(before && after) {
+            pairs += (i - start) / 2;
+            lone += (i - start) % 2;
+        }
+    }
+    (pairs, lone)
 }
 
 /// Tidy one piece of a line and append it to `out`. `line_start`: it begins
