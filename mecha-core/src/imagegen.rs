@@ -1572,7 +1572,7 @@ impl EditAsk {
         let edit = match input.get("edit") {
             None | Some(Value::Null) => return Ok(None),
             Some(Value::Object(m)) => m,
-            Some(_) => return Err("`edit` must be an object with `change` and `keep`.".into()),
+            Some(_) => return Err("`edit` must be an object with at least `change`.".into()),
         };
         let field = |k: &str| -> std::result::Result<Option<String>, String> {
             match edit.get(k) {
@@ -1680,7 +1680,7 @@ const REPEAT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const REPEAT_REFUSED: &str = "This call would draw exactly the picture last drawn in this \
      chat — the same prompt, seed and size — and it is already in the chat, where the user \
      sees it. Do not call image_generate again for it. If the user asked for \
-     another version, change the prompt, or leave out the seed for a new picture.";
+     another version, change what you asked for, or leave out the seed for a new picture.";
 
 /// What an identical request gets while the first is still drawing: it
 /// cannot say the picture exists, since that render may yet fail (review of
@@ -3092,7 +3092,7 @@ impl Tool for ImageGenerate {
                     "type": "array",
                     "items": {"type": "string"},
                     "maxItems": MAX_REFERENCES,
-                    "description": "Workspace paths of images to edit or draw from — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in the prompt."
+                    "description": "Workspace paths of images to edit — an attached picture (inbox/...) or an earlier result (images/...). The first is the one being edited; refer to them as <image1>, <image2> in edit.change. Any reference makes the call an edit, described in `edit`."
                 },
                 "mask": {
                     "type": "string",
@@ -4523,10 +4523,12 @@ mod tests {
                                       "face": "she laughs, chin up, eyes on the camera",
                                       "camera": "From a low camera near the grass"},
                              "reference_images": ["images/a.png"]})),
+            // The fields go in as written: `sentence` adds the full stop,
+            // never a capital.
             Ok(
-                "Keep the park and her dress unchanged. Have her stand up. She laughs, chin \
+                "Keep the park and her dress unchanged. Have her stand up. she laughs, chin \
                 up, eyes on the camera. From a low camera near the grass."
-                    .replace("She laughs", "she laughs")
+                    .into()
             )
         );
         // A masked edit writes only the change: the mask keeps the rest.
