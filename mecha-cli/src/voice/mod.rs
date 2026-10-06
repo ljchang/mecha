@@ -52,6 +52,7 @@ use crate::GlobalOpts;
 
 pub mod confirm;
 mod direct;
+mod speech;
 
 pub use direct::DirectorSeed;
 pub(crate) use direct::{ask_on as ask_director_on, last_reply, Asked as DirectorAsked};
@@ -1432,16 +1433,30 @@ async fn pump(
     if disconnected {
         cancel.cancel(mecha_core::agent::CancelReason::Stopped);
     }
+    // The reply is written as the chat shows it, and tidied for the ear
+    // here, as it streams: no mark is ever spoken (`speech.rs`, the rule
+    // Listen applies on the page).
+    let mut tidy = speech::Tidier::default();
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     keepalive.reset();
     loop {
         tokio::select! {
-            ev = rx.recv() => match ev {
-                Some(AgentEvent::TextDelta(t)) if !disconnected => {
+            ev = rx.recv() => {
+                let (spoken, over) = match ev {
+                    Some(AgentEvent::TextDelta(t)) => (tidy.push(&t), false),
+                    // A turn's text is complete: what is held is the end of
+                    // a sentence, never the start of the next turn's.
+                    Some(AgentEvent::AssistantText(_)) => (tidy.finish(), false),
+                    Some(_) => (String::new(), false),
+                    // The run dropped its sender: it is over. The caller
+                    // collects the outcome.
+                    None => (tidy.finish(), true),
+                };
+                if !spoken.is_empty() && !disconnected {
                     // Kept because the speaker plays it: every delta of every
                     // turn is spoken, not just the final one, and all of it
                     // can echo. See `Streamed::said`.
-                    said.push_str(&t);
+                    said.push_str(&spoken);
                     // A memory bound, and deliberately in bytes: this one
                     // is about how large the buffer may grow, not about how
                     // much speech the window holds. The trim at return is
@@ -1449,16 +1464,15 @@ async fn pump(
                     if said.len() > 4 * crate::review_policy::SPOKEN_UNPROMPTED_CHARS {
                         keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
                     }
-                    let chunk = sse_chunk(id, model, json!({"content": t}), None);
+                    let chunk = sse_chunk(id, model, json!({"content": spoken}), None);
                     if write_chunk(stream, chunk.as_bytes()).await.is_err() {
                         cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                         disconnected = true;
                     }
                 }
-                Some(_) => {}
-                // The run dropped its sender: it is over. The caller
-                // collects the outcome.
-                None => break,
+                if over {
+                    break;
+                }
             },
             _ = keepalive.tick() => {
                 if !disconnected
@@ -3311,6 +3325,54 @@ mod the_reply_reaches_the_wire {
             bytes.iter().all(|byte| *byte == 0),
             "a failed chunk was followed by more bytes"
         );
+    }
+
+    /// What reaches the worker is what the owner should hear: a reply
+    /// written with Markdown goes out without its marks, and a turn's last
+    /// words end their sentence before the next turn's begin (the owner's
+    /// ask, 2026-10-06; `speech.rs`). Before the tidier, `**` and the link's
+    /// address went to the speech engine as written.
+    #[tokio::test]
+    async fn a_call_never_speaks_the_formatting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut sock = VoiceStream::new(sock, CancellationToken::new());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            for ev in [
+                AgentEvent::TextDelta("Let me **check**".into()),
+                AgentEvent::AssistantText("Let me **check**".into()),
+                AgentEvent::TextDelta("It sailed at [nine](https://example.com/t).".into()),
+            ] {
+                tx.send(ev).unwrap();
+            }
+            drop(tx);
+            let cancel = mecha_core::agent::CancelHandle::new();
+            let streamed = pump(&mut sock, "cmpl-test", "a-model", &mut rx, &cancel, true).await;
+            finish_stream(&mut sock, "cmpl-test", "a-model", None).await;
+            streamed.said
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        let said = server.await.unwrap();
+        let got = String::from_utf8_lossy(&got);
+        let spoken: String = got
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+            .filter_map(|v| {
+                v["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+
+        assert_eq!(spoken.trim(), "Let me check. It sailed at nine.", "{got:?}");
+        // The echo window holds what was heard, not what was written.
+        assert_eq!(said.trim(), spoken.trim());
     }
 
     #[tokio::test]

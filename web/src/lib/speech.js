@@ -5,6 +5,11 @@
 // What a listener should not hear: Markdown's marks, a URL spelled out, a
 // code block read character by character, a persona's bracketed citation.
 // What they should: the words, a link's label, "from the field guide".
+//
+// A call speaks by the same rule, applied as the reply streams
+// (`mecha-cli/src/voice/speech.rs`); `test/speakable-cases.json` holds the
+// two to it, read by both suites — change a rule here and that file, and the
+// Rust test says whether the call still agrees.
 
 // A persona's citation, as the page parses it (`citeSegments`): `[file, p. N:
 // "quote"]` or `[file: "quote"]`. Spoken as where it came from.
@@ -39,7 +44,10 @@ export function speakable(text) {
       .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '') // list markers
       .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/, '') // rules
       .replace(/(\*\*|__)(.+?)\1/g, '$2') // bold
-      .replace(/(\*|_)(?=\S)(.+?)(?<=\S)\1/g, '$2') // italics
+      .replace(/\*(?=\S)(.+?)(?<=\S)\*/g, '$1') // italics
+      // Underscores only around words: one inside a word (snake_case) is
+      // the word's, as CommonMark has it.
+      .replace(/(?<![\p{L}\p{N}])_(?=\S)(.+?)(?<=\S)_(?![\p{L}\p{N}])/gu, '$1')
       .replace(/~~(.+?)~~/g, '$1')
       .replace(/\|/g, ' ') // table pipes
       .trim(),
