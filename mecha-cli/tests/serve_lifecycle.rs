@@ -92,7 +92,11 @@ async fn check_shutdown(case: Case) {
             } else if delivered && first_call {
                 serde_json::json!({"choices":[{"index":0,"delta":{"content":"Saved partial answer","tool_calls":[{"index":0,"id":"read-1","type":"function","function":{"name":"fs_read","arguments":"{\"path\":\"missing.txt\"}"}}]},"finish_reason":null}]})
             } else {
-                serde_json::json!({"choices":[{"index":0,"delta":{"content":"Saved partial answer"},"finish_reason":if delivered {Some("stop")} else {None}}]})
+                // A finished sentence, then more to come: a call speaks a
+                // sentence once it ends (`voice::speech`), so a phrase still
+                // open would never reach the voice stream this test reads
+                // before it signals.
+                serde_json::json!({"choices":[{"index":0,"delta":{"content":"Saved partial answer. "},"finish_reason":if delivered {Some("stop")} else {None}}]})
             };
             let first = futures::stream::once(async move {
                 Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(chunk.to_string()))
