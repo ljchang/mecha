@@ -63,23 +63,42 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 - `image_generate` splits at `backend.generate`: validation, claim and casting run before the
   split, and generate, save, near-copy and manifest run in the job. Its `now` is factual:
   `being made: images/<will-be>.png`. The path is reserved, so a later reference can name it.
+- **The job is `'static`, so it owns what it uses.** `Tool::call` keeps its signature (`&self`,
+  `&ToolCtx`); the tool builds the job from owned parts before returning:
+  - an `Arc` of what `generate` and `save` need (the backend handle and the settings), never a
+    borrow of the tool;
+  - an **owned claim**: today's `Claim<'a>` borrows the tool and releases on `Drop` unless
+    `keep()` ran, so it becomes a claim holding an `Arc` of the claim table. A job that is
+    cancelled or fails drops it and releases the repeat guard at once, instead of leaving it
+    stuck for `REPEAT_WINDOW`;
+  - the output path, **resolved through `ToolCtx::resolve` before the split** and moved into the
+    job as a resolved path, plus an owned clone of the context fields `save` reads. The job never
+    resolves a model-supplied path, so the jail is proved in the call, as today.
 
 ### 2.2 The job queue (core): one per conversation
 
 - `jobs.rs`: a `JobQueue` keyed by the conversation, holding at most **one** job in flight.
-- A second deferred call while one is pending gets the immediate result
-  `not made: a picture is already being made`, which is factual and structural, not advice.
-  This bounds the in-turn runaway without any turn cap (R6).
+- A second deferred call while one is pending gets an immediate refusal, which is factual and
+  structural, not advice. This bounds the in-turn runaway without any turn cap (R6).
+  - **The words are the tool's, not the queue's.** A deferring tool says what its refusal reads
+    (`ToolOutput::deferred(now, job).busy(text)`; `image_generate`'s is `not made: a picture is
+    already being made`). The core queue stays generic and holds no picture prose.
+  - **It is a refusal, not a failure:** the result carries `refusal: true`, as `refused()`'s
+    results do, so a queue collision never books as a tool failure in the run-quality corpus.
+    It is decided before the tool's job starts, so no GPU work is spent; for `image_generate`
+    the refusal is raised through `refused()` itself, keeping that function the single exit for
+    a picture that will not be made (review of #384, the 2026-09-28 incident).
 - A job runs to completion, failure, or an explicit cancel (§2.4). Its outcome is held until the
   host can deliver it (§2.3).
 
 ### 2.3 Delivery: the call's result arrives late
 
 When a job finishes, the host:
-1. **Sends `WireEvent::ToolResult{id, preview}` at once**, with the call's original id. The page
-   updates the existing tool entry, so the picture appears where the call is, in the chat and on
-   the call screen. This happens even while another run is in flight, because the live entry is
-   the page's.
+1. **Sends `WireEvent::ToolResult{name, id, is_error, preview}` at once**, with the call's
+   original id and name. The page updates the existing tool entry, so the picture appears where
+   the call is, in the chat and on the call screen. This happens even while another run is in
+   flight, because the live entry is the page's. **A failed job sends `is_error: true`**, or the
+   page's `turnsWithoutPicture` would read the turn as drawn.
 2. **Rewrites the stored result** at the next point it holds the conversation: the end of the
    current run, or before the next one starts (the `pending_crisis` pattern).
    - "being made: …" becomes the finished, text-only result (`image: <path> …`), recorded as a
@@ -90,8 +109,15 @@ When a job finishes, the host:
 3. **Adds a run note for the next run** (§5.1, `RunContext::notes` + `Record::Notes`): "the
    picture you started (images/x.png) has reached the owner; you have not seen it".
 
-A failure takes the same path: the result becomes `not made: <reason>`. A server restart loses
-in-flight jobs. When a session is loaded, any `being made: …` result with no job behind it is
+A failure takes the same path: the result becomes `not made: <reason>`.
+
+**The rewrite finds its result by `tool_use_id`, never by position.** A compaction can cut the
+message holding the "being made" result before the job finishes, the in-session counterpart of
+the restart below. When no result with that id is left in the history, there is nothing to
+rewrite: the page event (1) and the run note (3) still go, so the owner sees the picture and the
+model is told; the summary's own wording, if it mentions the picture, stays what it was.
+
+A server restart loses in-flight jobs. When a session is loaded, any `being made: …` result with no job behind it is
 rewritten to `not made: the server restarted`, so no result claims a picture is still coming.
 
 ### 2.4 Talking never kills a job; Stop does
@@ -118,14 +144,26 @@ get the same behaviour.
 - The in-turn runaway: one job at a time, structurally.
 - `image_generate`'s exception to "a tool is never interrupted mid-call": the job, not the call,
   watches its own token.
-- The repeat guard's in-flight branch (`REPEAT_IN_FLIGHT`), which the queue covers. Its
-  completed-repeat branch stays until §6 of the parent doc measures it.
+- **Not** the repeat guard's in-flight branch (`REPEAT_IN_FLIGHT`). The queue is per
+  conversation and Q3 lets a second conversation's picture through, but the claim is keyed on
+  `ctx.workspace`, which every persona chat shares (`work::producer_dir("persona")`). The
+  in-flight branch is what collapses two chats asking for the identical render at once, so it
+  stays (review of #573). The completed-repeat branch stays too, until §6 of the parent doc
+  measures it.
 
 ## 4. What does not change
 
 - `image_view` is still the only way the model sees a picture.
 - Images reach the model only as user turns.
-- The path jail is unchanged: the job writes through the same `save`, within the same workspace.
+- The path jail is unchanged: the job writes through the same `save`, within the same workspace,
+  to a path resolved in the call (§2.1).
+- **Taint is armed by what came back, when it comes back.** Today the loop records a result's
+  taint (`ToolOutput::external`) in the run that made the call. A late result arrives after that
+  run, so the host arms the conversation's taint from the job's `ToolOutput` at delivery, by the
+  same rule, before the next run starts, and records it with the rewrite. A job that reached
+  outside and came back `external` therefore arms `untrusted` exactly as the inline call would
+  have. `image_generate` talks to a loopback server and arms nothing today, but the mechanism is
+  generic, and this is the rule that would otherwise be found missing later.
 - The manifest, the near-copy measurement and the face anchor run as they do now, inside the job.
 
 ## 5. Tests (each fails on today's behaviour)
