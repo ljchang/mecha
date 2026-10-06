@@ -23,6 +23,7 @@
   // conversation this view is rendering, and spoken turns arrive here over
   // the ordinary SSE feed like any other.
   import { createVoiceSession, dropRing, readVoicePrefs } from '../../../scripts/voice/voice-core.js';
+  import { historyLines, pendingSpeech } from './call-lines.js';
 
   let key = $state('main');
   let mode = $state('read_only');
@@ -1100,9 +1101,29 @@
   let vKey = $state(null);
   let vIncognito = $state(false);
 
-  function vScroll() {
-    queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
+  // The call shows this chat's own transcript, which spoken turns join over
+  // the ordinary feed, the reply streaming in, and only the owner's speech
+  // the transcript has not taken yet (the owner's ask, 2026-10-05: the call
+  // shows the whole conversation, as the persona call does). One source, so
+  // a re-read never draws a line twice.
+  // Only while the page shows the conversation the call speaks into
+  // (`vKey`, captured at connect): switched to another chat mid-call, the
+  // pane falls back to the call's own lines rather than draw a different
+  // conversation under the chip that names this one (review of #570).
+  const vSame = $derived(voiceOpen && !!vKey && key === vKey);
+  const vTranscript = $derived(vSame ? historyLines(entries) : []);
+  const vReplying = $derived(vSame && streaming ? streaming.trim() : '');
+  const vSpeaking = $derived(vSame ? pendingSpeech(vEntries, vTranscript) : vEntries);
+  // Held at the bottom while the owner is there, left alone once they scroll
+  // up to read: nothing arriving drags a reader back down.
+  let vStick = true;
+  function vScrolled() {
+    if (voicePane) vStick = voicePane.scrollHeight - voicePane.scrollTop - voicePane.clientHeight < 40;
   }
+  $effect(() => {
+    void vTranscript.length, vReplying, vSpeaking.length, voicePane;
+    if (vStick && voicePane) queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
+  });
 
   function onTranscript({ who, text, interim }) {
     const last = vEntries.at(-1);
@@ -1112,7 +1133,9 @@
     } else {
       vEntries.push({ who, text, interim });
     }
-    vScroll();
+    // A line growing in place changes no length the effect reads: follow it
+    // here, while the owner is at the bottom (review of #570).
+    if (vStick) queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
   }
 
   // `keep` is the reconnect path: the words already spoken stay on screen,
@@ -1122,6 +1145,9 @@
   function startVoice({ keep = false } = {}) {
     // connect() inside the tap handler — the audio unlock needs the gesture.
     if (!keep) vEntries = [];
+    // A reconnect supersedes the notices that led to it: keep the speech.
+    else vEntries = vEntries.filter((e) => e.who !== 'notice');
+    vStick = true;
     // A line typed into another call — another chat, or an incognito one —
     // must not wait in this one's box (review of #499).
     if (!keep) {
@@ -2320,9 +2346,25 @@
           {/each}
         </div>
       </div>
-      <div class="voice-pane" bind:this={voicePane}>
-        {#each vEntries as entry}
-          {#if entry.who === 'user'}
+      <div class="voice-pane" bind:this={voicePane} onscroll={vScrolled}>
+        {#each vTranscript as line}
+          {#if line.who === 'user'}
+            <div class="vbubble" class:vlost={line.undelivered}>{line.text}{#if line.undelivered}<span class="queued-tag">not delivered — send again</span>{/if}</div>
+          {:else if line.picture}
+            <div class="vanswer vpicture">{line.text}</div>
+          {:else}
+            <!-- The chat's own renderer, so a call formats a reply the way
+                 the chat does (the owner's ask, 2026-10-06). -->
+            <div class="vanswer"><ChatProse text={line.text} /></div>
+          {/if}
+        {/each}
+        {#if vReplying}
+          <div class="vanswer"><ChatProse text={vReplying} /></div>
+        {/if}
+        {#each vSpeaking as entry}
+          {#if entry.who === 'notice'}
+            <div class="vanswer vnote">{entry.text}</div>
+          {:else if entry.who === 'user'}
             <div class="vbubble" class:interim={entry.interim}>{entry.text}</div>
           {:else}
             <div class="vanswer" class:interim={entry.interim}>{entry.text}</div>
@@ -3543,7 +3585,13 @@
     flex-direction: column;
     gap: 10px;
   }
+  /* A line the chat dropped: shown, and said so, since the call covers the
+     chat's own tag. */
+  .vbubble.vlost {
+    color: var(--text-muted);
+  }
   .vbubble {
+    white-space: pre-wrap;
     align-self: flex-end;
     max-width: 84%;
     background: var(--surface);
@@ -3561,6 +3609,15 @@
   .vbubble.interim,
   .vanswer.interim {
     color: var(--text-muted);
+  }
+  /* A picture in the transcript, as a line. */
+  .vpicture {
+    font-style: italic;
+  }
+  /* The call's own state — a dead mic, a dropped line — never speech. */
+  .vnote {
+    color: var(--text-muted);
+    font-style: italic;
   }
   .typerow {
     display: flex;
