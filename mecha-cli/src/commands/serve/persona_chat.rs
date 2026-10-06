@@ -3075,6 +3075,39 @@ impl PersonaChats {
         // review of #409; `chat::begin_turn` folds for the same reason). The
         // fold is recorded as a `Rewrite`, or the file would hold the
         // invalid shape and a resume would replay it.
+        // The run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): sent with every
+        // request of this run and stored in no message, so none of them is
+        // re-sent on the turns after. Memory first, as it rode first before:
+        // what it remembers at chat start, then what this message brings to
+        // mind. Two notes, never joined, because each arms taint by the stem
+        // it opens with (`recall::stem_of`), and a recall from outside joined
+        // after a clean block would hide its own.
+        let anchored = anchor.is_some();
+        let notes: Vec<String> = [
+            memory_block,
+            recall_block,
+            anchor,
+            call_note,
+            variety_note,
+            edit_note,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        // Recorded with the turn, never after it: the notes carry what used
+        // to ride inside the owner's message (the memory, the Core), and the
+        // transcript is how a torn taint record is re-derived, so a notes line
+        // that will not write refuses the turn as a message line that will not
+        // write does. Not for a turn the crisis layer pauses: nothing reaches
+        // the model.
+        let record_notes = |session: &Session| -> anyhow::Result<()> {
+            if notes.is_empty() || pause {
+                return Ok(());
+            }
+            session.append(&Record::Notes {
+                notes: notes.clone(),
+            })
+        };
         let recorded = if conversation
             .messages
             .last()
@@ -3096,6 +3129,7 @@ impl PersonaChats {
                 .append(&Record::Rewrite {
                     messages: conversation.messages.clone(),
                 })
+                .and_then(|()| record_notes(&ps.session))
                 .map_err(|e| (e, Some(pre_fold)))
         } else {
             let mut user = Message::user(&said);
@@ -3111,6 +3145,7 @@ impl PersonaChats {
             conversation.push(user.clone());
             ps.session
                 .append(&Record::Message(user))
+                .and_then(|()| record_notes(&ps.session))
                 .map_err(|e| (e, None))
         };
         // Refuse a turn the record did not accept, as the assistant's do —
@@ -3127,25 +3162,6 @@ impl PersonaChats {
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
         let said_for_judge = said.clone();
-        // The run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): sent with every
-        // request of this run and stored in no message, so none of them is
-        // re-sent on the turns after. Memory first, as it rode first before:
-        // what it remembers at chat start, then what this message brings to
-        // mind. Two notes, never joined, because each arms taint by the stem
-        // it opens with (`recall::stem_of`), and a recall from outside joined
-        // after a clean block would hide its own.
-        let anchored = anchor.is_some();
-        let notes: Vec<String> = [
-            memory_block,
-            recall_block,
-            anchor,
-            call_note,
-            variety_note,
-            edit_note,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
         let _ = ps.events.send(WireEvent::User {
             text: said,
             spoken: spoken.is_some(),
@@ -3274,17 +3290,6 @@ impl PersonaChats {
         let judge_cancel = cancel.clone();
         cx = cx.with_cancel_handle(cancel);
         cx.queued_input = Some(queue);
-        // The run's notes, recorded beside the turn they go with: the messages
-        // no longer carry them, so this is where a reader sees what the model
-        // was told. Audit only, so a line that will not write is logged and
-        // the turn, already recorded, goes ahead.
-        if !notes.is_empty() {
-            if let Err(e) = ps.session.append(&Record::Notes {
-                notes: notes.clone(),
-            }) {
-                tracing::warn!("a persona run's notes were not recorded: {e:#}");
-            }
-        }
         cx.notes = notes.into();
         // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
         if spoken_turn {
