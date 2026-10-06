@@ -39,7 +39,7 @@ every reader already understands.
   a client disconnect, and a crisis pause. A tool cannot tell speech from an explicit Stop.
 
 **Reaching the page:**
-- `AgentEvent::ToolResult` becomes `WireEvent::ToolResult{id, preview}`.
+- `AgentEvent::ToolResult` becomes `WireEvent::ToolResult{name, id, is_error, preview}`.
 - `picture.js` `pictureOf` draws a tool entry whose preview's first line is
   `image: images/<x>.png`.
 - The call screen's pictures come from the same entries.
@@ -59,7 +59,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 - The agent loop hands the job to `RunContext::jobs` when the run has one (a `JobSink`, given by
   a chat host) and records `now` as the call's result.
 - With no sink (the CLI, a subagent, an eval, a batch), the loop **awaits the job inline**. Every
-  path without a conversation host behaves exactly as today.
+  path without a conversation host behaves exactly as today, **cancellation included**: awaited
+  inline, the job is given the run's own cancellation token, so a Stop or a Ctrl-C stops the
+  render and `abandon`s the server's job exactly as the tool's own watch does now. Only a host's
+  sink hands a job a token of its own (`subagent.rs`'s rule: a stop that left work running would
+  be a lie). (Review of #573, pass 2.)
 - `image_generate` splits at `backend.generate`: validation, claim and casting run before the
   split, and generate, save, near-copy and manifest run in the job. Its `now` is factual:
   `being made: images/<will-be>.png`. The path is reserved, so a later reference can name it.
@@ -82,12 +86,14 @@ from records. A new `Record` variant would be invisible without endpoint and pag
   structural, not advice. This bounds the in-turn runaway without any turn cap (R6).
   - **The words are the tool's, not the queue's.** A deferring tool says what its refusal reads
     (`ToolOutput::deferred(now, job).busy(text)`; `image_generate`'s is `not made: a picture is
-    already being made`). The core queue stays generic and holds no picture prose.
-  - **It is a refusal, not a failure:** the result carries `refusal: true`, as `refused()`'s
-    results do, so a queue collision never books as a tool failure in the run-quality corpus.
-    It is decided before the tool's job starts, so no GPU work is spent; for `image_generate`
-    the refusal is raised through `refused()` itself, keeping that function the single exit for
-    a picture that will not be made (review of #384, the 2026-09-28 incident).
+    already being made`). The core queue stays generic, holds no picture prose, and builds the
+    refusal from that text alone.
+  - **It is a refusal, not a failure:** the core builds it with `ToolOutput::refusal`, so it
+    carries `refusal: true` and a queue collision never books as a tool failure in the
+    run-quality corpus. It is decided before the tool's job starts, so no GPU work is spent.
+  - **`refused()` is not changed by this.** It builds `ToolOutput::err` today, so its 14 refusals
+    book as tool failures. Whether they should be `refusal: true` is a separate decision, left
+    open and outside this build; the queue's refusal does not depend on it.
 - A job runs to completion, failure, or an explicit cancel (§2.4). Its outcome is held until the
   host can deliver it (§2.3).
 
@@ -160,7 +166,10 @@ get the same behaviour.
 - **Taint is armed by what came back, when it comes back.** Today the loop records a result's
   taint (`ToolOutput::external`) in the run that made the call. A late result arrives after that
   run, so the host arms the conversation's taint from the job's `ToolOutput` at delivery, by the
-  same rule, before the next run starts, and records it with the rewrite. A job that reached
+  same rule, **unconditionally**, and persists it with its own `Record::Taint`: never only with
+  the rewrite, which the compaction path of §2.3 skips, and never through the run note, which
+  arms nothing (a plain text note matches no stem in `Taint::arm_for_content`). (Review of #573,
+  pass 2.) A job that reached
   outside and came back `external` therefore arms `untrusted` exactly as the inline call would
   have. `image_generate` talks to a loopback server and arms nothing today, but the mechanism is
   generic, and this is the rule that would otherwise be found missing later.
@@ -180,6 +189,13 @@ get the same behaviour.
 - Loading a session with an orphaned `being made` result rewrites it to `not made: …`.
 - The persona and assistant chats both deliver.
 - Measurement (parent doc §8): picture latency and loops on a scripted call, before and after.
+- A late result that came back `external` arms `untrusted` on the conversation, and records it,
+  even when a compaction removed the result before delivery (no rewrite happens on that path).
+- Without a sink, Stop during an inline-awaited job cancels it: the render stops and the server's
+  job is abandoned, as today.
+- A queue collision is a `refusal: true` result with the tool's own busy text, and books as no
+  tool failure.
+
 
 ## 6. Build order
 
