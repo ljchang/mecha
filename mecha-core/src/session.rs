@@ -110,7 +110,13 @@ fn lenient_message(v: &serde_json::Value) -> Option<Message> {
         );
     }
     Some(Message {
-        cancelled: Default::default(),
+        // Read as `tool_provenance` is: a mark this build cannot read is
+        // dropped with the rest of the field, which keeps the call in what is
+        // sent — the safe direction (`Cancelled`).
+        cancelled: v
+            .get("cancelled")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         harness: v.get("harness").and_then(|v| v.as_bool()).unwrap_or(false),
         planning: v
             .get("planning")
