@@ -71,6 +71,9 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 - `image_generate` splits at `backend.generate`: validation, claim and casting run before the
   split, and generate, save, near-copy and manifest run in the job. Its `now` is factual:
   `being made: images/<will-be>.png`. The path is reserved, so a later reference can name it.
+  `now` is `is_error: false`, and the page reads a `being made:` first line as **still out** —
+  `picture.js` gains that third state beside drawn and not drawn — so `turnsWithoutPicture`
+  never counts a picture in progress as drawn (review of #573, pass 6).
 - **The job is `'static`, so it owns what it uses.** `Tool::call` keeps its signature (`&self`,
   `&ToolCtx`); the tool builds the job from owned parts before returning:
   - an `Arc` of what `generate` and `save` need (the backend handle and the settings), never a
@@ -85,7 +88,9 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 ### 2.2 The job queue (core): one per conversation
 
-- `jobs.rs`: a `JobQueue` keyed by the conversation, holding at most **one** job in flight.
+- `jobs.rs`: a `JobQueue` keyed by **the host's session key** (the chat's key, which both chats
+  already use for their session maps — `agent::Conversation` has no identity of its own), holding
+  at most **one** job in flight.
 - A second deferred call while one is pending gets an immediate refusal, which is factual and
   structural, not advice. This bounds the in-turn runaway without any turn cap (R6).
   - **The words are the tool's, not the queue's.** A deferring tool says what its refusal reads
@@ -115,8 +120,13 @@ When a job finishes, the host:
    "before the next run starts": an idle chat may have no next run for hours, and a restart in
    that window would find a finished picture with nothing recorded about it (review of #573,
    pass 4).
-   - "being made: …" becomes the finished, text-only result (`image: <path> …`), recorded as a
-     `Record::Rewrite`.
+   - "being made: …" becomes the finished, text-only result (`image: <path> …`), recorded as
+     **an appended `Record::LateResult { tool_use_id, content, is_error }`** that
+     `Session::read` applies to the message holding that call's result. Never a
+     `Record::Rewrite`: `read` clears the taint checkpoints on a rewrite, which would cost every
+     conversation that made a picture its provenance-gated learning (`Record::Extend` exists for
+     the same reason). An older build skips the unknown record and shows "being made" (review of
+     #573, pass 6).
    - No `Block::Image` is added: the model is told a picture reached the owner, never shown its
      pixels (`image_view` stays the separate step).
    - The rewrite touches a recent message, so the cached prefix is re-read from that point once.
@@ -125,10 +135,12 @@ When a job finishes, the host:
    delivery as its own pending-note record, which the next run takes and the file keeps across
    a restart: never only re-derived from the rewritten result, which a compaction may have cut
    (review of #573, pass 5).
-4. **Books a failed job as a tool error** of the run that made the call, in a record the
-   run-quality corpus folds into that run's error count. The run closed before the failure
-   arrived, so without it `doctor`'s tool-error threshold and the candidate gate's error rate
-   would grow quieter as more work is deferred (review of #573, pass 5).
+4. **Books a failed job as a tool error** of the run that made the call. The run closed before
+   the failure arrived, so without it `doctor`'s tool-error threshold and the candidate gate's
+   error rate would grow quieter as more work is deferred (review of #573, pass 5). Not a
+   second `Record::Outcome`, which `runlog` would read as an extra run: a
+   `Record::LateFailure { tool_use_id }` that `runlog` attributes to the run whose span recorded
+   that call, adding one to its tool errors (review of #573, pass 6).
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
@@ -144,9 +156,12 @@ with no job behind it is repaired by **asking the artifact, not the absent job**
 finished one (`image: <path>`, without the measurements the job did not get to record); if it
 does not, the result becomes `not made: the server restarted`. Either way no result claims a
 picture is still coming, and none denies one the owner already saw.
-- **A file at the path means a finished job**, because `save` writes the reserved path only
-  once a render has completed, never a partial or placeholder file: the name is fixed at the
-  split, the bytes arrive at the end.
+- **A picture at the path counts only if it is the job's own.** The reserved name is told to
+  the model 40 s before the bytes exist, and a run in the same jail can write that path
+  (`fs_write`, `shell`), so a file there proves nothing alone. The job's manifest
+  (`write_manifest`, written by `save` after a completed render) names the call's
+  `tool_use_id`, and the repair accepts the picture only when the manifest beside it does;
+  anything else is `not made: the server restarted` (review of #573, pass 6).
 - **The repair fails closed on taint and provenance.** It has no job `ToolOutput` to read, so it
   takes the tool's declared capabilities in its place: a tool that *can* return untrusted
   content is treated as having done so — provenance recorded `external`, `untrusted` armed and
@@ -190,6 +205,12 @@ get the same behaviour.
 - Images reach the model only as user turns.
 - The path jail is unchanged: the job writes through the same `save`, within the same workspace,
   to a path resolved in the call (§2.1).
+- **The in-flight window is armed from the declared capability.** A deferred call from an
+  `untrusted_input` tool arms `untrusted` when it is deferred, the conservative stand-in
+  `turn_taint` already uses for a batch, so an `Egress::Chosen` call between the deferral and
+  the delivery is refused as it would be after the result had arrived. Delivery then records
+  the real provenance. The wait would otherwise be the one optimistic window in the design
+  (review of #573, pass 6).
 - **Taint is armed by what came back, when it comes back.** Today the loop records a result's
   taint (`ToolOutput::external`) in the run that made the call. A late result arrives after that
   run, so the host arms the conversation's taint from the job's `ToolOutput` at delivery, by the
@@ -234,6 +255,14 @@ get the same behaviour.
   job is abandoned, as today.
 - A queue collision is a `refusal: true` result with the tool's own busy text, and books as no
   tool failure.
+- A late result is an appended `Record::LateResult`: the earlier taint checkpoints stand after
+  delivery, and an older build reads the file with the call still "being made".
+- An `Egress::Chosen` call between a deferred `untrusted_input` call and its delivery is
+  refused.
+- Restart repair with a picture at the reserved path whose manifest names another call (or
+  none): `not made: the server restarted`.
+- A late failure adds one tool error to the run that made the call, and no run to the corpus.
+- The page draws a `being made:` result as still out, never as drawn.
 
 
 ## 6. Build order
