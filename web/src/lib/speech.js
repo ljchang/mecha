@@ -39,13 +39,19 @@ const PICTURE_REF = /^[ \t]*\[\s*image\s*:\s*images\/[A-Za-z0-9._-]+\.png\]\s*$/
 export function withoutPictureRefs(text) {
   const s = String(text ?? '');
   if (!s.includes('[')) return s;
-  let fenced = false;
+  // The renderer's own fence rule (`mail-markdown.js` `parseBlocks`): a
+  // fence opens on ``` or ~~~ indented at most three spaces, and only the
+  // same marker closes it (review of #578).
+  let fence = null;
   return s
     .split('\n')
     .filter((line) => {
-      // Either fence the renderer knows (`mail-markdown.js` `parseBlocks`).
-      if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-      return fenced || !PICTURE_REF.test(line);
+      const m = /^ {0,3}(```|~~~)/.exec(line);
+      if (m && (fence === null || m[1] === fence)) {
+        fence = fence === null ? m[1] : null;
+        return true;
+      }
+      return fence !== null || !PICTURE_REF.test(line);
     })
     .join('\n');
 }
