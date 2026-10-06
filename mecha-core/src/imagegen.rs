@@ -1533,14 +1533,15 @@ const FACE_REFERENCE: &str = "library:face:";
 /// captions: on 2026-10-06 a live chat's three edits all came back unchanged
 /// (layout similarity 0.99–1.00), and replayed, its caption made the
 /// asked-for change 3 times in 8 where an instruction did 8 in 8, face anchor
-/// on or off. A caption cannot be written into these fields; `keep` is asked for
-/// because naming what stays took the measured edit from 8/12 to 12/12.
+/// on or off. A caption cannot be written into these fields. Naming what stays
+/// took a measured edit from 8/12 to 12/12 (2026-09-29), so `keep` is asked
+/// for, but optional: a generic stand-in did worse than none.
 #[derive(Debug, Clone, PartialEq)]
 struct EditAsk {
     /// The one change, as an instruction.
     change: String,
-    /// What stays, named. Required except on a masked edit, whose mask keeps
-    /// everything outside it.
+    /// What stays, named, when the model names it. Ignored on a masked edit,
+    /// whose mask keeps everything outside it.
     keep: Option<String>,
     /// What each face does after the change. Without it the edit hands the
     /// face back as it was (2026-10-05), which is right when the change is not
@@ -1604,7 +1605,7 @@ impl EditAsk {
     /// The edit model's prompt: the kept parts named, then the change, then
     /// what the face and the camera do. A masked edit writes only the change:
     /// the mask keeps the rest exactly.
-    fn prompt(&self, masked: bool) -> std::result::Result<String, String> {
+    fn prompt(&self, masked: bool) -> String {
         let sentence = |s: &str| {
             let s = s.trim();
             if s.ends_with(['.', '!', '?', '"', '\u{201d}']) {
@@ -1614,11 +1615,11 @@ impl EditAsk {
             }
         };
         let mut out = String::new();
-        if !masked {
-            let keep = self.keep.as_deref().ok_or(
-                "`edit.keep` is required: name what must stay as it is (\"the street, the \
-                 lighting and both faces\"), so the edit changes only edit.change.",
-            )?;
+        // Named when given; left out otherwise. A stand-in for a missing
+        // `keep` measured worse than none (2026-10-06, one edit, 4 seeds):
+        // the change alone 4/4, "Keep everything else unchanged." 3/4, a
+        // generic list of face, hair, pose, background and light 2/4.
+        if let (false, Some(keep)) = (masked, self.keep.as_deref()) {
             out.push_str(&format!("Keep {} unchanged. ", keep_phrase(keep)));
         }
         out.push_str(&sentence(&self.change));
@@ -1626,7 +1627,7 @@ impl EditAsk {
             out.push(' ');
             out.push_str(&sentence(extra));
         }
-        Ok(out)
+        out
     }
 }
 
@@ -2924,7 +2925,7 @@ impl ImageGenerate {
             (Some(_), true) => return Err(EDIT_NEEDS_PICTURE.into()),
             (None, false) => return Err(EDIT_REQUIRED.into()),
             (Some(_), false) if !written.is_empty() => return Err(EDIT_NOT_PROMPT.into()),
-            (Some(edit), false) => edit.prompt(mask.is_some())?,
+            (Some(edit), false) => edit.prompt(mask.is_some()),
             (None, true) if written.is_empty() => {
                 return Err("`prompt` is required: describe the image.".into())
             }
@@ -3072,7 +3073,7 @@ impl Tool for ImageGenerate {
                     "description": "An edit of the first of reference_images, as parts the tool turns into the edit model's prompt. Use it for every edit, and leave prompt out.",
                     "properties": {
                         "change": {"type": "string", "description": "The one change, as an instruction: \"Give the man a red umbrella.\" From the picture edit panel, the user's words as given."},
-                        "keep": {"type": "string", "description": "What must stay as it is, named: \"the street, the lighting and both faces\". Required unless there is a mask."},
+                        "keep": {"type": "string", "description": "What must stay as it is, named, when it matters: \"the street, the lighting and both faces\". Leave it out rather than writing \"everything else\"."},
                         "face": {"type": "string", "description": "Only when the change is about faces: what each face does after it — expression, head angle, gaze. Left out, faces stay as they are."},
                         "camera": {"type": "string", "description": "Only when the camera moves: where it is and what is nearest it."}
                     },
@@ -4552,9 +4553,11 @@ mod tests {
             refused(json!({"edit": {"change": "y", "keep": "z"}})),
             EDIT_NEEDS_PICTURE
         );
-        assert!(
-            refused(json!({"edit": {"change": "y"}, "reference_images": ["images/a.png"]}))
-                .contains("edit.keep")
+        // `keep` left out: the change alone, measured better than a stand-in.
+        assert_eq!(
+            prompt_of(json!({"edit": {"change": "Give the man a red umbrella"},
+                             "reference_images": ["images/a.png"]})),
+            Ok("Give the man a red umbrella.".into())
         );
         assert!(
             refused(json!({"edit": {"keep": "z"}, "reference_images": ["images/a.png"]}))

@@ -686,6 +686,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Picture edits are described in parts, and the tool writes the edit
+  model's instruction.** An edit now names the one change (and, if it
+  matters, what stays, what a face does, or where the camera goes), never a
+  description of the whole scene, which the edit model reads as the picture
+  it already has. Persona edits had been coming back unchanged; replayed, a
+  scene description made the asked-for change 3 times in 8 and an
+  instruction 8 times in 8. An edit sent as a free description is refused
+  with what to send instead. From the edit panel, the owner's own words are
+  the change (`docs/PERSONA-CONTEXT-DESIGN.md` §5.5).
+
 - **A persona's harness notes last one run and are no longer stored in the
   chat.** A recall, the reminder of who it is, and the call, variety and edit
   notes used to be written into the owner's message, where they stayed and
