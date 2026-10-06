@@ -3,6 +3,12 @@
 // the match is what turns a tool's text into a URL the page fetches, and two
 // copies of a strict pattern drift into one loose one.
 //
+// Two other places match a picture path, for a different job — a reply line
+// that only points at a picture, hidden from display and speech:
+// `speech.js` `PICTURE_REF` and `mecha-cli/src/voice/speech.rs`
+// `is_picture_ref`, held to each other by `test/speakable-cases.json`. A
+// change to what a picture path is belongs in all three.
+//
 // The picture is the file `image_generate` saved, or the one
 // `image_view` put in front of the model — which the owner must be able to
 // see too, since the model's answer is about it. Read off the first line of
