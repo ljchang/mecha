@@ -3094,12 +3094,15 @@ impl PersonaChats {
         .into_iter()
         .flatten()
         .collect();
-        // Recorded with the turn, never after it: the notes carry what used
+        // Recorded with the turn, and ahead of it: the notes carry what used
         // to ride inside the owner's message (the memory, the Core), and the
         // transcript is how a torn taint record is re-derived, so a notes line
         // that will not write refuses the turn as a message line that will not
-        // write does. Not for a turn the crisis layer pauses: nothing reaches
-        // the model.
+        // write does. Ahead, so a refusal leaves the file without the turn,
+        // as the rollback assumes: an orphaned notes line pushes no taint
+        // checkpoint and only over-arms (`Session::read`), where an orphaned
+        // owner turn would be replayed on resume. Not for a turn the crisis
+        // layer pauses: nothing reaches the model.
         let record_notes = |session: &Session| -> anyhow::Result<()> {
             if notes.is_empty() || pause {
                 return Ok(());
@@ -3125,11 +3128,12 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
             }
-            ps.session
-                .append(&Record::Rewrite {
-                    messages: conversation.messages.clone(),
+            record_notes(&ps.session)
+                .and_then(|()| {
+                    ps.session.append(&Record::Rewrite {
+                        messages: conversation.messages.clone(),
+                    })
                 })
-                .and_then(|()| record_notes(&ps.session))
                 .map_err(|e| (e, Some(pre_fold)))
         } else {
             let mut user = Message::user(&said);
@@ -3143,9 +3147,8 @@ impl PersonaChats {
                 });
             }
             conversation.push(user.clone());
-            ps.session
-                .append(&Record::Message(user))
-                .and_then(|()| record_notes(&ps.session))
+            record_notes(&ps.session)
+                .and_then(|()| ps.session.append(&Record::Message(user)))
                 .map_err(|e| (e, None))
         };
         // Refuse a turn the record did not accept, as the assistant's do —
