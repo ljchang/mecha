@@ -3038,8 +3038,10 @@ fn begin_turn(
             }
             ws.conversation = Some(conversation);
             ws.live = None;
-            if let (Some(turn), true) = (turn, outcome_recorded) {
-                ws.late.recorded(turn);
+            // Two orderings, as in the persona host: the outcome is numbered
+            // before held pictures land, and they land before `Done`.
+            if let (Some(turn), true) = (turn, outcome.is_ok()) {
+                ws.late.ended_ok(turn, outcome_recorded);
             }
             // Pictures that finished while this run held the chat: into the
             // record now, before `Done` sends the page to re-read.
