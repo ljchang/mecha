@@ -121,8 +121,12 @@ When a job finishes, the host:
    that window would find a finished picture with nothing recorded about it (review of #573,
    pass 4).
    - "being made: …" becomes the finished, text-only result (`image: <path> …`), recorded as
-     **an appended `Record::LateResult { tool_use_id, content, is_error }`** that
-     `Session::read` applies to the message holding that call's result. Never a
+     **an appended `Record::LateResult { index, tool_use_id, content, is_error }`** that
+     `Session::read` applies to message `index`, the one holding that call's result.
+     **`index` is what keeps it honest on taint**: `TaintTimeline::from_records` keeps no
+     messages, so the record must say where it lands, and it follows `Record::Extend`'s own
+     rule — the checkpoints covering `index` and after are dropped, so an `external` late result
+     never sits in a message `mecha learn` still classifies clean (review of #573, pass 7). Never a
      `Record::Rewrite`: `read` clears the taint checkpoints on a rewrite, which would cost every
      conversation that made a picture its provenance-gated learning (`Record::Extend` exists for
      the same reason). An older build skips the unknown record and shows "being made" (review of
@@ -139,8 +143,11 @@ When a job finishes, the host:
    the failure arrived, so without it `doctor`'s tool-error threshold and the candidate gate's
    error rate would grow quieter as more work is deferred (review of #573, pass 5). Not a
    second `Record::Outcome`, which `runlog` would read as an extra run: a
-   `Record::LateFailure { tool_use_id }` that `runlog` attributes to the run whose span recorded
-   that call, adding one to its tool errors (review of #573, pass 6).
+   `Record::LateFailure { index }`, where `index` is the results message holding the call, which
+   `runlog` attributes to the outcome covering that index (`outcome_positions`, as
+   `outcomes_attributed` already reads positions), adding one to its tool errors. A bare
+   `tool_use_id` would have no reader: `outcomes_attributed` keeps no messages (review of #573,
+   passes 6 and 7).
 
 A failure takes the same path: the result becomes `not made: <reason>`.
 
@@ -156,6 +163,9 @@ with no job behind it is repaired by **asking the artifact, not the absent job**
 finished one (`image: <path>`, without the measurements the job did not get to record); if it
 does not, the result becomes `not made: the server restarted`. Either way no result claims a
 picture is still coming, and none denies one the owner already saw.
+- **The manifest gains the call's `tool_use_id`** — a change, not today's shape: the manifest
+  JSON has no such key, and `write_manifest` runs on `run`'s path after the near-copy check,
+  not inside `save`. `ToolCtx::call_id` is stamped on every call, so the value is there.
 - **A picture at the path counts only if it is the job's own.** The reserved name is told to
   the model 40 s before the bytes exist, and a run in the same jail can write that path
   (`fs_write`, `shell`), so a file there proves nothing alone. The job's manifest
@@ -192,7 +202,9 @@ get the same behaviour.
 - The in-turn runaway: one job at a time, structurally.
 - `image_generate`'s exception to "a tool is never interrupted mid-call": the job, not the call,
   watches its own token.
-- **Not** the repeat guard's in-flight branch (`REPEAT_IN_FLIGHT`). The queue is per
+- **Not** the repeat guard's in-flight branch (`REPEAT_IN_FLIGHT`), though its wording changes:
+  it says the colliding call is "in this turn" and offers that call's result, and under jobs the
+  collision is another conversation's, whose result this run cannot use. The queue is per
   conversation and Q3 lets a second conversation's picture through, but the claim is keyed on
   `ctx.workspace`, which every persona chat shares (`work::producer_dir("persona")`). The
   in-flight branch is what collapses two chats asking for the identical render at once, so it
@@ -205,12 +217,13 @@ get the same behaviour.
 - Images reach the model only as user turns.
 - The path jail is unchanged: the job writes through the same `save`, within the same workspace,
   to a path resolved in the call (§2.1).
-- **The in-flight window is armed from the declared capability.** A deferred call from an
-  `untrusted_input` tool arms `untrusted` when it is deferred, the conservative stand-in
-  `turn_taint` already uses for a batch, so an `Egress::Chosen` call between the deferral and
-  the delivery is refused as it would be after the result had arrived. Delivery then records
-  the real provenance. The wait would otherwise be the one optimistic window in the design
-  (review of #573, pass 6).
+- **The in-flight window is gated, not tainted.** While a job from an `untrusted_input` tool is
+  pending, every run of that conversation folds the tool's declared capability into its
+  per-turn gate — the `turn_taint` mechanism, extended by the conversation's pending jobs — so
+  an `Egress::Chosen` call between the deferral and the delivery is refused as it would be
+  after the result had arrived. It does **not** arm `convo.taint`: that is permanent, and would
+  cost the session its learning for a result that may come back clean. Delivery then arms
+  `convo.taint` from the real provenance (review of #573, passes 6 and 7).
 - **Taint is armed by what came back, when it comes back.** Today the loop records a result's
   taint (`ToolOutput::external`) in the run that made the call. A late result arrives after that
   run, so the host arms the conversation's taint from the job's `ToolOutput` at delivery, by the
