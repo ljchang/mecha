@@ -77,6 +77,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 - `image_generate` splits at `backend.generate`: validation, claim and casting run before the
   split, and generate, save, near-copy and manifest run in the job. Its `now` is factual:
   `being made: images/<will-be>.png`. The path is reserved, so a later reference can name it.
+  **Reserving it moves the stamp to the call**: today `save` stamps the name with
+  `Utc::now()` when the bytes are written and chooses it itself, so the call takes the stamp
+  (and the seed is final by then), names `images/<stamp>-<seed>.png`, and hands the stamp to
+  `save`, which writes under it — or beside it, numbered, if something already sits there
+  (review of #573, pass 16).
   `now` is `is_error: false`, and the page reads a `being made:` first line as **still out** —
   `picture.js` gains that third state beside drawn and not drawn — so `turnsWithoutPicture`
   never counts a picture in progress as drawn (review of #573, pass 6). The change lands in the
@@ -121,7 +126,10 @@ from records. A new `Record` variant would be invisible without endpoint and pag
     book as tool failures. Whether they should be `refusal: true` is a separate decision, left
     open and outside this build; the queue's refusal does not depend on it.
 - A job runs to completion, failure, or an explicit cancel (§2.4). Its outcome is held until the
-  host can deliver it (§2.3).
+  host can deliver it (§2.3). **A job whose run ended in error is cancelled at that run's
+  hand-back**: the run was rolled back, call and all, so there is nothing left to show the
+  picture to, and drawing on would hold the conversation's one slot — and, for a deferring
+  tool with reach, its send gate — until the render ended (review of #573, pass 16).
 
 ### 2.3 Delivery: the call's result arrives late
 
@@ -188,7 +196,11 @@ ordering guarantee (1) states (review of #573, pass 10).
    delivery as its own record, `Record::PendingNote` — a new one, not `Record::Notes`, which is
    what the next run writes when it takes the note — and the file keeps it across
    a restart: never only re-derived from the rewritten result, which a compaction may have cut
-   (review of #573, pass 5).
+   (review of #573, pass 5). **It retires at the next `Record::Outcome`**: the notes still owed
+   are the `PendingNote`s after the last outcome (`Transcript::pending_notes`). Not at
+   `Record::Notes`, which a run writes for any note it carries, owed or not. So a note taken by
+   a run that then fails is owed again — on file, since the failed run wrote no outcome, and in
+   the host's memory, which puts it back at the hand-back (review of #573, pass 16).
 4. **Books a failed job as a tool error** of the run that made the call. The run closed before
    the failure arrived, so without it `doctor`'s tool-error threshold and the candidate gate's
    error rate would grow quieter as more work is deferred (review of #573, pass 5). Not a
@@ -404,6 +416,12 @@ reaches no hook (review of #583).
   re-read row names its call.
 - A late failure adds one tool error to the run that made the call, and no run to the corpus;
   `sessions show` and the corpus report the same count for that run.
+- A late failure of a run that ended in error books nothing — not even on the next run, which
+  an ordinal bound at submit would have charged — and its owed note is owed again.
+- A late failure books by its ordinal wherever it sits in the file (the readers apply them
+  after their walk).
+- A job whose run ended in error is cancelled at the hand-back.
+- An incognito chat's run gets no sink: its picture is drawn inline.
 - A live picture entry survives the page's next re-read of the transcript: the record was written
   before the event.
 - The page draws a `being made:` result as still out, never as drawn.
@@ -425,6 +443,9 @@ reaches no hook (review of #583).
    pending row, gains the closed "being made" row as a place a late result lands (review of
    #573, pass 14).
 5. The scripted-call measurement.
+
+Incognito needs no step of its own: it is the absence of one. Its run is simply not handed a sink
+(step 4's host checks for a kept session), and §5 has a line for it.
 
 ## 7. Rulings (owner, 2026-10-05)
 
