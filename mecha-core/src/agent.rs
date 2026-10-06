@@ -6724,6 +6724,34 @@ mod tests {
         );
     }
 
+    /// A replay or a probe builds its agent from a *recorded* system prompt,
+    /// whose guidance is worded as it was that day. The note is earned by
+    /// the heading every version opened with, so an old recording is still
+    /// told the date (review of the run-notes change: keyed on today's whole
+    /// text, a replay of a date-dependent session was told a reference was
+    /// attached and received none).
+    #[tokio::test]
+    async fn a_recorded_prompts_older_guidance_still_earns_the_date() {
+        let clock = Arc::new(crate::clock::TestClock::at("2026-09-14T13:21:33Z"));
+        let (mut agent, provider) = agent_on_a_clock(
+            &clock,
+            chrono::Duration::zero(),
+            vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+        );
+        agent.system = Some(format!(
+            "{}\n\nAn older wording of the standing instruction, as a recording keeps it.",
+            crate::date_context::GUIDANCE_HEADING
+        ));
+        let mut convo = Conversation::from(vec![Message::user("what day is it?")]);
+        agent.run(&mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            calendar_blocks(&seen[0]).len(),
+            1,
+            "the replay was told no date"
+        );
+    }
+
     /// The other half: within one local day nothing is re-folded, so the
     /// eight-line reference is not re-sent on every turn of a long run.
     #[tokio::test]
