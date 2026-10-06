@@ -995,7 +995,20 @@ fn undelivered_calls(
         if ids.is_empty() || m.role != Role::User || j == 0 {
             continue;
         }
-        if messages[j - 1].role == Role::Assistant {
+        // Only a pair the owner's words came after: folded into its results
+        // message (a barge-in, as `append_user_text` lands the next turn) or
+        // in the message after it. Without them the request would end on the
+        // assistant's message — a prefill — which a replay branch seeded on a
+        // cut-off turn reaches (`replay_run::drive_branch`). And never a pair
+        // the assistant's next step follows directly: that run went on, which
+        // the cancel gate rules out, and dropping it would put two assistant
+        // messages side by side (review of #580).
+        let owner_words_after = m.content.iter().any(|b| matches!(b, Block::Text { .. }))
+            || messages.get(j + 1).is_some_and(|n| n.role == Role::User);
+        let step_follows = messages
+            .get(j + 1)
+            .is_some_and(|n| n.role == Role::Assistant);
+        if messages[j - 1].role == Role::Assistant && owner_words_after && !step_follows {
             gone.insert(j - 1, ids.clone());
             gone.insert(j, ids);
         }
@@ -1153,13 +1166,18 @@ mod tests {
                 call("p1", "image_generate"),
             ]),
             results(
-                vec![result("m1", "saved"), result("p1", "Cancelled")],
+                vec![
+                    result("m1", "saved"),
+                    result("p1", "Cancelled"),
+                    // The owner spoke over the picture: the next turn's words
+                    // land beside the results, as `append_user_text` folds them.
+                    Block::text("no picture, thanks"),
+                ],
                 &[("p1", Cancelled::Nothing)],
             ),
-            Message::assistant(vec![Block::text("The date is saved.")]),
         ];
         let out = sent(&history);
-        assert_eq!(out.len(), 4, "{out:?}");
+        assert_eq!(out.len(), 3, "{out:?}");
         assert_eq!(
             out[1].content,
             vec![
@@ -1170,7 +1188,10 @@ mod tests {
             "the words and the finished call stay, and so does the reasoning: a tool turn is \
              never sent without it"
         );
-        assert_eq!(out[2].content, vec![result("m1", "saved")]);
+        assert_eq!(
+            out[2].content,
+            vec![result("m1", "saved"), Block::text("no picture, thanks")]
+        );
     }
 
     /// Stopped partway is not nothing: the pages a reply may already quote
@@ -1236,6 +1257,7 @@ mod tests {
             Message::user("again"),
             Message::assistant(vec![call("x", "image_generate")]),
             results(vec![result("x", "Cancelled")], &[("x", Cancelled::Nothing)]),
+            Message::user("never mind"),
         ];
         let out = sent(&history);
         assert!(
@@ -1244,6 +1266,38 @@ mod tests {
         );
         assert_eq!(out[2].content, vec![result("x", "image: images/a.png")]);
         assert_eq!(out.len(), 5, "{out:?}");
+    }
+
+    /// A cut-off pair with no owner words after it is the turn the request
+    /// answers — a replay branch seeded there — and stays: dropped, the
+    /// request would end on the assistant's message. So does one the
+    /// assistant's next step follows, which only a run that went on can
+    /// produce (review of #580).
+    #[test]
+    fn a_pair_without_the_owners_words_after_it_stays() {
+        let tail = [
+            Message::user("draw the garden"),
+            Message::assistant(vec![
+                Block::text("Drawing it."),
+                call("p1", "image_generate"),
+            ]),
+            results(
+                vec![result("p1", "Cancelled")],
+                &[("p1", Cancelled::Nothing)],
+            ),
+        ];
+        assert_eq!(sent(&tail), tail.to_vec());
+        let went_on = [
+            Message::user("draw the garden"),
+            Message::assistant(vec![call("p1", "image_generate")]),
+            results(
+                vec![result("p1", "Cancelled")],
+                &[("p1", Cancelled::Nothing)],
+            ),
+            Message::assistant(vec![Block::text("It did not come out.")]),
+            Message::user("ok"),
+        ];
+        assert_eq!(sent(&went_on), went_on.to_vec());
     }
 
     /// Nearly every request has nothing marked, and pays nothing for it.

@@ -103,6 +103,10 @@ persona's `file_read`, a subagent's partial run).
 - **Only across runs.** `Nothing` is recorded only when the run really was
   cancelled, so the run stops at its next safe point and no request of the
   same run hides the call it is answering.
+- **Only where the owner's words came after.** A cut-off pair with no
+  owner words after it (folded into its results, or in the next message) is
+  the turn the request answers, and stays: dropped, the request would end
+  on the assistant's message, which a replay branch seeded there would send.
 - **No empty message, no two of one role in a row.** An assistant message
   left with nothing is dropped whole, and so is a results message; the
   owner's words around a dropped turn fold into one message, set off by a
@@ -110,7 +114,7 @@ persona's `file_read`, a subagent's partial run).
 - **A reply it makes plain is trimmed** by `PriorTails`' rule, read on what
   is sent.
 
-Measured on the replay of the persona loop (2026-10-06, 8 samples each): picture
+Measured by replaying the 2026-10-05 persona call (replayed 2026-10-06, 8 samples each): picture
 attempts after a turn the owner had cut off fell from 2/8 to 1/8 and from 3/8
 to 0/8, and an explicit picture request after the same history was still
 answered with a picture (5/8 on main, 7/8 with the projection).
