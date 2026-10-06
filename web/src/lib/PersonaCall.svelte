@@ -124,13 +124,13 @@
   // call that never connected is no minutes at all.
   let since = null;
 
-  function onTranscript({ who, text, interim, typed = false }) {
+  function onTranscript({ who, text, interim }) {
     const last = entries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
     } else {
-      entries.push({ who, text, interim, typed });
+      entries.push({ who, text, interim });
     }
     // A line growing in place changes no length the effect reads: follow it
     // here, while the owner is at the bottom (review of #570).

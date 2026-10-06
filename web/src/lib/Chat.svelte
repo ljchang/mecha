@@ -1125,13 +1125,13 @@
     if (vStick && voicePane) queueMicrotask(() => voicePane?.scrollTo({ top: voicePane.scrollHeight }));
   });
 
-  function onTranscript({ who, text, interim, typed = false }) {
+  function onTranscript({ who, text, interim }) {
     const last = vEntries.at(-1);
     if (last && last.who === who && last.interim) {
       last.text = text;
       last.interim = interim;
     } else {
-      vEntries.push({ who, text, interim, typed });
+      vEntries.push({ who, text, interim });
     }
     // A line growing in place changes no length the effect reads: follow it
     // here, while the owner is at the bottom (review of #570).

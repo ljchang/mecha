@@ -53,26 +53,24 @@ export function historyLines(entries) {
 // on a re-read; never a count, which that fold changes (review of #570). A
 // repeated short line ("yes") may count as taken a moment early: a blink, and
 // one that corrects itself, where a stale count drew a line twice for good.
-// The call's own notices (`who: "notice"` — a dead mic, a dropped typed line,
-// an error) show until the call carries on past them: the pane is their only
-// surface, and a silent one over a dead mic is the state #534 was fixed for,
-// but a notice the owner has since *spoken* after is history, not the call's
-// state (a reconnect drops them on the page side). Never the persona's
-// speech, which comes from the transcript and the reply streaming in.
+// The call's own notices (`who: "notice"` — a dead mic, audio that cannot
+// reach the owner, a dropped typed line, an error) show for the rest of the
+// call, as they did before this screen drew the transcript: the pane is their
+// only surface (a silent one over a dead mic is the state #534 was fixed
+// for), and nothing the owner says is evidence the condition has passed. A
+// reconnect — the action they ask for — clears them on the page side.
+// Never the persona's speech, which comes from the transcript and the reply
+// streaming in.
 export function pendingSpeech(callEntries, lines) {
   const norm = (t) => (t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const said = (callEntries ?? []).filter((e) => e.who === 'user' || e.who === 'notice');
-  const finished = said.filter((e) => e.who === 'user' && !e.interim).length;
+  const shown = (callEntries ?? []).filter((e) => e.who === 'user' || e.who === 'notice');
+  const finished = shown.filter((e) => e.who === 'user' && !e.interim).length;
   const recent = (lines ?? [])
     .filter((l) => l.who === 'user')
     .slice(-(finished + 2))
     .map((l) => ` ${norm(l.text)} `);
-  // Spoken lines only: a typed line can be sent over a dead mic, so it is
-  // no sign the condition a notice reports has passed (review of #570).
-  const lastSaid = (callEntries ?? []).findLastIndex((e) => e.who === 'user' && !e.typed);
-  return said.filter((e) => {
-    if (e.who === 'notice') return (callEntries ?? []).indexOf(e) > lastSaid;
-    if (e.interim) return true;
+  return shown.filter((e) => {
+    if (e.who === 'notice' || e.interim) return true;
     const t = norm(e.text);
     return t !== '' && !recent.some((r) => r.includes(` ${t} `));
   });
