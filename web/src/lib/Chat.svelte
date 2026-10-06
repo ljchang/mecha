@@ -7,7 +7,7 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures, downloadPicture } from './picture.js';
+  import { pictureOf, stillOut, repeatedPictures, downloadPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
@@ -463,11 +463,18 @@
           // `ToolDenied` and `ToolResult`, and the denial already wrote the
           // reason where it belongs.
           const open = openCall(entries, ev);
-          if (!open) fillRefusal(entries, ev);
-          if (open) {
-            open.pending = false;
-            open.is_error = ev.is_error;
-            open.preview = ev.preview;
+          // A picture finished after its turn (§5.4): its row closed when the
+          // call answered "being made", and the finished result lands on it
+          // by id — never on a row that already holds its answer.
+          const late = open
+            ? null
+            : entries.find((e) => e.kind === 'tool' && e.id != null && e.id === ev.id && stillOut(e));
+          if (!open && !late) fillRefusal(entries, ev);
+          const row = open ?? late;
+          if (row) {
+            row.pending = false;
+            row.is_error = ev.is_error;
+            row.preview = ev.preview;
           }
           // Every plan change already arrives here as a tool call, so the
           // list needs no event of its own — re-read on the one that means
@@ -1608,6 +1615,20 @@
     }
   }
 
+  // The call screen's picture Stop: the picture alone, never the reply being
+  // spoken (ruling Q2, 2026-10-05).
+  async function stopPicture() {
+    try {
+      await fetch(`/api/chat/${key}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ picture: true }),
+      });
+    } catch {
+      // The picture's own result reports the outcome.
+    }
+  }
+
   const pct = $derived(
     usage?.window ? Math.min(100, Math.round((usage.prompt / usage.window) * 100)) : null
   );
@@ -1944,8 +1965,13 @@
           </button>
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked</span>
-          {:else if entry.is_error}<span class="tool-state">failed</span>{/if}
+          {:else if entry.is_error}<span class="tool-state">failed</span>
+          {:else if stillOut(entry)}<span class="tool-state">drawing a picture…</span>{/if}
         </div>
+        <!-- Still being drawn past the turn that asked for it (§5.4): it
+             lands on this row when done. Stop is the owner's, and ends only
+             the picture when no reply is running. -->
+        {#if stillOut(entry)}<button class="qmore" onclick={cancel}>Stop the picture</button>{/if}
         {#if entry.open}
           <div class="toolpanel">
             {#if entry.draft}
@@ -2357,6 +2383,10 @@
             <!-- No height until it loads: follow the bottom again once it
                  does (review of #576). -->
             <span class="vanswer vshot"><img src={workspaceFile(line.picture)} alt={line.text} loading="lazy" onload={() => vStick && voicePane?.scrollTo({ top: voicePane.scrollHeight })} /></span>
+          {:else if line.making}
+            <!-- Still being drawn: its place in the call, and a Stop for the
+                 picture alone, which leaves the reply being spoken (ruling Q2). -->
+            <span class="vanswer vmaking">{line.text} <button class="qmore" onclick={stopPicture}>Stop</button></span>
           {:else}
             <!-- The chat's own renderer, so a call formats a reply the way
                  the chat does (the owner's ask, 2026-10-06). -->
@@ -3616,6 +3646,7 @@
     color: var(--text-muted);
   }
   /* A picture in the transcript, drawn where it was made. */
+  .vmaking { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .vshot {
     display: block;
     width: min(92%, 320px);
