@@ -43,7 +43,8 @@ export function withoutPictureRefs(text) {
   return s
     .split('\n')
     .filter((line) => {
-      if (line.trimStart().startsWith('```')) fenced = !fenced;
+      // Either fence the renderer knows (`mail-markdown.js` `parseBlocks`).
+      if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
       return fenced || !PICTURE_REF.test(line);
     })
     .join('\n');
