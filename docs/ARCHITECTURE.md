@@ -4088,9 +4088,26 @@ agree.
 - **Vocal tags are the engine's** (`(laugh)`, `fragments.py` `EVENTS`), so
   the tidier leaves parentheses alone.
 
-The voice preamble's "no Markdown" rule predates this, when the model's raw
-text was the speech. It is now redundant for the ear, and still shapes what
-the chat shows.
+**A spoken turn's guidance is a run note, and it asks nothing about
+formatting** (`voice::VOICE_NOTE` / `VOICE_NOTE_STREAMING`, 2026-10-06). It
+says the owner is listening and what a spoken turn does (the gist of long
+tool output, a line before a slow step, the staged-draft protocol), rides
+every request of a spoken run, and is recorded as a `notes` line *ahead* of
+the owner's message, which holds only what was said. Until then the voice
+block was prepended to the owner's message at the start of a spoken stretch
+and stored there, with a "no Markdown" rule from when the model's raw text
+was the speech; the tidier made that rule redundant, and dropping it means a
+reply is written one way whether it is read or heard. `VOICE_BLOCK` stays
+for the standalone `voice-serve`'s system prompt and for stripping old
+transcripts (`serve::chat::strip_voice_preamble`).
+
+- **The note is what marks a turn as spoken on disk.** The block inside the
+  message used to, and `scripts/check-private.py` reads which turns of a
+  chat were spoken from the record; it now treats a voice-note `notes` line
+  as marking the owner turn after it, and scans any session holding one.
+  Recorded ahead of the turn for that reason, as a persona chat's notes are.
+- **Persona calls keep their own note** (`persona::call::note`), which still
+  carries a formatting clause; that file is the persona lane's.
 
 ## The voice director
 
