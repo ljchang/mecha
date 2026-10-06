@@ -697,15 +697,17 @@ conversation, so the capabilities do not change. Three rules:
   The model never sees the result, and reported a near-copy as the change
   made, so a retry in the same chat repeated the edit. Each edit's
   `layout_similarity` to its first reference (grayscale 32² thumbnails,
-  correlated) goes in the manifest; at `NEAR_COPY_LAYOUT` (0.78) the result
-  says the layout did not change, that a move or pose may not have taken, and
-  how to retry *if the owner asks*: edit the original with the prompt
-  rewritten as the parts to keep, named, then an instruction naming the
-  change, or redraw from the library by the names in the original's manifest.
-  It never says "call again now" (`NO_RETRY_UNASKED`): on 2026-10-03, in a
-  chat where it had, a persona retried 12 of 13 near-copies unasked — detail
-  edits included — and then redrew after edits that had worked, reasoning
-  that the result said they had not taken.
+  correlated) goes in the manifest. At `NEAR_COPY_LAYOUT` (0.78) the result
+  states facts only (PERSONA-CONTEXT-DESIGN.md §5.2): that the layout barely
+  moved, with its similarity score; whether this picture has now done so
+  twice running; which original a near-copy descends from; and, for an
+  original made from the library, the names it was made with. Guidance lives
+  once in the description: fine after a recolour or a small detail; after a
+  move or a pose, tell the owner it probably failed; retry only on request,
+  from the original; after two running, stop and explain. A retry is never
+  the result's to suggest: on 2026-10-03 a notice urging an immediate retry
+  led the persona to redo 12 of 13 near-copies unprompted, detail edits among
+  them, and then to redraw edits that had worked.
   It gives the names only, each checked against the library, since the
   manifest is a workspace file. The threshold was measured on one scene and
   on same-shape edits only: every copy, and every edit that left her
@@ -716,13 +718,12 @@ conversation, so the capabilities do not change. Three rules:
   and reads as changed, which fails in the safe direction. A recolour also
   keeps the layout (0.78–1.00), which is why the tool reports rather than
   retries: only the model knows which it asked for, and a blind retry would
-  cost every recolour a minute. For the same reason neither notice says the
-  edit failed: each leads with "expected after a colour or detail change",
-  and the result stays the next thing to edit. A near-copy records
-  `same_layout_as`, so a retry that edits the near-copy is pointed back at
-  the original. Strikes count per picture actually edited: a failed move
-  retried as told edits the same original again, and the second within 15
-  minutes says stop and tell the owner if the change was a move, while a
+  cost every recolour a minute. For the same reason no result says the edit
+  failed. A near-copy records
+  `same_layout_as`, so an edit of the near-copy is told which original it
+  came from. Strikes count per picture actually edited: a failed move
+  retried on the original edits the same picture again, and the second
+  within 15 minutes says it is the second in a row, while a
   recolour chain edits a new result each time and never counts twice. An
   edit that does change the layout ends the row. Counting per chain root
   instead told a second successful recolour to stop (review of #408). The

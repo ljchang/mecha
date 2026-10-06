@@ -58,9 +58,9 @@ the repository (§8).
   (`persona::recall`). Because they live in the message, they stay in the history and are
   re-sent on every later turn. `PriorNudges::Drop` takes the stale variety and edit notes back
   out at send time. The rest stay.
-- **Tool results** carry guidance as well as facts. An image result is about 900 characters:
-  where the file is, not to overwrite the original, "To change it further, edit … next", and the
-  near-copy notice with its recovery advice (`imagegen.rs`).
+- **Tool results** carry guidance as well as facts. An image result was about 900 characters:
+  where the file is, an instruction about the original, a suggestion of what to edit next, and
+  the near-copy notice with its recovery advice (`imagegen.rs`; facts only since §5.2 was built).
 - **A call's barge-in** (`persona_chat::speak`) cancels the run in flight (`CancelReason::Stopped`).
   `image_generate` honours that cancel and stops the ComfyUI job, because the chat's Stop button
   needs exactly that. The result is "Cancelled — the generation was stopped and nothing was
@@ -304,6 +304,29 @@ what is true for this run. Nothing a component says is written into the conversa
 A result says what happened: the path, edit or new, the time, and for an edit the similarity. How
 to use the tool, and what to do next, lives **once**, in the tool's description.
 
+- **Built for `image_generate`** (2026-10-06). A new picture's result is its path, size, cast, time
+  and seed, and "It is on the owner's screen; you have not seen it." An edit's adds what it edited
+  and that the original is unchanged. A near-copy adds the similarity, whether it is the second in a
+  row, which original it came from, and the library names it was drawn from. Gone from every result:
+  the suggestions about revising a picture, editing it further and leaving the original alone, and
+  the near-copy notice's retry advice. Those now sit once in the description.
+- **Measured** (2026-10-06, one session, 12 unseeded samples per cell, recorded image results
+  rewritten into the new form; a check before each request paused it while a voice call was live):
+
+  | | M2 (should not draw) | owner asked for a picture |
+  |---|---|---|
+  | the results as deployed | 10/12 | 12/12 |
+  | factual results, full guidance in the description | 6/12 | 11/12 |
+  | factual results, guidance cut to a third | 8/12 | 11/12 |
+
+  No fake pictures or empty replies in any cell. An earlier 8-sample run, made with the guidance
+  before its rewording, showed the owner-asked control at 5/8; the 12-sample run did not repeat it.
+  The same deployed setup scored 3/8 at M2 in that earlier run, so these cells vary between runs,
+  and only comparisons within one run are read.
+- The leading `image: <path>` line stays exactly as it was: the page reads it to draw the picture
+  (`web/src/lib/picture.js`). A reply that repeats it is to be hidden from the chat and from speech by
+  #578.
+
 ### 5.3 The history is what happened, not what was attempted
 
 - A turn the owner interrupted is sent as **its delivered words plus whatever its tools delivered**,
@@ -405,8 +428,8 @@ assumption:
 - the call note's "first spoken turn of a stretch" gating (§5.1). (The chat-start memory's
   first-turn placement was retired with #572 and reinstated, as `recall::carries_chat_start`, by
   #575: as a note it was slower and outweighed the owner's asks.)
-- the near-copy notice's recovery advice and the "To change it further, edit … next" line (§5.2,
-  §5.5);
+- the near-copy notice's recovery advice and the edit-next line (§5.2, §5.5): retired by #581, with
+  the replay in §5.2;
 - the variety note itself (`persona::variety`). Under §5.1 it is one note for one run, never a
   stack, which is the condition it was measured in. Whether it is still needed once the history
   is lean is a measurement;
