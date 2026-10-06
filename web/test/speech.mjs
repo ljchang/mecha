@@ -3,13 +3,22 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ownWords } from '../src/lib/persona.js';
-import { replyContext, replyKey, speakable, speechPieces, speechSentences } from '../src/lib/speech.js';
+import { replyContext, replyKey, speakable, speechPieces, speechSentences, withoutPictureRefs } from '../src/lib/speech.js';
 
 // The rule a call shares (`speakable-cases.json`, read by the Rust tidier's
 // test too): every case, spoken as the call would say it.
 const cases = JSON.parse(readFileSync(new URL('./speakable-cases.json', import.meta.url), 'utf8'));
 assert.ok(cases.length > 0);
 for (const c of cases) assert.equal(speakable(c.text), c.spoken, c.why);
+
+// What the chat draws: a line that only points at a picture goes, and the
+// rest of the reply, a mention inside a sentence among it, stays as written.
+assert.equal(
+  withoutPictureRefs('Here it is.\n[Image: images/20261006-120000-1.png]\nLike it?'),
+  'Here it is.\nLike it?',
+);
+assert.equal(withoutPictureRefs('I saved [image: images/a.png] for you.'), 'I saved [image: images/a.png] for you.');
+assert.equal(withoutPictureRefs('[Image attached: a wide shot]'), '[Image attached: a wide shot]');
 
 // Marks go, words stay.
 assert.equal(speakable('## Plan\n\n- **first**, check the *traps*\n- then `count` them'), 'Plan. first, check the traps. then count them.');

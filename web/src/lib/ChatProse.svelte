@@ -25,6 +25,7 @@
   import { parseBlocks, hiddenTarget } from './mail-markdown.js';
   import { citeNote, citeOpens, citeMark, citeUnmark } from './persona.js';
   import { replyFilename, copyText, downloadText } from './reply-export.js';
+  import { withoutPictureRefs } from './speech.js';
   import { player, playReply, stopPlaying } from './reply-player.svelte.js';
 
   // `listen`: speak this reply aloud (the owner's ask, 2026-10-01) — `{ chat,
@@ -61,7 +62,10 @@
   }
   // Citations are swapped for placeholders before the Markdown is parsed
   // and drawn back from them, so the parser cannot split one (`citeMark`).
-  const prepared = $derived(citeMark(text, cites));
+  // Drawn without a line that only points at a picture the chat already
+  // shows (`withoutPictureRefs`); double-click still shows the reply as
+  // written, that line included.
+  const prepared = $derived(citeMark(withoutPictureRefs(text), cites));
   const blocks = $derived(parseBlocks(prepared.text));
   const pieces = (v) => citeUnmark(v, prepared.marks);
   // Code keeps a citation's words, drawn plain: a placeholder must never
