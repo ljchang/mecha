@@ -133,8 +133,8 @@ An earlier run, the V-series, is superseded:
   rates.
 - **L6 removed more than §5.1 does.** It dropped every parenthesised harness block from past
   turns, including the files block, the memory block and the session goal. It did not move them.
-  The build keeps the files and the goal in the first turn and moves memory into the run's notes
-  (§5.1). So L7 is the direction, not a measurement of the build. Each step's gate replays the
+  The build keeps the files, the chat-start memory and the goal in the first turn, and sends the
+  per-turn recall and the other guidance as the run's notes (§5.1). So L7 is the direction, not a measurement of the build. Each step's gate replays the
   projection *as built* (§8).
 - The replay tests what the model *reads* (changes 1–3 in §5). Changes 4–6 alter what *happens*,
   so they cannot be replayed and each needs its own measurement once built.
@@ -258,22 +258,38 @@ what is true for this run. Nothing a component says is written into the conversa
   - Re-attaching notes is owed before either reader is pointed at a chat that carries them.
 - **Guidance and material.**
   - *Guidance* changes per run and becomes notes: the call note, the variety note, the edit note,
-    the identity reminder, and memory: the chat-start block and the per-turn recall.
-  - **Memory and recall are two notes, never joined.** `recall::stem_of` reads only a note's
-    leading stem. A clean chat-start block joined ahead of a recall from outside would arm
-    `private` and never `untrusted`. That is why `arm_for_content` has two stems, and a test
-    caught exactly this in #572.
-  - *Material* is read once and kept: the files block stays in the first turn, where it is cached
-    and compaction keeps it. The session goal stays too, because it is the owner's words.
+    the identity reminder, and the per-turn recall.
+  - **A recall is its own note, never joined.** `recall::stem_of` reads only a note's leading
+    stem. A recall from outside joined after a clean block would arm `private` and never
+    `untrusted`. A test caught exactly this in #572.
+  - *Material* is read once and kept: the files block and the **chat-start memory block** are
+    stored once, in the chat's first turn before its first reply, where they are cached and
+    compaction keeps them (it keeps `messages[0]` whole). A chat already past a reply that never
+    stored the memory block gets it as a note. The session goal stays too, because it is the
+    owner's words.
+  - Once stored, the memory block stays with its chat. A memory switch turned off reaches the
+    next chat, not an open one, as before #572.
+  - **Why chat-start memory is material, not a note (2026-10-06).** #572 first sent it as a note.
+    Measured on the live server:
+    - At the end of every request, it was re-read every time: ~1,800 tokens, ~1.1–1.6 s of
+      prefill per request, against ~230 tokens (~0.3 s) stored once in the first turn.
+    - It was also the most salient text in the request. A standing preference inside it ("prefers
+      talk over pictures") outweighed the owner's explicit ask: on the two picture requests of one
+      chat, 6/8 and 6/8 calls with memory at the end, against 8/8 and 7/8 from the first turn.
+    - Its effect on the picture loop (M1/M2) was no worse: 1/8 and 4/8 from the first turn, against
+      3/8 and 4/8 at the end, in the same session.
+  - **The rule this leaves:** the tail is for short, per-run guidance. Anything large or standing
+    is material.
   - The call note goes on **every** spoken turn. It no longer persists, so "first spoken turn of a
     stretch" no longer applies.
 - **Chats recorded before this.** Their stored messages already hold notes. The persona projection
   drops every recorded persona note from the history it sends: call, variety, edit, identity
-  reminder and memory, but never files or the goal, and never a block whose removal would leave its
-  message empty (an empty user message is a 400, as an empty assistant one is). That replaces
-  `PriorNudges`'s stale-note logic and keeps its empty-message guard.
-  - **The cost, once per old chat.** Dropping every recorded note makes the server's cache diverge
-    at the first note, which is in the chat's first turn. So an old chat's first turn after the
+  reminder and per-turn recall. It keeps the files block, the goal and the first chat-start memory
+  block (any later copy goes, though no recorded chat holds one), and never removes a block whose
+  removal would leave its message empty (an empty user message is a 400, as an empty assistant one
+  is). That replaces `PriorNudges`'s stale-note logic and keeps its empty-message guard.
+  - **The cost, once per old chat.** Dropping the recorded notes makes the server's cache diverge
+    at the first one dropped, usually in the chat's first few turns. So an old chat's first turn after the
     change re-reads its whole history: roughly 8,000 tokens for a long chat, about 4–5 s at the
     router's measured ~1,800 tokens/s, on a spoken reply if that turn is spoken. After that the
     history is stable and each request repeats the one before.
@@ -345,6 +361,32 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   no identity source it does not have. The tool's description says so, and linking a character is
   the owner's way to fix it.
 - This is the owner's stated intent (2026-10-05). It also removes edit-chain drift at its source.
+- **An edit is typed fields, and the tool writes the edit model's prompt** (built first, 2026-10-06,
+  `imagegen::EditAsk`). The rule that an edit prompt is an instruction, never a scene caption, had
+  been in the tool's guidance since 2026-09-29 (`ARCHITECTURE.md` §images). A live chat showed the
+  persona still writing captions: its three edits all came back unchanged.
+  - Replayed on one of them (owner-asked, edit panel; 2 seeds per cell, then 4 more for the
+    first and last; a local vision model judged the change):
+
+    | edit prompt | face anchor | change made |
+    |---|---|---|
+    | the persona's scene caption | on | 2/6 |
+    | the persona's scene caption | off | 1/2 |
+    | instruction ("Keep … unchanged. <change>") | on | 2/2 |
+    | instruction | off | 6/6 |
+
+    So the prompt's form decides it, and the face anchor (#569) does not block edits.
+  - The fields: `change` (the one change, as an instruction; from the edit panel, the owner's
+    words as given), `keep` (what stays, named, optional), and `face` and `camera` only when the
+    change is about them. A missing `keep` gets no stand-in: the change alone made the edit 4/4,
+    "Keep everything else unchanged." 3/4, and a generic list 2/4 (one edit, 4 seeds, judged in
+    both orders). `camera` replaces the `camera_moves` flag: a described camera move turns the face
+    anchor off. A free-text edit is refused with the shape to send instead, so a caption cannot
+    reach the edit model.
+  - With the new schema, on the same chat's three edit moments (6 samples each), the persona used
+    `edit` in 12 of 18 calls and sent free text in 6, which is now refused and retried. The replayed
+    history held only free-text edits to copy. When it used the fields, panel edits carried the
+    owner's words as `change`, and both rendered edits made the change.
 
 ### 5.6 Guidance travels with capability
 
@@ -360,8 +402,9 @@ assumption:
 
 - `PriorNudges`'s stale-note logic and its re-read cap (§5.1: there is nothing stale to drop once
   notes are not stored; the projection of old chats drops all of them);
-- `recall::carries_now`'s first-turn placement of memory, and the call note's
-  "first spoken turn of a stretch" gating (§5.1);
+- the call note's "first spoken turn of a stretch" gating (§5.1). (The chat-start memory's
+  first-turn placement was retired with #572 and reinstated, as `recall::carries_chat_start`, by
+  #575: as a note it was slower and outweighed the owner's asks.)
 - the near-copy notice's recovery advice and the "To change it further, edit … next" line (§5.2,
   §5.5);
 - the variety note itself (`persona::variety`). Under §5.1 it is one note for one run, never a
@@ -374,6 +417,13 @@ assumption:
 Not retired: `is_harness_voice`'s persona entries (old transcripts carry those notes), and
 `PriorTails` (a cut-off reply is what the owner heard, and the trim is about how the model reads
 it, not about harness text).
+
+### Open: a fake picture in the history
+
+A reply that narrates a picture it never made is a claim, like §1.5's. Under §5.3 ("the history is
+what happened") such a reply would arguably be sent back without the fake picture, so the model
+cannot copy it. That needs a way to recognise the narration that is not a wording match, and is
+not built. Recorded here because the replay showed the copying (§8).
 
 ## 7. Rulings (owner, 2026-10-05)
 
@@ -401,6 +451,14 @@ get started").
   - Rerun the replay against the projection as built. L0 must move toward L7 for M1 and M2, with
     no empty replies.
   - Read the echo and repetition readings before and after.
+  - **Always replay a positive control beside M1/M2:** a moment where the owner asks for a
+    picture, where the right reply calls `image_generate`. M1/M2 count calls the model should
+    not make, so on their own they reward a change that just suppresses tool calls. #572's first
+    gate had only them, and missed that memory at the tail cost a quarter of the calls the owner
+    asked for (§5.1).
+  - Count **fake pictures** as well: a reply that narrates a picture ("[image: …]") without a
+    call. Once one is in the history the model copies it (4/8 on the next request, with no notes
+    at all), so a fake is a claimed picture with a lasting cost, the same family as §1.5.
   - Run a **regression panel** over at least three personas, one of them without
     `image_generate`. It covers repetition and copying (`persona::echo`), the picture loop, the
     claimed picture, and identity in self-portraits. One persona's chats are too small a sample

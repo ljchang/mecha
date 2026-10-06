@@ -185,12 +185,14 @@ struct PersonaSession {
     /// the chat's life in this process — a restart forgets it, since the
     /// safety record is content-free and names no chat by design.
     crisis_shown: bool,
-    /// What the persona remembers at chat start (§9.7): read once per chat
-    /// in this process and sent as one of every run's notes
-    /// (`RunContext::notes`, PERSONA-CONTEXT-DESIGN.md §5.1), never stored in
-    /// a message. `None` until read; `Some(None)` when there is nothing to
-    /// send (it remembers nothing, its memory is off, or the store was
-    /// unreadable, which the first turn said on the page).
+    /// What the persona remembers at chat start (§9.7), as read for this
+    /// chat in this process: `None` until read; `Some(None)` when there was
+    /// nothing to store (it remembers nothing, its memory is off, or the
+    /// store was unreadable, which the turn that read it said on the page).
+    /// Kept so a chat with nothing to remember is not re-read, and re-noticed,
+    /// on every turn. What is read is stored once in the chat's first turn
+    /// (`recall::carries_chat_start`); only a chat already past a reply that
+    /// never stored it gets it as a note.
     memory: Option<Option<String>>,
     /// The reply being read aloud, while a Listen tap speaks it
     /// (`listen::Reply`): here so it goes when this chat does.
@@ -2840,9 +2842,18 @@ impl PersonaChats {
                 .conversation
                 .as_ref()
                 .is_some_and(|c| carries_files_now(&c.messages));
-            // What it remembers at chat start (§9.7): read once per chat, then
-            // sent with every run as a note, never stored (§5.1).
-            let remembered = ps.memory.clone();
+            // What it remembers at chat start (§9.7): material, stored once
+            // in the chat's first turn (§5.1), so a chat that carries it needs
+            // no read at all.
+            let carried = ps
+                .conversation
+                .as_ref()
+                .is_some_and(|c| mecha_core::persona::recall::carries_chat_start(&c.messages));
+            let remembered = if carried {
+                Some(None)
+            } else {
+                ps.memory.clone()
+            };
             // After the first reply, each turn also recalls what the owner's
             // message brings to mind (§9.7). What the conversation already
             // holds is not recalled again, so its text is read here; the
@@ -2929,11 +2940,13 @@ impl PersonaChats {
             _ => None,
         };
         // What the persona remembers, read off its store outside the lock,
-        // with the memory switches as the persona stands at that read. Read
-        // on the chat's first turn in this process and kept, so a switch
-        // turned off mid-chat reaches it on the next resume. A chat recorded
-        // before run notes has its stored copy left off the wire
-        // (`PriorNudges::Drop`).
+        // with the memory switches as the persona stands at that read: on a
+        // chat's first turn, or the first turn of one begun under run notes
+        // that never stored it. Stored once in the owner's turn below, where
+        // it is cached with the history. As a note at the end of every
+        // request it cost ~1.1–1.6 s of prefill each time and, as the most
+        // salient text in the request, outweighed the owner's own asks
+        // (PERSONA-CONTEXT-DESIGN.md §5.1, measured 2026-10-06).
         let remembered = match (remembered, &ready, &live) {
             (Some(kept), _, _) => Some(kept),
             (None, Some((bound, _)), Some(persona)) => Some(
@@ -3010,6 +3023,29 @@ impl PersonaChats {
         if ps.memory.is_none() {
             ps.memory = remembered;
         }
+        // Asked again with the conversation in hand: a turn that finished in
+        // between may have stored it already (the files block's rule).
+        // Stored only before the chat's first reply, so it lands in
+        // `messages[0]`, which compaction keeps whole (the files block's rule,
+        // `recall::carries_chat_start`). A chat already past a reply that never
+        // stored one (begun under #572, or a first turn whose read failed and
+        // was read again after a restart)
+        // gets it as a note instead: slower, but never folded mid-history for
+        // a compaction to summarise away and the next turn to store again.
+        let (memory_block, memory_note) = match memory_block
+            .filter(|_| !mecha_core::persona::recall::carries_chat_start(&conversation.messages))
+        {
+            Some(memory)
+                if !conversation
+                    .messages
+                    .iter()
+                    .any(|m| m.role == mecha_core::message::Role::Assistant) =>
+            {
+                (Some(memory), None)
+            }
+            Some(memory) => (None, Some(memory)),
+            None => (None, None),
+        };
         // The call note (§11): on every spoken turn, never on a typed one. It
         // speaks of pictures only to a persona that can make them (§5.6).
         let pictures = ready
@@ -3075,16 +3111,15 @@ impl PersonaChats {
         // review of #409; `chat::begin_turn` folds for the same reason). The
         // fold is recorded as a `Rewrite`, or the file would hold the
         // invalid shape and a resume would replay it.
-        // The run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): sent with every
-        // request of this run and stored in no message, so none of them is
-        // re-sent on the turns after. Memory first, as it rode first before:
-        // what it remembers at chat start, then what this message brings to
-        // mind. Two notes, never joined, because each arms taint by the stem
-        // it opens with (`recall::stem_of`), and a recall from outside joined
-        // after a clean block would hide its own.
+        // The run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): short, per-run
+        // guidance, sent with every request of this run and stored in no
+        // message, so none of them is re-sent on the turns after. The recall
+        // is its own note, never joined to anything: it arms taint by the
+        // stem it opens with (`recall::stem_of`), and joined after a clean
+        // block a recall from outside would hide its own.
         let anchored = anchor.is_some();
         let notes: Vec<String> = [
-            memory_block,
+            memory_note,
             recall_block,
             anchor,
             call_note,
@@ -3128,6 +3163,9 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 mecha_core::agent::append_user_text(&mut conversation.messages, files.clone());
             }
+            if let Some(memory) = &memory_block {
+                mecha_core::agent::append_user_text(&mut conversation.messages, memory.clone());
+            }
             record_notes(&ps.session)
                 .and_then(|()| {
                     ps.session.append(&Record::Rewrite {
@@ -3144,6 +3182,13 @@ impl PersonaChats {
             if let Some(files) = &files_block {
                 user.content.push(mecha_core::message::Block::Text {
                     text: files.clone(),
+                });
+            }
+            // What it remembers at chat start, stored once like the files: the
+            // stem it opens with is what arms the chat (§9.7).
+            if let Some(memory) = &memory_block {
+                user.content.push(mecha_core::message::Block::Text {
+                    text: memory.clone(),
                 });
             }
             conversation.push(user.clone());
@@ -5529,15 +5574,15 @@ mod tests {
         let t = chat("Hello again.").await;
         let seen = w.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 2);
-        // One of the run's notes (PERSONA-CONTEXT-DESIGN.md §5.1): on every
-        // request, at the end of its newest message, and stored nowhere, so
-        // no request carries an earlier turn's copy.
+        // Material (PERSONA-CONTEXT-DESIGN.md §5.1): stored once, in the
+        // chat's first owner turn, and sent from there as history on every
+        // later request, one copy, never re-sent at the tail as a note.
         for req in &seen {
-            let newest = req.messages.last().unwrap().text();
+            let first = req.messages[0].text();
             assert!(
-                newest.contains(mecha_core::persona::recall::MEMORY_STEM)
-                    && newest.contains("Teaches a methods seminar on Thursdays."),
-                "{newest}"
+                first.contains(mecha_core::persona::recall::MEMORY_STEM)
+                    && first.contains("Teaches a methods seminar on Thursdays."),
+                "{first}"
             );
             let copies: usize = req
                 .messages
@@ -5546,6 +5591,15 @@ mod tests {
                 .sum();
             assert_eq!(copies, 1, "one copy a request, never a stack");
         }
+        assert!(
+            !seen[1]
+                .messages
+                .last()
+                .unwrap()
+                .text()
+                .contains("methods seminar"),
+            "not at the tail of a later request"
+        );
         let bubbles: Vec<String> = t["entries"]
             .as_array()
             .unwrap()
@@ -5563,6 +5617,120 @@ mod tests {
         remember("Lives by the sea.", Origin::ModelUntrusted);
         let t = chat("Hi.").await;
         assert_eq!(t["taint"]["untrusted"], true, "{t}");
+    }
+
+    /// §5.1: a chat that stored its chat-start memory keeps it through a
+    /// restart: the rebuilt conversation carries the block, so nothing is read
+    /// again and nothing rides as a note — one copy, still in `messages[0]`
+    /// (review of #575). If the rebuild ever lost it, the block would be read
+    /// again and sent at the tail of every request, slower than before #572.
+    #[tokio::test]
+    async fn stored_memory_survives_a_restart_as_one_copy_in_the_first_turn() {
+        use mecha_core::persona::memory::{Memory, NewEpisode, Source};
+        use mecha_core::persona::Origin;
+        let w = world();
+        Memory::open(&w.store(), "mara")
+            .unwrap()
+            .add_episode(NewEpisode {
+                source: Some(Source {
+                    chat: "earlier".into(),
+                    from: 0,
+                    to: 1,
+                }),
+                summary: "Walked the tide pools at dawn.".into(),
+                origin: Origin::ModelClean,
+                model: "m".into(),
+                ..NewEpisode::default()
+            })
+            .unwrap();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello there.").await;
+        // Out of memory, as after a restart.
+        w.personas().sessions.lock().await.clear();
+        let resumed = w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        turn(&w, resumed["key"].as_str().unwrap(), "And then?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        for req in &seen {
+            assert!(req.messages[0].text().contains("tide pools"));
+            let copies: usize = req
+                .messages
+                .iter()
+                .map(|m| m.text().matches("tide pools").count())
+                .sum();
+            assert_eq!(copies, 1);
+        }
+    }
+
+    /// §5.1: a chat already past its first reply that never stored its
+    /// chat-start memory (begun under #572, or a first turn whose read
+    /// failed) gets it as a run note, never folded into a later owner turn:
+    /// compaction keeps only `messages[0]` whole, so a block stored mid-history
+    /// would be summarised away and stored again (review of #575).
+    #[tokio::test]
+    async fn memory_a_chat_never_stored_rides_as_a_note_past_the_first_reply() {
+        use mecha_core::persona::memory::{Memory, NewEpisode, Source};
+        use mecha_core::persona::Origin;
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello there.").await;
+        Memory::open(&w.store(), "mara")
+            .unwrap()
+            .add_episode(NewEpisode {
+                source: Some(Source {
+                    chat: "earlier".into(),
+                    from: 0,
+                    to: 1,
+                }),
+                summary: "Walked the tide pools at dawn.".into(),
+                origin: Origin::ModelClean,
+                model: "m".into(),
+                ..NewEpisode::default()
+            })
+            .unwrap();
+        // Out of memory, as after a restart.
+        w.personas().sessions.lock().await.clear();
+        let resumed = w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let key2 = resumed["key"].as_str().unwrap().to_string();
+        turn(&w, &key2, "And then?").await;
+        turn(&w, &key2, "Go on.").await;
+
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert!(!seen[0].messages[0].text().contains("tide pools"));
+        for req in &seen[1..] {
+            let newest = req.messages.last().unwrap().text();
+            assert!(
+                newest.contains("Walked the tide pools at dawn."),
+                "{newest}"
+            );
+            let copies: usize = req
+                .messages
+                .iter()
+                .map(|m| m.text().matches("tide pools").count())
+                .sum();
+            assert_eq!(copies, 1, "a note, never stored mid-history");
+        }
     }
 
     /// §9.7, on every turn: past the first reply, an owner message that

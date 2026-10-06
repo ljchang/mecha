@@ -1436,6 +1436,28 @@ mod tests {
         );
     }
 
+    /// A persona's chat-start memory block is stored in `messages[0]` because
+    /// a compaction keeps that message whole (PERSONA-CONTEXT-DESIGN.md §5.1,
+    /// `recall::carries_chat_start`). Stripped here, the next turn would store
+    /// it again just after context ran short (review of #575).
+    #[test]
+    fn a_persona_chat_start_memory_block_survives_the_rebuild() {
+        let mut messages = transcript(6);
+        let memory = format!(
+            "{}{}: the owner keeps a vegetable garden.)",
+            crate::persona::recall::MEMORY_STEM,
+            crate::persona::recall::CHAT_START_MARK
+        );
+        messages[0].content.push(Block::text(memory.clone()));
+        let cut = cut_point(&messages, 5).unwrap();
+        let rebuilt = rebuild(&messages, cut, "s", &[]);
+        assert!(rebuilt[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if *text == memory)));
+        assert!(crate::persona::recall::carries_chat_start(&rebuilt));
+    }
+
     #[test]
     fn the_rebuilt_transcript_never_has_two_user_messages_in_a_row() {
         // Some providers reject it outright, and it is exactly what a naive
