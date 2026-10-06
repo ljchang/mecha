@@ -337,6 +337,7 @@ impl Tool for ReplayTool {
         // std mutex must not be held across an await point.
         match self.decide(&input) {
             Action::Recorded(content, is_error, external) => Ok(ToolOutput {
+                deferred: None,
                 content,
                 is_error,
                 external: external.unwrap_or(true),

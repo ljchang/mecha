@@ -97,6 +97,7 @@ pub mod image;
 pub mod imagegen;
 pub mod imagelib;
 pub mod install;
+pub mod jobs;
 pub mod layout;
 pub mod learning;
 pub mod lesson_source;
