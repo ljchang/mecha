@@ -21,7 +21,27 @@ Two different things, and the difference is the point:
   turn boundary or mid-stream — and keeps the partial turn. Cancellation is a
   dropped future; that is what aborts the HTTP request. A cancellable run
   always streams, because otherwise there is no partial answer to keep. Tools
-  are never interrupted mid-call.
+  are never interrupted mid-call, except a tool that does slow work under the
+  run's own token. That is a set, not a fixed number; the members today:
+  - `image_generate` honours the cancel, takes its job off the image server,
+    and returns "Cancelled — the generation was stopped and nothing was
+    saved." (`imagegen.rs`, `Failure::Cancelled`). The chat's Stop button
+    needs that. A call's barge-in cancels the same way, which is what turned a
+    picture into a cancel-and-retry loop on calls.
+    `PERSONA-CONTEXT-DESIGN.md` §5.4 removes this one by making a picture a
+    job that the barge-in does not touch.
+  - `document_read` passes the cancel into the extractor (`tool/document.rs`;
+    `Extractor::extract` is in `document.rs`), which drops the page in flight
+    and returns the pages already transcribed, recording that it stopped
+    early (`Extraction::cancelled`).
+  - A persona's `file_read` (`persona::files::FileRead`) passes it into the
+    same extractor, so a call's barge-in stops an OCR pass the same way and
+    the pages already read come back.
+  - `subagent` runs its child on the caller's token, so cancelling the parent
+    cancels the child mid-call and the tool returns the child's partial run.
+
+  The set is every tool that hands `ctx.cancel` to its work: a grep for it
+  outside tests finds them.
 - **Steer** (`RunContext::queued_input`) redirects a run *without* stopping it.
   Text queued mid-run is folded into the message carrying the tool results, so
   the model sees the results and the new instruction as one user turn and keeps
@@ -3981,6 +4001,32 @@ canary, a scan of the whole mecha home (nothing while open, nothing after),
 the room gone on End, the key dead on both doors — and the same turn in an
 ordinary chat, which must find the canary, so the scan is known to look where
 a trace would be.
+
+## The call screen
+
+**A call screen shows the chat's own transcript, from one source.** This
+holds in both chats (`web/src/lib/call-lines.js`, the owner's ask of
+2026-10-05). The pane draws three things in order: `historyLines` over the
+chat's entries, the reply streaming in, and `pendingSpeech`, which is the
+owner's speech the transcript has not taken yet. Nothing marks where the
+call began. Three revisions of #570 tried to anchor a "Call" divider (an
+index, a snapshot, a count of owner lines), and each drifted when a re-read
+folded two lines into one.
+
+- **"Taken" is matched by text, against every owner line**, never the last
+  few. Lines typed on another device reach every observer and shift any
+  count.
+- **A reply is drawn by `ChatProse`, as in the chat.** What the voice says is
+  tidied on the speech path, never on this screen.
+- **The screen covers the chat, so it draws everything the chat would
+  otherwise have to show:**
+  - a dropped line, marked "not delivered";
+  - a crisis pause (`kind: 'crisis'`), as a card that honours the chat's
+    closed cards, with the support resources one tap away;
+  - the call's own notices (`who: "notice"`), which last until a reconnect.
+- **`pendingSpeech` keeps only `user` and `notice` lines**, so a notice sent
+  as `bot` would vanish silently. `test/call-lines.mjs` pins the producer
+  side: `bot` is emitted only by `bot-transcription`.
 
 ## Voice preferences in the browser
 
