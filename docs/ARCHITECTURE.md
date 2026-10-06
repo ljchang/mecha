@@ -3999,7 +3999,9 @@ mid-call was saved where nothing else looked.
 
 **A reply is written once, for the chat, and tidied for the ear where it
 leaves mecha.** Every call's words go to the worker through `voice::pump`,
-in both chats, and `voice::speech::Tidier` sits there. It drops Markdown's
+in both chats, and `voice::speech::Tidier` sits there; a blocking request
+(`stream` off) answers with `speech::speakable` of the reply, the same rule
+whole, so neither door speaks the formatting. It drops Markdown's
 marks and keeps their words. A link is spoken as its label and a bare URL as
 "a link". A code block is announced once, when it opens, and never read. A
 persona's citation becomes "(from the file's words)". The rule is Listen's
