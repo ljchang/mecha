@@ -4487,6 +4487,51 @@ silent failure before it was a rule:
   "MCP servers can shadow built-ins" doc comment on `Registry::insert`
   describes the method, not a configurable behaviour.
 
+## Background jobs
+
+A tool may hand its slow half to the run's host and answer at once
+(`jobs.rs`; `ToolOutput::deferred`; the design and its review record are
+`docs/BACKGROUND-JOBS-DESIGN.md`). `image_generate` is the one that does: a
+picture takes a minute, and on a call that minute was silence the owner
+talked into, which cancelled the render, which the model retried. The
+invariants:
+
+- **Who runs the job is the run's business, never the tool's.** A chat host
+  gives the run a `JobSink` (`RunContext::jobs`); every other path — the CLI,
+  a subagent, an eval, a batch, incognito — has none, and the loop awaits
+  the job inline, linked to the run's cancellation, so it behaves exactly as
+  the call did before it deferred. A run with no host never sees "being
+  made".
+- **The job carries its own token.** Talking over a reply cancels the run,
+  never the picture; the owner's Stop cancels both (`/cancel`, two calls),
+  and the call screen's picture slot cancels the picture alone
+  (`{"picture": true}`).
+- **One job per conversation, refused in the tool's words.** A second is a
+  `refusal: true` result with the tool's own busy text, never a tool failure.
+- **A late result is finished by the loop's own rule** — the turn's cap, the
+  envelope, taint armed from what came back — through `jobs::settle`, the
+  one function `run_tools` uses for an inline result too, so the two cannot
+  drift. Provenance is recorded beside it (`Conversation::apply_late`).
+- **The wait is gated, not tainted.** Until a job's result *lands* — not
+  merely finishes: the queue keeps it pending until the host calls
+  `JobQueue::landed` — its tool's declared reach folds into each turn's send
+  gate (`JobSink::pending_tools`), and nothing arms `convo.taint` until what
+  came back does.
+- **Recorded by appended records, never a rewrite.** `Record::LateResult`
+  patches the result in place and drops the taint checkpoints covering its
+  message (`Record::Extend`'s rule), so late content is never classified by
+  a checkpoint written before it; the host writes the late result, then a
+  `Record::Taint`, then the page event, so a page that re-reads finds it.
+  `Record::LateFailure` books one tool error against the run that made the
+  call, by the ordinal of the outcome that run wrote — bound at its
+  hand-back, because a run that ended in error writes none and was rolled
+  back, call and all. `Record::PendingNote` is the next run's "it arrived",
+  owed until a run records an outcome.
+- **A restart is repaired from the artifact, not the absent job.** A resumed
+  chat's "being made" result becomes the picture only when a manifest in
+  `images/` names the call's `tool_use_id`; anything else is
+  `not made: the server restarted`.
+
 ## Approval rules
 
 `mecha-core/src/policy.rs`. `[[rule]]` entries in config make approval

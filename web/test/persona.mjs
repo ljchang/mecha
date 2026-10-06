@@ -276,6 +276,17 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   assert.deepEqual([...turnsWithoutPicture(entries)], [3, 15]);
   assert.deepEqual([...turnsWithoutPicture(entries, true)], [3], 'a running turn is not judged');
   assert.deepEqual([...turnsWithoutPicture([{ kind: 'user', text: 'x' }, img(null)])], [], 'a call still out');
+  // A picture being made past its turn (§5.4) came back `is_error: false`
+  // as "being made: …": still out, never drawn — and once it fails, the
+  // turn says so.
+  const making = { kind: 'tool', name: 'image_generate', is_error: false, preview: 'being made: images/a.png' };
+  const { stillOut } = await import('../src/lib/picture.js');
+  assert.ok(stillOut(making));
+  assert.ok(!stillOut({ ...making, preview: 'image: images/a.png' }));
+  const failed = { ...making, is_error: true, preview: 'Cancelled — the generation was stopped and nothing was saved.' };
+  const asked = (row) => [{ kind: 'user', text: 'draw it' }, row, { kind: 'assistant', text: 'On its way.' }];
+  assert.deepEqual([...turnsWithoutPicture(asked(making))], [], 'a picture being made is still out');
+  assert.deepEqual([...turnsWithoutPicture(asked(failed))], [2], 'one that failed late was not drawn');
   // The same steered turn as a reload reads it: the steer after the tool
   // rows, marked `steered` by the server (`transcript_entries`).
   const reloaded = [

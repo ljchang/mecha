@@ -3728,6 +3728,10 @@ impl Tool for ImageGenerate {
             };
             let manifest = json!({
                 "image": path,
+                // The call this picture answers: the restart repair accepts a
+                // picture only when its manifest names the orphaned call
+                // (`repair_orphan`).
+                "tool_use_id": ctx.call_id,
                 "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "prompt": scene_prompt,
                 // An edit's typed fields as the model gave them, beside the
@@ -3870,7 +3874,7 @@ impl Tool for ImageGenerate {
             ToolOutput::ok(text)
         };
         Ok(ToolOutput::deferred(
-            format!("being made: {reserved}"),
+            format!("{BEING_MADE}{reserved}"),
             crate::jobs::DeferredJob::new(job, cancel, BUSY),
         ))
     }
@@ -3896,6 +3900,63 @@ impl ImageGenerate {
             None => out,
         })
     }
+}
+
+/// The first line of a result whose picture is still being drawn (§2.1 of
+/// `docs/BACKGROUND-JOBS-DESIGN.md`): what the page reads as still out, and
+/// what [`repair_orphan`] looks for.
+pub const BEING_MADE: &str = "being made: ";
+
+/// A "being made" result with no job behind it — the server restarted while
+/// it drew — settled by **asking the artifact, not the absent job**
+/// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.3). A picture counts only if a
+/// manifest in the chat's `images/` names this call: the reserved name was
+/// told to the model before the bytes existed, and a run in the same jail
+/// can write that path, so a file there proves nothing alone. The manifest
+/// is the job's last write, after the bytes and the near-copy check, so a
+/// picture without one is a picture nobody was shown, and reads `not made`.
+///
+/// `workspace` is the chat's own directory, never a model-supplied path,
+/// and every name read is one the directory listing returned. `None` when
+/// `content` is not a "being made" result.
+pub fn repair_orphan(
+    workspace: &std::path::Path,
+    tool_use_id: &str,
+    content: &str,
+) -> Option<(String, bool)> {
+    content.lines().next()?.strip_prefix(BEING_MADE)?;
+    let made = std::fs::read_dir(workspace.join("images"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| std::fs::read(e.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|m| m["tool_use_id"].as_str() == Some(tool_use_id))
+        .filter_map(|m| m["image"].as_str().map(str::to_string))
+        .find(|image| {
+            image
+                .strip_prefix("images/")
+                .and_then(|name| name.strip_suffix(".png"))
+                .is_some_and(|stem| {
+                    !stem.is_empty()
+                        && stem
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+                        && !stem.starts_with('.')
+                })
+                && workspace.join(image).is_file()
+        });
+    Some(match made {
+        Some(image) => (
+            format!(
+                "image: {image}\nThe picture was finished before the server restarted. It is on \
+                 the owner's screen; you have not seen it."
+            ),
+            false,
+        ),
+        None => ("not made: the server restarted".to_string(), true),
+    })
 }
 
 /// A refusal before any GPU time, saying so first. The first live run read a
@@ -4881,6 +4942,67 @@ mod tests {
             let json = png.replace(".png", ".json");
             assert!(names.contains(&json), "{json} missing from {names:?}");
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The manifest names the call its picture answers, which is what the
+    /// restart repair matches on.
+    #[tokio::test]
+    async fn the_manifest_names_the_call_it_answers() {
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let mut c = ctx(&dir);
+        c.call_id = Some("c7".into());
+        let out = tool(&url)
+            .call(json!({"prompt": "a fox", "seed": 3}), &c)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert_eq!(manifest["tool_use_id"], "c7");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A "being made" result with no job behind it is settled by the
+    /// artifact: a picture counts only when a manifest names this call —
+    /// wherever `save` put it — and anything else is "not made".
+    #[test]
+    fn a_restart_repair_trusts_only_the_jobs_own_manifest() {
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        let made = "being made: images/a.png";
+        let not_made = Some(("not made: the server restarted".to_string(), true));
+        assert_eq!(repair_orphan(&dir, "c1", "image: images/a.png"), None);
+        // Bytes at the reserved path and no manifest: nobody was shown them.
+        std::fs::write(dir.join("images/a.png"), PNG).unwrap();
+        assert_eq!(repair_orphan(&dir, "c1", made), not_made);
+        // A manifest naming another call, or pointing out of `images/`.
+        let manifest = |name: &str, image: &str, id: &str| {
+            std::fs::write(
+                dir.join(format!("images/{name}.json")),
+                json!({"image": image, "tool_use_id": id}).to_string(),
+            )
+            .unwrap()
+        };
+        manifest("a", "images/a.png", "c2");
+        assert_eq!(repair_orphan(&dir, "c1", made), not_made);
+        manifest("x", "../secret.png", "c1");
+        assert_eq!(repair_orphan(&dir, "c1", made), not_made);
+        // Its own, under the numbered name `save` took beside the reserved one.
+        std::fs::write(dir.join("images/a-1.png"), PNG).unwrap();
+        manifest("a-1", "images/a-1.png", "c1");
+        let (text, is_error) = repair_orphan(&dir, "c1", made).unwrap();
+        assert!(!is_error);
+        assert!(text.starts_with("image: images/a-1.png\n"), "{text}");
         std::fs::remove_dir_all(dir).ok();
     }
 

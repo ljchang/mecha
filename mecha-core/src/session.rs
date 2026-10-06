@@ -329,6 +329,62 @@ pub enum Record {
     /// A build from before this record skips the line as one it cannot
     /// parse, and loses nothing it needs.
     SpokenDirection(crate::voice_direction::SpokenDirection),
+    /// A deferred call's result, arrived after the run that made it
+    /// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.3): it replaces the "being made"
+    /// result in message `index`, which must hold a result with
+    /// `tool_use_id` — a record naming the wrong message is skipped.
+    ///
+    /// **Appended, never a [`Record::Rewrite`]**, which clears every taint
+    /// checkpoint and would cost each conversation that made a picture its
+    /// provenance-gated learning. It follows [`Record::Extend`]'s rule
+    /// instead: the checkpoints covering `index` and after drop, so content
+    /// that arrived late never sits under a checkpoint written before it,
+    /// and the delivery's own `Record::Taint`, written after this one,
+    /// covers it — unknown on a torn file, never clean. Applied whether or
+    /// not the id matched, so a bad record fails toward unknown too. A build
+    /// from before this record skips the line and shows "being made".
+    LateResult {
+        index: usize,
+        tool_use_id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
+        #[serde(default)]
+        external: bool,
+    },
+    /// A deferred call that failed after its run closed: one more tool
+    /// error for run `run`, the ordinal of that run's [`Record::Outcome`] in
+    /// this file. Not a second outcome, which every corpus reader would
+    /// count as a run; an ordinal, because the corpus reader
+    /// ([`Session::outcomes_attributed`]) keeps no messages to join an id or
+    /// a message index to. The id stays for audit (§2.3, step 4).
+    LateFailure {
+        run: usize,
+        tool_use_id: String,
+    },
+    /// A note for the next run, written when a late result is delivered —
+    /// "the picture you started has reached the owner" — and kept until a
+    /// run takes it: the notes after the last [`Record::Outcome`] are the
+    /// ones still owed (`Transcript::pending_notes`). Its own record rather
+    /// than re-derived from the result, which a compaction may cut (§2.3,
+    /// step 3).
+    PendingNote {
+        note: String,
+    },
+}
+
+/// A late failure's extra tool error, in the one place every outcome reader
+/// applies it (`Session::parse`'s episode, [`Session::outcomes`],
+/// [`Session::outcomes_attributed`]) — or `sessions show` and the corpus
+/// would count the same run's errors differently. An ordinal past the
+/// recorded runs (the run that made the call failed and wrote none) adds
+/// nothing.
+fn add_late_failures<T>(rows: &mut [T], runs: &[usize], stats: impl Fn(&mut T) -> &mut RunStats) {
+    for &run in runs {
+        if let Some(row) = rows.get_mut(run) {
+            stats(row).tool_errors += 1;
+        }
+    }
 }
 
 /// What a run was configured with, recorded so it can be replayed.
@@ -1519,6 +1575,9 @@ pub struct Transcript {
     /// list the stop was never in (found on review: the old positions read
     /// every pre-compaction stop as an abandonment cited past the end).
     pub outcomes: Vec<RunStats>,
+    /// Notes a late delivery left for the next run (`Record::PendingNote`)
+    /// that no run has taken yet: those recorded after the last outcome.
+    pub pending_notes: Vec<String>,
     pub outcome_positions: Vec<Option<usize>>,
     /// Every `GoalAnchor` record, in order, with the message count when it
     /// was written — the anchor each `record_run` ended on, placed among the
@@ -1760,8 +1819,10 @@ impl Session {
         let mut provider = String::new();
         let mut model = String::new();
         let mut out = Vec::new();
+        let mut late = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str(line) {
+                Ok(Record::LateFailure { run, .. }) => late.push(run),
                 Ok(Record::Meta(meta)) => {
                     provider = meta.provider;
                     model = meta.model;
@@ -1774,6 +1835,7 @@ impl Session {
                 _ => {}
             }
         }
+        add_late_failures(&mut out, &late, |row| &mut row.2);
         Ok(out)
     }
 
@@ -1785,14 +1847,17 @@ impl Session {
     pub fn outcomes(path: &Path) -> Result<Vec<RunStats>> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Ok(text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter_map(|l| match serde_json::from_str(l) {
-                Ok(Record::Outcome(s)) => Some(s),
-                _ => None,
-            })
-            .collect())
+        let mut out = Vec::new();
+        let mut late = Vec::new();
+        for l in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str(l) {
+                Ok(Record::Outcome(s)) => out.push(s),
+                Ok(Record::LateFailure { run, .. }) => late.push(run),
+                _ => {}
+            }
+        }
+        add_late_failures(&mut out, &late, |s| s);
+        Ok(out)
     }
 
     /// Every spoken direction recorded in a transcript, in file order —
@@ -1957,6 +2022,8 @@ impl Session {
         // rebuild the same structure is the multi-read mistake this
         // function exists to end.
         let mut taint_checkpoints: Vec<(usize, Taint)> = Vec::new();
+        let mut late_failures = Vec::new();
+        let mut pending_notes = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
                 Ok(Record::Meta(m)) => meta = Some(m),
@@ -2094,7 +2161,45 @@ impl Session {
                     anchored_since_outcome = false;
                     outcome_positions.push(Some(messages.len()));
                     outcomes.push(o);
+                    // A run took the notes that were owed it.
+                    pending_notes.clear();
                 }
+                // A late result, onto the message holding its call. The
+                // checkpoints covering it drop whether or not it applied —
+                // `TaintTimeline::from_records` cannot see ids, and the two
+                // readers must agree (see there).
+                Ok(Record::LateResult {
+                    index,
+                    tool_use_id,
+                    content,
+                    is_error,
+                    external,
+                }) => {
+                    if index < messages.len() {
+                        if !crate::agent::apply_late_at(
+                            &mut messages[index],
+                            &tool_use_id,
+                            &content,
+                            is_error,
+                            external,
+                        ) {
+                            tracing::warn!(
+                                index,
+                                %tool_use_id,
+                                "skipping a late result for a message that holds no such call"
+                            );
+                        }
+                        taint_checkpoints.retain(|(n, _)| *n <= index);
+                    } else {
+                        tracing::warn!(
+                            index,
+                            held = messages.len(),
+                            "skipping a late result for a message this transcript does not hold"
+                        );
+                    }
+                }
+                Ok(Record::LateFailure { run, .. }) => late_failures.push(run),
+                Ok(Record::PendingNote { note }) => pending_notes.push(note),
                 Ok(Record::GoalAnchor { goal }) => {
                     anchors.push((Some(messages.len()), goal.clone()));
                     anchored_since_outcome = true;
@@ -2144,8 +2249,12 @@ impl Session {
             },
             configs,
             config_positions,
-            episode: RunStats::fold(outcomes.iter().cloned()),
+            episode: {
+                add_late_failures(&mut outcomes, &late_failures, |s| s);
+                RunStats::fold(outcomes.iter().cloned())
+            },
             outcomes,
+            pending_notes,
             outcome_positions,
             anchors,
             anchor_floor,
@@ -2758,6 +2867,15 @@ impl TaintTimeline {
                 // block has, reachable only from a newer build's records.)
                 Record::Extend { index, .. } => {
                     if index + 1 == messages {
+                        checkpoints.retain(|(n, _)| *n <= index);
+                    }
+                }
+                // Content changed in message `index` after checkpoints that
+                // covered it were written: the same rule as an extension, for
+                // any message this count holds. `Session::parse` drops them
+                // whether or not the id matched, so the readers agree.
+                Record::LateResult { index, .. } => {
+                    if index < messages {
                         checkpoints.retain(|(n, _)| *n <= index);
                     }
                 }
@@ -5417,6 +5535,184 @@ mod extension_tests {
         let ever = Session::messages_ever(&std::fs::read_to_string(&s.path).unwrap());
         assert_eq!(ever.len(), 3, "{ever:?}");
         assert!(ever.iter().all(|m| m.role == Role::User));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A deferred call's turn on file: the owner's words, the call, its
+    /// "being made" result, the reply, and the run's clean checkpoint.
+    fn deferred_turn(s: &Session) {
+        s.append(&Record::Message(Message::user("draw the harbour")))
+            .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::ToolUse {
+            id: "c1".into(),
+            name: "image_generate".into(),
+            input: serde_json::json!({}),
+        }])))
+        .unwrap();
+        s.append(&Record::Message(Message::tool_results(vec![
+            Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "being made: images/a.png".into(),
+                is_error: false,
+            },
+        ])))
+        .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            "On its way.",
+        )])))
+        .unwrap();
+        s.append(&Record::Taint(Taint::default())).unwrap();
+    }
+
+    /// A late result lands on the message holding its call, by an appended
+    /// record: the checkpoints before that message stand, the ones covering
+    /// it drop, and the delivery's own checkpoint is what covers it — so
+    /// content that arrived late is never classified by a checkpoint
+    /// written before it (`docs/BACKGROUND-JOBS-DESIGN.md` §5).
+    #[test]
+    fn a_late_result_lands_where_its_call_is_and_never_reads_clean_from_before() {
+        let (dir, s) = session();
+        s.append(&Record::Message(Message::user("earlier")))
+            .unwrap();
+        s.append(&Record::Taint(Taint::default())).unwrap();
+        deferred_turn(&s);
+        s.append(&Record::LateResult {
+            index: 3,
+            tool_use_id: "c1".into(),
+            content: "<untrusted-content>a page</untrusted-content>".into(),
+            is_error: false,
+            external: true,
+        })
+        .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        assert!(
+            matches!(&t.convo.messages[3].content[0],
+                Block::ToolResult { content, .. } if content.contains("a page")),
+            "{:?}",
+            t.convo.messages[3]
+        );
+        assert_eq!(t.convo.messages[3].tool_provenance.get("c1"), Some(&true));
+        // Before the delivery's checkpoint is written: the earlier message is
+        // still covered, the patched one is unknown — never clean.
+        let timeline = Session::taint_timeline(&s.path).unwrap();
+        assert_eq!(timeline.covering(0), Some(Taint::default()));
+        assert_eq!(
+            timeline.covering(3),
+            None,
+            "a checkpoint written before the delivery covers it"
+        );
+        assert_eq!(
+            t.taint_timeline.covering(3),
+            None,
+            "the parse reader agrees"
+        );
+        // The delivery's checkpoint covers it with what came back.
+        let armed = Taint {
+            private: false,
+            untrusted: true,
+        };
+        s.append(&Record::Taint(armed)).unwrap();
+        assert_eq!(
+            Session::taint_timeline(&s.path).unwrap().covering(3),
+            Some(armed)
+        );
+        assert_eq!(
+            Session::read(&s.path).unwrap().taint_timeline.covering(3),
+            Some(armed)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A late record that names a message without its call is skipped — the
+    /// result stays "being made" — and still drops the checkpoints covering
+    /// that message, so a bad record fails toward unknown, never clean.
+    #[test]
+    fn a_late_result_for_the_wrong_message_is_skipped_and_reads_unknown() {
+        let (dir, s) = session();
+        deferred_turn(&s);
+        s.append(&Record::LateResult {
+            index: 1,
+            tool_use_id: "c1".into(),
+            content: "image: images/a.png".into(),
+            is_error: false,
+            external: false,
+        })
+        .unwrap();
+        let t = Session::read(&s.path).unwrap();
+        assert!(
+            matches!(&t.convo.messages[2].content[0],
+                Block::ToolResult { content, .. } if content == "being made: images/a.png"),
+            "{:?}",
+            t.convo.messages[2]
+        );
+        assert!(!t.convo.messages[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolResult { .. })));
+        assert_eq!(t.taint_timeline.covering(1), None);
+        assert_eq!(Session::taint_timeline(&s.path).unwrap().covering(1), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A late failure is one more tool error for the run that made the call,
+    /// in every reader that counts them, and never another run.
+    #[test]
+    fn a_late_failure_books_against_its_run_in_every_reader() {
+        let (dir, s) = session();
+        deferred_turn(&s);
+        s.append(&Record::Outcome(RunStats::default())).unwrap();
+        s.append(&Record::Message(Message::user("and now?")))
+            .unwrap();
+        s.append(&Record::Outcome(RunStats::default())).unwrap();
+        s.append(&Record::LateFailure {
+            run: 0,
+            tool_use_id: "c1".into(),
+        })
+        .unwrap();
+        // An ordinal past the recorded runs adds nothing anywhere.
+        s.append(&Record::LateFailure {
+            run: 9,
+            tool_use_id: "c9".into(),
+        })
+        .unwrap();
+        let errors = |rows: Vec<RunStats>| rows.iter().map(|r| r.tool_errors).collect::<Vec<_>>();
+        assert_eq!(errors(Session::outcomes(&s.path).unwrap()), vec![1, 0]);
+        assert_eq!(
+            errors(
+                Session::outcomes_attributed(&s.path)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.2)
+                    .collect()
+            ),
+            vec![1, 0]
+        );
+        let t = Session::read(&s.path).unwrap();
+        assert_eq!(errors(t.outcomes.clone()), vec![1, 0]);
+        assert_eq!(
+            t.episode.as_ref().map(|e| e.tool_errors),
+            Some(1),
+            "sessions show agrees with the corpus"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A note a delivery left is owed until a run records an outcome.
+    #[test]
+    fn a_pending_note_is_owed_until_a_run_takes_it() {
+        let (dir, s) = session();
+        deferred_turn(&s);
+        s.append(&Record::Outcome(RunStats::default())).unwrap();
+        s.append(&Record::PendingNote {
+            note: "the picture arrived".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            Session::read(&s.path).unwrap().pending_notes,
+            vec!["the picture arrived".to_string()]
+        );
+        s.append(&Record::Outcome(RunStats::default())).unwrap();
+        assert!(Session::read(&s.path).unwrap().pending_notes.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
