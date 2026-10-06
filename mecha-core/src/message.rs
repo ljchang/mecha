@@ -750,15 +750,36 @@ pub fn is_recorded_note(block: &Block) -> bool {
 /// positions: user messages only, and never a message the removal would
 /// leave empty (a 400 on every provider).
 fn recorded_notes(messages: &[Message]) -> Vec<(usize, usize)> {
-    messages
+    // The first chat-start memory block is the chat's material; any later one
+    // goes as a stale note. The old placement stored it only before the first
+    // reply, and every recorded persona chat holds at most one (2026-10-06,
+    // all sessions read), so this is a guard, not a cleanup (review of #575).
+    let mut chat_start_seen = false;
+    let mut stale = |b: &Block| {
+        let chat_start = matches!(b, Block::Text { text }
+            if crate::persona::recall::is_chat_start(text));
+        let later_copy = chat_start && std::mem::replace(&mut chat_start_seen, true);
+        is_recorded_note(b) || later_copy
+    };
+    let flagged: Vec<Vec<bool>> = messages
+        .iter()
+        .map(|m| {
+            if m.role == Role::User {
+                m.content.iter().map(&mut stale).collect()
+            } else {
+                vec![false; m.content.len()]
+            }
+        })
+        .collect();
+    flagged
         .iter()
         .enumerate()
-        .filter(|(_, m)| m.role == Role::User && m.content.iter().any(|b| !is_recorded_note(b)))
-        .flat_map(|(i, m)| {
-            m.content
-                .iter()
+        // Never a message the removal would leave empty.
+        .filter(|(_, f)| f.iter().any(|stale| !stale))
+        .flat_map(|(i, f)| {
+            f.iter()
                 .enumerate()
-                .filter(|(_, b)| is_recorded_note(b))
+                .filter(|(_, stale)| **stale)
                 .map(move |(j, _)| (i, j))
         })
         .collect()
@@ -1298,6 +1319,9 @@ mod tests {
         let mut edit = Message::user("Edit images/a.png: make the sky pink");
         edit.content
             .extend([variety.clone(), Block::text(crate::persona::edit::note())]);
+        // A second chat-start block, which no recorded chat holds, goes as a
+        // stale copy; the first stays.
+        second.content.push(memory.clone());
         // A message that is only a note is never emptied.
         let mut lone = Message::user("");
         lone.content = vec![variety];

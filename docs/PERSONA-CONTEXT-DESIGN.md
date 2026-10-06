@@ -133,8 +133,8 @@ An earlier run, the V-series, is superseded:
   rates.
 - **L6 removed more than §5.1 does.** It dropped every parenthesised harness block from past
   turns, including the files block, the memory block and the session goal. It did not move them.
-  The build keeps the files and the goal in the first turn and moves memory into the run's notes
-  (§5.1). So L7 is the direction, not a measurement of the build. Each step's gate replays the
+  The build keeps the files, the chat-start memory and the goal in the first turn, and sends the
+  per-turn recall and the other guidance as the run's notes (§5.1). So L7 is the direction, not a measurement of the build. Each step's gate replays the
   projection *as built* (§8).
 - The replay tests what the model *reads* (changes 1–3 in §5). Changes 4–6 alter what *happens*,
   so they cannot be replayed and each needs its own measurement once built.
@@ -284,11 +284,12 @@ what is true for this run. Nothing a component says is written into the conversa
     stretch" no longer applies.
 - **Chats recorded before this.** Their stored messages already hold notes. The persona projection
   drops every recorded persona note from the history it sends: call, variety, edit, identity
-  reminder and memory, but never files or the goal, and never a block whose removal would leave its
-  message empty (an empty user message is a 400, as an empty assistant one is). That replaces
-  `PriorNudges`'s stale-note logic and keeps its empty-message guard.
-  - **The cost, once per old chat.** Dropping every recorded note makes the server's cache diverge
-    at the first note, which is in the chat's first turn. So an old chat's first turn after the
+  reminder and per-turn recall. It keeps the files block, the goal and the first chat-start memory
+  block (any later copy goes, though no recorded chat holds one), and never removes a block whose
+  removal would leave its message empty (an empty user message is a 400, as an empty assistant one
+  is). That replaces `PriorNudges`'s stale-note logic and keeps its empty-message guard.
+  - **The cost, once per old chat.** Dropping the recorded notes makes the server's cache diverge
+    at the first one dropped, usually in the chat's first few turns. So an old chat's first turn after the
     change re-reads its whole history: roughly 8,000 tokens for a long chat, about 4–5 s at the
     router's measured ~1,800 tokens/s, on a spoken reply if that turn is spoken. After that the
     history is stable and each request repeats the one before.
@@ -375,8 +376,9 @@ assumption:
 
 - `PriorNudges`'s stale-note logic and its re-read cap (§5.1: there is nothing stale to drop once
   notes are not stored; the projection of old chats drops all of them);
-- `recall::carries_now`'s first-turn placement of memory, and the call note's
-  "first spoken turn of a stretch" gating (§5.1);
+- the call note's "first spoken turn of a stretch" gating (§5.1). (The chat-start memory's
+  first-turn placement was retired with #572 and reinstated, as `recall::carries_chat_start`, by
+  #575: as a note it was slower and outweighed the owner's asks.)
 - the near-copy notice's recovery advice and the "To change it further, edit … next" line (§5.2,
   §5.5);
 - the variety note itself (`persona::variety`). Under §5.1 it is one note for one run, never a
