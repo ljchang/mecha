@@ -310,6 +310,19 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   row, which original it came from, and the library names it was drawn from. Gone from every result:
   the suggestions about revising a picture, editing it further and leaving the original alone, and
   the near-copy notice's retry advice. Those now sit once in the description.
+- **Measured** (2026-10-06, one session, 12 unseeded samples per cell, recorded image results
+  rewritten into the new form; a check before each request paused it while a voice call was live):
+
+  | | M2 (should not draw) | owner asked for a picture |
+  |---|---|---|
+  | the results as deployed | 10/12 | 12/12 |
+  | factual results, full guidance in the description | 6/12 | 11/12 |
+  | factual results, guidance cut to a third | 8/12 | 11/12 |
+
+  No fake pictures or empty replies in any cell. An earlier 8-sample run, made with the guidance
+  before its rewording, showed the owner-asked control at 5/8; the 12-sample run did not repeat it.
+  The same deployed setup scored 3/8 at M2 in that earlier run, so these cells vary between runs,
+  and only comparisons within one run are read.
 - The leading `image: <path>` line stays exactly as it was: the page reads it to draw the picture
   (`web/src/lib/picture.js`). A reply that repeats it is hidden from the chat and from speech by
   #578.
