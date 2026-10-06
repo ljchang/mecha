@@ -141,8 +141,12 @@ ordering guarantee (1) states (review of #573, pass 10).
    that window would find a finished picture with nothing recorded about it (review of #573,
    pass 4).
    - "being made: …" becomes the finished, text-only result (`image: <path> …`), recorded as
-     **an appended `Record::LateResult { index, tool_use_id, content, is_error }`** that
+     **an appended `Record::LateResult { index, tool_use_id, content, is_error, external }`** that
      `Session::read` applies to message `index`, the one holding that call's result.
+     **`external` is the result's provenance**, written into that message's
+     `tool_provenance` as the loop writes an inline one: without it a resume or a replay
+     (`replay.rs` reads `tool_provenance`) would take an outside late result for one of ours —
+     the content-only rewrite §4 rules out, surviving a restart (review of #573, pass 13).
      **`index` is what keeps it honest on taint**: `TaintTimeline::from_records` keeps no
      messages, so the record must say where it lands, and it takes `Record::Extend`'s *drop*
      — the checkpoints covering `index` and after go — but **unconditionally**, for any `index`
@@ -383,7 +387,10 @@ reaches no hook (review of #583).
 ## 6. Build order
 
 1. Core: `ToolOutput::deferred`, the `JobSink` and `JobQueue`, inline-await without a sink, and
-   unit tests with a fake slow tool.
+   unit tests with a fake slow tool. The three new records trip `runlog::exhaustive`, which
+   names every `Record` variant so the compiler forces a decision: `LateResult` and
+   `PendingNote` are ignored by the corpus scan, and `LateFailure` is not — the scan reads it
+   through `Session::outcomes_attributed` (review of #573, pass 13).
 2. `image_generate` split. This lands after the parent doc's §5.2 and §5.5 have changed this file.
 3. The persona chat host: sink, delivery (event, rewrite, run note), Stop vs barge-in, orphan
    repair on load; and the page: the still-out state in the chat and on the call screen
