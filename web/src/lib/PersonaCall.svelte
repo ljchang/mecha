@@ -51,6 +51,10 @@
     // null: the call screen covers the chat, so it offers them itself, one
     // tap away, as the chat does (owner ruling, 2026-09-30).
     resources = null,
+    // The chat's closed crisis cards (ids) and how to close one: a card
+    // closed in the chat stays closed here, and Close here closes it there.
+    dismissed = new Set(),
+    ondismiss = null,
   } = $props();
   let showResources = $state(false);
 
@@ -152,6 +156,9 @@
       typed = '';
       typing = false;
       viewing = null;
+      // One screen serves every persona's call: resources opened on one
+      // are not left open on the next.
+      showResources = false;
     }
     // No hold outlives the call that took it. Unreachable today — the edit
     // modal's scrim covers the call button, and leaving the chat closes the
@@ -349,10 +356,15 @@
            way the chat does (the owner's ask, 2026-10-06). -->
       {#each transcript as line}
         {#if line.who === 'user'}
-          <div class="said">{line.text}</div>
+          <div class="said" class:undelivered={line.undelivered}>{line.text}{#if line.undelivered}<span class="lost">not delivered — send again</span>{/if}</div>
         {:else if line.who === 'crisis'}
-          <!-- The plain voice, not the persona: what the call just said. -->
-          <div class="crisis" role="alert">{line.text}</div>
+          {#if !dismissed.has(line.id)}
+            <!-- The plain voice, not the persona: what the call just said. -->
+            <div class="crisis" role="alert">
+              <div class="crisistext">{line.text}</div>
+              {#if ondismiss}<button class="crisisclose" onclick={() => ondismiss(line.id)}>Close</button>{/if}
+            </div>
+          {/if}
         {:else if line.picture}
           <div class="heard pictured">{line.text}</div>
         {:else}
@@ -361,7 +373,10 @@
       {/each}
       {#if resources}
         {#if showResources}
-          <div class="crisis" role="note">{resources}</div>
+          <div class="crisis" role="note">
+            <div class="crisistext">{resources}</div>
+            <button class="crisisclose" onclick={() => (showResources = false)}>Close</button>
+          </div>
         {:else}
           <button class="resources" onclick={() => (showResources = true)}>support resources</button>
         {/if}
@@ -668,13 +683,41 @@
   }
   /* A crisis pause and the support resources, as the chat's card draws them. */
   .crisis {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     background: var(--surface);
     border: 1px solid var(--accent-500);
     border-radius: var(--radius);
     padding: 12px 14px;
+  }
+  .crisistext {
     font-size: 14px;
     line-height: 1.55;
     white-space: pre-wrap;
+  }
+  .crisisclose {
+    align-self: flex-start;
+    min-height: 32px;
+    padding: 0 12px;
+    background: transparent;
+    border: 1px solid var(--accent-900);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  /* A line the chat dropped: shown, and said so. */
+  .said.undelivered {
+    color: var(--text-muted);
+  }
+  .lost {
+    display: block;
+    margin-top: 4px;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--text-muted);
   }
   .resources {
     align-self: flex-start;

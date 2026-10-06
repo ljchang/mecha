@@ -5,10 +5,17 @@
 import { pictureOf } from './picture.js';
 import { ownWords } from './persona.js';
 
-// A line of the owner's that the chat received: not one still queued or
-// discarded (its bubble says "not delivered"). Steered lines count.
+// A line of the owner's that the chat received: not one still queued.
+// Steered lines count.
 function said(e) {
   return e.kind === 'user' && !(e.queued && e.delivery !== 'delivered');
+}
+
+// A queued line the chat dropped. The call screen covers the chat's "not
+// delivered" tag, so it draws the line itself, marked (`undelivered`) —
+// never as a plain bubble that reads as sent (review of #570).
+function dropped(e) {
+  return e.kind === 'user' && e.queued && e.delivery === 'discarded';
 }
 
 // The conversation as the call screen shows it: the chat's own transcript,
@@ -32,15 +39,17 @@ export function historyLines(entries) {
   const pictures = new Set();
   for (const e of entries ?? []) {
     if (e.kind === 'user') {
-      if (!said(e)) continue;
+      const lost = dropped(e);
+      if (!said(e) && !lost) continue;
       const text = ownWords(e.text).trim();
-      if (text) lines.push({ who: 'user', text });
+      if (text) lines.push(lost ? { who: 'user', text, undelivered: true } : { who: 'user', text });
     } else if (e.kind === 'assistant') {
       const text = (e.text ?? '').trim();
       if (text) lines.push({ who: 'persona', text });
     } else if (e.kind === 'crisis') {
       const text = (e.text ?? '').trim();
-      if (text) lines.push({ who: 'crisis', text });
+      // Its id, so a card the owner closed in the chat stays closed here.
+      if (text) lines.push({ who: 'crisis', text, id: e.id });
     } else if (e.kind === 'tool') {
       const picture = pictureOf(e);
       if (picture && !pictures.has(picture)) {
@@ -56,11 +65,14 @@ export function historyLines(entries) {
 // still being heard (interim), and a finished line until the transcript has
 // taken it — the turn reaches the chat a moment after the speech ends, and
 // the line must not blink out in between. "Taken" is by text: a finished line
-// is in the transcript once one of its last few owner lines contains it.
-// Containment, because the server may fold two plain lines into one message
-// on a re-read; never a count, which that fold changes (review of #570). A
-// repeated short line ("yes") may count as taken a moment early: a blink, and
-// one that corrects itself, where a stale count drew a line twice for good.
+// is in the transcript once any of its owner lines contains it — dropped ones
+// included, which the transcript draws marked. Containment, because the
+// server may fold two plain lines into one message on a re-read; and any
+// line, never the last few, because a count is what that fold — or a line
+// typed on another device, which every observer receives — throws off
+// (review of #570). A repeated short line ("yes") may count as taken a moment
+// early: a blink, and one that corrects itself when its turn arrives, where a
+// stale count drew a line twice for good.
 // The call's own notices (`who: "notice"` — a dead mic, audio that cannot
 // reach the owner, a dropped typed line, an error) show for the rest of the
 // call, as they did before this screen drew the transcript: the pane is their
@@ -72,11 +84,7 @@ export function historyLines(entries) {
 export function pendingSpeech(callEntries, lines) {
   const norm = (t) => (t ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const shown = (callEntries ?? []).filter((e) => e.who === 'user' || e.who === 'notice');
-  const finished = shown.filter((e) => e.who === 'user' && !e.interim).length;
-  const recent = (lines ?? [])
-    .filter((l) => l.who === 'user')
-    .slice(-(finished + 2))
-    .map((l) => ` ${norm(l.text)} `);
+  const recent = (lines ?? []).filter((l) => l.who === 'user').map((l) => ` ${norm(l.text)} `);
   return shown.filter((e) => {
     if (e.who === 'notice' || e.interim) return true;
     const t = norm(e.text);
