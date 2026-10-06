@@ -25,7 +25,7 @@
   import { createVoiceSession } from '../../../scripts/voice/voice-core.js';
   import { chatUrl, hangUpReport } from './persona.js';
   import { pendingSpeech } from './call-lines.js';
-  import { speakable } from './speech.js';
+  import ChatProse from './ChatProse.svelte';
 
   let {
     chatKey,
@@ -69,12 +69,12 @@
   function scrolled() {
     if (pane) stick = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   }
-  const replying = $derived(streaming ? speakable(streaming).trim() : '');
+  const replying = $derived(streaming ? streaming.trim() : '');
   const speaking = $derived(pendingSpeech(entries, transcript));
   $effect(() => {
     // Nothing to follow, and nothing worth computing, with no call open: a
-    // persona reply streaming in a chat must not pay a speakable() pass per
-    // token for a pane that is not drawn (review of #570).
+    // persona reply streaming in a chat must not pay a pane's work per token
+    // for a pane that is not drawn (review of #570).
     if (!open || !pane) return;
     // Read what can grow, so the effect runs when any of it does.
     void transcript.length, replying, speaking.length;
@@ -340,11 +340,19 @@
       {/if}
     </div>
     <div class="call-pane" bind:this={pane} inert={!!viewing} onscroll={scrolled}>
+      <!-- Replies through the chat's own renderer, so a call formats one the
+           way the chat does (the owner's ask, 2026-10-06). -->
       {#each transcript as line}
-        <div class={line.who === 'user' ? 'said' : 'heard'} class:pictured={line.picture}>{line.text}</div>
+        {#if line.who === 'user'}
+          <div class="said">{line.text}</div>
+        {:else if line.picture}
+          <div class="heard pictured">{line.text}</div>
+        {:else}
+          <div class="heard"><ChatProse text={line.text} /></div>
+        {/if}
       {/each}
       {#if replying}
-        <div class="heard">{replying}</div>
+        <div class="heard"><ChatProse text={replying} /></div>
       {/if}
       {#each speaking as entry}
         {#if entry.who === 'notice'}
