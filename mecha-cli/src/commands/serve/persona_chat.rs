@@ -108,6 +108,13 @@ pub struct PersonaChats {
     calls: StdMutex<HashMap<String, (u64, Option<String>)>>,
     /// The next binding's id.
     next_call: std::sync::atomic::AtomicU64,
+    /// Every chat's background jobs (`docs/BACKGROUND-JOBS-DESIGN.md`): a
+    /// picture drawn past the turn that asked for it, one in flight per chat
+    /// key. A finished one comes back through `delivered`, drained by the
+    /// task the first turn starts (`start_delivery`).
+    jobs: Arc<mecha_core::jobs::JobQueue>,
+    delivered: StdMutex<Option<tokio::sync::mpsc::UnboundedReceiver<mecha_core::jobs::Delivered>>>,
+    delivering: std::sync::Once,
 }
 
 /// A spoken turn's other end (§11): the voice facade's tap on the run's
@@ -197,6 +204,25 @@ struct PersonaSession {
     /// The reply being read aloud, while a Listen tap speaks it
     /// (`listen::Reply`): here so it goes when this chat does.
     listen: Option<Arc<super::listen::Reply>>,
+    /// Late results that arrived while a run held the conversation, applied
+    /// when it hands the conversation back, before its end event sends the
+    /// page to re-read (`docs/BACKGROUND-JOBS-DESIGN.md` §2.3).
+    late: Vec<mecha_core::jobs::Delivered>,
+    /// Notes owed to the next run — a late result's "it has arrived" —
+    /// recorded as `Record::PendingNote` and taken by the next turn.
+    late_notes: Vec<String>,
+    /// How many runs this transcript holds an outcome for: the ordinal the
+    /// next run's outcome takes.
+    runs_recorded: usize,
+    /// The turns this process has started on the chat, numbered: a run's
+    /// jobs carry its number (`JobQueue::sink`), and `outcome_of` maps it to
+    /// the ordinal of the outcome the run wrote when it handed back — which
+    /// a late failure books against (`Record::LateFailure`). A run that
+    /// ended in error wrote none, and its call was rolled back with it, so
+    /// it has no entry and its job's late result books and notes nothing
+    /// (review of #573, pass 9).
+    turns: usize,
+    outcome_of: HashMap<usize, usize>,
 }
 
 struct Live {
@@ -214,6 +240,121 @@ struct Live {
     /// picture… 1:24" rather than "typing" (review of #431). Set and cleared
     /// by the run's event forwarder ([`track_working`]).
     working: Arc<StdMutex<Vec<serde_json::Value>>>,
+}
+
+/// What the next run is told when a late result has arrived since the last
+/// reply: the call and what its result now reads, facts only (§5.2) — what
+/// to do about it is the tool description's. Capped, since it rides every
+/// request of that run.
+fn arrived_note(tool: &str, content: &str) -> String {
+    const MAX: usize = 800;
+    let mut said = content.trim();
+    if said.len() > MAX {
+        let mut at = MAX;
+        while !said.is_char_boundary(at) {
+            at -= 1;
+        }
+        said = &said[..at];
+    }
+    format!("The {tool} call from an earlier turn has finished since your last reply. Its result now reads:\n{said}")
+}
+
+/// A late result into a chat whose conversation is in hand (§2.3): settled
+/// by the loop's own rule (cap, envelope, taint armed from what came back),
+/// put where its "being made" result is and recorded there, the taint
+/// recorded whether or not a result was left to rewrite — a compaction may
+/// have cut it, and what came back still entered — a failure booked against
+/// the run that made the call, and a note owed to the next run.
+fn land(ps: &mut PersonaSession, late: &mecha_core::jobs::Delivered) {
+    let run = ps.outcome_of.get(&late.run).copied();
+    let Some(convo) = ps.conversation.as_mut() else {
+        return;
+    };
+    // What came back entered whatever happened to the call, so its taint
+    // is armed and recorded on every path below.
+    let out = late.settle(&mut convo.taint);
+    let session = &ps.session;
+    // The run that made the call ended in error: it was rolled back, call
+    // and all, so there is no result to rewrite, no run to book a failure
+    // against, and no picture the model knows it asked for.
+    let Some(run) = run else {
+        let _ = session.append(&Record::Taint(convo.taint));
+        return;
+    };
+    if let Some(index) = convo.apply_late(&late.call_id, &out.content, out.is_error, out.external) {
+        if let Err(e) = session.append(&Record::LateResult {
+            index,
+            tool_use_id: late.call_id.clone(),
+            content: out.content.clone(),
+            is_error: out.is_error,
+            external: out.external,
+        }) {
+            tracing::warn!("a late result was not recorded: {e:#}");
+        }
+    }
+    if let Err(e) = session.append(&Record::Taint(convo.taint)) {
+        tracing::warn!("a late result's taint was not recorded: {e:#}");
+    }
+    if out.is_error {
+        let _ = session.append(&Record::LateFailure {
+            run,
+            tool_use_id: late.call_id.clone(),
+        });
+    }
+    let note = arrived_note(&late.tool, &out.content);
+    if let Err(e) = session.append(&Record::PendingNote { note: note.clone() }) {
+        tracing::warn!("a late result's note was not recorded: {e:#}");
+    }
+    ps.late_notes.push(note);
+}
+
+/// Settle every "being made" result a resumed chat holds, when no job can be
+/// behind it (§2.3, the restart repair): by what the workspace holds, never
+/// by the absent job (`imagegen::repair_orphan`). Recorded as late results,
+/// then one taint checkpoint covering them. Only `image_generate` writes a
+/// "being made" result, and it declares no outside reach, so its repair is
+/// recorded as not external; a deferring tool that could return untrusted
+/// content would take its declared capability here instead. No failure is
+/// booked: the run that made the call is not known from here.
+fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Conversation) {
+    let orphans: Vec<(String, String)> = convo
+        .messages
+        .iter()
+        .filter(|m| m.role == mecha_core::message::Role::User)
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            mecha_core::message::Block::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if content.starts_with(mecha_core::imagegen::BEING_MADE) => {
+                Some((tool_use_id.clone(), content.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if orphans.is_empty() {
+        return;
+    }
+    for (id, content) in orphans {
+        let Some((settled, is_error)) =
+            mecha_core::imagegen::repair_orphan(workspace, &id, &content)
+        else {
+            continue;
+        };
+        if let Some(index) = convo.apply_late(&id, &settled, is_error, false) {
+            if let Err(e) = session.append(&Record::LateResult {
+                index,
+                tool_use_id: id,
+                content: settled,
+                is_error,
+                external: false,
+            }) {
+                tracing::warn!("a repaired picture result was not recorded: {e:#}");
+            }
+        }
+    }
+    let _ = session.append(&Record::Taint(convo.taint));
 }
 
 /// Keep `slot` naming the tool a run is waiting on: every call that has
@@ -529,6 +670,7 @@ impl PersonaChats {
     }
 
     fn with(store: PathBuf, work: PathBuf, provider: ProviderFactory) -> Self {
+        let (deliver, delivered) = tokio::sync::mpsc::unbounded_channel();
         PersonaChats {
             store,
             work,
@@ -539,6 +681,11 @@ impl PersonaChats {
             reading: Arc::new(tokio::sync::Semaphore::new(1)),
             calls: StdMutex::new(HashMap::new()),
             next_call: std::sync::atomic::AtomicU64::new(1),
+            jobs: mecha_core::jobs::JobQueue::new(move |d| {
+                let _ = deliver.send(d);
+            }),
+            delivered: StdMutex::new(Some(delivered)),
+            delivering: std::sync::Once::new(),
         }
     }
 
@@ -1318,6 +1465,11 @@ impl PersonaChats {
                 pending_crisis: None,
                 judge_answered: None,
                 listen: None,
+                late: Vec::new(),
+                late_notes: Vec::new(),
+                runs_recorded: 0,
+                turns: 0,
+                outcome_of: HashMap::new(),
             },
         );
         Ok(serde_json::json!({
@@ -1611,7 +1763,9 @@ impl PersonaChats {
         if !valid_session_id(id) || !path.is_file() {
             return Err(Refusal::NotFound);
         }
-        let (meta, conversation) = Session::load(&path).map_err(failed)?;
+        let transcript = Session::read(&path).map_err(failed)?;
+        let (meta, mut conversation) = (transcript.meta, transcript.convo);
+        let (late_notes, runs_recorded) = (transcript.pending_notes, transcript.outcomes.len());
         let pin: PinRecord = std::fs::read(pin_path(&dir, &meta.id))
             .map_err(anyhow::Error::from)
             .and_then(|b| serde_json::from_slice(&b).map_err(anyhow::Error::from))
@@ -1661,6 +1815,10 @@ impl PersonaChats {
             self.work.join(&key)
         };
         mecha_core::create_private_dir(&workspace).map_err(|e| failed(e.into()))?;
+        // A picture still "being made" when the server stopped: no job is
+        // behind it now (a chat leaves this map only with the process), so
+        // the result is settled by what the workspace holds.
+        repair_orphans(&session, &workspace, &mut conversation);
         sessions.insert(
             key.clone(),
             PersonaSession {
@@ -1681,6 +1839,11 @@ impl PersonaChats {
                 pending_crisis: None,
                 judge_answered: None,
                 listen: None,
+                late: Vec::new(),
+                late_notes,
+                runs_recorded,
+                turns: 0,
+                outcome_of: HashMap::new(),
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -2404,16 +2567,73 @@ impl PersonaChats {
         library: &LibraryState,
         key: &str,
         token: Option<&str>,
+        picture_only: bool,
     ) -> Result<bool, Refusal> {
         self.persona_of(library, key, token).await?;
         let sessions = self.sessions.lock().await;
+        // The owner's Stop ends the chat's picture too, where talking over
+        // a reply ends only the reply (`docs/BACKGROUND-JOBS-DESIGN.md` §2.4):
+        // two calls here, so no new `CancelReason`. The call screen's picture
+        // slot stops the picture alone (ruling Q2), and leaves the persona
+        // speaking.
+        let job = self.jobs.cancel(key);
+        if picture_only {
+            return Ok(job);
+        }
         Ok(match sessions.get(key).and_then(|ps| ps.live.as_ref()) {
             Some(live) => {
                 live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                 true
             }
-            None => false,
+            None => job,
         })
+    }
+
+    /// Start the task that hands finished jobs to their chats — once, on
+    /// the first turn, which is when there is a runtime and a job to wait
+    /// for. It holds the chats weakly, so it ends with them.
+    fn start_delivery(self: &Arc<Self>) {
+        self.delivering.call_once(|| {
+            let Some(mut rx) = self.delivered.lock().ok().and_then(|mut r| r.take()) else {
+                return;
+            };
+            let chats = Arc::downgrade(self);
+            tokio::spawn(async move {
+                while let Some(late) = rx.recv().await {
+                    let Some(chats) = chats.upgrade() else { break };
+                    chats.deliver(late).await;
+                }
+            });
+        });
+    }
+
+    /// A finished job, to its chat (§2.3). Into the record at once when the
+    /// chat is idle — the common case, since a picture outlasts the reply
+    /// that started it — and only then to the page, so a page that re-reads
+    /// the transcript finds it there; held for the run's hand-back when a run
+    /// has the conversation, with the page shown it now, as a preview the
+    /// hand-back makes true before `Done`.
+    async fn deliver(&self, late: mecha_core::jobs::Delivered) {
+        let mut sessions = self.sessions.lock().await;
+        let Some(ps) = sessions.get_mut(&late.key) else {
+            tracing::warn!(key = %late.key, "a finished job's chat is gone");
+            return;
+        };
+        let event = WireEvent::ToolResult {
+            name: late.tool.clone(),
+            id: late.call_id.clone(),
+            is_error: late.output.is_error,
+            preview: chat::result_preview(&late.output.content),
+        };
+        if ps.conversation.is_some() {
+            land(ps, &late);
+            // In the conversation now, taint and all: the send gate lets
+            // it go. Held for a hand-back, it stays pending until then.
+            self.jobs.landed(&late.key, &late.call_id);
+        } else {
+            ps.late.push(late);
+        }
+        let _ = ps.events.send(event);
     }
 
     /// `check_call` and `bind` in one, as the tests place a call.
@@ -3118,6 +3338,13 @@ impl PersonaChats {
         // stem it opens with (`recall::stem_of`), and joined after a clean
         // block a recall from outside would hide its own.
         let anchored = anchor.is_some();
+        // What arrived since the last run (a late picture), taken now; a
+        // paused turn reaches no model and leaves them owed.
+        let arrived = if pause {
+            Vec::new()
+        } else {
+            std::mem::take(&mut ps.late_notes)
+        };
         let notes: Vec<String> = [
             memory_note,
             recall_block,
@@ -3128,6 +3355,7 @@ impl PersonaChats {
         ]
         .into_iter()
         .flatten()
+        .chain(arrived)
         .collect();
         // Recorded with the turn, and ahead of it: the notes carry what used
         // to ride inside the owner's message (the memory, the Core), and the
@@ -3339,6 +3567,12 @@ impl PersonaChats {
         cx = cx.with_cancel_handle(cancel);
         cx.queued_input = Some(queue);
         cx.notes = notes.into();
+        // A picture outlives the turn that asked for it (§5.4): the run hands
+        // it to this chat's slot in the queue and answers at once.
+        self.start_delivery();
+        let turn = ps.turns;
+        ps.turns += 1;
+        cx.jobs = Some(self.jobs.sink(key, turn));
         // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
         if spoken_turn {
             cx = cx.with_think_budget(SPOKEN_THINK_BUDGET);
@@ -3420,10 +3654,13 @@ impl PersonaChats {
                 }
             };
             let _ = forwarder.await;
+            let mut outcome_recorded = false;
             match &outcome {
                 Ok(o) => {
                     let _ = session.record_run(&before, &conversation);
-                    let _ = session.record_outcome(o);
+                    if session.record_outcome(o).is_ok() {
+                        outcome_recorded = true;
+                    }
                 }
                 // The record agrees with the rollback, or a resume replays
                 // the failed turn (the assistant's rule, `chat::begin_turn`).
@@ -3490,6 +3727,16 @@ impl PersonaChats {
                 }
                 ps.conversation = Some(conversation);
                 ps.live = None;
+                if outcome_recorded {
+                    ps.outcome_of.insert(turn, ps.runs_recorded);
+                    ps.runs_recorded += 1;
+                }
+                // Pictures that finished while this run held the chat: into
+                // the record now, before `Done` sends the page to re-read.
+                for late in std::mem::take(&mut ps.late) {
+                    land(ps, &late);
+                    chats.jobs.landed(&key, &late.call_id);
+                }
                 // A compaction may have summarised the Core away (§12.5).
                 if compacted || owed_anchor {
                     ps.anchor_due = true;
@@ -4507,20 +4754,30 @@ pub async fn send(
     )
 }
 
+#[derive(serde::Deserialize)]
+pub struct CancelBody {
+    #[serde(default)]
+    unlock: Option<String>,
+    /// Stop only the chat's picture (the call screen's picture slot), not
+    /// the reply in flight.
+    #[serde(default)]
+    picture: bool,
+}
+
 /// POST /api/persona-chat/{key}/cancel
 pub async fn cancel(
     State(state): Web,
     axum::extract::Path(key): axum::extract::Path<String>,
-    body: Option<Json<UnlockBody>>,
+    body: Option<Json<CancelBody>>,
 ) -> axum::response::Response {
     let chat = match chat::chat_state(&state) {
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
-    let unlock = body.and_then(|Json(b)| b.unlock);
+    let (unlock, picture) = body.map_or((None, false), |Json(b)| (b.unlock, b.picture));
     match chat
         .personas
-        .cancel(&state.library, &key, unlock.as_deref())
+        .cancel(&state.library, &key, unlock.as_deref(), picture)
         .await
     {
         Ok(cancelled) => Json(serde_json::json!({ "cancelled": cancelled })).into_response(),
@@ -7411,6 +7668,278 @@ mod tests {
         let to = format!("{line} = {value}");
         assert!(text.contains(&from), "{from}");
         std::fs::write(&toml, text.replacen(&from, &to, 1)).unwrap();
+    }
+
+    /// A picture asked for on an earlier turn and still being made, as a
+    /// chat holds it: the call, its "being made" result and the reply, in
+    /// the conversation and on file alike, with that run's outcome.
+    async fn deferred_picture(w: &World, key: &str) -> PathBuf {
+        let mut sessions = w.chat.personas.sessions.lock().await;
+        let ps = sessions.get_mut(key).unwrap();
+        let turn = vec![
+            Message::user("draw the harbour"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "c1".into(),
+                name: "image_generate".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "being made: images/a.png".into(),
+                is_error: false,
+            }]),
+            Message::assistant(vec![Block::text("On its way.")]),
+        ];
+        ps.session.append_messages(&turn).unwrap();
+        ps.session
+            .append(&Record::Outcome(Default::default()))
+            .unwrap();
+        ps.outcome_of.insert(ps.turns, ps.runs_recorded);
+        ps.turns += 1;
+        ps.runs_recorded += 1;
+        ps.conversation.as_mut().unwrap().messages.extend(turn);
+        ps.session.path.clone()
+    }
+
+    fn late(key: &str, output: mecha_core::tool::ToolOutput) -> mecha_core::jobs::Delivered {
+        mecha_core::jobs::Delivered {
+            key: key.into(),
+            call_id: "c1".into(),
+            tool: "image_generate".into(),
+            output,
+            terms: mecha_core::jobs::Terms {
+                cap: 16 * 1024,
+                ..Default::default()
+            },
+            run: 0,
+        }
+    }
+
+    fn result_on_file(path: &Path) -> String {
+        let t = Session::read(path).unwrap();
+        t.convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "c1" => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    const FINISHED: &str =
+        "image: images/a.png\nIt is on the owner's screen; you have not seen it.";
+
+    /// A picture that finishes after its turn, in an idle chat — the common
+    /// case — is on file before the page is told, so a page that re-reads
+    /// finds it there; and the next turn is told it arrived, once
+    /// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.3).
+    #[tokio::test]
+    async fn a_picture_finished_after_its_turn_lands_and_the_next_turn_is_told() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .deliver(late(&key, mecha_core::tool::ToolOutput::ok(FINISHED)))
+            .await;
+        match rx.try_recv() {
+            Ok(WireEvent::ToolResult {
+                id,
+                is_error,
+                preview,
+                ..
+            }) => {
+                assert_eq!(id, "c1");
+                assert!(!is_error);
+                assert!(preview.starts_with("image: images/a.png"), "{preview}");
+            }
+            other => panic!("the page was not told: {other:?}"),
+        }
+        assert_eq!(result_on_file(&path), FINISHED);
+        assert_eq!(Session::read(&path).unwrap().pending_notes.len(), 1);
+
+        let told = |w: &World| {
+            w.seen
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|m| {
+                    m.content.iter().any(|b| {
+                        matches!(b, Block::Text { text }
+                        if text.contains("has finished since your last reply")
+                            && text.contains("image: images/a.png"))
+                    })
+                })
+        };
+        turn(&w, &key, "is it done?").await;
+        assert!(told(&w), "the next turn was not told");
+        assert!(Session::read(&path).unwrap().pending_notes.is_empty());
+        turn(&w, &key, "thanks").await;
+        assert!(!told(&w), "told twice");
+    }
+
+    /// While a run holds the conversation, a finished picture is shown at
+    /// once and recorded when the run hands the conversation back.
+    #[tokio::test]
+    async fn a_picture_finished_while_a_run_holds_the_chat_is_held_for_hand_back() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        let held = {
+            let mut sessions = w.chat.personas.sessions.lock().await;
+            sessions.get_mut(&key).unwrap().conversation.take()
+        };
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .deliver(late(&key, mecha_core::tool::ToolOutput::ok(FINISHED)))
+            .await;
+        assert!(matches!(rx.try_recv(), Ok(WireEvent::ToolResult { .. })));
+        assert_eq!(result_on_file(&path), "being made: images/a.png");
+        let mut sessions = w.chat.personas.sessions.lock().await;
+        let ps = sessions.get_mut(&key).unwrap();
+        assert_eq!(ps.late.len(), 1);
+        // The hand-back's own steps.
+        ps.conversation = held;
+        for l in std::mem::take(&mut ps.late) {
+            land(ps, &l);
+        }
+        assert_eq!(result_on_file(&path), FINISHED);
+    }
+
+    /// A picture that fails late books one tool error on the run that
+    /// asked for it, and says so where the result was.
+    #[tokio::test]
+    async fn a_picture_that_fails_late_books_against_its_run() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        w.personas()
+            .deliver(late(
+                &key,
+                mecha_core::tool::ToolOutput::err("Image generation failed: the server went away."),
+            ))
+            .await;
+        assert!(result_on_file(&path).starts_with("Image generation failed"));
+        let errors: Vec<u32> = Session::outcomes(&path)
+            .unwrap()
+            .iter()
+            .map(|o| o.tool_errors)
+            .collect();
+        assert_eq!(errors, vec![1]);
+    }
+
+    /// A picture from a run that ended in error: the run wrote no outcome
+    /// and was rolled back, call and all, so its late failure books against
+    /// no run — never the next one — and the next turn is told nothing.
+    #[tokio::test]
+    async fn a_late_failure_from_a_failed_run_books_nothing() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        w.chat
+            .personas
+            .sessions
+            .lock()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .outcome_of
+            .clear();
+        w.personas()
+            .deliver(late(
+                &key,
+                mecha_core::tool::ToolOutput::err("Image generation failed: the server went away."),
+            ))
+            .await;
+        let t = Session::read(&path).unwrap();
+        assert_eq!(
+            t.outcomes.iter().map(|o| o.tool_errors).collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert!(t.pending_notes.is_empty());
+    }
+
+    /// The owner's Stop ends the chat's picture even when no reply is
+    /// running (§2.4); the job ends by its own cancelled output.
+    #[tokio::test]
+    async fn stop_ends_a_chats_picture_with_no_reply_running() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let token = tokio_util::sync::CancellationToken::new();
+        let watched = token.clone();
+        let job = mecha_core::jobs::DeferredJob::new(
+            async move {
+                watched.cancelled().await;
+                mecha_core::tool::ToolOutput::err("Cancelled — nothing was saved.")
+            },
+            token,
+            "busy",
+        );
+        w.personas()
+            .jobs
+            .submit(&key, 0, "c1", "image_generate", job)
+            .unwrap();
+        assert!(w
+            .personas()
+            .cancel(&w.library, &key, None, true)
+            .await
+            .unwrap());
+        for _ in 0..200 {
+            if w.personas().jobs.pending(&key).is_none() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the picture was not stopped");
+    }
+
+    /// A chat resumed after a restart holds a "being made" result with no
+    /// job behind it: settled from what the workspace holds — the picture,
+    /// when its manifest names the call — and recorded.
+    #[tokio::test]
+    async fn a_resumed_chat_settles_a_picture_the_restart_left_being_made() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        let (id, workspace) = {
+            let sessions = w.chat.personas.sessions.lock().await;
+            let ps = sessions.get(&key).unwrap();
+            (ps.session.meta.id.clone(), ps.workspace.clone())
+        };
+        std::fs::create_dir_all(workspace.join("images")).unwrap();
+        std::fs::write(workspace.join("images/a.png"), b"png").unwrap();
+        std::fs::write(
+            workspace.join("images/a.json"),
+            serde_json::json!({"image": "images/a.png", "tool_use_id": "c1"}).to_string(),
+        )
+        .unwrap();
+        w.personas().sessions.lock().await.clear();
+        w.personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        assert!(
+            result_on_file(&path).starts_with("image: images/a.png\n"),
+            "{}",
+            result_on_file(&path)
+        );
     }
 
     async fn open_chat(w: &World) -> String {

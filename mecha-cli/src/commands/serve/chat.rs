@@ -1059,7 +1059,7 @@ pub enum Entry {
 /// The first stretch of a tool result, char-safe, with the cut declared.
 /// 1,500 chars is a screenful on a phone: enough to see what came back,
 /// small enough that a transcript of forty calls stays a page, not a dump.
-fn result_preview(content: &str) -> String {
+pub(super) fn result_preview(content: &str) -> String {
     const CAP: usize = 1_500;
     if content.chars().count() <= CAP {
         return content.to_string();
