@@ -288,9 +288,22 @@ fn is_picture_ref(line: &str) -> bool {
     let Some(path) = rest.strip_prefix(':').map(str::trim_start) else {
         return false;
     };
-    path.starts_with("images/")
-        && path.len() > "images/".len()
-        && !path.contains(|c: char| c.is_whitespace() || c == ']')
+    // `picture.js`'s `image_generate` form, as `PICTURE_REF` has it: `images/`,
+    // a plain name, `.png` — case-insensitive, as the JS pattern's `i` flag is.
+    let Some(name) = path
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("images/"))
+        .map(|_| &path[7..])
+    else {
+        return false;
+    };
+    name.len() > 4
+        && name
+            .get(name.len() - 4..)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(".png"))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 fn collapse(s: &str) -> String {

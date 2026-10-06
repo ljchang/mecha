@@ -19,6 +19,12 @@ assert.equal(
 );
 assert.equal(withoutPictureRefs('I saved [image: images/a.png] for you.'), 'I saved [image: images/a.png] for you.');
 assert.equal(withoutPictureRefs('[Image attached: a wide shot]'), '[Image attached: a wide shot]');
+// A code block shows what was written, that line included.
+const fenced = 'Like this:\n```\n[Image: images/a.png]\n```';
+assert.equal(withoutPictureRefs(fenced), fenced);
+// Only the path a picture card stands in for.
+assert.equal(withoutPictureRefs('[Image: images/a b.png]'), '[Image: images/a b.png]');
+assert.equal(withoutPictureRefs('[Image: images/notes.txt]'), '[Image: images/notes.txt]');
 
 // Marks go, words stay.
 assert.equal(speakable('## Plan\n\n- **first**, check the *traps*\n- then `count` them'), 'Plan. first, check the traps. then count them.');
