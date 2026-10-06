@@ -5450,6 +5450,37 @@ mod extension_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A cut-off call's mark survives the session file, so a replay seeded on
+    /// a recorded history (`replay_run`) runs the projection of interrupted
+    /// turns on exactly what the live chat would have sent (review of #580).
+    #[test]
+    fn a_cut_off_calls_mark_survives_the_session_file() {
+        let (dir, s) = session();
+        let mut results = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "p1".into(),
+            content: "Cancelled".into(),
+            is_error: true,
+        }]);
+        results
+            .cancelled
+            .insert("p1".into(), crate::message::Cancelled::Nothing);
+        s.append(&Record::Message(Message::user("draw it")))
+            .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::ToolUse {
+            id: "p1".into(),
+            name: "image_generate".into(),
+            input: serde_json::json!({}),
+        }])))
+        .unwrap();
+        s.append(&Record::Message(results)).unwrap();
+        let (_, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(
+            convo.messages[2].cancelled.get("p1"),
+            Some(&crate::message::Cancelled::Nothing)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A memory note armed the chat when it ran. With no taint record on file
     /// (torn, or a crash before it was written), the rebuild still arms from
     /// the recorded note, as it would from a memory block in the messages.
