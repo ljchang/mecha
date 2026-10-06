@@ -26,7 +26,9 @@ function dropped(e) {
 // other line as it is), the persona's replies as written — the screen draws
 // them with the chat's own renderer, so a call and the chat format a reply
 // the same way (the owner's ask, 2026-10-06; what the voice says is tidied
-// on the speech path, never here) — and a picture as a line saying so —
+// on the speech path, never here) — and a picture as itself, its path on
+// the line (`picture`) for the screen to draw where it was made, as the chat
+// does (the owner's ask, 2026-10-06: the line used to say "a picture") —
 // once, as the chat draws it once (`image_view` of a picture just made is
 // the same picture).
 // A crisis pause is drawn too, as itself (`who: 'crisis'`): the plain voice
@@ -54,7 +56,7 @@ export function historyLines(entries) {
       const picture = pictureOf(e);
       if (picture && !pictures.has(picture)) {
         pictures.add(picture);
-        lines.push({ who: 'persona', picture: true, text: 'a picture' });
+        lines.push({ who: 'persona', picture, text: 'a picture' });
       }
     }
   }
