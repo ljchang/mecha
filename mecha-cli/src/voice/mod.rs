@@ -316,9 +316,21 @@ const MIN_SPAN_WORDS: usize = 2;
 /// The gate is cheap to be wrong about only because being wrong is rare,
 /// never because the consequence is mild — which is the argument for
 /// replacing it with the timing signal rather than loosening it.
+///
+/// **Against the reply as written and as spoken.** A call and Listen speak
+/// the reply tidied for the ear (`speech::speakable`): marks go — which
+/// `spoken_words` already ignored — but a URL is said as "a link", a code
+/// block as "There is a code block here.", a citation as "(from …)". The mic
+/// hears those words, which are no span of the text as written, so an echo
+/// of them kept the standing yes (review of #574). Either form counts: the
+/// union only ever finds more echoes, which only ever narrows.
 pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
+    is_a_span(utterance, last_reply) || is_a_span(utterance, &speech::speakable(last_reply))
+}
+
+fn is_a_span(utterance: &str, reply: &str) -> bool {
     let heard = spoken_words(utterance);
-    let said = spoken_words(last_reply);
+    let said = spoken_words(reply);
     if heard.len() < MIN_SPAN_WORDS || said.len() < heard.len() {
         return false;
     }
@@ -500,6 +512,23 @@ mod echo_span_tests {
     fn punctuation_and_case_do_not_hide_it() {
         assert!(echoes_the_last_reply("Delete it.", OFFER));
         assert!(echoes_the_last_reply("  DELETE  IT  ", OFFER));
+    }
+
+    /// The speaker plays the reply tidied for the ear, so what comes back
+    /// through the mic is the spoken form: the words the tidier says for a
+    /// code block or an address, which are in no span of the text as
+    /// written (review of #574).
+    #[test]
+    fn an_echo_of_what_was_spoken_is_our_own_voice() {
+        let reply = "Run this:\n```\nrm -rf old\n```\nOr read https://example.com/notes first.";
+        for heard in ["there is a code block here", "or read a link"] {
+            assert!(
+                echoes_the_last_reply(heard, reply),
+                "{heard:?} is what the speaker played"
+            );
+        }
+        // And the text as written still counts.
+        assert!(echoes_the_last_reply("rm rf old", reply));
     }
 
     #[test]
@@ -3346,22 +3375,26 @@ mod the_reply_reaches_the_wire {
     #[test]
     fn a_blocking_answer_is_tidied_too() {
         let src = include_str!("mod.rs");
-        // Needles assembled at run time, so this test's own text never
-        // matches them (the self-match trap noted above).
+        // Each door's own body, sliced at its signature and the closing brace
+        // at column zero, so a legitimate call elsewhere (the echo gate's)
+        // neither satisfies nor trips this. Needles assembled at run time,
+        // so this test's own text never matches them.
         let tidy = ["speech::", "speakable("].concat();
-        assert_eq!(
-            src.matches(&tidy).count(),
-            2,
-            "each blocking door must tidy its answer"
-        );
-        for who in ["a", "o"] {
+        for (door, who) in [("hosted_completion", "a"), ("completion", "o")] {
+            let sig = format!("\nasync fn {door}(");
+            let at = src.find(&sig).unwrap_or_else(|| panic!("`{door}` moved")) + 1;
+            let body = &src[at..][..src[at..].find("\n}\n").expect("a closing brace")];
+            assert!(
+                body.contains(&tidy),
+                "`{door}` answers a blocking request untidied"
+            );
             for raw in [
                 format!("\"{{}} {{}}\", {who}.text"),
                 format!("None => {who}.text"),
             ] {
                 assert!(
-                    !src.contains(&raw),
-                    "a blocking answer is built from the raw reply: {raw}"
+                    !body.contains(&raw),
+                    "`{door}` builds its answer from the raw reply: {raw}"
                 );
             }
         }

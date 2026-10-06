@@ -4018,7 +4018,13 @@ agree.
 - **A turn's text ends its sentence** (`AgentEvent::AssistantText` flushes
   the tidier). Before this, the narration ahead of a tool call ran straight
   into the next turn's first word.
-- **The echo window holds what was spoken**, not what was written.
+- **The echo window holds what was spoken, not what was written**, and
+  the echo gate (`echoes_the_last_reply`) counts a span of either form. The
+  mic hears "a link" or "There is a code block here", which are no span of
+  the text as written, and the union of the two only ever narrows.
+- **A sentence left unfinished when the server stops is not spoken.** It
+  waits in the tidier for an end that never comes. The transcript still
+  records it, so the loss is audio only.
 - **Vocal tags are the engine's** (`(laugh)`, `fragments.py` `EVENTS`), so
   the tidier leaves parentheses alone.
 
