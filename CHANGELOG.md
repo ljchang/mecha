@@ -28,12 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A persona's edits keep its face.** In a persona chat, an edit of a
   picture of the persona's own character now sends a tight crop of the
   character's portrait beside it, so a chain of edits no longer drifts into
-  somebody else. The edit sets `camera_moves` when it moves the camera, which
+  somebody else. An edit that says where the camera goes (`edit.camera`)
   leaves the crop off. The face is found by a detector that runs inside
   mecha: install it once with `mecha imagelib install-face-detector`
   (89 MB). Without it, edits draw as before and their manifests say why.
-  Edit prompts are now asked to say what the face does and to describe a
-  camera change by where the camera is.
+  An edit says what the face does (`edit.face`) when the change is about it,
+  and a camera change by where the camera is.
 
 - **`mecha features enable` installs the embeddings and OCR servers.** On a
   Linux machine without them, enabling a feature that uses one fetches its
@@ -685,6 +685,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Changed
+
+- **Picture edits are described in parts, and the tool writes the edit
+  model's instruction.** An edit now names the one change (and, if it
+  matters, what stays, what a face does, or where the camera goes), never a
+  description of the whole scene, which the edit model reads as the picture
+  it already has. Persona edits had been coming back unchanged; replayed, a
+  scene description made the asked-for change 3 times in 8 and an
+  instruction 8 times in 8. An edit sent as a free description is refused
+  with what to send instead. From the edit panel, the owner's own words are
+  the change (`docs/PERSONA-CONTEXT-DESIGN.md` §5.5).
 
 - **A persona's harness notes last one run and are no longer stored in the
   chat.** A recall, the reminder of who it is, and the call, variety and edit
