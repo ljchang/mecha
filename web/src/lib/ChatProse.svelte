@@ -34,7 +34,14 @@
   // the persona's voice whatever is sent here (`settings::speak`). `asked`
   // and `lastReply` are the moment it was said in (`replyContext`), for the
   // director serve asks for the reply's delivery.
-  let { text = '', cites = null, onCite = null, actions = null, listen = null, download = false } = $props();
+  //
+  // `hidePictureRefs`: leave out a line that only points at a picture the
+  // surface already draws as itself (`withoutPictureRefs`). Opted into by
+  // each reply surface, never assumed, on `download`'s rule: this renderer
+  // also draws a persona proposal on its approval panel, where what is
+  // approved must be what was seen, with no raw view beside it (review of
+  // #578).
+  let { text = '', cites = null, onCite = null, actions = null, listen = null, hidePictureRefs = false, download = false } = $props();
   // This reply, to the one player: which button says Stop. A string, never
   // an object: the player's state is deep `$state`, which would store a
   // proxy of an object and never compare `===` to it again (the trap #484's
@@ -62,10 +69,10 @@
   }
   // Citations are swapped for placeholders before the Markdown is parsed
   // and drawn back from them, so the parser cannot split one (`citeMark`).
-  // Drawn without a line that only points at a picture the chat already
-  // shows (`withoutPictureRefs`); double-click still shows the reply as
-  // written, that line included.
-  const prepared = $derived(citeMark(withoutPictureRefs(text), cites));
+  // Where the surface opts in, drawn without a line that only points at a
+  // picture it already shows (`withoutPictureRefs`); double-click still
+  // shows the reply as written, that line included.
+  const prepared = $derived(citeMark(hidePictureRefs ? withoutPictureRefs(text) : text, cites));
   const blocks = $derived(parseBlocks(prepared.text));
   const pieces = (v) => citeUnmark(v, prepared.marks);
   // Code keeps a citation's words, drawn plain: a placeholder must never

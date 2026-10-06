@@ -102,4 +102,20 @@ assert.deepEqual(replyContext(entries, 0), { asked: null, lastReply: null });
 const framed = [{ kind: 'user', text: '(What I want from this conversation: rest)\n\nHow did the dig go?' }];
 assert.equal(replyContext([...framed, { kind: 'assistant', text: 'Well.' }], 1, ownWords).asked, 'How did the dig go?');
 
+// Who hides a picture line, read out of the components that ship: every
+// reply surface opts in, and the proposal's approval panel does not, where
+// what is approved must be what was seen (review of #578). Every site is
+// counted, so a rename cannot make the check vacuous.
+{
+  const read = (f) => readFileSync(new URL(`../src/lib/${f}`, import.meta.url), 'utf8');
+  const calls = (f) => [...read(f).matchAll(/<ChatProse\b[^>]*\/>/g)].map((m) => m[0]);
+  const sites = ['Chat.svelte', 'Personas.svelte', 'PersonaCall.svelte'].flatMap(calls);
+  const review = sites.filter((c) => /text=\{review\./.test(c));
+  const replies = sites.filter((c) => !/text=\{review\./.test(c));
+  assert.equal(review.length, 2, review.join('\n'));
+  assert.equal(replies.length, 8, replies.join('\n'));
+  for (const c of review) assert.ok(!/hidePictureRefs/.test(c), `an approval hides text: ${c}`);
+  for (const c of replies) assert.match(c, /\shidePictureRefs\b/, c);
+}
+
 console.log('speech: ok');

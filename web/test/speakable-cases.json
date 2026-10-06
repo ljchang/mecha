@@ -30,5 +30,6 @@
   {"why": "a line that only points at a picture the chat draws is not read", "text": "Here it is, by the window.\n[Image: images/20261006-120000-1234567.png]", "spoken": "Here it is, by the window."},
   {"why": "in any case, and a bracketed description in the persona's own words stays", "text": "[image: images/a.png]\n[a wide shot of the harbour]", "spoken": "[a wide shot of the harbour]."},
   {"why": "a space before the bracket closes is not a picture line, on either side", "text": "[Image: images/a.png ]", "spoken": "[Image: images/a.png ]."},
-  {"why": "only a picture path a card draws is a picture line", "text": "[Image: images/notes.txt]", "spoken": "[Image: images/notes.txt]."}
+  {"why": "only a picture path a card draws is a picture line", "text": "[Image: images/notes.txt]", "spoken": "[Image: images/notes.txt]."},
+  {"why": "speech's fence is the call tidier's, ``` only: a picture line inside ~~~ is left out on both, not read on one", "text": "Look:\n~~~\n[Image: images/a.png]\n~~~\nDone.", "spoken": "Look: ~~~. ~~~. Done."}
 ]
