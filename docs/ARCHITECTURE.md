@@ -4132,6 +4132,15 @@ reply is written one way whether it is read or heard. `VOICE_BLOCK` stays
 for the standalone `voice-serve`'s system prompt and for stripping old
 transcripts (`serve::chat::strip_voice_preamble`).
 
+- **It rides the tail, and that has a price on llama-server.** A spoken run's
+  tool rounds each re-read the previous step plus the note (~250 tokens),
+  the same mechanism #577 measured for the calendar reference: about
+  +0.25–0.40 s per *tool round* at the median, nothing on a spoken reply
+  that calls no tool. It is not on the first message as the calendar is,
+  because it comes and goes as a chat switches between typed and spoken
+  turns, and a head that changes breaks the whole cached prefix. The voice
+  block it replaces sat inside the owner's stored message, append-only, so
+  this is a cost the spoken path did not pay before.
 - **The note is what marks a turn as spoken on disk.** The block inside the
   message used to, and `scripts/check-private.py` reads which turns of a
   chat were spoken from the record; it now treats a voice-note `notes` line
