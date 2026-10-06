@@ -2384,11 +2384,11 @@ impl ImageGenerate {
             // local model once retried without it, a whole-picture edit of a
             // picture the owner had painted a region on (#429).
             Some(mask) => format!(
-                " Inside the painted area of {mask} its layout came back nearly the same as \
-                 {edited}'s (similarity {similarity:.2})."
+                " Inside the painted area of {mask}, the new picture's layout came back nearly \
+                 the same as {edited}'s (similarity {similarity:.2})."
             ),
             None => format!(
-                " Its layout came back nearly the same as {edited}'s (similarity \
+                " The new picture's layout came back nearly the same as {edited}'s (similarity \
                  {similarity:.2})."
             ),
         };
@@ -3033,7 +3033,10 @@ impl Tool for ImageGenerate {
          mask, with the picture in reference_images, and put only the change in edit.change: \
          everything outside the mask is kept exactly. The first line of a result is the new \
          picture's file path: edit that path to change the picture, and leave the path out of \
-         replies, since the owner is shown the picture. Results are not shown to you, so never \
+         replies, since the owner is shown the picture. In a chat the result can come at once as \
+         `being made: <path>`: the picture is still being drawn, reaches the owner's screen when \
+         it is done, and you are told then; it is not a failure, so do not draw it again, and \
+         edit it only after you are told it is done. Results are not shown to you, so never \
          say what a picture shows. An edit always makes a new file and leaves the original as \
          it was: never write or copy a result over the picture it was edited from. To keep a new picture's composition while changing its prompt, \
          draw it again with its seed. An edit whose result reports a near-copy is normal for a \
@@ -3759,7 +3762,7 @@ impl Tool for ImageGenerate {
             });
             let manifest_note = match write_manifest(ctx, &path, &manifest).await {
                 Ok(()) => String::new(),
-                Err(e) => format!(" (Its manifest was not written: {e:#}.)"),
+                Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
             };
             let mut text = format!("image: {path}\n");
             if !is_edit {
@@ -3809,7 +3812,7 @@ impl Tool for ImageGenerate {
                     .unwrap_or_default();
                 text.push_str(&format!(
                     "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
-                     {} unchanged. It is on the owner's screen; you have not seen it.",
+                     The new picture is on the owner's screen; you have not seen it. {} unchanged.",
                     sources.join(", "),
                     req.seed,
                     req.steps,
@@ -5092,6 +5095,18 @@ mod tests {
             out.content.contains("An edit of inbox/me.jpg")
                 && out.content.contains("inbox/me.jpg is unchanged.")
                 && out.content.contains("you have not seen it."),
+            "{}",
+            out.content
+        );
+        // The new picture's status comes first, so "it" never reads as the
+        // original (review of #581).
+        let at = |needle: &str| {
+            out.content
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} not in: {}", out.content))
+        };
+        assert!(
+            at("The new picture is on the owner's screen") < at("inbox/me.jpg is unchanged."),
             "{}",
             out.content
         );
@@ -7184,10 +7199,10 @@ mod tests {
         // Facts only (§5.2): what came back, never what to do about it; the
         // description says the retry is the owner's to ask for.
         assert!(
-            out.content
-                .contains("Its layout came back nearly the same as images/orig.png's")
-                && !out.content.contains("say so")
-                && !out.content.contains("again")
+            out.content.contains(
+                "The new picture's layout came back nearly the same as images/orig.png's"
+            ) && !out.content.contains("say so")
+                && !out.content.contains(" again")
                 && !out.content.contains("If they ask"),
             "{}",
             out.content
@@ -7800,7 +7815,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content.contains(
-                "Inside the painted area of inbox/mask.png its layout came back nearly the same"
+                "Inside the painted area of inbox/mask.png, the new picture's layout came back nearly the same"
             ),
             "{}",
             out.content
