@@ -190,6 +190,17 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {fact!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_a_sentence_in_a_runs_notes_is_refused(self):
+        # A run's notes (`Record::Notes`) hold what no message does since #572,
+        # the persona's Core among them.
+        core = "Grew up above a clockmaker's shop and still winds every clock on Sundays."
+        path = os.path.join(self.home, "personas", "quillon", "sessions", f"{SESSION}.jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps({"record": "notes",
+                                "notes": [f"(A reminder from the harness of who you are: {core})"]}) + "\n")
+        self.stage("fixture.py", f"X = {core!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
     def test_an_unreadable_persona_memory_refuses(self):
         db = os.path.join(self.home, "personas", "quillon", "memory.db")
         open(db, "wb").write(b"not a database at all, just bytes " * 40)

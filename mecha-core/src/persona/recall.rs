@@ -56,7 +56,8 @@ pub struct MemoryBlock {
 
 /// Which taint a memory block arms, read off its text: `(private,
 /// untrusted)`, or `None` when the text is not one. The one predicate
-/// `Taint::arm_for_content` and [`carries`] use.
+/// `Taint::arm_for_content` (and through it `Taint::arm_for_notes`) and
+/// `message::is_recorded_note` use.
 pub fn stem_of(text: &str) -> Option<(bool, bool)> {
     let t = text.trim_start();
     // The untrusted stem first: it is the longer, more specific one.

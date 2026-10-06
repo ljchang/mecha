@@ -111,14 +111,21 @@ def spoken(o):
     """Everything a conversation holds: every message's blocks at any depth
     (text, thinking, a tool call's arguments — a picture's prompt — and a
     tool's result, which can carry what a persona remembers about the owner;
-    a compaction `rewrite` carries whole messages inside it) and each spoken
-    direction's sentence."""
+    a compaction `rewrite` carries whole messages inside it), each spoken
+    direction's sentence, and a run's notes."""
     if isinstance(o, dict):
         if o.get("record") == "spoken_direction":
             yield o.get("sentence", "")
         # A session's title is model-written from the owner's first words.
         if o.get("record") in ("meta", "title") and isinstance(o.get("title"), str):
             yield o["title"]
+        # A run's notes (`Record::Notes`): what the harness told the model for
+        # one run, kept out of the messages since #572. They carry what used to
+        # ride the owner's message, among it the persona's `## Core`
+        # (`safety::reanchor_text`), which no other source here covers.
+        if o.get("record") == "notes":
+            yield from (n for n in o.get("notes") or [] if isinstance(n, str))
+            return
         if o.get("role") in ("user", "assistant", "tool") and "content" in o:
             yield from strings(o["content"])
             return
