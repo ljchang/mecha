@@ -673,10 +673,26 @@ conversation, so the capabilities do not change. Three rules:
   stand up…" alone, 8 (3 near-copies, 1 partial); the same after "Keep the
   watercolor style, the lake, willow tree, and red checkered blanket
   unchanged.", 12. The seed only decides which way an ambiguous prompt tips,
-  which is why the failure looked random. The tool description and the
-  `prompt` field ask for the kept parts named, then the instruction; a
-  guidance that said "describe the finished picture" produced the caption
-  that failed.
+  which is why the failure looked random. A guidance that said "describe the
+  finished picture" produced the caption that failed.
+  - **So an edit is typed fields, and the tool writes its prompt**
+    (`EditAsk`, PERSONA-CONTEXT-DESIGN.md §5.5). Asking for the right shape
+    in the description was not enough: on 2026-10-06 a live persona chat's
+    three edits were all scene captions, all came back unchanged (layout
+    similarity 0.99–1.00), and replayed, the caption made the asked-for change
+    3 times in 8 where an instruction did 8 in 8, face anchor on or off. An
+    edit now takes `edit.change` (the one change, as an instruction),
+    `edit.keep` (what stays, named, optional), and `edit.face` and
+    `edit.camera` only when the change is about them. The tool writes "Keep
+    {keep} unchanged. {change} {face} {camera}", leaving the keep sentence out
+    when `keep` is absent or a mask keeps the rest. No stand-in for a missing
+    `keep`: on one edit, 4 seeds, the change alone made it 4/4, "Keep
+    everything else unchanged." 3/4, and a generic list of face, hair, pose,
+    background and light 2/4. A free-text
+    `prompt` with references is refused (`EDIT_REQUIRED`), as is `edit`
+    beside `prompt` or without a picture, each saying what to send instead,
+    so a caption can never reach the edit model. The manifest keeps the
+    fields beside the prompt they became.
 - **An edit that kept the layout says so, and never retries by itself.**
   The model never sees the result, and reported a near-copy as the change
   made, so a retry in the same chat repeated the edit. Each edit's
@@ -760,16 +776,18 @@ conversation, so the capabilities do not change. Three rules:
   a camera move held identity (0.85, 0.44 and 0.57 across the chain's
   last three steps, where unanchored edits fell to 0.25, 0.21 and 0.13) and kept
   expressions, hair and full-body framing. So it is skipped, and the
-  manifest says why, when the call sets `camera_moves` — with the crop on, a
-  low angle came back at eye level — and it is never applied to a masked
+  manifest says why, when the edit says where the camera goes
+  (`edit.camera`) — with the crop on, a low angle came back at eye level —
+  and it is never applied to a masked
   edit, beside references the model chose, to an attached photo with no
   manifest, or in the assistant's own chats. A crop that cannot be had (the
   detector not installed, no face in the portrait) is recorded as
-  `face_anchor.skipped`, never refused: the edit draws as it did before. The
-  tool's guidance asks every edit to say what the face does — expression,
-  head angle, gaze — because without it the edit hands the face back as it
-  was, and to describe a camera change by where the camera is and what is
-  nearest it: named, the angle did not move; described, it did.
+  `face_anchor.skipped`, never refused: the edit draws as it did before.
+  `edit.face` says what the face does — expression, head angle, gaze — when
+  the change is about faces, because without it the edit hands the face back
+  as it was (which is right when it is not), and `edit.camera` describes a
+  camera change by where the camera is and what is nearest it: named, the
+  angle did not move; described, it did.
   The detector is py-feat's RetinaFace-R34 (`py-feat/retinaface_r34`, MIT,
   pinned in `face.rs`), run by `face.rs`'s own small network on
   `matrixmultiply`, its batch norms folded into the convolutions at load:
@@ -1448,8 +1466,10 @@ module.
     the one message compaction keeps whole; stored later, a compaction would
     summarise it away and the next turn would store it again. A chat already
     past a reply that never stored it (begun under #572, or a first turn whose
-    read failed) gets it as a run note instead. As a run note at the end of every request (#572) it
-    cost ~1.1–1.6 s of prefill per request, and as the most salient text in
+    read failed and was retried after a restart) gets it as a run note
+    instead. A failed read is not retried within one process, so the owner is
+    not told about it on every turn. As a run note at the end of every request
+    (#572) it cost ~1.1–1.6 s of prefill per request, and as the most salient text in
     the request a standing preference inside it outweighed the owner's ask:
     6/8 picture calls against 8/8 from the first turn (2026-10-06). Past the
     first reply, what the owner's message brings to mind is a run note

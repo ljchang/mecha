@@ -3028,7 +3028,8 @@ impl PersonaChats {
         // Stored only before the chat's first reply, so it lands in
         // `messages[0]`, which compaction keeps whole (the files block's rule,
         // `recall::carries_chat_start`). A chat already past a reply that never
-        // stored one (begun under #572, or a first turn whose read failed)
+        // stored one (begun under #572, or a first turn whose read failed and
+        // was read again after a restart)
         // gets it as a note instead: slower, but never folded mid-history for
         // a compaction to summarise away and the next turn to store again.
         let (memory_block, memory_note) = match memory_block

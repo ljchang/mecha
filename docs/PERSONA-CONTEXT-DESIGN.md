@@ -361,6 +361,32 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   no identity source it does not have. The tool's description says so, and linking a character is
   the owner's way to fix it.
 - This is the owner's stated intent (2026-10-05). It also removes edit-chain drift at its source.
+- **An edit is typed fields, and the tool writes the edit model's prompt** (built first, 2026-10-06,
+  `imagegen::EditAsk`). The rule that an edit prompt is an instruction, never a scene caption, had
+  been in the tool's guidance since 2026-09-29 (`ARCHITECTURE.md` §images). A live chat showed the
+  persona still writing captions: its three edits all came back unchanged.
+  - Replayed on one of them (owner-asked, edit panel; 2 seeds per cell, then 4 more for the
+    first and last; a local vision model judged the change):
+
+    | edit prompt | face anchor | change made |
+    |---|---|---|
+    | the persona's scene caption | on | 2/6 |
+    | the persona's scene caption | off | 1/2 |
+    | instruction ("Keep … unchanged. <change>") | on | 2/2 |
+    | instruction | off | 6/6 |
+
+    So the prompt's form decides it, and the face anchor (#569) does not block edits.
+  - The fields: `change` (the one change, as an instruction; from the edit panel, the owner's
+    words as given), `keep` (what stays, named, optional), and `face` and `camera` only when the
+    change is about them. A missing `keep` gets no stand-in: the change alone made the edit 4/4,
+    "Keep everything else unchanged." 3/4, and a generic list 2/4 (one edit, 4 seeds, judged in
+    both orders). `camera` replaces the `camera_moves` flag: a described camera move turns the face
+    anchor off. A free-text edit is refused with the shape to send instead, so a caption cannot
+    reach the edit model.
+  - With the new schema, on the same chat's three edit moments (6 samples each), the persona used
+    `edit` in 12 of 18 calls and sent free text in 6, which is now refused and retried. The replayed
+    history held only free-text edits to copy. When it used the fields, panel edits carried the
+    owner's words as `change`, and both rendered edits made the change.
 
 ### 5.6 Guidance travels with capability
 
