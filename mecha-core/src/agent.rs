@@ -353,6 +353,14 @@ pub struct RunContext {
     /// (`Record::Notes`). Empty by default, and a subagent never inherits
     /// its parent's: they are for the run that set them.
     pub notes: Arc<[String]>,
+    /// Where this run hands a deferred tool call's slow half
+    /// (`ToolOutput::deferred`): a chat host's queue for this conversation,
+    /// so the work outlives the run (`jobs::JobQueue`). `None` — the CLI, a
+    /// subagent, an eval, a batch — and the loop awaits the job inline,
+    /// linked to this run's cancellation, exactly as the call ran before it
+    /// deferred (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1). Never inherited by
+    /// a subagent: its job is the parent's call's, awaited inline.
+    pub jobs: Option<Arc<dyn crate::jobs::JobSink>>,
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -393,6 +401,7 @@ impl RunContext {
             mailbox: None,
             think_budget: None,
             notes: Arc::from(Vec::new()),
+            jobs: None,
         }
     }
 
@@ -4953,6 +4962,22 @@ impl Agent {
         // into `role: "tool"` messages ahead of the parts array anyway.
         let mut pictures = Vec::new();
         for (i, id, name, mut out) in executed {
+            // A deferred call's slow half (`ToolOutput::deferred`): handed to
+            // the host's queue, where it outlives this run and its output
+            // answers the call late; refused in the tool's own words when the
+            // conversation already has one running (a refusal, never a tool
+            // failure); or, with no host, awaited here — linked to this run's
+            // cancellation, so the call behaves as it did before it deferred
+            // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1–2.2).
+            if let Some(job) = out.deferred.take() {
+                out = match &cx.jobs {
+                    Some(sink) => match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
+                        Ok(()) => out,
+                        Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
+                    },
+                    None => crate::jobs::run_inline(&job, cx.cancel.as_ref()).await,
+                };
+            }
             provenance.insert(id.clone(), out.external);
             out.content = crate::tool::cap_result(
                 out.content,
@@ -6618,6 +6643,203 @@ mod tests {
             self.0.advance(self.1);
             Ok(ToolOutput::ok("time passed"))
         }
+    }
+
+    /// A tool that defers its slow half (`ToolOutput::deferred`): it answers
+    /// "being made" at once, and the job makes it when released, or says it
+    /// stopped when its token fires.
+    struct Later(Arc<tokio::sync::Notify>);
+
+    #[async_trait]
+    impl Tool for Later {
+        fn name(&self) -> &str {
+            "draw"
+        }
+        fn description(&self) -> &str {
+            "Draw something."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            let go = Arc::clone(&self.0);
+            let cancel = CancellationToken::new();
+            let token = cancel.clone();
+            let job = crate::jobs::DeferredJob::new(
+                async move {
+                    tokio::select! {
+                        _ = go.notified() => ToolOutput::ok("image: images/made.png"),
+                        _ = token.cancelled() => ToolOutput::err("not made: stopped"),
+                    }
+                },
+                cancel,
+                "not made: a picture is already being made",
+            );
+            Ok(ToolOutput::deferred("being made: images/made.png", job))
+        }
+    }
+
+    fn draw_then(text: &str) -> Vec<CompletionResponse> {
+        vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "d1".into(),
+                    name: "draw".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text(text)], StopReason::EndTurn),
+        ]
+    }
+
+    fn result_of(convo: &Conversation, id: &str) -> String {
+        convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == id => Some(content.clone()),
+                _ => None,
+            })
+            .expect("the call has a result")
+    }
+
+    /// No host (the CLI, an eval, a subagent): the job is awaited inline and
+    /// the call's result is the finished one, as before it deferred.
+    #[tokio::test]
+    async fn without_a_host_a_deferred_call_is_awaited_inline() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        go.notify_one();
+        let (agent, _) = agent_with_tools(
+            draw_then("Here."),
+            vec![Arc::new(Later(go))],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("draw the harbour");
+        agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(result_of(&convo, "d1"), "image: images/made.png");
+    }
+
+    /// A chat host's queue: the call answers "being made" at once, the run
+    /// ends without waiting for the picture, and the job is delivered after
+    /// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1, the first test of §5).
+    #[tokio::test]
+    async fn with_a_host_the_run_answers_at_once_and_the_job_is_delivered_after() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let queue = crate::jobs::JobQueue::new(move |d| sink.lock().unwrap().push(d));
+        let (agent, _) = agent_with_tools(
+            draw_then("It is on its way."),
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat"));
+        let mut convo = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(result_of(&convo, "d1"), "being made: images/made.png");
+        assert!(
+            got.lock().unwrap().is_empty(),
+            "the run waited for the picture"
+        );
+        assert_eq!(queue.pending("chat").as_deref(), Some("d1"));
+        go.notify_one();
+        for _ in 0..200 {
+            if !got.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let d = got.lock().unwrap()[0].clone();
+        assert_eq!(
+            (d.call_id.as_str(), d.output.content.as_str()),
+            ("d1", "image: images/made.png")
+        );
+    }
+
+    /// One job per conversation: a second deferred call while one runs is
+    /// refused in the tool's own words, as a refusal, never a tool failure —
+    /// and nothing of it starts.
+    #[tokio::test]
+    async fn a_second_job_while_one_runs_is_refused_in_the_tools_words() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![
+                        Block::ToolUse {
+                            id: "d1".into(),
+                            name: "draw".into(),
+                            input: json!({}),
+                        },
+                        Block::ToolUse {
+                            id: "d2".into(),
+                            name: "draw".into(),
+                            input: json!({}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("One is coming.")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Later(go))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat"));
+        let mut convo = Conversation::user("draw two");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let (a, b) = (result_of(&convo, "d1"), result_of(&convo, "d2"));
+        let mut both = [a, b];
+        both.sort();
+        assert_eq!(
+            both,
+            [
+                "being made: images/made.png".to_string(),
+                "not made: a picture is already being made".to_string()
+            ]
+        );
+        assert!(
+            outcome
+                .tool_calls
+                .iter()
+                .filter(|t| t.is_error)
+                .all(|t| t.denied),
+            "a queue collision booked as a tool failure"
+        );
+    }
+
+    /// No host, and the owner stops the run: the run's cancellation reaches
+    /// the job's own token, and the call ends as stopped, as before it
+    /// deferred (§2.1, review of #573 pass 2).
+    #[tokio::test]
+    async fn without_a_host_the_runs_stop_stops_the_job() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let (agent, _) = agent_with_tools(
+            draw_then("Stopped."),
+            vec![Arc::new(Later(go))],
+            PermissionMode::Allow,
+        );
+        let token = CancellationToken::new();
+        let cx = agent.context().as_ref().clone().with_cancel(token.clone());
+        let stopper = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            stopper.cancel();
+        });
+        let mut convo = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(result_of(&convo, "d1"), "not made: stopped");
     }
 
     /// Advances the clock on its **first** call only: the case is one

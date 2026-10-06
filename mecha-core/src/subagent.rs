@@ -332,6 +332,10 @@ impl Tool for Subagent {
         // which is both wrong and a hole in the jail. Permissions stay the
         // child's own: the allowlist is the point of a subagent.
         let cx = RunContext {
+            // Never the parent's queue: a deferred call inside a child is
+            // the child's work, awaited inline before it answers the parent
+            // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1).
+            jobs: None,
             // Never sampled per child: a subagent is work inside the
             // parent's run, and the parent's snapshot already spans it.
             // Differencing the backlog again here would count a draft the
