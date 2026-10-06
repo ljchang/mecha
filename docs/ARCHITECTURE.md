@@ -9504,19 +9504,25 @@ value is worse than none, because the derived threshold trusts it.
 
 **The clock is asked per request and the reading is never stored.** `Clock`
 is a trait object on the `Agent` (`clock.rs`), and `date_context::render`'s
-reading is a run note (`Agent::calendar_note`, added by `wire` to the end of
-the newest message of every request), so each request carries exactly the
-current date and the history carries none. It is ~0.5 KB and identical bytes
-for every request on one local day. On Anthropic it costs the cache nothing
-new (the moving `cache_control` breakpoint sits before the notes, and the
-tools→system prefix is untouched). On llama-server it is not free: the tail
-note breaks the prefix at the previous step, so each tool round re-reads that
-step plus the note (§The local model server; measured on #577). `date_context::GUIDANCE` is the standing
-half, names no date, and tells the model the most recent reference is the
-date. The run's reading is recorded as a `notes` line
-(`Conversation::harness_notes`, written by `Session::record_run` for every
-door), which is where the grounded judge (`eval::grounding_evidence`) and
-`Transcript::notes` find it.
+reading is a note (`Agent::calendar_note`) that `wire` attaches to the
+**first** message of every request (`message::attach_head_notes`,
+`agent::RequestNotes::head`), so each request carries exactly the current
+date and the history carries none. It is ~0.5 KB and identical bytes for
+every request on one local day, so on the first message it sits inside the
+cached prefix: within a day each request is a byte prefix of the next and no
+tool round re-reads it, on llama-server as on Anthropic; the date changing is
+one re-read a day. At the *tail* of each request, where #577 first put it, it
+broke llama-server's prefix before the previous step, and each tool round
+re-read that step with it — measured +0.23–0.34 s per tool round at the
+median, +0.67–0.98 s at the 90th percentile — so the owner ruled it onto the
+first message (2026-10-06). `date_context::GUIDANCE` is the standing half,
+names no date, and tells the model the reference at the start of the
+conversation is the current one and any other is stale — an old chat holds
+folded references *later* in its history. The run's reading is recorded as a
+`notes` line (`Conversation::harness_notes`, written by `Session::record_run`
+for every door), which is where the grounded judge
+(`eval::grounding_evidence`) and `Transcript::notes` find it. After a
+compaction the first message is the summary head, and the note rides there.
 
 Until 2026-10-06 the reading was *folded* into the owner's message once per
 local day and kept, so a long chat carried every day it had lived through
