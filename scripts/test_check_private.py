@@ -263,6 +263,59 @@ class Guard(unittest.TestCase):
             self.stage("fixture.py", f"X = {text!r}\n")
             self.assertEqual(self.run_guard("--staged").returncode, want, text)
 
+    def test_a_spoken_turn_marked_by_its_voice_note_counts(self):
+        # Since 2026-10-06 a spoken turn's guidance is a run note recorded
+        # ahead of the owner's message, and the message holds only the words:
+        # the note marks the turn. Without reading it, a chat with calls in it
+        # would be skipped whole (no block anywhere in the file).
+        heard = "Move the gutter cleaning to the Thursday after next please."
+        reply = "The gutter cleaning is on the Thursday after next now."
+        typed = "Bump the crate version and write the changelog entry."
+        note = "(From the harness: this turn is spoken. Pretend this fixture is guidance.)"
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        def msg(role, text):
+            return json.dumps({"record": "message", "role": role,
+                               "content": [{"type": "text", "text": text}]}) + "\n"
+        with open(os.path.join(sessions, "20990107T000000-6a7b8c9d.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "n", "kind": "web"}) + "\n")
+            f.write(msg("user", typed))
+            f.write(msg("assistant", "Bumped and logged."))
+            f.write(json.dumps({"record": "notes", "notes": [note]}) + "\n")
+            f.write(msg("user", heard))
+            f.write(msg("assistant", reply))
+        for text, want in ((heard, 1), (reply, 1), (typed, 0)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
+    def test_the_harness_words_around_a_spoken_turn_are_not_conversation(self):
+        # The voice block a spoken turn was stored behind before 2026-10-06,
+        # and the voice note and calendar reference recorded as notes since,
+        # are mecha's own text: staging their wording is not quoting a call.
+        # The owner's words beside them still are.
+        heard = "Can you check whether the library returns are due this week."
+        block = ("Voice mode: everything you write is spoken aloud in this made-up fixture, "
+                 "which stands for the block the harness wrote and nobody ever said.")
+        note = ("(From the harness: this turn is spoken. A pretend note whose wording "
+                "was invented for this test and appears in no conversation.)")
+        reading = "Calendar reference from the harness clock: an invented reading for a made-up morning."
+        sessions = os.path.join(self.home, "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        def msg(role, text):
+            return json.dumps({"record": "message", "role": role,
+                               "content": [{"type": "text", "text": text}]}) + "\n"
+        with open(os.path.join(sessions, "20990108T000000-7b8c9d0e.jsonl"), "w") as f:
+            f.write(json.dumps({"record": "meta", "id": "h", "kind": "web"}) + "\n")
+            f.write(msg("user", block + "\n\n" + heard))
+            f.write(msg("assistant", "Two books are due on Friday."))
+            f.write(json.dumps({"record": "notes", "notes": [note, reading]}) + "\n")
+            f.write(msg("user", "And the overdue one from last month as well."))
+        for text, want in ((block, 0), (note, 0), (reading, 0), (heard, 1)):
+            git(self.repo, "reset", "-q")
+            self.stage("fixture.py", f"X = {text!r}\n")
+            self.assertEqual(self.run_guard("--staged").returncode, want, text)
+
     def test_a_spoken_turn_that_calls_a_tool_keeps_its_reply_and_later_directed_turns_count(self):
         sessions = os.path.join(self.home, "sessions")
         os.makedirs(sessions, exist_ok=True)

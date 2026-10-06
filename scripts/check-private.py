@@ -61,6 +61,11 @@ QUOTE = re.compile(r'"([^"\n]{6,240})"|“([^”\n]{6,240})”|\'([^\'\n]{12,240
 # The opening of the voice block every spoken turn carries
 # (`voice::VOICE_BLOCK` / `VOICE_BLOCK_STREAMING`).
 VOICE_MARK = "Voice mode: everything you write is spoken aloud"
+# Since 2026-10-06 a spoken turn carries its guidance as a run note
+# (`voice::VOICE_NOTE`), recorded as a `notes` line ahead of the owner's
+# message, and the message holds only what was said: the note's opening is
+# what marks the turn as spoken now.
+VOICE_NOTE_STEM = "(From the harness: this turn is spoken."
 # The header a compaction summary opens with (`compact::SUMMARY_HEADER`).
 SUMMARY_HEADER = "[Earlier turns were compacted to fit the context window. What happened in them:]"
 # Harness text that can ride in a user message of a chat that is not a
@@ -79,7 +84,8 @@ DERIVED_STEMS = (SUMMARY_HEADER, "[Live state, carried past the compaction", "[p
                  "Nothing is being learned here:", "A second opinion on your plan:",
                  "Harness check feedback: ", "Harness observations of owner-bound task criteria.",
                  "You have used your entire tool budget", "Your previous turn ended without producing anything",
-                 "A declared plan check was not run", "The declared plan check did not establish completion")
+                 "A declared plan check was not run", "The declared plan check did not establish completion",
+                 VOICE_NOTE_STEM)
 DELIVERY_STEM = "another mecha agent on this machine, not the user"
 SESSION_ID = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
 
@@ -124,7 +130,9 @@ def spoken(o):
         # ride the owner's message, among it the persona's `## Core`
         # (`safety::reanchor_text`), which no other source here covers.
         if o.get("record") == "notes":
-            yield from (n for n in o.get("notes") or [] if isinstance(n, str))
+            # Less the harness's own readings and guidance (the calendar
+            # reference, a spoken turn's voice note): those are mecha's words.
+            yield from (n for n in o.get("notes") or [] if isinstance(n, str) and not derived(n))
             return
         if o.get("role") in ("user", "assistant", "tool") and "content" in o:
             yield from strings(o["content"])
@@ -180,6 +188,16 @@ def read_memory(db):
     except sqlite3.Error as e:
         print(f"check-private: the persona memory {db} could not be read ({e}); refusing rather than passing unread.")
         sys.exit(2)
+
+
+def without_voice_block(text):
+    """An owner turn as said: a spoken turn recorded before 2026-10-06 is
+    the voice block, a blank line, then the words, and the block is the
+    harness's own text — read as said, it made every later edit near the
+    block's wording look like conversation."""
+    if text.lstrip().startswith(VOICE_MARK):
+        return text.split("\n\n", 1)[1] if "\n\n" in text else ""
+    return text
 
 
 def derived(text):
@@ -303,7 +321,8 @@ def spoken_turns(records):
     # `heard`: has a turn been read as spoken yet — a title recorded after
     # one can have been written from it. `opened`: was the first owner turn
     # spoken — the header's title is written before any turn.
-    state = {"in_stretch": False, "last_user": None, "heard": False, "opened": None}
+    state = {"in_stretch": False, "last_user": None, "heard": False, "opened": None,
+             "spoken_next": False}
 
     def turn(m):
         """One message entering the conversation, as said or not."""
@@ -320,19 +339,20 @@ def spoken_turns(records):
             if not results:
                 # Any turn the owner sends decides the stretch, a picture
                 # with no words included (review of #559, pass 4).
-                state["in_stretch"] = VOICE_MARK in text
+                state["in_stretch"] = VOICE_MARK in text or state["spoken_next"]
+                state["spoken_next"] = False
                 state["heard"] = state["heard"] or state["in_stretch"]
                 if state["opened"] is None:
                     state["opened"] = state["in_stretch"]
                 # What the owner said, less what a door or a compaction
                 # folded beside it (review of #559, pass 6).
                 state["last_user"] = " ".join(
-                    b.get("text", "") for b in m.get("content") or []
+                    without_voice_block(b.get("text", "")) for b in m.get("content") or []
                     if isinstance(b, dict) and b.get("type") == "text" and not derived(b.get("text", "")))
             if state["in_stretch"]:
                 for b in m.get("content") or []:
                     if isinstance(b, dict) and b.get("type") == "text" and not derived(b.get("text", "")):
-                        yield b.get("text", "")
+                        yield without_voice_block(b.get("text", ""))
         elif m.get("role") == "assistant":
             said = " ".join(words(text))
             if state["in_stretch"]:
@@ -359,6 +379,11 @@ def spoken_turns(records):
             # 48 characters, enough for a shingle (review of #559, pass 7).
             if state["heard"]:
                 yield r["title"]
+        elif kind == "notes":
+            # A spoken turn's voice note, recorded ahead of the owner's
+            # message it guides: that message was said (2026-10-06).
+            if any(isinstance(n, str) and n.startswith(VOICE_NOTE_STEM) for n in r.get("notes") or []):
+                state["spoken_next"] = True
         elif kind == "extend":
             # Harness text folded onto the last message (`Record::Extend`):
             # kept for the replay, never read as said.
@@ -374,11 +399,12 @@ def spoken_turns(records):
                 # one that carries the voice block opens a stretch (review of
                 # #559, pass 4: a compaction's new text is not a barge-in).
                 if text.strip() and not derived(text):
-                    state["in_stretch"] = state["in_stretch"] or VOICE_MARK in text
+                    state["in_stretch"] = state["in_stretch"] or VOICE_MARK in text or state["spoken_next"]
+                    state["spoken_next"] = False
                     state["heard"] = state["heard"] or state["in_stretch"]
-                    state["last_user"] = text
+                    state["last_user"] = without_voice_block(text)
                     if state["in_stretch"]:
-                        yield text
+                        yield without_voice_block(text)
             else:
                 # A compaction. `Session::record_run` writes a run that
                 # compacted itself as the compacted state *plus* every turn
@@ -436,8 +462,10 @@ def corpus():
                 kind = json.loads(fh.readline()).get("kind")
                 if kind == "voice":
                     whole.append(f)
-                elif VOICE_MARK in fh.read():
-                    partly.append(f)
+                else:
+                    rest = fh.read()
+                    if VOICE_MARK in rest or VOICE_NOTE_STEM in rest:
+                        partly.append(f)
         except (OSError, ValueError) as e:
             print(f"check-private: the session {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
