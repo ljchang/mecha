@@ -387,6 +387,11 @@ pub const PICTURE_STILL_BEING_MADE: &str = "(From the harness: a picture is stil
 /// only a tool call written out as text. Never the call markup itself.
 pub const PICTURE_ON_ITS_WAY_REPLY: &str = "The picture is on its way.";
 
+/// The same, when the closing request follows a busy refusal: this turn's
+/// picture was never started, so "on its way" would be false (mecha-a3's G3
+/// busy cell: 12 of 30 closing replies there were only a call).
+pub const PICTURE_NOT_STARTED_REPLY: &str = "The last picture is still being made, so this one wasn't started. Send it again once that one lands.";
+
 /// The deferred tools a run has started, and whether it has tried one again.
 /// One picture per run, structurally (IMAGE-DESIGN.md §5.5): a deferred job
 /// of a tool already started in a run is never started again in it.
@@ -3044,10 +3049,15 @@ impl Agent {
             // sees the words that remain, or that the picture is on its way
             // (§5.5). An empty reply is replaced the same way, not retried.
             let mut response = response;
-            if closing.is_some() {
+            if let Some(line) = closing {
                 let said = strip_call_markup(&response.message.text());
                 let said = if said.trim().is_empty() {
-                    PICTURE_ON_ITS_WAY_REPLY.to_string()
+                    if line == PICTURE_STILL_BEING_MADE {
+                        PICTURE_NOT_STARTED_REPLY
+                    } else {
+                        PICTURE_ON_ITS_WAY_REPLY
+                    }
+                    .to_string()
                 } else {
                     said.trim().to_string()
                 };
@@ -7477,6 +7487,47 @@ mod tests {
             assert!(tail_text(&seen[1]).ends_with(PICTURE_STILL_BEING_MADE));
         }
         assert_eq!(outcome.text, "Still on its way.");
+        hold.notify_one();
+        go.notify_one();
+    }
+
+    /// A busy close whose reply is only a call shows the line that is true
+    /// on that path: this turn's picture was not started (mecha-a3's G3).
+    #[tokio::test]
+    async fn a_busy_close_with_only_a_call_says_the_picture_was_not_started() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let call = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "d1".into(),
+                    name: "draw".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _provider) = agent_with_tools(
+            vec![call(), call()],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let held = Arc::clone(&hold);
+        let earlier = crate::jobs::DeferredJob::new(
+            async move {
+                held.notified().await;
+                ToolOutput::ok("image: images/earlier.png")
+            },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "e1", "draw", earlier).unwrap();
+        let mut convo = Conversation::user("draw it again");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(outcome.text, PICTURE_NOT_STARTED_REPLY);
         hold.notify_one();
         go.notify_one();
     }
