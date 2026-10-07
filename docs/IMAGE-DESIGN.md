@@ -100,54 +100,34 @@ Person.who = a library character's name | "self" | { from: picture } | a descrip
 - **`who`** is resolved against the library, in this order:
   - an approved character's name or alias brings its portrait (new picture) or head crop (edit), and its description verbatim;
   - `self`, or the persona's own name, display name or folder name (as `cast_self` resolves it today), is the persona's linked approved character;
-  - `{ from: picture, which? }` is a real person from a photo the owner attached: a friend, the owner, anyone not in the library. It is use case 4, and the owner wants it first-class (2026-10-07). See §4.1;
+  - a real person (a friend, the owner) is a library character like any other, added to the library from photos the owner attaches (§4.1; owner, 2026-10-07: real people come in through the library, not straight from a photo into a scene);
   - anything else is drawn from its own words, as an extra is today. That needs no separate field, and `extras` was never used.
 - **Library names in the prose fields are checked** (review B2): `setting`, `light`, `camera`, `together`, a descriptive `who`, `wearing`, `doing`, `expression` and `retouch`. In `together`, a name is expected: it must be someone in `people`. A name in a descriptive `who` resolves to that character. A name in any other field is refused plainly ("John is named in `doing`: add him to people"), because drawing him from words makes a stranger (E1).
 - **`wearing`, `doing` and `expression` are prose** (§2.8). `wearing` and `doing` are required for anyone the call introduces. `expression` is optional and separate from `doing`: an expression changes the face and is retouched, while a pose redraws the scene (§5.2).
 - **The scene is recorded** for every picture drawn: per chat, outside the jail, in a store the harness writes (§6). That covers the assistant chat as well as personas, so there is one path, not a scene path and a no-scene path. Each field carries its origin (clean or untrusted), as `scene.rs` does now.
 
-### 4.1 Real people from a photo
+### 4.1 Real people, through the library
 
-The owner can add a real person to a scene from a photo they attach: a friend, the owner, anyone who is not a drawn character (owner, 2026-10-07).
+The owner can put a real person (a friend, the owner) in scenes. **They come in through the image library, not straight from a photo into a scene** (owner, 2026-10-07). The library's approval step is where the owner says who this is and that they may be drawn, once, instead of a face appearing in a scene on a run's say-so.
 
 So far this has been used once: 41 attached images held 22 other real people's faces, 5 picture calls referenced them, and 1 added a person to another picture.
 
-**Consent comes first, and this design holds two lines in code** (review R1). These persona chats are often sexual, and the image model will draw whatever it is asked. A real person's face in a picture they never agreed to, and above all in a nude or sexual one, is a harm to someone who is not in the conversation. So:
+- **Adding them.** The owner attaches one or more photos of the person and asks for a library entry. `image_library_propose` stages a candidate from those photos. On the library page the owner approves it, gives it a name, and confirms the person has agreed to be in pictures. The entry is marked `real`. Nothing reaches a scene before that approval.
+- **Several pictures per entry, one default** (owner, 2026-10-07). Any library entry can hold more than one portrait, real people and drawn characters alike: a front view, a profile, another day. One is the default, set on the library page, and the default is what every render uses today. Adding a photo to an existing entry is a candidate the owner approves, like any library change. Choosing a portrait to match a scene's angle is a later step; it needs its own measurement.
+- **Picking the face in a photo.** When the owner adds a photo, RetinaFace finds the faces. A photo with one face uses it. In a group photo the library page shows numbered boxes and the owner picks one. A face under a minimum size (proposed 96 px, set by G4b) is refused there and then, before it becomes a portrait. This replaces in-scene `which` (reviews R3, R4).
+- **In a scene they are an ordinary `who`.** The prose check and the budget apply as for any library character (§4). Their name, being a library name, can't collide with another.
+- **A real person is never drawn in a nude or sexual picture.** This is the one rule the library route does not settle on its own: approval decides who may be drawn, not how. The persona chats can ask for nudity with any character. So an entry marked `real` is held to three checks on every render, by code, with no setting to lift it:
+  - **Before:** the prose fields (`wearing`, `doing`, `expression`, `together`, `setting`, `light`, `retouch`) are checked for nudity or sexual content.
+  - **In the compile:** the compiler states each real person clothed, from their `wearing`.
+  - **After:** a local image-safety classifier checks the rendered picture. A nude or sexual result with a real person in it is discarded unseen, and the result says only that it could not be drawn.
 
-1. **A real person's face is never drawn in a nude or sexual picture.** This is not a setting, not a ruling a model can change, and not something an approval can lift. A person whose crop came from a photo is marked `real` in the scene store, and so is a library entry made from one. Every render with a `real` person is checked three ways:
-   - **Before:** the prose fields (`wearing`, `doing`, `expression`, `setting`, `light`, `retouch`) are checked for nudity or sexual content, and the call is refused plainly if any carries it.
-   - **In the compile:** the compiler states each real person as clothed, using their `wearing` (which is required).
-   - **After:** the rendered picture goes through a local image-safety classifier. A nude or sexual result containing a real person's face is discarded unseen, and the result says only that it could not be drawn.
-
-   The output check is the one that holds when the prompt was clean and the image model went further anyway. A local classifier is owed: it is not in the tree yet (§10).
-2. **The owner confirms consent once per person, on the card.** The first time a face from a photo is used, the card asks the owner to confirm that this person has agreed to be in pictures. Until the owner answers, nothing is drawn. The answer is recorded with the crop, set only by the owner's button, never by a model or a tool call.
-
-**Picking the face.**
-- RetinaFace finds the faces in the photo. With one face, that is the person.
-- With two or three, `which` picks one by position ("left", "second from left") or by size ("the largest").
-- With more than three, the card shows the photo with numbered boxes and the owner picks one; `which` is not used (review R4).
-- A photo with no detectable face, an ambiguous `which`, or a chosen face under a minimum size is refused plainly, naming how many faces were found. The minimum is proposed at 96 px, to be measured (review R3; 11 of the corpus's 22 faces were 73 px or less). A back view cannot be a source of identity.
-
-**Identity is the head crop,** at 1.12× the face box, as a library crop is (`face.rs`). There is no library description, so their looks come from the call's `wearing` plus a short description the call may give ("short grey hair, glasses"). They cost one crop in the budget, like a library character on an edit.
-
-**The crop is kept with the scene.** The photo lives in the chat's jail, which a run can write and retention collects. So the crop is copied into the chat's scene store when the person first joins, and every later restage, edit or redraw uses that copy. A person stays the same person after the photo is gone.
-
-**A label for later calls,** such as `label: "Sam"`, so a later change can say `who: "Sam"`.
-- A label may not equal a library character's name or alias, or the persona's names. Such a label is refused at the door; the library already holds a "Sam" (review R2).
-- The prose-field check (§4) covers labels as it covers library names: "holding hands with Sam" in `doing` asks for Sam to be added to `people`, never draws a stranger.
-
-**Per chat until promoted** (review R5).
-- A real person's crop and label belong to the chat that added them. They are not carried to other chats or into the persona's latest scene.
-- To use someone across chats, the owner promotes them to the library through `image_library_propose`, as a candidate the owner approves. They keep their `real` mark and the consent answer.
-- Forgetting a chat deletes its real-person crops, including the content-addressed blob when no other record names it.
-- Incognito keeps them in the room.
-
-**Privacy.** An attached photo already arms `private_data`, and the crop inherits that. It never leaves the machine.
-
-**Measured before it ships** (§9, G4b). Identity from a single attached photo has not been tested the way library crops were (M1–M4). The render set is mecha-a3's G4b design:
-- the owner's own photo, chosen by the owner, with the face at least 150 px;
-- five arms, 3 seeds each, 15 renders, all neutral and clothed: a new picture; with a library character; placed on a photo; restaged; and a 64 px small-face arm, which sets the minimum size;
-- judged by the owner on face-sized sheets.
+  The person this protects is not in the conversation. Drawn characters are not affected.
+- **Existing entries.** Entries already in the library that are real people need marking `real`. The owner marks them on the library page; nothing guesses.
+- **Privacy.** The photos arm `private_data` when attached, and the portraits stay in the library store on this machine. Removing an entry removes its portraits, as `imagelib::remove` does now.
+- **Measured before it ships** (§9, G4b). Identity from photos the owner adds has not been tested the way the existing portraits were (M1–M4). The render set is mecha-a3's design:
+  - the owner's own photo, chosen by the owner, with the face at least 150 px, added as a library entry;
+  - drawn as a new picture, beside a drawn library character, placed on a photo, and restaged, plus a 64 px small-face arm that sets the minimum size;
+  - 3 seeds each, 15 renders, all neutral and clothed, judged by the owner on face-sized sheets.
 
 ## 5. The one operation: draw a scene, or change one
 
@@ -277,7 +257,7 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 | **G2 the wanted call still happens** | request 1 of every replayed picture turn calls the tool; no reply narrates a picture without one | ≥ 95% |
 | **G3 one picture per run** | at most one started, structurally; 0 calls written as text; 0 empty replies | 100% |
 | **G4 renders, the owner's eye** (face-sized labelled sheets, ≥ 3 seeds each) | restage pose right, room held across restages, identity holds; words setting and photo setting | owner's verdict |
-| **G4b a real person from a photo** (§4.1) | the same real person added to a new picture, placed on a photo, and restaged, ≥ 3 seeds each | owner's verdict |
+| **G4b a real person through the library** (§4.1) | the same real person, added to the library from the owner's photo, drawn new, beside a drawn library character, placed on a photo, and restaged, plus a small-face arm; ≥ 3 seeds each | owner's verdict |
 | **G5 after deploy** (first real chats) | pose and camera changes go through restage; restages pass the owner's eye; edit-shaped renders that should move something (adding a person, placing on a photo) are not near-copies; no runaways | restage share ≥ 90%; edit-shaped near-copy ≤ 30%; runaways 0 |
 
 ## 10. Build order
@@ -289,14 +269,18 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
 4. **Regenerate** on the same record (§5.4).
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
-6. **Real people from photos** (§4.1), after G4b passes. This needs the consent confirmation on the card, the `real` mark, and the three safety checks. The output check needs a local image-safety classifier, which is not in the tree. Choosing and measuring one is the first task of this step. No real-person crop is drawn before all of it is in.
+6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes.
+   - This step covers adding people from photos on the library page, picking a face in a group photo, and the minimum face size.
+   - It adds the `real` mark and the default portrait.
+   - It adds the three checks that keep a real person out of nude or sexual pictures. The output check needs a local image-safety classifier, which is not in the tree. Choosing and measuring one is the first task of this step.
+   - No entry marked `real` is drawn before all of it is in.
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 11. Questions for the owner
 
 1. **Record the scene for the assistant chat too** (§6)? **Ruled 2026-10-07: yes, one path.**
-2. **The scene's fields** (§4, after the survey in §13): `setting`, `light`, `camera`, `style`, `together`, `text`, and per person `who`, `where`, `wearing`, `doing`, `expression`? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling.* The survey added `together`, `where` and `text`. It confirmed `camera` absorbing shot size and angle, `light` absorbing mood and colour, and the compiler (not the model) writing the keep list on edits. `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
+2. **The scene's fields** (§4, after the survey in §13): `setting`, `light`, `camera`, `style`, `together`, `text`, and per person `who`, `where`, `wearing`, `doing`, `expression`? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling.* The survey added `together`, `where` and `text`. It confirmed `camera` absorbing shot size and angle, `light` absorbing mood and colour, and the compiler (not the model) writing the keep list on edits. Rendered words go in `text`, never in `setting`. **Ruled 2026-10-07: this set.** `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
 3. **Close #593 unmerged** (§5.4)? **Ruled 2026-10-07: closed.**
 4. **The thresholds in §9.** **Ruled 2026-10-07: accepted as proposed.**
 5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
@@ -313,11 +297,11 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | B3, N1: a no-record picture is not an empty room, and faces cannot tell | §5.1 and §5.2: the call says a photo's role; a no-record `picture` is always the current picture |
 | N2: no people is not the same as people unknown | §5.1: unknown people are recorded as unknown; a restage of them is drawn as an edit |
 | N3: an empty or restated extraction is "try again" | §5.3 step 5: drawn as a redraw |
-| R1: consent; a real face in sexual pictures | §4.1: never in a nude or sexual picture, held in code (prose check, compile, output classifier), not a setting; the owner confirms each person's consent once on the card |
-| R2: labels colliding with library names | §4.1: refused at the door; the prose check covers labels |
+| R1: consent; a real face in sexual pictures | §4.1: real people come in only through the library, where approval confirms consent; an entry marked `real` is never in a nude or sexual picture, held in code (prose check, compile, output classifier) |
+| R2: labels colliding with library names | §4.1: moot: a real person's name is a library name |
 | R3: small faces | §4.1: a minimum face size, proposed 96 px, set by G4b's small-face arm |
-| R4: group photos | §4.1: more than three faces, the owner picks a numbered box |
-| R5: per chat, and deletion | §4.1: per chat until promoted; forgetting deletes the crop |
+| R4: group photos | §4.1: the owner picks a numbered face on the library page |
+| R5: per chat, and deletion | §4.1: moot: a real person is a library entry, removed with its portraits |
 | T1: `together` with one person drawn | §4: folded into that person's `doing`; an off-camera control in G1 |
 | T2: a stale relation | §4: a change to the acts clears `together` unless restated |
 | T3: G1 and relations in either field | §9, G1 |
