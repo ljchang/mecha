@@ -79,36 +79,73 @@ A picture is a scene.
 
 ```
 Scene {
-  setting: Words("a narrow kitchen with a window over the sink") | Photo(path, hash)
-  light:   "late afternoon sun, warm and hazy"        // optional prose: light and mood
-  camera:  "from low by the door, looking up"         // optional prose: viewpoint and framing
-  style:   library style name                         // optional
-  people:  [ Person { who, wearing, doing, expression } ]   // in left-to-right order
+  setting:  Words("a narrow kitchen with a window over the sink") | Photo(path, hash)
+  light:    "late afternoon sun, warm and hazy"       // optional prose: light, mood, time of day, colour tone
+  camera:   "a wide shot from low by the door"        // optional prose: shot size, angle, framing, lens
+  style:    library style name                        // optional
+  people:   [ Person { who, where, wearing, doing, expression } ]
+  together: "Maya and John hold hands, looking at each other"   // optional prose: what people do with each other
+  text:     [ { words, where, look } ]                // optional: words to render exactly, in quotes
 }
+Person.where = left | centre | right | background     // optional; defaults to the list's left-to-right order
 Person.who = a library character's name | "self" | { from: picture } | a description of someone not in the library
 ```
 
-- **`setting` is everything in the picture except its people.** For a picture with people it is the place and its objects, with no looks or poses. For a picture without people (an object, a diagram, a logo) it is the whole subject, including any text to render, in quotes. It is either words, or a photo used as the room.
+- **`setting` is everything in the picture except its people and its words.** For a picture with people it is the place and its objects, with no looks or poses. For a picture without people (an object, a diagram, a logo) it is the whole subject. Era and period go here too. It is either words, or a photo used as the room.
+- **`together`** is what people do with each other, stated once (§13): a shared act, gaze between people, who holds whom. Each person's `doing` stays their own pose. Without it a shared act is written twice, once per person, and can contradict itself. Relations between people are the measured weak point of image models (T2I-CompBench, LAION-SG).
+- **`where`** places a person: left, centre, right or background. It also anchors which portrait or crop goes to which body ("the woman from <image2>, on the left"). Without it the list's order is left to right, as the compiler does today (E1–E12).
+- **`text`** is words to render, quoted exactly, never paraphrased, with optional placement and look ("on the shop sign, in gold serif"). Qwen-Image's text rendering is its strongest skill, and every vendor's guide treats text apart. Rare in chat (1 in 264), but a field makes "the owner's words, unaltered" checkable.
 - **`who`** is resolved against the library, in this order:
   - an approved character's name or alias brings its portrait (new picture) or head crop (edit), and its description verbatim;
   - `self`, or the persona's own name, display name or folder name (as `cast_self` resolves it today), is the persona's linked approved character;
   - `{ from: picture, which? }` is a real person from a photo the owner attached: a friend, the owner, anyone not in the library. It is use case 4, and the owner wants it first-class (2026-10-07). See §4.1;
   - anything else is drawn from its own words, as an extra is today. That needs no separate field, and `extras` was never used.
-- **Library names in the prose fields are checked** (review B2): `setting`, `light`, `camera`, a descriptive `who`, `wearing`, `doing`, `expression` and `retouch`. A name in a descriptive `who` resolves to that character. A name in any other field is refused plainly ("John is named in `doing`: add him to people"), because drawing him from words makes a stranger (E1).
-- **`wearing`, `doing` and `expression` are prose** (§2.8).
+- **Library names in the prose fields are checked** (review B2): `setting`, `light`, `camera`, `together`, a descriptive `who`, `wearing`, `doing`, `expression` and `retouch`. In `together`, a name is expected: it must be someone in `people`. A name in a descriptive `who` resolves to that character. A name in any other field is refused plainly ("John is named in `doing`: add him to people"), because drawing him from words makes a stranger (E1).
+- **`wearing`, `doing` and `expression` are prose** (§2.8). `wearing` and `doing` are required for anyone the call introduces. `expression` is optional and separate from `doing`: an expression changes the face and is retouched, while a pose redraws the scene (§5.2).
+- **The scene is recorded** for every picture drawn: per chat, outside the jail, in a store the harness writes (§6). That covers the assistant chat as well as personas, so there is one path, not a scene path and a no-scene path. Each field carries its origin (clean or untrusted), as `scene.rs` does now.
 
 ### 4.1 Real people from a photo
 
-The owner can add a real person to a scene from a photo they attach.
+The owner can add a real person to a scene from a photo they attach: a friend, the owner, anyone who is not a drawn character (owner, 2026-10-07).
 
-- **Picking the face.** RetinaFace finds the faces in the photo. With one face, that is the person. With several, `which` picks one by position ("left", "second from left") or by size ("the largest"). A photo with no detectable face, or an ambiguous `which`, is refused plainly, naming how many faces were found. A back view cannot be a source of identity.
-- **Identity is the head crop**, at 1.12× the face box, as a library crop is (`face.rs`). There is no library description, so their looks come from the call's `wearing`, plus a short description the call may give ("short grey hair, glasses"). They cost one crop in the budget, like a library character on an edit.
-- **The crop is kept with the scene.** The photo lives in the chat's jail, which a run can write and retention collects. So the crop is copied into the scene store (harness-written, content-addressed) when the person first joins, and every later restage, edit or redraw uses that copy. A person stays the same person after the photo is gone.
-- **Who they are, for later calls.** The record names them by the call's label (`who: { from, which, label: "Sam" }`), so a later change can say `who: "Sam"`. The label is not a library name, and the name check (§4) does not treat it as one.
-- **Making them a character.** A real person used more than once can be proposed to the library from the same crop through `image_library_propose`, as a candidate the owner approves. Then they get a description and a portrait like any character. Nothing is added to the library without the owner's approval.
-- **Privacy.** An attached photo already arms `private_data` (images are captured, not composed), and the crop inherits that. The crop never leaves the machine and is deleted with the chat's scene records (`persona memory forget --chat`). Incognito keeps it in the room.
-- **Measured before it ships** (§9, G4b). Identity from a single attached photo has not been tested the way library crops were (M1–M4). The gate is a render set: the same real person (a consenting volunteer's photo, or the owner's own) added to a new picture, placed on a photo, and restaged, ≥ 3 seeds each, judged by the owner on face-sized sheets. `wearing` and `doing` are required for anyone the call introduces. `expression` is optional and separate from `doing`: an expression changes the face and is retouched, while a pose redraws the scene (§5.2).
-- **The scene is recorded** for every picture drawn: per chat, outside the jail, in a store the harness writes (§6). That covers the assistant chat as well as personas, so there is one path, not a scene path and a no-scene path. Each field carries its origin (clean or untrusted), as `scene.rs` does now.
+So far this has been used once: 41 attached images held 22 other real people's faces, 5 picture calls referenced them, and 1 added a person to another picture.
+
+**Consent comes first, and this design holds two lines in code** (review R1). These persona chats are often sexual, and the image model will draw whatever it is asked. A real person's face in a picture they never agreed to, and above all in a nude or sexual one, is a harm to someone who is not in the conversation. So:
+
+1. **A real person's face is never drawn in a nude or sexual picture.** This is not a setting, not a ruling a model can change, and not something an approval can lift. A person whose crop came from a photo is marked `real` in the scene store, and so is a library entry made from one. Every render with a `real` person is checked three ways:
+   - **Before:** the prose fields (`wearing`, `doing`, `expression`, `setting`, `light`, `retouch`) are checked for nudity or sexual content, and the call is refused plainly if any carries it.
+   - **In the compile:** the compiler states each real person as clothed, using their `wearing` (which is required).
+   - **After:** the rendered picture goes through a local image-safety classifier. A nude or sexual result containing a real person's face is discarded unseen, and the result says only that it could not be drawn.
+
+   The output check is the one that holds when the prompt was clean and the image model went further anyway. A local classifier is owed: it is not in the tree yet (§10).
+2. **The owner confirms consent once per person, on the card.** The first time a face from a photo is used, the card asks the owner to confirm that this person has agreed to be in pictures. Until the owner answers, nothing is drawn. The answer is recorded with the crop, set only by the owner's button, never by a model or a tool call.
+
+**Picking the face.**
+- RetinaFace finds the faces in the photo. With one face, that is the person.
+- With two or three, `which` picks one by position ("left", "second from left") or by size ("the largest").
+- With more than three, the card shows the photo with numbered boxes and the owner picks one; `which` is not used (review R4).
+- A photo with no detectable face, an ambiguous `which`, or a chosen face under a minimum size is refused plainly, naming how many faces were found. The minimum is proposed at 96 px, to be measured (review R3; 11 of the corpus's 22 faces were 73 px or less). A back view cannot be a source of identity.
+
+**Identity is the head crop,** at 1.12× the face box, as a library crop is (`face.rs`). There is no library description, so their looks come from the call's `wearing` plus a short description the call may give ("short grey hair, glasses"). They cost one crop in the budget, like a library character on an edit.
+
+**The crop is kept with the scene.** The photo lives in the chat's jail, which a run can write and retention collects. So the crop is copied into the chat's scene store when the person first joins, and every later restage, edit or redraw uses that copy. A person stays the same person after the photo is gone.
+
+**A label for later calls,** such as `label: "Sam"`, so a later change can say `who: "Sam"`.
+- A label may not equal a library character's name or alias, or the persona's names. Such a label is refused at the door; the library already holds a "Sam" (review R2).
+- The prose-field check (§4) covers labels as it covers library names: "holding hands with Sam" in `doing` asks for Sam to be added to `people`, never draws a stranger.
+
+**Per chat until promoted** (review R5).
+- A real person's crop and label belong to the chat that added them. They are not carried to other chats or into the persona's latest scene.
+- To use someone across chats, the owner promotes them to the library through `image_library_propose`, as a candidate the owner approves. They keep their `real` mark and the consent answer.
+- Forgetting a chat deletes its real-person crops, including the content-addressed blob when no other record names it.
+- Incognito keeps them in the room.
+
+**Privacy.** An attached photo already arms `private_data`, and the crop inherits that. It never leaves the machine.
+
+**Measured before it ships** (§9, G4b). Identity from a single attached photo has not been tested the way library crops were (M1–M4). The render set is mecha-a3's G4b design:
+- the owner's own photo, chosen by the owner, with the face at least 150 px;
+- five arms, 3 seeds each, 15 renders, all neutral and clothed: a new picture; with a library character; placed on a photo; restaged; and a 64 px small-face arm, which sets the minimum size;
+- judged by the owner on face-sized sheets.
 
 ## 5. The one operation: draw a scene, or change one
 
@@ -250,13 +287,14 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
 4. **Regenerate** on the same record (§5.4).
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
+6. **Real people from photos** (§4.1), after G4b passes. This needs the consent confirmation on the card, the `real` mark, and the three safety checks. The output check needs a local image-safety classifier, which is not in the tree. Choosing and measuring one is the first task of this step. No real-person crop is drawn before all of it is in.
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 11. Questions for the owner
 
 1. **Record the scene for the assistant chat too** (§6)? **Ruled 2026-10-07: yes, one path.**
-2. **Prose fields: `setting`, `light`, `camera`, and per person `wearing`, `doing`, `expression`** (§4)? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling; see §13 once written.* `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
+2. **The scene's fields** (§4, after the survey in §13): `setting`, `light`, `camera`, `style`, `together`, `text`, and per person `who`, `where`, `wearing`, `doing`, `expression`? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling.* The survey added `together`, `where` and `text`. It confirmed `camera` absorbing shot size and angle, `light` absorbing mood and colour, and the compiler (not the model) writing the keep list on edits. `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
 3. **Close #593 unmerged** (§5.4)? **Ruled 2026-10-07: closed.**
 4. **The thresholds in §9.** **Ruled 2026-10-07: accepted as proposed.**
 5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
@@ -264,7 +302,7 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 12. Review and how each point is met
 
-mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions in round 1, and 1 blocking finding and 2 shoulds in round 2. Each is met above:
+mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions in round 1, 1 blocking finding and 2 shoulds in round 2, and 2 blocking findings and 3 shoulds in round 3 (§4.1). Each is met above:
 
 | Point | Met in |
 |---|---|
@@ -273,6 +311,11 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | B3, N1: a no-record picture is not an empty room, and faces cannot tell | §5.1 and §5.2: the call says a photo's role; a no-record `picture` is always the current picture |
 | N2: no people is not the same as people unknown | §5.1: unknown people are recorded as unknown; a restage of them is drawn as an edit |
 | N3: an empty or restated extraction is "try again" | §5.3 step 5: drawn as a redraw |
+| R1: consent; a real face in sexual pictures | §4.1: never in a nude or sexual picture, held in code (prose check, compile, output classifier), not a setting; the owner confirms each person's consent once on the card |
+| R2: labels colliding with library names | §4.1: refused at the door; the prose check covers labels |
+| R3: small faces | §4.1: a minimum face size, proposed 96 px, set by G4b's small-face arm |
+| R4: group photos | §4.1: more than three faces, the owner picks a numbered box |
+| R5: per chat, and deletion | §4.1: per chat until promoted; forgetting deletes the crop |
 | B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
 | S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
@@ -288,3 +331,30 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | Q3: `light` | §4 and §11.2 |
 | Q4: the G5 metric | §9 |
 | Q5: a typed-turn arm | §9, G1b |
+
+## 13. How other image tools structure their inputs (survey, 2026-10-07)
+
+The owner asked for a survey before ruling on the fields. It covered the official guides of FLUX.2 (whose model is trained on JSON prompts), Google's Gemini image and Veo, OpenAI's image API, Midjourney's parameters, and Qwen-Image's own prompt rewriter, README and edit model cards. It also covered the research on relations between people (InteractDiffusion, LAION-SG, T2I-CompBench) and ComfyUI's regional prompting.
+
+- **What every guide has, and this design already has:** a subject and what they do, a setting, light and mood, the camera, a style, and the aspect. Qwen-Image's own example for people runs in nearly this design's order: who, wearing, pose, setting, light.
+- **Added from the survey:**
+  - **`together`, for relations.** Research represents interaction as a subject–action–object triple, and the benchmarks single out relations as a weak point. Products put relations in prose. One prose line naming the people is the portable form.
+  - **`where`, for placement.** FLUX.2 has a position per subject, and Qwen's rewriter adds a position when one is missing. It fights attributes bleeding between people, and anchors each reference to a body.
+  - **`text`, its own field.** Every vendor treats rendered text apart: quoted, exact, with placement and look.
+- **Consolidated:**
+  - **`camera`** carries shot size, angle, framing and lens. Veo's "composition" and Gemini's "shot type" are both framing, so there is no separate composition field.
+  - **`light`** carries mood, time of day and colour tone, which is Veo's "ambiance". FLUX.2's hex colour palette is for brand work and is left out.
+- **Edits: change, preserve, and the role of each reference.** Every vendor's edit guidance converges on three parts:
+  - what changes ("change only X");
+  - what stays, restated each time;
+  - which reference plays which role.
+
+  Here the model sends only the change. The compiler derives the keep list from the typed fields the change did not touch (identity, clothes, setting, light, framing), which is the structural form of "repeat the preserve list". It names each reference's role (canvas, crop of whom), as it does now.
+- **Left out of the model's schema:** negative prompts (FLUX.2 doesn't support them; Qwen-Edit recommends a blank), seed, steps, guidance and quality knobs, exact lens numbers (OpenAI calls them "cues, not a guarantee"), per-person boxes (they need trained adapters Qwen-Image does not ship), and fine aspect ratios.
+- **Noted for later, not in this build:**
+  - outpainting, re-framing a picture to another shape, which Qwen has a template for and would be a separate operation;
+  - pose-from-photo and garment-from-photo reference roles (Qwen-Image-Edit-2509);
+  - Qwen-Edit works best with 1–3 input images, which the edit budget (a canvas plus two crops) already matches.
+- **Not measured anywhere found:** whether JSON-shaped prompts help Qwen-Image. Qwen's own tooling compiles everything to prose of 200 words or fewer. That supports this design's typed fields compiled to prose by the tool.
+
+Sources: docs.bfl.ai (FLUX.2 prompting, JSON prompting); developers.googleblog.com and ai.google.dev (Gemini image); developers.openai.com (image prompting) and the OpenAI cookbook (input fidelity); docs.midjourney.com (parameters); github.com/QwenLM/Qwen-Image (`prompt_utils.py`, README); huggingface.co/Qwen/Qwen-Image-Edit-2509; arXiv 2312.05849 (InteractDiffusion), 2412.08580 (LAION-SG), 2307.06350 (T2I-CompBench).
