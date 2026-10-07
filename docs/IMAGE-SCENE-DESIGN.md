@@ -244,7 +244,9 @@ This is ruling R9 (owner, 2026-10-07).
   §5.5): the owner pointed at it, by a typed reference in the turn being answered. It also goes
   through `ToolCtx::resolve` before any crop is read. The model can propose them for the library
   through the existing candidate path.
-- The persona's own character is added by default, as `cast_self` does today for new pictures.
+- The persona's own character is added when something names her: the picture's record, or her
+  name in the edit's words, which `cast_self` resolves as it does for new pictures. An owner photo
+  with no record and no mention of her names nobody (§6, case 12).
 
 **Resolution and slots.** One call has one reference size.
 
@@ -262,7 +264,8 @@ This is ruling R9 (owner, 2026-10-07).
   they always did, and the budget only governs what the harness adds. **In short, what is
   refused: people the call names whose crops would not fit. What is only slow: four pictures the
   model passed itself.** People carried over from a picture's record are trimmed to the budget,
-  never refused, and `identity` says who went without a crop. **A call whose crops would exceed it is refused
+  never refused. `identity` and the result line the model reads both say who went without a crop
+  (as step 1 builds it). **A call whose crops would exceed it is refused
   before the GPU and says why, naming the ways out: fewer people, fewer pictures, or the place in
   words.** The model cannot reach those by sending the same call again. **Nothing
   falls back to another shape silently.** Drawing the scene without the place's picture is a different call, one the
@@ -367,8 +370,11 @@ picture.
   that key, and a reused id would let it take a redraw for the original.
 - **A redraw passes the same gates as any tool call.** The interlock, the `pre_tool` hooks and
   the approver live in the agent loop's dispatch, not in the `Registry`, which only resolves
-  tools. So a redraw goes through that dispatch path as an `image_generate` call with no model
-  turn before it; calling the tool directly would skip all three. The interlock is moot
+  tools. That dispatch is private to `Agent::run_tools`, and it takes its calls from the model's
+  `tool_use` blocks, so a button press with no model turn cannot reach it. **The build factors the
+  gate sequence (interlock, then `pre_tool`, then the approver) out of `run_tools` into one
+  function that `run_tools` and the redraw both call.** It is not copied (two copies drift), and
+  no assistant turn is forged to carry the call. Calling the tool directly would skip all three. The interlock is moot
   (`Capabilities::default()`), and the library re-check below is in addition to those gates, not
   instead of them.
 - **The new version shows on the same card** (‹ 1/2 ›), and the version showing is the current
@@ -384,8 +390,11 @@ picture.
     the references from the manifest's `cast` block: the name, the entry version and the
     portrait. Portraits are content-addressed, so a redraw at the recorded version finds the same
     portrait while the blob is kept.
-  - An edit records workspace-relative paths. Once `work.rs` retention has collected the chat's
-    workspace, there is nothing to redraw from.
+  - An edit records workspace-relative paths, in a file a run can write (§5.1). **A redraw
+    re-validates every recorded path before reading it**, as every manifest reader in
+    `imagegen.rs` already does (`original_of`): a plain path of safe characters that resolves
+    through `ToolCtx::resolve` in this chat's jail, or the redraw is refused. Once `work.rs`
+    retention has collected the chat's workspace, there is nothing to redraw from.
   - Either way, the button says so and does not draw something else in its place.
 
 ## 6. Use cases
