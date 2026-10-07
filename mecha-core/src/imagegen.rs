@@ -3200,14 +3200,33 @@ impl ImageGenerate {
                 )?;
             }
         }
-        let base = match &ctx.scene {
-            Some(slot) => read_references(ctx, std::slice::from_ref(&picture))
+        let canvas = match &ctx.scene {
+            Some(_) => read_references(ctx, std::slice::from_ref(&picture))
                 .await
                 .ok()
-                .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0).bytes))
-                .and_then(|b| slot.lookup(&b)),
+                .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0).bytes)),
             None => None,
         };
+        let base = match (&ctx.scene, &canvas) {
+            (Some(slot), Some(b)) => slot.lookup(b),
+            _ => None,
+        };
+        // The picture's shape, so a restage drawn new from words keeps it
+        // rather than falling back to a square (review of #591, pass 6).
+        let shape = canvas.as_deref().and_then(|b| {
+            let (w, h) = image::ImageReader::new(std::io::Cursor::new(b))
+                .with_guessed_format()
+                .ok()?
+                .into_dimensions()
+                .ok()?;
+            Some(if w * 5 > h * 6 {
+                "landscape"
+            } else if h * 5 > w * 6 {
+                "portrait"
+            } else {
+                "square"
+            })
+        });
         // Everyone after the change: the base's people, each change applied,
         // the removed left out, the new added.
         let mut people: Vec<(String, String, String)> = base
@@ -3289,10 +3308,33 @@ impl ImageGenerate {
         } else {
             "retouch"
         };
+        // A restage casts the people the library holds approved; anyone whose
+        // entry has gone is still in the scene, and is drawn from words, as
+        // an edit draws them from the canvas — or one lost entry would refuse
+        // every restage of the scene (review of #591, pass 6).
+        let listed = |n: &str| {
+            lib.as_ref()
+                .and_then(|l| l.get(crate::imagelib::Kind::Character, n))
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+        };
         let cast: Vec<Value> = people
             .iter()
+            .filter(|p| route != "restage" || listed(&p.0))
             .map(|(n, w, d)| json!({"name": n, "wearing": w, "doing": d}))
             .collect();
+        let described: String = people
+            .iter()
+            .filter(|p| route == "restage" && !listed(&p.0))
+            .map(|(n, w, d)| {
+                let m = crate::imagelib::CastMember {
+                    name: n.clone(),
+                    wearing: w.clone(),
+                    doing: d.clone(),
+                };
+                format!("{}.", person_sentence(&capitalized(n), "", &m).trim())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         let given_change = input
             .get("edit")
             .and_then(|e| e.get("change"))
@@ -3303,7 +3345,7 @@ impl ImageGenerate {
         // A restage redraws everyone with their faces, and one picture holds
         // at most `MAX_CAST` of them; a scene can hold more. Said in the
         // scene's terms, since the model sent no `cast` (review of #591).
-        if route == "restage" && people.len() > crate::imagelib::MAX_CAST {
+        if route == "restage" && cast.len() > crate::imagelib::MAX_CAST {
             let names: Vec<String> = people.iter().map(|p| capitalized(&p.0)).collect();
             return Err(format!(
                 "This scene holds {} people ({}), and a restage redraws at most {} with their \
@@ -3396,10 +3438,14 @@ impl ImageGenerate {
                 (Some(path), _) => {
                     on_place = true;
                     obj.insert("reference_images".into(), json!([path]));
+                    let mut change = given_change
+                        .clone()
+                        .unwrap_or_else(|| "Place the people described below in this room.".into());
+                    if !described.is_empty() {
+                        change = format!("{} {described}", change.trim());
+                    }
                     let mut edit = json!({
-                        "change": given_change.clone().unwrap_or_else(|| {
-                            "Place the people described below in this room.".into()
-                        }),
+                        "change": change,
                         "keep": "the room and its furniture",
                     });
                     if let Some(c) = &camera {
@@ -3412,6 +3458,11 @@ impl ImageGenerate {
                     on_place = true;
                     obj.remove("reference_images");
                     obj.remove("edit");
+                    if input.get("size").is_none_or(Value::is_null) {
+                        if let Some(shape) = shape {
+                            obj.insert("size".into(), json!(shape));
+                        }
+                    }
                     let mut prompt = words.trim().trim_end_matches('.').to_string();
                     if let Some(c) = &camera {
                         prompt.push_str(&format!(". {}", c.trim().trim_end_matches('.')));
@@ -3420,6 +3471,9 @@ impl ImageGenerate {
                     // branches keep them.
                     if let Some(g) = &given_change {
                         prompt.push_str(&format!(". {}", g.trim().trim_end_matches('.')));
+                    }
+                    if !described.is_empty() {
+                        prompt.push_str(&format!(". {}", described.trim_end_matches('.')));
                     }
                     obj.insert("prompt".into(), json!(format!("{prompt}.")));
                     obj.insert("cast".into(), json!(cast));
@@ -3430,15 +3484,23 @@ impl ImageGenerate {
                     // The current picture still shows whoever was removed, so
                     // the change says so; the other two branches draw on a
                     // canvas without them (review of #591, pass 5).
-                    let mut change = given_change
-                        .clone()
-                        .unwrap_or_else(|| "Place the people as described below.".into());
+                    // With nobody to place, nothing is "described below".
+                    let mut change = given_change.clone().unwrap_or_else(|| {
+                        if cast.is_empty() {
+                            "Keep everything in the picture as it is.".into()
+                        } else {
+                            "Place the people as described below.".into()
+                        }
+                    });
                     if !gone.is_empty() {
                         change = format!(
                             "{}. Take {} out of the picture.",
                             change.trim_end_matches('.'),
                             gone.join(" and ")
                         );
+                    }
+                    if !described.is_empty() {
+                        change = format!("{} {described}", change.trim());
                     }
                     let mut edit = json!({"change": change});
                     if let Some(c) = &camera {
@@ -11375,6 +11437,64 @@ mod tests {
         let now = cx.scene.as_ref().unwrap().current().unwrap();
         let names: Vec<_> = now.people.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["maya"], "{now:?}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A restage drawn new from the place's words keeps the picture's shape,
+    /// and draws from words anyone whose library entry has gone, rather than
+    /// refusing the whole scene over them (review of #591, pass 6).
+    #[tokio::test]
+    async fn a_words_restage_keeps_the_shape_and_everyone_in_the_scene() {
+        let wide = |c: u8| {
+            let img = image::RgbImage::from_pixel(96, 48, image::Rgb([c, 90, 40]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            png.into_inner()
+        };
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 2],
+            views: vec![wide(10), wide(200)],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let drawn = maya
+            .call(
+                json!({"prompt": "a long pier at noon", "size": "landscape", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "standing"},
+                    {"name": "john", "wearing": "a cap", "doing": "fishing"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        crate::imagelib::remove(&lib, crate::imagelib::Kind::Character, "john").unwrap();
+        let out = maya
+            .call(
+                json!({"scene": {"people": [{"name": "self", "doing": "sitting on the rail"}]},
+                       "reference_images": [picture_of(&drawn.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(m["size"], json!([1344, 768]), "the shape is kept: {m}");
+        let sent = last_prompt(&seen);
+        assert!(sent.contains("John, wearing a cap, fishing"), "{sent}");
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        assert!(now.people.iter().any(|p| p.name == "john"), "{now:?}");
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
