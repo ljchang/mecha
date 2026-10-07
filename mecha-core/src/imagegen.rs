@@ -4687,6 +4687,10 @@ impl Tool for ImageGenerate {
                             .filter(|p| !r.changed.contains(&p.0))
                             .cloned()
                             .collect(),
+                        // `people` is everyone after the change, so the base's
+                        // other people are not kept: a `remove` is their
+                        // absence from that list.
+                        nobody: true,
                         camera: r.camera.clone(),
                         style: None,
                         picture: crate::scene::hash(&bytes),
@@ -10556,6 +10560,55 @@ mod tests {
         let now = cx.scene.as_ref().unwrap().current().unwrap();
         assert!(now.people.is_empty(), "{now:?}");
         assert!(now.place.is_some(), "the place stays: {now:?}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A removal restages without that person, and the scene forgets them:
+    /// an edit keeps the people it did not name, but a scene change names
+    /// everyone who is left.
+    #[tokio::test]
+    async fn a_removed_person_leaves_the_scene() {
+        let (url, seen) = distinct(2).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let two = maya
+            .call(
+                json!({"prompt": "a harbour wall", "cast": [
+                    {"name": "self", "wearing": "a raincoat", "doing": "leaning"},
+                    {"name": "john", "wearing": "a cap", "doing": "fishing"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!two.is_error, "{}", two.content);
+        let out = maya
+            .call(
+                json!({"scene": {"people": [{"name": "john", "remove": true}]},
+                       "reference_images": [picture_of(&two.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(manifest_of(&dir, &out.content)["scene_route"], "restage");
+        assert!(
+            !last_prompt(&seen).contains("John"),
+            "{}",
+            last_prompt(&seen)
+        );
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        let names: Vec<_> = now.people.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["maya"], "{now:?}");
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
