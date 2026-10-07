@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     included.
   - **What was replaced:** the face anchor, which only fired on chains that
     traced back to a library scene (`IMAGE-SCENE-DESIGN.md`).
+  - **Clothing:** the clothes and pose a person is declared with now go in
+    even when no face reference can be sent. A person named only in an
+    edit's words, whom the picture doesn't record, is asked for in `cast`
+    with what they wear and do, instead of being drawn in invented clothes.
 
 ### Security
 
