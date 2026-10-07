@@ -137,6 +137,12 @@ pub struct Change {
     /// Otherwise their origin is untrusted, because the record came from a
     /// file a run could write.
     pub carried: Vec<(String, String, String)>,
+    /// The call said `"cast": []`: the people have left the picture, so an
+    /// edit keeps none of the scene's. Otherwise an edit keeps everyone the
+    /// scene had that it did not name, as it keeps the place and the camera
+    /// (review of #589, pass 4): a person whose library entry is gone is
+    /// still in the picture.
+    pub nobody: bool,
     pub camera: Option<String>,
     pub style: Option<String>,
     /// The landed picture's content hash.
@@ -207,6 +213,11 @@ impl Scene {
                     doing,
                     origin: Origin::Untrusted,
                 }),
+            }
+        }
+        if !change.nobody {
+            for kept in prev.into_iter().flat_map(|s| s.people.iter()) {
+                push(kept.clone());
             }
         }
         Scene {

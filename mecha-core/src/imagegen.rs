@@ -3950,9 +3950,17 @@ impl Tool for ImageGenerate {
                     .filter(|e| e.status == crate::imagelib::Status::Approved);
                 people.push(json!({"name": name, "from": "the picture's record", "crop": false,
                     "skipped": format!("past {} people in one picture", crate::imagelib::MAX_CAST)}));
+                // Another chat's words stay in the harness store, past the
+                // budget as within it (review of #589, pass 4).
+                let (wearing, doing) =
+                    if from_index && inherited.contains(&name) && !declared.contains(&name) {
+                        ("", "")
+                    } else {
+                        (m.wearing.trim(), m.doing.trim())
+                    };
                 edit_cast.push(json!({"name": name, "version": entry.map(|e| e.version),
                     "portrait": entry.and_then(|e| e.portrait.clone()),
-                    "wearing": m.wearing.trim(), "doing": m.doing.trim()}));
+                    "wearing": wearing, "doing": doing}));
                 trimmed.push(capitalized(&name));
             }
             identity = json!({"people": people, "from": people_from, "skipped": skipped,
@@ -4276,6 +4284,7 @@ impl Tool for ImageGenerate {
                         }),
                         declared: named,
                         carried,
+                        nobody: waived,
                         camera: EditAsk::parse(input).ok().flatten().and_then(|e| e.camera),
                         style: None,
                         picture: crate::scene::hash(&bytes),
@@ -9769,15 +9778,21 @@ mod tests {
                 .count()
         };
         let n = entries();
+        // An edit the server fails: it reaches the job (the fixture's error
+        // comes back), and the scene is as it was (review of #589, pass 4).
         let out = maya
             .call(
-                json!({"scene": {"camera": "From above."},
+                json!({"edit": {"change": "Make it dusk.", "keep": "everything else"},
                        "reference_images": [picture_of(&drawn.content)]}),
                 &cx,
             )
             .await
             .unwrap();
-        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.is_error && out.content.contains("boom"),
+            "{}",
+            out.content
+        );
         assert_eq!(cx.scene.as_ref().unwrap().current().unwrap(), before);
         assert_eq!(entries(), n, "no index entry for a picture never drawn");
         // A store that is a file, not a folder: nothing can be written there.
@@ -9854,6 +9869,141 @@ mod tests {
         std::fs::remove_dir_all(second).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A fake server whose every render is a different picture, so each
+    /// lands under its own hash in the scene index.
+    async fn distinct(n: usize) -> (String, Arc<Mutex<Vec<String>>>) {
+        fake_with(Fake {
+            history: vec![done(); n],
+            views: (0..n)
+                .map(|i| {
+                    picture(
+                        8,
+                        [(40 + 50 * i % 200) as u8, 90, (200 - 30 * i % 200) as u8],
+                    )
+                })
+                .collect(),
+            ..Fake::default()
+        })
+        .await
+    }
+
+    /// Past `MAX_CAST`, a person carried from another chat's scene is still
+    /// recorded by name only: the budget trim is not a way around the rule
+    /// (review of #589, pass 4).
+    #[tokio::test]
+    async fn a_person_past_the_budget_from_another_chat_is_recorded_by_name_only() {
+        let (url, _) = distinct(3).await;
+        let first = tempdir();
+        let second = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john", "wren", "ivo", "tamsin"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let worn =
+            |n: &str| json!({"name": n, "wearing": format!("worn-by-{n}"), "doing": "waving"});
+        let c1 = scene_ctx(&first, &store, "c1");
+        let four = maya
+            .call(
+                json!({"prompt": "a lighthouse picnic",
+                       "cast": [worn("self"), worn("john"), worn("wren"), worn("ivo")]}),
+                &c1,
+            )
+            .await
+            .unwrap();
+        assert!(!four.is_error, "{}", four.content);
+        let five = maya
+            .call(
+                json!({"edit": {"change": "Add Tamsin at the edge."},
+                       "reference_images": [picture_of(&four.content)],
+                       "cast": [worn("tamsin")]}),
+                &c1,
+            )
+            .await
+            .unwrap();
+        assert!(!five.is_error, "{}", five.content);
+        let bytes = std::fs::read(first.join(picture_of(&five.content))).unwrap();
+        std::fs::create_dir_all(second.join("inbox")).unwrap();
+        std::fs::write(second.join("inbox/carried.png"), &bytes).unwrap();
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Make it dusk."},
+                       "reference_images": ["inbox/carried.png"]}),
+                &scene_ctx(&second, &store, "c2"),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let m = manifest_of(&second, &out.content);
+        assert_eq!(m["cast"].as_array().map(Vec::len), Some(5), "{m}");
+        assert!(!m.to_string().contains("worn-by-"), "{m}");
+        for d in [first, second, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// An edit keeps the scene's people it did not name, as it keeps the
+    /// place: a person whose library entry has gone is still in the picture.
+    /// `"cast": []` says the people have left, and the scene keeps none
+    /// (review of #589, pass 4).
+    #[tokio::test]
+    async fn an_edit_keeps_the_scenes_people_unless_it_says_nobody() {
+        let (url, _) = distinct(3).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let drawn = maya
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "cooking"},
+                    {"name": "john", "wearing": "an apron", "doing": "tasting"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        // John's entry is withdrawn from the library.
+        crate::imagelib::remove(&lib, crate::imagelib::Kind::Character, "john").unwrap();
+        let dusk = maya
+            .call(
+                json!({"edit": {"change": "Make it dusk."},
+                       "reference_images": [picture_of(&drawn.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!dusk.is_error, "{}", dusk.content);
+        let names =
+            |s: &crate::scene::Scene| s.people.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        assert!(names(&now).contains(&"john".to_string()), "{now:?}");
+        let empty = maya
+            .call(
+                json!({"edit": {"change": "Empty the room."},
+                       "reference_images": [picture_of(&dusk.content)], "cast": []}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!empty.is_error, "{}", empty.content);
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        assert!(now.people.is_empty(), "{now:?}");
+        assert!(now.place.is_some(), "the place stays: {now:?}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// A call's `cast` adds to the people a picture records and never erases

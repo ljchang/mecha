@@ -837,7 +837,9 @@ conversation, so the capabilities do not change. Three rules:
   step 2). A render that lands advances it, beside `write_manifest` in the
   job, so a cancelled or failed render never does.
   - **What advances:** a new picture defines the scene afresh; an edit
-    changes what it declared and keeps the rest.
+    changes what it declared and keeps the rest, people included: someone
+    whose library entry has gone is still in the picture. Only `"cast": []`
+    empties it, the reset step 1 gave the manifest's record.
   - **Where it lives:** three files, all harness-written and outside the
     jail. The chat's copy sits beside its transcript (`<id>.scene.json`;
     a chat starts from the persona's latest, R7, and the run's scene note
@@ -856,8 +858,11 @@ conversation, so the capabilities do not change. Three rules:
   - **Who has a slot:** only a persona chat stamps one (`ToolCtx::scene`).
     The assistant's chats, incognito included, keep no scene, so R9 holds
     by construction.
-  - **Forgetting:** `persona memory forget --chat` also removes that chat's
-    entries from the store.
+  - **Forgetting:** `persona memory forget --chat` also removes the records
+    that chat wrote. Each is tagged with the chat that drew it, so an entry
+    another chat wrote by editing this chat's picture stays, and can hold
+    words from this one; forgetting by lineage is owed with the retention
+    sweep.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
