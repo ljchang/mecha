@@ -1,6 +1,6 @@
 # Image scenes — design
 
-**Status:** accepted 2026-10-07: the owner ruled R1–R8 (§9). Nothing here is built
+**Status:** accepted 2026-10-07: the owner ruled R1–R8 (§9); R9 (incognito) is proposed. Nothing here is built
 yet; the build waits on #583 and #577 (§10).
 It amends `IMAGE-COMPILER-DESIGN.md` §3, where `cast` and `reference_images` are exclusive,
 and `PERSONA-CONTEXT-DESIGN.md` §5.5, where edits happen only on the owner's initiative. It
