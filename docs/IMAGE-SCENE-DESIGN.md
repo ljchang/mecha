@@ -179,6 +179,9 @@ A **scene** is a typed record:
 The harness keeps the **current scene per persona**, in the persona store, not in a chat's
 workspace. Every manifest records its scene and the content hash of its picture. A picture
 attached in any chat is matched by its bytes, so a carried-over picture resolves to its scene.
+**Bytes select a record**, so the lookup reads only manifests under the owner's own sessions. The
+front door never does the lookup: an outside sender's bytes must not pull a scene out of the
+persona store.
 
 **An incognito chat writes no scene outside its own folder.** This follows
 `INCOGNITO-DESIGN.md` R3 (no writes outside the chat's own folder) and R6 (images deleted when
@@ -198,8 +201,9 @@ This is ruling R9, proposed and waiting on the owner.
   they cannot leak (§4, M4).
 - The library-name guard runs on every call, edits included.
 - A person from an owner photo who is not in the library is declared as "the person in picture
-  X", which uses their crop from that picture. The model can propose them for the library
-  through the existing candidate path.
+  X", which uses their crop from that picture. Picture X itself is not sent to the generator;
+  only the crop is. The model can propose them for the library through the existing candidate
+  path.
 - The persona's own character is added by default, as `cast_self` does today for new pictures.
 
 **Resolution and slots.** One call has one reference size.
@@ -208,11 +212,14 @@ This is ruling R9, proposed and waiting on the owner.
   as the anchor does today. That is how M1, M2's R and M3's add-a-person were measured. Times:
   canvas plus one crop, 52–54 s; canvas plus two crops, 66 s, against 40 s with none.
 - **With no canvas,** references go at 512², as `cast` does today.
-- **Slots.** The crops the harness adds do not count against the model's `MAX_REFERENCES`, which
-  bounds the pictures the model passes. The call has its own cap. With a canvas, at most two
-  crops, as measured; three full-size references sit just short of the research's four-reference
-  cliff (+120 s), and a third crop is a measurement (§8). A scene with more people than that
-  restages with no canvas, at 512², where four people held in one pass (E3).
+- **One budget for the whole call, computed from decoded sizes**, never from a role the call
+  declares (`IMAGE-COMPILER-RESEARCH.md` §10, item 3). Everything that goes in, model-passed
+  pictures and harness crops alike, is counted at the size it will be encoded at. The measured
+  ceiling is **three references at 1024², canvas included**: canvas plus one crop took 52–54 s;
+  canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
+  A call over budget is refused before the GPU and says why. A restage over budget goes without a
+  canvas, at 512², where four people held in one pass (E3). A third crop beside a canvas is a
+  measurement (§8).
 
 **New pictures keep the whole portrait until §8.1 passes.** R1's crop is measured only on paths
 with a canvas: M1, M2's R, and M3's add-a-person. New pictures still send the whole portrait at
@@ -225,13 +232,20 @@ before.
 | Change | Canvas (slot 1) | Then |
 |---|---|---|
 | Clothing, expression, hair, an object, a painted region | the current picture | crops and descriptions follow it |
-| Pose, camera, adding or removing a person | **the place** | the people are drawn fresh from crops and descriptions |
+| Pose, camera, adding or removing a person | **the place's picture**, when the place is a picture | the people are drawn fresh from crops and descriptions |
+| The same, when the place is words | none | a new picture at 512², the M3 shape (the whole portrait until §8.1 passes) |
 | A new scene | none | the place as material, or words |
 
 The code chooses the canvas from **which scene fields changed**, never from a flag the model sets.
 A restage always starts from the place, never from the last output, so identity is one step from
-the library on every render. A retouch of a retouch is allowed, because each one carries the
-crops.
+the library on every render. Words are the usual place until locations are built (§8.5), so the
+canvas-less row is the common restage today. It is also the shape M3 measured and the owner rated
+good.
+
+A retouch builds on the current picture, and **whether a chain of retouches holds identity is
+unmeasured** (§8). The nearest data point goes the other way: M2's EA, a chain with the crop
+riding along, fell to −0.01. EA moved the layout and a retouch does not, so the result may not
+carry over, but until it is measured a long retouch chain is not assumed safe.
 
 ### 5.4 The model writes scene changes, the compiler writes the prompt
 
@@ -290,6 +304,14 @@ picture.
 - **It can ship before the rest of this design.** Today's manifests already record the compiled
   prompt, the references, the size and the steps, so a redraw with a new seed works now. Identity
   improves when R1 lands.
+- **What a redraw needs, and when it cannot run.**
+  - A new picture records no reference paths (`reference_images` is null). Its redraw rebuilds
+    the references from the manifest's `cast` block: the name, the entry version and the
+    portrait. Portraits are content-addressed, so a redraw at the recorded version finds the same
+    portrait while the blob is kept.
+  - An edit records workspace-relative paths. Once `work.rs` retention has collected the chat's
+    workspace, there is nothing to redraw from.
+  - Either way, the button says so and does not draw something else in its place.
 
 ## 6. Use cases
 
@@ -298,7 +320,7 @@ picture.
 | 1 | New picture of the persona | none | A's crop + description |
 | 2 | The persona in an owner photo | the photo | A (M1) |
 | 3 | With another library character | place or none | both crops + descriptions; touching per M3 |
-| 4 | With someone from an owner photo | place | A + "the person in picture X" |
+| 4 | With someone from an owner photo | place | A + "the person in picture X" (their crop only) |
 | 5 | Clothing, expression or hair | current picture | crops ride along |
 | 6 | Pose | place | restage (M2, R) |
 | 7 | Camera move | place | restage; wording from §5.4 |
@@ -343,7 +365,8 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 4. Seed variance: answered by Regenerate (§5.7, R8), not by drawing two of every picture.
 5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
-6. A third crop beside a canvas (§5.2, slots).
+6. A third crop beside a canvas (§5.2, budget).
+7. A chain of retouches, three or more deep, each carrying the crops (§5.3).
 
 ## 9. Rulings (owner, 2026-10-07)
 
