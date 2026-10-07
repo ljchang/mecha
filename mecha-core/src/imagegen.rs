@@ -2279,6 +2279,10 @@ struct LibraryAsk {
     folded: Vec<String>,
 }
 
+/// What a manifest says in place of a prompt built from another chat's scene.
+const FOREIGN_PROMPT: &str =
+    "(drawn from another chat's scene; its words are kept in the persona's store)";
+
 /// What a `scene` change routed to (IMAGE-SCENE-DESIGN.md §5.3, step 3; the
 /// owner's ruling of 2026-10-07: a scene-change field, only what is sent
 /// counts as changed, and the code picks the canvas).
@@ -4637,6 +4641,14 @@ impl Tool for ImageGenerate {
                 Some((w, h)) => format!("{w}×{h}"),
                 None => "reference-shaped".to_string(),
             };
+            // Whether a `scene` change was built on another chat's scene (a
+            // picture carried in, found by its bytes): that chat's words then
+            // stay out of this chat's manifest (review of #589, kept for step 3).
+            let foreign = routed.as_ref().is_some_and(|r| {
+                r.base.as_ref().is_some_and(|b| {
+                    b.chat.as_deref() != ctx.scene.as_ref().map(|s| s.chat.as_str())
+                })
+            });
             // The scene this render lands as, in a persona chat (§5.1, §5.6):
             // here, after the picture is saved, so a cancelled or failed
             // render never advances it. A new picture defines it afresh; an
@@ -4777,11 +4789,20 @@ impl Tool for ImageGenerate {
                 // (`repair_orphan`).
                 "tool_use_id": ctx.call_id,
                 "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "prompt": scene_prompt,
+                // A scene change built on another chat's scene carries that
+                // chat's place and clothes in its prompt, which this file
+                // (in this chat's jail) must not keep: the words stay in the
+                // harness store they came from (review of #589's rule, kept
+                // for step 3).
+                "prompt": if foreign { json!(FOREIGN_PROMPT) } else { json!(scene_prompt) },
                 // An edit's typed fields as the model gave them, beside the
                 // prompt the tool wrote from them (`EditAsk`).
                 "edit": input.get("edit").filter(|v| !v.is_null()),
-                "compiled_prompt": (req.prompt != scene_prompt).then_some(&req.prompt),
+                "compiled_prompt": if foreign {
+                    None
+                } else {
+                    (req.prompt != scene_prompt).then_some(req.prompt.clone())
+                },
                 "negative_prompt": req.negative,
                 "seed": req.seed,
                 "steps": req.steps,
@@ -4793,6 +4814,8 @@ impl Tool for ImageGenerate {
                 "same_layout_as": near.as_ref().map(|n| &n.original),
                 // An edit records the people it declared, so an edit of this
                 // picture finds them here without being told again.
+                // Built on another chat's scene, by name only, as an index
+                // lookup records them (review of #589).
                 "cast": if is_edit {
                     (!edit_cast.is_empty()).then(|| edit_cast.clone())
                 } else {
@@ -4802,7 +4825,15 @@ impl Tool for ImageGenerate {
                         "name": u.name, "version": u.version, "portrait": u.portrait,
                         "wearing": m.wearing.trim(), "doing": m.doing.trim(),
                     })).collect::<Vec<_>>())
-                },
+                }.map(|cast| if foreign {
+                    cast.into_iter().map(|mut p| {
+                        p["wearing"] = json!("");
+                        p["doing"] = json!("");
+                        p
+                    }).collect()
+                } else {
+                    cast
+                }),
                 "extras": (!drawn_extras.is_empty()).then_some(&drawn_extras),
                 "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                     .map(|u| json!({"name": u.name, "version": u.version})),
@@ -10658,6 +10689,57 @@ mod tests {
             "a blue raincoat"
         );
         std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A scene change built on another chat's scene (a picture carried in,
+    /// found by its bytes) keeps that chat's words out of this chat's
+    /// manifest; the prompt still carries them to the model.
+    #[tokio::test]
+    async fn a_restage_of_another_chats_scene_keeps_its_words_out_of_the_jail() {
+        let (url, seen) = distinct(2).await;
+        let first = tempdir();
+        let second = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let drawn = maya
+            .call(
+                json!({"prompt": "a lighthouse kitchen", "cast": [
+                    {"name": "self", "wearing": "a green jumper", "doing": "reading"}]}),
+                &scene_ctx(&first, &store, "c1"),
+            )
+            .await
+            .unwrap();
+        let bytes = std::fs::read(first.join(picture_of(&drawn.content))).unwrap();
+        std::fs::create_dir_all(second.join("inbox")).unwrap();
+        std::fs::write(second.join("inbox/carried.png"), &bytes).unwrap();
+        let out = maya
+            .call(
+                json!({"scene": {"people": [{"name": "self", "doing": "standing at the window"}]},
+                       "reference_images": ["inbox/carried.png"]}),
+                &scene_ctx(&second, &store, "c2"),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            last_prompt(&seen).contains("a lighthouse kitchen"),
+            "the model is told"
+        );
+        let m = manifest_of(&second, &out.content).to_string();
+        assert!(
+            !m.contains("lighthouse") && !m.contains("green jumper"),
+            "the jail is not: {m}"
+        );
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
     }
