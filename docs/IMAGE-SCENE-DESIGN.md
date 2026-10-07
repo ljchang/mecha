@@ -1,6 +1,6 @@
 # Image scenes — design
 
-**Status:** accepted 2026-10-07: the owner ruled R1–R7 yes as written (§9). Nothing here is built
+**Status:** accepted 2026-10-07: the owner ruled R1–R8 (§9). Nothing here is built
 yet; the build waits on #583 and #577 (§10).
 It amends `IMAGE-COMPILER-DESIGN.md` §3, where `cast` and `reference_images` are exclusive,
 and `PERSONA-CONTEXT-DESIGN.md` §5.5, where edits happen only on the owner's initiative. It
@@ -237,6 +237,27 @@ checked against #583's branch on 2026-10-07; check them again against the tree o
   restart by that key. A manifest that gains a scene keeps the key, or `repair_orphan` changes
   with it.
 
+### 5.7 Regenerate
+
+There is a **Regenerate** button beside Edit on every picture card: in the assistant chat, in the
+persona chat, and on a call. It is the owner's answer to seed variance (§4: up to 0.32 between
+two seeds of one call). A second draw is paid for only when the first misses, never on every
+picture.
+
+- **The harness redraws the picture's recorded scene with a new seed.** No model turn is
+  involved: no loop, no reasoning, one render. A retouch regenerates as itself, which is the same
+  change on the same canvas with a new seed.
+- **Identity follows R1**, because the scene names its people.
+- **The chat history records the redraw as a fact.** Picture X was redrawn as Y; nothing tells
+  the model what to do about it. The persona then knows which picture is current, because the
+  history is what happened (`PERSONA-CONTEXT-DESIGN.md` §5.3).
+- **On a call it runs as a job** (#583).
+- **Proposed, not yet confirmed by the owner:** the new version shows on the same card (‹ 1/2 ›),
+  and the version showing is the one later edits and restages build on.
+- **It can ship before the rest of this design.** Today's manifests already record the compiled
+  prompt, the references, the size and the steps, so a redraw with a new seed works now. Identity
+  improves when R1 lands.
+
 ## 6. Use cases
 
 | # | Use | Canvas | People |
@@ -282,15 +303,14 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 2. Wording that produces a high camera angle.
 3. Why the seated, facing-the-camera placement in P1 failed for crop alone and for words, but
    held with the description.
-4. Seed variance: whether to draw two and let the owner keep one, at twice the time.
+4. Seed variance: answered by Regenerate (§5.7, R8), not by drawing two of every picture.
 5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
 
 ## 9. Rulings (owner, 2026-10-07)
 
-All seven were accepted as written. They are settled, and the build follows them without asking
-again. Drawing two variants for the owner to choose between (§8, item 4) was not ruled on and
-stays open.
+R1–R7 were accepted as written, and R8 is the owner's own proposal. They are settled, and the
+build follows them without asking again.
 
 - **R1.** Identity is declared: every library person enters every render as head crop plus
   description (§5.2).
@@ -302,6 +322,8 @@ stays open.
 - **R6.** The owner's eye on face-sized sheets is the gate for every step. ArcFace is a backstop.
 - **R7.** With two chats rendering for one persona, each chat works on its own copy of the scene,
   and the last render to land updates the persona's latest (§5.6).
+- **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
+  turn (§5.7). This replaces drawing two variants of every picture.
 
 ## 10. Build order
 
