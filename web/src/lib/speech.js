@@ -1,3 +1,5 @@
+import { FENCE } from './mail-markdown.js';
+
 // A reply made fit to be heard (the owner's ask, 2026-10-01: a play button
 // on each reply, the text written as usual and tidied for speech). Pure, so
 // node can test it (web/test/speech.mjs); `reply-player.svelte.js` plays it.
@@ -23,9 +25,51 @@ function fileWords(file) {
     .trim();
 }
 
+// A whole line that only points at a picture the chat already draws —
+// "[Image: images/20261006-….png]", which a persona sometimes types after
+// making one, echoing the tool's own "image: <path>" line. Nothing to read
+// and nothing to say: the picture card is the picture (2026-10-06). Narrow
+// on purpose — a bracketed description in the persona's own words stays.
+// The path is `picture.js`'s `image_generate` form — what the tool writes
+// and the card draws — so no line is hidden that no card stands in for
+// (review of #578).
+const PICTURE_REF = /^[ \t]*\[\s*image\s*:\s*images\/[A-Za-z0-9._-]+\.png\]\s*$/i;
+
+// Which fences a reader honours: the renderer's (`mail-markdown.js`'s
+// `FENCE`, imported rather than restated, with its close — any indent, the
+// same marker), or speech's, which is the call tidier's ``` only
+// (`voice::speech::Tidier`), or a `~~~` block would be read on one and
+// silent on the other (review of #578, passes 2 and 3).
+const DISPLAY_MARKERS = ['```', '~~~'];
+const SPOKEN_MARKERS = ['```'];
+
+/** `text` without its picture-reference lines (`PICTURE_REF`), for display.
+ * Never inside a fenced code block: a block shows what was written, whole
+ * (review of #578). */
+export function withoutPictureRefs(text, markers = DISPLAY_MARKERS) {
+  const s = String(text ?? '');
+  if (!s.includes('[')) return s;
+  let fence = null;
+  return s
+    .split('\n')
+    .filter((line) => {
+      if (fence !== null) {
+        if (line.trimStart().startsWith(fence)) fence = null;
+        return true;
+      }
+      const m = FENCE.exec(line);
+      if (m && markers.includes(m[1])) {
+        fence = m[1];
+        return true;
+      }
+      return !PICTURE_REF.test(line);
+    })
+    .join('\n');
+}
+
 /** `text` (a reply's Markdown) as plain sentences to speak. */
 export function speakable(text) {
-  let s = String(text ?? '');
+  let s = withoutPictureRefs(text, SPOKEN_MARKERS);
   // Code blocks: never read out.
   s = s.replace(/```[\s\S]*?(```|$)/g, '\nThere is a code block here.\n');
   // Citations, before links (both are bracketed).

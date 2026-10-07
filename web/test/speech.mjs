@@ -1,15 +1,36 @@
 // A reply tidied for speech, and cut into pieces the player can ask for one
 // at a time (`speech.js`; the owner's ask, 2026-10-01).
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { ownWords } from '../src/lib/persona.js';
-import { replyContext, replyKey, speakable, speechPieces, speechSentences } from '../src/lib/speech.js';
+import { replyContext, replyKey, speakable, speechPieces, speechSentences, withoutPictureRefs } from '../src/lib/speech.js';
 
 // The rule a call shares (`speakable-cases.json`, read by the Rust tidier's
 // test too): every case, spoken as the call would say it.
 const cases = JSON.parse(readFileSync(new URL('./speakable-cases.json', import.meta.url), 'utf8'));
 assert.ok(cases.length > 0);
 for (const c of cases) assert.equal(speakable(c.text), c.spoken, c.why);
+
+// What the chat draws: a line that only points at a picture goes, and the
+// rest of the reply, a mention inside a sentence among it, stays as written.
+assert.equal(
+  withoutPictureRefs('Here it is.\n[Image: images/20261006-120000-1.png]\nLike it?'),
+  'Here it is.\nLike it?',
+);
+assert.equal(withoutPictureRefs('I saved [image: images/a.png] for you.'), 'I saved [image: images/a.png] for you.');
+assert.equal(withoutPictureRefs('[Image attached: a wide shot]'), '[Image attached: a wide shot]');
+// A code block shows what was written, that line included.
+const fenced = 'Like this:\n```\n[Image: images/a.png]\n```';
+assert.equal(withoutPictureRefs(fenced), fenced);
+const tilded = 'Like this:\n~~~\n[Image: images/a.png]\n~~~';
+assert.equal(withoutPictureRefs(tilded), tilded);
+// Only the same marker closes a fence: a ~~~ line inside a backtick block
+// leaves it open.
+const mixed = 'Like this:\n```\n~~~\n[Image: images/a.png]\n```';
+assert.equal(withoutPictureRefs(mixed), mixed);
+// Only the path a picture card stands in for.
+assert.equal(withoutPictureRefs('[Image: images/a b.png]'), '[Image: images/a b.png]');
+assert.equal(withoutPictureRefs('[Image: images/notes.txt]'), '[Image: images/notes.txt]');
 
 // Marks go, words stay.
 assert.equal(speakable('## Plan\n\n- **first**, check the *traps*\n- then `count` them'), 'Plan. first, check the traps. then count them.');
@@ -80,5 +101,35 @@ assert.deepEqual(replyContext(entries, 0), { asked: null, lastReply: null });
 // The owner's words as the page shows them: a persona chat's preamble goes.
 const framed = [{ kind: 'user', text: '(What I want from this conversation: rest)\n\nHow did the dig go?' }];
 assert.equal(replyContext([...framed, { kind: 'assistant', text: 'Well.' }], 1, ownWords).asked, 'How did the dig go?');
+
+// Who hides a picture line, read out of the components that ship: every
+// reply surface opts in, and the proposal's approval panel does not, where
+// what is approved must be what was seen (review of #578). Every site is
+// counted, so a rename cannot make the check vacuous.
+{
+  const read = (f) => readFileSync(new URL(`../src/lib/${f}`, import.meta.url), 'utf8');
+  const calls = (f) => [...read(f).matchAll(/<ChatProse\b[^>]*\/>/g)].map((m) => m[0]);
+  // Every component, so a new one is counted too (review of #578, pass 3).
+  const components = readdirSync(new URL('../src/lib/', import.meta.url)).filter((f) => f.endsWith('.svelte'));
+  const sites = components.flatMap(calls);
+  const review = sites.filter((c) => /text=\{review\./.test(c));
+  const replies = sites.filter((c) => !/text=\{review\./.test(c));
+  assert.equal(review.length, 2, review.join('\n'));
+  assert.equal(replies.length, 8, replies.join('\n'));
+  for (const c of review) assert.ok(!/hidePictureRefs/.test(c), `an approval hides text: ${c}`);
+  for (const c of replies) assert.match(c, /\shidePictureRefs\b/, c);
+}
+
+// The renderer's fence rule, not a copy (review of #578, pass 3): a fence
+// opened with a tab is a code block, whose picture line is shown as
+// written; a close indented four spaces still closes it.
+assert.equal(
+  withoutPictureRefs('Like this:\n\t```\n[Image: images/a.png]\n\t```'),
+  'Like this:\n\t```\n[Image: images/a.png]\n\t```',
+);
+assert.equal(
+  withoutPictureRefs('```\n[Image: images/a.png]\n    ```\nHere:\n[Image: images/b.png]'),
+  '```\n[Image: images/a.png]\n    ```\nHere:',
+);
 
 console.log('speech: ok');

@@ -26,5 +26,10 @@
   {"why": "a smile is not a link", "text": "Nice to see you :) How was the ferry? It ran late.", "spoken": "Nice to see you :) How was the ferry? It ran late."},
   {"why": "spacing is one space", "text": "Two.  Spaces   here.", "spoken": "Two. Spaces here."},
   {"why": "a script without spaces ends a sentence at its own mark", "text": "你好。再见", "spoken": "你好。再见."},
-  {"why": "and its full-width marks end a line as a full stop does", "text": "今天很好。明天呢？", "spoken": "今天很好。明天呢？"}
+  {"why": "and its full-width marks end a line as a full stop does", "text": "今天很好。明天呢？", "spoken": "今天很好。明天呢？"},
+  {"why": "a line that only points at a picture the chat draws is not read", "text": "Here it is, by the window.\n[Image: images/20261006-120000-1234567.png]", "spoken": "Here it is, by the window."},
+  {"why": "in any case, and a bracketed description in the persona's own words stays", "text": "[image: images/a.png]\n[a wide shot of the harbour]", "spoken": "[a wide shot of the harbour]."},
+  {"why": "a space before the bracket closes is not a picture line, on either side", "text": "[Image: images/a.png ]", "spoken": "[Image: images/a.png ]."},
+  {"why": "only a picture path a card draws is a picture line", "text": "[Image: images/notes.txt]", "spoken": "[Image: images/notes.txt]."},
+  {"why": "speech's fence is the call tidier's, ``` only: a picture line inside ~~~ is left out on both, not read on one", "text": "Look:\n~~~\n[Image: images/a.png]\n~~~\nDone.", "spoken": "Look: ~~~. ~~~. Done."}
 ]
