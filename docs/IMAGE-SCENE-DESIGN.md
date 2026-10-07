@@ -180,22 +180,26 @@ A **scene** is a typed record:
 The harness keeps the **current scene per persona**, in the persona store, not in a chat's
 workspace. Every manifest records its scene and the content hash of its picture. A picture
 attached in any chat is matched by its bytes, so a carried-over picture resolves to its scene.
-**Bytes select a record.** That is the key, and it says nothing about where the lookup searches.
-**A second, separate rule does the security work: the lookup reads only manifests under the
-owner's own sessions.** **The index is the harness's own record, not the workspace's.** A
-manifest sits in the chat's jail, where a run can write one with `fs_write` (`repair_orphan`'s
-comment grants this). So the index the lookup reads is written by the harness into the persona
-store, which the model cannot write, keyed by content hash and pointing at scenes the harness
-wrote. A workspace manifest's stated origin is never trusted: it is read only as fail-closed
-evidence, never as a clean label. The front door never does the lookup: an outside sender's bytes must not
-pull a scene out of the persona store.
+**The lookup, in one rule: a picture's bytes are looked up only in a harness-written index in the
+persona store, and nowhere else.** The harness writes an entry there when a render in one of the
+owner's own sessions lands, keyed by the picture's content hash and pointing at the scene it
+wrote. The bytes are only the key; the security is in where the index lives:
+- **The model cannot write it.** A workspace manifest sits in the chat's jail, where a run can
+  write one with `fs_write` (`repair_orphan`'s comment grants this), so cross-chat lookup never
+  reads workspace manifests at all.
+- **A manifest's stated origin is never trusted:** within its own chat it is read only as
+  fail-closed evidence, never as a clean label.
+- **The front door never looks anything up:** an outside sender's bytes must not pull a scene out
+  of the persona store.
 
 **A scene carries its origin.** Scene text is model-written, so it crosses from one chat's run
 into another chat's notes. Each write records the taint of the run that made it, classified
 from the transcript's recorded taint the way a library candidate's `imagelib::Origin` is, and
-failing closed: unknown classifies untrusted. **A scene's origin is the union of every write
-still in it, not the last write's.** §5.4 keeps unchanged fields, so a clean write over a scene
-with an untrusted field stays untrusted. Only a field the clean write replaced stops counting. A chat that reads a scene written under untrusted
+failing closed: unknown classifies untrusted. **Origin is kept per field, and a scene's origin is
+the union over its fields.** Each field records the origin of the write that last set it. §5.4
+keeps unchanged fields, so a clean write over a scene with one untrusted field leaves that field,
+and the scene, untrusted. Only a field the clean write replaced takes the clean origin. A single
+origin per write would satisfy the words and launder the field. A chat that reads a scene written under untrusted
 input takes that taint on, as a `mailbox.rs` message carries its sender's.
 
 The carrier into the notes is a stem. Notes arm taint only by stem match (`Taint::arm_for_notes`),
@@ -230,7 +234,10 @@ This is ruling R9 (owner, 2026-10-07).
   sent. The crop is the anchor's existing crop. The
   description is the entry's text, verbatim: build, and features such as a tattoo, worded so
   they cannot leak (§4, M4).
-- The library-name guard runs on every call, edits included.
+- The library-name guard runs on every call, edits included. **`"cast": []` is the one waiver,
+  and it is explicit and recorded:** it means someone else by that name, it skips the self-cast
+  and the guard, and the manifest's `identity` says "`cast` was empty". It is the model's
+  deliberate statement, not a shape the call happens to have.
 - A person from an owner photo who is not in the library is declared as "the person in picture
   X", which uses their crop from that picture. Picture X itself is not sent to the generator;
   only the crop is. Picture X passes the same test as an edit's canvas (`PERSONA-CONTEXT-DESIGN.md`
@@ -252,9 +259,10 @@ This is ruling R9 (owner, 2026-10-07).
   canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
   **Crops never take a call past the budget. Pictures the model passes itself keep
   `MAX_REFERENCES` (4), as today:** four plain references with nobody declared draw, slowly, as
-  they always did, and the budget only governs what the harness adds. In a persona chat the
-  persona is usually declared, by the picture's record or the edit's words, so four pictures plus
-  her crop is over budget and refused, naming the ways out. **A call whose crops would exceed it is refused
+  they always did, and the budget only governs what the harness adds. **In short, what is
+  refused: people the call names whose crops would not fit. What is only slow: four pictures the
+  model passed itself.** People carried over from a picture's record are trimmed to the budget,
+  never refused, and `identity` says who went without a crop. **A call whose crops would exceed it is refused
   before the GPU and says why, naming the ways out: fewer people, fewer pictures, or the place in
   words.** The model cannot reach those by sending the same call again. **Nothing
   falls back to another shape silently.** Drawing the scene without the place's picture is a different call, one the
@@ -275,7 +283,8 @@ before.
 | Change | Canvas (slot 1) | Then |
 |---|---|---|
 | Clothing, expression, hair, an object, a painted region | the current picture | crops and descriptions follow it |
-| Pose, camera, adding or removing a person | **the place's picture**, when the place is a picture | the people are drawn fresh from crops and descriptions |
+| Pose, camera, removing a person | **the place's picture**, when the place is a picture | the people are drawn fresh from crops and descriptions |
+| Adding a person | the current picture, everyone in it carried over, the new person's crop beside it (M3's add-a-person, mixed at two seeds) | the place's picture instead is unmeasured (§8) |
 | The same, when the place is words | none | a new picture at 512², the M3 shape (the whole portrait until §8.1 passes) |
 | A new scene | none | the place as material, or words |
 
@@ -356,10 +365,12 @@ picture.
   while another is being made, it is refused with `BUSY`. **A redraw has its own call id, never
   the source picture's `tool_use_id`:** `repair_orphan` accepts a picture as an orphaned call's by
   that key, and a reused id would let it take a redraw for the original.
-- **A redraw passes the same gates as any tool call.** It is dispatched as an `image_generate`
-  call through the registry, so `pre_tool` hooks and the approver see it. Only the model's turn
-  is skipped. The interlock is moot (`Capabilities::default()`), and the library re-check below
-  is in addition to those gates, not instead of them.
+- **A redraw passes the same gates as any tool call.** The interlock, the `pre_tool` hooks and
+  the approver live in the agent loop's dispatch, not in the `Registry`, which only resolves
+  tools. So a redraw goes through that dispatch path as an `image_generate` call with no model
+  turn before it; calling the tool directly would skip all three. The interlock is moot
+  (`Capabilities::default()`), and the library re-check below is in addition to those gates, not
+  instead of them.
 - **The new version shows on the same card** (‹ 1/2 ›), and the version showing is the current
   one (owner, 2026-10-07). The other versions stay on the card, one swipe away. Edit, a retouch,
   works on the version showing, as does Regenerate. **A restage takes the showing version's
@@ -429,7 +440,8 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
    held with the description.
 4. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
-5. A third crop beside a canvas (§5.2, budget).
+5. A third crop beside a canvas (§5.2, budget), and adding a person by restaging from the place
+   rather than onto the current picture (§5.3).
 6. A chain of retouches, three or more deep, each carrying the crops (§5.3).
 
 ## 9. Rulings (owner, 2026-10-07)
