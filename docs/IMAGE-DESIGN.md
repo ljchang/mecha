@@ -1,6 +1,6 @@
 # Image generation, redesigned
 
-**Status: DRAFT for the owner's rulings** (2026-10-07).
+**Status: accepted 2026-10-07** (the owner's rulings are recorded in §11, §13 and §14).
 
 - **Lead:** mecha-7e.
 - **Evidence and review:** mecha-a3. a3 owns the evidence base and the acceptance gates, and reviews this draft adversarially.
@@ -268,7 +268,7 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
 4. **Regenerate** on the same record (§5.4).
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
-6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` mark and the default portrait. Usage rules are not part of this build (§14). *Proposed by mecha-a3 and the lead, for the owner to confirm:* step 6 may be built and pass G4b, neutral and clothed, but it is not merged or deployed until the owner has decided §14's real-person rule. Steps 1–5 involve no real people and are unaffected.
+6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` mark and the default portrait. Usage rules are not part of this build (§14). **Ruled 2026-10-07: get it working first, with no restrictions; step 6 is not held for §14.**
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
@@ -350,5 +350,5 @@ Sources: docs.bfl.ai (FLUX.2 prompting, JSON prompting); developers.googleblog.c
 The owner deferred decisions about how pictures may be used (2026-10-07). The functionality comes first, and usage rules are to be thought through carefully as their own decision. Recorded here so they are not lost:
 
 - **Real people.** Whether, and how, a library entry marked `real` may appear in nude or sexual pictures. mecha-a3's review R1 and the lead both recommended never, held in code. The proposed shape: a prose check before render, the compiler stating them clothed, and a local image-safety classifier on the output. No classifier is in the tree yet.
-- **Minors.** The library holds an entry described as 16. The proposed rule: a `minor` mark on library entries, set by the owner, and set automatically for any proposed entry with an age under 18. A marked entry is never drawn nude or sexually, under the same three checks, and possibly never in a persona chat whose chats are sexual. The image model here is local with no guard of its own. Until this is decided, mecha-7e and mecha-a3 keep that entry out of every test render and will not generate such content.
+- **Minors.** The library holds an entry described as 16. The proposed rule: a `minor` mark on library entries, set by the owner, and set automatically for any proposed entry with an age under 18. A marked entry is never drawn nude or sexually, under the same three checks, and possibly never in a persona chat whose chats are sexual. The image model here is local with no guard of its own. **Ruled 2026-10-07: that entry is left out of all tests.** mecha-7e and mecha-a3 also will not generate such content.
 - **Existing entries.** Which current library entries are real people or minors; the owner marks them.
