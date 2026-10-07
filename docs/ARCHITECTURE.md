@@ -802,7 +802,10 @@ conversation, so the capabilities do not change. Three rules:
     cliff.
   - **What is not covered.** A masked edit carries no crops. A crop that
     cannot be had (the detector not installed, no face in the portrait) is
-    recorded, never refused: the edit draws as it did before. New pictures
+    recorded, never refused: the edit draws without it, but a declared
+    person's description, clothes and pose still go into the prompt, so
+    nothing they wear is invented (review of #586, pass 3). So does a
+    declared person with no library entry, by name. New pictures
     still send the whole portrait until `IMAGE-SCENE-DESIGN.md` §8.1 is
     measured.
   - **The record.** The manifest's `identity` always says who was declared,
