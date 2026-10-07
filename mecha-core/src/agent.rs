@@ -4205,6 +4205,23 @@ impl Agent {
     /// slate, and the result arms the conversation it was gated against.
     /// There is no context forecast (`ToolCtx::context` is `None`): no model
     /// turn is being planned.
+    ///
+    /// **What the caller owes** (review of #592, pass 2):
+    /// - **Record the taint.** Nothing here writes the session file, and a
+    ///   harness call leaves no transcript for `Session::read` to re-derive
+    ///   it from, so the caller appends `Record::Taint` whenever `convo.taint`
+    ///   changed, as `serve::late::land` does for a late result. Without it a
+    ///   reopened chat has lost what this call armed.
+    /// - **Never append `Dispatched::blocks` to the conversation.** Its
+    ///   `tool_result` answers no `tool_use` there (none was forged), and an
+    ///   orphaned result is a 400. The blocks are for the caller to show or
+    ///   record in its own terms.
+    /// - **The busy rule here is the stricter one:** while any job is out
+    ///   for this chat, a deferring harness call is refused, where the queue
+    ///   refuses only a second running job.
+    /// - **The result is capped at the configured budget**, unnarrowed by
+    ///   context pressure. A caller that puts its text into a transcript
+    ///   spills or caps it as a turn's result would be.
     pub async fn dispatch_one(
         &self,
         cx: &RunContext,
@@ -5209,9 +5226,9 @@ impl Agent {
                             Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
                         }
                     }
-                    // A harness call, inline; while the chat has a job out it
-                    // is refused as the queue would refuse a second (review
-                    // of #592).
+                    // A harness call, inline; while the chat has any job out
+                    // it is refused, stricter than the queue's rule, which
+                    // refuses only a second running job (review of #592).
                     Some(sink) if !sink.pending_tools().is_empty() => {
                         ToolOutput::refusal(job.busy())
                     }
