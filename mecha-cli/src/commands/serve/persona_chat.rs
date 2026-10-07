@@ -3464,6 +3464,9 @@ impl PersonaChats {
         self.start_delivery();
         let turn = self.jobs.number();
         cx.jobs = Some(self.jobs.queue.sink(key, turn));
+        // A persona's run ends as soon as its picture is queued: nothing after
+        // the picture is the persona's job (IMAGE-DESIGN.md §5.5).
+        cx.end_after_deferral = true;
         // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
         if spoken_turn {
             cx = cx.with_think_budget(SPOKEN_THINK_BUDGET);
