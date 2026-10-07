@@ -268,7 +268,7 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
 4. **Regenerate** on the same record (§5.4).
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
-6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` mark and the default portrait. Usage rules are not part of this build (§14).
+6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` mark and the default portrait. Usage rules are not part of this build (§14). *Proposed by mecha-a3 and the lead, for the owner to confirm:* step 6 may be built and pass G4b, neutral and clothed, but it is not merged or deployed until the owner has decided §14's real-person rule. Steps 1–5 involve no real people and are unaffected.
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
