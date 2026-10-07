@@ -378,6 +378,11 @@ pub struct RunContext {
 /// clean, against 1 of 6 for the LoopGuard's exit.
 pub const PICTURE_ON_ITS_WAY: &str = "(From the harness: the picture this turn asked for is being made and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
 
+/// The closing line when this turn's call was refused because a picture from
+/// an earlier turn is still being made (review of #596: a busy refusal must
+/// close the run too, or it loops as the queue's refusals did).
+pub const PICTURE_STILL_BEING_MADE: &str = "(From the harness: a picture is still being made from an earlier turn and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
+
 /// What the owner sees in place of a closing reply that was empty, or was
 /// only a tool call written out as text. Never the call markup itself.
 pub const PICTURE_ON_ITS_WAY_REPLY: &str = "The picture is on its way.";
@@ -392,6 +397,9 @@ pub(crate) struct RunPictures {
     started_now: bool,
     /// Set this turn: a call named a tool already started, and was not run.
     repeated: bool,
+    /// Set this turn: a deferred call was refused because the chat already
+    /// has one out from an earlier turn (the queue's busy refusal).
+    busy: bool,
 }
 
 /// Every `<tool_call>` block taken out of a reply, and a trailing unclosed
@@ -1282,6 +1290,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
         || text == PICTURE_ON_ITS_WAY
+        || text == PICTURE_STILL_BEING_MADE
         || text == crate::planning::CRITERION_OBSERVATION
         || text == "A declared plan check was not run; completion remains unverified."
         || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
@@ -1765,8 +1774,11 @@ impl Agent {
     /// its tail. Read **once per request** and handed to both `wire` and
     /// `wire_bytes`, so a request sent across midnight is measured as the
     /// bytes it carries.
+    /// The notes as a later request of the run carries them: for the
+    /// measurements and the ceiling's final answer, which must not re-send
+    /// the panel's note (review of #596).
     fn request_notes(&self, cx: &RunContext) -> RequestNotes {
-        self.request_notes_for(cx, true, false)
+        self.request_notes_for(cx, false, None)
     }
 
     /// The notes for one request of a run: `first` is the run's first
@@ -1777,15 +1789,20 @@ impl Agent {
     /// the measured loop trigger: panel turns ran away 5 times in 13, typed
     /// ones 0 in 19, and with the note sent once 0 in 10. Every other note
     /// stays as it was. A closing request ends with [`PICTURE_ON_ITS_WAY`].
-    fn request_notes_for(&self, cx: &RunContext, first: bool, closing: bool) -> RequestNotes {
+    fn request_notes_for(
+        &self,
+        cx: &RunContext,
+        first: bool,
+        closing: Option<&str>,
+    ) -> RequestNotes {
         let mut tail: Vec<String> = cx
             .notes
             .iter()
             .filter(|n| first || !crate::persona::edit::is_note(n))
             .cloned()
             .collect();
-        if closing {
-            tail.push(PICTURE_ON_ITS_WAY.to_string());
+        if let Some(line) = closing {
+            tail.push(line.to_string());
         }
         RequestNotes {
             head: self.calendar_note().into_iter().collect(),
@@ -2379,7 +2396,12 @@ impl Agent {
         // One picture per run (IMAGE-DESIGN.md §5.5): what this run has
         // queued, and whether its next request is the closing one.
         let mut pictures = RunPictures::default();
-        let mut closing = false;
+        // The closing request's line, when the next request closes the run.
+        let mut closing: Option<&'static str> = None;
+        // Whether any tool result has come back in this run: the panel's
+        // note rides every request before the first, empty-reply retries
+        // included (review of #596).
+        let mut answered = false;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -2810,7 +2832,7 @@ impl Agent {
             // one request.
             // This request's notes, read once: the bytes measured, the bytes
             // sent and the count the provider marks are one reading.
-            let notes = self.request_notes_for(cx, turns == 1, closing);
+            let notes = self.request_notes_for(cx, !answered, closing);
             // The harness's part of them is what the recording keeps: the
             // reading this request carried, so a run that crosses midnight
             // records the date the model last saw.
@@ -2831,7 +2853,7 @@ impl Agent {
                 trailing_notes: notes.tail.len(),
                 // The closing request keeps the tools listed (the cached
                 // prefix holds) and asks for words (§5.5).
-                tool_choice: if closing {
+                tool_choice: if closing.is_some() {
                     crate::message::ToolChoice::None
                 } else {
                     crate::message::ToolChoice::Auto
@@ -2858,7 +2880,11 @@ impl Agent {
             // The closing request is not streamed: a reply written as a tool
             // call would reach the screen before it could be taken out. Its
             // cleaned text goes out once, below (§5.5).
-            let stream = if closing { None } else { events.clone() };
+            let stream = if closing.is_some() {
+                None
+            } else {
+                events.clone()
+            };
             let completion = match self.complete(cx, &request, &stream).await {
                 Err(e) if is_context_overflow(&e) => {
                     // Counted before the recovery rather than after it: what
@@ -3018,7 +3044,7 @@ impl Agent {
             // sees the words that remain, or that the picture is on its way
             // (§5.5). An empty reply is replaced the same way, not retried.
             let mut response = response;
-            if closing {
+            if closing.is_some() {
                 let said = strip_call_markup(&response.message.text());
                 let said = if said.trim().is_empty() {
                     PICTURE_ON_ITS_WAY_REPLY.to_string()
@@ -3252,9 +3278,17 @@ impl Agent {
                     // The next request closes the run (§5.5): on a repeat
                     // call in every chat, or right after the picture is
                     // queued where the run is set to end then.
-                    closing = pictures.repeated || (cx.end_after_deferral && pictures.started_now);
+                    answered = true;
+                    closing = if pictures.busy {
+                        Some(PICTURE_STILL_BEING_MADE)
+                    } else if pictures.repeated || (cx.end_after_deferral && pictures.started_now) {
+                        Some(PICTURE_ON_ITS_WAY)
+                    } else {
+                        None
+                    };
                     pictures.repeated = false;
                     pictures.started_now = false;
+                    pictures.busy = false;
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
                     // after every sibling's work, through the same guards as any call.
@@ -5412,7 +5446,10 @@ impl Agent {
                                 run_pictures.started_now = true;
                                 out
                             }
-                            Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
+                            Err(crate::jobs::Busy) => {
+                                run_pictures.busy = true;
+                                ToolOutput::refusal(job.busy())
+                            }
                         }
                     }
                     // A harness call, inline; while the chat has any job out
@@ -7393,6 +7430,75 @@ mod tests {
         let later = tail_text(&seen[1]);
         assert!(!later.contains(crate::persona::edit::EDIT_STEM), "{later}");
         assert!(later.contains("(A run note.)"), "{later}");
+    }
+
+    /// A call refused because an earlier turn's picture is still being made
+    /// closes the run too, with the line that fits it; otherwise the run would
+    /// loop on busy refusals as the queue's did (review of #596).
+    #[tokio::test]
+    async fn a_busy_refusal_closes_the_run() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "d1".into(),
+                        name: "draw".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("Still on its way.")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        // An earlier turn's picture is still out.
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let held = Arc::clone(&hold);
+        let earlier = crate::jobs::DeferredJob::new(
+            async move {
+                held.notified().await;
+                ToolOutput::ok("image: images/earlier.png")
+            },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "e1", "draw", earlier).unwrap();
+        let mut convo = Conversation::user("draw it again");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[1].tool_choice, crate::message::ToolChoice::None);
+            assert!(tail_text(&seen[1]).ends_with(PICTURE_STILL_BEING_MADE));
+        }
+        assert_eq!(outcome.text, "Still on its way.");
+        hold.notify_one();
+        go.notify_one();
+    }
+
+    /// The panel's note rides every request until a tool result comes back,
+    /// an empty-reply retry included (review of #596).
+    #[tokio::test]
+    async fn the_panel_note_survives_an_empty_retry() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        go.notify_one();
+        let mut turns = vec![assistant(vec![], StopReason::EndTurn)];
+        turns.extend(draw_then("Here."));
+        let (agent, provider) =
+            agent_with_tools(turns, vec![Arc::new(Later(go))], PermissionMode::Allow);
+        let mut cx = agent.context().as_ref().clone();
+        cx.notes = vec![crate::persona::edit::note()].into();
+        let mut convo = Conversation::user("make it dusk");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        let has = |r: &CompletionRequest| tail_text(r).contains(crate::persona::edit::EDIT_STEM);
+        assert!(has(&seen[0]) && has(&seen[1]), "the retry keeps it");
+        assert!(!has(&seen[2]), "after the result it is gone");
     }
 
     /// A chat host's queue: the call answers "being made" at once, the run
