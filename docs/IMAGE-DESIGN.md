@@ -166,7 +166,7 @@ The planner reads the call against the picture's record and picks one render. No
 | `retouch` (with or without `mask`) | **Retouch** of the picture, in the #408 keep form; masked as today. |
 
 **Budgets, as measured:**
-- **An edit-shaped render carries the canvas plus up to five face crops** (`EDIT_REFERENCE_BUDGET` 6, up from 3). **Provisional (owner, 2026-10-07): start with C5 and revisit after a closer look at the sheets.** The owner wants up to five people, though usually one to three. Because the budget is a cap, one to three people cost what they did. Five people on a photo, in one pass (C5), kept the room, with faces "mostly really good, a few of Luke's drift"; about 240 s. Two passes (S5) shifted the first three. The three-person set before it: mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (evidence §F):
+- **An edit-shaped render carries the canvas plus up to five face crops** (`EDIT_REFERENCE_BUDGET` 6, up from 3). **Provisional (owner, 2026-10-07): start with C5 and revisit after a closer look at the sheets.** The owner wants up to five people, though usually one to three. Because the budget is a cap, one to three people cost what they did. Five people on a photo, in one pass (C5), kept the room, with faces "mostly really good, a few of Luke's drift"; about 240 s. Two passes (S5) shifted the first three. Before it, mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (evidence §F):
   - **C3, canvas plus three crops:** kept the owner's actual room. All three approaches placed the three people correctly, and face identity was close across them.
   - **RN3, portraits with the photo as material:** recomposed the room.
   - **W3, the room in words:** drew a different room every time.
@@ -260,7 +260,7 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 | **G1b typed turns** (replayed typed picture turns through the new schema) | the call the persona makes is right | ≥ 90%, and **0** refusals for shape |
 | **G2 the wanted call still happens** | request 1 of every replayed picture turn calls the tool; no reply narrates a picture without one | ≥ 95% |
 | **G3 one picture per run** | at most one started, structurally; 0 calls written as text; 0 empty replies | 100% |
-| **G4 renders, the owner's eye** (face-sized labelled sheets, ≥ 3 seeds each) | restage pose right, room held across restages, identity holds; words setting and photo setting | owner's verdict |
+| **G4 renders, the owner's eye** (face-sized labelled sheets, ≥ 3 seeds each) | restage pose right, room held across restages, identity holds; words setting and photo setting; and a five-person arm on a photo (a canvas plus five crops), where Luke-style drift is watched | owner's verdict |
 | **G4b a real person through the library** (§4.1) | the same real person, added to the library from the owner's photo, drawn new, beside a drawn library character, placed on a photo, and restaged, plus a small-face arm; ≥ 3 seeds each | owner's verdict |
 | **G5 after deploy** (first real chats) | pose and camera changes go through restage; restages pass the owner's eye; edit-shaped renders that should move something (adding a person, placing on a photo) are not near-copies; no runaways | restage share ≥ 90%; edit-shaped near-copy ≤ 30%; runaways 0 |
 
