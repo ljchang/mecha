@@ -183,12 +183,19 @@ pub enum Size {
 }
 
 impl Size {
+    /// Every size, so a reader of `dims` cannot miss one added later.
+    const ALL: [Size; 3] = [Size::Square, Size::Landscape, Size::Portrait];
+
     fn parse(s: &str) -> Option<Self> {
-        match s {
-            "square" => Some(Size::Square),
-            "landscape" => Some(Size::Landscape),
-            "portrait" => Some(Size::Portrait),
-            _ => None,
+        Self::ALL.into_iter().find(|v| v.name() == s)
+    }
+
+    /// The name `parse` reads: the two ends of one table.
+    fn name(self) -> &'static str {
+        match self {
+            Size::Square => "square",
+            Size::Landscape => "landscape",
+            Size::Portrait => "portrait",
         }
     }
 
@@ -2513,43 +2520,6 @@ impl ImageGenerate {
         {
             call.insert("style".into(), json!(st));
         }
-        // The library as it stands now, on every surface: a person or style
-        // no longer approved refuses the redraw and says so, rather than being
-        // drawn as an extra in their place as an assistant chat's new call
-        // would (§5.7: "says so and does not draw").
-        let library = self
-            .library_dir
-            .as_ref()
-            .map(|d| crate::imagelib::Library::load(d).0);
-        let approved = |kind: crate::imagelib::Kind, n: &str| {
-            library
-                .as_ref()
-                .and_then(|l| l.get(kind, &n.trim().to_lowercase()))
-                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
-        };
-        let mut gone: Vec<String> = call
-            .get("cast")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|p| p.get("name").and_then(Value::as_str))
-            .filter(|n| !approved(crate::imagelib::Kind::Character, n))
-            .map(capitalized)
-            .collect();
-        if let Some(st) = call.get("style").and_then(Value::as_str) {
-            if !approved(crate::imagelib::Kind::Style, st) {
-                gone.push(format!("the style {st}"));
-            }
-        }
-        if !gone.is_empty() {
-            return Err(format!(
-                "`{picture}` cannot be redrawn: {} {} no longer in the image library as \
-                 approved, and nothing else is drawn in {} place.",
-                gone.join(", "),
-                if gone.len() == 1 { "is" } else { "are" },
-                if gone.len() == 1 { "its" } else { "their" },
-            ));
-        }
         let paths: Vec<String> = m
             .get("reference_images")
             .and_then(Value::as_array)
@@ -2563,10 +2533,12 @@ impl ImageGenerate {
         if !paths.is_empty() {
             // An edit regenerates as itself: the same change on the same
             // canvas, with a new seed, which an edit always takes.
-            if let Some(bad) = paths.iter().find(|p| !safe(p)) {
+            // The path is not repeated: it is a manifest's text, which this
+            // refusal would hand to the model (review of #593).
+            if paths.iter().any(|p| !safe(p)) {
                 return Err(format!(
-                    "`{picture}`'s record names `{bad}`, which is not a picture in this chat \
-                     any more, so it cannot be redrawn."
+                    "`{picture}`'s record names a picture that is not in this chat any more, \
+                     so it cannot be redrawn."
                 ));
             }
             let edit = m
@@ -2622,28 +2594,24 @@ impl ImageGenerate {
                 call.insert("mask".into(), json!(mask));
             }
         } else {
-            // A new picture: its words, or, where the record kept another
-            // chat's words out, the scene's place found by the picture's bytes.
-            let prompt = match text("prompt").filter(|p| p != FOREIGN_PROMPT) {
+            // A new picture: its words. A picture carried in from another
+            // chat records a placeholder instead, and its words stay in that
+            // chat's store: a redraw here would write them into this chat's
+            // manifest, so it is refused, and the picture can be edited here
+            // or redrawn where it was made (review of #593).
+            let prompt = match text("prompt") {
+                Some(p) if p == FOREIGN_PROMPT => {
+                    return Err(format!(
+                        "`{picture}` was drawn from another chat's scene, so its words are not \
+                         this chat's to redraw. Edit it here, or regenerate it in the chat that \
+                         drew it."
+                    ))
+                }
                 Some(p) => p,
                 None => {
-                    let bytes = read_references(ctx, &[picture.to_string()])
-                        .await
-                        .ok()
-                        .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0).bytes));
-                    let place = ctx
-                        .scene
-                        .as_ref()
-                        .zip(bytes)
-                        .and_then(|(slot, b)| slot.lookup(&b))
-                        .and_then(|s| s.place)
-                        .and_then(|p| match p.value {
-                            crate::scene::Place::Words { text } => Some(text),
-                            _ => None,
-                        });
-                    place.ok_or_else(|| {
-                        format!("`{picture}` records no words it was drawn from, so it cannot be redrawn.")
-                    })?
+                    return Err(format!(
+                        "`{picture}` records no words it was drawn from, so it cannot be redrawn."
+                    ))
                 }
             };
             call.insert("prompt".into(), json!(prompt));
@@ -2656,20 +2624,50 @@ impl ImageGenerate {
             let shape = m.get("size").and_then(Value::as_array).and_then(|wh| {
                 let w = wh.first()?.as_u64()? as u32;
                 let h = wh.get(1)?.as_u64()? as u32;
-                [Size::Square, Size::Landscape, Size::Portrait]
-                    .into_iter()
-                    .find(|s| s.dims() == (w, h))
+                Size::ALL.into_iter().find(|s| s.dims() == (w, h))
             });
             if let Some(s) = shape {
-                call.insert(
-                    "size".into(),
-                    json!(match s {
-                        Size::Square => "square",
-                        Size::Landscape => "landscape",
-                        Size::Portrait => "portrait",
-                    }),
-                );
+                call.insert("size".into(), json!(s.name()));
             }
+        }
+        // The library as it stands now, on every surface, over the people the
+        // redraw will declare (after an edit's narrowing: a person the canvas's
+        // record brings refuses nothing here, as in #586 and #591): a person or style
+        // no longer approved refuses the redraw and says so, rather than being
+        // drawn as an extra in their place as an assistant chat's new call
+        // would (§5.7: "says so and does not draw").
+        let library = self
+            .library_dir
+            .as_ref()
+            .map(|d| crate::imagelib::Library::load(d).0);
+        let approved = |kind: crate::imagelib::Kind, n: &str| {
+            library
+                .as_ref()
+                .and_then(|l| l.get(kind, &n.trim().to_lowercase()))
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+        };
+        let mut gone: Vec<String> = call
+            .get("cast")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.get("name").and_then(Value::as_str))
+            .filter(|n| !approved(crate::imagelib::Kind::Character, n))
+            .map(capitalized)
+            .collect();
+        if let Some(st) = call.get("style").and_then(Value::as_str) {
+            if !approved(crate::imagelib::Kind::Style, st) {
+                gone.push(format!("the style {st}"));
+            }
+        }
+        if !gone.is_empty() {
+            return Err(format!(
+                "`{picture}` cannot be redrawn: {} {} no longer in the image library as \
+                 approved, and nothing else is drawn in {} place.",
+                gone.join(", "),
+                if gone.len() == 1 { "is" } else { "are" },
+                if gone.len() == 1 { "its" } else { "their" },
+            ));
         }
         // A new seed, never the recorded one: that is what a redraw is for.
         call.remove("seed");
@@ -11231,6 +11229,13 @@ mod tests {
             ["john"],
             "maya came from the canvas's record: {again}"
         );
+        // Maya leaving the library refuses nothing here: the redraw does not
+        // declare her (review of #593, the rule of #586 and #591).
+        crate::imagelib::remove(&lib, crate::imagelib::Kind::Character, "maya").unwrap();
+        assert!(t
+            .redraw_of(&ctx(&dir), &picture_of(&added.content))
+            .await
+            .is_ok());
         // Refusals.
         let refused = |r: Result<Value, String>, says: &str| {
             let why = r.unwrap_err();
@@ -11251,17 +11256,17 @@ mod tests {
         std::fs::write(&json, m.to_string()).unwrap();
         refused(
             t.redraw_of(&ctx(&dir), &picture_of(&added.content)).await,
-            "not a picture in this chat",
+            "not in this chat any more",
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 
     /// A picture carried in from another chat records a placeholder, not
-    /// that chat's words; its redraw takes the place from the persona's
-    /// scene, found by the picture's bytes.
+    /// that chat's words; its redraw is refused rather than writing those
+    /// words into this chat's manifest (review of #593).
     #[tokio::test]
-    async fn a_redraw_of_a_carried_picture_takes_its_words_from_the_scene() {
+    async fn a_redraw_of_a_carried_picture_is_refused_here() {
         let (url, _) = distinct(1).await;
         let first = tempdir();
         let second = tempdir();
@@ -11287,12 +11292,65 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        let again = maya
+        let why = maya
             .redraw_of(&scene_ctx(&second, &store, "c2"), "images/carried.png")
             .await
-            .unwrap();
-        assert_eq!(again["prompt"], "a lighthouse kitchen");
+            .unwrap_err();
+        assert!(why.contains("another chat's scene"), "{why}");
+        assert!(!why.contains("lighthouse"), "{why}");
         for d in [first, second, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A change that would leave a scene with more people than its record
+    /// keeps is refused, not silently cut by the record (review of #593).
+    #[tokio::test]
+    async fn a_scene_past_its_people_is_refused_not_cut() {
+        let (url, _) = distinct(1).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = scene_ctx(&dir, &store, "c1");
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        let bytes = picture(8, [30, 60, 90]);
+        std::fs::write(dir.join("images/full.png"), &bytes).unwrap();
+        let full = crate::scene::Scene {
+            place: Some(crate::scene::Field {
+                value: crate::scene::Place::Words {
+                    text: "a crowded tram".into(),
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            people: (0..crate::scene::MAX_PEOPLE)
+                .map(|i| crate::scene::Person {
+                    name: format!("p{i}"),
+                    wearing: "a coat".into(),
+                    doing: "standing".into(),
+                    origin: crate::scene::Origin::Clean,
+                })
+                .collect(),
+            picture: Some(crate::scene::hash(&bytes)),
+            chat: Some("c1".into()),
+            ..Default::default()
+        };
+        cx.scene.as_ref().unwrap().land(&full).unwrap();
+        let out = t
+            .call(
+                json!({"scene": {"people": [{"name": "maya", "wearing": "a hat", "doing": "sitting"}]},
+                       "reference_images": ["images/full.png"]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("would hold 9 people"),
+            "{}",
+            out.content
+        );
+        for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
     }
