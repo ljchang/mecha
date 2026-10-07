@@ -843,7 +843,11 @@ conversation, so the capabilities do not change. Three rules:
     a chat starts from the persona's latest, R7, and the run's scene note
     is what reads it). The persona's
     `scene/latest.json` is won by the last render to land. The index is
-    `scene/index/<sha256>.json`.
+    `scene/index/<sha256>.json`, and is unbounded for now: an entry per
+    picture ever rendered, outliving the pictures `work.rs` retention sweeps.
+    A cap or age sweep is owed before it grows large. A manifest carries only
+    a pointer to its scene (the picture's hash), never the scene itself, which
+    can hold another chat's words.
   - **Lookup:** an attached picture whose manifest records nobody is found
     there by its bytes, so a picture carried in from another chat brings its
     people. The lookup never reads a workspace manifest across chats.

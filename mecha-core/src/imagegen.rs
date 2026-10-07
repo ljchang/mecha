@@ -3258,6 +3258,10 @@ impl Tool for ImageGenerate {
         // what it found: said in `identity`, so a miss is never silent
         // (§5.1).
         let mut scene_lookup: Option<&str> = None;
+        // People carried in from another chat's scene, through the index:
+        // their clothes are that chat's words, so this chat's manifest (in its
+        // jail) records them by name only (review of #589).
+        let mut from_index = false;
         // The record is read whether or not the call names anyone: the call's
         // `cast` adds to the people the picture records and never erases
         // them, so a retry that names one person cannot drop the others
@@ -3300,6 +3304,7 @@ impl Tool for ImageGenerate {
                     (Some(slot), Some(h)) => {
                         let found = slot.lookup_hash(h);
                         scene_lookup = Some(if found.is_some() { "found" } else { "none" });
+                        from_index = found.is_some();
                         // Capped as a manifest's are: the same rule for both
                         // sources (review of #589).
                         let cap = |s: String| {
@@ -3909,8 +3914,15 @@ impl Tool for ImageGenerate {
                             );
                         }
                     }
+                    // Another chat's words stay in the harness store (above).
+                    let (wearing, doing) =
+                        if from_index && inherited.contains(&name) && !declared.contains(&name) {
+                            ("", "")
+                        } else {
+                            (m.wearing.trim(), m.doing.trim())
+                        };
                     edit_cast.push(json!({"name": name, "version": e.version,
-                        "portrait": e.portrait, "wearing": m.wearing.trim(), "doing": m.doing.trim()}));
+                        "portrait": e.portrait, "wearing": wearing, "doing": doing}));
                 }
                 // Only with a crop riding along is the canvas's role said: an
                 // edit without one keeps the prompt measured for it.
@@ -4302,9 +4314,13 @@ impl Tool for ImageGenerate {
             });
             let manifest = json!({
                 "image": path,
-                // The scene this picture was rendered as, when a persona
-                // chat keeps one.
-                "scene": landed.as_ref().map(|(_, scene)| scene),
+                // A pointer to the scene this picture was rendered as, when a
+                // persona chat keeps one: the picture's hash, which the
+                // persona's index is keyed by. Never the scene itself, which
+                // can hold another chat's words; this file sits in the jail,
+                // where forgetting cannot reach and no stem labels it
+                // (review of #589).
+                "scene": landed.as_ref().map(|(_, scene)| json!({"picture": scene.picture})),
                 // The call this picture answers: the restart repair accepts a
                 // picture only when its manifest names the orphaned call
                 // (`repair_orphan`).
@@ -9547,9 +9563,9 @@ mod tests {
         assert_eq!(s1.people[0].wearing, "a red coat");
         assert!(matches!(&s1.place.as_ref().unwrap().value,
             crate::scene::Place::Words { text } if text.contains("a park")));
-        assert_eq!(
-            manifest_of(&dir, &scene.content)["scene"]["people"][0]["name"],
-            "maya"
+        assert!(
+            manifest_of(&dir, &scene.content)["scene"]["picture"].is_string(),
+            "the manifest points at the scene, by its picture's hash"
         );
         let moved = maya
             .call(
@@ -9719,6 +9735,75 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
+    /// §5.6, measured: a render that fails never advances the scene, and a
+    /// store that cannot be written costs the record, never the picture
+    /// (review of #589).
+    #[tokio::test]
+    async fn a_failed_render_never_advances_and_a_dead_store_never_costs_the_picture() {
+        let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
+            "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
+        let (url, _) = fake(vec![done(), failed], "200 OK").await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let drawn = maya
+            .call(
+                json!({"prompt": "a park", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "sitting"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        let before = cx.scene.as_ref().unwrap().current().unwrap();
+        let entries = || {
+            std::fs::read_dir(store.join("scene/index"))
+                .unwrap()
+                .count()
+        };
+        let n = entries();
+        let out = maya
+            .call(
+                json!({"scene": {"camera": "From above."},
+                       "reference_images": [picture_of(&drawn.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert_eq!(cx.scene.as_ref().unwrap().current().unwrap(), before);
+        assert_eq!(entries(), n, "no index entry for a picture never drawn");
+        // A store that is a file, not a folder: nothing can be written there.
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dead = tempdir().join("not-a-folder");
+        std::fs::write(&dead, b"x").unwrap();
+        let t =
+            Arc::new(tool(&url).with_library_dir(lib.clone())).persona_form(Some(persona_maya()));
+        let out = t
+            .call(
+                json!({"prompt": "a park", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "sitting"}]}),
+                &scene_ctx(&dir, &dead, "c1"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !out.is_error && out.content.starts_with("image: "),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// A picture carried into another chat arrives with no manifest, and is
     /// found by its bytes in the persona's index: its people come with it
     /// (use case 10), so her face rides the edit there too.
@@ -9761,6 +9846,10 @@ mod tests {
             "{}",
             last_prompt(&seen)
         );
+        // The other chat's words stay in the harness store, never in this
+        // chat's jail (review of #589).
+        let m = manifest_of(&second, &out.content).to_string();
+        assert!(!m.contains("a cafe") && !m.contains("green jumper"), "{m}");
         std::fs::remove_dir_all(first).ok();
         std::fs::remove_dir_all(second).ok();
         std::fs::remove_dir_all(store).ok();
