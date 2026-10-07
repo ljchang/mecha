@@ -92,10 +92,22 @@ Person.who = a library character's name | "self" | { from: picture } | a descrip
 - **`who`** is resolved against the library, in this order:
   - an approved character's name or alias brings its portrait (new picture) or head crop (edit), and its description verbatim;
   - `self`, or the persona's own name, display name or folder name (as `cast_self` resolves it today), is the persona's linked approved character;
-  - `{ from: picture }` is the one face in that picture (an owner photo of a real person), cropped by RetinaFace and budgeted as a crop. This is use case 4, kept;
+  - `{ from: picture, which? }` is a real person from a photo the owner attached: a friend, the owner, anyone not in the library. It is use case 4, and the owner wants it first-class (2026-10-07). See §4.1;
   - anything else is drawn from its own words, as an extra is today. That needs no separate field, and `extras` was never used.
 - **Library names in the prose fields are checked** (review B2): `setting`, `light`, `camera`, a descriptive `who`, `wearing`, `doing`, `expression` and `retouch`. A name in a descriptive `who` resolves to that character. A name in any other field is refused plainly ("John is named in `doing`: add him to people"), because drawing him from words makes a stranger (E1).
-- **`wearing`, `doing` and `expression` are prose** (§2.8). `wearing` and `doing` are required for anyone the call introduces. `expression` is optional and separate from `doing`: an expression changes the face and is retouched, while a pose redraws the scene (§5.2).
+- **`wearing`, `doing` and `expression` are prose** (§2.8).
+
+### 4.1 Real people from a photo
+
+The owner can add a real person to a scene from a photo they attach.
+
+- **Picking the face.** RetinaFace finds the faces in the photo. With one face, that is the person. With several, `which` picks one by position ("left", "second from left") or by size ("the largest"). A photo with no detectable face, or an ambiguous `which`, is refused plainly, naming how many faces were found. A back view cannot be a source of identity.
+- **Identity is the head crop**, at 1.12× the face box, as a library crop is (`face.rs`). There is no library description, so their looks come from the call's `wearing`, plus a short description the call may give ("short grey hair, glasses"). They cost one crop in the budget, like a library character on an edit.
+- **The crop is kept with the scene.** The photo lives in the chat's jail, which a run can write and retention collects. So the crop is copied into the scene store (harness-written, content-addressed) when the person first joins, and every later restage, edit or redraw uses that copy. A person stays the same person after the photo is gone.
+- **Who they are, for later calls.** The record names them by the call's label (`who: { from, which, label: "Sam" }`), so a later change can say `who: "Sam"`. The label is not a library name, and the name check (§4) does not treat it as one.
+- **Making them a character.** A real person used more than once can be proposed to the library from the same crop through `image_library_propose`, as a candidate the owner approves. Then they get a description and a portrait like any character. Nothing is added to the library without the owner's approval.
+- **Privacy.** An attached photo already arms `private_data` (images are captured, not composed), and the crop inherits that. The crop never leaves the machine and is deleted with the chat's scene records (`persona memory forget --chat`). Incognito keeps it in the room.
+- **Measured before it ships** (§9, G4b). Identity from a single attached photo has not been tested the way library crops were (M1–M4). The gate is a render set: the same real person (a consenting volunteer's photo, or the owner's own) added to a new picture, placed on a photo, and restaged, ≥ 3 seeds each, judged by the owner on face-sized sheets. `wearing` and `doing` are required for anyone the call introduces. `expression` is optional and separate from `doing`: an expression changes the face and is retouched, while a pose redraws the scene (§5.2).
 - **The scene is recorded** for every picture drawn: per chat, outside the jail, in a store the harness writes (§6). That covers the assistant chat as well as personas, so there is one path, not a scene path and a no-scene path. Each field carries its origin (clean or untrusted), as `scene.rs` does now.
 
 ## 5. The one operation: draw a scene, or change one
@@ -226,6 +238,7 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 | **G2 the wanted call still happens** | request 1 of every replayed picture turn calls the tool; no reply narrates a picture without one | ≥ 95% |
 | **G3 one picture per run** | at most one started, structurally; 0 calls written as text; 0 empty replies | 100% |
 | **G4 renders, the owner's eye** (face-sized labelled sheets, ≥ 3 seeds each) | restage pose right, room held across restages, identity holds; words setting and photo setting | owner's verdict |
+| **G4b a real person from a photo** (§4.1) | the same real person added to a new picture, placed on a photo, and restaged, ≥ 3 seeds each | owner's verdict |
 | **G5 after deploy** (first real chats) | pose and camera changes go through restage; restages pass the owner's eye; edit-shaped renders that should move something (adding a person, placing on a photo) are not near-copies; no runaways | restage share ≥ 90%; edit-shaped near-copy ≤ 30%; runaways 0 |
 
 ## 10. Build order
@@ -263,7 +276,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
 | S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
-| S3: use case 4 dropped | §4: `who: { from: picture }` |
+| S3: use case 4 dropped | §4.1: a real person from a photo, first-class, with its crop kept in the scene store and its own gate (G4b) |
 | S4: budget refusals are round trips | §5.2: fall back before refusing; the photo-setting fallback is owed a measurement |
 | S5: `tool_choice` for the reply | §5.3 step 4 |
 | S6: the safety check on the panel path | §5.3 step 0 |
