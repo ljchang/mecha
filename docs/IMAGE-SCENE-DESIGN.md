@@ -508,10 +508,10 @@ from the scene's place.
    descriptions beside a canvas under §5.2's resolution and slot rule, the name guard on edits,
    and `face_anchor` recording why it was not applied. New pictures keep the whole portrait.
    They switch after §8.1, and only on the owner's sheets.
-2. The scene record per persona, manifests carrying scenes, and lookup by content hash through a
-   harness-written index in the persona store, never through workspace manifests (§5.1). An
-   incognito chat's write-back path does not exist rather than being switched off, and every
-   scene carries its origin (§5.1).
+2. *(Built 2026-10-07, `scene.rs`.)* The scene record per persona, manifests carrying scenes,
+   and lookup by content hash through a harness-written index in the persona store, never
+   through workspace manifests (§5.1). An incognito chat's write-back path does not exist
+   rather than being switched off, and every scene carries its origin (§5.1).
 3. The canvas rule and restage, with the scene change as the call's type, replacing the typed
    edit.
 4. The scene in run notes.

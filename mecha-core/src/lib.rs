@@ -126,6 +126,7 @@ pub mod runlog;
 pub mod runmarker;
 pub mod sample;
 pub mod sandbox;
+pub mod scene;
 pub mod search;
 pub mod session;
 pub mod shell_registry;
