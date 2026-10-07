@@ -1,7 +1,7 @@
 # Image scenes — design
 
 **Status:** accepted 2026-10-07: the owner ruled R1–R9 (§9). Nothing here is built
-yet; the build waits on #583 and #577 (§10).
+yet; #583 and #577, which it builds on, merged on 2026-10-07.
 It amends `IMAGE-COMPILER-DESIGN.md` §3, where `cast` and `reference_images` are exclusive,
 and `PERSONA-CONTEXT-DESIGN.md` §5.5, where edits happen only on the owner's initiative. It
 replaces the lineage rule of #569's face anchor. The measurements are in §4. The owner judged
@@ -150,8 +150,8 @@ across its steps.
 ### M4: three levers
 
 - **A portrait drawn by the model itself** (best of 6, 0.78 to the original): no gain on any
-  path (place 0.39 → 0.31, two people 0.48 → 0.47). Dropped. The owner judged the drawn
-  portraits to look like A.
+  path (place 0.39 → 0.31, two people 0.48 → 0.47). The portraits themselves looked like A to the
+  owner, but the scenes drawn from them were no closer to her, so the lever is dropped.
 - **1536 instead of 1024**: ArcFace went from 0.28 / 0.60 to 0.73 / 0.68. To the owner, the
   seed mattered more: the best and the worst both include a 1536. It costs 256 s against 54 s.
   Dropped.
@@ -191,8 +191,10 @@ failing closed: unknown classifies untrusted. A chat that reads a scene written 
 input takes that taint on, as a `mailbox.rs` message carries its sender's.
 
 The carrier into the notes is a stem. Notes arm taint only by stem match (`Taint::arm_for_notes`),
-so the scene note opens with its own stem, recognised there as `persona::recall::stem_of`'s
-are, and arms from the origin its record carries. A scene record with no origin, older than
+and a stem is text, so one stem would arm every scene alike. **There are two scene stems, one
+for a clean origin and one for an untrusted one**, as memory has two (`persona::recall::stem_of`;
+the comment on `arm_for_content` says why). The note opens with the stem its record's origin
+picks. A scene record with no origin, older than
 this rule or hand-made, reads as untrusted, never as the default; this is the second half of
 mailbox's `taint_recorded`.
 
@@ -236,8 +238,9 @@ This is ruling R9 (owner, 2026-10-07).
   pictures and harness crops alike, is counted at the size it will be encoded at. The measured
   ceiling is **three references at 1024², canvas included**: canvas plus one crop took 52–54 s;
   canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
-  **A call over budget is refused before the GPU and says why. Nothing falls back to another
-  shape silently.** Drawing the scene without the place's picture is a different call, one the
+  **A call over budget is refused before the GPU and says why, naming the ways out: fewer people,
+  or the place in words.** The model cannot reach those by sending the same call again. **Nothing
+  falls back to another shape silently.** Drawing the scene without the place's picture is a different call, one the
   model makes on purpose, and its result says the room was redrawn: R2's canvas is what keeps an
   owner photo's room (M1, layout 0.84–0.97). That call goes at 512²; E3's four people held there
   as whole portraits standing apart, and touching is measured for two (M3). A third crop beside a
@@ -331,6 +334,10 @@ picture.
   the model what to do about it. The persona then knows which picture is current, because the
   history is what happened (`PERSONA-CONTEXT-DESIGN.md` §5.3).
 - **On a call it runs as a job** (#583).
+- **A redraw passes the same gates as any tool call.** It is dispatched as an `image_generate`
+  call through the registry, so `pre_tool` hooks and the approver see it. Only the model's turn
+  is skipped. The interlock is moot (`Capabilities::default()`), and the library re-check below
+  is in addition to those gates, not instead of them.
 - **The new version shows on the same card** (‹ 1/2 ›), and the version showing is the current
   one (owner, 2026-10-07). The other versions stay on the card, one swipe away. Edit, a retouch,
   works on the version showing, as does Regenerate. **A restage takes the showing version's
@@ -428,17 +435,18 @@ build follows them without asking again.
 
 ## 10. Build order
 
-All of it after #583 (jobs) and #577 (run notes in a head and a tail) merge, since §5.6 builds
-inside both.
+It builds on #583 (jobs) and #577 (run notes in a head and a tail), both merged 2026-10-07. The
+scene record comes before the canvas rule, because the rule compares scene fields and restages
+from the scene's place.
 
 1. Declared identity on the measured paths: lift the `cast` + references refusal, crops and
    descriptions beside a canvas under §5.2's resolution and slot rule, the name guard on edits,
    and `face_anchor` recording why it was not applied. New pictures keep the whole portrait.
    They switch after §8.1, and only on the owner's sheets.
-2. The canvas rule and restage, with the scene change as the call's type, replacing the typed
-   edit.
-3. The scene record per persona, manifests carrying scenes, and lookup by content hash. An
+2. The scene record per persona, manifests carrying scenes, and lookup by content hash. An
    incognito chat's write-back path does not exist rather than being switched off, and every
    scene carries its origin (§5.1).
+3. The canvas rule and restage, with the scene change as the call's type, replacing the typed
+   edit.
 4. The scene in run notes.
 5. §8's measurements, each before the step that depends on it.
