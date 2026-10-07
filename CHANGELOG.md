@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **An edit now carries the faces of the people in it.**
+  - **Who:** `image_generate` takes `cast` beside `reference_images`. Each
+    named library character comes in as a head crop of their portrait with
+    their description, so a chain of edits no longer drifts into somebody
+    else. In a persona chat the persona is included when the picture records
+    her or the edit names her. A picture mecha made remembers its people, so
+    the next edit needs no `cast`.
+  - **The name check:** a library character named in an edit but not in
+    `cast` is now refused, as it already was for new pictures.
+  - **The limit:** an edit takes at most three pictures in all, the faces
+    included.
+  - **What was replaced:** the face anchor, which only fired on chains that
+    traced back to a library scene (`IMAGE-SCENE-DESIGN.md`).
+
 ### Security
 
 - **An experiment environment can no longer set `[documents]`.** A project's
