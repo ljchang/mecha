@@ -963,7 +963,7 @@ pub fn demote_unknown(
 }
 
 /// Empty, or only the refusal's own placeholder copied back — no answer.
-fn blank(s: &str) -> bool {
+pub(crate) fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')
 }
 

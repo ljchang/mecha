@@ -1696,13 +1696,20 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
     out
 }
 
-/// A library name as the edit prompt says it: "maya" → "Maya".
+/// A library name as the edit prompt says it, each word capitalised: "maya" →
+/// "Maya", "mara quinn" → "Mara Quinn" — the name is what binds a face to a
+/// person in the prompt (review of #586).
 fn capitalized(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
+    name.split(' ')
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 /// How long a near-copy of a picture counts against the next edit of it. A
@@ -3187,22 +3194,58 @@ impl Tool for ImageGenerate {
         // (R5). An attached photo records nobody, so it names nobody unless
         // the call does.
         let mut people_from = "the call";
+        // Who the call itself named, as library names (`self` is the
+        // persona's character): held to the compiler's bar below, where a
+        // person carried over from the picture's record is not.
+        let own = |n: &str| {
+            let n = n.trim().to_lowercase();
+            match (&self.self_as, n.as_str()) {
+                (Some(w), "self") => w
+                    .character
+                    .as_deref()
+                    .map(|c| c.trim().to_lowercase())
+                    .unwrap_or(n),
+                _ => n,
+            }
+        };
+        let declared: std::collections::BTreeSet<String> = input
+            .get("cast")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.get("name").and_then(Value::as_str))
+            .map(own)
+            .collect();
+        let mut inherited: std::collections::BTreeSet<String> = Default::default();
         if is_edit && !waived && input.get("cast").is_none_or(Value::is_null) {
+            // What they wore and did is kept for the record, never sent: the
+            // canvas already shows them (review of #586).
             let recorded: Vec<crate::imagelib::CastMember> = read_manifest(ctx, &paths[0])
                 .await
                 .and_then(|m| m.get("cast").and_then(Value::as_array).cloned())
                 .map(|people| {
                     people
                         .iter()
-                        .filter_map(|p| p.get("name").and_then(Value::as_str))
-                        .map(|n| crate::imagelib::CastMember {
-                            name: n.to_string(),
-                            wearing: String::new(),
-                            doing: String::new(),
+                        .filter_map(|p| {
+                            let field = |k: &str| {
+                                p.get(k)
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string()
+                            };
+                            Some(crate::imagelib::CastMember {
+                                name: p.get("name")?.as_str()?.to_string(),
+                                wearing: field("wearing"),
+                                doing: field("doing"),
+                            })
                         })
                         .collect()
                 })
                 .unwrap_or_default();
+            inherited = recorded
+                .iter()
+                .map(|m| m.name.trim().to_lowercase())
+                .collect();
             people_from = if recorded.is_empty() {
                 "nobody named"
             } else {
@@ -3374,29 +3417,81 @@ impl Tool for ImageGenerate {
         // An edit's people come in as head crops beside its canvas, never as
         // portraits in place of it: taken out of the library ask here, before
         // the compile step below, which would swap the canvas for them.
-        let edit_people: Vec<crate::imagelib::CastMember> = if is_edit {
+        let taken: Vec<crate::imagelib::CastMember> = if is_edit {
             ask.as_mut()
                 .map(|a| std::mem::take(&mut a.cast))
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
+        // The compiler's checks, which an edit's cast no longer reaches
+        // (review of #586): a name the call gives twice is refused, and so is
+        // a person the call names without what they wear and do — left out,
+        // the edit invents both. A person carried over from the picture's
+        // record keeps what the canvas shows, so is exempt; a duplicate there
+        // is dropped, not refused. The call's own people go first.
+        let mut edit_people: Vec<crate::imagelib::CastMember> = Vec::new();
+        for m in taken {
+            let name = m.name.trim().to_lowercase();
+            let theirs = declared.contains(&name);
+            if edit_people
+                .iter()
+                .any(|e| e.name.trim().to_lowercase() == name)
+            {
+                if theirs {
+                    return Ok(refused(format!(
+                        "`{name}` appears twice in `cast`; each person is drawn once."
+                    )));
+                }
+                continue;
+            }
+            if theirs {
+                let (wearing, doing) = (m.wearing.trim(), m.doing.trim());
+                if crate::imagelib::blank(wearing) || crate::imagelib::blank(doing) {
+                    return Ok(refused(format!(
+                        "`{name}` needs `wearing` and `doing`: in an edit, what they wear and do \
+                         after the change. Left out, the edit invents them."
+                    )));
+                }
+                if wearing.chars().count() > crate::imagelib::MAX_CAST_FIELD
+                    || doing.chars().count() > crate::imagelib::MAX_CAST_FIELD
+                {
+                    return Ok(refused(format!(
+                        "`wearing` and `doing` are capped at {} characters each.",
+                        crate::imagelib::MAX_CAST_FIELD
+                    )));
+                }
+            }
+            edit_people.push(m);
+        }
+        edit_people.sort_by_key(|m| !declared.contains(&m.name.trim().to_lowercase()));
         // One budget for the whole call, counted before anything is read
-        // (IMAGE-SCENE-DESIGN.md §5.2). A masked edit carries no crops.
-        let crops_asked = if mask_path.is_some() {
-            0
-        } else {
-            edit_people.len()
+        // (IMAGE-SCENE-DESIGN.md §5.2), in crops that can exist: a name with
+        // no approved entry never becomes one. A masked edit carries none.
+        // People the call names over budget are refused, in words that are
+        // true; people carried over from the picture's record are trimmed to
+        // it, and `identity` says who went without (review of #586).
+        let approved = |n: &str| {
+            library
+                .as_ref()
+                .and_then(|l| l.get(crate::imagelib::Kind::Character, n))
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
         };
-        if is_edit && crops_asked > 0 && paths.len() + crops_asked > EDIT_REFERENCE_BUDGET {
+        let room = EDIT_REFERENCE_BUDGET.saturating_sub(paths.len());
+        let named_crops = edit_people
+            .iter()
+            .map(|m| m.name.trim().to_lowercase())
+            .filter(|n| declared.contains(n) && approved(n))
+            .count();
+        if is_edit && mask_path.is_none() && named_crops > room {
             return Ok(refused(format!(
                 "This edit would send {} pictures to the image model at full size — {} in \
-                 reference_images and {} for the people in `cast` — and at most \
+                 reference_images and {} faces for the people named in `cast` — and at most \
                  {EDIT_REFERENCE_BUDGET} fit one call. Pass fewer pictures, name fewer people, or \
                  draw the scene new with `cast` and no reference_images.",
-                paths.len() + crops_asked,
+                paths.len() + named_crops,
                 paths.len(),
-                crops_asked
+                named_crops
             )));
         }
         // Before reading anything: up to a hundred megabytes of references is
@@ -3568,6 +3663,18 @@ impl Tool for ImageGenerate {
                     };
                     let shown = capitalized(&name);
                     let text = e.text.trim().trim_end_matches('.').to_string();
+                    // Past the budget, a carried-over person keeps no crop:
+                    // the people the call named came first, and were
+                    // refused above if they did not fit.
+                    let anchor = match anchor {
+                        Some(crate::face::Anchor::Crop(_)) if crops >= room => {
+                            Some(crate::face::Anchor::Unavailable(format!(
+                                "over the reference budget: an edit sends at most \
+                                 {EDIT_REFERENCE_BUDGET} pictures, this one included"
+                            )))
+                        }
+                        other => other,
+                    };
                     match anchor {
                         Some(crate::face::Anchor::Crop(bytes)) => {
                             req.references.push(Reference {
@@ -3577,7 +3684,18 @@ impl Tool for ImageGenerate {
                             });
                             crops += 1;
                             let k = req.references.len();
-                            said.push_str(&person_sentence(&shown, &text, &m));
+                            // A carried-over person's clothes are on the
+                            // canvas already: only what the call says is sent.
+                            let told = if inherited.contains(&name) && !declared.contains(&name) {
+                                crate::imagelib::CastMember {
+                                    name: m.name.clone(),
+                                    wearing: String::new(),
+                                    doing: String::new(),
+                                }
+                            } else {
+                                m.clone()
+                            };
+                            said.push_str(&person_sentence(&shown, &text, &told));
                             said.push_str(&format!(
                                 " Take only {shown}'s facial identity from <image{k}>, nothing else."
                             ));
@@ -7458,6 +7576,100 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The compiler's checks hold for the people an edit's call names (review
+    /// of #586): a name twice is refused, and so is one without what they wear
+    /// and do, or with the refusal skeleton's placeholder copied back.
+    #[tokio::test]
+    async fn an_edit_holds_its_named_people_to_the_compilers_bar() {
+        let lib = library_with(&["maya"]);
+        let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
+        let dir = tempdir();
+        let call = |cast: Value| {
+            let t = t.clone();
+            let dir = dir.clone();
+            async move {
+                t.call(
+                    json!({"edit": {"change": "x", "keep": "the rest"}, "cast": cast,
+                           "reference_images": ["images/a.png"]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let maya = json!({"name": "maya", "wearing": "a coat", "doing": "sitting"});
+        let out = call(json!([maya, maya])).await;
+        assert!(
+            out.is_error && out.content.contains("appears twice"),
+            "{}",
+            out.content
+        );
+        let out = call(json!([{"name": "maya", "wearing": "…", "doing": ""}])).await;
+        assert!(
+            out.is_error && out.content.contains("needs `wearing` and `doing`"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A picture that records more people than an edit's budget holds is still
+    /// editable with no `cast`: the carried-over people are trimmed to it, and
+    /// `identity` says who went without a crop (review of #586).
+    #[tokio::test]
+    async fn a_crowded_picture_is_trimmed_not_refused() {
+        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john", "sam"]);
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec())));
+        let scene = t
+            .call(
+                json!({"prompt": "a dinner table", "cast": [
+                    {"name": "maya", "wearing": "a dress", "doing": "laughing"},
+                    {"name": "john", "wearing": "a suit", "doing": "pouring wine"},
+                    {"name": "sam", "wearing": "a jumper", "doing": "eating"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!scene.is_error, "{}", scene.content);
+        let out = t
+            .call(
+                json!({"edit": {"change": "Dim the lights.", "keep": "everyone"},
+                       "reference_images": [picture_of(&scene.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last_prompt(&seen);
+        assert!(
+            sent.contains("images.image_3") && !sent.contains("images.image_4"),
+            "{sent}"
+        );
+        assert!(
+            !sent.contains("wearing a dress"),
+            "carried-over clothes are not sent: {sent}"
+        );
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(m["identity"]["people"][2]["crop"], false, "{m}");
+        assert_eq!(
+            m["cast"][0]["wearing"], "a dress",
+            "the record keeps the clothes: {m}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    #[test]
+    fn every_word_of_a_name_is_capitalised() {
+        assert_eq!(capitalized("mara quinn"), "Mara Quinn");
+        assert_eq!(capitalized("maya"), "Maya");
     }
 
     /// Crops never take an edit past the budget, but pictures the model passes
