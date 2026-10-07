@@ -921,7 +921,12 @@ conversation, so the capabilities do not change. Three rules:
       canvas's record brings the rest, as it did the first time. If the call
       declared someone the library could not supply, they were drawn from
       the call's own words, which the record does not keep, so the redraw
-      says so and does not draw.
+      says so and does not draw. A picture made by a `scene` change redraws
+      as the call it was routed into (§5.7: a retouch regenerates as
+      itself), so on the record it advances as that call did.
+    - **The same call:** its negative prompt is carried, and a call that
+      waived declared identity (`"cast": []`, recorded as `cast_waived`)
+      redraws waived.
     - **A picture carried from another chat** is refused. Its record holds
       a placeholder instead of that chat's words, and a redraw here would
       write those words into this chat's manifest. It can be edited here,

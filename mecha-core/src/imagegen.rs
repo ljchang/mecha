@@ -2459,11 +2459,12 @@ impl ImageGenerate {
     /// nothing else is drawn in their place.
     ///
     /// Every path the manifest names is re-checked before it is used: a
-    /// plain path of safe characters that resolves in this chat's jail, as
-    /// `original_of` reads one. A manifest that names another chat's words by
-    /// placeholder only takes the place from the persona's scene, found by
-    /// the picture's bytes. A picture with no record, or one whose record
-    /// cannot be used, is refused and says why.
+    /// plain path of safe characters, no `..`, that resolves in this chat's
+    /// jail to a file that still exists, more strictly than `original_of`
+    /// reads one. A picture carried from another chat, whose record names
+    /// that chat's words by placeholder only, is refused rather than writing
+    /// them here. A picture with no record, or one whose record cannot be
+    /// used, is refused and says why.
     pub async fn redraw_of(&self, ctx: &ToolCtx, picture: &str) -> Result<Value, String> {
         let safe = |p: &str| {
             p.len() <= 200
@@ -2599,10 +2600,19 @@ impl ImageGenerate {
                 .filter_map(|p| p.get("name").and_then(Value::as_str))
                 .map(|n| n.trim().to_lowercase())
                 .collect();
+            // Manifest text, so capped and counted as a library name is
+            // (review of #593, pass 3).
             let unrecorded: Vec<String> = declared
                 .iter()
                 .filter(|n| !kept.contains(n))
-                .map(|n| capitalized(n))
+                .take(crate::imagelib::MAX_CAST)
+                .map(|n| {
+                    capitalized(
+                        &n.chars()
+                            .take(crate::imagelib::MAX_NAME)
+                            .collect::<String>(),
+                    )
+                })
                 .collect();
             if !unrecorded.is_empty() {
                 return Err(format!(
@@ -2650,11 +2660,7 @@ impl ImageGenerate {
                 }
             };
             call.insert("prompt".into(), json!(prompt));
-            // The call's own negative prompt, so the redraw is the same call
-            // (review of #593, pass 2).
-            if let Some(neg) = text("negative_prompt") {
-                call.insert("negative_prompt".into(), json!(neg));
-            }
+
             if let Some(extras) = m.get("extras").and_then(Value::as_array) {
                 if !extras.is_empty() {
                     call.insert("extras".into(), json!(extras));
@@ -2669,6 +2675,24 @@ impl ImageGenerate {
             if let Some(s) = shape {
                 call.insert("size".into(), json!(s.name()));
             }
+        }
+        // The call's own negative prompt, for a new picture and an edit
+        // alike, so the redraw is the same call (review of #593, passes 2
+        // and 3).
+        if let Some(neg) = text("negative_prompt") {
+            call.insert("negative_prompt".into(), json!(neg));
+        }
+        // A call that waived declared identity (`"cast": []`) redraws waived:
+        // no self cast, no name guard, no crops it did not have. Recorded
+        // as `cast_waived`, or, on an edit recorded before that, by its
+        // identity's note (review of #593, pass 3).
+        let waived = m.get("cast_waived").and_then(Value::as_bool) == Some(true)
+            || m.get("identity")
+                .and_then(|i| i.get("skipped"))
+                .and_then(Value::as_str)
+                == Some("`cast` was empty");
+        if waived {
+            call.insert("cast".into(), json!([]));
         }
         // The library as it stands now, on every surface, over the people the
         // redraw will declare (after an edit's narrowing: a person the canvas's
@@ -5422,6 +5446,9 @@ impl Tool for ImageGenerate {
                 "same_layout_as": near.as_ref().map(|n| &n.original),
                 // An edit records the people it declared, so an edit of this
                 // picture finds them here without being told again.
+                // An explicit `"cast": []`: the call waived declared identity,
+                // and a redraw must waive it too (review of #593, pass 3).
+                "cast_waived": waived.then_some(true),
                 // Built on another chat's scene, by name only, as an index
                 // lookup records them (review of #589).
                 "cast": if is_edit {
@@ -11229,6 +11256,54 @@ mod tests {
             why.contains("Maya is no longer in the image library"),
             "{why}"
         );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A call that waived declared identity redraws waived, a new picture
+    /// and an edit alike, and an edit's negative prompt is carried, so the
+    /// redraw is the same call (review of #593, pass 3).
+    #[tokio::test]
+    async fn a_redraw_keeps_the_calls_waiver_and_negative_prompt() {
+        let (url, _) = distinct(3).await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya =
+            Arc::new(tool(&url).with_library_dir(lib.clone())).persona_form(Some(persona_maya()));
+        let explorer = maya
+            .call(
+                json!({"prompt": "Maya the explorer", "cast": []}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!explorer.is_error, "{}", explorer.content);
+        let again = maya
+            .redraw_of(&ctx(&dir), &picture_of(&explorer.content))
+            .await
+            .unwrap();
+        assert_eq!(again["cast"], json!([]), "{again}");
+        let out = maya.call(again, &ctx(&dir)).await.unwrap();
+        assert!(
+            !out.is_error,
+            "the waiver holds on the redraw: {}",
+            out.content
+        );
+        let edited = maya
+            .call(
+                json!({"edit": {"change": "Make it dusk."}, "negative_prompt": "text, watermark",
+                       "reference_images": [picture_of(&explorer.content)], "cast": []}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!edited.is_error, "{}", edited.content);
+        let again = maya
+            .redraw_of(&ctx(&dir), &picture_of(&edited.content))
+            .await
+            .unwrap();
+        assert_eq!(again["negative_prompt"], "text, watermark");
+        assert_eq!(again["cast"], json!([]), "{again}");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
