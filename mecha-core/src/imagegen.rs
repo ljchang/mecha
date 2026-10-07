@@ -2471,7 +2471,9 @@ impl ImageGenerate {
                 && !p.split('/').any(|c| c == ".." || c.is_empty())
                 && p.chars()
                     .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
-                && ctx.resolve(p).is_ok()
+                // `resolve` succeeds for a file that is gone; a redraw needs
+                // the file (review of #593, pass 2).
+                && ctx.resolve(p).is_ok_and(|q| q.is_file())
         };
         if !(picture.starts_with("images/") && picture.ends_with(".png") && safe(picture)) {
             return Err(format!("`{picture}` is not a picture this chat drew."));
@@ -2513,10 +2515,18 @@ impl ImageGenerate {
                 call.insert("cast".into(), json!(cast));
             }
         }
+        // Capped as a library name is: a manifest is a file a run can write,
+        // and this text reaches the model (review of #593, pass 2).
         if let Some(st) = m
             .get("style")
             .and_then(|s| s.get("name"))
             .and_then(Value::as_str)
+            .map(|s| {
+                s.chars()
+                    .take(crate::imagelib::MAX_NAME)
+                    .collect::<String>()
+            })
+            .filter(|s| !s.trim().is_empty())
         {
             call.insert("style".into(), json!(st));
         }
@@ -2577,6 +2587,31 @@ impl ImageGenerate {
                         .is_some_and(|n| declared.contains(&n.trim().to_lowercase()))
                 });
             }
+            // Someone the call declared whom the library could not supply was
+            // drawn from the call's own words, which the record does not keep
+            // (no cast row): a redraw would leave them out unsaid, so it
+            // says so and does not draw (§5.7; review of #593, pass 2).
+            let kept: Vec<String> = call
+                .get("cast")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.get("name").and_then(Value::as_str))
+                .map(|n| n.trim().to_lowercase())
+                .collect();
+            let unrecorded: Vec<String> = declared
+                .iter()
+                .filter(|n| !kept.contains(n))
+                .map(|n| capitalized(n))
+                .collect();
+            if !unrecorded.is_empty() {
+                return Err(format!(
+                    "`{picture}` cannot be redrawn: {} {} drawn from the edit's own words, \
+                     with no library entry, and those words are not recorded.",
+                    unrecorded.join(", "),
+                    if unrecorded.len() == 1 { "was" } else { "were" },
+                ));
+            }
             if call
                 .get("cast")
                 .and_then(Value::as_array)
@@ -2615,6 +2650,11 @@ impl ImageGenerate {
                 }
             };
             call.insert("prompt".into(), json!(prompt));
+            // The call's own negative prompt, so the redraw is the same call
+            // (review of #593, pass 2).
+            if let Some(neg) = text("negative_prompt") {
+                call.insert("negative_prompt".into(), json!(neg));
+            }
             if let Some(extras) = m.get("extras").and_then(Value::as_array) {
                 if !extras.is_empty() {
                     call.insert("extras".into(), json!(extras));
@@ -2660,6 +2700,12 @@ impl ImageGenerate {
                 gone.push(format!("the style {st}"));
             }
         }
+        if library.is_none() && !gone.is_empty() {
+            return Err(format!(
+                "`{picture}` cannot be redrawn: the image library is not available (the \
+                 mecha home could not be resolved)."
+            ));
+        }
         if !gone.is_empty() {
             return Err(format!(
                 "`{picture}` cannot be redrawn: {} {} no longer in the image library as \
@@ -2669,8 +2715,8 @@ impl ImageGenerate {
                 if gone.len() == 1 { "its" } else { "their" },
             ));
         }
-        // A new seed, never the recorded one: that is what a redraw is for.
-        call.remove("seed");
+        // No `seed` was carried, so the tool draws a new one: that is what a
+        // redraw is for.
         Ok(Value::Object(call))
     }
 
@@ -3391,14 +3437,20 @@ impl ImageGenerate {
                     ));
                 }
                 for v in items {
-                    for k in ["name", "wearing", "doing"] {
+                    // A name as long as the store keeps one, or the record
+                    // would cut it and a later change by the full name would
+                    // find nobody (review of #593, pass 2).
+                    for (k, cap) in [
+                        ("name", crate::imagelib::MAX_NAME),
+                        ("wearing", crate::imagelib::MAX_CAST_FIELD),
+                        ("doing", crate::imagelib::MAX_CAST_FIELD),
+                    ] {
                         if v.get(k)
                             .and_then(Value::as_str)
-                            .is_some_and(|t| t.chars().count() > crate::imagelib::MAX_CAST_FIELD)
+                            .is_some_and(|t| t.chars().count() > cap)
                         {
                             return Err(format!(
-                                "`scene.people` `{k}` is at most {} characters.",
-                                crate::imagelib::MAX_CAST_FIELD
+                                "`scene.people` `{k}` is at most {cap} characters."
                             ));
                         }
                     }
@@ -11142,6 +11194,7 @@ mod tests {
         let drawn = t
             .call(
                 json!({"prompt": "a quiet harbour at dawn", "size": "landscape", "seed": 41,
+                       "negative_prompt": "blurry",
                        "cast": [{"name": "maya", "wearing": "a coat", "doing": "waving"}]}),
                 &ctx(&dir),
             )
@@ -11154,6 +11207,7 @@ mod tests {
             .unwrap();
         assert_eq!(again["prompt"], "a quiet harbour at dawn");
         assert_eq!(again["size"], "landscape");
+        assert_eq!(again["negative_prompt"], "blurry");
         assert_eq!(again["cast"][0]["name"], "maya");
         assert_eq!(again["cast"][0]["wearing"], "a coat");
         assert!(again.get("seed").is_none(), "{again}");
@@ -11185,7 +11239,7 @@ mod tests {
     /// resolves is refused rather than drawn from.
     #[tokio::test]
     async fn a_redraw_of_an_edit_is_the_same_change_and_a_bad_record_is_refused() {
-        let (url, _) = distinct(2).await;
+        let (url, _) = distinct(3).await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
         let t = tool(&url)
@@ -11241,6 +11295,23 @@ mod tests {
             let why = r.unwrap_err();
             assert!(why.contains(says), "{why}");
         };
+        // Someone declared with no library entry was drawn from the call's
+        // words, which are not recorded: said, not drawn (review of #593,
+        // pass 2).
+        let zoe = t
+            .call(
+                json!({"edit": {"change": "Add Zoe at the table."},
+                       "reference_images": [picture_of(&drawn.content)],
+                       "cast": [{"name": "zoe", "wearing": "a red coat", "doing": "pouring tea"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!zoe.is_error, "{}", zoe.content);
+        refused(
+            t.redraw_of(&ctx(&dir), &picture_of(&zoe.content)).await,
+            "Zoe was drawn from the edit's own words",
+        );
         refused(
             t.redraw_of(&ctx(&dir), "../outside.png").await,
             "not a picture",
@@ -11253,6 +11324,13 @@ mod tests {
         let json = dir.join(picture_of(&added.content).replace(".png", ".json"));
         let mut m: Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
         m["reference_images"] = json!(["../../etc/passwd"]);
+        std::fs::write(&json, m.to_string()).unwrap();
+        refused(
+            t.redraw_of(&ctx(&dir), &picture_of(&added.content)).await,
+            "not in this chat any more",
+        );
+        // A path that resolves but whose file is gone (review of #593, pass 2).
+        m["reference_images"] = json!(["images/gone.png"]);
         std::fs::write(&json, m.to_string()).unwrap();
         refused(
             t.redraw_of(&ctx(&dir), &picture_of(&added.content)).await,
@@ -12251,6 +12329,11 @@ mod tests {
                 json!({"scene": {"people": [{"name": "john", "wearing": "w".repeat(400), "doing": "d"}]},
                     "reference_images": ["inbox/a.png"]}),
                 "`wearing` is at most 300 characters",
+            ),
+            (
+                json!({"scene": {"people": [{"name": "n".repeat(65), "wearing": "w", "doing": "d"}]},
+                    "reference_images": ["inbox/a.png"]}),
+                "`name` is at most 64 characters",
             ),
         ] {
             let out = t.call(bad, &ctx(&dir)).await.unwrap();

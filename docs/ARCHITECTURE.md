@@ -909,8 +909,8 @@ conversation, so the capabilities do not change. Three rules:
     replayed from the compiled prompt, which sits in a file a run can write.
     The call goes through the tool again, so every pre-GPU check runs afresh.
     - **Paths:** each path the record names is re-checked, as `original_of`
-      reads one: a plain path of safe characters that resolves in this
-      chat's jail.
+      reads one, and more strictly: a plain path of safe characters, no
+      `..`, that resolves in this chat's jail to a file that still exists.
     - **The library, as it stands now:** a person or style the redraw will
       declare that is no longer approved refuses the redraw, on every
       surface. An assistant chat would otherwise draw the name as an extra.
@@ -918,7 +918,10 @@ conversation, so the capabilities do not change. Three rules:
       record brings refuses nothing (the rule of #586 and #591).
     - **An edit:** it regenerates as itself, and casts only the people its
       own call declared (`identity.people[].from == "the call"`). The
-      canvas's record brings the rest, as it did the first time.
+      canvas's record brings the rest, as it did the first time. If the call
+      declared someone the library could not supply, they were drawn from
+      the call's own words, which the record does not keep, so the redraw
+      says so and does not draw.
     - **A picture carried from another chat** is refused. Its record holds
       a placeholder instead of that chat's words, and a redraw here would
       write those words into this chat's manifest. It can be edited here,
