@@ -307,6 +307,10 @@ pub fn stem_of(text: &str) -> Option<(bool, bool)> {
 /// The most of a place described in words a note carries.
 const NOTE_PLACE_CHARS: usize = 240;
 
+/// The most of any other field (what someone wears or does, the camera) a
+/// note carries.
+const NOTE_FIELD_CHARS: usize = 160;
+
 /// The scene as a run note: where the persona is, who is with her, what each
 /// wears and does, and the camera. The present comes from here, so a
 /// recalled day's outfit or blocking cannot stand in for it (§5.5). `me` is
@@ -316,24 +320,22 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
     if scene.place.is_none() && scene.people.is_empty() && scene.camera.is_none() {
         return None;
     }
-    let stem = match scene.origin() {
-        Origin::Clean => SCENE_STEM,
-        Origin::Untrusted => UNTRUSTED_SCENE_STEM,
+    // Every field is cut to a sentence's length, so the note rides on every
+    // request at a bounded size whatever a scene holds (review of #590).
+    let clip = |text: &str, n: usize| {
+        let text = text.trim();
+        let cut: String = text.chars().take(n).collect();
+        let cut = if cut.len() < text.len() {
+            format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a))
+        } else {
+            cut
+        };
+        cut.trim_end_matches('.').to_string()
     };
-    let mut out = format!(
-        "{stem}: what your last picture showed. Clothes and places come from here now, \
-         not from a remembered day.)"
-    );
+    let mut out = String::new();
     match scene.place.as_ref().map(|p| &p.value) {
         Some(Place::Words { text }) => {
-            let text = text.trim();
-            let cut: String = text.chars().take(NOTE_PLACE_CHARS).collect();
-            let cut = if cut.len() < text.len() {
-                format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a))
-            } else {
-                cut
-            };
-            out.push_str(&format!(" Place: {}.", cut.trim_end_matches('.')));
+            out.push_str(&format!(" Place: {}.", clip(text, NOTE_PLACE_CHARS)));
         }
         Some(Place::Picture { .. }) => out.push_str(" Place: the picture you were placed in."),
         // Nothing to say about a place this build cannot read; the scene is
@@ -358,10 +360,10 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         };
         let mut said = vec![];
         if !p.wearing.trim().is_empty() {
-            said.push(format!("wearing {}", p.wearing.trim()));
+            said.push(format!("wearing {}", clip(&p.wearing, NOTE_FIELD_CHARS)));
         }
         if !p.doing.trim().is_empty() {
-            said.push(p.doing.trim().trim_end_matches('.').to_string());
+            said.push(clip(&p.doing, NOTE_FIELD_CHARS));
         }
         if said.is_empty() {
             let verb = if who == "You" { "are" } else { "is" };
@@ -371,12 +373,22 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         }
     }
     if let Some(c) = &scene.camera {
-        out.push_str(&format!(
-            " Camera: {}.",
-            c.value.trim().trim_end_matches('.')
-        ));
+        out.push_str(&format!(" Camera: {}.", clip(&c.value, NOTE_FIELD_CHARS)));
     }
-    Some(out)
+    // Nothing to say is no note: an unknown place alone would otherwise send
+    // the opening sentence by itself, and arm `untrusted` for no content
+    // (review of #590).
+    if out.is_empty() {
+        return None;
+    }
+    let stem = match scene.origin() {
+        Origin::Clean => SCENE_STEM,
+        Origin::Untrusted => UNTRUSTED_SCENE_STEM,
+    };
+    Some(format!(
+        "{stem}: what your last picture showed. Clothes and places come from here now, \
+         not from a remembered day.){out}"
+    ))
 }
 
 /// A picture's content hash, as the index keys it.
@@ -830,6 +842,25 @@ mod tests {
         });
         let n = note(&Scene::advance(None, long, Origin::Clean, "c1"), None).unwrap();
         assert!(n.len() < 600 && n.contains("…"), "{n}");
+    }
+
+    /// A scene with nothing to say gives no note, so an unknown place alone
+    /// never arms `untrusted` with no content; and every field is cut, so the
+    /// note is bounded whatever the scene holds (review of #590).
+    #[test]
+    fn a_note_says_something_or_nothing_and_is_bounded() {
+        let unknown: Scene =
+            serde_json::from_str(r#"{"place": {"value": {"kind": "hologram"}}, "chat": "c1"}"#)
+                .unwrap();
+        assert_eq!(note(&unknown, None), None);
+        let mut big = change(true, "a");
+        big.camera = Some("low ".repeat(2_000));
+        big.declared = (0..MAX_PEOPLE)
+            .map(|i| (format!("p{i}"), "silk ".repeat(100), "waving ".repeat(100)))
+            .collect();
+        let n = note(&Scene::advance(None, big, Origin::Clean, "c1"), None).unwrap();
+        assert!(n.len() < 4_500, "{} bytes", n.len());
+        assert!(n.contains("Camera: low") && n.contains("…"), "{n}");
     }
 
     /// Forgetting a chat removes what its renders left in the persona's
