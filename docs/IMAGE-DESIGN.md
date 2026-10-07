@@ -166,18 +166,18 @@ The planner reads the call against the picture's record and picks one render. No
 | `retouch` (with or without `mask`) | **Retouch** of the picture, in the #408 keep form; masked as today. |
 
 **Budgets, as measured:**
-- **An edit-shaped render carries the canvas plus up to three face crops** (`EDIT_REFERENCE_BUDGET` 4, up from 3). mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (evidence §F):
+- **An edit-shaped render carries the canvas plus up to five face crops** (`EDIT_REFERENCE_BUDGET` 6, up from 3). **Provisional (owner, 2026-10-07): start with C5 and revisit after a closer look at the sheets.** The owner wants up to five people, though usually one to three. Because the budget is a cap, one to three people cost what they did. Five people on a photo, in one pass (C5), kept the room, with faces "mostly really good, a few of Luke's drift"; about 240 s. Two passes (S5) shifted the first three. The three-person set before it: mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (evidence §F):
   - **C3, canvas plus three crops:** kept the owner's actual room. All three approaches placed the three people correctly, and face identity was close across them.
   - **RN3, portraits with the photo as material:** recomposed the room.
   - **W3, the room in words:** drew a different room every time.
 
-  The owner's verdict (2026-10-07, given to mecha-a3): only C3 keeps the scene. The cost is time: about 150 s against about 46 s, the measured four-reference cliff. The owner chose scene fidelity, so one budget serves every edit-shaped render: placing on a photo, restaging on a photo setting, adding someone, and clothes.
-- **A new picture carries up to `MAX_CAST` 4 portraits.**
+  The owner's verdict (2026-10-07): C3 keeps the scene, RN3 is close with some distortions, and W3 is clearly not the same room. The cost is time: about 150 s against about 46 s at three people, and about 240 s at five. The owner chose scene fidelity, so one budget serves every edit-shaped render: placing on a photo, restaging on a photo setting, adding someone, and clothes.
+- **A new picture carries up to `MAX_CAST` 5 portraits** (up from 4; five whole portraits with the room in words drew all five correctly, 3/3).
 - **A scene keeps up to 8 people.**
 
 A change that does not fit falls back before it refuses (review S4):
 - **On a words setting,** a restage that needs more faces than an edit holds is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
-- **On a photo setting,** four or more people with faces are refused in the scene's own terms, naming them, pending §11 question 7. A canvas plus four crops is untested, beyond the cliff. The owner rated RN3 (portraits with the photo as material) "close, with some distortions", against W3 "clearly not the same room". So RN3 is a candidate fallback, unmeasured for four or more people.
+- **On a photo setting,** up to five people with faces are drawn in one pass (C5). More than five are refused in the scene's own terms, naming them.
 - **A person without a library entry** costs no budget; they are drawn from words.
 
 **Seeds:** the model does not send seeds (§5.1). An edit-shaped render samples fresh (#306). A restage reuses the base picture's seed. A redraw takes a new one. The seed actually drawn is recorded, so a redraw always differs.
@@ -289,7 +289,7 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 4. **The thresholds in §9.** **Ruled 2026-10-07: accepted as proposed.**
 5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
 6. **Seeds off the chat schemas** (§5.1)? **Ruled 2026-10-07: off;** every seed reuse that helps is the harness's.
-7. **Four or more people with faces on a photo** (§5.2): refuse them, or draw them RN-style (portraits with the photo as material, about 46 s) and say on the card that the room is approximate? The RN option needs a small render set of its own for four or more people first; mecha-a3 can run it.
+7. **Up to five people** (§5.2)? **Ruled provisionally 2026-10-07: C5,** a canvas plus five crops in one pass; the owner may revisit after a closer look. The budget is one constant.
 
 ## 12. Review and how each point is met
 
