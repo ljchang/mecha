@@ -131,7 +131,8 @@ the description's effect; the owner could.
 | **R: restage on the place + head crop** | 0.43 / 0.60 / 0.20 | low angle yes | **pretty good** |
 | RN: new picture, full portrait, place as material | 0.22 / 0.69 / 0.41 | low angle yes | okay, the most unnatural faces |
 
-Chains changed pose but never the camera. No path produced a clearly high angle from the
+Step 3, the back view, has no face to score; all four paths drew it. Chains changed pose but
+never the camera. No path produced a clearly high angle from the
 wording used. Step 4 is that high-angle step, with the face tilted against the table. R's 0.20
 there is read as the wording failing (§8.2), not the restage path: the owner rated R pretty good
 across its steps.
@@ -183,6 +184,16 @@ attached in any chat is matched by its bytes, so a carried-over picture resolves
 front door never does the lookup: an outside sender's bytes must not pull a scene out of the
 persona store.
 
+**A scene carries its origin.** Scene text is model-written, so it crosses from one chat's run
+into another chat's notes. Each write records the taint of the run that made it, classified
+from the transcript's recorded taint the way a library candidate's `imagelib::Origin` is, and
+failing closed: unknown classifies untrusted. A chat that reads a scene written under untrusted
+input takes that taint on, as a `mailbox.rs` message carries its sender's.
+
+**A picture whose bytes match no record names nobody,** and the call has to declare its people
+(§5.2). The manifest records that no scene was found for it. It never falls through silently:
+that silence is §1's `face_anchor: null` again.
+
 **An incognito chat writes no scene outside its own folder.** This follows
 `INCOGNITO-DESIGN.md` R3 (no writes outside the chat's own folder) and R6 (images deleted when
 the session closes).
@@ -219,7 +230,8 @@ This is ruling R9 (owner, 2026-10-07).
   canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
   A call over budget is refused before the GPU and says why. A restage over budget goes without a
   canvas, at 512², where four people held in one pass (E3). A third crop beside a canvas is a
-  measurement (§8).
+  measurement (§8). The cap is therefore a function of the encode size, not a larger constant
+  beside `MAX_REFERENCES`.
 
 **New pictures keep the whole portrait until §8.1 passes.** R1's crop is measured only on paths
 with a canvas: M1, M2's R, and M3's add-a-person. New pictures still send the whole portrait at
@@ -245,7 +257,9 @@ good.
 A retouch builds on the current picture, and **whether a chain of retouches holds identity is
 unmeasured** (§8). The nearest data point goes the other way: M2's EA, a chain with the crop
 riding along, fell to −0.01. EA moved the layout and a retouch does not, so the result may not
-carry over, but until it is measured a long retouch chain is not assumed safe.
+carry over, but until it is measured a long retouch chain is not assumed safe. Each manifest
+records its **retouch depth** (the picture it built on, plus one; zero for a render from the
+place), so §8.7 can be read from real use as well as from a fresh sheet.
 
 ### 5.4 The model writes scene changes, the compiler writes the prompt
 
@@ -261,7 +275,8 @@ carry over, but until it is measured a long retouch chain is not assumed safe.
 
 ### 5.5 The scene is the story's present
 
-The current scene goes into the run's notes (`PERSONA-CONTEXT-DESIGN.md` §5.1): what A is
+The **chat's own copy** of the scene (R7), never the persona's latest, goes into the run's notes
+(`PERSONA-CONTEXT-DESIGN.md` §5.1): what A is
 wearing and where. A recalled day's outfit or blocking then cannot stand in for the present one.
 
 ### 5.6 Scenes and background jobs
@@ -294,7 +309,10 @@ picture.
 - **The harness redraws the picture's recorded scene with a new seed.** No model turn is
   involved: no loop, no reasoning, one render. A retouch regenerates as itself, which is the same
   change on the same canvas with a new seed.
-- **Identity follows R1**, because the scene names its people.
+- **Identity follows R1**, because the scene names its people. The live library is checked
+  again on every redraw: each entry has to be approved now, as on every other identity path, not
+  merely when the picture was first drawn. A redraw whose person is no longer approved says so
+  and does not draw.
 - **The chat history records the redraw as a fact.** Picture X was redrawn as Y; nothing tells
   the model what to do about it. The persona then knows which picture is current, because the
   history is what happened (`PERSONA-CONTEXT-DESIGN.md` §5.3).
@@ -345,14 +363,15 @@ C. That is switched on per case.
 - `edit.camera` as the switch for the anchor.
 - The refusal of `cast` beside `reference_images`.
 
-**Kept:** a masked edit carries no crops, as `ImageGenerate` decides today ("the masked graph has
-one canvas"). Outside the mask nothing moves, so the people there keep their pixels. And the
-10-05 drift study behind #569 found that a masked redraw with a face crop did not move identity.
 - The near-copy recovery advice, already reduced by #581. A restage is not an edit of the last
   picture.
 - `PERSONA-CONTEXT-DESIGN.md` §5.5 keeps its rule (edit only what the owner points at) and loses
   its assumption: what the owner points at chooses the scene and the retouch canvas, and the
   crops always come along.
+
+**Kept:** a masked edit carries no crops, as `ImageGenerate` decides today ("the masked graph has
+one canvas"). Outside the mask nothing moves, so the people there keep their pixels. And the
+10-05 drift study behind #569 found that a masked redraw with a face crop did not move identity.
 
 ## 8. Open, measured during the build
 
@@ -382,7 +401,8 @@ build follows them without asking again.
 - **R4.** §5.5 is amended as in §7.
 - **R5.** #569's lineage path is retired rather than kept beside this.
 - **R6.** The owner's eye on face-sized sheets is the gate for every step. ArcFace is a backstop.
-- **R7.** With two chats rendering for one persona, each chat works on its own copy of the scene,
+- **R7.** With two chats rendering for one persona (incognito chats never write back, R9 and
+  `INCOGNITO-DESIGN.md` R3, whatever else is ruled), each chat works on its own copy of the scene,
   and the last render to land updates the persona's latest (§5.6).
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
   turn (§5.7). This replaces drawing two variants of every picture. Versions stay on one card, and the version showing
@@ -402,6 +422,8 @@ inside both.
    They switch after §8.1, and only on the owner's sheets.
 2. The canvas rule and restage, with the scene change as the call's type, replacing the typed
    edit.
-3. The scene record per persona, manifests carrying scenes, and lookup by content hash.
+3. The scene record per persona, manifests carrying scenes, and lookup by content hash. An
+   incognito chat's write-back path does not exist rather than being switched off, and every
+   scene carries its origin (§5.1).
 4. The scene in run notes.
 5. §8's measurements, each before the step that depends on it.
