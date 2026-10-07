@@ -4230,13 +4230,14 @@ impl Tool for ImageGenerate {
             // An edit advances its canvas's own scene, found by the canvas's
             // bytes, never the chat's latest: editing an older picture must
             // not carry the latest picture's place and camera (review of
-            // #589). A new picture starts from the chat's scene and replaces
-            // it whole.
+            // #589). A new picture replaces it whole.
             let landed = ctx.scene.as_ref().map(|slot| {
+                // A new picture defines its scene afresh, so it reads no base;
+                // the chat's copy is read by the run's scene note (step 4).
                 let base = if is_edit {
                     canvas_hash.as_deref().and_then(|h| slot.lookup_hash(h))
                 } else {
-                    slot.current()
+                    None
                 };
                 let triple = |v: &Value| {
                     let f = |k: &str| {
@@ -9638,6 +9639,81 @@ mod tests {
             "{now:?}"
         );
         assert_eq!(now.people[0].wearing, "a red coat", "{now:?}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The run's taint is the landed scene's origin, and an unstamped run
+    /// lands untrusted (`Origin::of`); a lookup that finds nothing says so
+    /// (review of #589).
+    #[tokio::test]
+    async fn a_scenes_origin_is_its_runs_taint_and_a_miss_is_said() {
+        let (url, _) = fake_with(Fake {
+            history: vec![done(); 4],
+            views: (0..4u8)
+                .map(|i| picture(8, [30 + 40 * i, 80, 120]))
+                .collect(),
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let draw = |taint: Option<crate::agent::Taint>| {
+            let mut cx = scene_ctx(&dir, &store, "c1");
+            cx.taint = taint;
+            let maya = maya.clone();
+            async move {
+                maya.call(
+                    json!({"prompt": "a harbour", "cast": [
+                        {"name": "self", "wearing": "a coat", "doing": "standing"}]}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+                cx.scene.clone().unwrap().current().unwrap().origin()
+            }
+        };
+        use crate::scene::Origin;
+        assert_eq!(
+            draw(Some(crate::agent::Taint::default())).await,
+            Origin::Clean
+        );
+        assert_eq!(
+            draw(Some(crate::agent::Taint {
+                private: true,
+                untrusted: true
+            }))
+            .await,
+            Origin::Untrusted
+        );
+        assert_eq!(
+            draw(None).await,
+            Origin::Untrusted,
+            "unstamped is untrusted"
+        );
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/stranger.png"), picture(8, [1, 2, 3])).unwrap();
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Brighten it."},
+                       "reference_images": ["inbox/stranger.png"]}),
+                &scene_ctx(&dir, &store, "c1"),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["identity"]["scene_lookup"],
+            "none"
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();

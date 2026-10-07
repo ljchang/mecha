@@ -811,26 +811,6 @@ conversation, so the capabilities do not change. Three rules:
   - **The record.** The manifest's `identity` always says who was declared,
     from where, and whose crop came or why not. Its `cast` records them,
     which is how the next edit finds them.
-- **A persona chat keeps a scene record** (`scene.rs`, `IMAGE-SCENE-DESIGN.md`
-  step 2). A render that lands advances it, beside `write_manifest` in the
-  job, so a cancelled or failed render never does.
-  - **What advances:** a new picture defines the scene afresh; an edit
-    changes what it declared and keeps the rest.
-  - **Where it lives:** three files, all harness-written and outside the
-    jail. The chat's copy sits beside its transcript (`<id>.scene.json`;
-    a chat starts from the persona's latest, R7). The persona's
-    `scene/latest.json` is won by the last render to land. The index is
-    `scene/index/<sha256>.json`.
-  - **Lookup:** an attached picture whose manifest records nobody is found
-    there by its bytes, so a picture carried in from another chat brings its
-    people. The lookup never reads a workspace manifest across chats.
-  - **Origin:** kept per field, the scene's origin is the union, and unknown
-    reads untrusted. Nothing reads a scene into a prompt yet (step 4).
-  - **Who has a slot:** only a persona chat stamps one (`ToolCtx::scene`).
-    The assistant's chats, incognito included, keep no scene, so R9 holds
-    by construction.
-  - **Forgetting:** `persona memory forget --chat` also removes that chat's
-    entries from the store.
   `edit.face` says what the face does — expression, head angle, gaze — when
   the change is about faces, because without it the edit hands the face back
   as it was (which is right when it is not), and `edit.camera` describes a
@@ -853,6 +833,27 @@ conversation, so the capabilities do not change. Three rules:
   (`the_convolution_matches_its_definition_at_every_shape_used`).
   `mecha imagelib install-face-detector` fetches the weights; wiring them
   into the image feature's install plan is FEATURES-DESIGN 7e's.
+- **A persona chat keeps a scene record** (`scene.rs`, `IMAGE-SCENE-DESIGN.md`
+  step 2). A render that lands advances it, beside `write_manifest` in the
+  job, so a cancelled or failed render never does.
+  - **What advances:** a new picture defines the scene afresh; an edit
+    changes what it declared and keeps the rest.
+  - **Where it lives:** three files, all harness-written and outside the
+    jail. The chat's copy sits beside its transcript (`<id>.scene.json`;
+    a chat starts from the persona's latest, R7, and the run's scene note
+    is what reads it). The persona's
+    `scene/latest.json` is won by the last render to land. The index is
+    `scene/index/<sha256>.json`.
+  - **Lookup:** an attached picture whose manifest records nobody is found
+    there by its bytes, so a picture carried in from another chat brings its
+    people. The lookup never reads a workspace manifest across chats.
+  - **Origin:** kept per field, the scene's origin is the union, and unknown
+    reads untrusted. Nothing reads a scene into a prompt yet (step 4).
+  - **Who has a slot:** only a persona chat stamps one (`ToolCtx::scene`).
+    The assistant's chats, incognito included, keep no scene, so R9 holds
+    by construction.
+  - **Forgetting:** `persona memory forget --chat` also removes that chat's
+    entries from the store.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
