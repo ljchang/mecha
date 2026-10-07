@@ -2307,6 +2307,9 @@ struct Routed {
     /// is neither held nor in words is redrawn on the current picture, and
     /// the result must not say otherwise (review of #591).
     on_place: bool,
+    /// The style the call itself named, if any: the only one recorded as
+    /// declared.
+    style: Option<String>,
     /// The camera the change set, if it set one.
     camera: Option<String>,
     /// The place the change moved to, in words, if it moved.
@@ -3262,7 +3265,29 @@ impl ImageGenerate {
         let mut out = input.clone();
         let obj = out.as_object_mut().expect("an object, checked above");
         obj.remove("scene");
+        // The call's own style, the only one the landing records as declared;
+        // a scene's style it did not name keeps its own origin.
+        let style = input
+            .get("style")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         if route == "restage" {
+            // A restage draws everyone afresh, so whatever the change did not
+            // set comes from the scene: its camera and its style, or the
+            // picture would lose them while the record kept them (review of
+            // #591, pass 2).
+            let camera = camera.clone().or_else(|| {
+                base.as_ref()
+                    .and_then(|s| s.camera.as_ref())
+                    .map(|c| c.value.clone())
+            });
+            if style.is_none() {
+                if let Some(st) = base.as_ref().and_then(|s| s.style.as_ref()) {
+                    obj.insert("style".into(), json!(st.value));
+                }
+            }
             // The place: a new one in words, else the scene's own. A picture
             // place is drawn on only when this chat still holds it; its path
             // is a label and the hash is checked (§5.1).
@@ -3309,6 +3334,11 @@ impl ImageGenerate {
                     if let Some(c) = &camera {
                         prompt.push_str(&format!(". {}", c.trim().trim_end_matches('.')));
                     }
+                    // The model's own words for the change, as the other two
+                    // branches keep them.
+                    if let Some(g) = &given_change {
+                        prompt.push_str(&format!(". {}", g.trim().trim_end_matches('.')));
+                    }
                     obj.insert("prompt".into(), json!(format!("{prompt}.")));
                     obj.insert("cast".into(), json!(cast));
                 }
@@ -3347,12 +3377,24 @@ impl ImageGenerate {
                         lines.push(format!("Dress {shown} in {w}."));
                     }
                 }
-                if lines.is_empty() {
+                if lines.is_empty() && place.is_none() {
                     "Make the change described for each person below.".into()
                 } else {
                     lines.join(" ")
                 }
             });
+            // A new place with no scene to restage on is drawn by the edit,
+            // so the picture moves where the record says it did (review of
+            // #591, pass 2).
+            let change = match &place {
+                Some(p) => format!(
+                    "{change} Set the scene in {}.",
+                    p.trim().trim_end_matches('.')
+                )
+                .trim()
+                .to_string(),
+                None => change,
+            };
             let mut edit = input.get("edit").cloned().unwrap_or_else(|| json!({}));
             edit["change"] = json!(change);
             if let Some(c) = &camera {
@@ -3382,6 +3424,7 @@ impl ImageGenerate {
                 changed,
                 amended,
                 on_place,
+                style,
                 camera,
                 place,
             }),
@@ -4734,11 +4777,10 @@ impl Tool for ImageGenerate {
                         // absence from that list.
                         nobody: true,
                         camera: r.camera.clone(),
-                        // A style drawn in is declared, as on any edit.
-                        style: used
-                            .iter()
-                            .find(|u| u.kind == crate::imagelib::Kind::Style)
-                            .map(|u| u.name.clone()),
+                        // Only a style the call named is declared; one a
+                        // restage carried over from the scene keeps its own
+                        // origin (review of #591, pass 2).
+                        style: r.style.clone(),
                         picture: crate::scene::hash(&bytes),
                     };
                     let scene = crate::scene::Scene::advance(
@@ -4846,8 +4888,10 @@ impl Tool for ImageGenerate {
                 // harness store they came from (review of #589's rule, kept
                 // for step 3).
                 "prompt": if foreign { json!(FOREIGN_PROMPT) } else { json!(scene_prompt) },
-                // An edit's typed fields as the model gave them, beside the
-                // prompt the tool wrote from them (`EditAsk`).
+                // An edit's typed fields as the model gave them, or as a
+                // `scene` change was routed into them (`scene_route` says
+                // which), beside the prompt the tool wrote from them
+                // (`EditAsk`).
                 "edit": input.get("edit").filter(|v| !v.is_null()),
                 "compiled_prompt": if foreign {
                     None
@@ -10963,6 +11007,82 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
+    /// What a restage draws and what the scene records agree: a pose change
+    /// keeps the scene's camera in the picture, as the record keeps it; and
+    /// a new place on a picture with no scene is drawn by the edit, as the
+    /// record says (review of #591, pass 2).
+    #[tokio::test]
+    async fn the_picture_and_the_record_agree_on_camera_and_place() {
+        let (url, seen) = distinct(4).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let drawn = maya
+            .call(
+                json!({"prompt": "a greenhouse", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "watering"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        let low = maya
+            .call(
+                json!({"scene": {"camera": "From a low camera near the floor."},
+                       "reference_images": [picture_of(&drawn.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!low.is_error, "{}", low.content);
+        let posed = maya
+            .call(
+                json!({"scene": {"people": [{"name": "self", "doing": "kneeling by a pot"}]},
+                       "reference_images": [picture_of(&low.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!posed.is_error, "{}", posed.content);
+        assert!(
+            last_prompt(&seen).contains("From a low camera near the floor"),
+            "the picture keeps the scene's camera: {}",
+            last_prompt(&seen)
+        );
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        assert_eq!(
+            now.camera.as_ref().unwrap().value,
+            "From a low camera near the floor."
+        );
+        // No scene for this picture: the edit itself moves it.
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/street.png"), picture(8, [90, 90, 90])).unwrap();
+        let moved = maya
+            .call(
+                json!({"scene": {"place": "a rainy harbour at dusk",
+                                 "people": [{"name": "self", "wearing": "a coat", "doing": "walking"}]},
+                       "reference_images": ["inbox/street.png"]}),
+                &scene_ctx(&dir, &store, "c3"),
+            )
+            .await
+            .unwrap();
+        assert!(!moved.is_error, "{}", moved.content);
+        assert!(
+            last_prompt(&seen).contains("a rainy harbour at dusk"),
+            "{}",
+            last_prompt(&seen)
+        );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
     /// A restage of a scene holding more people than one picture draws with
     /// faces is refused in the scene's terms, naming them, since the model
     /// sent no `cast`; a restage whose place cannot be found edits the
@@ -11085,6 +11205,11 @@ mod tests {
                 json!({"scene": {"camera": "x"}, "reference_images": ["inbox/a.png"],
                     "mask": "inbox/m.png"}),
                 "not a scene change",
+            ),
+            (
+                json!({"scene": {"camera": "x"}, "reference_images": ["inbox/a.png"],
+                    "prompt": "a beach"}),
+                "not `prompt`",
             ),
         ] {
             let out = t.call(bad, &ctx(&dir)).await.unwrap();
