@@ -29,7 +29,6 @@
 //! construction, with no switch to turn.
 
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use std::path::{Path, PathBuf};
 
 /// Where a field's value came from: a run with no untrusted input in it, or
@@ -265,10 +264,7 @@ where
 
 /// A picture's content hash, as the index keys it.
 pub fn hash(bytes: &[u8]) -> String {
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::document::sha256_hex(bytes)
 }
 
 /// Where one chat's scene lives, stamped on its runs by the front end (a
@@ -298,6 +294,15 @@ impl SceneSlot {
     /// #589). The other two are not one write: a latest that lands with a
     /// failed chat copy leaves that chat a render behind, until its next.
     pub fn land(&self, scene: &Scene) -> std::io::Result<()> {
+        // The id forgetting accepts, or a record could be written that
+        // `forget_chat` refuses, and the chat's memories with it (review of
+        // #589, pass 7).
+        if !is_chat_id(&self.chat) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("`{}` is not a chat id", self.chat),
+            ));
+        }
         let bytes = serde_json::to_vec_pretty(scene).map_err(std::io::Error::other)?;
         if let Some(h) = scene.picture.as_deref().filter(|h| is_hash(h)) {
             write_atomic(&self.store.join("index").join(format!("{h}.json")), &bytes)?;
@@ -517,6 +522,22 @@ mod tests {
             "c1",
         );
         assert_eq!(first.people[0].name, "maya", "the call's people come first");
+    }
+
+    /// A slot whose chat id forgetting would refuse writes nothing, so no
+    /// record exists that cannot be forgotten (review of #589, pass 7).
+    #[test]
+    fn a_slot_with_a_bad_chat_id_lands_nothing() {
+        let (good, root) = slot();
+        let bad = SceneSlot {
+            chat: "../c1".into(),
+            ..good
+        };
+        let s = Scene::advance(None, change(true, "a"), Origin::Clean, "../c1");
+        assert!(bad.land(&s).is_err());
+        assert!(!root.join("persona/scene/latest.json").exists());
+        assert!(!root.join("persona/scene/index").exists());
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// A place of a kind this build does not know reads as no place, and

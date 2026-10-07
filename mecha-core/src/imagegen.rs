@@ -2280,6 +2280,17 @@ struct LibraryAsk {
 }
 
 impl ImageGenerate {
+    /// Whether this machine has the memory a generation needs, asked before
+    /// any reference is read: reading them is itself a cost on that pool.
+    async fn memory_guard(&self) -> std::result::Result<(), String> {
+        let need = if self.cfg.min_available_mb == 0 {
+            0
+        } else {
+            memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb)
+        };
+        memory_verdict(mem_available_mb(), need)
+    }
+
     /// Refuses a configuration whose server is not on this machine.
     pub fn new(cfg: ImageConfig) -> Result<Self> {
         Ok(ImageGenerate {
@@ -3244,14 +3255,25 @@ impl Tool for ImageGenerate {
         // chat's scene (IMAGE-SCENE-DESIGN.md §5.1): the index is keyed by
         // content, so a picture carried in from another chat is found by
         // what it is, never by a workspace manifest a run could write. These
-        // are the bytes as they sit, read again below to fit them: hash the
-        // fitted bytes instead and every index key changes.
+        // are the bytes as they sit, kept to be fitted below rather than read
+        // again: hash the fitted bytes instead and every index key changes.
+        // The memory guard runs first, as it does before every read (review
+        // of #589, pass 7). A canvas that cannot be read here is read again
+        // below, which refuses it with the reason.
+        let mut guarded = false;
+        let mut canvas: Option<Reference> = None;
         let canvas_hash: Option<String> = match (&ctx.scene, is_edit) {
-            (Some(_), true) => read_references(ctx, std::slice::from_ref(&paths[0]))
-                .await
-                .ok()
-                .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0).bytes))
-                .map(|b| crate::scene::hash(&b)),
+            (Some(_), true) => {
+                if let Err(why) = self.memory_guard().await {
+                    return Ok(refused(why));
+                }
+                guarded = true;
+                canvas = read_references(ctx, std::slice::from_ref(&paths[0]))
+                    .await
+                    .ok()
+                    .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0)));
+                canvas.as_ref().map(|r| crate::scene::hash(&r.bytes))
+            }
             _ => None,
         };
         let mut inherited: std::collections::BTreeSet<String> = Default::default();
@@ -3275,11 +3297,13 @@ impl Tool for ImageGenerate {
                 .await
                 .and_then(|m| m.get("cast").and_then(Value::as_array).cloned())
                 .map(|people| {
-                    // As many as a scene keeps, each name as long as a
-                    // library name may be (review of #589, pass 5).
+                    // As many as an edit records (its cast with faces, and a
+                    // scene's worth past them), each name as long as a
+                    // library name may be (review of #589, passes 5 and 7):
+                    // the scene's own cap then keeps the call's first.
                     people
                         .iter()
-                        .take(crate::scene::MAX_PEOPLE)
+                        .take(crate::imagelib::MAX_CAST + crate::scene::MAX_PEOPLE)
                         .filter_map(|p| {
                             // A workspace file a run can write: capped as a
                             // call's own fields are (review of #586).
@@ -3665,17 +3689,21 @@ impl Tool for ImageGenerate {
         }
         // Before reading anything: up to a hundred megabytes of references is
         // itself a cost on the pool this check guards.
-        let need = if self.cfg.min_available_mb == 0 {
-            0
-        } else {
-            memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb)
-        };
-        if let Err(why) = memory_verdict(mem_available_mb(), need) {
-            return Ok(refused(why));
+        if !guarded {
+            if let Err(why) = self.memory_guard().await {
+                return Ok(refused(why));
+            }
         }
-        req.references = match read_references(ctx, &paths).await {
-            Ok(references) => references,
-            Err(why) => return Ok(refused(why)),
+        // The canvas, when the scene's hash already read it, is not read twice.
+        req.references = match canvas.take() {
+            Some(first) => match read_references(ctx, &paths[1..]).await {
+                Ok(rest) => std::iter::once(first).chain(rest).collect(),
+                Err(why) => return Ok(refused(why)),
+            },
+            None => match read_references(ctx, &paths).await {
+                Ok(references) => references,
+                Err(why) => return Ok(refused(why)),
+            },
         };
         // A phone photo goes up at the encoder's scale, not its own, and
         // upright: before the mask is sized to it, the near-copy check reads
@@ -4296,7 +4324,12 @@ impl Tool for ImageGenerate {
                         carried,
                         nobody: waived,
                         camera: EditAsk::parse(input).ok().flatten().and_then(|e| e.camera),
-                        style: None,
+                        // A style the edit drew in is what it declared,
+                        // as its camera is (review of #589, pass 7).
+                        style: used
+                            .iter()
+                            .find(|u| u.kind == crate::imagelib::Kind::Style)
+                            .map(|u| u.name.clone()),
                         picture: crate::scene::hash(&bytes),
                     }
                 } else {
@@ -9897,6 +9930,69 @@ mod tests {
             ..Fake::default()
         })
         .await
+    }
+
+    /// An edit drawn in a style declares it: the scene takes the style, as it
+    /// takes the edit's camera, rather than keeping the last one (review of
+    /// #589, pass 7).
+    #[tokio::test]
+    async fn an_edit_in_a_style_records_the_style() {
+        let (url, _) = distinct(2).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "inkwash".into(),
+                text: "loose ink wash on cream paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let drawn = maya
+            .call(
+                json!({"prompt": "a quay", "cast": [
+                    {"name": "self", "wearing": "a coat", "doing": "waiting"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        let inked = maya
+            .call(
+                json!({"edit": {"change": "Redraw it in the style."},
+                       "reference_images": [picture_of(&drawn.content)], "style": "inkwash"}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!inked.is_error, "{}", inked.content);
+        assert!(
+            inked.content.contains("in style inkwash"),
+            "{}",
+            inked.content
+        );
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        assert_eq!(
+            now.style.as_ref().map(|s| s.value.as_str()),
+            Some("inkwash"),
+            "{now:?}"
+        );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// Past `MAX_CAST`, a person carried from another chat's scene is still
