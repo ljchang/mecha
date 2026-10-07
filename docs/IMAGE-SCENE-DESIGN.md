@@ -190,6 +190,12 @@ from the transcript's recorded taint the way a library candidate's `imagelib::Or
 failing closed: unknown classifies untrusted. A chat that reads a scene written under untrusted
 input takes that taint on, as a `mailbox.rs` message carries its sender's.
 
+The carrier into the notes is a stem. Notes arm taint only by stem match (`Taint::arm_for_notes`),
+so the scene note opens with its own stem, recognised there as `persona::recall::stem_of`'s
+are, and arms from the origin its record carries. A scene record with no origin, older than
+this rule or hand-made, reads as untrusted, never as the default; this is the second half of
+mailbox's `taint_recorded`.
+
 **A picture whose bytes match no record names nobody,** and the call has to declare its people
 (§5.2). The manifest records that no scene was found for it. It never falls through silently:
 that silence is §1's `face_anchor: null` again.
@@ -255,7 +261,7 @@ before.
 
 The code chooses the canvas from **which scene fields changed**, never from a flag the model sets.
 A restage always starts from the place, never from the last output, so identity is one step from
-the library on every render. Words are the usual place until locations are built (§8.5), so the
+the library on every render. Words are the usual place until locations are built (§8.4), so the
 canvas-less row is the common restage today. It is also the shape M3 measured and the owner rated
 good.
 
@@ -264,7 +270,9 @@ unmeasured** (§8). The nearest data point goes the other way: M2's EA, a chain 
 riding along, fell to −0.01. EA moved the layout and a retouch does not, so the result may not
 carry over, but until it is measured a long retouch chain is not assumed safe. Each manifest
 records its **retouch depth** (the picture it built on, plus one; zero for a render from the
-place), so §8.7 can be read from real use as well as from a fresh sheet.
+place), so §8.6 can be read from real use as well as from a fresh sheet. Before step 2 ships,
+the depth also reaches the result line ("the third retouch of …"). Whether a cap holds until
+§8.6 is measured is decided then; §1's failure was a depth-7 chain.
 
 ### 5.4 The model writes scene changes, the compiler writes the prompt
 
@@ -344,9 +352,9 @@ picture.
 
 | # | Use | Canvas | People |
 |---|---|---|---|
-| 1 | New picture of the persona | none | A's crop + description |
+| 1 | New picture of the persona | none | A's whole portrait at 512², as today; the crop only after §8.1 passes |
 | 2 | The persona in an owner photo | the photo | A (M1) |
-| 3 | With another library character | place or none | both crops + descriptions; touching per M3 |
+| 3 | With another library character | place or none | with a canvas, both crops + descriptions; with none, whole portraits at 512² (M3 measured touching for two that way) until §8.1 |
 | 4 | With someone from an owner photo | place | A + "the person in picture X" (their crop only) |
 | 5 | Clothing, expression or hair | current picture | crops ride along |
 | 6 | Pose | place | restage (M2, R) |
@@ -390,11 +398,10 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 2. Wording that produces a high camera angle.
 3. Why the seated, facing-the-camera placement in P1 failed for crop alone and for words, but
    held with the description.
-4. Seed variance: answered by Regenerate (§5.7, R8), not by drawing two of every picture.
-5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
+4. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
-6. A third crop beside a canvas (§5.2, budget).
-7. A chain of retouches, three or more deep, each carrying the crops (§5.3).
+5. A third crop beside a canvas (§5.2, budget).
+6. A chain of retouches, three or more deep, each carrying the crops (§5.3).
 
 ## 9. Rulings (owner, 2026-10-07)
 
