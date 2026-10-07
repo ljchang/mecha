@@ -2246,43 +2246,9 @@ impl Agent {
         pressure: &mut crate::pressure::ContextTracker,
     ) -> Result<RunOutcome> {
         let harness_notes = self.now_notes();
-        // Run-scoped state a tool cannot otherwise see, stamped onto the
-        // `ToolCtx` once here rather than at every call site that builds a
-        // `RunContext`. A tool that *contains* a run — a subagent — reads
-        // these to forward events, chain cancellation, and inherit the phase;
-        // without the stamp each of those silently defaults off. Done
-        // unconditionally: one clone per run, and a conditional here is a
-        // fourth copy of the bug this fixes.
-        let stamped = RunContext {
-            tools: Arc::new(ToolCtx {
-                events: events.clone(),
-                cancel: cx.cancel.clone(),
-                cancel_reason: Some(Arc::clone(&cx.cancel_reason)),
-                phase: cx.phase,
-                withheld: cx.withheld.clone(),
-                // Identity only — the counters are folded per turn in
-                // `run_tools`, which is the one place the trace is in scope.
-                // It has to be minted *here*: the trace is per run and a
-                // `RunContext` is not, so an id on the context would be one
-                // value across every chat turn and the reset it exists to
-                // catch would be invisible.
-                work: Some(crate::step::Work::default().in_run(crate::step::next_run())),
-                ..(*cx.tools).clone()
-            }),
-            ..cx.clone()
-        };
+        let stamped = Self::stamped(cx, &events);
         let cx = &stamped;
-
-        // **Read off the messages at run start, never armed by whoever added
-        // them.** `Conversation::push` would be the tidy place and is not the
-        // safe one: `slack/connector.rs` appends to `messages` directly, so
-        // arming there would have left the Slack path — the one people
-        // actually attach screenshots from — unarmed. Recomputed every run
-        // rather than tracked, which costs a walk of the block types and is
-        // idempotent because taint only ever grows.
-        convo.taint.arm_for_content(&convo.messages);
-        // And the run's notes, which reach the model without being stored.
-        convo.taint.arm_for_notes(&cx.notes);
+        Self::arm_at_start(cx, convo);
 
         let mut usage = Usage::default();
         let mut turns = 0;
@@ -4146,6 +4112,53 @@ impl Agent {
         configured.min(afford)
     }
 
+    /// Run-scoped state a tool cannot otherwise see, stamped onto the
+    /// `ToolCtx` once per run rather than at every call site that builds a
+    /// `RunContext`. A tool that *contains* a run — a subagent — reads these
+    /// to forward events, chain cancellation, and inherit the phase and what
+    /// the run withholds; without the stamp each of those silently defaults
+    /// off. Done unconditionally: one clone per run, and a conditional here
+    /// is a fourth copy of the bug this fixes. One function for a run and a
+    /// harness call (`dispatch_one`), so the two cannot drift (review of
+    /// #592, pass 3).
+    fn stamped(cx: &RunContext, events: &Option<UnboundedSender<AgentEvent>>) -> RunContext {
+        RunContext {
+            tools: Arc::new(ToolCtx {
+                events: events.clone(),
+                cancel: cx.cancel.clone(),
+                cancel_reason: Some(Arc::clone(&cx.cancel_reason)),
+                phase: cx.phase,
+                withheld: cx.withheld.clone(),
+                // Identity only — the counters are folded per turn in
+                // `run_tools`, which is the one place the trace is in scope.
+                // It has to be minted *here*: the trace is per run and a
+                // `RunContext` is not, so an id on the context would be one
+                // value across every chat turn and the reset it exists to
+                // catch would be invisible.
+                work: Some(crate::step::Work::default().in_run(crate::step::next_run())),
+                ..(*cx.tools).clone()
+            }),
+            ..cx.clone()
+        }
+    }
+
+    /// What the conversation holds, armed before anything is dispatched: by
+    /// a run, and by a harness call (`dispatch_one`), whose gate reads the
+    /// same taint (review of #592, pass 3).
+    ///
+    /// **Read off the messages at run start, never armed by whoever added
+    /// them.** `Conversation::push` would be the tidy place and is not the
+    /// safe one: `slack/connector.rs` appends to `messages` directly, so
+    /// arming there would have left the Slack path — the one people actually
+    /// attach screenshots from — unarmed. Recomputed every run rather than
+    /// tracked, which costs a walk of the block types and is idempotent
+    /// because taint only ever grows. And the run's notes, which reach the
+    /// model without being stored.
+    fn arm_at_start(cx: &RunContext, convo: &mut Conversation) {
+        convo.taint.arm_for_content(&convo.messages);
+        convo.taint.arm_for_notes(&cx.notes);
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn run_tools(
         &self,
@@ -4216,9 +4229,13 @@ impl Agent {
     ///   `tool_result` answers no `tool_use` there (none was forged), and an
     ///   orphaned result is a 400. The blocks are for the caller to show or
     ///   record in its own terms.
-    /// - **The busy rule here is the stricter one:** while any job is out
-    ///   for this chat, a deferring harness call is refused, where the queue
-    ///   refuses only a second running job.
+    /// - **Its render takes no job seat.** While any job is out for this
+    ///   chat, a deferring harness call is refused; but the reverse is not
+    ///   guarded here: a model turn's job can start while this one renders,
+    ///   archiving or handing over the chat does not wait for it, and
+    ///   `JobQueue::cancel` cannot reach it (`cx.cancel` can). A caller that
+    ///   must keep one picture at a time holds the chat's seat itself
+    ///   (review of #592, pass 3).
     /// - **The result is capped at the configured budget**, unnarrowed by
     ///   context pressure. A caller that puts its text into a transcript
     ///   spills or caps it as a turn's result would be.
@@ -4231,6 +4248,11 @@ impl Agent {
         events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Dispatched {
         let call_id = format!("harness_{}", uuid::Uuid::new_v4().simple());
+        // Stamped and armed as a run is, so what the run would withhold and
+        // what its messages and notes armed reach this call too.
+        let stamped = Self::stamped(cx, events);
+        let cx = &stamped;
+        Self::arm_at_start(cx, convo);
         let mut trace = Vec::new();
         let mut blocked_sends = 0;
         let (blocks, provenance) = self
@@ -5227,8 +5249,9 @@ impl Agent {
                         }
                     }
                     // A harness call, inline; while the chat has any job out
-                    // it is refused, stricter than the queue's rule, which
-                    // refuses only a second running job (review of #592).
+                    // it is refused. It takes no seat itself, so a turn's job
+                    // is not refused by it: its caller owes that (review of
+                    // #592, passes 2 and 3).
                     Some(sink) if !sink.pending_tools().is_empty() => {
                         ToolOutput::refusal(job.busy())
                     }
@@ -5326,7 +5349,9 @@ pub struct Dispatched {
     /// The result's text, as a model would have read it.
     pub content: String,
     pub is_error: bool,
-    /// A gate refused it: the interlock, a hook, a rule or the approver.
+    /// The harness said no: a gate (the interlock, a hook, a rule, the
+    /// approver) or the tool's own in-process guard, a busy picture included,
+    /// as a turn's trace counts them.
     pub denied: bool,
     /// Staged in the outbox for review rather than executed: not an error,
     /// and nothing ran (review of #592).
@@ -6982,6 +7007,45 @@ mod tests {
         let mut convo = Conversation::user("draw the harbour");
         agent.run(&mut convo, None).await.unwrap();
         assert_eq!(result_of(&convo, "d1"), "image: images/made.png");
+    }
+
+    /// A routed harness call is staged, never run, and a staging that fails
+    /// fails closed, as a turn's does; what the conversation's messages and
+    /// the run's notes hold arms the gate before the call (review of #592,
+    /// pass 3).
+    #[tokio::test]
+    async fn a_harness_call_is_staged_and_armed_as_a_turn_is() {
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("harness");
+        agent.set_outbox(Arc::clone(&route));
+        let cx = Arc::clone(agent.context());
+        let mut convo = Conversation::user("x");
+        let d = agent
+            .dispatch_one(&cx, &mut convo, "send_data", json!({}), &None)
+            .await;
+        assert!(d.staged && !d.is_error, "{d:?}");
+        assert_eq!(route.store.items().unwrap().len(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+        let d = agent
+            .dispatch_one(&cx, &mut convo, "send_data", json!({}), &None)
+            .await;
+        assert!(d.is_error && !d.staged, "{d:?}");
+        assert!(d.content.contains("staging failed"), "{}", d.content);
+        // A note armed as a run arms it: an untrusted scene line is read
+        // before the gate, not only by the next turn.
+        let (agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        let mut cx = agent.context().as_ref().clone();
+        cx.notes = vec![format!(
+            "{} the scene, some of it from outside.)",
+            crate::persona::recall::UNTRUSTED_MEMORY_STEM
+        )]
+        .into();
+        let mut convo = Conversation::user("x");
+        agent
+            .dispatch_one(&cx, &mut convo, "echo", json!({"value": "hi"}), &None)
+            .await;
+        assert!(convo.taint.untrusted, "the notes armed it");
     }
 
     /// A harness call that defers runs inline even with a host's queue on
