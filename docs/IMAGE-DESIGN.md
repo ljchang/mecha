@@ -114,11 +114,8 @@ image_generate {
 ```
 
 - **Retired inputs:** `prompt`, `cast`, `extras`, `edit` (`change`, `keep`, `face`, `camera`), `negative_prompt`, multi-picture `reference_images`, and `seed` (review S1; kept for the CLI and evals, off the chat schemas).
-- **A photo's role is said by the call, not guessed.** `picture` is the picture being changed ("this is her, make her smile"). `scene.setting: { photo }` is a room to put people in ("put her in this room"). Both of today's chats opened with this ambiguity. For a `picture` with no record, which the call did not place as a setting, RetinaFace decides (review B3):
-  - **no faces:** it is a setting, as if the call had said so;
-  - **faces:** it is the current picture. Its people are the ones the call declares, and its record starts from this call.
-
-  So an old picture, an assistant picture carried over, or a photo of her made outside mecha (use case 11) is never treated as an empty room.
+- **A photo's role is said by the call, never guessed.** `picture` is always the picture being changed ("this is her, make her smile"). `scene.setting: { photo }` is a room to put people in ("put her in this room"). Both of today's chats opened with this ambiguity. A `picture` with no record is therefore always the current picture (reviews B3 and N1). Faces cannot decide: RetinaFace found no face in 16 of 106 persona pictures, every one of which shows her from behind, bent over or from the waist down. So an old picture, an assistant picture carried over, or a photo of her made outside mecha (use case 11) is never treated as an empty room.
+- **A picture's people can be unknown** (review N2). A no-record picture starts a record whose people are the ones the call declares. If the call declares nobody (a retouch, say), its people are recorded as **unknown**, never as none. A change that would redraw everyone (a restage) on a scene whose people are unknown is drawn as an edit of the picture instead, and the result says the scene's people are not known yet. Once a call declares them, the record knows them.
 - **The model never writes the image model's prompt.** The compiler does, in the measured forms (§2.5, E1–E12).
 - **Equal is unchanged, and all-equal is a redraw.** On a picture with a record, a scene field equal to its recorded value is not a change, so the model's habit of restating everyone costs nothing. This retires both the `cast` versus `scene.people` overlap and the refusals between them. But the record holds what was asked, not what was drawn. A call that changes nothing at all ("she's still standing", restating `doing: "sitting"`) is therefore a **redraw** of the scene at a new seed, never "no change" and never a refusal (review B4). Era-A panel re-calls were mostly this kind of second attempt: 14 of 41.
 - **One retouch, in words.** It is the only free text that addresses the picture itself. The tool writes the #408 keep form around it.
@@ -130,8 +127,8 @@ The planner reads the call against the picture's record and picks one render. No
 | Call | Render |
 |---|---|
 | no `picture`; a whole scene | **New picture.** Library portraits, the E1–E12 compile, the call's seed or a new one. |
-| `scene.setting` is a photo (said, or a no-record `picture` with no faces); a scene with people | **Place on the photo.** An edit of the photo with each person's head crop and description (M1). The photo becomes the scene's setting. |
-| a no-record `picture` with faces | **The current picture.** Edited as any recorded picture is, with its record started from the call (review B3). |
+| `scene.setting` is a photo; a scene with people | **Place on the photo.** An edit of the photo with each person's head crop and description (M1). The photo becomes the scene's setting. |
+| a `picture` with no record | **The current picture.** Edited as any recorded picture is, with its record started from the call; its people are unknown until a call declares them, and a restage of unknown people is drawn as an edit (reviews B3, N1, N2). |
 | a change to someone's pose, the camera, the setting, or a removal | **Restage.** Everyone drawn afresh on the scene's setting, at the base picture's seed (§2.6): an edit of the setting photo with crops when the setting is a photo, a new picture from the setting's words when it is words. |
 | a change to someone's clothes, someone's `expression`, or someone added | **Edit of the picture,** with the crops of the people it changes, in the #408 keep form. Clothes come back unchanged elsewhere 100% (correct for this case). An expression is a face retouch, not a restage (review S2). |
 | nothing changed at all | **Redraw** of the scene at a new seed (review B4); the same render as Regenerate (§5.4). |
@@ -159,7 +156,8 @@ A panel press is the owner's instruction to the image model, not something said 
 2. **The extracted call is dispatched through `Agent::dispatch_one`** (#592). It goes through every gate a model call meets, with its own call id, inline, on the chat's job seat, with taint recorded.
 3. **The history records one fact,** a `HarnessPicture` record: "Picture X was changed into Y: <the typed change>". The card shows the new version from it.
 4. **The persona replies in a line or two,** in its own voice. That reply goes with `tool_choice: "none"`, not with the tools removed: removing them re-sends the whole context (12,277 tokens against 4 measured), while `tool_choice` keeps the cache (review S5). It carries no edit note, and G3's calls-as-text check covers it.
-5. **An extraction that fails is said, never dropped and never retried in a loop** (review S7). A failure is a 400, unparsable output, an empty change, or a name the library does not hold. The card says the edit was not understood and why, in a line, and nothing is drawn. G1 counts it.
+5. **"Try again" is a redraw, not a failure** (review N3). An extraction that comes back empty, or restates the record, on a recorded picture means the owner wants another attempt. It is drawn as a redraw at a new seed (§5.1), and the card says it was drawn again.
+6. **An extraction that fails is said, never dropped and never retried in a loop** (review S7). Only these are failures: a 400, unparsable or schema-invalid output, or a name the library does not hold. The card says the edit was not understood and why, in a line, and nothing is drawn. G1 counts it.
 
 This removes the panel loop at its source (§2.9), because the persona never makes the call. It also removes the model's field choice for the turns where it chose wrong. Typed requests in chat ("draw us at the beach") still go through the persona model, with the one-shape schema (§5.1).
 
@@ -253,13 +251,15 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 12. Review and how each point is met
 
-mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions. Each is met above:
+mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions in round 1, and 1 blocking finding and 2 shoulds in round 2. Each is met above:
 
 | Point | Met in |
 |---|---|
 | B1: the forced end breaks the assistant; LoopGuard is generic | §5.5, split into two rules; the guard's refusal blind spot fixed for every tool |
 | B2: retiring the name guard reopens E1 through prose fields | §4, every prose field checked; `who` resolves names and the persona's names |
-| B3: a no-record picture is not an empty room | §5.1 and §5.2: the call says a photo's role; otherwise RetinaFace decides |
+| B3, N1: a no-record picture is not an empty room, and faces cannot tell | §5.1 and §5.2: the call says a photo's role; a no-record `picture` is always the current picture |
+| N2: no people is not the same as people unknown | §5.1: unknown people are recorded as unknown; a restage of them is drawn as an edit |
+| N3: an empty or restated extraction is "try again" | §5.3 step 5: drawn as a redraw |
 | B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
 | S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
