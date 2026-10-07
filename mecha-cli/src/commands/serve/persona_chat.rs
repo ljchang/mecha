@@ -10890,7 +10890,7 @@ mod tests {
         walk(&root.join("src"), &mut files);
         walk(&root.join("../mecha-core/src"), &mut files);
         assert!(files.len() > 50, "the walk found the sources");
-        let mut stamps = Vec::new();
+        let mut stamps = std::collections::BTreeSet::new();
         for f in files {
             let src = std::fs::read_to_string(&f).unwrap();
             let code = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(&src);
@@ -10902,12 +10902,12 @@ mod tests {
                     && !line.starts_with("pub struct")
                     && !line.starts_with("impl");
                 if builds || line.contains(".scene = Some(") {
-                    stamps.push(f.file_name().unwrap().to_string_lossy().into_owned());
+                    stamps.insert(f.file_name().unwrap().to_string_lossy().into_owned());
                 }
             }
         }
         assert_eq!(
-            stamps,
+            stamps.into_iter().collect::<Vec<_>>(),
             ["persona_chat.rs"],
             "a scene slot is stamped elsewhere"
         );
