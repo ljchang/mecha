@@ -396,10 +396,13 @@ pub struct CompletionRequest {
     /// the block before them: a cache write on a note is never read back.
     pub trailing_notes: usize,
     /// Whether the model may call a tool on this request. `None` keeps the
-    /// tools listed, so the cached prefix is unchanged, and asks the model to
-    /// answer in words: how a run ends cleanly once its picture is queued
-    /// (`IMAGE-DESIGN.md` §5.5). Removing the tools instead would re-send the
-    /// whole context: 12,277 tokens against 4, measured 2026-10-07.
+    /// tools listed and asks the model to answer in words: how a run ends
+    /// cleanly once its picture is queued (`IMAGE-DESIGN.md` §5.5). On
+    /// llama-server the cached prefix survives it, where removing the tools
+    /// re-sent the whole context: 12,277 tokens against 4, measured there on
+    /// 2026-10-07. Not measured on Anthropic, whose caching rules list a
+    /// `tool_choice` change as invalidating the cached message blocks; the
+    /// cache lens counts it as a surface change either way.
     pub tool_choice: ToolChoice,
 }
 

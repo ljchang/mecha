@@ -405,6 +405,12 @@ pub(crate) struct RunPictures {
     /// Set this turn: a deferred call was refused because the chat already
     /// has one out from an earlier turn (the queue's busy refusal).
     busy: bool,
+    /// The tools refused busy in this run, so a second try is told apart
+    /// from the first.
+    refused_busy: std::collections::BTreeSet<String>,
+    /// Set this turn: a tool refused busy earlier in this run was called
+    /// again — the retry loop, not a slow picture.
+    busy_again: bool,
 }
 
 /// Every `<tool_call>` block taken out of a reply, and a trailing unclosed
@@ -3289,16 +3295,23 @@ impl Agent {
                     // call in every chat, or right after the picture is
                     // queued where the run is set to end then.
                     answered = true;
-                    closing = if pictures.busy {
-                        Some(PICTURE_STILL_BEING_MADE)
-                    } else if pictures.repeated || (cx.end_after_deferral && pictures.started_now) {
-                        Some(PICTURE_ON_ITS_WAY)
-                    } else {
-                        None
-                    };
+                    // A picture this run started is the stronger fact, so
+                    // it is said first. A busy refusal closes a run set to
+                    // end on its picture; any other run keeps working after
+                    // one, and closes on a retry of it (review of #596,
+                    // pass 3).
+                    closing =
+                        if pictures.repeated || (cx.end_after_deferral && pictures.started_now) {
+                            Some(PICTURE_ON_ITS_WAY)
+                        } else if pictures.busy_again || (cx.end_after_deferral && pictures.busy) {
+                            Some(PICTURE_STILL_BEING_MADE)
+                        } else {
+                            None
+                        };
                     pictures.repeated = false;
                     pictures.started_now = false;
                     pictures.busy = false;
+                    pictures.busy_again = false;
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
                     // after every sibling's work, through the same guards as any call.
@@ -5456,8 +5469,18 @@ impl Agent {
                                 run_pictures.started_now = true;
                                 out
                             }
+                            // Busy because this run's own picture is out (a
+                            // second call in one batch) is a repeat; busy
+                            // from an earlier turn is said once, and a retry
+                            // of it is the loop (review of #596, pass 3).
                             Err(crate::jobs::Busy) => {
-                                run_pictures.busy = true;
+                                if run_pictures.started.contains(&name) {
+                                    run_pictures.repeated = true;
+                                } else if run_pictures.refused_busy.insert(name.clone()) {
+                                    run_pictures.busy = true;
+                                } else {
+                                    run_pictures.busy_again = true;
+                                }
                                 ToolOutput::refusal(job.busy())
                             }
                         }
@@ -7442,9 +7465,10 @@ mod tests {
         assert!(later.contains("(A run note.)"), "{later}");
     }
 
-    /// A call refused because an earlier turn's picture is still being made
-    /// closes the run too, with the line that fits it; otherwise the run would
-    /// loop on busy refusals as the queue's did (review of #596).
+    /// In a run set to end on its picture, a call refused because an earlier
+    /// turn's picture is still being made closes the run too, with the line
+    /// that fits it; otherwise the run would loop on busy refusals as the
+    /// queue's did (review of #596).
     #[tokio::test]
     async fn a_busy_refusal_closes_the_run() {
         let go = Arc::new(tokio::sync::Notify::new());
@@ -7466,6 +7490,7 @@ mod tests {
         );
         let mut cx = agent.context().as_ref().clone();
         cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
         // An earlier turn's picture is still out.
         let hold = Arc::new(tokio::sync::Notify::new());
         let held = Arc::clone(&hold);
@@ -7487,6 +7512,98 @@ mod tests {
             assert!(tail_text(&seen[1]).ends_with(PICTURE_STILL_BEING_MADE));
         }
         assert_eq!(outcome.text, "Still on its way.");
+        hold.notify_one();
+        go.notify_one();
+    }
+
+    /// Two calls in one turn queue one picture and refuse the other busy:
+    /// the picture this turn started is the fact said, never "not started"
+    /// (review of #596, pass 3).
+    #[tokio::test]
+    async fn two_calls_in_one_turn_say_the_picture_is_on_its_way() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let draw = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "draw".into(),
+            input: json!({}),
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![draw("d1"), draw("d2")], StopReason::ToolUse),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=draw></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let mut convo = Conversation::user("draw two");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(tail_text(&seen[1]).ends_with(PICTURE_ON_ITS_WAY));
+        }
+        assert_eq!(outcome.text, PICTURE_ON_ITS_WAY_REPLY);
+        go.notify_one();
+    }
+
+    /// The assistant keeps working after one busy refusal, since a slow
+    /// earlier picture says nothing about its run; a retry of the refused
+    /// call is the loop, and closes it (review of #596, pass 3).
+    #[tokio::test]
+    async fn an_assistant_run_keeps_working_after_one_busy_refusal() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let call = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "draw".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                call("d1"),
+                call("d2"),
+                assistant(vec![Block::text("Still drawing.")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let held = Arc::clone(&hold);
+        let earlier = crate::jobs::DeferredJob::new(
+            async move {
+                held.notified().await;
+                ToolOutput::ok("image: images/earlier.png")
+            },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "e1", "draw", earlier).unwrap();
+        let mut convo = Conversation::user("draw it, then carry on");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            assert_eq!(seen[1].tool_choice, crate::message::ToolChoice::Auto);
+            assert_eq!(seen[2].tool_choice, crate::message::ToolChoice::None);
+            assert!(tail_text(&seen[2]).ends_with(PICTURE_STILL_BEING_MADE));
+        }
+        assert_eq!(outcome.text, "Still drawing.");
         hold.notify_one();
         go.notify_one();
     }
@@ -7514,6 +7631,7 @@ mod tests {
         );
         let mut cx = agent.context().as_ref().clone();
         cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
         let hold = Arc::new(tokio::sync::Notify::new());
         let held = Arc::clone(&hold);
         let earlier = crate::jobs::DeferredJob::new(
