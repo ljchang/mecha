@@ -261,6 +261,21 @@ struct PinRecord {
     goal: Option<String>,
 }
 
+/// A chat's scene slot (IMAGE-SCENE-DESIGN.md §5.1): its own copy beside
+/// its transcript, and the persona's latest and index in its folder, all
+/// outside the jail. One place, so the tool's slot and the run's scene note
+/// read the same files.
+fn scene_slot(store: &Path, persona: &str, chat: &str) -> mecha_core::scene::SceneSlot {
+    let persona_dir = store.join(persona);
+    mecha_core::scene::SceneSlot {
+        chat_copy: persona_dir
+            .join("sessions")
+            .join(format!("{chat}.scene.json")),
+        store: persona_dir.join("scene"),
+        chat: chat.to_string(),
+    }
+}
+
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
     sessions.join(format!("{id}.persona.json"))
 }
@@ -3200,6 +3215,15 @@ impl PersonaChats {
         // Owed again if the run fails: it is rolled back, and the file still
         // owes them.
         let arrived_back = arrived.clone();
+        // The scene as it stands (IMAGE-SCENE-DESIGN.md §5.5): the chat's
+        // own copy, so what she wears and where she is come from her last
+        // picture rather than a recalled day. Its own note, arming taint by
+        // the stem its origin picks (`scene::stem_of`).
+        let scene_note = scene_slot(&self.store, &name, &ps.session.meta.id)
+            .current()
+            .and_then(|scene| {
+                mecha_core::scene::note(&scene, ps.pinned.settings.character.as_deref())
+            });
         let notes: Vec<String> = [
             memory_note,
             recall_block,
@@ -3207,6 +3231,7 @@ impl PersonaChats {
             call_note,
             variety_note,
             edit_note,
+            scene_note,
         ]
         .into_iter()
         .flatten()
@@ -3418,14 +3443,7 @@ impl PersonaChats {
         // This chat's scene (IMAGE-SCENE-DESIGN.md §5.1): its own copy beside
         // its transcript, and the persona's latest and index in its folder,
         // all outside the jail. Stamped here, never by a model.
-        let persona_dir = self.store.join(&name);
-        tools.scene = Some(mecha_core::scene::SceneSlot {
-            chat_copy: persona_dir
-                .join("sessions")
-                .join(format!("{}.scene.json", ps.session.meta.id)),
-            store: persona_dir.join("scene"),
-            chat: ps.session.meta.id.clone(),
-        });
+        tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));
         cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
@@ -5861,6 +5879,52 @@ mod tests {
                 .map(|m| m.text().matches("tide pools").count())
                 .sum();
             assert_eq!(copies, 1, "a note, never stored mid-history");
+        }
+    }
+
+    /// IMAGE-SCENE-DESIGN.md §5.5: a chat with a scene carries it as a run
+    /// note, in the harness's voice, so what she wears and where she is come
+    /// from her last picture; a note, never stored in a message.
+    #[tokio::test]
+    async fn a_chats_scene_rides_as_a_note() {
+        use mecha_core::scene::{Change, Origin, Place, Scene};
+        let w = world();
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        let slot = scene_slot(&w.store(), "mara", &id);
+        let change = Change {
+            fresh: true,
+            place: Some(Place::Words {
+                text: "a harbour at low tide".into(),
+            }),
+            declared: vec![("john".into(), "a blue raincoat".into(), "waving".into())],
+            picture: mecha_core::scene::hash(b"a picture"),
+            ..Change::default()
+        };
+        slot.land(&Scene::advance(None, change, Origin::Clean, &id))
+            .unwrap();
+        turn(&w, &key, "Hello there.").await;
+        turn(&w, &key, "And then?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        for req in &seen {
+            let newest = req.messages.last().unwrap().text();
+            assert!(
+                newest.contains(mecha_core::scene::SCENE_STEM)
+                    && newest.contains("John: wearing a blue raincoat, waving.")
+                    && newest.contains("a harbour at low tide"),
+                "{newest}"
+            );
+            let copies: usize = req
+                .messages
+                .iter()
+                .map(|m| m.text().matches("blue raincoat").count())
+                .sum();
+            assert_eq!(copies, 1, "a note, never stored in a message");
         }
     }
 
@@ -10826,7 +10890,7 @@ mod tests {
         walk(&root.join("src"), &mut files);
         walk(&root.join("../mecha-core/src"), &mut files);
         assert!(files.len() > 50, "the walk found the sources");
-        let mut stamps = Vec::new();
+        let mut stamps = std::collections::BTreeSet::new();
         for f in files {
             let src = std::fs::read_to_string(&f).unwrap();
             let code = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(&src);
@@ -10838,12 +10902,12 @@ mod tests {
                     && !line.starts_with("pub struct")
                     && !line.starts_with("impl");
                 if builds || line.contains(".scene = Some(") {
-                    stamps.push(f.file_name().unwrap().to_string_lossy().into_owned());
+                    stamps.insert(f.file_name().unwrap().to_string_lossy().into_owned());
                 }
             }
         }
         assert_eq!(
-            stamps,
+            stamps.into_iter().collect::<Vec<_>>(),
             ["persona_chat.rs"],
             "a scene slot is stamped elsewhere"
         );
