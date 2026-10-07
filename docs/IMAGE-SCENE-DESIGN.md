@@ -1,6 +1,6 @@
 # Image scenes — design
 
-**Status:** accepted 2026-10-07: the owner ruled R1–R8 (§9); R9 (incognito) is proposed. Nothing here is built
+**Status:** accepted 2026-10-07: the owner ruled R1–R9 (§9). Nothing here is built
 yet; the build waits on #583 and #577 (§10).
 It amends `IMAGE-COMPILER-DESIGN.md` §3, where `cast` and `reference_images` are exclusive,
 and `PERSONA-CONTEXT-DESIGN.md` §5.5, where edits happen only on the owner's initiative. It
@@ -191,7 +191,7 @@ the session closes).
 - It keeps its copy in its own folder, where it is deleted on close.
 - It never writes back, and its pictures are not indexed by content hash outside the chat.
 
-This is ruling R9, proposed and waiting on the owner.
+This is ruling R9 (owner, 2026-10-07).
 
 ### 5.2 People are declared on every call
 
@@ -371,7 +371,7 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 
 ## 9. Rulings (owner, 2026-10-07)
 
-R1–R7 were accepted as written, and R8 is the owner's own proposal. They are settled, and the
+R1–R7 and R9 were accepted as written, and R8 is the owner's own proposal. They are settled, and the
 build follows them without asking again.
 
 - **R1.** Identity is declared: every library person enters every render as head crop plus
@@ -387,8 +387,6 @@ build follows them without asking again.
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
   turn (§5.7). This replaces drawing two variants of every picture. Versions stay on one card, and the version showing
   is the one that is built on.
-
-Proposed, waiting on the owner:
 
 - **R9.** An incognito chat reads the persona's scene and keeps its own copy, deleted on close.
   It never writes back (§5.1, from `INCOGNITO-DESIGN.md` R3 and R6).
