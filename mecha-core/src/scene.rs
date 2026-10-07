@@ -102,7 +102,10 @@ pub struct Person {
 /// The scene record.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Scene {
-    #[serde(default)]
+    /// Read leniently: a place this build does not know (a kind a later step
+    /// adds) reads as no place, and the rest of the record survives. The
+    /// store is a wire format (review of #589).
+    #[serde(default, deserialize_with = "lenient_place")]
     pub place: Option<Field<Place>>,
     #[serde(default)]
     pub people: Vec<Person>,
@@ -223,6 +226,15 @@ impl Scene {
     }
 }
 
+/// A place that does not parse is no place, never a lost record.
+fn lenient_place<'de, D>(d: D) -> std::result::Result<Option<Field<Place>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+
 /// A picture's content hash, as the index keys it.
 pub fn hash(bytes: &[u8]) -> String {
     sha2::Sha256::digest(bytes)
@@ -252,14 +264,17 @@ impl SceneSlot {
 
     /// Record a landed render: the chat's copy, the persona's latest (the
     /// last to land wins), and the index entry for its picture.
+    ///
+    /// The index first: if it cannot be written, nothing is, rather than
+    /// leaving a latest that names a picture no lookup can find (review of
+    /// #589).
     pub fn land(&self, scene: &Scene) -> std::io::Result<()> {
         let bytes = serde_json::to_vec_pretty(scene).map_err(std::io::Error::other)?;
-        write_atomic(&self.chat_copy, &bytes)?;
-        write_atomic(&self.store.join("latest.json"), &bytes)?;
         if let Some(h) = scene.picture.as_deref().filter(|h| is_hash(h)) {
             write_atomic(&self.store.join("index").join(format!("{h}.json")), &bytes)?;
         }
-        Ok(())
+        write_atomic(&self.store.join("latest.json"), &bytes)?;
+        write_atomic(&self.chat_copy, &bytes)
     }
 
     /// The scene a picture with these bytes was rendered as, from the
@@ -426,6 +441,20 @@ mod tests {
         let s = Scene::advance(None, edit, Origin::Clean, "c1");
         assert_eq!(s.people[0].origin, Origin::Untrusted);
         assert_eq!(s.people[0].wearing, "an apron");
+    }
+
+    /// A place of a kind this build does not know reads as no place, and
+    /// the rest of the record survives (review of #589).
+    #[test]
+    fn an_unknown_place_costs_the_place_only() {
+        let s: Scene = serde_json::from_str(
+            r#"{"place": {"value": {"kind": "hologram"}, "origin": "clean"},
+                "people": [{"name": "maya", "origin": "clean"}], "chat": "c1"}"#,
+        )
+        .unwrap();
+        assert!(s.place.is_none());
+        assert_eq!(s.people[0].name, "maya");
+        assert_eq!(s.chat.as_deref(), Some("c1"));
     }
 
     /// A record with no origin, or one this build does not know, reads
