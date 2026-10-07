@@ -902,6 +902,26 @@ conversation, so the capabilities do not change. Three rules:
     change named take the run's origin; the rest keep their own, or a camera
     move would launder an untrusted person clean. A newcomer's `doing`
     describes them; it is not a pose change.
+  - **Regenerate's call (R8-2).** `ImageGenerate::redraw_of(ctx, picture)`
+    returns the `image_generate` call that redraws a picture with a new seed;
+    no model turn makes it. It is rebuilt from the call the picture recorded:
+    the words or the edit, the cast, extras, style and shape. It is never
+    replayed from the compiled prompt, which sits in a file a run can write.
+    The call goes through the tool again, so every pre-GPU check runs afresh.
+    - **Paths:** each path the record names is re-checked, as `original_of`
+      reads one: a plain path of safe characters that resolves in this
+      chat's jail.
+    - **The library, as it stands now:** a person or style no longer
+      approved refuses the redraw, on every surface. An assistant chat would
+      otherwise draw the name as an extra.
+    - **An edit:** it regenerates as itself, and casts only the people its
+      own call declared (`identity.people[].from == "the call"`). The
+      canvas's record brings the rest, as it did the first time.
+    - **A picture carried from another chat:** its record holds a
+      placeholder instead of that chat's words, so its redraw takes the
+      place from the persona's scene, found by its bytes.
+    - **Nothing to rebuild from** (no record, a path gone, another chat's
+      edit) is refused, and the refusal says why.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
