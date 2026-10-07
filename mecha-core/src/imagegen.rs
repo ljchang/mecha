@@ -3243,7 +3243,9 @@ impl Tool for ImageGenerate {
         // The canvas's own bytes, hashed as they sit in the jail, for a persona
         // chat's scene (IMAGE-SCENE-DESIGN.md §5.1): the index is keyed by
         // content, so a picture carried in from another chat is found by
-        // what it is, never by a workspace manifest a run could write.
+        // what it is, never by a workspace manifest a run could write. These
+        // are the bytes as they sit, read again below to fit them: hash the
+        // fitted bytes instead and every index key changes.
         let canvas_hash: Option<String> = match (&ctx.scene, is_edit) {
             (Some(_), true) => read_references(ctx, std::slice::from_ref(&paths[0]))
                 .await
@@ -3273,8 +3275,11 @@ impl Tool for ImageGenerate {
                 .await
                 .and_then(|m| m.get("cast").and_then(Value::as_array).cloned())
                 .map(|people| {
+                    // As many as a scene keeps, each name as long as a
+                    // library name may be (review of #589, pass 5).
                     people
                         .iter()
+                        .take(crate::scene::MAX_PEOPLE)
                         .filter_map(|p| {
                             // A workspace file a run can write: capped as a
                             // call's own fields are (review of #586).
@@ -3287,7 +3292,12 @@ impl Tool for ImageGenerate {
                                     .collect::<String>()
                             };
                             Some(crate::imagelib::CastMember {
-                                name: p.get("name")?.as_str()?.to_string(),
+                                name: p
+                                    .get("name")?
+                                    .as_str()?
+                                    .chars()
+                                    .take(crate::imagelib::MAX_NAME)
+                                    .collect(),
                                 wearing: field("wearing"),
                                 doing: field("doing"),
                             })

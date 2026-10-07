@@ -189,9 +189,21 @@ impl Scene {
                 })
             }),
         };
+        // Bounded here, where everything that reaches the store passes: a
+        // carried person comes from a manifest a run can write, and an edit
+        // keeps the people it did not name, so neither the count nor a name
+        // may grow along a chain of edits (review of #589, pass 5). The
+        // call's people come first, so the cap drops the oldest kept ones.
         let mut people: Vec<Person> = Vec::new();
+        let cap = |s: String, n: usize| s.chars().take(n).collect::<String>();
         let mut push = |p: Person| {
-            if !people.iter().any(|q| q.name == p.name) {
+            let p = Person {
+                name: cap(p.name, crate::imagelib::MAX_NAME),
+                wearing: cap(p.wearing, crate::imagelib::MAX_CAST_FIELD),
+                doing: cap(p.doing, crate::imagelib::MAX_CAST_FIELD),
+                ..p
+            };
+            if people.len() < MAX_PEOPLE && !people.iter().any(|q| q.name == p.name) {
                 people.push(p);
             }
         };
@@ -237,6 +249,11 @@ impl Scene {
     }
 }
 
+/// The most people a scene keeps: twice what one picture draws with faces,
+/// so a picture's record past `MAX_CAST` still fits, and a chain of edits
+/// cannot grow the store without bound.
+pub const MAX_PEOPLE: usize = 2 * crate::imagelib::MAX_CAST;
+
 /// A place that does not parse is no place, never a lost record.
 fn lenient_place<'de, D>(d: D) -> std::result::Result<Option<Field<Place>>, D::Error>
 where
@@ -278,7 +295,8 @@ impl SceneSlot {
     ///
     /// The index first: if it cannot be written, nothing is, rather than
     /// leaving a latest that names a picture no lookup can find (review of
-    /// #589).
+    /// #589). The other two are not one write: a latest that lands with a
+    /// failed chat copy leaves that chat a render behind, until its next.
     pub fn land(&self, scene: &Scene) -> std::io::Result<()> {
         let bytes = serde_json::to_vec_pretty(scene).map_err(std::io::Error::other)?;
         if let Some(h) = scene.picture.as_deref().filter(|h| is_hash(h)) {
@@ -458,6 +476,47 @@ mod tests {
         let s = Scene::advance(None, edit, Origin::Clean, "c1");
         assert_eq!(s.people[0].origin, Origin::Untrusted);
         assert_eq!(s.people[0].wearing, "an apron");
+    }
+
+    /// A record a run wrote cannot grow the store: a scene keeps at most
+    /// `MAX_PEOPLE`, the call's people first, and no name longer than a
+    /// library name, however long the chain of edits (review of #589,
+    /// pass 5).
+    #[test]
+    fn a_scene_is_bounded_in_people_and_in_each_field() {
+        let long = "n".repeat(5_000);
+        let mut edit = change(false, "a");
+        edit.declared = vec![("maya".into(), "a coat".into(), "reading".into())];
+        edit.carried = (0..40)
+            .map(|i| (format!("{long}{i}"), "w".repeat(5_000), "d".into()))
+            .collect();
+        let mut s = Scene::advance(None, edit, Origin::Clean, "c1");
+        for _ in 0..5 {
+            let mut next = change(false, "b");
+            next.carried = (0..40)
+                .map(|i| (format!("x{i}"), String::new(), String::new()))
+                .collect();
+            s = Scene::advance(Some(&s), next, Origin::Clean, "c1");
+        }
+        assert_eq!(s.people.len(), MAX_PEOPLE);
+        assert!(s
+            .people
+            .iter()
+            .all(|p| p.name.chars().count() <= crate::imagelib::MAX_NAME
+                && p.wearing.chars().count() <= crate::imagelib::MAX_CAST_FIELD));
+        let first = Scene::advance(
+            None,
+            Change {
+                declared: vec![("maya".into(), String::new(), String::new())],
+                carried: (0..40)
+                    .map(|i| (format!("x{i}"), String::new(), String::new()))
+                    .collect(),
+                ..change(false, "c")
+            },
+            Origin::Clean,
+            "c1",
+        );
+        assert_eq!(first.people[0].name, "maya", "the call's people come first");
     }
 
     /// A place of a kind this build does not know reads as no place, and
