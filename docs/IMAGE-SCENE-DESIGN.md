@@ -1,6 +1,7 @@
 # Image scenes — design
 
-**Status:** proposed 2026-10-07, waiting on the owner's rulings (§9). Nothing here is built.
+**Status:** accepted 2026-10-07: the owner ruled R1–R7 yes as written (§9). Nothing here is built
+yet; the build waits on #583 and #577 (§10).
 It amends `IMAGE-COMPILER-DESIGN.md` §3, where `cast` and `reference_images` are exclusive,
 and `PERSONA-CONTEXT-DESIGN.md` §5.5, where edits happen only on the owner's initiative. It
 replaces the lineage rule of #569's face anchor. The measurements are in §4. The owner judged
@@ -285,7 +286,11 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
 
-## 9. Rulings asked of the owner
+## 9. Rulings (owner, 2026-10-07)
+
+All seven were accepted as written. They are settled, and the build follows them without asking
+again. Drawing two variants for the owner to choose between (§8, item 4) was not ruled on and
+stays open.
 
 - **R1.** Identity is declared: every library person enters every render as head crop plus
   description (§5.2).
