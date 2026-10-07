@@ -4664,6 +4664,12 @@ invariants:
   (`Egress::Chosen`), or whose reach is unknown, has its job awaited inline
   even with a sink: the interlock cleared it against this turn's taint, and
   a job run later would send against that snapshot.
+- **One picture per run, structurally** (`IMAGE-DESIGN.md` §5.5). `RunPictures` records the deferred tools a run has started.
+  - **The repeat is not run.** A later call to one of them in the same run is answered "Not run: … already started in this turn" and never reaches the tool. In all sessions, the queue's busy refusal and the old repeat guard never stopped a model that kept calling.
+  - **Then the run closes.** Its next request is the closing one, which keeps the tools listed (so the cached prefix holds), asks for words with `ToolChoice::None`, ends with `PICTURE_ON_ITS_WAY` as its last note, and is not streamed.
+  - **What the owner sees.** The closing reply's call markup (Qwen's `<tool_call>` blocks, written as text) is stripped. Nothing left, or an empty reply, becomes `PICTURE_ON_ITS_WAY_REPLY`, so a call written out as text never reaches the screen.
+  - **When the close fires.** A persona chat sets `RunContext::end_after_deferral`, so its run closes right after the picture is queued. Every other run closes only on a repeat: the assistant keeps working after drawing (`image_view`, `shell` and `fs_read` in 43 measured runs).
+  - **The panel's note rides the first request only** (`persona::edit::is_note`): re-sent beside a "being made" result, it was the measured loop trigger. With `ToolChoice::None` and the note sent once, the closing reply was clean 5 times in 6, against 1 in 6 for the LoopGuard's exit.
 - **One job per conversation, refused in the tool's words.** A second is a
   `refusal: true` result with the tool's own busy text, never a tool failure.
 - **A late result is finished by the loop's own rule** — the turn's cap, the

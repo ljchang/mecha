@@ -362,6 +362,57 @@ pub struct RunContext {
     /// deferred (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1). Never inherited by
     /// a subagent: its job is the parent's call's, awaited inline.
     pub jobs: Option<Arc<dyn crate::jobs::JobSink>>,
+    /// End the run cleanly as soon as it has queued a deferred picture: the
+    /// next request answers in words (`ToolChoice::None`) with
+    /// [`PICTURE_ON_ITS_WAY`] as its last note (IMAGE-DESIGN.md §5.5). A
+    /// persona chat sets it, since nothing after the picture is the
+    /// persona's job. Every other run ends that way only on a repeat call,
+    /// because the assistant keeps working after drawing: it went on to
+    /// `image_view`, `shell` or `fs_read` in 43 measured runs.
+    pub end_after_deferral: bool,
+}
+
+/// The last note on a run's closing request, once its picture is queued
+/// (IMAGE-DESIGN.md §5.5). Verbatim as measured on 2026-10-07: with
+/// `ToolChoice::None` and the panel's note sent once, 5 of 6 replies were
+/// clean, against 1 of 6 for the LoopGuard's exit.
+pub const PICTURE_ON_ITS_WAY: &str = "(From the harness: the picture this turn asked for is being made and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
+
+/// What the owner sees in place of a closing reply that was empty, or was
+/// only a tool call written out as text. Never the call markup itself.
+pub const PICTURE_ON_ITS_WAY_REPLY: &str = "The picture is on its way.";
+
+/// The deferred tools a run has started, and whether it has tried one again.
+/// One picture per run, structurally (IMAGE-DESIGN.md §5.5): a deferred job
+/// of a tool already started in a run is never started again in it.
+#[derive(Debug, Default)]
+pub(crate) struct RunPictures {
+    started: std::collections::BTreeSet<String>,
+    /// Set this turn: a deferred job was queued.
+    started_now: bool,
+    /// Set this turn: a call named a tool already started, and was not run.
+    repeated: bool,
+}
+
+/// Every `<tool_call>` block taken out of a reply, and a trailing unclosed
+/// one cut to the end. A model asked to answer in words sometimes writes the
+/// call out as text (Qwen's `<tool_call><function=…>` markup, measured in
+/// `content` with `finish_reason: stop`); none of it is for the owner.
+pub(crate) fn strip_call_markup(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("<tool_call>") {
+        out.push_str(&rest[..i]);
+        match rest[i..].find("</tool_call>") {
+            Some(j) => rest = &rest[i + j + "</tool_call>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What one request carries beside its history, never stored in it.
@@ -420,7 +471,14 @@ impl RunContext {
             think_budget: None,
             notes: Arc::from(Vec::new()),
             jobs: None,
+            end_after_deferral: false,
         }
+    }
+
+    /// End this run as soon as it queues a picture; see the field.
+    pub fn with_end_after_deferral(mut self) -> Self {
+        self.end_after_deferral = true;
+        self
     }
 
     /// Cap the model's reasoning per request in this run; see the field.
@@ -1223,6 +1281,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
         || text == EMPTY_TURN_NUDGE
+        || text == PICTURE_ON_ITS_WAY
         || text == crate::planning::CRITERION_OBSERVATION
         || text == "A declared plan check was not run; completion remains unverified."
         || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
@@ -1707,9 +1766,30 @@ impl Agent {
     /// `wire_bytes`, so a request sent across midnight is measured as the
     /// bytes it carries.
     fn request_notes(&self, cx: &RunContext) -> RequestNotes {
+        self.request_notes_for(cx, true, false)
+    }
+
+    /// The notes for one request of a run: `first` is the run's first
+    /// request, `closing` is its closing one (§5.5).
+    ///
+    /// The edit panel's note describes the owner's message, so it rides the
+    /// run's first request only. Re-sent beside a "being made" result it is
+    /// the measured loop trigger: panel turns ran away 5 times in 13, typed
+    /// ones 0 in 19, and with the note sent once 0 in 10. Every other note
+    /// stays as it was. A closing request ends with [`PICTURE_ON_ITS_WAY`].
+    fn request_notes_for(&self, cx: &RunContext, first: bool, closing: bool) -> RequestNotes {
+        let mut tail: Vec<String> = cx
+            .notes
+            .iter()
+            .filter(|n| first || !crate::persona::edit::is_note(n))
+            .cloned()
+            .collect();
+        if closing {
+            tail.push(PICTURE_ON_ITS_WAY.to_string());
+        }
         RequestNotes {
             head: self.calendar_note().into_iter().collect(),
-            tail: cx.notes.to_vec(),
+            tail,
         }
     }
 
@@ -2296,6 +2376,10 @@ impl Agent {
         // alternate-forever worry is already answered by `max_turns`: every
         // retry spends a turn against the same ceiling as real work.
         let mut empty_turns = 0u32;
+        // One picture per run (IMAGE-DESIGN.md §5.5): what this run has
+        // queued, and whether its next request is the closing one.
+        let mut pictures = RunPictures::default();
+        let mut closing = false;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -2726,7 +2810,7 @@ impl Agent {
             // one request.
             // This request's notes, read once: the bytes measured, the bytes
             // sent and the count the provider marks are one reading.
-            let notes = self.request_notes(cx);
+            let notes = self.request_notes_for(cx, turns == 1, closing);
             // The harness's part of them is what the recording keeps: the
             // reading this request carried, so a run that crosses midnight
             // records the date the model last saw.
@@ -2745,6 +2829,13 @@ impl Agent {
                 think: None,
                 think_budget: cx.think_budget,
                 trailing_notes: notes.tail.len(),
+                // The closing request keeps the tools listed (the cached
+                // prefix holds) and asks for words (§5.5).
+                tool_choice: if closing {
+                    crate::message::ToolChoice::None
+                } else {
+                    crate::message::ToolChoice::Auto
+                },
             };
 
             // A prompt that overflows the model's window is refused outright,
@@ -2764,7 +2855,11 @@ impl Agent {
             // nothing worth summarising, freed by thinning alone), and the
             // next overflow propagated as a raw 400 with no recovery
             // attempted at all.
-            let completion = match self.complete(cx, &request, &events).await {
+            // The closing request is not streamed: a reply written as a tool
+            // call would reach the screen before it could be taken out. Its
+            // cleaned text goes out once, below (§5.5).
+            let stream = if closing { None } else { events.clone() };
+            let completion = match self.complete(cx, &request, &stream).await {
                 Err(e) if is_context_overflow(&e) => {
                     // Counted before the recovery rather than after it: what
                     // this measures is the threshold having failed to prevent
@@ -2833,7 +2928,7 @@ impl Agent {
                     // sent.
                     pressure.invalidate();
                     sent_bytes = self.wire_bytes(messages, &notes);
-                    self.complete(cx, &request, &events).await?
+                    self.complete(cx, &request, &stream).await?
                 }
                 other => other?,
             };
@@ -2918,6 +3013,26 @@ impl Agent {
                 }
             }
 
+            // The closing reply answers in words. A call the model still made,
+            // or wrote out as text, is not run and never shown: the owner
+            // sees the words that remain, or that the picture is on its way
+            // (§5.5). An empty reply is replaced the same way, not retried.
+            let mut response = response;
+            if closing {
+                let said = strip_call_markup(&response.message.text());
+                let said = if said.trim().is_empty() {
+                    PICTURE_ON_ITS_WAY_REPLY.to_string()
+                } else {
+                    said.trim().to_string()
+                };
+                response
+                    .message
+                    .content
+                    .retain(|b| !matches!(b, Block::ToolUse { .. } | Block::Text { .. }));
+                response.message.content.push(Block::text(said.clone()));
+                response.stop_reason = StopReason::EndTurn;
+                emit(&events, AgentEvent::TextDelta(said));
+            }
             let text = response.message.text();
             if !text.is_empty() {
                 emit(&events, AgentEvent::AssistantText(text.clone()));
@@ -2998,6 +3113,7 @@ impl Agent {
                             &mut trace,
                             &mut taint,
                             &mut blocked_sends,
+                            &mut pictures,
                             self.output_budget(cx, pressure, transcript_bytes),
                             // Understates by this turn's results, which do
                             // not exist yet and cannot: this number is an
@@ -3133,6 +3249,12 @@ impl Agent {
                     let mut result_message = Message::tool_results(results);
                     result_message.tool_provenance = provenance;
                     messages.push(result_message);
+                    // The next request closes the run (§5.5): on a repeat
+                    // call in every chat, or right after the picture is
+                    // queued where the run is set to end then.
+                    closing = pictures.repeated || (cx.end_after_deferral && pictures.started_now);
+                    pictures.repeated = false;
+                    pictures.started_now = false;
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
                     // after every sibling's work, through the same guards as any call.
@@ -3195,6 +3317,7 @@ impl Agent {
                                 &mut trace,
                                 &mut taint,
                                 &mut check_blocks,
+                                &mut pictures,
                                 self.output_budget(
                                     cx,
                                     pressure,
@@ -3749,6 +3872,7 @@ impl Agent {
             think: None,
             think_budget: cx.think_budget,
             trailing_notes: notes.tail.len(),
+            tool_choice: crate::message::ToolChoice::Auto,
         };
 
         let response = match self.complete(cx, &request, events).await? {
@@ -4168,6 +4292,7 @@ impl Agent {
         trace: &mut Vec<ToolCallTrace>,
         taint: &mut Taint,
         blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
         output_budget: usize,
         context: Option<crate::pressure::Forecast>,
     ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
@@ -4183,6 +4308,7 @@ impl Agent {
             trace,
             taint,
             blocked_sends,
+            run_pictures,
             output_budget,
             context,
             true,
@@ -4263,6 +4389,7 @@ impl Agent {
                 &mut trace,
                 &mut convo.taint,
                 &mut blocked_sends,
+                &mut RunPictures::default(),
                 cx.tools.output_budget_bytes,
                 None,
                 false,
@@ -4303,6 +4430,7 @@ impl Agent {
         trace: &mut Vec<ToolCallTrace>,
         taint: &mut Taint,
         blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
         output_budget: usize,
         context: Option<crate::pressure::Forecast>,
         // Whether a deferred call may go to the host's job queue: a model
@@ -4394,6 +4522,41 @@ impl Agent {
                     input: shown,
                 },
             );
+
+            // One picture per run (IMAGE-DESIGN.md §5.5): a deferred job of a
+            // tool already started in this run is never started again in it.
+            // The repeat is not run, and the run's next request closes it.
+            if run_pictures.started.contains(name) {
+                let content = format!(
+                    "Not run: `{name}` was already started in this turn, and its result is on \
+                     its way. Answer the owner now."
+                );
+                run_pictures.repeated = true;
+                emit(
+                    events,
+                    AgentEvent::ToolResult {
+                        id: id.clone(),
+                        name: name.clone(),
+                        is_error: true,
+                        content: content.clone(),
+                    },
+                );
+                results[i] = Some(Block::ToolResult {
+                    tool_use_id: id.clone(),
+                    content,
+                    is_error: true,
+                });
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: true,
+                    unknown: false,
+                    staged: false,
+                });
+                denied_this_turn += 1;
+                continue;
+            }
 
             // Filtering the advertised list is not enough on its own: the
             // tool was in the prompt on an earlier turn, and the model may
@@ -5244,7 +5407,11 @@ impl Agent {
                 out = match sink {
                     Some(sink) if defer => {
                         match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
-                            Ok(()) => out,
+                            Ok(()) => {
+                                run_pictures.started.insert(name.clone());
+                                run_pictures.started_now = true;
+                                out
+                            }
                             Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
                         }
                     }
@@ -7082,6 +7249,150 @@ mod tests {
             .await;
         assert_eq!(d.content, "not made: a picture is already being made");
         go.notify_one();
+    }
+
+    /// The text of every user-role block a request carried at its tail.
+    fn tail_text(req: &CompletionRequest) -> String {
+        req.messages.last().map(|m| m.text()).unwrap_or_default()
+    }
+
+    /// One picture per run (IMAGE-DESIGN.md §5.5), a persona chat's shape:
+    /// once the picture is queued, the next request closes the run. It keeps
+    /// the tools listed, asks for words, carries the "on its way" line last,
+    /// and is not streamed. A closing reply that is only a call written out
+    /// as text is never shown; the owner sees that the picture is on its way.
+    #[tokio::test]
+    async fn a_persona_run_ends_cleanly_once_its_picture_is_queued() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "d1".into(),
+                        name: "draw".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=draw><parameter=x>1</parameter></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let mut convo = Conversation::user("draw the harbour");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "one closing request, then the run ends");
+        assert_eq!(seen[0].tool_choice, crate::message::ToolChoice::Auto);
+        assert_eq!(seen[1].tool_choice, crate::message::ToolChoice::None);
+        assert!(!seen[1].tools.is_empty(), "the tools stay listed");
+        assert!(tail_text(&seen[1]).ends_with(PICTURE_ON_ITS_WAY));
+        assert_eq!(outcome.text, PICTURE_ON_ITS_WAY_REPLY);
+        let last = convo.messages.last().unwrap().text();
+        assert!(!last.contains("tool_call"), "{last}");
+        go.notify_one();
+    }
+
+    /// The assistant keeps working after drawing, so its run is not closed
+    /// by the picture; a second start of the same deferred tool is not run,
+    /// and that closes the run instead. Words beside a written-out call are
+    /// kept, the call is not (§5.5).
+    #[tokio::test]
+    async fn a_repeat_of_a_started_picture_is_not_run_and_closes_the_run() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let queue = crate::jobs::JobQueue::new(move |d| sink.lock().unwrap().push(d));
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "d1".into(),
+                        name: "draw".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "d2".into(),
+                        name: "draw".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::text("Here it comes. <tool_call>draw</tool_call>")],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("draw the harbour");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            assert_eq!(
+                seen[1].tool_choice,
+                crate::message::ToolChoice::Auto,
+                "the assistant may go on working after drawing"
+            );
+            assert_eq!(seen[2].tool_choice, crate::message::ToolChoice::None);
+        }
+        assert!(result_of(&convo, "d2").starts_with("Not run:"));
+        assert_eq!(outcome.text, "Here it comes.");
+        go.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(got.lock().unwrap().len(), 1, "one picture made, not two");
+    }
+
+    /// The edit panel's note describes the owner's message, so it rides the
+    /// run's first request only: re-sent beside a "being made" result it was
+    /// the measured loop trigger (§5.5). Other notes keep their place.
+    #[tokio::test]
+    async fn the_panel_note_rides_the_first_request_only() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        go.notify_one();
+        let (agent, provider) = agent_with_tools(
+            draw_then("Here."),
+            vec![Arc::new(Later(go))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.notes = vec![crate::persona::edit::note(), "(A run note.)".to_string()].into();
+        let mut convo = Conversation::user("make it dusk");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert!(crate::persona::edit::is_note(
+            &seen[0]
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .iter()
+                .find_map(|b| match b {
+                    Block::Text { text } if crate::persona::edit::is_note(text) =>
+                        Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        ));
+        let later = tail_text(&seen[1]);
+        assert!(!later.contains(crate::persona::edit::EDIT_STEM), "{later}");
+        assert!(later.contains("(A run note.)"), "{later}");
     }
 
     /// A chat host's queue: the call answers "being made" at once, the run

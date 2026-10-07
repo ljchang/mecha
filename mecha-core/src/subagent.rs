@@ -335,6 +335,7 @@ impl Tool for Subagent {
             // Never the parent's queue: a deferred call inside a child is
             // the child's work, awaited inline before it answers the parent
             // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1).
+            end_after_deferral: false,
             jobs: None,
             // Never sampled per child: a subagent is work inside the
             // parent's run, and the parent's snapshot already spans it.

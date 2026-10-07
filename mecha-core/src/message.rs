@@ -395,6 +395,23 @@ pub struct CompletionRequest {
     /// them, so a provider that marks a moving cache breakpoint puts it on
     /// the block before them: a cache write on a note is never read back.
     pub trailing_notes: usize,
+    /// Whether the model may call a tool on this request. `None` keeps the
+    /// tools listed, so the cached prefix is unchanged, and asks the model to
+    /// answer in words: how a run ends cleanly once its picture is queued
+    /// (`IMAGE-DESIGN.md` §5.5). Removing the tools instead would re-send the
+    /// whole context: 12,277 tokens against 4, measured 2026-10-07.
+    pub tool_choice: ToolChoice,
+}
+
+/// Whether a request lets the model call a tool.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolChoice {
+    /// The model may call any listed tool, or answer. What every request did
+    /// before this existed, and what a provider sends nothing for.
+    #[default]
+    Auto,
+    /// The model must answer in words; the tools stay listed.
+    None,
 }
 
 #[derive(Debug, Clone)]

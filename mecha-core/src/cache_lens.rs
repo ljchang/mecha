@@ -226,6 +226,7 @@ mod tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
     }
 
@@ -269,6 +270,7 @@ mod tests {
             messages.last_mut().unwrap().content.push(note.clone());
             CompletionRequest {
                 trailing_notes: 1,
+                tool_choice: crate::message::ToolChoice::Auto,
                 ..request(messages)
             }
         };
