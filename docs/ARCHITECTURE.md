@@ -911,15 +911,18 @@ conversation, so the capabilities do not change. Three rules:
     - **Paths:** each path the record names is re-checked, as `original_of`
       reads one: a plain path of safe characters that resolves in this
       chat's jail.
-    - **The library, as it stands now:** a person or style no longer
-      approved refuses the redraw, on every surface. An assistant chat would
-      otherwise draw the name as an extra.
+    - **The library, as it stands now:** a person or style the redraw will
+      declare that is no longer approved refuses the redraw, on every
+      surface. An assistant chat would otherwise draw the name as an extra.
+      It is checked after an edit's narrowing, so a person the canvas's
+      record brings refuses nothing (the rule of #586 and #591).
     - **An edit:** it regenerates as itself, and casts only the people its
       own call declared (`identity.people[].from == "the call"`). The
       canvas's record brings the rest, as it did the first time.
-    - **A picture carried from another chat:** its record holds a
-      placeholder instead of that chat's words, so its redraw takes the
-      place from the persona's scene, found by its bytes.
+    - **A picture carried from another chat** is refused. Its record holds
+      a placeholder instead of that chat's words, and a redraw here would
+      write those words into this chat's manifest. It can be edited here,
+      or regenerated in the chat that drew it (review of #593).
     - **Nothing to rebuild from** (no record, a path gone, another chat's
       edit) is refused, and the refusal says why.
 - **The web chat's Edit button opens a modal where the owner paints what may
