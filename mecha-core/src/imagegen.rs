@@ -4238,7 +4238,7 @@ impl Tool for ImageGenerate {
                         }),
                         declared: named,
                         carried,
-                        camera: EditAsk::parse(&input).ok().flatten().and_then(|e| e.camera),
+                        camera: EditAsk::parse(input).ok().flatten().and_then(|e| e.camera),
                         style: None,
                         picture: crate::scene::hash(&bytes),
                     }
