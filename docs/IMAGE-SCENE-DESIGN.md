@@ -514,5 +514,5 @@ from the scene's place.
    rather than being switched off, and every scene carries its origin (§5.1).
 3. The canvas rule and restage, with the scene change as the call's type, replacing the typed
    edit.
-4. The scene in run notes.
+4. *(Built 2026-10-07.)* The scene in run notes.
 5. §8's measurements, each before the step that depends on it.

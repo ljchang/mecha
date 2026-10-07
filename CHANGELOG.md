@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they wear and do. A picture brought into another chat is recognised by its
   content and keeps its people. Forgetting a chat's memories removes the
   scene records that chat wrote; what another chat later drew from its
-  pictures stays with that chat.
+  pictures stays with that chat. Each turn she's told what her last picture
+  showed, so a remembered day's outfit or setting no longer slips into the
+  present.
 - **An edit now carries the faces of the people in it.**
   - **Who:** `image_generate` takes `cast` beside `reference_images`. Each
     named library character comes in as a head crop of their portrait with
