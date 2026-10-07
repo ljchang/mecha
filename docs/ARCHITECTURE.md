@@ -2052,11 +2052,15 @@ slate (`a_harness_call_meets_every_gate_a_model_call_does`). **It runs inline,
 never as a job:** a job answers its call late, into that call's transcript
 slot, and a harness call has none, so the result would be lost and the
 chat's one job seat held. A job still out from a turn still counts in the
-interlock's taint, and while one is out a deferring harness call is refused
-in the tool's own busy words (`a_harness_call_runs_inline_and_meets_the_one_job_rule`).
-`Dispatched` says whether the call was staged rather than run, and carries
-the trace and refused sends, so the caller can record them where `doctor`
-reads them.
+interlock's taint, and while any job is out a deferring harness call is
+refused in the tool's own busy words, stricter than the queue's own rule
+(`a_harness_call_runs_inline_and_meets_the_one_job_rule`). `Dispatched` says
+whether the call was staged rather than run, and carries the trace and
+refused sends, so the caller can record them where `doctor` reads them. **The
+caller owes two writes:** a `Record::Taint` whenever the call armed the
+conversation, since no transcript exists to re-derive it from (as
+`serve::late::land` does), and never the result block itself into the
+conversation, where it would be a `tool_result` answering no `tool_use`.
 
 Two distinctions that are easy to get wrong:
 
