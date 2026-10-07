@@ -1682,7 +1682,17 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
     if !text.is_empty() {
         out.push_str(&format!(" ({text})"));
     }
-    let (wearing, doing) = (m.wearing.trim(), m.doing.trim().trim_end_matches('.'));
+    // A placeholder (the refusal skeleton's "…", or what `cast_self` fills
+    // in) is no answer, so it is never printed (review of #586, pass 3).
+    fn stated(s: &str) -> &str {
+        let s = s.trim();
+        if unstated(s) {
+            ""
+        } else {
+            s
+        }
+    }
+    let (wearing, doing) = (stated(&m.wearing), stated(&m.doing).trim_end_matches('.'));
     if !wearing.is_empty() {
         out.push_str(&format!(", wearing {wearing}"));
     }
@@ -1694,6 +1704,14 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
     }
     out.push('.');
     out
+}
+
+/// No answer about clothes or pose: empty, the refusal skeleton's "…", or the
+/// self-cast's stand-in, which on an edit points at a scene that is only the
+/// change (review of #586, pass 3).
+fn unstated(s: &str) -> bool {
+    let s = s.trim();
+    crate::imagelib::blank(s) || s == SELF_WEARING || s == SELF_DOING
 }
 
 /// A library name as the edit prompt says it, each word capitalised: "maya" →
@@ -3052,8 +3070,11 @@ impl Tool for ImageGenerate {
          edit, put in cast the owner's characters who are in the picture or being added to it \
          (yourself as \"self\" in a persona chat), each with what they wear and do after the \
          change: the tool brings each face from the library. A picture you made already \
-         records its people, so cast can be left out for it; pass \"cast\": [] when none of \
-         them is in it. Do not describe their looks in the edit. If the user's \
+         records its people, so cast can be left out for it, and a cast you give adds to \
+         them rather than replacing them. Pass \"cast\": [] when none of the recorded people \
+         is in the picture any more, or when a name in the change means someone else who \
+         shares a library character's name; it turns off their faces and the name check. Do not describe their looks \
+         in the edit. If the user's \
          message names a mask (a picture they painted over the part to change), pass it as \
          mask, with the picture in reference_images, and put only the change in edit.change: \
          everything outside the mask is kept exactly. The first line of a result is the new \
@@ -3193,7 +3214,10 @@ impl Tool for ImageGenerate {
         // back through its history, which missed 63 of 69 persona edits
         // (R5). An attached photo records nobody, so it names nobody unless
         // the call does.
-        let mut people_from = "the call";
+        // Overwritten wherever someone is merged; an edit that names nobody
+        // says so here, so `from` never disagrees with `skipped` (review of
+        // #588, pass 4).
+        let mut people_from = "nobody named";
         // Who the call itself named, as library names (`self` is the
         // persona's character): held to the compiler's bar below, where a
         // person carried over from the picture's record is not.
@@ -3217,7 +3241,12 @@ impl Tool for ImageGenerate {
             .map(own)
             .collect();
         let mut inherited: std::collections::BTreeSet<String> = Default::default();
-        if is_edit && !waived && input.get("cast").is_none_or(Value::is_null) {
+        let mut record: Vec<crate::imagelib::CastMember> = Vec::new();
+        // The record is read whether or not the call names anyone: the call's
+        // `cast` adds to the people the picture records and never erases
+        // them, so a retry that names one person cannot drop the others
+        // (review of #588). Only `"cast": []` turns the record off.
+        if is_edit && !waived {
             // What they wore and did is kept for the record, never sent: the
             // canvas already shows them (review of #586).
             let recorded: Vec<crate::imagelib::CastMember> = read_manifest(ctx, &paths[0])
@@ -3246,18 +3275,17 @@ impl Tool for ImageGenerate {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Only the people the call does not name itself: theirs is the
+            // call's word, with what they wear now.
+            let recorded: Vec<crate::imagelib::CastMember> = recorded
+                .into_iter()
+                .filter(|m| !declared.contains(&m.name.trim().to_lowercase()))
+                .collect();
             inherited = recorded
                 .iter()
                 .map(|m| m.name.trim().to_lowercase())
                 .collect();
-            people_from = if recorded.is_empty() {
-                "nobody named"
-            } else {
-                "the picture's manifest"
-            };
-            if !recorded.is_empty() {
-                ask.get_or_insert_with(LibraryAsk::default).cast = recorded;
-            }
+            record = recorded;
         }
         // A persona drawing itself: before the guard below, which would
         // otherwise refuse the persona for naming itself (§8.6). On an edit
@@ -3268,11 +3296,35 @@ impl Tool for ImageGenerate {
                 return Ok(refused(why));
             }
         }
-        if is_edit
-            && people_from == "nobody named"
-            && ask.as_ref().is_some_and(|a| !a.cast.is_empty())
-        {
-            people_from = "the edit's words";
+        // The record joins after the self cast, so the self cast's "cast is
+        // full" refusal counts only the people the call and its words name,
+        // never ones it cannot drop (review of #588, pass 3). A recorded
+        // person the words also name is the recorded person, with what the
+        // record says they wear; past `MAX_CAST`, the rest of the record is
+        // left out and `identity` says who.
+        let mut left_out: Vec<crate::imagelib::CastMember> = Vec::new();
+        // Only when there is someone to merge, so an edit with nobody keeps no
+        // library ask and its prompt goes through untouched.
+        if is_edit && (!record.is_empty() || ask.is_some()) {
+            let a = ask.get_or_insert_with(LibraryAsk::default);
+            a.cast
+                .retain(|m| !inherited.contains(&m.name.trim().to_lowercase()));
+            let worded_in = !a.cast.is_empty() && declared.is_empty();
+            for m in record {
+                if a.cast.len() < crate::imagelib::MAX_CAST {
+                    a.cast.push(m);
+                } else {
+                    left_out.push(m);
+                }
+            }
+            people_from = match (declared.is_empty(), inherited.is_empty(), worded_in) {
+                (false, true, _) => "the call",
+                (false, false, _) => "the call and the picture's record",
+                (true, false, true) => "the edit's words and the picture's record",
+                (true, false, false) => "the picture's record",
+                (true, true, true) => "the edit's words",
+                (true, true, false) => "nobody named",
+            };
         }
         let scene_prompt = req.prompt.clone();
         // A library character named in the prompt but not in `cast` is drawn
@@ -3317,15 +3369,21 @@ impl Tool for ImageGenerate {
                         if broken.len() == 1 { "is" } else { "are" }
                     )));
                 }
+                // Someone the record carried past `MAX_CAST` is still in the
+                // picture, so naming them is no stranger drawn from words
+                // (review of #588, pass 5).
                 let cast: std::collections::BTreeSet<String> = ask
                     .as_ref()
                     .map(|a| {
                         a.cast
                             .iter()
                             .map(|m| m.name.trim().to_lowercase())
-                            .collect()
+                            .collect::<std::collections::BTreeSet<_>>()
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(left_out.iter().map(|m| m.name.trim().to_lowercase()))
+                    .collect();
                 let in_prompt = crate::imagelib::named_in(lib, &said);
                 let named: Vec<String> = in_prompt
                     .iter()
@@ -3359,9 +3417,23 @@ impl Tool for ImageGenerate {
                             .and_then(|a| a.cast.iter().find(|m| m.name.trim().to_lowercase() == n))
                             .filter(|_| !is_edit || declared.contains(n))
                     };
-                    let mut order: Vec<String> = in_prompt.clone();
+                    // On an edit, the people the picture's record carries are
+                    // left out of the retry: the record brings them anyway,
+                    // and quoted back with "…" for clothes they would be
+                    // refused as placeholders (review of #588, pass 6). They
+                    // do not count toward the head count either.
+                    let carried = |n: &String| {
+                        is_edit
+                            && (inherited.contains(n)
+                                || left_out.iter().any(|m| m.name.trim().to_lowercase() == *n))
+                    };
+                    let mut order: Vec<String> =
+                        in_prompt.iter().filter(|n| !carried(n)).cloned().collect();
                     for m in ask.iter().flat_map(|a| a.cast.iter()) {
                         let n = m.name.trim().to_lowercase();
+                        if carried(&n) {
+                            continue;
+                        }
                         // Only library characters count toward the head count
                         // or belong in the sentence below: a name that is no
                         // entry is `compile`'s `missing` to report, not a
@@ -3453,13 +3525,25 @@ impl Tool for ImageGenerate {
                 }
                 continue;
             }
-            if theirs {
+            // Someone only the edit's words name, whom the picture's record
+            // does not carry, is new to this picture, so meets the same bar
+            // (review of #586, pass 3): "Add Maya on the bench" with no `cast`.
+            let new_here = !theirs && !inherited.contains(&name);
+            if theirs || new_here {
                 let (wearing, doing) = (m.wearing.trim(), m.doing.trim());
-                if crate::imagelib::blank(wearing) || crate::imagelib::blank(doing) {
-                    return Ok(refused(format!(
-                        "`{name}` needs `wearing` and `doing`: in an edit, what they wear and do \
-                         after the change. Left out, the edit invents them."
-                    )));
+                if unstated(wearing) || unstated(doing) {
+                    return Ok(refused(if theirs {
+                        format!(
+                            "`{name}` needs `wearing` and `doing`: in an edit, what they wear and \
+                             do after the change. Left out, the edit invents them."
+                        )
+                    } else {
+                        format!(
+                            "`{name}` is named in the edit but this picture does not record \
+                             them: put them in `cast` with what they wear and do after the \
+                             change, or the edit invents both."
+                        )
+                    }));
                 }
                 if wearing.chars().count() > crate::imagelib::MAX_CAST_FIELD
                     || doing.chars().count() > crate::imagelib::MAX_CAST_FIELD
@@ -3667,6 +3751,7 @@ impl Tool for ImageGenerate {
                     .zip(anchors)
                     .map(|((m, name, entry, unknown), anchor)| (m, name, entry, anchor, unknown));
                 let mut said = String::new();
+                let mut worded = String::new();
                 let mut crops = 0;
                 // Where each person came from, said per person (review of
                 // #586): a scene's record and the edit's words can mix.
@@ -3695,6 +3780,12 @@ impl Tool for ImageGenerate {
                         }
                         people.push(json!({"name": name, "from": from_of(&name), "crop": false,
                             "skipped": "no approved library entry by that name"}));
+                        // No entry, no face; but what the call says they wear
+                        // and do still goes in, or the edit invents it (review
+                        // of #588). The name is the call's own word here.
+                        if !masked && declared.contains(&name) {
+                            worded.push_str(&person_sentence(&capitalized(&name), "", &m));
+                        }
                         continue;
                     };
                     let shown = capitalized(&name);
@@ -3712,6 +3803,18 @@ impl Tool for ImageGenerate {
                         }
                         other => other,
                     };
+                    // A carried-over person's clothes are on the canvas
+                    // already: only what the call says is sent.
+                    let told = if inherited.contains(&name) && !declared.contains(&name) {
+                        crate::imagelib::CastMember {
+                            name: m.name.clone(),
+                            wearing: String::new(),
+                            doing: String::new(),
+                        }
+                    } else {
+                        m.clone()
+                    };
+                    let sentence = person_sentence(&shown, &text, &told);
                     match anchor {
                         Some(crate::face::Anchor::Crop(bytes)) => {
                             req.references.push(Reference {
@@ -3721,18 +3824,7 @@ impl Tool for ImageGenerate {
                             });
                             crops += 1;
                             let k = req.references.len();
-                            // A carried-over person's clothes are on the
-                            // canvas already: only what the call says is sent.
-                            let told = if inherited.contains(&name) && !declared.contains(&name) {
-                                crate::imagelib::CastMember {
-                                    name: m.name.clone(),
-                                    wearing: String::new(),
-                                    doing: String::new(),
-                                }
-                            } else {
-                                m.clone()
-                            };
-                            said.push_str(&person_sentence(&shown, &text, &told));
+                            said.push_str(&sentence);
                             said.push_str(&format!(
                                 " Take only {shown}'s facial identity from <image{k}>, nothing else."
                             ));
@@ -3750,6 +3842,16 @@ impl Tool for ImageGenerate {
                                 Some(crate::face::Anchor::Unavailable(why)) => why,
                                 Some(crate::face::Anchor::Crop(_)) => unreachable!(),
                             };
+                            // No crop, but what the call says they wear and do
+                            // still goes in: without a detector, or past one
+                            // that failed, a person added with no clothes
+                            // stated gets invented ones (review of #586, pass
+                            // 3). Not on a masked edit, whose prompt is the
+                            // change alone.
+                            let states = !unstated(&told.wearing) || !unstated(&told.doing);
+                            if !masked && states {
+                                worded.push_str(&sentence);
+                            }
                             people.push(
                                 json!({"name": name, "from": from_of(&name), "version": e.version,
                                 "portrait": e.portrait, "crop": false, "skipped": why}),
@@ -3772,6 +3874,23 @@ impl Tool for ImageGenerate {
                         req.prompt.push_str(" Each of them appears exactly once.");
                     }
                 }
+                req.prompt.push_str(&worded);
+            }
+            // Past `MAX_CAST` a recorded person gets no face, but is still in
+            // the picture: kept in the record, and said in the result line,
+            // as a budget trim is (review of #588, pass 4).
+            for m in &left_out {
+                let name = m.name.trim().to_lowercase();
+                let entry = library
+                    .as_ref()
+                    .and_then(|l| l.get(crate::imagelib::Kind::Character, &name))
+                    .filter(|e| e.status == crate::imagelib::Status::Approved);
+                people.push(json!({"name": name, "from": "the picture's record", "crop": false,
+                    "skipped": format!("past {} people in one picture", crate::imagelib::MAX_CAST)}));
+                edit_cast.push(json!({"name": name, "version": entry.map(|e| e.version),
+                    "portrait": entry.and_then(|e| e.portrait.clone()),
+                    "wearing": m.wearing.trim(), "doing": m.doing.trim()}));
+                trimmed.push(capitalized(&name));
             }
             identity = json!({"people": people, "from": people_from, "skipped": skipped});
         }
@@ -3782,10 +3901,11 @@ impl Tool for ImageGenerate {
             String::new()
         } else {
             format!(
-                " {} went without a face reference: an edit sends at most \
-                 {EDIT_REFERENCE_BUDGET} pictures, this one included, so the picture alone \
-                 carried {}.",
+                " {} went without a face reference this time (an edit sends at most \
+                 {EDIT_REFERENCE_BUDGET} pictures, and holds at most {} library people), so the \
+                 picture alone carried {}.",
                 trimmed.join(", "),
+                crate::imagelib::MAX_CAST,
                 if trimmed.len() == 1 {
                     "that face"
                 } else {
@@ -8976,7 +9096,7 @@ mod tests {
         );
         assert!(!first.content.contains(FACE_REFERENCE), "{}", first.content);
         let m = manifest_of(&dir, &first.content);
-        assert_eq!(m["identity"]["from"], "the picture's manifest", "{m}");
+        assert_eq!(m["identity"]["from"], "the picture's record", "{m}");
         assert_eq!(m["identity"]["people"][0]["name"], "maya", "{m}");
         assert_eq!(m["identity"]["people"][0]["crop"], true, "{m}");
         assert_eq!(m["cast"][0]["name"], "maya", "the edit records her: {m}");
@@ -9060,6 +9180,10 @@ mod tests {
         assert!(!last_prompt(&seen).contains("images.image_2"));
         let m = manifest_of(&dir, &out.content);
         assert_eq!(m["identity"]["skipped"], "nobody was named", "{m}");
+        assert_eq!(
+            m["identity"]["from"], "nobody named",
+            "from agrees with skipped: {m}"
+        );
         assert!(m["cast"].is_null(), "{m}");
         // Declared: herself, onto the photo.
         let out = edit(
@@ -9109,6 +9233,11 @@ mod tests {
             manifest_of(&dir, &out.content)["identity"]["people"][0]["crop"],
             false
         );
+        assert!(
+            last_prompt(&seen).contains(" Zed, wearing a coat, standing."),
+            "a declared stranger's clothes still go in: {}",
+            last_prompt(&seen)
+        );
         let out = edit(
             maya.clone(),
             "inbox/room.png",
@@ -9130,7 +9259,12 @@ mod tests {
         )
         .await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(!last_prompt(&seen).contains("images.image_2"));
+        let sent = last_prompt(&seen);
+        assert!(!sent.contains("images.image_2"), "{sent}");
+        assert!(
+            sent.contains(" Maya (maya, a memorable face), wearing a coat, sitting."),
+            "no crop, but the declared clothes still go in (review of #586, pass 3): {sent}"
+        );
         assert_eq!(
             manifest_of(&dir, &out.content)["identity"]["people"][0]["skipped"],
             "the face detector is not installed"
@@ -9152,6 +9286,209 @@ mod tests {
         let edited = json!({"reference_images": ["inbox/room.png"], "cast": cast});
         assert!(t.library_redraw(&drawn).is_some());
         assert!(t.library_redraw(&edited).is_none());
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The self cast's "cast is full" refusal counts only the people the call
+    /// and its words name (review of #588, pass 3): on a picture that records
+    /// four others, the persona naming herself comes in, and the record past
+    /// `MAX_CAST` is left out and said, not refused over.
+    #[tokio::test]
+    async fn a_full_record_never_blocks_the_persona_naming_herself() {
+        let (url, seen) = fake(vec![done(); 3], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john", "sam", "tau", "thea"]);
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let four = base
+            .call(
+                json!({"prompt": "a long table", "cast": [
+                    {"name": "john", "wearing": "a suit", "doing": "sitting"},
+                    {"name": "sam", "wearing": "a jumper", "doing": "sitting"},
+                    {"name": "tau", "wearing": "a coat", "doing": "sitting"},
+                    {"name": "thea", "wearing": "a dress", "doing": "sitting"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!four.is_error, "{}", four.content);
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Maya sits at the head of the table wearing a red coat, raising a glass."},
+                       "reference_images": [picture_of(&four.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(last_prompt(&seen).contains("Maya's facial identity from <image2>"));
+        let m = manifest_of(&dir, &out.content);
+        let people = m["identity"]["people"].as_array().unwrap();
+        assert!(
+            people.iter().any(|p| p["skipped"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("past 4"))),
+            "{m}"
+        );
+        assert_eq!(
+            m["cast"].as_array().map(Vec::len),
+            Some(5),
+            "the record keeps everyone: {m}"
+        );
+        assert!(
+            out.content.contains("went without a face reference"),
+            "{}",
+            out.content
+        );
+        // Naming the person left out is no stranger: no "split the scene"
+        // refusal an edit cannot follow (review of #588, pass 5).
+        let again = maya
+            .call(
+                json!({"edit": {"change": "Have Thea raise a glass too."},
+                       "reference_images": [picture_of(&out.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!again.is_error, "{}", again.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A call's `cast` adds to the people a picture records and never erases
+    /// them (review of #588): "add me to this picture" names only her, and
+    /// the man already in it keeps his crop and his place in the record.
+    #[tokio::test]
+    async fn a_named_cast_adds_to_the_picture_record() {
+        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let john = maya
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!john.is_error, "{}", john.content);
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Add a woman beside the stove.", "keep": "the kitchen"},
+                       "reference_images": [picture_of(&john.content)],
+                       "cast": [{"name": "self", "wearing": "a coat", "doing": "standing"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last_prompt(&seen);
+        assert!(
+            sent.contains("Maya's facial identity from <image2>")
+                && sent.contains("John's facial identity from <image3>"),
+            "{sent}"
+        );
+        let m = manifest_of(&dir, &out.content);
+        let names: Vec<&str> = m["cast"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["maya", "john"], "{m}");
+        assert_eq!(
+            m["identity"]["from"], "the call and the picture's record",
+            "{m}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The name guard's retry on an edit names only people the call can
+    /// declare: the picture's record carries the rest, and quoting them back
+    /// with "…" would have the copied retry refused as placeholders (review
+    /// of #588, pass 6). The retry, copied, draws.
+    #[tokio::test]
+    async fn an_edits_name_guard_retry_converges() {
+        let (url, _) = fake(vec![done(); 2], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec())));
+        let scene = t
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "maya", "wearing": "an apron", "doing": "cooking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let picture = picture_of(&scene.content);
+        let out = t
+            .call(
+                json!({"edit": {"change": "Add John at the table."},
+                       "reference_images": [picture]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("\"maya\""), "{}", out.content);
+        let retry = t
+            .call(
+                json!({"edit": {"change": "Add John at the table."},
+                       "reference_images": [picture],
+                       "cast": [{"name": "john", "wearing": "a shirt", "doing": "sitting"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!retry.is_error, "{}", retry.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Someone only the edit's words name, whom the picture does not record,
+    /// is new to it, so is asked for in `cast` with what they wear and do
+    /// rather than drawn in invented clothes (review of #586, pass 3).
+    #[tokio::test]
+    async fn a_person_named_only_in_an_edits_words_must_be_declared_with_clothes() {
+        let lib = library_with(&["maya"]);
+        let base = Arc::new(
+            tool("http://127.0.0.1:1")
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/room.png"), PNG).unwrap();
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Add Maya sitting on the bench.", "keep": "the room"},
+                       "reference_images": ["inbox/room.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("does not record them"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 

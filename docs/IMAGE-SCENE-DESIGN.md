@@ -180,6 +180,10 @@ A **scene** is a typed record:
 The harness keeps the **current scene per persona**, in the persona store, not in a chat's
 workspace. Every manifest records its scene and the content hash of its picture. A picture
 attached in any chat is matched by its bytes, so a carried-over picture resolves to its scene.
+**The assistant's own chats have no scene store.** Scenes are per persona. In the assistant
+chat, §5.3's canvas rule and §5.7's redraw read the picture's own manifest within its chat,
+under the same fail-closed reading, and nothing crosses chats.
+
 **The lookup, in one rule: a picture's bytes are looked up only in a harness-written index in the
 persona store, and nowhere else.** The harness writes an entry there when a render in one of the
 owner's own sessions lands, keyed by the picture's content hash and pointing at the scene it
@@ -229,7 +233,10 @@ This is ruling R9 (owner, 2026-10-07).
 ### 5.2 People are declared on every call
 
 - **Each library person in a render enters as their detector head crop plus their library
-  description, on every call, whatever the canvas, except a masked edit** (§7). A masked edit
+  description, on every call, whatever the canvas, except a masked edit** (§7). Where no crop
+  can be had (no detector, no face in the portrait, past the budget), a declared person still
+  enters as their description, clothes and pose in words; only the face reference is missing,
+  and the result line says so. A masked edit
   still runs the name guard; declaring the person satisfies it, and their crop is simply not
   sent. The crop is the anchor's existing crop. The
   description is the entry's text, verbatim: build, and features such as a tattoo, worded so
@@ -244,9 +251,15 @@ This is ruling R9 (owner, 2026-10-07).
   §5.5): the owner pointed at it, by a typed reference in the turn being answered. It also goes
   through `ToolCtx::resolve` before any crop is read. The model can propose them for the library
   through the existing candidate path.
-- The persona's own character is added when something names her: the picture's record, or her
-  name in the edit's words, which `cast_self` resolves as it does for new pictures. An owner photo
-  with no record and no mention of her names nobody (§6, case 12).
+- The persona's own character comes in when something names her. **The picture's record**
+  carries her over. **Her name in the edit's words**, on a picture that does not record her,
+  brings her in when those words say what she wears and does. Otherwise the call is refused and
+  asks for her in `cast`, because she is new to that picture and stand-in clothes would be
+  invented ones; that costs use case 2 one round trip.
+- **A call's `cast` adds to a picture's record and never erases it.** Removing one person from
+  the record waits for the scene record (§10 step 2). Until then `"cast": []` resets the whole
+  record when the recorded people have left the picture.
+  An owner photo with no record and no mention of her names nobody (§6, case 12).
 
 **Resolution and slots.** One call has one reference size.
 
@@ -293,7 +306,7 @@ before.
 
 The code chooses the canvas from **which scene fields changed**, never from a flag the model sets.
 A restage always starts from the place, never from the last output, so identity is one step from
-the library on every render. Words are the usual place until locations are built (§8.4), so the
+the library on every render. Words are the usual place until locations are built (§8.5), so the
 canvas-less row is the common restage today. It is also the shape M3 measured and the owner rated
 good.
 
@@ -302,9 +315,9 @@ unmeasured** (§8). The nearest data point goes the other way: M2's EA, a chain 
 riding along, fell to −0.01. EA moved the layout and a retouch does not, so the result may not
 carry over, but until it is measured a long retouch chain is not assumed safe. Each manifest
 records its **retouch depth** (the picture it built on, plus one; zero for a render from the
-place), so §8.6 can be read from real use as well as from a fresh sheet. Before step 3 (the canvas rule) ships,
+place), so §8.7 can be read from real use as well as from a fresh sheet. Before step 3 (the canvas rule) ships,
 the depth also reaches the result line ("the third retouch of …"). Whether a cap holds until
-§8.6 is measured is decided then; §1's failure was a depth-7 chain.
+§8.7 is measured is decided then; §1's failure was a depth-7 chain.
 
 ### 5.4 The model writes scene changes, the compiler writes the prompt
 
@@ -334,7 +347,9 @@ checked against #583's branch on 2026-10-07; check them again against the tree o
   where it was. **Identity is not in the job:** crops are references, and a reference has to be
   in the request before `backend.generate`. So §10 step 1 runs in `call` before the split, where
   #569's anchor ran. Only the **scene write** belongs after the split, inside #583's
-  `let job = async move { … }` beside `write_manifest`, or in `late::land`.
+  `let job = async move { … }` beside `write_manifest`. Not in `late::land`, which returns early
+  on a rolled-back run and would leave a picture that really landed one scene behind (review of
+  #584, final pass).
 - **Two chats with one persona can render at once.** Jobs are one in flight per chat, and the
   scene is kept per persona (§5.1). Each chat works on its own copy of the scene, taken
   from the persona's latest when the chat starts. A landing writes back to the persona's latest,
@@ -356,7 +371,10 @@ picture.
 
 - **The harness redraws the picture's recorded scene with a new seed.** No model turn is
   involved: no loop, no reasoning, one render. A retouch regenerates as itself, which is the same
-  change on the same canvas with a new seed.
+  change on the same canvas with a new seed. **The redraw is recompiled from the scene through
+  the compiler, never replayed from the manifest's compiled prompt.** That prompt sits in a file
+  a run can write (§5.1). Recompiling runs the pre-GPU checks again: `cast_self`, the name guard,
+  unknown names, `MAX_CAST` and the budget. The library re-check covers only the approval half.
 - **Identity follows R1**, because the scene names its people. The live library is checked
   again on every redraw: each entry has to be approved now, as on every other identity path, not
   merely when the picture was first drawn. A redraw whose person is no longer approved says so
@@ -447,11 +465,15 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 2. Wording that produces a high camera angle.
 3. Why the seated, facing-the-camera placement in P1 failed for crop alone and for words, but
    held with the description.
-4. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
+4. How often the model waives with `"cast": []` (the one-token opt-out of declared identity),
+   counted from manifests' `identity`. The tool description gives it two uses: someone else who
+   shares a library character's name, and resetting a record whose people have left the picture,
+   until the scene record can remove one person. Which use it is put to is the measurement.
+5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
-5. A third crop beside a canvas (§5.2, budget), and adding a person by restaging from the place
+6. A third crop beside a canvas (§5.2, budget), and adding a person by restaging from the place
    rather than onto the current picture (§5.3).
-6. A chain of retouches, three or more deep, each carrying the crops (§5.3).
+7. A chain of retouches, three or more deep, each carrying the crops (§5.3).
 
 ## 9. Rulings (owner, 2026-10-07)
 
