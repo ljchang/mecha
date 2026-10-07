@@ -884,6 +884,9 @@ conversation, so the capabilities do not change. Three rules:
       or a removal. Everyone is drawn afresh with their crops on the scene's
       place: an edit of the place picture when this chat holds it (its hash
       checked), else a new picture from the place's words (the M3 shape).
+      With neither, the people are redrawn on the current picture, and the
+      result says the place could not be found. The scene's camera and
+      style are drawn unless the change sets new ones.
     - **Add:** someone new is added onto the current picture.
     - **Retouch:** anything else edits the current picture.
     - **No scene:** the assistant's chats, or a photo from outside, edit the

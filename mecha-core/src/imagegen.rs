@@ -3125,6 +3125,14 @@ impl ImageGenerate {
         if input.get("prompt").is_some_and(|p| !p.is_null()) {
             return Err("A scene change takes `scene`, not `prompt`.".into());
         }
+        // Checked here, before the routing writes into it: the schema is not
+        // enforced, and indexing a string panics (review of #591, pass 3).
+        if input
+            .get("edit")
+            .is_some_and(|e| !e.is_null() && !e.is_object())
+        {
+            return Err("`edit` must be an object with at least `change`.".into());
+        }
         let text = |k: &str| -> std::result::Result<Option<String>, String> {
             match sc.get(k) {
                 None | Some(Value::Null) => Ok(None),
@@ -3161,16 +3169,28 @@ impl ImageGenerate {
         if changes.is_empty() && camera.is_none() && place.is_none() {
             return Err("`scene` names no change: give people, camera or place.".into());
         }
-        // `self` is the persona's own character, as in `cast`.
+        // `self` is the persona's own character, as in `cast`, and only when
+        // the library holds it approved: otherwise the compiler would refuse
+        // it under a name the model never wrote (#444; review of #591, pass 3).
+        let lib = self
+            .library_dir
+            .as_ref()
+            .map(|d| crate::imagelib::Library::load(d).0);
         let me = self
             .self_as
             .as_ref()
             .and_then(|w| w.character.as_deref())
-            .map(|c| c.trim().to_lowercase());
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| {
+                lib.as_ref()
+                    .and_then(|l| l.get(crate::imagelib::Kind::Character, c))
+                    .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+            });
         for c in &mut changes {
             if c.name == "self" {
                 c.name = me.clone().ok_or(
-                    "This persona has no library character, so there is no \"self\" in a scene.",
+                    "This persona has no approved library character, so there is no \"self\" \
+                     in a scene.",
                 )?;
             }
         }
@@ -3205,7 +3225,22 @@ impl ImageGenerate {
                         people[i].2 = d.clone();
                     }
                 }
-                None if c.remove => {}
+                // Removing someone the scene does not hold would spend a
+                // render that changes nothing (review of #591, pass 3).
+                None if c.remove => {
+                    return Err(format!(
+                        "{} is not in this scene, so there is no one to remove.",
+                        capitalized(&c.name)
+                    ))
+                }
+                // Someone new needs their clothes and what they are doing,
+                // said in the scene's terms: the model sent no `cast`.
+                None if c.wearing.is_none() || c.doing.is_none() => {
+                    return Err(format!(
+                        "{} is new to this scene: give what they wear and what they are doing.",
+                        capitalized(&c.name)
+                    ))
+                }
                 None => {
                     people.push((
                         c.name.clone(),
@@ -4892,7 +4927,9 @@ impl Tool for ImageGenerate {
                 // `scene` change was routed into them (`scene_route` says
                 // which), beside the prompt the tool wrote from them
                 // (`EditAsk`).
-                "edit": input.get("edit").filter(|v| !v.is_null()),
+                // Not when built on another chat's scene: a restage carries
+                // that chat's camera into it (review of #591, pass 3).
+                "edit": input.get("edit").filter(|v| !v.is_null() && !foreign),
                 "compiled_prompt": if foreign {
                     None
                 } else {
@@ -10884,7 +10921,7 @@ mod tests {
     /// manifest; the prompt still carries them to the model.
     #[tokio::test]
     async fn a_restage_of_another_chats_scene_keeps_its_words_out_of_the_jail() {
-        let (url, seen) = distinct(2).await;
+        let (url, seen) = distinct(3).await;
         let first = tempdir();
         let second = tempdir();
         let store = tempdir();
@@ -10903,6 +10940,16 @@ mod tests {
             )
             .await
             .unwrap();
+        // A camera in the first chat's scene, so the restage carries it.
+        let drawn = maya
+            .call(
+                json!({"scene": {"camera": "From a lighthouse gallery."},
+                       "reference_images": [picture_of(&drawn.content)]}),
+                &scene_ctx(&first, &store, "c1"),
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
         let bytes = std::fs::read(first.join(picture_of(&drawn.content))).unwrap();
         std::fs::create_dir_all(second.join("inbox")).unwrap();
         std::fs::write(second.join("inbox/carried.png"), &bytes).unwrap();
@@ -10921,7 +10968,7 @@ mod tests {
         );
         let m = manifest_of(&second, &out.content).to_string();
         assert!(
-            !m.contains("lighthouse") && !m.contains("green jumper"),
+            !m.contains("lighthouse") && !m.contains("green jumper") && !m.contains("gallery"),
             "the jail is not: {m}"
         );
         std::fs::remove_dir_all(first).ok();
@@ -11005,6 +11052,68 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A restage on another chat's scene whose place this chat does not hold
+    /// is an edit of the picture carrying that chat's camera: the camera
+    /// goes to the model, never into this chat's manifest (review of #591,
+    /// pass 3).
+    #[tokio::test]
+    async fn a_foreign_restage_keeps_the_other_chats_camera_out_of_the_manifest() {
+        let (url, seen) = distinct(3).await;
+        let first = tempdir();
+        let second = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let c1 = scene_ctx(&first, &store, "c1");
+        std::fs::create_dir_all(first.join("inbox")).unwrap();
+        std::fs::write(first.join("inbox/room.png"), picture(8, [10, 10, 10])).unwrap();
+        let placed = maya
+            .call(
+                json!({"edit": {"change": "Add a woman by the window."},
+                       "reference_images": ["inbox/room.png"],
+                       "cast": [{"name": "self", "wearing": "a coat", "doing": "sitting"}]}),
+                &c1,
+            )
+            .await
+            .unwrap();
+        assert!(!placed.is_error, "{}", placed.content);
+        let high = maya
+            .call(
+                json!({"scene": {"camera": "From a lighthouse gallery."},
+                       "reference_images": [picture_of(&placed.content)]}),
+                &c1,
+            )
+            .await
+            .unwrap();
+        assert!(!high.is_error, "{}", high.content);
+        let bytes = std::fs::read(first.join(picture_of(&high.content))).unwrap();
+        std::fs::create_dir_all(second.join("inbox")).unwrap();
+        std::fs::write(second.join("inbox/carried.png"), &bytes).unwrap();
+        let out = maya
+            .call(
+                json!({"scene": {"people": [{"name": "self", "doing": "standing"}]},
+                       "reference_images": ["inbox/carried.png"]}),
+                &scene_ctx(&second, &store, "c2"),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            last_prompt(&seen).contains("lighthouse gallery"),
+            "the model is told"
+        );
+        let m = manifest_of(&second, &out.content).to_string();
+        assert!(!m.contains("lighthouse"), "the jail is not: {m}");
+        for d in [first, second, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// What a restage draws and what the scene records agree: a pose change
@@ -11211,6 +11320,21 @@ mod tests {
                     "prompt": "a beach"}),
                 "not `prompt`",
             ),
+            (
+                json!({"scene": {"camera": "x"}, "reference_images": ["inbox/a.png"],
+                    "edit": "make it blue"}),
+                "must be an object",
+            ),
+            (
+                json!({"scene": {"people": [{"name": "john", "remove": true}]},
+                    "reference_images": ["inbox/a.png"]}),
+                "John is not in this scene",
+            ),
+            (
+                json!({"scene": {"people": [{"name": "john"}]},
+                    "reference_images": ["inbox/a.png"]}),
+                "John is new to this scene",
+            ),
         ] {
             let out = t.call(bad, &ctx(&dir)).await.unwrap();
             assert!(
@@ -11219,6 +11343,29 @@ mod tests {
                 out.content
             );
         }
+        // "self" names the persona's character only when the library holds
+        // it approved (#444; review of #591, pass 3).
+        let no_maya = library_with(&["john"]);
+        let her = Arc::new(
+            tool(&url)
+                .with_library_dir(no_maya.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let out = her
+            .call(
+                json!({"scene": {"people": [{"name": "self", "doing": "waving"}]},
+                       "reference_images": ["inbox/a.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("no approved library character"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(no_maya).ok();
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
