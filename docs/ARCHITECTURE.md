@@ -930,13 +930,15 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
   held identity within a few hundredths of a tight crop (E2, E10). `Request`
   carries `reference_size` for this; ComfyUI's encoder takes one size per
-  call, which is why `cast` and `reference_images` are refused together
-  until a per-reference size is measured.
+  call. Until 2026-10-07 that was why `cast` and `reference_images` were
+  refused together. Since then an edit sends its people as head crops at
+  the canvas's size, under `EDIT_REFERENCE_BUDGET` (the declared-identity
+  entry under images).
 - **A character named without a `cast` is refused before the GPU.** The first
   real run looked the characters up, wrote their descriptions into the prompt
   and left `cast` out: two strangers (ArcFace 0.17 and 0.10 against their
   portraits). `imagelib::named_in` catches an approved character's name as a
-  whole word in any non-edit prompt, minus the names already in `cast` — a
+  whole word in any prompt, an edit's included since 2026-10-07, minus the names already in `cast` — a
   cast of one does not excuse a second character named beside it (review of
   #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
