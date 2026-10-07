@@ -140,6 +140,10 @@ pub struct Change {
     /// Otherwise their origin is untrusted, because the record came from a
     /// file a run could write.
     pub carried: Vec<(String, String, String)>,
+    /// People the call changed in part: their new fields as sent, beside
+    /// the rest of their entry, under their old origin joined with the
+    /// run's, so one new field never launders the others (review of #591).
+    pub amended: Vec<(String, String, String)>,
     /// The call said `"cast": []`: the people have left the picture, so an
     /// edit keeps none of the scene's. Otherwise an edit keeps everyone the
     /// scene had that it did not name, as it keeps the place and the camera
@@ -220,6 +224,18 @@ impl Scene {
                 wearing,
                 doing,
                 origin: by,
+            });
+        }
+        for (name, wearing, doing) in change.amended {
+            let name = name.trim().to_lowercase();
+            let was = prev
+                .and_then(|s| s.people.iter().find(|p| p.name == name))
+                .map_or(Origin::Untrusted, |p| p.origin);
+            push(Person {
+                name,
+                wearing,
+                doing,
+                origin: was.union(by),
             });
         }
         for (name, wearing, doing) in change.carried {
