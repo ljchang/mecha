@@ -772,9 +772,12 @@ conversation, so the capabilities do not change. Three rules:
     adds to the record and never erases it, so a retry that names one person
     cannot drop the others (review of #588). `self` and the persona's name are
     resolved by `cast_self`. A persona named only in an edit's words, whom
-    the picture does not record, is refused until she is cast with what she
-    wears and does. An attached photo names nobody unless the call does, and
-    `"cast": []` is nobody.
+    the picture does not record, comes in when those words say what she
+    wears and does; otherwise the call is refused and asks for her in
+    `cast`. An attached photo names nobody unless the call does, and
+    `"cast": []` is nobody: it also resets a record whose people have left
+    the picture, since removing one person waits for the scene record
+    (`IMAGE-SCENE-DESIGN.md` §10 step 2).
   - **The crop and the sentences.** Each approved character gets a tight crop
     of its portrait (1.12× the face box) at the canvas's size, its library
     description verbatim, and "take only X's facial identity from

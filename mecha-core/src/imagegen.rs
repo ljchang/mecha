@@ -1684,7 +1684,7 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
     }
     // A placeholder (the refusal skeleton's "…", or what `cast_self` fills
     // in) is no answer, so it is never printed (review of #586, pass 3).
-    fn said(s: &str) -> &str {
+    fn stated(s: &str) -> &str {
         let s = s.trim();
         if unstated(s) {
             ""
@@ -1692,7 +1692,7 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
             s
         }
     }
-    let (wearing, doing) = (said(&m.wearing), said(&m.doing).trim_end_matches('.'));
+    let (wearing, doing) = (stated(&m.wearing), stated(&m.doing).trim_end_matches('.'));
     if !wearing.is_empty() {
         out.push_str(&format!(", wearing {wearing}"));
     }
@@ -3071,9 +3071,9 @@ impl Tool for ImageGenerate {
          (yourself as \"self\" in a persona chat), each with what they wear and do after the \
          change: the tool brings each face from the library. A picture you made already \
          records its people, so cast can be left out for it, and a cast you give adds to \
-         them rather than replacing them. Pass \"cast\": [] only when a \
-         name in the change means someone else who shares a library character's name; \
-         \"cast\": [] turns off their faces and the name check. Do not describe their looks \
+         them rather than replacing them. Pass \"cast\": [] when none of the recorded people \
+         is in the picture any more, or when a name in the change means someone else who \
+         shares a library character's name; it turns off their faces and the name check. Do not describe their looks \
          in the edit. If the user's \
          message names a mask (a picture they painted over the part to change), pass it as \
          mask, with the picture in reference_images, and put only the change in edit.change: \
@@ -3238,6 +3238,7 @@ impl Tool for ImageGenerate {
             .map(own)
             .collect();
         let mut inherited: std::collections::BTreeSet<String> = Default::default();
+        let mut record: Vec<crate::imagelib::CastMember> = Vec::new();
         // The record is read whether or not the call names anyone: the call's
         // `cast` adds to the people the picture records and never erases
         // them, so a retry that names one person cannot drop the others
@@ -3281,17 +3282,7 @@ impl Tool for ImageGenerate {
                 .iter()
                 .map(|m| m.name.trim().to_lowercase())
                 .collect();
-            people_from = match (declared.is_empty(), recorded.is_empty()) {
-                (true, true) => "nobody named",
-                (true, false) => "the picture's manifest",
-                (false, true) => "the call",
-                (false, false) => "the call and the picture's manifest",
-            };
-            if !recorded.is_empty() {
-                ask.get_or_insert_with(LibraryAsk::default)
-                    .cast
-                    .extend(recorded);
-            }
+            record = recorded;
         }
         // A persona drawing itself: before the guard below, which would
         // otherwise refuse the persona for naming itself (§8.6). On an edit
@@ -3302,11 +3293,34 @@ impl Tool for ImageGenerate {
                 return Ok(refused(why));
             }
         }
-        if is_edit
-            && people_from == "nobody named"
-            && ask.as_ref().is_some_and(|a| !a.cast.is_empty())
-        {
-            people_from = "the edit's words";
+        // The record joins after the self cast, so the self cast's "cast is
+        // full" refusal counts only the people the call and its words name,
+        // never ones it cannot drop (review of #588, pass 3). A recorded
+        // person the words also name is the recorded person, with what the
+        // record says they wear; past `MAX_CAST`, the rest of the record is
+        // left out and `identity` says who.
+        let mut left_out: Vec<String> = Vec::new();
+        // Only when there is someone to merge, so an edit with nobody keeps no
+        // library ask and its prompt goes through untouched.
+        if is_edit && (!record.is_empty() || ask.is_some()) {
+            let a = ask.get_or_insert_with(LibraryAsk::default);
+            a.cast
+                .retain(|m| !inherited.contains(&m.name.trim().to_lowercase()));
+            let worded_in = !a.cast.is_empty() && declared.is_empty();
+            for m in record {
+                if a.cast.len() < crate::imagelib::MAX_CAST {
+                    a.cast.push(m);
+                } else {
+                    left_out.push(m.name.trim().to_lowercase());
+                }
+            }
+            people_from = match (declared.is_empty(), inherited.is_empty(), worded_in) {
+                (false, true, _) => "the call",
+                (false, false, _) => "the call and the picture's manifest",
+                (true, false, _) => "the picture's manifest",
+                (true, true, true) => "the edit's words",
+                (true, true, false) => "nobody named",
+            };
         }
         let scene_prompt = req.prompt.clone();
         // A library character named in the prompt but not in `cast` is drawn
@@ -3838,7 +3852,8 @@ impl Tool for ImageGenerate {
                 }
                 req.prompt.push_str(&worded);
             }
-            identity = json!({"people": people, "from": people_from, "skipped": skipped});
+            identity = json!({"people": people, "from": people_from, "skipped": skipped,
+                "left_out": (!left_out.is_empty()).then_some(&left_out)});
         }
         // A trim is said where the model reads it, not only in the manifest
         // (review of #584, pass 10): the picture is still drawn, from the
@@ -9227,6 +9242,53 @@ mod tests {
         let edited = json!({"reference_images": ["inbox/room.png"], "cast": cast});
         assert!(t.library_redraw(&drawn).is_some());
         assert!(t.library_redraw(&edited).is_none());
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The self cast's "cast is full" refusal counts only the people the call
+    /// and its words name (review of #588, pass 3): on a picture that records
+    /// four others, the persona naming herself comes in, and the record past
+    /// `MAX_CAST` is left out and said, not refused over.
+    #[tokio::test]
+    async fn a_full_record_never_blocks_the_persona_naming_herself() {
+        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john", "sam", "tau", "thea"]);
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let four = base
+            .call(
+                json!({"prompt": "a long table", "cast": [
+                    {"name": "john", "wearing": "a suit", "doing": "sitting"},
+                    {"name": "sam", "wearing": "a jumper", "doing": "sitting"},
+                    {"name": "tau", "wearing": "a coat", "doing": "sitting"},
+                    {"name": "thea", "wearing": "a dress", "doing": "sitting"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!four.is_error, "{}", four.content);
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Maya sits at the head of the table wearing a red coat, raising a glass."},
+                       "reference_images": [picture_of(&four.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(last_prompt(&seen).contains("Maya's facial identity from <image2>"));
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(
+            m["identity"]["left_out"].as_array().map(Vec::len),
+            Some(1),
+            "{m}"
+        );
+        std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 
