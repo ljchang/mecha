@@ -2439,6 +2439,243 @@ impl ImageGenerate {
         (original, own)
     }
 
+    /// The call that redraws `picture` with a new seed: Regenerate
+    /// (`IMAGE-SCENE-DESIGN.md` §5.7, R8-2). No model turn makes it.
+    ///
+    /// Rebuilt from the call the picture recorded, which is the model's own
+    /// fields (the prompt or the edit, the cast, extras, style and size),
+    /// never the manifest's compiled prompt. That is a file a run can write,
+    /// and the call this returns goes through `image_generate` again, so it is
+    /// compiled afresh: `cast_self`, the name guard, unknown names, the
+    /// library's approvals as they stand now, and the budgets all run again.
+    /// A person no longer approved refuses the redraw in the tool's words;
+    /// nothing else is drawn in their place.
+    ///
+    /// Every path the manifest names is re-checked before it is used: a
+    /// plain path of safe characters that resolves in this chat's jail, as
+    /// `original_of` reads one. A manifest that names another chat's words by
+    /// placeholder only takes the place from the persona's scene, found by
+    /// the picture's bytes. A picture with no record, or one whose record
+    /// cannot be used, is refused and says why.
+    pub async fn redraw_of(&self, ctx: &ToolCtx, picture: &str) -> Result<Value, String> {
+        let safe = |p: &str| {
+            p.len() <= 200
+                && !p.starts_with('/')
+                && !p.split('/').any(|c| c == ".." || c.is_empty())
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+                && ctx.resolve(p).is_ok()
+        };
+        if !(picture.starts_with("images/") && picture.ends_with(".png") && safe(picture)) {
+            return Err(format!("`{picture}` is not a picture this chat drew."));
+        }
+        let m = read_manifest(ctx, picture).await.ok_or_else(|| {
+            format!("`{picture}` has no record of how it was drawn, so it cannot be redrawn.")
+        })?;
+        let text = |k: &str| {
+            m.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        };
+        let mut call = serde_json::Map::new();
+        // Who is in it, by the record: names with what they wore and did.
+        // The record's versions and portraits are not sent; the library is
+        // asked afresh.
+        if let Some(people) = m.get("cast").and_then(Value::as_array) {
+            let cast: Vec<Value> = people
+                .iter()
+                .filter_map(|p| {
+                    let f = |k: &str| {
+                        p.get(k)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .chars()
+                            .take(crate::imagelib::MAX_CAST_FIELD)
+                            .collect::<String>()
+                    };
+                    let name = f("name");
+                    (!name.trim().is_empty()).then(
+                        || json!({"name": name, "wearing": f("wearing"), "doing": f("doing")}),
+                    )
+                })
+                .take(crate::imagelib::MAX_CAST)
+                .collect();
+            if !cast.is_empty() {
+                call.insert("cast".into(), json!(cast));
+            }
+        }
+        if let Some(st) = m
+            .get("style")
+            .and_then(|s| s.get("name"))
+            .and_then(Value::as_str)
+        {
+            call.insert("style".into(), json!(st));
+        }
+        // The library as it stands now, on every surface: a person or style
+        // no longer approved refuses the redraw and says so, rather than being
+        // drawn as an extra in their place as an assistant chat's new call
+        // would (§5.7: "says so and does not draw").
+        let library = self
+            .library_dir
+            .as_ref()
+            .map(|d| crate::imagelib::Library::load(d).0);
+        let approved = |kind: crate::imagelib::Kind, n: &str| {
+            library
+                .as_ref()
+                .and_then(|l| l.get(kind, &n.trim().to_lowercase()))
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+        };
+        let mut gone: Vec<String> = call
+            .get("cast")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.get("name").and_then(Value::as_str))
+            .filter(|n| !approved(crate::imagelib::Kind::Character, n))
+            .map(capitalized)
+            .collect();
+        if let Some(st) = call.get("style").and_then(Value::as_str) {
+            if !approved(crate::imagelib::Kind::Style, st) {
+                gone.push(format!("the style {st}"));
+            }
+        }
+        if !gone.is_empty() {
+            return Err(format!(
+                "`{picture}` cannot be redrawn: {} {} no longer in the image library as \
+                 approved, and nothing else is drawn in {} place.",
+                gone.join(", "),
+                if gone.len() == 1 { "is" } else { "are" },
+                if gone.len() == 1 { "its" } else { "their" },
+            ));
+        }
+        let paths: Vec<String> = m
+            .get("reference_images")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !paths.is_empty() {
+            // An edit regenerates as itself: the same change on the same
+            // canvas, with a new seed, which an edit always takes.
+            if let Some(bad) = paths.iter().find(|p| !safe(p)) {
+                return Err(format!(
+                    "`{picture}`'s record names `{bad}`, which is not a picture in this chat \
+                     any more, so it cannot be redrawn."
+                ));
+            }
+            let edit = m
+                .get("edit")
+                .filter(|e| e.is_object())
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "`{picture}` was drawn from another chat's scene, so its change is \
+                         not recorded here and it cannot be redrawn."
+                    )
+                })?;
+            call.insert("edit".into(), edit);
+            call.insert("reference_images".into(), json!(paths));
+            // Only the people the edit's own call declared: the canvas's
+            // record brings the rest again, as it did the first time, and
+            // declaring everyone would spend the edit's face budget on people
+            // the call never named.
+            let declared: Vec<String> = m
+                .get("identity")
+                .and_then(|i| i.get("people"))
+                .and_then(Value::as_array)
+                .map(|people| {
+                    people
+                        .iter()
+                        .filter(|p| p.get("from").and_then(Value::as_str) == Some("the call"))
+                        .filter_map(|p| p.get("name").and_then(Value::as_str))
+                        .map(str::to_lowercase)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(Value::Array(cast)) = call.get_mut("cast") {
+                cast.retain(|p| {
+                    p.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| declared.contains(&n.trim().to_lowercase()))
+                });
+            }
+            if call
+                .get("cast")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                call.remove("cast");
+            }
+            if let Some(mask) = text("mask") {
+                if !safe(&mask) {
+                    return Err(format!(
+                        "`{picture}`'s record names a painted area that is not in this chat \
+                         any more, so it cannot be redrawn."
+                    ));
+                }
+                call.insert("mask".into(), json!(mask));
+            }
+        } else {
+            // A new picture: its words, or, where the record kept another
+            // chat's words out, the scene's place found by the picture's bytes.
+            let prompt = match text("prompt").filter(|p| p != FOREIGN_PROMPT) {
+                Some(p) => p,
+                None => {
+                    let bytes = read_references(ctx, &[picture.to_string()])
+                        .await
+                        .ok()
+                        .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0).bytes));
+                    let place = ctx
+                        .scene
+                        .as_ref()
+                        .zip(bytes)
+                        .and_then(|(slot, b)| slot.lookup(&b))
+                        .and_then(|s| s.place)
+                        .and_then(|p| match p.value {
+                            crate::scene::Place::Words { text } => Some(text),
+                            _ => None,
+                        });
+                    place.ok_or_else(|| {
+                        format!("`{picture}` records no words it was drawn from, so it cannot be redrawn.")
+                    })?
+                }
+            };
+            call.insert("prompt".into(), json!(prompt));
+            if let Some(extras) = m.get("extras").and_then(Value::as_array) {
+                if !extras.is_empty() {
+                    call.insert("extras".into(), json!(extras));
+                }
+            }
+            // The same shape: a size the tool offers, read off the record.
+            let shape = m.get("size").and_then(Value::as_array).and_then(|wh| {
+                let w = wh.first()?.as_u64()? as u32;
+                let h = wh.get(1)?.as_u64()? as u32;
+                [Size::Square, Size::Landscape, Size::Portrait]
+                    .into_iter()
+                    .find(|s| s.dims() == (w, h))
+            });
+            if let Some(s) = shape {
+                call.insert(
+                    "size".into(),
+                    json!(match s {
+                        Size::Square => "square",
+                        Size::Landscape => "landscape",
+                        Size::Portrait => "portrait",
+                    }),
+                );
+            }
+        }
+        // A new seed, never the recorded one: that is what a redraw is for.
+        call.remove("seed");
+        Ok(Value::Object(call))
+    }
+
     /// What an edit that kept the layout of `edited` tells the model: facts
     /// only. It cannot say the edit failed — a recolour keeps the layout too,
     /// and only the model knows which it asked for (review of #408: a second
@@ -3147,7 +3384,26 @@ impl ImageGenerate {
         match sc.get("people") {
             None | Some(Value::Null) => {}
             Some(Value::Array(items)) => {
+                // Bounded at the door, as `cast` is: how many, and how long
+                // each field (review of #591, pass 8).
+                if items.len() > crate::scene::MAX_PEOPLE {
+                    return Err(format!(
+                        "`scene.people` names at most {} people.",
+                        crate::scene::MAX_PEOPLE
+                    ));
+                }
                 for v in items {
+                    for k in ["name", "wearing", "doing"] {
+                        if v.get(k)
+                            .and_then(Value::as_str)
+                            .is_some_and(|t| t.chars().count() > crate::imagelib::MAX_CAST_FIELD)
+                        {
+                            return Err(format!(
+                                "`scene.people` `{k}` is at most {} characters.",
+                                crate::imagelib::MAX_CAST_FIELD
+                            ));
+                        }
+                    }
                     let f = |k: &str| {
                         v.get(k)
                             .and_then(Value::as_str)
@@ -3345,15 +3601,31 @@ impl ImageGenerate {
         // A restage redraws everyone with their faces, and one picture holds
         // at most `MAX_CAST` of them; a scene can hold more. Said in the
         // scene's terms, since the model sent no `cast` (review of #591).
+        // The count said is the count that fired: the people the library
+        // holds, who would be drawn with faces (review of #591, pass 8).
         if route == "restage" && cast.len() > crate::imagelib::MAX_CAST {
-            let names: Vec<String> = people.iter().map(|p| capitalized(&p.0)).collect();
+            let names: Vec<String> = cast
+                .iter()
+                .filter_map(|p| p["name"].as_str())
+                .map(capitalized)
+                .collect();
             return Err(format!(
-                "This scene holds {} people ({}), and a restage redraws at most {} with their \
-                 faces. Take someone out with `remove` in the same change, or change only what \
-                 they wear, which edits the picture as it is.",
-                people.len(),
+                "This scene holds {} people with faces ({}), and a restage redraws at most {} \
+                 with their faces. Take someone out with `remove` in the same change, or change \
+                 only what they wear, which edits the picture as it is.",
+                names.len(),
                 names.join(", "),
                 crate::imagelib::MAX_CAST
+            ));
+        }
+        // Everyone after the change, faces or words, fits the scene's record,
+        // or the record would drop some and disagree with the picture.
+        if base.is_some() && people.len() > crate::scene::MAX_PEOPLE {
+            return Err(format!(
+                "This scene would hold {} people, and a scene keeps at most {}. Take someone out \
+                 with `remove` in the same change.",
+                people.len(),
+                crate::scene::MAX_PEOPLE
             ));
         }
         let mut on_place = false;
@@ -10860,6 +11132,171 @@ mod tests {
         }
     }
 
+    /// Regenerate (§5.7, R8-2): a new picture redraws from the words, cast
+    /// and shape it recorded, with no seed so a new one is drawn; the call
+    /// goes through the tool again, which draws a different picture.
+    #[tokio::test]
+    async fn a_redraw_of_a_new_picture_is_its_own_call_with_a_new_seed() {
+        let (url, _) = distinct(2).await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let drawn = t
+            .call(
+                json!({"prompt": "a quiet harbour at dawn", "size": "landscape", "seed": 41,
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "waving"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        let again = t
+            .redraw_of(&ctx(&dir), &picture_of(&drawn.content))
+            .await
+            .unwrap();
+        assert_eq!(again["prompt"], "a quiet harbour at dawn");
+        assert_eq!(again["size"], "landscape");
+        assert_eq!(again["cast"][0]["name"], "maya");
+        assert_eq!(again["cast"][0]["wearing"], "a coat");
+        assert!(again.get("seed").is_none(), "{again}");
+        assert!(again.get("compiled_prompt").is_none());
+        let out = t.call(again, &ctx(&dir)).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let first = manifest_of(&dir, &drawn.content);
+        let second = manifest_of(&dir, &out.content);
+        assert_ne!(first["seed"], second["seed"]);
+        assert_ne!(picture_of(&drawn.content), picture_of(&out.content));
+        // The library is asked again: an entry withdrawn since refuses the
+        // redraw and says so, rather than drawing her as an extra.
+        crate::imagelib::remove(&lib, crate::imagelib::Kind::Character, "maya").unwrap();
+        let why = t
+            .redraw_of(&ctx(&dir), &picture_of(&drawn.content))
+            .await
+            .unwrap_err();
+        assert!(
+            why.contains("Maya is no longer in the image library"),
+            "{why}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// An edit regenerates as itself: the same change on the same canvas,
+    /// declaring only the people its own call declared; and a record that
+    /// is missing, outside the pictures, or names a path that no longer
+    /// resolves is refused rather than drawn from.
+    #[tokio::test]
+    async fn a_redraw_of_an_edit_is_the_same_change_and_a_bad_record_is_refused() {
+        let (url, _) = distinct(2).await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec())));
+        let drawn = t
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "maya", "wearing": "an apron", "doing": "cooking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let added = t
+            .call(
+                json!({"edit": {"change": "Add John at the table."},
+                       "reference_images": [picture_of(&drawn.content)],
+                       "cast": [{"name": "john", "wearing": "a cardigan", "doing": "reading"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!added.is_error, "{}", added.content);
+        let again = t
+            .redraw_of(&ctx(&dir), &picture_of(&added.content))
+            .await
+            .unwrap();
+        assert_eq!(again["edit"]["change"], "Add John at the table.");
+        assert_eq!(
+            again["reference_images"],
+            json!([picture_of(&drawn.content)])
+        );
+        let names: Vec<_> = again["cast"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["john"],
+            "maya came from the canvas's record: {again}"
+        );
+        // Refusals.
+        let refused = |r: Result<Value, String>, says: &str| {
+            let why = r.unwrap_err();
+            assert!(why.contains(says), "{why}");
+        };
+        refused(
+            t.redraw_of(&ctx(&dir), "../outside.png").await,
+            "not a picture",
+        );
+        std::fs::write(dir.join("images/blank.png"), PNG).unwrap();
+        refused(
+            t.redraw_of(&ctx(&dir), "images/blank.png").await,
+            "no record",
+        );
+        let json = dir.join(picture_of(&added.content).replace(".png", ".json"));
+        let mut m: Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+        m["reference_images"] = json!(["../../etc/passwd"]);
+        std::fs::write(&json, m.to_string()).unwrap();
+        refused(
+            t.redraw_of(&ctx(&dir), &picture_of(&added.content)).await,
+            "not a picture in this chat",
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A picture carried in from another chat records a placeholder, not
+    /// that chat's words; its redraw takes the place from the persona's
+    /// scene, found by the picture's bytes.
+    #[tokio::test]
+    async fn a_redraw_of_a_carried_picture_takes_its_words_from_the_scene() {
+        let (url, _) = distinct(1).await;
+        let first = tempdir();
+        let second = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya =
+            Arc::new(tool(&url).with_library_dir(lib.clone())).persona_form(Some(persona_maya()));
+        let drawn = maya
+            .call(
+                json!({"prompt": "a lighthouse kitchen", "cast": [
+                    {"name": "self", "wearing": "a jumper", "doing": "reading"}]}),
+                &scene_ctx(&first, &store, "c1"),
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        let bytes = std::fs::read(first.join(picture_of(&drawn.content))).unwrap();
+        std::fs::create_dir_all(second.join("images")).unwrap();
+        std::fs::write(second.join("images/carried.png"), &bytes).unwrap();
+        std::fs::write(
+            second.join("images/carried.json"),
+            json!({"prompt": FOREIGN_PROMPT, "cast": [{"name": "maya", "wearing": "", "doing": ""}]})
+                .to_string(),
+        )
+        .unwrap();
+        let again = maya
+            .redraw_of(&scene_ctx(&second, &store, "c2"), "images/carried.png")
+            .await
+            .unwrap();
+        assert_eq!(again["prompt"], "a lighthouse kitchen");
+        for d in [first, second, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
     /// A removal restages without that person, and the scene forgets them:
     /// an edit keeps the people it did not name, but a scene change names
     /// everyone who is left.
@@ -11649,7 +12086,7 @@ mod tests {
             .unwrap();
         assert!(out.is_error, "{}", out.content);
         assert!(
-            out.content.contains("This scene holds 5 people"),
+            out.content.contains("This scene holds 5 people with faces"),
             "{}",
             out.content
         );
@@ -11746,6 +12183,16 @@ mod tests {
                 json!({"scene": {"people": [{"name": "john"}]},
                     "reference_images": ["inbox/a.png"]}),
                 "John is new to this scene",
+            ),
+            (
+                json!({"scene": {"people": (0..9).map(|i| json!({"name": format!("p{i}"), "wearing": "w", "doing": "d"})).collect::<Vec<_>>()},
+                    "reference_images": ["inbox/a.png"]}),
+                "names at most 8 people",
+            ),
+            (
+                json!({"scene": {"people": [{"name": "john", "wearing": "w".repeat(400), "doing": "d"}]},
+                    "reference_images": ["inbox/a.png"]}),
+                "`wearing` is at most 300 characters",
             ),
         ] {
             let out = t.call(bad, &ctx(&dir)).await.unwrap();
