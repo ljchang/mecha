@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A persona remembers what her last picture showed.** Each picture a
+  persona chat draws records its scene: where it is, who is in it, and what
+  they wear and do. A picture brought into another chat is recognised by its
+  content and keeps its people. Forgetting a chat's memories forgets its
+  scenes too.
 - **An edit now carries the faces of the people in it.**
   - **Who:** `image_generate` takes `cast` beside `reference_images`. Each
     named library character comes in as a head crop of their portrait with

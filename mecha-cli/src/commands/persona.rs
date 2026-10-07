@@ -1152,8 +1152,8 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 }
                 let out = memory::forget_chat(dir, &name, &chat)?;
                 println!(
-                    "Forgotten: {} episodes, {} facts, {} shared copies.",
-                    out.episodes, out.facts, out.shared
+                    "Forgotten: {} episodes, {} facts, {} shared copies, {} scene records.",
+                    out.episodes, out.facts, out.shared, out.scenes
                 );
             } else {
                 let id = id.expect("clap requires an id or --chat");

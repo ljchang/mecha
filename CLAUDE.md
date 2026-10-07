@@ -144,6 +144,8 @@ imagegen.rs  image_generate: typed values to a loopback image server, PNG into t
              run's workspace; the graph is fixed in code, never the model's
 imagelib.rs  the character and style library, and the compiler a scene runs
              through: names in, portraits and verbatim descriptions out
+scene.rs     what a persona's picture shows now: the record a render lands, per chat and
+             per persona, keyed by the picture's bytes; origin per field, unknown untrusted
 persona.rs   characters the owner writes and talks to, apart from the assistant:
              the store, owner files never rewritten, versions, links by name
 provider/    Provider trait + anthropic.rs (raw HTTP) + openai.rs (compatible)

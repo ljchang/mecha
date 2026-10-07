@@ -3240,6 +3240,18 @@ impl Tool for ImageGenerate {
             .filter_map(|m| m.get("name").and_then(Value::as_str))
             .map(own)
             .collect();
+        // The canvas's own bytes, hashed as they sit in the jail, for a persona
+        // chat's scene (IMAGE-SCENE-DESIGN.md §5.1): the index is keyed by
+        // content, so a picture carried in from another chat is found by
+        // what it is, never by a workspace manifest a run could write.
+        let canvas_hash: Option<String> = match (&ctx.scene, is_edit) {
+            (Some(_), true) => read_references(ctx, std::slice::from_ref(&paths[0]))
+                .await
+                .ok()
+                .and_then(|mut r| (!r.is_empty()).then(|| r.remove(0).bytes))
+                .map(|b| crate::scene::hash(&b)),
+            _ => None,
+        };
         let mut inherited: std::collections::BTreeSet<String> = Default::default();
         let mut record: Vec<crate::imagelib::CastMember> = Vec::new();
         // The record is read whether or not the call names anyone: the call's
@@ -3275,6 +3287,31 @@ impl Tool for ImageGenerate {
                         .collect()
                 })
                 .unwrap_or_default();
+            // A picture whose manifest records nobody (an attached copy of a
+            // picture from another chat has none) is looked up in the
+            // persona's scene index by its bytes, and its scene's people are
+            // carried as a record's are (use case 10).
+            let recorded = if recorded.is_empty() {
+                match (&ctx.scene, &canvas_hash) {
+                    (Some(slot), Some(h)) => slot
+                        .lookup_hash(h)
+                        .map(|scene| {
+                            scene
+                                .people
+                                .into_iter()
+                                .map(|p| crate::imagelib::CastMember {
+                                    name: p.name,
+                                    wearing: p.wearing,
+                                    doing: p.doing,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    _ => recorded,
+                }
+            } else {
+                recorded
+            };
             // Only the people the call does not name itself: theirs is the
             // call's word, with what they wear now.
             let recorded: Vec<crate::imagelib::CastMember> = recorded
@@ -4171,8 +4208,77 @@ impl Tool for ImageGenerate {
                 Some((w, h)) => format!("{w}×{h}"),
                 None => "reference-shaped".to_string(),
             };
+            // The scene this render lands as, in a persona chat (§5.1, §5.6):
+            // here, after the picture is saved, so a cancelled or failed
+            // render never advances it. A new picture defines it afresh; an
+            // edit changes what it declared and keeps the rest.
+            let landed = ctx.scene.as_ref().map(|slot| {
+                let triple = |v: &Value| {
+                    let f = |k: &str| {
+                        v.get(k)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    (f("name"), f("wearing"), f("doing"))
+                };
+                let change = if is_edit {
+                    let (named, carried): (Vec<_>, Vec<_>) = edit_cast
+                        .iter()
+                        .map(triple)
+                        .partition(|(n, _, _)| declared.contains(&n.trim().to_lowercase()));
+                    crate::scene::Change {
+                        fresh: false,
+                        place: None,
+                        fallback_place: canvas_hash.clone().map(|hash| {
+                            crate::scene::Place::Picture {
+                                path: paths[0].clone(),
+                                hash,
+                            }
+                        }),
+                        declared: named,
+                        carried,
+                        camera: EditAsk::parse(&input).ok().flatten().and_then(|e| e.camera),
+                        style: None,
+                        picture: crate::scene::hash(&bytes),
+                    }
+                } else {
+                    crate::scene::Change {
+                        fresh: true,
+                        place: Some(crate::scene::Place::Words {
+                            text: scene_prompt.clone(),
+                        }),
+                        declared: drawn_cast
+                            .iter()
+                            .map(|m| {
+                                (
+                                    m.name.clone(),
+                                    m.wearing.trim().to_string(),
+                                    m.doing.trim().to_string(),
+                                )
+                            })
+                            .collect(),
+                        style: used
+                            .iter()
+                            .find(|u| u.kind == crate::imagelib::Kind::Style)
+                            .map(|u| u.name.clone()),
+                        picture: crate::scene::hash(&bytes),
+                        ..crate::scene::Change::default()
+                    }
+                };
+                let scene = crate::scene::Scene::advance(
+                    slot.current().as_ref(),
+                    change,
+                    crate::scene::Origin::of(ctx.taint.as_ref()),
+                    &slot.chat,
+                );
+                (slot.clone(), scene)
+            });
             let manifest = json!({
                 "image": path,
+                // The scene this picture was rendered as, when a persona
+                // chat keeps one.
+                "scene": landed.as_ref().map(|(_, scene)| scene),
                 // The call this picture answers: the restart repair accepts a
                 // picture only when its manifest names the orphaned call
                 // (`repair_orphan`).
@@ -4217,6 +4323,16 @@ impl Tool for ImageGenerate {
                     "vae": me.cfg.vae,
                 },
             });
+            // Into the persona's store, outside the jail: the chat's copy, the
+            // latest and the index. A store that cannot be written costs the
+            // record, never the picture, and is said in the log.
+            if let Some((slot, scene)) = landed {
+                let picture = path.clone();
+                let wrote = tokio::task::spawn_blocking(move || slot.land(&scene)).await;
+                if !matches!(wrote, Ok(Ok(()))) {
+                    tracing::warn!("the scene for {picture} was not recorded: {wrote:?}");
+                }
+            }
             let manifest_note = match write_manifest(ctx, &path, &manifest).await {
                 Ok(()) => String::new(),
                 Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
@@ -9356,6 +9472,133 @@ mod tests {
             .unwrap();
         assert!(!again.is_error, "{}", again.content);
         std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A persona chat's scene slot over a scratch store, for chat `chat`.
+    fn scene_ctx(dir: &std::path::Path, store: &std::path::Path, chat: &str) -> ToolCtx {
+        ToolCtx {
+            workspace: dir.to_path_buf(),
+            scene: Some(crate::scene::SceneSlot {
+                chat_copy: store.join("sessions").join(format!("{chat}.scene.json")),
+                store: store.join("scene"),
+                chat: chat.into(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The scene record (IMAGE-SCENE-DESIGN.md §5.1, step 2): a new picture
+    /// defines the chat's scene; an edit that moves the camera changes the
+    /// camera and keeps the people and the place; the manifest carries the
+    /// scene; and the assistant's own chats, with no slot, write none.
+    #[tokio::test]
+    async fn a_landed_render_advances_the_chats_scene() {
+        let (url, _) = fake(vec![done(); 3], "200 OK").await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let scene = maya
+            .call(
+                json!({"prompt": "a park in autumn", "cast": [
+                    {"name": "self", "wearing": "a red coat", "doing": "sitting on a bench"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!scene.is_error, "{}", scene.content);
+        let slot = cx.scene.clone().unwrap();
+        let s1 = slot.current().expect("the chat's scene");
+        assert_eq!(s1.people[0].name, "maya");
+        assert_eq!(s1.people[0].wearing, "a red coat");
+        assert!(matches!(&s1.place.as_ref().unwrap().value,
+            crate::scene::Place::Words { text } if text.contains("a park")));
+        assert_eq!(
+            manifest_of(&dir, &scene.content)["scene"]["people"][0]["name"],
+            "maya"
+        );
+        let moved = maya
+            .call(
+                json!({"edit": {"change": "Have her stand.", "camera": "From a low camera near the ground."},
+                       "reference_images": [picture_of(&scene.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!moved.is_error, "{}", moved.content);
+        let s2 = slot.current().unwrap();
+        assert_eq!(
+            s2.camera.as_ref().unwrap().value,
+            "From a low camera near the ground."
+        );
+        assert_eq!(
+            s2.people[0].wearing, "a red coat",
+            "carried, not re-declared"
+        );
+        assert_eq!(s2.place, s1.place, "the place is kept");
+        // The assistant's own chats keep no scene.
+        let plain = base
+            .call(json!({"prompt": "a lighthouse at dusk"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(manifest_of(&dir, &plain.content)["scene"].is_null());
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A picture carried into another chat arrives with no manifest, and is
+    /// found by its bytes in the persona's index: its people come with it
+    /// (use case 10), so her face rides the edit there too.
+    #[tokio::test]
+    async fn a_picture_from_another_chat_is_found_by_its_bytes() {
+        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
+        let first = tempdir();
+        let second = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let drawn = maya
+            .call(
+                json!({"prompt": "a cafe", "cast": [
+                    {"name": "self", "wearing": "a green jumper", "doing": "reading"}]}),
+                &scene_ctx(&first, &store, "c1"),
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        let bytes = std::fs::read(first.join(picture_of(&drawn.content))).unwrap();
+        std::fs::create_dir_all(second.join("inbox")).unwrap();
+        std::fs::write(second.join("inbox/yesterday.png"), &bytes).unwrap();
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Have her look up and smile."},
+                       "reference_images": ["inbox/yesterday.png"]}),
+                &scene_ctx(&second, &store, "c2"),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            last_prompt(&seen).contains("Maya's facial identity from <image2>"),
+            "{}",
+            last_prompt(&seen)
+        );
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
+        std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 

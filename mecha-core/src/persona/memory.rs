@@ -334,6 +334,8 @@ pub struct Forgotten {
     pub episodes: usize,
     pub facts: usize,
     pub shared: usize,
+    /// Scene records that chat wrote (`scene::forget_chat`).
+    pub scenes: usize,
 }
 
 // ── wire helpers ────────────────────────────────────────────────────────
@@ -1903,6 +1905,9 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
         .chain(shared.iter().map(|s| &s.conn))
         .collect();
     scrub(&conns)?;
+    // What the chat's renders left in the persona's scene record goes too:
+    // it would otherwise shape her next chats once scenes reach the notes.
+    out.scenes = crate::scene::forget_chat(&store_dir.join(persona).join("scene"), chat)?;
     Ok(out)
 }
 

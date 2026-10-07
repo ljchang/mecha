@@ -253,7 +253,8 @@ fn forgetting_a_chat_clears_both_files_and_nothing_else() {
         Forgotten {
             episodes: 1,
             facts: 1,
-            shared: 1
+            shared: 1,
+            scenes: 0
         }
     );
     assert_eq!(

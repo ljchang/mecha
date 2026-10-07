@@ -782,6 +782,12 @@ pub struct ToolCtx {
     /// ruling, 2026-10-01) — and never from anything a model sent. A
     /// proposing tool may only add the lock with it, never remove one.
     pub stage_locked: bool,
+    /// Where this chat's scene lives (`scene::SceneSlot`), stamped by a
+    /// persona chat's front end, never by a model. `image_generate` advances
+    /// it when a render lands and looks an attached picture up in its index.
+    /// `None` everywhere else, the assistant's chats and incognito included,
+    /// which keep no scene (IMAGE-SCENE-DESIGN.md §5.1).
+    pub scene: Option<crate::scene::SceneSlot>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -967,6 +973,7 @@ impl Default for ToolCtx {
             shell_registry: None,
             image_trail: None,
             stage_locked: false,
+            scene: None,
         }
     }
 }
