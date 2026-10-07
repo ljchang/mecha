@@ -3728,6 +3728,12 @@ impl Tool for ImageGenerate {
                         }
                         people.push(json!({"name": name, "from": from_of(&name), "crop": false,
                             "skipped": "no approved library entry by that name"}));
+                        // No entry, no face; but what the call says they wear
+                        // and do still goes in, or the edit invents it (review
+                        // of #588). The name is the call's own word here.
+                        if !masked && declared.contains(&name) {
+                            worded.push_str(&person_sentence(&capitalized(&name), "", &m));
+                        }
                         continue;
                     };
                     let shown = capitalized(&name);
@@ -9153,6 +9159,11 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["identity"]["people"][0]["crop"],
             false
+        );
+        assert!(
+            last_prompt(&seen).contains(" Zed, wearing a coat, standing."),
+            "a declared stranger's clothes still go in: {}",
+            last_prompt(&seen)
         );
         let out = edit(
             maya.clone(),
