@@ -299,8 +299,9 @@ picture.
   the model what to do about it. The persona then knows which picture is current, because the
   history is what happened (`PERSONA-CONTEXT-DESIGN.md` §5.3).
 - **On a call it runs as a job** (#583).
-- **Proposed, not yet confirmed by the owner:** the new version shows on the same card (‹ 1/2 ›),
-  and the version showing is the one later edits and restages build on.
+- **The new version shows on the same card** (‹ 1/2 ›), and the version showing is the one Edit,
+  Regenerate and later restages build on (owner, 2026-10-07). The other versions stay on the
+  card, one swipe away.
 - **It can ship before the rest of this design.** Today's manifests already record the compiled
   prompt, the references, the size and the steps, so a redraw with a new seed works now. Identity
   improves when R1 lands.
@@ -384,7 +385,8 @@ build follows them without asking again.
 - **R7.** With two chats rendering for one persona, each chat works on its own copy of the scene,
   and the last render to land updates the persona's latest (§5.6).
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
-  turn (§5.7). This replaces drawing two variants of every picture.
+  turn (§5.7). This replaces drawing two variants of every picture. Versions stay on one card, and the version showing
+  is the one that is built on.
 
 Proposed, waiting on the owner:
 
