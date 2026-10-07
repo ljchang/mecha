@@ -882,7 +882,7 @@ fn number(n: usize) -> &'static str {
     .unwrap_or("several")
 }
 
-fn missing(lib: &Library, kind: Kind, name: &str) -> String {
+pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     // A corrupt entry is a finding, not an absence: said as such, or the
     // model is told a character the owner can see does not exist.
     let entry_dir = lib.dir.join(kind.dir()).join(name);
@@ -963,7 +963,7 @@ pub fn demote_unknown(
 }
 
 /// Empty, or only the refusal's own placeholder copied back — no answer.
-fn blank(s: &str) -> bool {
+pub(crate) fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')
 }
 
