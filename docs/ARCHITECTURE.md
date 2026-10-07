@@ -854,7 +854,18 @@ conversation, so the capabilities do not change. Three rules:
     there by its bytes, so a picture carried in from another chat brings its
     people. The lookup never reads a workspace manifest across chats.
   - **Origin:** kept per field, the scene's origin is the union, and unknown
-    reads untrusted. Nothing reads a scene into a prompt yet (step 4).
+    reads untrusted.
+  - **Into the prompt (step 4).** The chat's copy rides each run's notes,
+    never a stored message, so what she wears and where she is come from her
+    last picture rather than a recalled day. It opens with one of two stems
+    (`scene::SCENE_STEM`, `UNTRUSTED_SCENE_STEM`), picked by the scene's
+    origin. Both arm `private`, and the second also arms `untrusted`
+    (`Taint::arm_for_content`), as memory's two stems do. Two, because notes
+    arm at every run start, and one stem arming both would make every chat
+    with a scene untrusted. The stems are registered as harness text in
+    `message::is_recorded_note` and `is_harness_voice`.
+    `scripts/check-private.py` exempts only the note's opening sentence; the
+    place and clothes after it come from the chat, and are read.
   - **Who has a slot:** only a persona chat stamps one (`ToolCtx::scene`).
     The assistant's chats, incognito included, keep no scene, so R9 holds
     by construction.

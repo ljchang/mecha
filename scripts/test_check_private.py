@@ -213,6 +213,21 @@ class Guard(unittest.TestCase):
         self.stage("fixture.py", f"X = {fact!r}\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_a_scene_notes_opening_is_mecha_s_and_its_body_is_read(self):
+        # IMAGE-SCENE-DESIGN.md §5.5: the scene note's opening sentence is the
+        # harness's own wording, which lives in scene.rs; the place and the
+        # clothes after it come from the chat.
+        opening = ("(Where things stand in your pictures now, from the harness: what your last "
+                   "picture showed. Clothes and places come from here now, not from a remembered day.)")
+        body = " Place: a lighthouse kitchen with copper pans over a cast iron stove."
+        path = os.path.join(self.home, "personas", "quillon", "sessions", f"{SESSION}.jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps({"record": "notes", "notes": [opening + body]}) + "\n")
+        self.stage("scene.rs", f"const X: &str = {opening!r};\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+        self.stage("fixture.py", f"X = {body!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
     def test_an_unreadable_persona_memory_refuses(self):
         db = os.path.join(self.home, "personas", "quillon", "memory.db")
         open(db, "wb").write(b"not a database at all, just bytes " * 40)

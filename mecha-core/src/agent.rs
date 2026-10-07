@@ -667,6 +667,14 @@ impl Taint {
                         self.private |= private;
                         self.untrusted |= untrusted;
                     }
+                    // **And a persona's scene** (IMAGE-SCENE-DESIGN.md §5.5):
+                    // private always, since it can carry an owner photo or a
+                    // person out of one; untrusted when any field came from
+                    // outside, said by the stem the harness chose.
+                    if let Some((private, untrusted)) = crate::scene::stem_of(text) {
+                        self.private |= private;
+                        self.untrusted |= untrusted;
+                    }
                 }
             }
         }
@@ -1246,6 +1254,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona's memory, folded into a chat's first turn (§9.7): the
         // harness's notes, never the owner's words.
         || crate::persona::recall::stem_of(text).is_some()
+        // A persona's scene (IMAGE-SCENE-DESIGN.md §5.5): the harness's note
+        // of what her last picture showed, never the owner's words.
+        || crate::scene::stem_of(text).is_some()
         // A persona on a call (§11): how a reply is heard, folded beside the
         // owner's spoken words — the harness's note, never what they said.
         || crate::persona::call::is_note(text)

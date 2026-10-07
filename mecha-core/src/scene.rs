@@ -280,6 +280,105 @@ where
     }))
 }
 
+/// The scene note's opening when every field came from a clean run
+/// (`IMAGE-SCENE-DESIGN.md` §5.5, step 4). It rides in a run's notes, and
+/// arms taint by its stem as memory's does: two stems, because notes arm at
+/// every run start, and one stem arming both would make every chat with a
+/// scene untrusted. Both arm `private`: a scene can carry an owner photo, or a
+/// person from one, into a chat that never saw it.
+pub const SCENE_STEM: &str = "(Where things stand in your pictures now, from the harness";
+/// The opening when any field came from a run that read something from
+/// outside.
+pub const UNTRUSTED_SCENE_STEM: &str =
+    "(Where things stand in your pictures now, some of it first read from outside, from the harness";
+
+/// `(private, untrusted)` for a scene note, or `None` when `text` is not one.
+pub fn stem_of(text: &str) -> Option<(bool, bool)> {
+    let t = text.trim_start();
+    if t.starts_with(UNTRUSTED_SCENE_STEM) {
+        Some((true, true))
+    } else if t.starts_with(SCENE_STEM) {
+        Some((true, false))
+    } else {
+        None
+    }
+}
+
+/// The most of a place described in words a note carries.
+const NOTE_PLACE_CHARS: usize = 240;
+
+/// The scene as a run note: where the persona is, who is with her, what each
+/// wears and does, and the camera. The present comes from here, so a
+/// recalled day's outfit or blocking cannot stand in for it (§5.5). `me` is
+/// the persona's own library character, said as "You". `None` when the
+/// scene holds nothing to say.
+pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
+    if scene.place.is_none() && scene.people.is_empty() && scene.camera.is_none() {
+        return None;
+    }
+    let stem = match scene.origin() {
+        Origin::Clean => SCENE_STEM,
+        Origin::Untrusted => UNTRUSTED_SCENE_STEM,
+    };
+    let mut out = format!(
+        "{stem}: what your last picture showed. Clothes and places come from here now, \
+         not from a remembered day.)"
+    );
+    match scene.place.as_ref().map(|p| &p.value) {
+        Some(Place::Words { text }) => {
+            let text = text.trim();
+            let cut: String = text.chars().take(NOTE_PLACE_CHARS).collect();
+            let cut = if cut.len() < text.len() {
+                format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a))
+            } else {
+                cut
+            };
+            out.push_str(&format!(" Place: {}.", cut.trim_end_matches('.')));
+        }
+        Some(Place::Picture { .. }) => out.push_str(" Place: the picture you were placed in."),
+        // Nothing to say about a place this build cannot read; the scene is
+        // untrusted for it, so the note rides under the untrusted stem.
+        Some(Place::Unknown) | None => {}
+    }
+    let me = me.map(|m| m.trim().to_lowercase());
+    for p in &scene.people {
+        let who = if me.as_deref() == Some(p.name.as_str()) {
+            "You".to_string()
+        } else {
+            p.name
+                .split(' ')
+                .map(|w| {
+                    let mut c = w.chars();
+                    c.next()
+                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut said = vec![];
+        if !p.wearing.trim().is_empty() {
+            said.push(format!("wearing {}", p.wearing.trim()));
+        }
+        if !p.doing.trim().is_empty() {
+            said.push(p.doing.trim().trim_end_matches('.').to_string());
+        }
+        if said.is_empty() {
+            let verb = if who == "You" { "are" } else { "is" };
+            out.push_str(&format!(" {who} {verb} there."));
+        } else {
+            out.push_str(&format!(" {who}: {}.", said.join(", ")));
+        }
+    }
+    if let Some(c) = &scene.camera {
+        out.push_str(&format!(
+            " Camera: {}.",
+            c.value.trim().trim_end_matches('.')
+        ));
+    }
+    Some(out)
+}
+
 /// A picture's content hash, as the index keys it.
 pub fn hash(bytes: &[u8]) -> String {
     crate::document::sha256_hex(bytes)
@@ -670,6 +769,43 @@ mod tests {
         let latest = read(&slot.store.join("latest.json")).unwrap();
         assert_eq!(latest.chat.as_deref(), Some("c2"), "the last to land wins");
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The note says where she is, who is with her and what each wears and
+    /// does, the persona herself as "You"; its stem is untrusted when any
+    /// field is; and a clean note arms `private` only, an untrusted one both.
+    #[test]
+    fn the_note_reads_the_scene_and_arms_by_its_stem() {
+        let mut c = change(true, "a");
+        c.place = Some(Place::Words {
+            text: "a harbour".into(),
+        });
+        c.declared = vec![
+            ("maya".into(), "a red coat".into(), "sitting".into()),
+            ("mara quinn".into(), "a scarf".into(), String::new()),
+        ];
+        let clean = Scene::advance(None, c.clone(), Origin::Clean, "c1");
+        let n = note(&clean, Some("Maya")).unwrap();
+        assert!(n.starts_with(SCENE_STEM), "{n}");
+        assert!(n.contains("Place: a harbour."), "{n}");
+        assert!(n.contains("You: wearing a red coat, sitting."), "{n}");
+        assert!(n.contains("Mara Quinn: wearing a scarf."), "{n}");
+        let mut t = crate::agent::Taint::default();
+        t.arm_for_notes(&[n]);
+        assert!(t.private && !t.untrusted);
+        let dirty = Scene::advance(None, c, Origin::Untrusted, "c1");
+        let n = note(&dirty, None).unwrap();
+        assert!(n.starts_with(UNTRUSTED_SCENE_STEM), "{n}");
+        let mut t = crate::agent::Taint::default();
+        t.arm_for_notes(&[n]);
+        assert!(t.private && t.untrusted);
+        assert_eq!(note(&Scene::default(), None), None);
+        let mut long = change(true, "b");
+        long.place = Some(Place::Words {
+            text: "word ".repeat(100),
+        });
+        let n = note(&Scene::advance(None, long, Origin::Clean, "c1"), None).unwrap();
+        assert!(n.len() < 600 && n.contains("…"), "{n}");
     }
 
     /// Forgetting a chat removes what its renders left in the persona's
