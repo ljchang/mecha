@@ -165,16 +165,20 @@ The planner reads the call against the picture's record and picks one render. No
 | nothing changed at all | **Redraw** of the scene at a new seed (review B4); the same render as Regenerate (§5.4). |
 | `retouch` (with or without `mask`) | **Retouch** of the picture, in the #408 keep form; masked as today. |
 
-**Budgets stay where they were measured:**
-- an edit-shaped render carries the canvas plus two face crops (`EDIT_REFERENCE_BUDGET` 3);
-- a new picture carries up to `MAX_CAST` 4 portraits;
-- a scene keeps up to 8 people.
+**Budgets, as measured:**
+- **An edit-shaped render carries the canvas plus up to three face crops** (`EDIT_REFERENCE_BUDGET` 4, up from 3). mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (§13 of the evidence):
+  - **C3, canvas plus three crops:** kept the owner's actual room. All three approaches placed the three people correctly, and face identity was close across them.
+  - **RN3, portraits with the photo as material:** recomposed the room.
+  - **W3, the room in words:** drew a different room every time.
 
-A change that does not fit falls back before it refuses (review S4).
-- A restage that needs more crops than an edit holds, on a words setting, is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
-- On a photo setting there is no measured fallback yet. The portrait with the room as material (M2's "RN") was rated "okay, the most unnatural faces". That is a measurement owed before it ships, and until then it is refused in the scene's own terms, naming the people.
-- Only a scene with more than `MAX_CAST` people with faces is always refused.
-- A person without a library entry costs no budget; they are drawn from words.
+  The owner's verdict (2026-10-07, given to mecha-a3): only C3 keeps the scene. The cost is time: about 150 s against about 46 s, the measured four-reference cliff. The owner chose scene fidelity, so one budget serves every edit-shaped render: placing on a photo, restaging on a photo setting, adding someone, and clothes.
+- **A new picture carries up to `MAX_CAST` 4 portraits.**
+- **A scene keeps up to 8 people.**
+
+A change that does not fit falls back before it refuses (review S4):
+- **On a words setting,** a restage that needs more faces than an edit holds is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
+- **On a photo setting,** there is no fallback that keeps the scene. Four or more people with faces on a photo are refused in the scene's own terms, naming them. A canvas plus four crops is untested, beyond the cliff.
+- **A person without a library entry** costs no budget; they are drawn from words.
 
 **Seeds:** the model does not send seeds (§5.1). An edit-shaped render samples fresh (#306). A restage reuses the base picture's seed. A redraw takes a new one. The seed actually drawn is recorded, so a redraw always differs.
 
@@ -310,7 +314,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
 | S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
 | S3: use case 4 dropped | §4.1: a real person from a photo, first-class, with its crop kept in the scene store and its own gate (G4b) |
-| S4: budget refusals are round trips | §5.2: fall back before refusing; the photo-setting fallback is owed a measurement |
+| S4: budget refusals are round trips | §5.2: fall back before refusing. Measured: a canvas plus three crops keeps the scene (the owner's verdict), so the edit budget is 4 references; four or more faces on a photo are refused |
 | S5: `tool_choice` for the reply | §5.3 step 4 |
 | S6: the safety check on the panel path | §5.3 step 0 |
 | S7: extraction failure | §5.3 step 5 |
@@ -344,7 +348,7 @@ The owner asked for a survey before ruling on the fields. It covered the officia
 - **Noted for later, not in this build:**
   - outpainting, re-framing a picture to another shape, which Qwen has a template for and would be a separate operation;
   - pose-from-photo and garment-from-photo reference roles (Qwen-Image-Edit-2509);
-  - Qwen-Edit works best with 1–3 input images, which the edit budget (a canvas plus two crops) already matches.
+  - Qwen-Edit works best with 1–3 input images. The edit budget allows a canvas plus three crops (four), past that range and slower (about 150 s). The owner chose it on the three-person measurement because only it kept the scene (§5.2). Two people or fewer stay inside the range.
 - **Not measured anywhere found:** whether JSON-shaped prompts help Qwen-Image. Qwen's own tooling compiles everything to prose of 200 words or fewer. That supports this design's typed fields compiled to prose by the tool.
 
 Sources: docs.bfl.ai (FLUX.2 prompting, JSON prompting); developers.googleblog.com and ai.google.dev (Gemini image); developers.openai.com (image prompting) and the OpenAI cookbook (input fidelity); docs.midjourney.com (parameters); github.com/QwenLM/Qwen-Image (`prompt_utils.py`, README); huggingface.co/Qwen/Qwen-Image-Edit-2509; arXiv 2312.05849 (InteractDiffusion), 2412.08580 (LAION-SG), 2307.06350 (T2I-CompBench).
