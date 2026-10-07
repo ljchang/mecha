@@ -4163,7 +4163,91 @@ impl Agent {
             .into_iter()
             .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
             .collect();
+        self.dispatch(
+            cx,
+            calls,
+            events,
+            trace,
+            taint,
+            blocked_sends,
+            output_budget,
+            context,
+        )
+        .await
+    }
 
+    /// One call the harness makes itself, with no model turn: a button press
+    /// such as Regenerate (`IMAGE-SCENE-DESIGN.md` §5.7).
+    ///
+    /// It goes through [`Agent::dispatch`], the one path every model call
+    /// takes, so it meets the same gates in the same order: the phase gate,
+    /// the restriction, the trifecta interlock against `taint` and any job
+    /// still out, the `pre_tool` hooks, outbox staging, the approval rules and
+    /// the approver. Nothing is copied, so nothing can drift; and nothing is
+    /// recorded as an assistant turn, because no model made the call.
+    ///
+    /// The call gets an id of its own, never one a model call had: a job is
+    /// keyed by it, and an orphaned call is repaired by it, so a reused id
+    /// would let one stand in for the other. `taint` is the conversation's,
+    /// and it is armed by what the call returns, as a turn's would be.
+    pub async fn dispatch_one(
+        &self,
+        cx: &RunContext,
+        taint: &mut Taint,
+        name: &str,
+        input: Value,
+        events: &Option<UnboundedSender<AgentEvent>>,
+    ) -> Dispatched {
+        let call_id = format!("harness_{}", uuid::Uuid::new_v4().simple());
+        let mut trace = Vec::new();
+        let mut blocked_sends = 0;
+        let (blocks, provenance) = self
+            .dispatch(
+                cx,
+                vec![(call_id.clone(), name.to_string(), input)],
+                events,
+                &mut trace,
+                taint,
+                &mut blocked_sends,
+                cx.tools.output_budget_bytes,
+                None,
+            )
+            .await;
+        let (content, is_error) = blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } if *tool_use_id == call_id => Some((content.clone(), *is_error)),
+                _ => None,
+            })
+            .unwrap_or_else(|| ("the call produced no result".to_string(), true));
+        Dispatched {
+            denied: trace.iter().any(|t| t.denied),
+            external: provenance.get(&call_id).copied().unwrap_or(false),
+            call_id,
+            content,
+            is_error,
+            blocks,
+        }
+    }
+
+    /// Every call, a model's or the harness's own, from the gates through to
+    /// its result: the one dispatch, so the two kinds cannot drift apart.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch(
+        &self,
+        cx: &RunContext,
+        calls: Vec<(String, String, Value)>,
+        events: &Option<UnboundedSender<AgentEvent>>,
+        trace: &mut Vec<ToolCallTrace>,
+        taint: &mut Taint,
+        blocked_sends: &mut u32,
+        output_budget: usize,
+        context: Option<crate::pressure::Forecast>,
+    ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
         // Refusals and staging notices are ours; executed results overwrite
         // their entries with the tool's actual per-call classification.
         let mut provenance: std::collections::BTreeMap<String, bool> =
@@ -5185,6 +5269,22 @@ impl Agent {
         blocks.append(&mut pictures);
         (blocks, provenance)
     }
+}
+
+/// What [`Agent::dispatch_one`] did with one harness call.
+#[derive(Debug, Clone)]
+pub struct Dispatched {
+    /// The call's own id, fresh for this call.
+    pub call_id: String,
+    /// The result's text, as a model would have read it.
+    pub content: String,
+    pub is_error: bool,
+    /// A gate refused it: the interlock, a hook, a rule or the approver.
+    pub denied: bool,
+    /// Whether the result came from outside (`ToolOutput::external`).
+    pub external: bool,
+    /// The result block, then any pictures it carried, as a turn returns them.
+    pub blocks: Vec<Block>,
 }
 
 /// The text of a panic payload, for the tool result and the log.
@@ -7812,6 +7912,69 @@ mod tests {
         agent.registry.insert(Arc::new(SendTool));
         agent.ctx_mut().security.trifecta = policy;
         agent
+    }
+
+    /// A call the harness makes itself (`Agent::dispatch_one`, Regenerate's
+    /// path) meets the gates a model's call meets, in the same function: the
+    /// interlock against the conversation's taint, a `pre_tool` hook, and the
+    /// approver; and a call that passes runs, under an id of its own, and
+    /// arms the conversation as a turn's would (`IMAGE-SCENE-DESIGN.md` §5.7).
+    #[tokio::test]
+    async fn a_harness_call_meets_every_gate_a_model_call_does() {
+        // The interlock: `send` panics if it runs.
+        let agent = trifecta_agent(TrifectaPolicy::Block);
+        let cx = Arc::clone(agent.context());
+        let mut taint = Taint {
+            private: true,
+            untrusted: true,
+        };
+        let d = agent
+            .dispatch_one(&cx, &mut taint, "send", json!({}), &None)
+            .await;
+        assert!(d.is_error && d.denied, "{d:?}");
+        assert!(
+            d.content.contains("can send data outside this machine"),
+            "{}",
+            d.content
+        );
+        // A hook.
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent
+            .registry
+            .insert(Arc::new(WatchedTool(Arc::clone(&ran))));
+        agent.set_hooks(hooked("echo not in this workspace; exit 2", Vec::new()));
+        let cx = Arc::clone(agent.context());
+        let mut taint = Taint::default();
+        let d = agent
+            .dispatch_one(&cx, &mut taint, "watched", json!({}), &None)
+            .await;
+        assert_eq!(d.content, "Blocked by a hook: not in this workspace");
+        assert!(d.denied && !ran.load(std::sync::atomic::Ordering::SeqCst));
+        // The approver: read-only mode refuses a write.
+        let (agent, _) = agent_with(Vec::new(), PermissionMode::ReadOnly);
+        let cx = Arc::clone(agent.context());
+        let d = agent
+            .dispatch_one(&cx, &mut taint, "fs_write", json!({}), &None)
+            .await;
+        assert!(d.is_error && d.denied, "{d:?}");
+        assert!(d.content.starts_with("Blocked by policy:"), "{}", d.content);
+        // Passed: it runs, its id is its own, and it arms what it read.
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(PrivateTool));
+        let cx = Arc::clone(agent.context());
+        let mut taint = Taint::default();
+        let one = agent
+            .dispatch_one(&cx, &mut taint, "read_private", json!({}), &None)
+            .await;
+        let two = agent
+            .dispatch_one(&cx, &mut taint, "read_private", json!({}), &None)
+            .await;
+        assert_eq!(one.content, "SECRET-42");
+        assert!(!one.is_error && !one.denied);
+        assert!(one.call_id.starts_with("harness_"), "{}", one.call_id);
+        assert_ne!(one.call_id, two.call_id);
+        assert!(taint.private, "armed as a turn would be");
     }
 
     #[tokio::test]

@@ -2037,6 +2037,18 @@ every call in the batch (`turn_taint`) and gates each call against that
 forecast. Without it, a mail read and an `http_fetch` requested in the same
 turn each saw a clean slate and the send went through.
 
+**A call the harness makes itself takes the same path.** A button press with
+no model turn, such as Regenerate (`IMAGE-SCENE-DESIGN.md` §5.7), goes
+through `Agent::dispatch_one`. That calls `Agent::dispatch`, the one function
+behind every model turn's `run_tools`, with a single call: the phase gate, the
+restriction, the interlock against the conversation's taint and any job still
+out, the `pre_tool` hooks, outbox staging, the approval rules and the approver,
+in that order. The gates are not copied, so they cannot drift, and no
+assistant turn is forged to carry the call. The call gets an id of its own
+(`harness_…`), never a model call's, because jobs and orphan repair are keyed
+by it. The caller passes the conversation's taint, and the result arms it as
+a turn's would (`a_harness_call_meets_every_gate_a_model_call_does`).
+
 Two distinctions that are easy to get wrong:
 
 - `Capabilities::untrusted_input` says what a tool *can* return.
