@@ -3319,8 +3319,9 @@ impl Tool for ImageGenerate {
             }
             people_from = match (declared.is_empty(), inherited.is_empty(), worded_in) {
                 (false, true, _) => "the call",
-                (false, false, _) => "the call and the picture's manifest",
-                (true, false, _) => "the picture's manifest",
+                (false, false, _) => "the call and the picture's record",
+                (true, false, true) => "the edit's words and the picture's record",
+                (true, false, false) => "the picture's record",
                 (true, true, true) => "the edit's words",
                 (true, true, false) => "nobody named",
             };
@@ -3368,15 +3369,21 @@ impl Tool for ImageGenerate {
                         if broken.len() == 1 { "is" } else { "are" }
                     )));
                 }
+                // Someone the record carried past `MAX_CAST` is still in the
+                // picture, so naming them is no stranger drawn from words
+                // (review of #588, pass 5).
                 let cast: std::collections::BTreeSet<String> = ask
                     .as_ref()
                     .map(|a| {
                         a.cast
                             .iter()
                             .map(|m| m.name.trim().to_lowercase())
-                            .collect()
+                            .collect::<std::collections::BTreeSet<_>>()
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(left_out.iter().map(|m| m.name.trim().to_lowercase()))
+                    .collect();
                 let in_prompt = crate::imagelib::named_in(lib, &said);
                 let named: Vec<String> = in_prompt
                     .iter()
@@ -9075,7 +9082,7 @@ mod tests {
         );
         assert!(!first.content.contains(FACE_REFERENCE), "{}", first.content);
         let m = manifest_of(&dir, &first.content);
-        assert_eq!(m["identity"]["from"], "the picture's manifest", "{m}");
+        assert_eq!(m["identity"]["from"], "the picture's record", "{m}");
         assert_eq!(m["identity"]["people"][0]["name"], "maya", "{m}");
         assert_eq!(m["identity"]["people"][0]["crop"], true, "{m}");
         assert_eq!(m["cast"][0]["name"], "maya", "the edit records her: {m}");
@@ -9274,7 +9281,7 @@ mod tests {
     /// `MAX_CAST` is left out and said, not refused over.
     #[tokio::test]
     async fn a_full_record_never_blocks_the_persona_naming_herself() {
-        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
+        let (url, seen) = fake(vec![done(); 3], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john", "sam", "tau", "thea"]);
         let base = Arc::new(
@@ -9323,6 +9330,17 @@ mod tests {
             "{}",
             out.content
         );
+        // Naming the person left out is no stranger: no "split the scene"
+        // refusal an edit cannot follow (review of #588, pass 5).
+        let again = maya
+            .call(
+                json!({"edit": {"change": "Have Thea raise a glass too."},
+                       "reference_images": [picture_of(&out.content)]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!again.is_error, "{}", again.content);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
@@ -9375,7 +9393,7 @@ mod tests {
             .collect();
         assert_eq!(names, ["maya", "john"], "{m}");
         assert_eq!(
-            m["identity"]["from"], "the call and the picture's manifest",
+            m["identity"]["from"], "the call and the picture's record",
             "{m}"
         );
         std::fs::remove_dir_all(dir).ok();
