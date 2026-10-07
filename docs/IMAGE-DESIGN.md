@@ -88,7 +88,7 @@ Scene {
   text:     [ { words, where, look } ]                // optional: words to render exactly, in quotes
 }
 Person.where = left | centre | right | background     // optional; defaults to the list's left-to-right order
-Person.who = a library character's name | "self" | { from: picture } | a description of someone not in the library
+Person.who = a library character's name | "self" | a description of someone not in the library
 ```
 
 - **`setting` is everything in the picture except its people and its words.** For a picture with people it is the place and its objects, with no looks or poses. For a picture without people (an object, a diagram, a logo) it is the whole subject. Era and period go here too. It is either words, or a photo used as the room.
@@ -155,8 +155,8 @@ The planner reads the call against the picture's record and picks one render. No
 | no `picture`; a whole scene | **New picture.** Library portraits, the E1–E12 compile, a new seed (or, on the CLI and in evals only, the call's). |
 | `scene.setting` is a photo; a scene with people | **Place on the photo.** An edit of the photo with each person's head crop and description (M1). The photo becomes the scene's setting. |
 | a `picture` with no record | **The current picture.** Edited as any recorded picture is, with its record started from the call; its people are unknown until a call declares them, and a restage of unknown people is drawn as an edit (reviews B3, N1, N2). |
-| a change to someone's pose, the camera, the setting, or a removal | **Restage.** Everyone drawn afresh on the scene's setting, at the base picture's seed (§2.6): an edit of the setting photo with crops when the setting is a photo, a new picture from the setting's words when it is words. |
-| a change to someone's clothes, someone's `expression`, or someone added | **Edit of the picture,** with the crops of the people it changes, in the #408 keep form. Clothes come back unchanged elsewhere 100% (correct for this case). An expression is a face retouch, not a restage (review S2). |
+| a change to someone's pose, the camera, the setting, the light, `together`, the style, or a removal | **Restage.** Everyone drawn afresh on the scene's setting, at the base picture's seed (§2.6): an edit of the setting photo with crops when the setting is a photo, a new picture from the setting's words when it is words. |
+| a change to someone's clothes, someone's `expression`, someone added, or `text` | **Edit of the picture,** with the crops of the people it changes, in the #408 keep form. Clothes come back unchanged elsewhere 100% (correct for this case). An expression is a face retouch, not a restage (review S2). |
 | nothing changed at all | **Redraw** of the scene at a new seed (review B4); the same render as Regenerate (§5.4). |
 | `retouch` (with or without `mask`) | **Retouch** of the picture, in the #408 keep form; masked as today. |
 
@@ -171,7 +171,7 @@ The planner reads the call against the picture's record and picks one render. No
 - **A scene keeps up to 10 people** (`MAX_PEOPLE`, twice `MAX_CAST`); people without library entries count here, not against the face budget.
 
 A change that does not fit falls back before it refuses (review S4):
-- **On a words setting,** a restage that needs more faces than an edit holds is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
+- **On a words setting,** a restage is drawn as a new picture from the words at the base seed, with up to `MAX_CAST` portraits. Under C5 an edit and a new picture both hold five faces, so there is no case where a words restage fits one and not the other; the fallback that mattered at the old budget of 3 (a restage needing more faces than an edit held) cannot arise, and more than five faces are refused on either setting.
 - **On a photo setting,** up to five people with faces are drawn in one pass (C5). More than five are refused in the scene's own terms, naming them.
 - **A person without a library entry** costs no budget; they are drawn from words.
 
@@ -182,7 +182,7 @@ A change that does not fit falls back before it refuses (review S4):
 A panel press is the owner's instruction to the image model, not something said to the persona (`persona/edit.rs`'s own doc). So:
 
 0. **The persona's safety check runs first,** the same `safety::keyword_hit` crisis check a persona turn meets before any model (review S6). A panel press is never a door around it.
-1. **The owner's words plus the picture's record go through a one-shot extraction.** It has no tools and no history, and is constrained to the scene-change schema: `scene` fields plus an optional `retouch`, with **no `kind` discriminator** (§2.7: clothes need an obvious home, which is `people[].wearing`).
+1. **The owner's words plus the picture's record go through a one-shot extraction,** a `quarantine::QuarantinedPass`: the record's fields may carry untrusted origin, and that type holds "no tools, no history" structurally rather than by convention. It has no tools and no history, and is constrained to the scene-change schema: `scene` fields plus an optional `retouch`, with **no `kind` discriminator** (§2.7: clothes need an obvious home, which is `people[].wearing`).
 2. **The extracted call is dispatched through `Agent::dispatch_one`** (#592). It goes through every gate a model call meets, with its own call id, inline, on the chat's job seat, with taint recorded.
 3. **The history records one fact,** a `HarnessPicture` record: "Picture X was changed into Y: <the typed change>". The card shows the new version from it.
 4. **The persona replies in a line or two,** in its own voice. That reply goes with `tool_choice: "none"`, not with the tools removed: removing them re-sends the whole context (12,277 tokens against 4 measured), while `tool_choice` keeps the cache (review S5). It carries no edit note, and G3's calls-as-text check covers it.
@@ -199,7 +199,7 @@ The same scene, a new seed, the same render plan. It goes through `dispatch_one`
 
 Two rules (review B1).
 
-- **Structural, in every chat.** A deferred job of a tool already started in a run is never started again in that run. The agent loop enforces this on the tool's job kind, not the model, and not a refusal string. The assistant keeps working after drawing (it went on to `image_view`, `shell` or `fs_read` in 43 runs), so its run is not ended.
+- **Structural, in every chat.** A deferred job of a tool already started in a run is never started again in that run. The agent loop enforces this on the tool's job kind, not the model, and not a refusal string. The closing lines are the picture's own today, because `image_generate` is the only tool that defers; a second deferred tool brings its lines through its job (`DeferredJob`, as its busy text already does), never as new text in `agent.rs`. The assistant keeps working after drawing (it went on to `image_view`, `shell` or `fs_read` in 43 runs), so its run is not ended.
 - **The clean end fires on the first repeat call** to that tool. The repeat is not run, and the next request goes with `tool_choice: "none"`, the turn's note once, and "the picture is on its way; answer in a line". That combination was measured clean 5/6. In a persona chat it fires right after the picture is queued, because nothing after the picture is the persona's job.
 - **A busy refusal** (an earlier turn's picture still drawing) closes a persona run, with a line that says this turn's picture was not started. Any other run keeps working after one and closes on a retry of the refused call. A picture this run started is always the fact said first.
 - **The backstop:** a reply that is only a tool-call block is replaced, never shown.
@@ -260,6 +260,8 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 | **G4b a real person through the library** (§4.1) | the same real person, added to the library from the owner's photo, drawn new, beside a drawn library character, placed on a photo, and restaged, plus a small-face arm; ≥ 3 seeds each | owner's verdict |
 | **G5 after deploy** (first real chats) | pose and camera changes go through restage; restages pass the owner's eye; edit-shaped renders that should move something (adding a person, placing on a photo) are not near-copies; no runaways | restage share ≥ 90%; edit-shaped near-copy ≤ 30%; runaways 0 |
 
+**The harness's own claims are unit tests, not gates.** One job per run, taint through `dispatch_one`, origin under equal-is-unchanged, and an extraction failing closed on a name the library does not hold are deterministic: each step names the tests that fail on today's behaviour (step 2's, for example: `two_calls_in_one_turn_say_the_picture_is_on_its_way`, `a_steer_on_the_closing_turn_stays_queued`). The gates above measure what only the model and the owner's eye can.
+
 **Open measurement, not a merge gate:** the head crop on new pictures (`IMAGE-SCENE-DESIGN.md` §8.1). New pictures keep the whole portrait at 512² until it passes on the owner's sheets for each path (§11 item 5).
 
 ## 10. Build order
@@ -267,7 +269,7 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 Each PR goes through its review loop, then a3's gates, then the owner's merge word.
 
 1. **The scene schema and the planner, with the retired inputs deleted.** This covers the record per chat (§6), equal-is-unchanged, place as the setting only, seed reuse, and the refusals in scene terms. It is the big one.
-2. **One picture per run** (§5.5).
+2. **One picture per run** (§5.5). This step adds `ToolChoice` to `CompletionRequest`, rendered by both providers (`"tool_choice": "none"` and `{"type": "none"}`). A provider added later must render it or refuse the request, never drop it: a dropped `tool_choice` lets the model call again, the silently-degrading-guard shape.
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
 4. **Regenerate** on the same record (§5.4).
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
@@ -313,7 +315,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | S4: budget refusals are round trips | §5.2: fall back before refusing. Measured: a canvas plus three crops keeps the scene, and five held in one pass (C5, the owner's provisional ruling), so `EDIT_REFERENCE_BUDGET` is 6 references; more than five faces on a photo are refused |
 | S5: `tool_choice` for the reply | §5.3 step 4 |
 | S6: the safety check on the panel path | §5.3 step 0 |
-| S7: extraction failure | §5.3 step 5 |
+| S7: extraction failure | §5.3 step 6 |
 | S8: the scene note | §6, kept for typed turns |
 | S9: `place` is wrong for a logo | §4: `setting` covers the whole subject without people |
 | Q1: near-copy as a fact | §8: the layout number stays in the result line |

@@ -90,6 +90,11 @@ as `model_untrusted`** — never approved, never clean.
 
 ## 3. Compiling a scene
 
+> **Superseded 2026-10-07 for the call (`IMAGE-DESIGN.md` §5.1):** `cast`, `extras` and
+> `reference_images` are retired. The model sends a `scene` whose people name library characters
+> in `who`, and the compiler below is what a new picture still runs through. The store (§2, §4–§7)
+> stands as written.
+>
 > **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1):** the bullet below that makes `cast` and
 > `reference_images` exclusive is lifted.
 > Every library person enters every render, edits included, as a head crop plus their
