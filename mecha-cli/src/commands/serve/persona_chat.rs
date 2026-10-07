@@ -2388,6 +2388,13 @@ impl PersonaChats {
                     w["elapsed_ms"] = serde_json::json!(elapsed);
                     w
                 }),
+            // The picture still being drawn past its turn, and how long it
+            // has run: the page's clock on its "drawing a picture…" row,
+            // which `working` stops covering once the turn hands it off.
+            "job": self.jobs.queue.running(key).map(|(id, ran)| serde_json::json!({
+                "id": id,
+                "elapsed_ms": ran.as_millis() as u64,
+            })),
             "display": ps.pinned.settings.display,
             // The switches as they stand, not as pinned: they are read live.
             "safety": safety_json(
