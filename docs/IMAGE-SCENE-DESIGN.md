@@ -182,7 +182,12 @@ workspace. Every manifest records its scene and the content hash of its picture.
 attached in any chat is matched by its bytes, so a carried-over picture resolves to its scene.
 **Bytes select a record.** That is the key, and it says nothing about where the lookup searches.
 **A second, separate rule does the security work: the lookup reads only manifests under the
-owner's own sessions.** The front door never does the lookup: an outside sender's bytes must not
+owner's own sessions.** **The index is the harness's own record, not the workspace's.** A
+manifest sits in the chat's jail, where a run can write one with `fs_write` (`repair_orphan`'s
+comment grants this). So the index the lookup reads is written by the harness into the persona
+store, which the model cannot write, keyed by content hash and pointing at scenes the harness
+wrote. A workspace manifest's stated origin is never trusted: it is read only as fail-closed
+evidence, never as a clean label. The front door never does the lookup: an outside sender's bytes must not
 pull a scene out of the persona store.
 
 **A scene carries its origin.** Scene text is model-written, so it crosses from one chat's run
@@ -197,7 +202,9 @@ The carrier into the notes is a stem. Notes arm taint only by stem match (`Taint
 and a stem is text, so one stem would arm every scene alike. **There are two scene stems, one
 for a clean origin and one for an untrusted one**, as memory has two (`persona::recall::stem_of`;
 the comment on `arm_for_content` says why). The note opens with the stem its record's origin
-picks. A scene record with no origin, older than
+picks. **Both stems arm `private`, as memory's do.** A scene can carry an owner photo, or a person
+out of one, into a chat that never saw it, which is exactly the case `private` exists for. So a
+clean scene and one page from outside still meet the interlock. A scene record with no origin, older than
 this rule or hand-made, reads as untrusted, never as the default; this is the second half of
 mailbox's `taint_recorded`.
 
@@ -244,8 +251,10 @@ This is ruling R9 (owner, 2026-10-07).
   ceiling is **three references at 1024², canvas included**: canvas plus one crop took 52–54 s;
   canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
   **Crops never take a call past the budget. Pictures the model passes itself keep
-  `MAX_REFERENCES` (4), as today:** four plain references draw, slowly, as they always did, and
-  the budget only governs what the harness adds. **A call whose crops would exceed it is refused
+  `MAX_REFERENCES` (4), as today:** four plain references with nobody declared draw, slowly, as
+  they always did, and the budget only governs what the harness adds. In a persona chat the
+  persona is usually declared, by the picture's record or the edit's words, so four pictures plus
+  her crop is over budget and refused, naming the ways out. **A call whose crops would exceed it is refused
   before the GPU and says why, naming the ways out: fewer people, fewer pictures, or the place in
   words.** The model cannot reach those by sending the same call again. **Nothing
   falls back to another shape silently.** Drawing the scene without the place's picture is a different call, one the
@@ -456,7 +465,8 @@ from the scene's place.
    descriptions beside a canvas under §5.2's resolution and slot rule, the name guard on edits,
    and `face_anchor` recording why it was not applied. New pictures keep the whole portrait.
    They switch after §8.1, and only on the owner's sheets.
-2. The scene record per persona, manifests carrying scenes, and lookup by content hash. An
+2. The scene record per persona, manifests carrying scenes, and lookup by content hash through a
+   harness-written index in the persona store, never through workspace manifests (§5.1). An
    incognito chat's write-back path does not exist rather than being switched off, and every
    scene carries its origin (§5.1).
 3. The canvas rule and restage, with the scene change as the call's type, replacing the typed
