@@ -242,12 +242,12 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 11. Questions for the owner
 
-1. **Record the scene for the assistant chat too** (§6)? Recommended: yes, one path. A picture with no record is classified by its faces (§5.1), which covers pictures carried between chats.
+1. **Record the scene for the assistant chat too** (§6)? **Ruled 2026-10-07: yes, one path.**
 2. **Prose fields: `setting`, `light`, `camera`, and per person `wearing`, `doing`, `expression`** (§4)? `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
-3. **Close #593 unmerged** (§5.4)?
+3. **Close #593 unmerged** (§5.4)? **Ruled 2026-10-07: closed.**
 4. **The thresholds in §9.**
-5. **Crop or whole portrait on new pictures** (§2.1): keep the whole portrait until §8.1's crop measurement passes on the owner's sheets, as ruled for R1?
-6. **Seeds off the chat schemas** (§5.1)? Every seed reuse that helps becomes the harness's.
+5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
+6. **Seeds off the chat schemas** (§5.1)? **Ruled 2026-10-07: off;** every seed reuse that helps is the harness's.
 
 ## 12. Review and how each point is met
 
