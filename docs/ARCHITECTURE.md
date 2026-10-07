@@ -756,35 +756,51 @@ conversation, so the capabilities do not change. Three rules:
   0.00 s as a duplicate of a finished prompt, kept no new output, and
   `/view` answered 404, which the run read as a failure. The record is
   salted hashes, as for the strikes.
-- **A persona's edit of its own character is anchored to its face**
-  (`face.rs`, the owner's ruling of 2026-10-05). An edit keeps only part of
+- **An edit declares its people, and each comes in as a head crop**
+  (`face.rs`; `IMAGE-SCENE-DESIGN.md` R1 and R5, the owner's rulings of
+  2026-10-07, replacing #569's lineage anchor). An edit keeps only part of
   the face it is given — about 0.77 ArcFace similarity per step across the
-  owner's persona edits — so a chain ended as somebody else, on the Q4 and
-  int8 models alike. In a persona chat, an edit of a single picture that
-  traces back, manifest by manifest through each edit's first reference, to
-  a scene whose cast was that persona's own approved character alone — no
-  extras there, on the way or in this edit, and no edit on the way given a
-  second picture, any of which is someone the face could land on (review of
-  #569); the walk always reaches that scene, so today's rule judges the
-  whole chain — gets a tight crop of the character's portrait as `<image2>` and
-  `FACE_ANCHOR_SENTENCE`, which names `<image1>` the canvas. Each of those
-  was measured on two five-step chains (2026-10-05): the whole portrait as
-  the reference copied its outfit and selfie pose into four of six scenes; a
-  crop at 1.6× the face carried hair and pose and flattened asked-for
-  expressions (py-feat action units); a crop shrunk onto a large canvas gave
-  impossible bodies; a masked face-only redraw, even enlarged, did not move
-  identity at all; and without the canvas sentence the crop pulled every
-  scene change into a close-up. The tight crop, the sentence and no crop on
-  a camera move held identity (0.85, 0.44 and 0.57 across the chain's
-  last three steps, where unanchored edits fell to 0.25, 0.21 and 0.13) and kept
-  expressions, hair and full-body framing. So it is skipped, and the
-  manifest says why, when the edit says where the camera goes
-  (`edit.camera`) — with the crop on, a low angle came back at eye level —
-  and it is never applied to a masked
-  edit, beside references the model chose, to an attached photo with no
-  manifest, or in the assistant's own chats. A crop that cannot be had (the
-  detector not installed, no face in the portrait) is recorded as
-  `face_anchor.skipped`, never refused: the edit draws as it did before.
+  owner's persona edits — so a chain ended as somebody else. The anchor that
+  first treated this inferred whose face to send by walking manifests back to
+  a cast scene, and it missed 63 of 69 persona edits after it shipped. Three
+  things ended the walk: a chat boundary (each chat has its own workspace, so
+  a carried-over picture is a bare inbox file), a second picture, or a chain
+  that began from words. Each time `face_anchor` was left `null` with no
+  reason. Now the people are declared:
+  - **Who.** The call's `cast`; failing that, the people the edited picture's
+    own manifest records (that one record, never a walk), with `self` and the
+    persona's name resolved by `cast_self`. An attached photo names nobody
+    unless the call does, and `"cast": []` is nobody.
+  - **The crop and the sentences.** Each approved character gets a tight crop
+    of its portrait (1.12× the face box) at the canvas's size, its library
+    description verbatim, and "take only X's facial identity from
+    `<imageN>`". These follow a sentence giving `<image1>` the canvas's role:
+    keep the camera (`CANVAS_KEEPS_CAMERA`), or keep only the room when
+    `edit.camera` moves it (`CANVAS_CAMERA_MOVES`; M2's R moved the camera
+    with the crop on).
+  - **The measurements.** The crop's shape was measured on 2026-10-05:
+    - the whole portrait leaked its outfit and selfie pose into four of six
+      scenes;
+    - a crop at 1.6× the face flattened asked-for expressions;
+    - a masked face-only redraw did not move identity;
+    - without the canvas sentence the crop pulled every scene into a
+      close-up.
+
+    Declaration was measured on 2026-10-07: crop plus description held on the
+    owner's sheets where words alone or the crop alone did not.
+  - **The guard and the budget.** The library-name guard now covers edits, so
+    a character named in a change but not declared is refused before the GPU.
+    One budget per edit, `EDIT_REFERENCE_BUDGET` (3, the canvas included):
+    every edit reference is encoded at 1024², and four is the research's
+    cliff.
+  - **What is not covered.** A masked edit carries no crops. A crop that
+    cannot be had (the detector not installed, no face in the portrait) is
+    recorded, never refused: the edit draws as it did before. New pictures
+    still send the whole portrait until `IMAGE-SCENE-DESIGN.md` §8.1 is
+    measured.
+  - **The record.** The manifest's `identity` always says who was declared,
+    from where, and whose crop came or why not. Its `cast` records them,
+    which is how the next edit finds them.
   `edit.face` says what the face does — expression, head angle, gaze — when
   the change is about faces, because without it the edit hands the face back
   as it was (which is right when it is not), and `edit.camera` describes a
@@ -919,13 +935,16 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
   held identity within a few hundredths of a tight crop (E2, E10). `Request`
   carries `reference_size` for this; ComfyUI's encoder takes one size per
-  call, which is why `cast` and `reference_images` are refused together
-  until a per-reference size is measured.
+  call. Until 2026-10-07 that was why `cast` and `reference_images` were
+  refused together. Since then an edit sends its people as head crops at
+  the canvas's size, under `EDIT_REFERENCE_BUDGET` (the declared-identity
+  entry under images).
 - **A character named without a `cast` is refused before the GPU.** The first
   real run looked the characters up, wrote their descriptions into the prompt
   and left `cast` out: two strangers (ArcFace 0.17 and 0.10 against their
   portraits). `imagelib::named_in` catches an approved character's name as a
-  whole word in any non-edit prompt, minus the names already in `cast` — a
+  whole word in any prompt, an edit's included since 2026-10-07, minus the
+  names already in `cast` — a
   cast of one does not excuse a second character named beside it (review of
   #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
