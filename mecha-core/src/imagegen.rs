@@ -4863,6 +4863,10 @@ impl Tool for ImageGenerate {
                 }
             }
             let mut text = format!("image: {path}\n");
+            // A restage is drawn on the scene's place, never from the last
+            // picture, and the result says so: "an edit of" the place's photo
+            // reads as though the last picture was lost (step 3).
+            let restaged = routed.as_ref().is_some_and(|r| r.route == "restage");
             if !is_edit {
                 let of = if used.is_empty() {
                     String::new()
@@ -4880,6 +4884,12 @@ impl Tool for ImageGenerate {
                      owner's screen; you have not seen it.",
                     req.seed, req.steps
                 ));
+                if restaged {
+                    text.push_str(
+                        " It was restaged from the scene's place in words, not edited from your \
+                         last picture.",
+                    );
+                }
                 if !drawn_as_extras.is_empty() {
                     let names: Vec<String> =
                         drawn_as_extras.iter().map(|n| format!("`{n}`")).collect();
@@ -4909,8 +4919,13 @@ impl Tool for ImageGenerate {
                     .map(|u| format!(" in style {} (v{})", u.name, u.version))
                     .unwrap_or_default();
                 text.push_str(&format!(
-                    "An edit of {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
+                    "{} {}{styled}: a {size} picture, drawn in {secs} s (seed {}, {} steps). \
                      The new picture is on the owner's screen; you have not seen it. {} unchanged.",
+                    if restaged {
+                        "Restaged, not edited from your last picture, on the scene's place:"
+                    } else {
+                        "An edit of"
+                    },
                     sources.join(", "),
                     req.seed,
                     req.steps,
@@ -10590,6 +10605,14 @@ mod tests {
             m["reference_images"][0], "inbox/room.png",
             "drawn on the place: {m}"
         );
+        assert!(
+            moved.content.contains(
+                "Restaged, not edited from your last picture, on the scene's place: inbox/room.png"
+            ),
+            "the result says it was restaged: {}",
+            moved.content
+        );
+        assert!(!placed.content.contains("Restaged"), "{}", placed.content);
         let sent = last_prompt(&seen);
         assert!(sent.contains("the camera may move as described"), "{sent}");
         assert!(
@@ -10645,6 +10668,12 @@ mod tests {
         let m = manifest_of(&dir, &ran.content);
         assert_eq!(m["scene_route"], "restage", "{m}");
         assert!(m["reference_images"].is_null(), "a new picture: {m}");
+        assert!(
+            ran.content
+                .contains("restaged from the scene's place in words"),
+            "{}",
+            ran.content
+        );
         assert!(last_prompt(&seen).contains("a park in autumn"));
         assert!(last_prompt(&seen).contains("running along the path"));
         // New clothes: a retouch of the current picture.
