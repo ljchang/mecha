@@ -84,6 +84,10 @@ pub enum Place {
         path: String,
         hash: String,
     },
+    /// A place this build cannot read: a kind it does not know, or a known
+    /// kind gone wrong. It is no place to draw on and is never clean, so a
+    /// scene holding one reads untrusted (review of #589, pass 8).
+    Unknown,
 }
 
 /// Someone in the scene, by library name.
@@ -181,12 +185,16 @@ impl Scene {
                 value: p,
                 origin: by,
             }),
-            None => prev.and_then(|s| s.place.clone()).or_else(|| {
-                change.fallback_place.map(|p| Field {
-                    value: p,
-                    origin: by,
-                })
-            }),
+            // An unknown place is no place to keep: the canvas replaces it.
+            None => prev
+                .and_then(|s| s.place.clone())
+                .filter(|p| p.value != Place::Unknown)
+                .or_else(|| {
+                    change.fallback_place.map(|p| Field {
+                        value: p,
+                        origin: by,
+                    })
+                }),
         };
         // Bounded here, where everything that reaches the store passes: a
         // carried person comes from a manifest a run can write, and an edit
@@ -253,13 +261,23 @@ impl Scene {
 /// cannot grow the store without bound.
 pub const MAX_PEOPLE: usize = 2 * crate::imagelib::MAX_CAST;
 
-/// A place that does not parse is no place, never a lost record.
+/// A place that does not parse is an unknown place, never a lost record,
+/// and untrusted whatever origin it was written with: unknown is never clean,
+/// and dropping it would drop the label that says so (review of #589, pass 8).
 fn lenient_place<'de, D>(d: D) -> std::result::Result<Option<Field<Place>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let v = Option::<serde_json::Value>::deserialize(d)?;
-    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+    Ok(v.filter(|v| !v.is_null()).map(|v| {
+        serde_json::from_value::<Field<Place>>(v)
+            .ok()
+            .filter(|f| f.value != Place::Unknown)
+            .unwrap_or(Field {
+                value: Place::Unknown,
+                origin: Origin::Untrusted,
+            })
+    }))
 }
 
 /// A picture's content hash, as the index keys it.
@@ -281,9 +299,15 @@ pub struct SceneSlot {
 
 impl SceneSlot {
     /// The chat's scene now: its own copy, else the persona's latest, which
-    /// the chat starts from (R7), else none.
+    /// the chat starts from (R7), else none. A copy that exists but cannot
+    /// be read is none, never the latest: that is another chat's scene, and
+    /// a broken copy is not a chat with no scene yet (review of #589, pass 8).
     pub fn current(&self) -> Option<Scene> {
-        read(&self.chat_copy).or_else(|| read(&self.store.join("latest.json")))
+        if self.chat_copy.exists() {
+            read(&self.chat_copy)
+        } else {
+            read(&self.store.join("latest.json"))
+        }
     }
 
     /// Record a landed render: the chat's copy, the persona's latest (the
@@ -540,18 +564,64 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// A place of a kind this build does not know reads as no place, and
-    /// the rest of the record survives (review of #589).
+    /// A chat whose own copy is broken has no scene; it does not start from
+    /// another chat's latest, which is for a chat with no copy yet (review
+    /// of #589, pass 8).
+    #[test]
+    fn a_broken_chat_copy_is_no_scene_not_the_latest() {
+        let (slot, root) = slot();
+        let s = Scene::advance(None, change(true, "a"), Origin::Clean, "c1");
+        slot.land(&s).unwrap();
+        assert!(slot.current().is_some());
+        std::fs::write(&slot.chat_copy, b"{ not json").unwrap();
+        assert!(slot.current().is_none());
+        std::fs::remove_file(&slot.chat_copy).unwrap();
+        assert_eq!(slot.current(), Some(s), "no copy yet: the latest");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A place this build cannot read is an unknown place, untrusted, and
+    /// the rest of the record survives (review of #589, passes 1 and 8); an
+    /// edit replaces it with its canvas.
     #[test]
     fn an_unknown_place_costs_the_place_only() {
-        let s: Scene = serde_json::from_str(
-            r#"{"place": {"value": {"kind": "hologram"}, "origin": "clean"},
-                "people": [{"name": "maya", "origin": "clean"}], "chat": "c1"}"#,
-        )
-        .unwrap();
-        assert!(s.place.is_none());
-        assert_eq!(s.people[0].name, "maya");
-        assert_eq!(s.chat.as_deref(), Some("c1"));
+        for place in [
+            r#"{"value": {"kind": "hologram"}, "origin": "clean"}"#,
+            r#"{"value": {"kind": "words"}, "origin": "clean"}"#,
+            r#"{"value": {"kind": "unknown"}, "origin": "clean"}"#,
+            r#"{"value": "a beach"}"#,
+        ] {
+            let s: Scene = serde_json::from_str(&format!(
+                r#"{{"place": {place},
+                    "people": [{{"name": "maya", "origin": "clean"}}], "chat": "c1"}}"#
+            ))
+            .unwrap();
+            let p = s.place.as_ref().expect("kept, as unknown");
+            assert_eq!(p.value, Place::Unknown, "{place}");
+            // Unknown is never clean, whatever the record says (pass 8).
+            assert_eq!(p.origin, Origin::Untrusted, "{place}");
+            assert_eq!(s.origin(), Origin::Untrusted, "{place}");
+            assert_eq!(s.people[0].name, "maya");
+            assert_eq!(s.chat.as_deref(), Some("c1"));
+            // And it stays so when written back and read again.
+            let again: Scene = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+            assert_eq!(again.origin(), Origin::Untrusted);
+        }
+        let none: Scene = serde_json::from_str(r#"{"place": null, "chat": "c1"}"#).unwrap();
+        assert!(none.place.is_none());
+        let unknown: Scene =
+            serde_json::from_str(r#"{"place": {"value": {"kind": "hologram"}}, "chat": "c1"}"#)
+                .unwrap();
+        let mut edit = change(false, "b");
+        edit.fallback_place = Some(Place::Picture {
+            path: "images/b.png".into(),
+            hash: hash(b"b"),
+        });
+        let s = Scene::advance(Some(&unknown), edit, Origin::Clean, "c1");
+        assert!(matches!(
+            s.place.as_ref().unwrap().value,
+            Place::Picture { .. }
+        ));
     }
 
     /// A record with no origin, or one this build does not know, reads
