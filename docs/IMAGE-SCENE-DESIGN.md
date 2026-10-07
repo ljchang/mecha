@@ -180,14 +180,17 @@ A **scene** is a typed record:
 The harness keeps the **current scene per persona**, in the persona store, not in a chat's
 workspace. Every manifest records its scene and the content hash of its picture. A picture
 attached in any chat is matched by its bytes, so a carried-over picture resolves to its scene.
-**Bytes select a record**, so the lookup reads only manifests under the owner's own sessions. The
-front door never does the lookup: an outside sender's bytes must not pull a scene out of the
-persona store.
+**Bytes select a record.** That is the key, and it says nothing about where the lookup searches.
+**A second, separate rule does the security work: the lookup reads only manifests under the
+owner's own sessions.** The front door never does the lookup: an outside sender's bytes must not
+pull a scene out of the persona store.
 
 **A scene carries its origin.** Scene text is model-written, so it crosses from one chat's run
 into another chat's notes. Each write records the taint of the run that made it, classified
 from the transcript's recorded taint the way a library candidate's `imagelib::Origin` is, and
-failing closed: unknown classifies untrusted. A chat that reads a scene written under untrusted
+failing closed: unknown classifies untrusted. **A scene's origin is the union of every write
+still in it, not the last write's.** §5.4 keeps unchanged fields, so a clean write over a scene
+with an untrusted field stays untrusted. Only a field the clean write replaced stops counting. A chat that reads a scene written under untrusted
 input takes that taint on, as a `mailbox.rs` message carries its sender's.
 
 The carrier into the notes is a stem. Notes arm taint only by stem match (`Taint::arm_for_notes`),
@@ -215,7 +218,9 @@ This is ruling R9 (owner, 2026-10-07).
 ### 5.2 People are declared on every call
 
 - **Each library person in a render enters as their detector head crop plus their library
-  description, on every call, whatever the canvas.** The crop is the anchor's existing crop. The
+  description, on every call, whatever the canvas, except a masked edit** (§7). A masked edit
+  still runs the name guard; declaring the person satisfies it, and their crop is simply not
+  sent. The crop is the anchor's existing crop. The
   description is the entry's text, verbatim: build, and features such as a tattoo, worded so
   they cannot leak (§4, M4).
 - The library-name guard runs on every call, edits included.
@@ -238,8 +243,11 @@ This is ruling R9 (owner, 2026-10-07).
   pictures and harness crops alike, is counted at the size it will be encoded at. The measured
   ceiling is **three references at 1024², canvas included**: canvas plus one crop took 52–54 s;
   canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
-  **A call over budget is refused before the GPU and says why, naming the ways out: fewer people,
-  or the place in words.** The model cannot reach those by sending the same call again. **Nothing
+  **Crops never take a call past the budget. Pictures the model passes itself keep
+  `MAX_REFERENCES` (4), as today:** four plain references draw, slowly, as they always did, and
+  the budget only governs what the harness adds. **A call whose crops would exceed it is refused
+  before the GPU and says why, naming the ways out: fewer people, fewer pictures, or the place in
+  words.** The model cannot reach those by sending the same call again. **Nothing
   falls back to another shape silently.** Drawing the scene without the place's picture is a different call, one the
   model makes on purpose, and its result says the room was redrawn: R2's canvas is what keeps an
   owner photo's room (M1, layout 0.84–0.97). That call goes at 512²; E3's four people held there
@@ -302,8 +310,10 @@ checked against #583's branch on 2026-10-07; check them again against the tree o
 
 - **The scene advances when a render lands, never when it is asked for.** The write happens
   inside the job, or in the host's `late::land`, so a cancelled or failed render leaves the scene
-  where it was. Steps 1–3 of §10 sit inside #583's `let job = async move { … }`, after
-  `backend.generate`, where the face anchor and `write_manifest` already run.
+  where it was. **Identity is not in the job:** crops are references, and a reference has to be
+  in the request before `backend.generate`. So §10 step 1 runs in `call` before the split, where
+  #569's anchor ran. Only the **scene write** belongs after the split, inside #583's
+  `let job = async move { … }` beside `write_manifest`, or in `late::land`.
 - **Two chats with one persona can render at once.** Jobs are one in flight per chat, and the
   scene is kept per persona (§5.1). Each chat works on its own copy of the scene, taken
   from the persona's latest when the chat starts. A landing writes back to the persona's latest,
@@ -333,7 +343,10 @@ picture.
 - **The chat history records the redraw as a fact.** Picture X was redrawn as Y; nothing tells
   the model what to do about it. The persona then knows which picture is current, because the
   history is what happened (`PERSONA-CONTEXT-DESIGN.md` §5.3).
-- **On a call it runs as a job** (#583).
+- **On a call it runs as a job** (#583). It meets #583's one-job-per-chat rule like any picture:
+  while another is being made, it is refused with `BUSY`. **A redraw has its own call id, never
+  the source picture's `tool_use_id`:** `repair_orphan` accepts a picture as an orphaned call's by
+  that key, and a reused id would let it take a redraw for the original.
 - **A redraw passes the same gates as any tool call.** It is dispatched as an `image_generate`
   call through the registry, so `pre_tool` hooks and the approver see it. Only the model's turn
   is skipped. The interlock is moot (`Capabilities::default()`), and the library re-check below

@@ -886,6 +886,11 @@ compute and memory bandwidth, and nothing queues one behind the other.
 
 ## Image library
 
+> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1).** Two rules below are lifted:
+> `cast` and `reference_images` refused together, and the name guard skipping edits. An edit
+> declares its people, and each enters as a head crop with their description. Until that build
+> (`image/declared-identity`) lands, the text below describes what ships.
+
 `imagelib.rs` is the store of recurring characters and styles, and the
 compiler that turns a scene into what `image_generate` sends;
 `docs/IMAGE-COMPILER-DESIGN.md` is the contract and
