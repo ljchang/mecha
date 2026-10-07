@@ -33,7 +33,7 @@ The parts that work, the renderer, the jail, masks, face crops, the library comp
 These are measured, mostly with the owner's eye as ground truth (M1–M4, #408, E1–E12, the replay of 10-07).
 
 1. **Identity comes from the library.** A head crop plus the library's own description works on every edit (M1, by the owner's eye). New pictures use the whole portrait at 512², which the owner rated good (M3) until §8.1's crop-on-new-pictures measurement passes. A model-drawn portrait does not help (M4), and neither does 1536² resolution (M4).
-2. **Restage, never chain.** A new pose or camera drawn afresh on the scene's place beat the edit chain at every step (M2). An edit chain never moves the camera (0/2), and loses identity by step 4.
+2. **Restage, never chain.** A new pose or camera drawn afresh on the scene's setting beat the edit chain at every step (M2). An edit chain never moves the camera (0/2), and loses identity by step 4.
 3. **A place photo works as the canvas** (24/24 placed, M1).
 4. **Two people touching, cast in one pass:** 8/8 interactions with no identity bleed (M3).
 5. **An edit prompt must not caption the picture it already has.** "Keep X unchanged. Have her stand up" stood a sitting person up 12/12; a caption did it 0/12 (#408). The tool, not the model, writes that form.
@@ -51,23 +51,27 @@ From the corpus (592 calls, 111 manifests):
 
 | Field or feature | Used | Decision |
 |---|---|---|
-| a new picture's words | 71% | kept, as typed place and light (§4) |
+| a new picture's words | 71% | kept, as a typed setting and light (§4) |
 | `reference_images` | 55% | replaced by one `picture` (§5) |
-| owner photos as the canvas | 44 calls, 13 renders | kept: an owner photo is a place (§5.2) |
+| owner photos as the canvas | 44 calls, 13 renders | kept: an owner photo is a setting, or the picture being changed (§5.1) |
 | `cast` | 19% | replaced by `scene.people` (§4) |
 | `edit.change` | 29% | replaced by `retouch` and scene changes (§5) |
 | `edit.keep` | 37% of edits | retired from the model: no measurable effect in use (85% vs 91% near-copy); the tool writes the keep clause itself |
 | `size` | 56% | kept |
-| `seed` | 48% (72 on edits, where it is ignored) | kept on new pictures only |
+| `seed` | 48%: 72 on edits, where it is ignored; of 211 on new pictures, 177 copied an earlier result's seed | retired from the model: every seed reuse that helps is the harness's (§5.2); kept for the CLI and evals |
 | mask (the Edit modal) | 14 calls | kept |
 | `style` | 11 calls, none reached a manifest | kept as a scene field |
 | `extras` | 0 | retired: a non-library person is a `people` entry with a description (§4) |
 | `negative_prompt` | 0 | retired |
 | `edit.face`, `edit.camera` | 0, 0 | retired |
-| two or more references | 4 calls | retired |
+| two or more references | 4 calls | replaced: a person from a photo is a `who` (§4) |
 | `scene` (since 10-07 18:29Z) | 0 | becomes the only shape |
 
 What a new picture's free prompt carried beyond its people: light or mood 79%, framing 11%, text to render 1 in 264. So a scene needs a light line where prose lives. Nothing measured needs free prose anywhere else.
+
+The assistant's 26 new pictures included 8 scenes or objects and 5 texts, diagrams or logos. These have no people and often no place, so the scene's first field describes the picture's subject and surroundings, not only a room (§4).
+
+After drawing, the assistant went on in the same run in 43 runs: `image_view` 23 times, `shell` 14, `fs_read` 6. So a run's end cannot be forced on every chat (§5.5).
 
 ## 4. The one representation: a scene
 
@@ -75,21 +79,23 @@ A picture is a scene.
 
 ```
 Scene {
-  place:  Words("a narrow kitchen with a window over the sink") | Picture(path, hash)
-  light:  "late afternoon sun, warm and hazy"         // optional prose: light, mood, framing, quoted text
-  camera: "from low by the door, looking up"          // optional prose
-  style:  library style name                          // optional
-  people: [ Person { who, wearing, doing } ]          // in left-to-right order
+  setting: Words("a narrow kitchen with a window over the sink") | Photo(path, hash)
+  light:   "late afternoon sun, warm and hazy"        // optional prose: light and mood
+  camera:  "from low by the door, looking up"         // optional prose: viewpoint and framing
+  style:   library style name                         // optional
+  people:  [ Person { who, wearing, doing, expression } ]   // in left-to-right order
 }
-Person.who = a library character's name | "self" | a description of someone not in the library
+Person.who = a library character's name | "self" | { from: picture } | a description of someone not in the library
 ```
 
-- **`place` is the setting only.** It has no people, looks or poses. It is either words, or a picture (an owner photo, or an earlier picture used as a room).
-- **`who`** is resolved against the library:
-  - an approved character brings its portrait (new picture) or head crop (edit), and its description verbatim;
-  - `self` is the persona's linked approved character;
+- **`setting` is everything in the picture except its people.** For a picture with people it is the place and its objects, with no looks or poses. For a picture without people (an object, a diagram, a logo) it is the whole subject, including any text to render, in quotes. It is either words, or a photo used as the room.
+- **`who`** is resolved against the library, in this order:
+  - an approved character's name or alias brings its portrait (new picture) or head crop (edit), and its description verbatim;
+  - `self`, or the persona's own name, display name or folder name (as `cast_self` resolves it today), is the persona's linked approved character;
+  - `{ from: picture }` is the one face in that picture (an owner photo of a real person), cropped by RetinaFace and budgeted as a crop. This is use case 4, kept;
   - anything else is drawn from its own words, as an extra is today. That needs no separate field, and `extras` was never used.
-- **`wearing` and `doing` are prose** (§2.8). They are required for anyone the call introduces.
+- **Library names in the prose fields are checked** (review B2): `setting`, `light`, `camera`, a descriptive `who`, `wearing`, `doing`, `expression` and `retouch`. A name in a descriptive `who` resolves to that character. A name in any other field is refused plainly ("John is named in `doing`: add him to people"), because drawing him from words makes a stranger (E1).
+- **`wearing`, `doing` and `expression` are prose** (§2.8). `wearing` and `doing` are required for anyone the call introduces. `expression` is optional and separate from `doing`: an expression changes the face and is retouched, while a pose redraws the scene (§5.2).
 - **The scene is recorded** for every picture drawn: per chat, outside the jail, in a store the harness writes (§6). That covers the assistant chat as well as personas, so there is one path, not a scene path and a no-scene path. Each field carries its origin (clean or untrusted), as `scene.rs` does now.
 
 ## 5. The one operation: draw a scene, or change one
@@ -98,18 +104,23 @@ Person.who = a library character's name | "self" | a description of someone not 
 
 ```
 image_generate {
-  picture:  path        // the one picture to change, or an owner photo to use as the place
-  scene:    {...}       // a whole scene for a new picture, or the fields that change
+  picture:  path        // the one picture being changed
+  scene:    {...}       // a whole scene for a new picture, or the fields that change;
+                        // scene.setting may be a photo: { photo: path } ("put her in this room")
   retouch:  "..."       // one small change to the picture itself: an object, a colour, a detail
   mask:     path        // the Edit modal's painted area, for a retouch
   size:     square | landscape | portrait
-  seed:     integer     // a new picture only
 }
 ```
 
-- **Retired inputs:** `prompt`, `cast`, `extras`, `edit` (`change`, `keep`, `face`, `camera`), `negative_prompt`, multi-picture `reference_images`.
+- **Retired inputs:** `prompt`, `cast`, `extras`, `edit` (`change`, `keep`, `face`, `camera`), `negative_prompt`, multi-picture `reference_images`, and `seed` (review S1; kept for the CLI and evals, off the chat schemas).
+- **A photo's role is said by the call, not guessed.** `picture` is the picture being changed ("this is her, make her smile"). `scene.setting: { photo }` is a room to put people in ("put her in this room"). Both of today's chats opened with this ambiguity. For a `picture` with no record, which the call did not place as a setting, RetinaFace decides (review B3):
+  - **no faces:** it is a setting, as if the call had said so;
+  - **faces:** it is the current picture. Its people are the ones the call declares, and its record starts from this call.
+
+  So an old picture, an assistant picture carried over, or a photo of her made outside mecha (use case 11) is never treated as an empty room.
 - **The model never writes the image model's prompt.** The compiler does, in the measured forms (§2.5, E1–E12).
-- **Equal is unchanged.** On a picture with a record, a scene field equal to its recorded value is not a change. The model's habit of restating everyone then costs nothing. This is what retires both the `cast` versus `scene.people` overlap and the refusals between them.
+- **Equal is unchanged, and all-equal is a redraw.** On a picture with a record, a scene field equal to its recorded value is not a change, so the model's habit of restating everyone costs nothing. This retires both the `cast` versus `scene.people` overlap and the refusals between them. But the record holds what was asked, not what was drawn. A call that changes nothing at all ("she's still standing", restating `doing: "sitting"`) is therefore a **redraw** of the scene at a new seed, never "no change" and never a refusal (review B4). Era-A panel re-calls were mostly this kind of second attempt: 14 of 41.
 - **One retouch, in words.** It is the only free text that addresses the picture itself. The tool writes the #408 keep form around it.
 
 ### 5.2 What each call becomes
@@ -119,9 +130,11 @@ The planner reads the call against the picture's record and picks one render. No
 | Call | Render |
 |---|---|
 | no `picture`; a whole scene | **New picture.** Library portraits, the E1–E12 compile, the call's seed or a new one. |
-| `picture` is an owner photo with no record; a scene with people | **Place on the photo.** An edit of the photo with each person's head crop and description (M1). The photo becomes the scene's place. |
-| a change to someone's pose, the camera, the place, or a removal | **Restage.** Everyone drawn afresh on the scene's place, at the base picture's seed (§2.6): an edit of the place picture with crops when the place is a picture, a new picture from the place words when it is words. |
-| a change to someone's clothes, or someone added | **Edit of the picture,** with the crops of the people it changes, in the #408 keep form. Clothes come back unchanged elsewhere 100% (correct for this case). |
+| `scene.setting` is a photo (said, or a no-record `picture` with no faces); a scene with people | **Place on the photo.** An edit of the photo with each person's head crop and description (M1). The photo becomes the scene's setting. |
+| a no-record `picture` with faces | **The current picture.** Edited as any recorded picture is, with its record started from the call (review B3). |
+| a change to someone's pose, the camera, the setting, or a removal | **Restage.** Everyone drawn afresh on the scene's setting, at the base picture's seed (§2.6): an edit of the setting photo with crops when the setting is a photo, a new picture from the setting's words when it is words. |
+| a change to someone's clothes, someone's `expression`, or someone added | **Edit of the picture,** with the crops of the people it changes, in the #408 keep form. Clothes come back unchanged elsewhere 100% (correct for this case). An expression is a face retouch, not a restage (review S2). |
+| nothing changed at all | **Redraw** of the scene at a new seed (review B4); the same render as Regenerate (§5.4). |
 | `retouch` (with or without `mask`) | **Retouch** of the picture, in the #408 keep form; masked as today. |
 
 **Budgets stay where they were measured:**
@@ -129,18 +142,24 @@ The planner reads the call against the picture's record and picks one render. No
 - a new picture carries up to `MAX_CAST` 4 portraits;
 - a scene keeps up to 8 people.
 
-A change that cannot fit is refused in the scene's own terms, naming the people. A person without a library entry costs no budget; they are drawn from words.
+A change that does not fit falls back before it refuses (review S4).
+- A restage that needs more crops than an edit holds, on a words setting, is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
+- On a photo setting there is no measured fallback yet. The portrait with the room as material (M2's "RN") was rated "okay, the most unnatural faces". That is a measurement owed before it ships, and until then it is refused in the scene's own terms, naming the people.
+- Only a scene with more than `MAX_CAST` people with faces is always refused.
+- A person without a library entry costs no budget; they are drawn from words.
 
-**Seeds:** an edit-shaped render always samples fresh (#306); a restage reuses the base picture's seed unless the call names one.
+**Seeds:** the model does not send seeds (§5.1). An edit-shaped render samples fresh (#306). A restage reuses the base picture's seed. A redraw takes a new one. The seed actually drawn is recorded, so a redraw always differs.
 
 ### 5.3 The edit panel: the harness extracts, the persona replies
 
 A panel press is the owner's instruction to the image model, not something said to the persona (`persona/edit.rs`'s own doc). So:
 
+0. **The persona's safety check runs first,** the same `safety::keyword_hit` crisis check a persona turn meets before any model (review S6). A panel press is never a door around it.
 1. **The owner's words plus the picture's record go through a one-shot extraction.** It has no tools and no history, and is constrained to the scene-change schema: `scene` fields plus an optional `retouch`, with **no `kind` discriminator** (§2.7: clothes need an obvious home, which is `people[].wearing`).
 2. **The extracted call is dispatched through `Agent::dispatch_one`** (#592). It goes through every gate a model call meets, with its own call id, inline, on the chat's job seat, with taint recorded.
 3. **The history records one fact,** a `HarnessPicture` record: "Picture X was changed into Y: <the typed change>". The card shows the new version from it.
-4. **The persona replies in a line or two,** in its own voice, with no tools offered for that reply.
+4. **The persona replies in a line or two,** in its own voice. That reply goes with `tool_choice: "none"`, not with the tools removed: removing them re-sends the whole context (12,277 tokens against 4 measured), while `tool_choice` keeps the cache (review S5). It carries no edit note, and G3's calls-as-text check covers it.
+5. **An extraction that fails is said, never dropped and never retried in a loop** (review S7). A failure is a 400, unparsable output, an empty change, or a name the library does not hold. The card says the edit was not understood and why, in a line, and nothing is drawn. G1 counts it.
 
 This removes the panel loop at its source (§2.9), because the persona never makes the call. It also removes the model's field choice for the turns where it chose wrong. Typed requests in chat ("draw us at the beach") still go through the persona model, with the one-shape schema (§5.1).
 
@@ -150,11 +169,15 @@ The same scene, a new seed, the same render plan. It goes through `dispatch_one`
 
 ### 5.5 A run makes at most one picture
 
-Whatever the path, a deferred picture already started in a run is never started again in that run. That is enforced in the agent loop on the tool's job kind, not by the model or by a refusal string. A run that has queued its picture ends cleanly:
-- the next request goes with `tool_choice: "none"`, the turn's note once, and "the picture is on its way; answer in a line";
-- a reply that is only a tool-call block is replaced and never shown.
+Two rules (review B1).
 
-This replaces `REPEAT_REFUSED`, `REPEAT_IN_FLIGHT` and the image half of the LoopGuard.
+- **Structural, in every chat.** A deferred job of a tool already started in a run is never started again in that run. The agent loop enforces this on the tool's job kind, not the model, and not a refusal string. The assistant keeps working after drawing (it went on to `image_view`, `shell` or `fs_read` in 43 runs), so its run is not ended.
+- **The clean end fires on the first repeat call** to that tool. The repeat is not run, and the next request goes with `tool_choice: "none"`, the turn's note once, and "the picture is on its way; answer in a line". That combination was measured clean 5/6. In a persona chat it fires right after the picture is queued, because nothing after the picture is the persona's job.
+- **The backstop:** a reply that is only a tool-call block is replaced, never shown.
+
+**Retired:** `REPEAT_REFUSED` and `REPEAT_IN_FLIGHT`, which never fired in any session.
+
+**LoopGuard stays.** It is generic, not an image guard. Its blind spot is that a harness refusal never counts toward its limit (`denied: out.refusal`). That is fixed in the guard for every tool.
 
 ## 6. The record
 
@@ -162,6 +185,7 @@ This replaces `REPEAT_REFUSED`, `REPEAT_IN_FLIGHT` and the image half of the Loo
   - **Persona chats** also write the persona's latest and the content-hash index, so a picture carried into another chat is found by its bytes (R3, R7).
   - **Incognito** keeps its copy in the room and never writes back (R9).
 - **What:** the scene, with origins per field. The place is the setting only (§4). Plus the picture's hash, its seed, size, render plan and the library versions used.
+- **The scene note** (`scene::note` in each persona run's notes) stays, for typed turns, which still have the persona choosing the call. Its stems and origin rules stand. With the setting recorded as the setting only, it no longer carries an old pose, and G3 covers it (review S8).
 - **The manifest** in the jail keeps only what the owner-facing doors read: the image path, the call id (orphan repair), the seed and the cast names (save-to-library), plus a pointer to the scene by hash. A run can write the jail, so nothing reads a scene back out of a manifest.
 
 ## 7. What stays
@@ -181,12 +205,13 @@ This replaces `REPEAT_REFUSED`, `REPEAT_IN_FLIGHT` and the image half of the Loo
 | `prompt`, `cast`, `extras`, `edit`, `negative_prompt`, multi `reference_images` | §3: unused, or replaced by the one shape |
 | the router that rewrites a `scene` call into an edit or prompt call (~530 lines) | the planner draws directly (§5.2) |
 | the edit cast-merge block: record merge, `left_out`, the six-way `people_from`, the waiver (~660 lines) | equal-is-unchanged plus one record (§5.1, §6) |
-| `cast_self`'s duplicate and possessive refusals (~380 lines) | `self` is a `who` value; no prose names the persona to be guarded |
-| the name guard on free prompts (~160 lines) | no free prompt; `place` and `light` are checked for a library name, and refused plainly if one is found |
+| `cast_self`'s duplicate and possessive refusals (~380 lines) | `self` is a `who` value, resolved from the persona's names as before (§4). Only the name resolution is kept. |
+| the name guard's retry skeleton and "split the scene" (~160 lines) | replaced by the plain prose-field check of §4: a name resolves in `who` and is refused elsewhere |
 | the foreign-scene placeholders and blanking | the manifest no longer carries a scene (§6) |
-| near-copy advice, strikes and library-redraw advice | restage replaces the chains they were warning about; the layout measurement stays in the record as data |
+| near-copy advice, strikes and library-redraw advice | restage replaces the chains they were warning about. The layout number stays as a fact in an edit-shaped render's result line, stated without advice (review Q1). |
 | `same_layout_as`/`original_of` | the one-hop lineage is unneeded under restage |
-| `REPEAT_REFUSED`/`REPEAT_IN_FLIGHT`; the image half of the LoopGuard | §5.5's structural rule |
+| `REPEAT_REFUSED`/`REPEAT_IN_FLIGHT` | never fired (0 in all sessions); replaced by §5.5's structural rule |
+| model-sent `seed` | 177 of 211 copied an earlier result's seed, the "same picture again" habit (§3) |
 | `demote_unknown` | a non-library `who` is drawn from words directly |
 | the panel note telling the persona which field to use | §5.3 |
 
@@ -198,11 +223,12 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 
 | Gate | Pass | Proposed threshold |
 |---|---|---|
-| **G1 typed-change correctness** (replayed real turns plus controls: clothes, camera, object, add someone, owner photo as place) | the typed change is right | ≥ 90%, and **0** refusals for shape |
+| **G1 panel extraction correctness** (replayed real panel turns plus controls: clothes, expression, camera, object, add someone, owner photo as setting) | the typed change is right; failures said on the card | ≥ 90%, and **0** refusals for shape |
+| **G1b typed turns** (replayed typed picture turns through the new schema) | the call the persona makes is right | ≥ 90%, and **0** refusals for shape |
 | **G2 the wanted call still happens** | request 1 of every replayed picture turn calls the tool; no reply narrates a picture without one | ≥ 95% |
 | **G3 one picture per run** | at most one started, structurally; 0 calls written as text; 0 empty replies | 100% |
-| **G4 renders, the owner's eye** (face-sized labelled sheets, ≥ 3 seeds each) | restage pose right, room held across restages, identity holds; words place and picture place | owner's verdict |
-| **G5 after deploy** | runaway rate and pose/camera near-copy rate on the first real chats | runaways 0; near-copy on pose/camera well below 84% |
+| **G4 renders, the owner's eye** (face-sized labelled sheets, ≥ 3 seeds each) | restage pose right, room held across restages, identity holds; words setting and photo setting | owner's verdict |
+| **G5 after deploy** (first real chats) | pose and camera changes go through restage; restages pass the owner's eye; edit-shaped renders that should move something (adding a person, placing on a photo) are not near-copies; no runaways | restage share ≥ 90%; edit-shaped near-copy ≤ 30%; runaways 0 |
 
 ## 10. Build order
 
@@ -218,8 +244,34 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 11. Questions for the owner
 
-1. **Is the scene recorded for the assistant chat too** (§6)? Recommended: yes, one path.
-2. **`light` as the one prose field beside the place** (§4)? It covers mood, framing and quoted text.
+1. **Record the scene for the assistant chat too** (§6)? Recommended: yes, one path. A picture with no record is classified by its faces (§5.1), which covers pictures carried between chats.
+2. **Prose fields: `setting`, `light`, `camera`, and per person `wearing`, `doing`, `expression`** (§4)? `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
 3. **Close #593 unmerged** (§5.4)?
-4. **The thresholds in §9**, especially G5's near-copy target.
+4. **The thresholds in §9.**
 5. **Crop or whole portrait on new pictures** (§2.1): keep the whole portrait until §8.1's crop measurement passes on the owner's sheets, as ruled for R1?
+6. **Seeds off the chat schemas** (§5.1)? Every seed reuse that helps becomes the harness's.
+
+## 12. Review and how each point is met
+
+mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions. Each is met above:
+
+| Point | Met in |
+|---|---|
+| B1: the forced end breaks the assistant; LoopGuard is generic | §5.5, split into two rules; the guard's refusal blind spot fixed for every tool |
+| B2: retiring the name guard reopens E1 through prose fields | §4, every prose field checked; `who` resolves names and the persona's names |
+| B3: a no-record picture is not an empty room | §5.1 and §5.2: the call says a photo's role; otherwise RetinaFace decides |
+| B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
+| S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
+| S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
+| S3: use case 4 dropped | §4: `who: { from: picture }` |
+| S4: budget refusals are round trips | §5.2: fall back before refusing; the photo-setting fallback is owed a measurement |
+| S5: `tool_choice` for the reply | §5.3 step 4 |
+| S6: the safety check on the panel path | §5.3 step 0 |
+| S7: extraction failure | §5.3 step 5 |
+| S8: the scene note | §6, kept for typed turns |
+| S9: `place` is wrong for a logo | §4: `setting` covers the whole subject without people |
+| Q1: near-copy as a fact | §8: the layout number stays in the result line |
+| Q2: the assistant record | §11.1, with B3's classification |
+| Q3: `light` | §4 and §11.2 |
+| Q4: the G5 metric | §9 |
+| Q5: a typed-turn arm | §9, G1b |
