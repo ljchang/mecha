@@ -3414,7 +3414,19 @@ impl PersonaChats {
         // The persona agent's own context, jailed to this chat's workspace.
         // No brief, homeostat, outbox or hooks: each is the owner's.
         let mut cx = (**agent.context()).clone();
-        cx.tools = Arc::new(agent.ctx().for_session(ps.workspace.clone()));
+        let mut tools = agent.ctx().for_session(ps.workspace.clone());
+        // This chat's scene (IMAGE-SCENE-DESIGN.md §5.1): its own copy beside
+        // its transcript, and the persona's latest and index in its folder,
+        // all outside the jail. Stamped here, never by a model.
+        let persona_dir = self.store.join(&name);
+        tools.scene = Some(mecha_core::scene::SceneSlot {
+            chat_copy: persona_dir
+                .join("sessions")
+                .join(format!("{}.scene.json", ps.session.meta.id)),
+            store: persona_dir.join("scene"),
+            chat: ps.session.meta.id.clone(),
+        });
+        cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
         }
