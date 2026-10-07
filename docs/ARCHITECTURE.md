@@ -4121,9 +4121,35 @@ agree.
 - **Vocal tags are the engine's** (`(laugh)`, `fragments.py` `EVENTS`), so
   the tidier leaves parentheses alone.
 
-The voice preamble's "no Markdown" rule predates this, when the model's raw
-text was the speech. It is now redundant for the ear, and still shapes what
-the chat shows.
+**A spoken turn's guidance is a run note, and it asks nothing about
+formatting** (`voice::VOICE_NOTE` / `VOICE_NOTE_STREAMING`, 2026-10-06). It
+says the owner is listening and what a spoken turn does (the gist of long
+tool output, a line before a slow step, the staged-draft protocol), rides
+every request of a spoken run, and is recorded as a `notes` line *ahead* of
+the owner's message, which holds only what was said. Until then the voice
+block was prepended to the owner's message at the start of a spoken stretch
+and stored there, with a "no Markdown" rule from when the model's raw text
+was the speech; the tidier made that rule redundant, and dropping it means a
+reply is written one way whether it is read or heard. `VOICE_BLOCK` stays
+for the standalone `voice-serve`'s system prompt and for stripping old
+transcripts (`serve::chat::strip_voice_preamble`).
+
+- **It rides the tail, and that has a price on llama-server.** A spoken run's
+  tool rounds each re-read the previous step plus the note (~250 tokens),
+  the same mechanism #577 measured for the calendar reference: about
+  +0.25–0.40 s per *tool round* at the median, nothing on a spoken reply
+  that calls no tool. It is not on the first message as the calendar is,
+  because it comes and goes as a chat switches between typed and spoken
+  turns, and a head that changes breaks the whole cached prefix. The voice
+  block it replaces sat inside the owner's stored message, append-only, so
+  this is a cost the spoken path did not pay before.
+- **The note is what marks a turn as spoken on disk.** The block inside the
+  message used to, and `scripts/check-private.py` reads which turns of a
+  chat were spoken from the record; it now treats a voice-note `notes` line
+  as marking the owner turn after it, and scans any session holding one.
+  Recorded ahead of the turn for that reason, as a persona chat's notes are.
+- **Persona calls keep their own note** (`persona::call::note`), which still
+  carries a formatting clause; that file is the persona lane's.
 
 ## The voice director
 
@@ -7320,8 +7346,10 @@ when touching it:
   file "at most" — never "none" or a zero. Two things are left out by rule
   rather than said: `/slots` for a provider that is not a local
   llama-server, and the context already used when no prompt has been
-  measured. **The slot is `date_context`'s**: `Agent::fold_situation_brief`
-  runs beside `fold_calendar_reference` at each of its three sites (top of
+  measured. **The slot is the one the calendar reference had before it
+  became a run note** (2026-10-06, §Timezones; the brief stays folded,
+  because a large note at the tail of every request outweighs the owner's
+  ask): `Agent::fold_situation_brief` runs at three sites (top of
   the turn, after compaction, and the overflow-recovery retry), appending
   through `append_user_text` to the outgoing user message — the run's own
   first user turn at the start, never a second user message and never the
@@ -7343,7 +7371,7 @@ when touching it:
   `GoalRef::from_str`'s rule — the graph server mints task ids, which reach
   a permit and a marker unparsed, and a newline would have forged a line
   in the harness's block (review of #309); the record keeps them verbatim. **Across a compaction cut** the
-  brief is the calendar reference's twin: `compact::rebuild` strips it from
+  brief is handled as the calendar reference was: `compact::rebuild` strips it from
   the head, the summariser's input drops it outright (a summary asked for
   "the specific values" would copy its counts into the head as prose no
   stem can strip), and the fold after the cut puts the run's brief back in
@@ -7355,8 +7383,8 @@ when touching it:
   without a brief there the lever's two arms were one condition; it assembles
   when the run is recorded or delivery is on, with the interactive board
   deadline at a terminal. The artifact-repeat probe refuses a recording
-  whose transcript holds a brief (`mismatch::validate_transcript` — asked of
-  the transcript, because a recording from before the lever cannot name it
+  whose transcript or recorded notes hold a brief (`mismatch::validate_transcript` — asked of
+  the record, because a recording from before the lever cannot name it
   in `levers_off`, and requiring that refused every stored case; review of
   #309), and runs with delivery off and `cx.brief` cleared, structurally.
   Seat counts ("1 of 3 free") are a numeric resource fact beside the budget:
@@ -7404,8 +7432,8 @@ when touching it:
   the record skips the line and loads the owner's turn without the folded
   harness text, which its own loop folds again; a block this build cannot
   read costs that block; an extension naming any other message is skipped
-  with a warning. The calendar reference's fold rides the same path (see
-  §Timezones). *Deferred:* a brief on the TUI, `chat`, Slack and unhosted
+  with a warning. The calendar reference's fold rode the same path until it
+  became a run note (§Timezones). *Deferred:* a brief on the TUI, `chat`, Slack and unhosted
   voice turns.
 - **A task run's brief names its previous attempts, and quotes only the
   owner (M5, built as 3a-2 under R42).** `brief::attempts` is the brief's
@@ -9574,17 +9602,37 @@ value is worse than none, because the derived threshold trusts it.
 
 ## Timezones
 
-**The clock is asked per turn and never stored.** `Clock` is a trait object on
-the `Agent` (`clock.rs`), and the loop folds `date_context::render`'s reading
-into the outgoing user message whenever the local date it states has stopped
-being true. The decision is an equality check against the rendered block —
-identical bytes for every turn on one local day — so there is no refresh
-cadence to get wrong, no per-conversation field to forget to reset on resume,
-and a compaction that cuts the block away re-acquires it on the next turn. The
-reading rides in the last message block, which the moving `cache_control`
-breakpoint re-pays every request anyway, so freshness costs nothing and the
-tools→system prefix is untouched. `date_context::GUIDANCE` is the standing
-half and names no date.
+**The clock is asked per request and the reading is never stored.** `Clock`
+is a trait object on the `Agent` (`clock.rs`), and `date_context::render`'s
+reading is a note (`Agent::calendar_note`) that `wire` attaches to the
+**first** message of every request (`message::attach_head_notes`,
+`agent::RequestNotes::head`), so each request carries exactly the current
+date and the history carries none. It is ~0.5 KB and identical bytes for
+every request on one local day, so on the first message it sits inside the
+cached prefix: within a day each request is a byte prefix of the next and no
+tool round re-reads it, on llama-server as on Anthropic; the date changing is
+one re-read a day. At the *tail* of each request, where #577 first put it, it
+broke llama-server's prefix before the previous step, and each tool round
+re-read that step with it — measured +0.23–0.34 s per tool round at the
+median, +0.67–0.98 s at the 90th percentile — so the owner ruled it onto the
+first message (2026-10-06). `date_context::GUIDANCE` is the standing half,
+names no date, and tells the model the reference at the start of the
+conversation is the current one and any other is stale — an old chat holds
+folded references *later* in its history. The run's reading is recorded as a
+`notes` line (`Conversation::harness_notes`, written by `Session::record_run`
+for every door), which is where the grounded judge
+(`eval::grounding_evidence`) and `Transcript::notes` find it. After a
+compaction the first message is the summary head, and the note rides there.
+
+Until 2026-10-06 the reading was *folded* into the owner's message once per
+local day and kept, so a long chat carried every day it had lived through
+and the model read them all; the owner asked for the current reading alone.
+Old transcripts still hold folded references, and every reader below still
+recognises them by `REFERENCE_STEM`. **The situation brief was not moved**:
+a large note at the end of every request is the most salient text in it,
+and on persona chats a 5.4 KB note there cost tool calls the owner had asked
+for (measured 2026-10-06), so the brief keeps its fold (the goal system's
+brief bullets).
 
 It used to be one string in the system prompt, rendered once by
 `prepare_tools` and frozen into `Agent::system`. Correct for a one-shot, wrong
@@ -9613,11 +9661,12 @@ multi-day `mecha serve` session accumulated a transcript copy per day, and
 `Record::Taint` covered the whole rewritten head with the run's cumulative
 taint, and a clean early correction in a session that later read a hostile
 page classified untrusted and was structurally excluded from `mecha learn`.
-Since 3a-3 the fold is a `Record::Extend` of the message it folded into
-(built for the situation brief, which folds far more often; the goal
-system's brief bullets), so it keeps the file append-only and the earlier
-checkpoints standing. A rewrite now means what it says: compaction,
-eviction, thinning, a rollback.
+From 3a-3 the fold was a `Record::Extend` of the message it folded into
+(built for the situation brief, which still folds that way; the goal
+system's brief bullets), which kept the file append-only and the earlier
+checkpoints standing; since 2026-10-06 the calendar reference folds into
+nothing. A rewrite means what it says: compaction, eviction, thinning, a
+rollback.
 
 **The reference never outranks the owner.** `GUIDANCE` concedes the date to
 the user on sight. The wording it replaced — "do not attach a conflicting
@@ -9722,10 +9771,11 @@ The things that decide the design:
   old block is the next thing to build if a session ever reports it.
 - **Harness readings are re-stated after a cut, never summarised.** The
   calendar reference and the situation brief (3a) are the harness's readings,
-  not events in the stretch: the summariser's input drops both outright,
-  `rebuild` strips both from the head, and the loop's folds after the cut put
-  the current ones back in the tail (§Timezones; the goal system's brief
-  bullets). A summariser handed either copies its values into the head as
+  not events in the stretch: the summariser's input drops both outright and
+  `rebuild` strips both from the head. The brief's fold after the cut puts
+  the current one back in the tail; the calendar reference is a run note on
+  every request since 2026-10-06, so it needs no putting back (§Timezones;
+  the goal system's brief bullets). A summariser handed either copies its values into the head as
   prose no stem can strip.
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold

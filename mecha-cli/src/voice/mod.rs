@@ -71,9 +71,24 @@ const MAX_BODY_BYTES: usize = 8 << 20;
 /// cannot drift apart on any of them.
 macro_rules! voice_rules {
     () => {
-        "Never use markdown, bullet lists, \
+        concat!(
+            "Never use markdown, bullet lists, \
 headings, tables or code blocks; write numbers, dates and times as they \
-are spoken. When a tool \
+are spoken. ",
+            voice_conduct!()
+        )
+    };
+}
+
+/// What a spoken turn does beyond the words — the gist of long tool output,
+/// a line before a slow step, and the staged-draft protocol — without the
+/// formatting rule [`voice_rules`] adds for the system-prompt block. The run
+/// note ([`voice_note`]) carries this alone: the call's speech path tidies
+/// formatting away (`speech.rs`), so a reply is written as the chat writes
+/// it (the owner's ask, 2026-10-06).
+macro_rules! voice_conduct {
+    () => {
+        "When a tool \
 returns something long, say the gist in a sentence or two instead of \
 reciting it. Before a slow step, say one short line about what you are \
 doing. When a message, email or calendar change was staged for review \
@@ -126,6 +141,49 @@ sentences as long as the thought needs, and as much as the conversation \
 calls for. ",
     voice_rules!(),
 );
+
+/// A spoken turn's guidance, as a run note (`RunContext::notes`): sent with
+/// every request of a spoken run and never written into the owner's message
+/// (2026-10-06). It used to be [`VOICE_BLOCK`] prepended to the first spoken
+/// turn of a stretch, where it stayed in the history for good; and it asked
+/// for no Markdown because the model's text was the speech. The speech path
+/// tidies formatting now (`speech.rs`), so the note says only that the owner
+/// is listening and what a spoken turn does: one chat, written one way.
+///
+/// Whole-sentence engine: the short-first-sentence rule stays, as the
+/// latency control [`VOICE_BLOCK`] explains.
+///
+/// Its opening, "(From the harness: this turn is spoken.", is copied by hand
+/// into `scripts/check-private.py` as `VOICE_NOTE_STEM`, which marks a
+/// spoken turn by it: reword one and reword the other
+/// (`a_spoken_run_carries_the_note_its_engine_needs` pins this side).
+pub(crate) const VOICE_NOTE: &str = concat!(
+    "(From the harness: this turn is spoken. A synthetic voice reads your \
+reply to the owner, who hears it rather than sees it. Keep sentences short \
+and conversational, the first just a few words, since speech starts once \
+it ends. Say numbers, dates and times in words. ",
+    voice_conduct!(),
+    " Stay brief unless asked to go deeper.)"
+);
+
+/// [`VOICE_NOTE`] for an engine that streams: no length rules (the owner's
+/// ruling of 2026-10-03, [`VOICE_BLOCK_STREAMING`]'s).
+pub(crate) const VOICE_NOTE_STREAMING: &str = concat!(
+    "(From the harness: this turn is spoken. A synthetic voice reads your \
+reply to the owner, who hears it rather than sees it. Talk the way you \
+would out loud. Say numbers, dates and times in words. ",
+    voice_conduct!(),
+    ")"
+);
+
+/// The note for this call's engine.
+pub(crate) fn voice_note(tts_streams: bool) -> &'static str {
+    if tts_streams {
+        VOICE_NOTE_STREAMING
+    } else {
+        VOICE_NOTE
+    }
+}
 
 /// Appended to the staged-draft tool result on a spoken turn
 /// (`ToolCtx::review_hint`), in place of the sentence naming `mecha outbox`.
@@ -218,32 +276,6 @@ pub trait SessionHost: Send + Sync {
     /// directing state (an incognito chat's words among it) does not outlive
     /// the chat. Must not barge in or start anything: a read.
     async fn holds(&self, key: &str) -> bool;
-}
-
-/// Open a spoken turn with the D10 block when the conversation has not just
-/// been spoken into — at the start of a call, and again after any typed
-/// turn, because the model has been writing for a reader since.
-///
-/// One rule, two callers: a facade slot is spoken-only, so "the previous
-/// turn was spoken" is exactly "the conversation is not empty"; a hosted
-/// conversation carries the flag because typed and spoken turns share it.
-/// Prepending costs nothing in cache terms — the transcript is append-only,
-/// so the block lands at the end and every earlier byte still matches.
-///
-/// `tts_streams` picks the block: [`VOICE_BLOCK_STREAMING`] for an engine
-/// that streams, [`VOICE_BLOCK`] otherwise.
-pub(crate) fn open_spoken_turn(
-    text: &str,
-    previous_turn_was_spoken: bool,
-    tts_streams: bool,
-) -> String {
-    if previous_turn_was_spoken {
-        text.to_string()
-    } else if tts_streams {
-        format!("{VOICE_BLOCK_STREAMING}\n\n{text}")
-    } else {
-        format!("{VOICE_BLOCK}\n\n{text}")
-    }
 }
 
 /// Words as an echo comparison sees them: lowercase, punctuation gone.
@@ -787,7 +819,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     // the system prompt, fixed when the process starts, and a per-call
     // engine choice there would change the system prompt's bytes from call
     // to call — the whole cached prefix. The mounted facade, which is what
-    // runs, chooses per call in the spoken turn instead (`open_spoken_turn`).
+    // runs, chooses per call in a run note instead (`voice_note`).
     opts.system_extra = Some(VOICE_BLOCK.to_string());
     if opts.workspace.is_none() {
         // The stable producer dir (D9): Tuesday's sketch is an ordinary
@@ -2334,14 +2366,22 @@ async fn completion(
         }
     }
 
-    // On a shared agent the D10 block cannot ride the system prompt, so a
-    // spoken stretch opens with it. A facade slot is spoken-only, so "the
-    // previous turn was spoken" is exactly "this conversation is not new".
-    let text = if shared.mount.inject_voice_block {
-        open_spoken_turn(&text, !slot.convo.is_empty(), head.tts_streams)
-    } else {
-        text
-    };
+    // On a shared agent the voice guidance cannot ride the system prompt,
+    // so every spoken run carries it as a run note, never in the owner's
+    // message (`voice_note`, 2026-10-06).
+    if shared.mount.inject_voice_block {
+        let note = voice_note(head.tts_streams).to_string();
+        // Best-effort, as every write on this surface is (a facade slot's
+        // session is `kind: voice`, which the privacy guard reads whole), but
+        // never silent: the note is what marks a spoken turn on disk (review
+        // of #577).
+        if let Err(e) = slot.session.append(&Record::Notes {
+            notes: vec![note.clone()],
+        }) {
+            tracing::warn!("a spoken turn's note was not recorded: {e:#}");
+        }
+        cx.notes = Arc::from(vec![note]);
+    }
     // Folded, not pushed, when the tail is already a user message — a
     // barge-in mid-tool-turn leaves the transcript ending on the user
     // message carrying tool results, and pushing there makes two user
@@ -2810,13 +2850,32 @@ mod tests {
         }
     }
 
+    /// A spoken run carries the note its engine needs (`voice_note`), and
+    /// neither note asks for anything about formatting: the speech path
+    /// tidies it (`speech.rs`), so a reply is written as the chat writes it
+    /// (2026-10-06). What a spoken turn *does* — the gist, the line before a
+    /// slow step, the staged-draft protocol — is kept, word for word.
     #[test]
-    fn a_spoken_stretch_opens_with_the_block_its_engine_needs() {
-        let whole = open_spoken_turn("hello", false, false);
-        let streaming = open_spoken_turn("hello", false, true);
-        assert_eq!(whole, format!("{VOICE_BLOCK}\n\nhello"));
-        assert_eq!(streaming, format!("{VOICE_BLOCK_STREAMING}\n\nhello"));
-        assert_eq!(open_spoken_turn("hello", true, true), "hello");
+    fn a_spoken_run_carries_the_note_its_engine_needs() {
+        assert_eq!(voice_note(false), VOICE_NOTE);
+        assert_eq!(voice_note(true), VOICE_NOTE_STREAMING);
+        for note in [VOICE_NOTE, VOICE_NOTE_STREAMING] {
+            assert!(note.starts_with("(From the harness: this turn is spoken."));
+            for gone in ["markdown", "bullet", "headings", "tables", "code blocks"] {
+                assert!(!note.contains(gone), "still asks about {gone:?}: {note}");
+            }
+            for kept in [
+                "in words",
+                "say the gist",
+                "Before a slow step",
+                "\"That is drafted.\"",
+                "say yes once it has been read back",
+            ] {
+                assert!(note.contains(kept), "dropped {kept:?}");
+            }
+        }
+        assert!(VOICE_NOTE.contains("the first just a few words"));
+        assert!(!VOICE_NOTE_STREAMING.contains("a few words"));
     }
 
     #[test]
@@ -3043,22 +3102,6 @@ mod tests {
         for not in ["0", "true", "yes", "", "11", "1 please"] {
             assert!(!with(not), "{not:?} was read as a claim");
         }
-    }
-
-    #[test]
-    fn the_voice_block_opens_a_spoken_stretch_and_nothing_else() {
-        // The rule is "the block accompanies a switch into speech": once at
-        // the start of a call, again after any typed turn, and never on the
-        // second consecutive spoken turn — where it would be pure repetition
-        // in a prompt that already carries it.
-        let opened = open_spoken_turn("what is on my calendar", false, false);
-        assert!(opened.starts_with(VOICE_BLOCK));
-        assert!(opened.ends_with("what is on my calendar"));
-        assert_eq!(
-            open_spoken_turn("and tomorrow?", true, false),
-            "and tomorrow?",
-            "a spoken turn following a spoken turn must not re-send the block"
-        );
     }
 
     /// FNV-1a: a digest that is the same on every toolchain, which

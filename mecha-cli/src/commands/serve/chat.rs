@@ -194,13 +194,6 @@ struct WebSession {
     /// the transcript, and re-earning it once is cheaper than another record
     /// that can disagree with the one beside it.
     titled_at: usize,
-    /// Was the last turn spoken? Since D3 typed and spoken turns share one
-    /// conversation, so "does this turn need the voice block" is no longer
-    /// answerable from the messages — a spoken turn and a typed one look
-    /// identical once recorded. False on create and on resume: injecting
-    /// one extra copy of the block costs a few hundred cached tokens,
-    /// where omitting it costs a markdown reply read aloud.
-    last_turn_spoken: bool,
     /// Which binding (`follow::Bound::generation`) this conversation's record
     /// last named. A turn on another one records a fresh `RunConfig` first,
     /// so a transcript that crossed a switch says which model answered each
@@ -440,7 +433,6 @@ impl ChatState {
                 last_usage: Arc::new(StdMutex::new(None)),
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions,
-                last_turn_spoken: false,
                 titled_at: 0,
                 // Empty on purpose: an incognito chat's withheld tools are
                 // re-derived per turn from the binding it runs on
@@ -1628,7 +1620,6 @@ fn ensure_session_as<'a>(
                 last_usage: Arc::new(StdMutex::new(None)),
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions,
-                last_turn_spoken: false,
                 titled_at: 0,
                 withheld: Arc::from(init.withheld),
                 task: init.task,
@@ -2436,15 +2427,33 @@ fn begin_turn(
         text,
     );
 
-    let text = if opts.spoken {
-        crate::voice::open_spoken_turn(text, ws.last_turn_spoken, opts.tts_streams)
-    } else {
-        text.to_string()
-    };
+    // A spoken turn's guidance rides as a run note (`voice::voice_note`),
+    // never in the owner's message: what was said is what is stored
+    // (2026-10-06). Recorded **ahead** of the turn, as a persona chat's
+    // notes are, so the record marks the owner's message that follows as
+    // spoken: the voice block inside the message used to say so, and
+    // `scripts/check-private.py` reads which turns of a chat were spoken
+    // from it.
+    let text = text.to_string();
 
     let Some(mut conversation) = ws.conversation.take() else {
         return Err(TurnError::Held);
     };
+
+    if opts.spoken {
+        if let Some(session) = ws.session.kept() {
+            // Fail-closed, as the message's own record is: the note is what
+            // marks the owner's turn as spoken on disk, and the privacy
+            // guard reads which turns were spoken from it, so a turn whose
+            // note did not land would be stored as if typed.
+            if let Err(e) = session.append(&Record::Notes {
+                notes: vec![crate::voice::voice_note(opts.tts_streams).to_string()],
+            }) {
+                ws.conversation = Some(conversation);
+                return Err(TurnError::Failed(format!("recording: {e:#}")));
+            }
+        }
+    }
 
     // Folded, not pushed, when the tail is already a user message — a
     // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
@@ -2536,7 +2545,6 @@ fn begin_turn(
             )));
         }
     };
-    ws.last_turn_spoken = opts.spoken;
     if let Some(room) = ws.session.room() {
         room.touch();
     }
@@ -2544,11 +2552,7 @@ fn begin_turn(
     // Every observer sees accepted input. A typed request id lets its sender
     // reconcile this event with the POST response; voice has no local echo.
     let _ = ws.events.send(WireEvent::User {
-        text: if opts.spoken {
-            strip_voice_preamble(&text).to_string()
-        } else {
-            text.clone()
-        },
+        text: text.clone(),
         spoken: opts.spoken,
         request_id: opts.request_id,
     });
@@ -2601,6 +2605,9 @@ fn begin_turn(
     // Per-run context on the shared agent: jail, approver, budget, cancel,
     // steering, and an outbox route stamped with this session's id.
     let mut cx = (**bound.agent.context()).clone();
+    if opts.spoken {
+        cx.notes = Arc::from(vec![crate::voice::voice_note(opts.tts_streams).to_string()]);
+    }
     cx.tools = Arc::new(ToolCtx {
         // A spoken turn's staged drafts are reviewed by ear, and the model
         // must be told so rather than told about a command line — the
@@ -3956,7 +3963,6 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             last_usage: Arc::new(StdMutex::new(None)),
             mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
             questions,
-            last_turn_spoken: false,
             titled_at: 0,
             // **A resumed delegation is still a delegation.** D6 is a
             // property of the conversation, not of how it was opened, so
@@ -4192,7 +4198,12 @@ mod tests {
 
     #[test]
     fn a_spoken_turn_reaches_the_titler_as_what_was_said() {
-        let spoken = crate::voice::open_spoken_turn("what did I promise Hollis?", false, false);
+        // A spoken turn as recorded before 2026-10-06, with the block
+        // prepended; old transcripts hold these.
+        let spoken = format!(
+            "{}\n\nwhat did I promise Hollis?",
+            crate::voice::VOICE_BLOCK
+        );
         assert!(
             spoken.starts_with(crate::voice::VOICE_BLOCK),
             "fixture is not decorated"
@@ -4629,19 +4640,21 @@ mod wire_tests {
     }
 
     #[test]
-    fn what_a_spoken_turn_opens_with_is_exactly_what_display_strips() {
-        // Two modules, one convention: `voice::open_spoken_turn` writes the
-        // preamble and `strip_voice_preamble` takes it off. Since D3 they
-        // meet in one conversation, so a drift between them would render
-        // harness plumbing to the owner as their own words — or, worse,
-        // eat the first paragraph of what they actually said.
-        let opened = crate::voice::open_spoken_turn("what is on my calendar", false, false);
+    fn an_old_spoken_turns_preamble_is_exactly_what_display_strips() {
+        // Until 2026-10-06 a spoken turn was stored with the voice block
+        // prepended, and old transcripts still hold them: display strips
+        // exactly that shape, or harness plumbing renders as the owner's
+        // words — or the first paragraph of what they said is eaten.
+        let opened = format!("{}\n\nwhat is on my calendar", crate::voice::VOICE_BLOCK);
         assert_eq!(strip_voice_preamble(&opened), "what is on my calendar");
-        // And a turn that carries no preamble is passed through untouched.
-        let plain = crate::voice::open_spoken_turn("and tomorrow?", true, false);
-        assert_eq!(strip_voice_preamble(&plain), "and tomorrow?");
+        // And a turn that carries no preamble — every turn since — is passed
+        // through untouched.
+        assert_eq!(strip_voice_preamble("and tomorrow?"), "and tomorrow?");
         // The streaming engine's block is stripped exactly as well.
-        let streamed = crate::voice::open_spoken_turn("what is on my calendar", false, true);
+        let streamed = format!(
+            "{}\n\nwhat is on my calendar",
+            crate::voice::VOICE_BLOCK_STREAMING
+        );
         assert_eq!(strip_voice_preamble(&streamed), "what is on my calendar");
     }
 
@@ -4653,7 +4666,8 @@ mod wire_tests {
             tool_provenance: Default::default(),
             role: Role::User,
             content: vec![Block::Text {
-                text: crate::voice::open_spoken_turn("book the room", false, false),
+                // As stored before 2026-10-06.
+                text: format!("{}\n\nbook the room", crate::voice::VOICE_BLOCK),
             }],
         }];
         assert_eq!(
@@ -5533,7 +5547,6 @@ mod held_tests {
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions: Default::default(),
                 titled_at: 0,
-                last_turn_spoken: false,
                 recorded_generation: 1,
             },
         )]);
@@ -5563,6 +5576,94 @@ mod held_tests {
             1,
             "and the switch no longer sees it"
         );
+    }
+
+    /// A spoken turn sends its guidance as a run note and stores only what
+    /// was said (2026-10-06): the request ends on the voice note, the
+    /// recorded turn is the owner's words alone, and the session file keeps
+    /// the note as a `notes` line. Before, the voice block was prepended to
+    /// the owner's message and stored there for good.
+    #[tokio::test]
+    async fn a_spoken_turn_sends_the_voice_note_and_stores_only_the_words() {
+        let home = crate::testenv::HomeGuard::new("spoken-note");
+        let (chat, seen) = test_chat_seeing(false);
+        let workspace = home.dir.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = Arc::new(
+            Session::create(
+                &workspace,
+                SessionMeta {
+                    id: "spoken-note".into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "test".into(),
+                    model: "test".into(),
+                    workspace: workspace.clone(),
+                    title: None,
+                    kind: Some(mecha_core::session::SessionKind::Test),
+                },
+            )
+            .unwrap(),
+        );
+        let (events, _) = broadcast::channel(16);
+        let mut sessions = HashMap::from([(
+            "k".to_string(),
+            WebSession {
+                listen: None,
+                conversation: Some(mecha_core::agent::Conversation::new()),
+                session: Recording::Kept(Arc::clone(&session)),
+                workspace,
+                live: None,
+                events,
+                last_usage: Arc::default(),
+                withheld: Arc::from([]),
+                task: None,
+                mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                questions: Default::default(),
+                titled_at: 0,
+                recorded_generation: 0,
+            },
+        )]);
+        begin_turn(
+            &chat,
+            &chat.follower.current(),
+            &mut None,
+            &mut sessions,
+            "k",
+            "what is on today",
+            TurnOpts {
+                request_id: None,
+                spoken: true,
+                approve_all: false,
+                unlogged: false,
+                tts_streams: true,
+                images: Vec::new(),
+            },
+        )
+        .unwrap_or_else(|_| panic!("the turn did not start"));
+        let req = 'asked: {
+            for _ in 0..200 {
+                if let Some(req) = seen.lock().unwrap().first().cloned() {
+                    break 'asked req;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("the model was never asked");
+        };
+        let last = req.messages.last().unwrap();
+        assert!(
+            matches!(last.content.last(), Some(Block::Text { text })
+                if text == crate::voice::VOICE_NOTE_STREAMING),
+            "the request does not end on the voice note: {last:?}"
+        );
+        let file = std::fs::read_to_string(&session.path).unwrap();
+        assert!(file.contains(r#""record":"notes""#), "{file}");
+        let (_, convo) = Session::load(&session.path).unwrap();
+        let first = convo
+            .messages
+            .iter()
+            .find(|m| m.role == Role::User)
+            .expect("the owner's turn was recorded");
+        assert_eq!(first.text(), "what is on today", "{first:?}");
     }
 
     /// An unvouched call is refused before anything else `speak` does — the
@@ -5620,7 +5721,6 @@ mod held_tests {
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions: Default::default(),
                 titled_at: 0,
-                last_turn_spoken: false,
                 recorded_generation: 1,
             },
         )]);
@@ -5746,7 +5846,6 @@ mod workflow_recording_tests {
                     mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                     questions: Default::default(),
                     titled_at: 0,
-                    last_turn_spoken: false,
                     recorded_generation: 1,
                 },
             )]);
@@ -5790,10 +5889,6 @@ mod workflow_recording_tests {
                     Err(broadcast::error::TryRecvError::Empty)
                 ),
                 "a refused turn must not broadcast accepted input"
-            );
-            assert!(
-                !ws.last_turn_spoken,
-                "a rejected start must not alter voice continuity"
             );
             let conversation = ws
                 .conversation

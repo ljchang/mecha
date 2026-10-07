@@ -273,12 +273,13 @@ fn recorded_brief(home: &Path, prefix: &str) -> SituationBrief {
         .unwrap_or_else(|| panic!("the `{prefix}` run recorded no brief"))
 }
 
-/// How the door recorded the run (3a-3, R35): the harness text the loop
-/// folded into the owner's already-recorded turn — the calendar reference,
-/// and the brief when it is delivered — lands as an extension, never a
-/// whole-transcript rewrite; and the run's taint checkpoint has `private`
-/// armed exactly when the brief was delivered (the fixture model calls no
-/// tool, so nothing else can arm it).
+/// How the door recorded the run (3a-3, R35): the brief, when it is
+/// delivered, is folded into the owner's already-recorded turn and lands as
+/// an extension, never a whole-transcript rewrite; the calendar reference is
+/// a run note since 2026-10-06, recorded as a `notes` line and folded into
+/// nothing; and the run's taint checkpoint has `private` armed exactly when
+/// the brief was delivered (the fixture model calls no tool, so nothing
+/// else can arm it).
 fn recorded_shape(home: &Path, prefix: &str, deliver: bool, what: &str) {
     let listed = Session::list(&home.join("sessions")).unwrap();
     let (_, path) = listed
@@ -299,7 +300,15 @@ fn recorded_shape(home: &Path, prefix: &str, deliver: bool, what: &str) {
         !kinds.contains(&"rewrite"),
         "{what}: a fold rewrote the transcript: {kinds:?}"
     );
-    assert!(kinds.contains(&"extend"), "{what}: {kinds:?}");
+    assert_eq!(
+        kinds.contains(&"extend"),
+        deliver,
+        "{what}: only a delivered brief is folded: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"notes"),
+        "{what}: the calendar reference went unrecorded: {kinds:?}"
+    );
     let taint = records
         .iter()
         .rev()
