@@ -3414,7 +3414,19 @@ impl PersonaChats {
         // The persona agent's own context, jailed to this chat's workspace.
         // No brief, homeostat, outbox or hooks: each is the owner's.
         let mut cx = (**agent.context()).clone();
-        cx.tools = Arc::new(agent.ctx().for_session(ps.workspace.clone()));
+        let mut tools = agent.ctx().for_session(ps.workspace.clone());
+        // This chat's scene (IMAGE-SCENE-DESIGN.md §5.1): its own copy beside
+        // its transcript, and the persona's latest and index in its folder,
+        // all outside the jail. Stamped here, never by a model.
+        let persona_dir = self.store.join(&name);
+        tools.scene = Some(mecha_core::scene::SceneSlot {
+            chat_copy: persona_dir
+                .join("sessions")
+                .join(format!("{}.scene.json", ps.session.meta.id)),
+            store: persona_dir.join("scene"),
+            chat: ps.session.meta.id.clone(),
+        });
+        cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
         }
@@ -10790,5 +10802,50 @@ mod tests {
             "the director ran and its line is spoken"
         );
         assert_eq!(w.assistant_seen.lock().unwrap().len(), 1);
+    }
+
+    /// R9 (IMAGE-SCENE-DESIGN.md §9): only the persona chat stamps a scene
+    /// slot, so the assistant's chats, incognito included, never write one
+    /// back. Read from the source, as `every_served_session_builds_its_turn_
+    /// context_through_for_session` is, because nothing at run time says
+    /// which front end built a context (review of #589, pass 6).
+    #[test]
+    fn only_the_persona_chat_stamps_a_scene_slot() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+        walk(&root.join("../mecha-core/src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        let mut stamps = Vec::new();
+        for f in files {
+            let src = std::fs::read_to_string(&f).unwrap();
+            let code = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(&src);
+            for line in code.lines().map(str::trim) {
+                if line.starts_with("//") {
+                    continue;
+                }
+                let builds = line.contains("SceneSlot {")
+                    && !line.starts_with("pub struct")
+                    && !line.starts_with("impl");
+                if builds || line.contains(".scene = Some(") {
+                    stamps.push(f.file_name().unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        assert_eq!(
+            stamps,
+            ["persona_chat.rs"],
+            "a scene slot is stamped elsewhere"
+        );
     }
 }
