@@ -3254,6 +3254,10 @@ impl Tool for ImageGenerate {
         };
         let mut inherited: std::collections::BTreeSet<String> = Default::default();
         let mut record: Vec<crate::imagelib::CastMember> = Vec::new();
+        // Whether a recordless picture was looked up in the scene index, and
+        // what it found: said in `identity`, so a miss is never silent
+        // (§5.1).
+        let mut scene_lookup: Option<&str> = None;
         // The record is read whether or not the call names anyone: the call's
         // `cast` adds to the people the picture records and never erases
         // them, so a retry that names one person cannot drop the others
@@ -3293,20 +3297,30 @@ impl Tool for ImageGenerate {
             // carried as a record's are (use case 10).
             let recorded = if recorded.is_empty() {
                 match (&ctx.scene, &canvas_hash) {
-                    (Some(slot), Some(h)) => slot
-                        .lookup_hash(h)
-                        .map(|scene| {
-                            scene
-                                .people
-                                .into_iter()
-                                .map(|p| crate::imagelib::CastMember {
-                                    name: p.name,
-                                    wearing: p.wearing,
-                                    doing: p.doing,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    (Some(slot), Some(h)) => {
+                        let found = slot.lookup_hash(h);
+                        scene_lookup = Some(if found.is_some() { "found" } else { "none" });
+                        // Capped as a manifest's are: the same rule for both
+                        // sources (review of #589).
+                        let cap = |s: String| {
+                            s.chars()
+                                .take(crate::imagelib::MAX_CAST_FIELD)
+                                .collect::<String>()
+                        };
+                        found
+                            .map(|scene| {
+                                scene
+                                    .people
+                                    .into_iter()
+                                    .map(|p| crate::imagelib::CastMember {
+                                        name: p.name,
+                                        wearing: cap(p.wearing),
+                                        doing: cap(p.doing),
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    }
                     _ => recorded,
                 }
             } else {
@@ -3929,7 +3943,8 @@ impl Tool for ImageGenerate {
                     "wearing": m.wearing.trim(), "doing": m.doing.trim()}));
                 trimmed.push(capitalized(&name));
             }
-            identity = json!({"people": people, "from": people_from, "skipped": skipped});
+            identity = json!({"people": people, "from": people_from, "skipped": skipped,
+                "scene_lookup": scene_lookup});
         }
         // A trim is said where the model reads it, not only in the manifest
         // (review of #584, pass 10): the picture is still drawn, from the
@@ -4212,7 +4227,17 @@ impl Tool for ImageGenerate {
             // here, after the picture is saved, so a cancelled or failed
             // render never advances it. A new picture defines it afresh; an
             // edit changes what it declared and keeps the rest.
+            // An edit advances its canvas's own scene, found by the canvas's
+            // bytes, never the chat's latest: editing an older picture must
+            // not carry the latest picture's place and camera (review of
+            // #589). A new picture starts from the chat's scene and replaces
+            // it whole.
             let landed = ctx.scene.as_ref().map(|slot| {
+                let base = if is_edit {
+                    canvas_hash.as_deref().and_then(|h| slot.lookup_hash(h))
+                } else {
+                    slot.current()
+                };
                 let triple = |v: &Value| {
                     let f = |k: &str| {
                         v.get(k)
@@ -4267,7 +4292,7 @@ impl Tool for ImageGenerate {
                     }
                 };
                 let scene = crate::scene::Scene::advance(
-                    slot.current().as_ref(),
+                    base.as_ref(),
                     change,
                     crate::scene::Origin::of(ctx.taint.as_ref()),
                     &slot.chat,
@@ -4323,6 +4348,11 @@ impl Tool for ImageGenerate {
                     "vae": me.cfg.vae,
                 },
             });
+            let manifest_note = match write_manifest(ctx, &path, &manifest).await {
+                Ok(()) => String::new(),
+                Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
+            };
+            // After the manifest, so a picture whose record lands carries it.
             // Into the persona's store, outside the jail: the chat's copy, the
             // latest and the index. A store that cannot be written costs the
             // record, never the picture, and is said in the log.
@@ -4333,10 +4363,6 @@ impl Tool for ImageGenerate {
                     tracing::warn!("the scene for {picture} was not recorded: {wrote:?}");
                 }
             }
-            let manifest_note = match write_manifest(ctx, &path, &manifest).await {
-                Ok(()) => String::new(),
-                Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
-            };
             let mut text = format!("image: {path}\n");
             if !is_edit {
                 let of = if used.is_empty() {
@@ -9549,6 +9575,69 @@ mod tests {
             .await
             .unwrap();
         assert!(manifest_of(&dir, &plain.content)["scene"].is_null());
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// An edit advances its canvas's own scene, not the chat's latest (review
+    /// of #589): editing the park after a beach was drawn keeps the park.
+    #[tokio::test]
+    async fn an_edit_of_an_older_picture_advances_that_pictures_scene() {
+        // Three different pictures, so each has its own hash in the index.
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done(), done()],
+            views: vec![
+                picture(8, [200, 40, 40]),
+                picture(8, [40, 200, 40]),
+                picture(8, [40, 40, 200]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let park = maya
+            .call(
+                json!({"prompt": "a park in autumn", "cast": [
+                    {"name": "self", "wearing": "a red coat", "doing": "sitting"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        let beach = maya
+            .call(
+                json!({"prompt": "a beach at noon", "cast": [
+                    {"name": "self", "wearing": "a swimsuit", "doing": "walking"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!beach.is_error, "{}", beach.content);
+        let edited = maya
+            .call(
+                json!({"edit": {"change": "Have her stand.", "camera": "From above."},
+                       "reference_images": [picture_of(&park.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!edited.is_error, "{}", edited.content);
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        assert!(
+            matches!(&now.place.as_ref().unwrap().value,
+                crate::scene::Place::Words { text } if text.contains("a park")),
+            "{now:?}"
+        );
+        assert_eq!(now.people[0].wearing, "a red coat", "{now:?}");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();

@@ -1907,7 +1907,7 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
     scrub(&conns)?;
     // What the chat's renders left in the persona's scene record goes too:
     // it would otherwise shape her next chats once scenes reach the notes.
-    out.scenes = crate::scene::forget_chat(&store_dir.join(persona).join("scene"), chat)?;
+    out.scenes = crate::scene::forget_chat(&store_dir.join(persona), chat)?;
     Ok(out)
 }
 

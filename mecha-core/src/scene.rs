@@ -76,8 +76,15 @@ pub struct Field<T> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Place {
-    Words { text: String },
-    Picture { path: String, hash: String },
+    Words {
+        text: String,
+    },
+    /// `path` is a label, local to the chat that placed the scene there;
+    /// `hash` is the handle any other chat finds the picture by.
+    Picture {
+        path: String,
+        hash: String,
+    },
 }
 
 /// Someone in the scene, by library name.
@@ -269,12 +276,30 @@ impl SceneSlot {
     }
 }
 
-/// Remove what one chat's renders left in a persona's scene store: each
-/// index entry that chat last advanced, and the latest when it was that
-/// chat's. The count removed; a store with nothing in it is zero, never an
-/// error. The chat's own copy goes with its transcript.
-pub fn forget_chat(store: &Path, chat: &str) -> std::io::Result<usize> {
+/// Remove what one chat's renders left: the chat's own copy (or its next
+/// render would land the scene back, review of #589), each index entry that
+/// chat last advanced, and the latest when it was that chat's. `persona_dir`
+/// is the persona's folder. The count removed; nothing there is zero, never
+/// an error. A chat id is a file name here, so it must be one.
+pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
+    if chat.is_empty()
+        || chat.len() > 128
+        || !chat
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(std::io::Error::other(format!("invalid chat id {chat:?}")));
+    }
+    let store = persona_dir.join("scene");
     let mut gone = 0;
+    let copy = persona_dir
+        .join("sessions")
+        .join(format!("{chat}.scene.json"));
+    match std::fs::remove_file(&copy) {
+        Ok(()) => gone += 1,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     let mut drop_if_theirs = |path: &Path| -> std::io::Result<()> {
         if read(path).is_some_and(|s| s.chat.as_deref() == Some(chat)) {
             std::fs::remove_file(path)?;
@@ -340,7 +365,7 @@ mod tests {
             std::env::temp_dir().join(format!("scene-test-{}", uuid::Uuid::new_v4().simple()));
         (
             SceneSlot {
-                chat_copy: root.join("sessions/c1.scene.json"),
+                chat_copy: root.join("persona/sessions/c1.scene.json"),
                 store: root.join("persona/scene"),
                 chat: "c1".into(),
             },
@@ -428,7 +453,7 @@ mod tests {
         assert_eq!(slot.lookup(b"picture one"), Some(s.clone()));
         assert_eq!(slot.lookup(b"another picture"), None);
         let other = SceneSlot {
-            chat_copy: root.join("sessions/c2.scene.json"),
+            chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
             ..slot.clone()
         };
@@ -461,7 +486,7 @@ mod tests {
         slot.land(&Scene::advance(None, c, Origin::Clean, "c1"))
             .unwrap();
         let other = SceneSlot {
-            chat_copy: root.join("sessions/c2.scene.json"),
+            chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
             ..slot.clone()
         };
@@ -473,19 +498,25 @@ mod tests {
                 "c2",
             ))
             .unwrap();
+        let persona = root.join("persona");
         assert_eq!(
-            forget_chat(&slot.store, "c1").unwrap(),
-            1,
-            "c1's index entry"
+            forget_chat(&persona, "c1").unwrap(),
+            2,
+            "c1's own copy and its index entry"
         );
         assert!(slot.lookup(b"one").is_none());
         assert!(slot.lookup(b"two").is_some());
+        // The forgotten chat now starts from the latest, which is c2's: its
+        // own scene is gone, and its next render cannot land it back.
+        assert_eq!(slot.current().unwrap().chat.as_deref(), Some("c2"));
         assert_eq!(
-            forget_chat(&slot.store, "c2").unwrap(),
-            2,
-            "c2's entry and the latest"
+            forget_chat(&persona, "c2").unwrap(),
+            3,
+            "c2's copy, its entry and the latest"
         );
+        assert_eq!(slot.current(), None);
         assert_eq!(forget_chat(&root.join("nowhere"), "c1").unwrap(), 0);
+        assert!(forget_chat(&persona, "../escape").is_err());
         std::fs::remove_dir_all(root).ok();
     }
 }
