@@ -273,7 +273,7 @@ unmeasured** (§8). The nearest data point goes the other way: M2's EA, a chain 
 riding along, fell to −0.01. EA moved the layout and a retouch does not, so the result may not
 carry over, but until it is measured a long retouch chain is not assumed safe. Each manifest
 records its **retouch depth** (the picture it built on, plus one; zero for a render from the
-place), so §8.6 can be read from real use as well as from a fresh sheet. Before step 2 ships,
+place), so §8.6 can be read from real use as well as from a fresh sheet. Before step 3 (the canvas rule) ships,
 the depth also reaches the result line ("the third retouch of …"). Whether a cap holds until
 §8.6 is measured is decided then; §1's failure was a depth-7 chain.
 
