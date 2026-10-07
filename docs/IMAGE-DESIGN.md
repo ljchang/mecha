@@ -93,6 +93,8 @@ Person.who = a library character's name | "self" | { from: picture } | a descrip
 
 - **`setting` is everything in the picture except its people and its words.** For a picture with people it is the place and its objects, with no looks or poses. For a picture without people (an object, a diagram, a logo) it is the whole subject. Era and period go here too. It is either words, or a photo used as the room.
 - **`together`** is what people do with each other, stated once (§13): a shared act, gaze between people, who holds whom. Each person's `doing` stays their own pose. Without it a shared act is written twice, once per person, and can contradict itself. Relations between people are the measured weak point of image models (T2I-CompBench, LAION-SG).
+  - **Only between people in the picture** (review T1). With one person drawn, a relation is with someone not drawn ("reaching toward the viewer"), so the compiler folds `together` into that person's `doing`. In the corpus, 96 of 116 relation phrases were with someone not drawn, and only 20 were between two drawn people.
+  - **It does not outlive the act** (review T2). "Equal is unchanged" carries most fields forward, but a relation depends on the people's own acts. Any change to someone's `doing`, a removal, or an addition clears the recorded `together` unless the call restates it. Otherwise "John sits down" would keep a hug the record no longer has bodies for.
 - **`where`** places a person: left, centre, right or background. It also anchors which portrait or crop goes to which body ("the woman from <image2>, on the left"). Without it the list's order is left to right, as the compiler does today (E1–E12).
 - **`text`** is words to render, quoted exactly, never paraphrased, with optional placement and look ("on the shop sign, in gold serif"). Qwen-Image's text rendering is its strongest skill, and every vendor's guide treats text apart. Rare in chat (1 in 264), but a field makes "the owner's words, unaltered" checkable.
 - **`who`** is resolved against the library, in this order:
@@ -270,7 +272,7 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 
 | Gate | Pass | Proposed threshold |
 |---|---|---|
-| **G1 panel extraction correctness** (replayed real panel turns plus controls: clothes, expression, camera, object, add someone, owner photo as setting) | the typed change is right; failures said on the card | ≥ 90%, and **0** refusals for shape |
+| **G1 panel extraction correctness** (replayed real panel turns plus controls: clothes, expression, camera, object, add someone, owner photo as setting, a two-person relation, a swap of positions, and an off-camera relation) | the typed change is right; failures said on the card. A relation may land in `together` or in a `doing`; only a contradiction or a lost relation fails (review T3) | ≥ 90%, and **0** refusals for shape |
 | **G1b typed turns** (replayed typed picture turns through the new schema) | the call the persona makes is right | ≥ 90%, and **0** refusals for shape |
 | **G2 the wanted call still happens** | request 1 of every replayed picture turn calls the tool; no reply narrates a picture without one | ≥ 95% |
 | **G3 one picture per run** | at most one started, structurally; 0 calls written as text; 0 empty replies | 100% |
@@ -302,7 +304,7 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 12. Review and how each point is met
 
-mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions in round 1, 1 blocking finding and 2 shoulds in round 2, and 2 blocking findings and 3 shoulds in round 3 (§4.1). Each is met above:
+mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the evidence file's §F) raised 4 blocking findings, 9 shoulds and 5 questions in round 1, 1 blocking finding and 2 shoulds in round 2, 2 blocking findings and 3 shoulds in round 3 (§4.1), and 3 shoulds and a doc point in round 4 (§13), with nothing blocking. Each is met above:
 
 | Point | Met in |
 |---|---|
@@ -316,6 +318,10 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | R3: small faces | §4.1: a minimum face size, proposed 96 px, set by G4b's small-face arm |
 | R4: group photos | §4.1: more than three faces, the owner picks a numbered box |
 | R5: per chat, and deletion | §4.1: per chat until promoted; forgetting deletes the crop |
+| T1: `together` with one person drawn | §4: folded into that person's `doing`; an off-camera control in G1 |
+| T2: a stale relation | §4: a change to the acts clears `together` unless restated |
+| T3: G1 and relations in either field | §9, G1 |
+| T5: text in `setting` and in `text` | §4: `text` holds rendered words; `setting` excludes them |
 | B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
 | S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
