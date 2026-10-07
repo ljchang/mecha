@@ -94,7 +94,10 @@ From `IMAGE-COMPILER-RESEARCH.md` §2 and §8:
 
 The face anchor already sends a detector head crop (`face::anchor_crop`, 1.12 × the face box)
 beside a full-size canvas in one call, so the encoder constraint behind rule 1 is already met in
-production.
+production. It is met only in that one shape. `comfy_graph` takes one `reference_size` per call;
+the `cast` path replaces `req.references` and forces `imagelib::REFERENCE_SIZE` (512²); and
+`MAX_REFERENCES` (4) counts the pictures the model passes. §5.2 states the resolution and slot rule
+that lifting rule 1 needs.
 
 ## 4. Evidence (2026-10-07)
 
@@ -129,7 +132,9 @@ the description's effect; the owner could.
 | RN: new picture, full portrait, place as material | 0.22 / 0.69 / 0.41 | low angle yes | okay, the most unnatural faces |
 
 Chains changed pose but never the camera. No path produced a clearly high angle from the
-wording used.
+wording used. Step 4 is that high-angle step, with the face tilted against the table. R's 0.20
+there is read as the wording failing (§8.2), not the restage path: the owner rated R pretty good
+across its steps.
 
 ### M3: two library people
 
@@ -175,6 +180,16 @@ The harness keeps the **current scene per persona**, in the persona store, not i
 workspace. Every manifest records its scene and the content hash of its picture. A picture
 attached in any chat is matched by its bytes, so a carried-over picture resolves to its scene.
 
+**An incognito chat writes no scene outside its own folder.** This follows
+`INCOGNITO-DESIGN.md` R3 (no writes outside the chat's own folder) and R6 (images deleted when
+the session closes).
+
+- It reads the persona's latest scene when it starts. That is a read, which R3 allows.
+- It keeps its copy in its own folder, where it is deleted on close.
+- It never writes back, and its pictures are not indexed by content hash outside the chat.
+
+This is ruling R9, proposed and waiting on the owner.
+
 ### 5.2 People are declared on every call
 
 - **Each library person in a render enters as their detector head crop plus their library
@@ -186,6 +201,24 @@ attached in any chat is matched by its bytes, so a carried-over picture resolves
   X", which uses their crop from that picture. The model can propose them for the library
   through the existing candidate path.
 - The persona's own character is added by default, as `cast_self` does today for new pictures.
+
+**Resolution and slots.** One call has one reference size.
+
+- **With a canvas,** every crop is encoded at the canvas's size (`EDIT_REFERENCE_SIZE`, 1024),
+  as the anchor does today. That is how M1, M2's R and M3's add-a-person were measured. Times:
+  canvas plus one crop, 52–54 s; canvas plus two crops, 66 s, against 40 s with none.
+- **With no canvas,** references go at 512², as `cast` does today.
+- **Slots.** The crops the harness adds do not count against the model's `MAX_REFERENCES`, which
+  bounds the pictures the model passes. The call has its own cap. With a canvas, at most two
+  crops, as measured; three full-size references sit just short of the research's four-reference
+  cliff (+120 s), and a third crop is a measurement (§8). A scene with more people than that
+  restages with no canvas, at 512², where four people held in one pass (E3).
+
+**New pictures keep the whole portrait until §8.1 passes.** R1's crop is measured only on paths
+with a canvas: M1, M2's R, and M3's add-a-person. New pictures still send the whole portrait at
+512² (`IMAGE-COMPILER-DESIGN.md` §1, E10), and M3 drew its touching pairs that way, rated good.
+Each path switches to the crop when §8.1 passes on the owner's sheets for that path, and not
+before.
 
 ### 5.3 The canvas follows the change, and nothing chains
 
@@ -269,14 +302,14 @@ picture.
 | 5 | Clothing, expression or hair | current picture | crops ride along |
 | 6 | Pose | place | restage (M2, R) |
 | 7 | Camera move | place | restage; wording from §5.4 |
-| 8 | A painted region (the Edit modal) | current picture + mask | crops ride along |
+| 8 | A painted region (the Edit modal) | current picture + mask | no crops, as today (§7) |
 | 9 | One small change, the rest held | as the change requires | the unchanged fields are kept by the scene |
 | 10 | A picture from another chat | resolved by content hash | from its scene |
 | 11 | A picture of the persona made outside mecha | the photo | declared by the owner's words |
 | 12 | An owner photo with no library people | the photo | none: a plain edit |
 | 13 | A persona with no linked character | as above | words, as today; linking a character fixes it |
 | 14 | A library style | any | any |
-| 15 | A picture during a call (§5.4 jobs) | any | the scene is data a job can carry |
+| 15 | A picture during a call (`PERSONA-CONTEXT-DESIGN.md` §5.4 jobs) | any | the scene is data a job can carry |
 | 16 | Variations | the same scene | new seeds |
 
 Five or more people, or close physical interaction beyond M3's four, may need the research's tier
@@ -288,6 +321,10 @@ C. That is switched on per case.
   every library person enters every call.
 - `edit.camera` as the switch for the anchor.
 - The refusal of `cast` beside `reference_images`.
+
+**Kept:** a masked edit carries no crops, as `ImageGenerate` decides today ("the masked graph has
+one canvas"). Outside the mask nothing moves, so the people there keep their pixels. And the
+10-05 drift study behind #569 found that a masked redraw with a face crop did not move identity.
 - The near-copy recovery advice, already reduced by #581. A restage is not an edit of the last
   picture.
 - `PERSONA-CONTEXT-DESIGN.md` §5.5 keeps its rule (edit only what the owner points at) and loses
@@ -306,6 +343,7 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 4. Seed variance: answered by Regenerate (§5.7, R8), not by drawing two of every picture.
 5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
+6. A third crop beside a canvas (§5.2, slots).
 
 ## 9. Rulings (owner, 2026-10-07)
 
@@ -325,13 +363,20 @@ build follows them without asking again.
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
   turn (§5.7). This replaces drawing two variants of every picture.
 
+Proposed, waiting on the owner:
+
+- **R9.** An incognito chat reads the persona's scene and keeps its own copy, deleted on close.
+  It never writes back (§5.1, from `INCOGNITO-DESIGN.md` R3 and R6).
+
 ## 10. Build order
 
 All of it after #583 (jobs) and #577 (run notes in a head and a tail) merge, since §5.6 builds
 inside both.
 
-1. Declared identity: lift the `cast` + references refusal, crops and descriptions on every
-   call, the name guard on edits, and `face_anchor` recording why it was not applied.
+1. Declared identity on the measured paths: lift the `cast` + references refusal, crops and
+   descriptions beside a canvas under §5.2's resolution and slot rule, the name guard on edits,
+   and `face_anchor` recording why it was not applied. New pictures keep the whole portrait.
+   They switch after §8.1, and only on the owner's sheets.
 2. The canvas rule and restage, with the scene change as the call's type, replacing the typed
    edit.
 3. The scene record per persona, manifests carrying scenes, and lookup by content hash.
