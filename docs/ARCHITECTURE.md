@@ -889,6 +889,12 @@ conversation, so the capabilities do not change. Three rules:
     - **No scene:** the assistant's chats, or a photo from outside, edit the
       picture.
 
+    The result says when a call was restaged, so the model does not read
+    "an edit of" the place's photo as a lost picture. A change built on
+    another chat's scene keeps step 2's rule: the prompt carries that chat's
+    words to the model, while this chat's manifest records a placeholder
+    prompt and the cast by name only.
+
     The manifest's `scene_route` says which. On landing, only the people the
     change named take the run's origin; the rest keep their own, or a camera
     move would launder an untrusted person clean. A newcomer's `doing`
