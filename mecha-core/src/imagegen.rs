@@ -3417,9 +3417,23 @@ impl Tool for ImageGenerate {
                             .and_then(|a| a.cast.iter().find(|m| m.name.trim().to_lowercase() == n))
                             .filter(|_| !is_edit || declared.contains(n))
                     };
-                    let mut order: Vec<String> = in_prompt.clone();
+                    // On an edit, the people the picture's record carries are
+                    // left out of the retry: the record brings them anyway,
+                    // and quoted back with "…" for clothes they would be
+                    // refused as placeholders (review of #588, pass 6). They
+                    // do not count toward the head count either.
+                    let carried = |n: &String| {
+                        is_edit
+                            && (inherited.contains(n)
+                                || left_out.iter().any(|m| m.name.trim().to_lowercase() == *n))
+                    };
+                    let mut order: Vec<String> =
+                        in_prompt.iter().filter(|n| !carried(n)).cloned().collect();
                     for m in ask.iter().flat_map(|a| a.cast.iter()) {
                         let n = m.name.trim().to_lowercase();
+                        if carried(&n) {
+                            continue;
+                        }
                         // Only library characters count toward the head count
                         // or belong in the sentence below: a name that is no
                         // entry is `compile`'s `missing` to report, not a
@@ -9396,6 +9410,51 @@ mod tests {
             m["identity"]["from"], "the call and the picture's record",
             "{m}"
         );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The name guard's retry on an edit names only people the call can
+    /// declare: the picture's record carries the rest, and quoting them back
+    /// with "…" would have the copied retry refused as placeholders (review
+    /// of #588, pass 6). The retry, copied, draws.
+    #[tokio::test]
+    async fn an_edits_name_guard_retry_converges() {
+        let (url, _) = fake(vec![done(); 2], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec())));
+        let scene = t
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "maya", "wearing": "an apron", "doing": "cooking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let picture = picture_of(&scene.content);
+        let out = t
+            .call(
+                json!({"edit": {"change": "Add John at the table."},
+                       "reference_images": [picture]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("\"maya\""), "{}", out.content);
+        let retry = t
+            .call(
+                json!({"edit": {"change": "Add John at the table."},
+                       "reference_images": [picture],
+                       "cast": [{"name": "john", "wearing": "a shirt", "doing": "sitting"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!retry.is_error, "{}", retry.content);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
