@@ -216,6 +216,26 @@ crops.
 The current scene goes into the run's notes (`PERSONA-CONTEXT-DESIGN.md` §5.1): what A is
 wearing and where. A recalled day's outfit or blocking then cannot stand in for the present one.
 
+### 5.6 Scenes and background jobs
+
+This is built on #583 (pictures as jobs, `PERSONA-CONTEXT-DESIGN.md` §5.4). The notes below were
+checked against #583's branch on 2026-10-07; check them again against the tree once it merges.
+
+- **The scene advances when a render lands, never when it is asked for.** The write happens
+  inside the job, or in the host's `late::land`, so a cancelled or failed render leaves the scene
+  where it was. Steps 1–3 of §10 sit inside #583's `let job = async move { … }`, after
+  `backend.generate`, where the face anchor and `write_manifest` already run.
+- **Two chats with one persona can render at once.** Jobs are one in flight per chat, and the
+  scene is kept per persona (§5.1). Proposed: each chat works on its own copy of the scene, taken
+  from the persona's latest when the chat starts. A landing writes back to the persona's latest,
+  and the last render to land wins. That is ruling R7.
+- **The scene note goes in the run notes' tail** (`cx.notes`, #577), beside #583's note about a
+  picture that arrived late. It never goes in the cached head: the scene changes from turn to
+  turn, and the head is the cached prefix.
+- **Manifests keep `tool_use_id`.** `imagegen::repair_orphan` finds a render that landed after a
+  restart by that key. A manifest that gains a scene keeps the key, or `repair_orphan` changes
+  with it.
+
 ## 6. Use cases
 
 | # | Use | Canvas | People |
@@ -275,8 +295,13 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 - **R4.** §5.5 is amended as in §7.
 - **R5.** #569's lineage path is retired rather than kept beside this.
 - **R6.** The owner's eye on face-sized sheets is the gate for every step. ArcFace is a backstop.
+- **R7.** With two chats rendering for one persona, each chat works on its own copy of the scene,
+  and the last render to land updates the persona's latest (§5.6).
 
 ## 10. Build order
+
+All of it after #583 (jobs) and #577 (run notes in a head and a tail) merge, since §5.6 builds
+inside both.
 
 1. Declared identity: lift the `cast` + references refusal, crops and descriptions on every
    call, the name guard on edits, and `face_anchor` recording why it was not applied.
