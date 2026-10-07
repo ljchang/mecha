@@ -336,6 +336,11 @@ pub struct Forgotten {
     pub shared: usize,
     /// Scene records that chat wrote (`scene::forget_chat`).
     pub scenes: usize,
+    /// Scene records that could not be read, so could not be shown to be
+    /// that chat's, and were kept.
+    pub scenes_unreadable: usize,
+    /// The scene store could not be walked at all; the rest was forgotten.
+    pub scenes_failed: bool,
 }
 
 // ── wire helpers ────────────────────────────────────────────────────────
@@ -1912,7 +1917,18 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
     scrub(&conns)?;
     // What the chat's renders left in the persona's scene record goes too:
     // it would otherwise shape her next chats once scenes reach the notes.
-    out.scenes = crate::scene::forget_chat(&store_dir.join(persona), chat)?;
+    // After the scrub, so a scene store that fails reports what was
+    // forgotten rather than losing it in the error (review of #589, pass 9).
+    match crate::scene::forget_chat(&store_dir.join(persona), chat) {
+        Ok(f) => {
+            out.scenes = f.removed;
+            out.scenes_unreadable = f.unreadable;
+        }
+        Err(e) => {
+            tracing::warn!("the scene records of chat {chat} were not forgotten: {e}");
+            out.scenes_failed = true;
+        }
+    }
     Ok(out)
 }
 
