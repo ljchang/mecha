@@ -938,7 +938,8 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   real run looked the characters up, wrote their descriptions into the prompt
   and left `cast` out: two strangers (ArcFace 0.17 and 0.10 against their
   portraits). `imagelib::named_in` catches an approved character's name as a
-  whole word in any prompt, an edit's included since 2026-10-07, minus the names already in `cast` — a
+  whole word in any prompt, an edit's included since 2026-10-07, minus the
+  names already in `cast` — a
   cast of one does not excuse a second character named beside it (review of
   #383); an explicit `"cast": []` says "someone else by that name". The lookup's result also says how entries are
   used, which alone was enough on the rerun (0.68 and 0.45).
