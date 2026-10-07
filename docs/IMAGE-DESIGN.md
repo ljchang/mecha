@@ -116,12 +116,7 @@ So far this has been used once: 41 attached images held 22 other real people's f
 - **Several pictures per entry, one default** (owner, 2026-10-07). Any library entry can hold more than one portrait, real people and drawn characters alike: a front view, a profile, another day. One is the default, set on the library page, and the default is what every render uses today. Adding a photo to an existing entry is a candidate the owner approves, like any library change. Choosing a portrait to match a scene's angle is a later step; it needs its own measurement.
 - **Picking the face in a photo.** When the owner adds a photo, RetinaFace finds the faces. A photo with one face uses it. In a group photo the library page shows numbered boxes and the owner picks one. A face under a minimum size (proposed 96 px, set by G4b) is refused there and then, before it becomes a portrait. This replaces in-scene `which` (reviews R3, R4).
 - **In a scene they are an ordinary `who`.** The prose check and the budget apply as for any library character (§4). Their name, being a library name, can't collide with another.
-- **A real person is never drawn in a nude or sexual picture.** This is the one rule the library route does not settle on its own: approval decides who may be drawn, not how. The persona chats can ask for nudity with any character. So an entry marked `real` is held to three checks on every render, by code, with no setting to lift it:
-  - **Before:** the prose fields (`wearing`, `doing`, `expression`, `together`, `setting`, `light`, `retouch`) are checked for nudity or sexual content.
-  - **In the compile:** the compiler states each real person clothed, from their `wearing`.
-  - **After:** a local image-safety classifier checks the rendered picture. A nude or sexual result with a real person in it is discarded unseen, and the result says only that it could not be drawn.
-
-  The person this protects is not in the conversation. Drawn characters are not affected.
+- **How real people may be drawn is deferred** (owner, 2026-10-07: get the functionality working first, and think usage rules through carefully as a separate decision). See §14. The `real` mark is still recorded on approval, so that decision has something to act on.
 - **Existing entries.** Entries already in the library that are real people need marking `real`. The owner marks them on the library page; nothing guesses.
 - **Privacy.** The photos arm `private_data` when attached, and the portraits stay in the library store on this machine. Removing an entry removes its portraits, as `imagelib::remove` does now.
 - **Measured before it ships** (§9, G4b). Identity from photos the owner adds has not been tested the way the existing portraits were (M1–M4). The render set is mecha-a3's design:
@@ -273,11 +268,7 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
 4. **Regenerate** on the same record (§5.4).
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
-6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes.
-   - This step covers adding people from photos on the library page, picking a face in a group photo, and the minimum face size.
-   - It adds the `real` mark and the default portrait.
-   - It adds the three checks that keep a real person out of nude or sexual pictures. The output check needs a local image-safety classifier, which is not in the tree. Choosing and measuring one is the first task of this step.
-   - No entry marked `real` is drawn before all of it is in.
+6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` mark and the default portrait. Usage rules are not part of this build (§14).
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
@@ -302,7 +293,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | B3, N1: a no-record picture is not an empty room, and faces cannot tell | §5.1 and §5.2: the call says a photo's role; a no-record `picture` is always the current picture |
 | N2: no people is not the same as people unknown | §5.1: unknown people are recorded as unknown; a restage of them is drawn as an edit |
 | N3: an empty or restated extraction is "try again" | §5.3 step 5: drawn as a redraw |
-| R1: consent; a real face in sexual pictures | §4.1: real people come in only through the library, where approval confirms consent; an entry marked `real` is never in a nude or sexual picture, held in code (prose check, compile, output classifier) |
+| R1: consent; a real face in sexual pictures | §4.1: real people come in only through the library, where approval confirms consent. How they may be drawn is deferred to §14 (owner's ruling) |
 | R2: labels colliding with library names | §4.1: moot: a real person's name is a library name |
 | R3: small faces | §4.1: a minimum face size, proposed 96 px, set by G4b's small-face arm |
 | R4: group photos | §4.1: the owner picks a numbered face on the library page |
@@ -353,3 +344,11 @@ The owner asked for a survey before ruling on the fields. It covered the officia
 - **Not measured anywhere found:** whether JSON-shaped prompts help Qwen-Image. Qwen's own tooling compiles everything to prose of 200 words or fewer. That supports this design's typed fields compiled to prose by the tool.
 
 Sources: docs.bfl.ai (FLUX.2 prompting, JSON prompting); developers.googleblog.com and ai.google.dev (Gemini image); developers.openai.com (image prompting) and the OpenAI cookbook (input fidelity); docs.midjourney.com (parameters); github.com/QwenLM/Qwen-Image (`prompt_utils.py`, README); huggingface.co/Qwen/Qwen-Image-Edit-2509; arXiv 2312.05849 (InteractDiffusion), 2412.08580 (LAION-SG), 2307.06350 (T2I-CompBench).
+
+## 14. Deferred: usage rules
+
+The owner deferred decisions about how pictures may be used (2026-10-07). The functionality comes first, and usage rules are to be thought through carefully as their own decision. Recorded here so they are not lost:
+
+- **Real people.** Whether, and how, a library entry marked `real` may appear in nude or sexual pictures. mecha-a3's review R1 and the lead both recommended never, held in code. The proposed shape: a prose check before render, the compiler stating them clothed, and a local image-safety classifier on the output. No classifier is in the tree yet.
+- **Minors.** The library holds an entry described as 16. The proposed rule: a `minor` mark on library entries, set by the owner, and set automatically for any proposed entry with an age under 18. A marked entry is never drawn nude or sexually, under the same three checks, and possibly never in a persona chat whose chats are sexual. The image model here is local with no guard of its own. Until this is decided, mecha-7e and mecha-a3 keep that entry out of every test render and will not generate such content.
+- **Existing entries.** Which current library entries are real people or minors; the owner marks them.
