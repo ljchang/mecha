@@ -177,7 +177,7 @@ The planner reads the call against the picture's record and picks one render. No
 
 A change that does not fit falls back before it refuses (review S4):
 - **On a words setting,** a restage that needs more faces than an edit holds is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
-- **On a photo setting,** there is no fallback that keeps the scene. Four or more people with faces on a photo are refused in the scene's own terms, naming them. A canvas plus four crops is untested, beyond the cliff.
+- **On a photo setting,** four or more people with faces are refused in the scene's own terms, naming them, pending §11 question 7. A canvas plus four crops is untested, beyond the cliff. The owner rated RN3 (portraits with the photo as material) "close, with some distortions", against W3 "clearly not the same room". So RN3 is a candidate fallback, unmeasured for four or more people.
 - **A person without a library entry** costs no budget; they are drawn from words.
 
 **Seeds:** the model does not send seeds (§5.1). An edit-shaped render samples fresh (#306). A restage reuses the base picture's seed. A redraw takes a new one. The seed actually drawn is recorded, so a redraw always differs.
@@ -289,6 +289,7 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 4. **The thresholds in §9.** **Ruled 2026-10-07: accepted as proposed.**
 5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
 6. **Seeds off the chat schemas** (§5.1)? **Ruled 2026-10-07: off;** every seed reuse that helps is the harness's.
+7. **Four or more people with faces on a photo** (§5.2): refuse them, or draw them RN-style (portraits with the photo as material, about 46 s) and say on the card that the room is approximate? The RN option needs a small render set of its own for four or more people first; mecha-a3 can run it.
 
 ## 12. Review and how each point is met
 
