@@ -92,6 +92,11 @@ DERIVED_STEMS = (SUMMARY_HEADER, "[Live state, carried past the compaction", "[p
                  "A declared plan check was not run", "The declared plan check did not establish completion",
                  VOICE_NOTE_STEM)
 DELIVERY_STEM = "another mecha agent on this machine, not the user"
+# The opening both scene notes share (`scene::SCENE_STEM` and
+# `UNTRUSTED_SCENE_STEM` in mecha-core/src/scene.rs; IMAGE-SCENE-DESIGN.md
+# §5.5). Only the note's own sentence, up to its first ")", is the harness's;
+# the place and the clothes after it come from the chat, and are read.
+SCENE_NOTE_STEM = "(Where things stand in your pictures now"
 SESSION_ID = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
 
 
@@ -139,8 +144,15 @@ def spoken(o):
             # reference and a spoken turn's voice note, by their prefixes
             # alone: `derived()` also matches a delivery phrase anywhere in a
             # text, which would let a memory note quoting it go unread.
-            yield from (n for n in o.get("notes") or []
-                        if isinstance(n, str) and not n.startswith((VOICE_NOTE_STEM, REFERENCE_STEM)))
+            for n in o.get("notes") or []:
+                if not isinstance(n, str) or n.startswith((VOICE_NOTE_STEM, REFERENCE_STEM)):
+                    continue
+                # A scene note: its opening sentence is mecha's, so editing
+                # that wording is never refused as chat text (#567's lesson);
+                # what follows it is read.
+                if n.startswith(SCENE_NOTE_STEM) and ")" in n:
+                    n = n[n.index(")") + 1:]
+                yield n
             return
         if o.get("role") in ("user", "assistant", "tool") and "content" in o:
             yield from strings(o["content"])

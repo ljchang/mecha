@@ -280,6 +280,117 @@ where
     }))
 }
 
+/// The scene note's opening when every field came from a clean run
+/// (`IMAGE-SCENE-DESIGN.md` §5.5, step 4). It rides in a run's notes, and
+/// arms taint by its stem as memory's does: two stems, because notes arm at
+/// every run start, and one stem arming both would make every chat with a
+/// scene untrusted. Both arm `private`: a scene can carry an owner photo, or a
+/// person from one, into a chat that never saw it.
+pub const SCENE_STEM: &str = "(Where things stand in your pictures now, from the harness";
+/// The opening when any field came from a run that read something from
+/// outside.
+pub const UNTRUSTED_SCENE_STEM: &str =
+    "(Where things stand in your pictures now, some of it first read from outside, from the harness";
+
+/// `(private, untrusted)` for a scene note, or `None` when `text` is not one.
+pub fn stem_of(text: &str) -> Option<(bool, bool)> {
+    let t = text.trim_start();
+    if t.starts_with(UNTRUSTED_SCENE_STEM) {
+        Some((true, true))
+    } else if t.starts_with(SCENE_STEM) {
+        Some((true, false))
+    } else {
+        None
+    }
+}
+
+/// The most of a place described in words a note carries.
+const NOTE_PLACE_CHARS: usize = 240;
+
+/// The most of any other field (what someone wears or does, the camera) a
+/// note carries.
+const NOTE_FIELD_CHARS: usize = 160;
+
+/// The scene as a run note: where the persona is, who is with her, what each
+/// wears and does, and the camera. The present comes from here, so a
+/// recalled day's outfit or blocking cannot stand in for it (§5.5). `me` is
+/// the persona's own library character, said as "You". `None` when the
+/// scene holds nothing to say.
+pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
+    if scene.place.is_none() && scene.people.is_empty() && scene.camera.is_none() {
+        return None;
+    }
+    // Every field is cut to a sentence's length, so the note rides on every
+    // request at a bounded size whatever a scene holds (review of #590).
+    let clip = |text: &str, n: usize| {
+        let text = text.trim();
+        let cut: String = text.chars().take(n).collect();
+        let cut = if cut.len() < text.len() {
+            format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a))
+        } else {
+            cut
+        };
+        cut.trim_end_matches('.').to_string()
+    };
+    let mut out = String::new();
+    match scene.place.as_ref().map(|p| &p.value) {
+        Some(Place::Words { text }) => {
+            out.push_str(&format!(" Place: {}.", clip(text, NOTE_PLACE_CHARS)));
+        }
+        Some(Place::Picture { .. }) => out.push_str(" Place: the picture you were placed in."),
+        // Nothing to say about a place this build cannot read; the scene is
+        // untrusted for it, so the note rides under the untrusted stem.
+        Some(Place::Unknown) | None => {}
+    }
+    let me = me.map(|m| m.trim().to_lowercase());
+    for p in &scene.people {
+        let who = if me.as_deref() == Some(p.name.as_str()) {
+            "You".to_string()
+        } else {
+            p.name
+                .split(' ')
+                .map(|w| {
+                    let mut c = w.chars();
+                    c.next()
+                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut said = vec![];
+        if !p.wearing.trim().is_empty() {
+            said.push(format!("wearing {}", clip(&p.wearing, NOTE_FIELD_CHARS)));
+        }
+        if !p.doing.trim().is_empty() {
+            said.push(clip(&p.doing, NOTE_FIELD_CHARS));
+        }
+        if said.is_empty() {
+            let verb = if who == "You" { "are" } else { "is" };
+            out.push_str(&format!(" {who} {verb} there."));
+        } else {
+            out.push_str(&format!(" {who}: {}.", said.join(", ")));
+        }
+    }
+    if let Some(c) = &scene.camera {
+        out.push_str(&format!(" Camera: {}.", clip(&c.value, NOTE_FIELD_CHARS)));
+    }
+    // Nothing to say is no note: an unknown place alone would otherwise send
+    // the opening sentence by itself, and arm `untrusted` for no content
+    // (review of #590).
+    if out.is_empty() {
+        return None;
+    }
+    let stem = match scene.origin() {
+        Origin::Clean => SCENE_STEM,
+        Origin::Untrusted => UNTRUSTED_SCENE_STEM,
+    };
+    Some(format!(
+        "{stem}: what your last picture showed. Clothes and places come from here now, \
+         not from a remembered day.){out}"
+    ))
+}
+
 /// A picture's content hash, as the index keys it.
 pub fn hash(bytes: &[u8]) -> String {
     crate::document::sha256_hex(bytes)
@@ -354,7 +465,7 @@ impl SceneSlot {
 /// chat last advanced, and the latest when it was that chat's. `persona_dir`
 /// is the persona's folder. The count removed; nothing there is zero, never
 /// an error. A chat id is a file name here, so it must be one.
-pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
+pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<SceneForget> {
     if !is_chat_id(chat) {
         return Err(std::io::Error::other(format!("invalid chat id {chat:?}")));
     }
@@ -368,10 +479,19 @@ pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    // A record that cannot be read cannot be shown to be this chat's, so it
+    // is kept, and counted, so the owner is told rather than shown a clean
+    // forget (review of #589, pass 9).
+    let mut unreadable = 0;
     let mut drop_if_theirs = |path: &Path| -> std::io::Result<()> {
-        if read(path).is_some_and(|s| s.chat.as_deref() == Some(chat)) {
-            std::fs::remove_file(path)?;
-            gone += 1;
+        match read(path) {
+            Some(s) if s.chat.as_deref() == Some(chat) => {
+                std::fs::remove_file(path)?;
+                gone += 1;
+            }
+            Some(_) => {}
+            None if path.exists() => unreadable += 1,
+            None => {}
         }
         Ok(())
     };
@@ -385,7 +505,18 @@ pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    Ok(gone)
+    Ok(SceneForget {
+        removed: gone,
+        unreadable,
+    })
+}
+
+/// What [`forget_chat`] did: the records it removed, and the ones it could
+/// not read and so kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SceneForget {
+    pub removed: usize,
+    pub unreadable: usize,
 }
 
 /// Whether `chat` can be a chat id here, where it is a file name: the shape
@@ -517,9 +648,13 @@ mod tests {
         let mut edit = change(false, "a");
         edit.declared = vec![("maya".into(), "a coat".into(), "reading".into())];
         edit.carried = (0..40)
-            .map(|i| (format!("{long}{i}"), "w".repeat(5_000), "d".into()))
+            // Distinct before the cut, so the first round measures the cap,
+            // not the dedupe of names the cut made equal (review of #589,
+            // pass 9).
+            .map(|i| (format!("p{i}-{long}"), "w".repeat(5_000), "d".into()))
             .collect();
         let mut s = Scene::advance(None, edit, Origin::Clean, "c1");
+        assert_eq!(s.people.len(), MAX_PEOPLE, "the cap, on the first write");
         for _ in 0..5 {
             let mut next = change(false, "b");
             next.carried = (0..40)
@@ -672,6 +807,62 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// The note says where she is, who is with her and what each wears and
+    /// does, the persona herself as "You"; its stem is untrusted when any
+    /// field is; and a clean note arms `private` only, an untrusted one both.
+    #[test]
+    fn the_note_reads_the_scene_and_arms_by_its_stem() {
+        let mut c = change(true, "a");
+        c.place = Some(Place::Words {
+            text: "a harbour".into(),
+        });
+        c.declared = vec![
+            ("maya".into(), "a red coat".into(), "sitting".into()),
+            ("mara quinn".into(), "a scarf".into(), String::new()),
+        ];
+        let clean = Scene::advance(None, c.clone(), Origin::Clean, "c1");
+        let n = note(&clean, Some("Maya")).unwrap();
+        assert!(n.starts_with(SCENE_STEM), "{n}");
+        assert!(n.contains("Place: a harbour."), "{n}");
+        assert!(n.contains("You: wearing a red coat, sitting."), "{n}");
+        assert!(n.contains("Mara Quinn: wearing a scarf."), "{n}");
+        let mut t = crate::agent::Taint::default();
+        t.arm_for_notes(&[n]);
+        assert!(t.private && !t.untrusted);
+        let dirty = Scene::advance(None, c, Origin::Untrusted, "c1");
+        let n = note(&dirty, None).unwrap();
+        assert!(n.starts_with(UNTRUSTED_SCENE_STEM), "{n}");
+        let mut t = crate::agent::Taint::default();
+        t.arm_for_notes(&[n]);
+        assert!(t.private && t.untrusted);
+        assert_eq!(note(&Scene::default(), None), None);
+        let mut long = change(true, "b");
+        long.place = Some(Place::Words {
+            text: "word ".repeat(100),
+        });
+        let n = note(&Scene::advance(None, long, Origin::Clean, "c1"), None).unwrap();
+        assert!(n.len() < 600 && n.contains("…"), "{n}");
+    }
+
+    /// A scene with nothing to say gives no note, so an unknown place alone
+    /// never arms `untrusted` with no content; and every field is cut, so the
+    /// note is bounded whatever the scene holds (review of #590).
+    #[test]
+    fn a_note_says_something_or_nothing_and_is_bounded() {
+        let unknown: Scene =
+            serde_json::from_str(r#"{"place": {"value": {"kind": "hologram"}}, "chat": "c1"}"#)
+                .unwrap();
+        assert_eq!(note(&unknown, None), None);
+        let mut big = change(true, "a");
+        big.camera = Some("low ".repeat(2_000));
+        big.declared = (0..MAX_PEOPLE)
+            .map(|i| (format!("p{i}"), "silk ".repeat(100), "waving ".repeat(100)))
+            .collect();
+        let n = note(&Scene::advance(None, big, Origin::Clean, "c1"), None).unwrap();
+        assert!(n.len() < 4_500, "{} bytes", n.len());
+        assert!(n.contains("Camera: low") && n.contains("…"), "{n}");
+    }
+
     /// Forgetting a chat removes what its renders left in the persona's
     /// store, and nothing another chat wrote.
     #[test]
@@ -695,23 +886,34 @@ mod tests {
             ))
             .unwrap();
         let persona = root.join("persona");
+        // A record nobody can read is kept, and said, not passed over as a
+        // clean forget (review of #589, pass 9).
+        std::fs::write(root.join("persona/scene/index/broken.json"), b"{ half").unwrap();
         assert_eq!(
             forget_chat(&persona, "c1").unwrap(),
-            2,
+            SceneForget {
+                removed: 2,
+                unreadable: 1
+            },
             "c1's own copy and its index entry"
         );
+        assert!(root.join("persona/scene/index/broken.json").exists());
+        std::fs::remove_file(root.join("persona/scene/index/broken.json")).unwrap();
         assert!(slot.lookup(b"one").is_none());
         assert!(slot.lookup(b"two").is_some());
         // The forgotten chat now starts from the latest, which is c2's: its
         // own scene is gone, and its next render cannot land it back.
         assert_eq!(slot.current().unwrap().chat.as_deref(), Some("c2"));
         assert_eq!(
-            forget_chat(&persona, "c2").unwrap(),
+            forget_chat(&persona, "c2").unwrap().removed,
             3,
             "c2's copy, its entry and the latest"
         );
         assert_eq!(slot.current(), None);
-        assert_eq!(forget_chat(&root.join("nowhere"), "c1").unwrap(), 0);
+        assert_eq!(
+            forget_chat(&root.join("nowhere"), "c1").unwrap(),
+            SceneForget::default()
+        );
         assert!(forget_chat(&persona, "../escape").is_err());
         std::fs::remove_dir_all(root).ok();
     }

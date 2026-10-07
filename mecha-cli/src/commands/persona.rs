@@ -1155,6 +1155,17 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                     "Forgotten: {} episodes, {} facts, {} shared copies, {} scene records.",
                     out.episodes, out.facts, out.shared, out.scenes
                 );
+                if out.scenes_unreadable > 0 {
+                    println!(
+                        "{} scene records could not be read, so could not be shown to be this \
+                         chat's, and were kept (in {}).",
+                        out.scenes_unreadable,
+                        dir.join(&name).join("scene").display()
+                    );
+                }
+                if out.scenes_failed {
+                    println!("The scene records could not be reached and were not forgotten.");
+                }
             } else {
                 let id = id.expect("clap requires an id or --chat");
                 let full = Memory::open_to_edit(dir, &name)?.resolve(&id)?;
