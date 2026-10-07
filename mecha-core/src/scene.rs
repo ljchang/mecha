@@ -453,7 +453,7 @@ impl SceneSlot {
 /// chat last advanced, and the latest when it was that chat's. `persona_dir`
 /// is the persona's folder. The count removed; nothing there is zero, never
 /// an error. A chat id is a file name here, so it must be one.
-pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
+pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<SceneForget> {
     if !is_chat_id(chat) {
         return Err(std::io::Error::other(format!("invalid chat id {chat:?}")));
     }
@@ -467,10 +467,19 @@ pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    // A record that cannot be read cannot be shown to be this chat's, so it
+    // is kept, and counted, so the owner is told rather than shown a clean
+    // forget (review of #589, pass 9).
+    let mut unreadable = 0;
     let mut drop_if_theirs = |path: &Path| -> std::io::Result<()> {
-        if read(path).is_some_and(|s| s.chat.as_deref() == Some(chat)) {
-            std::fs::remove_file(path)?;
-            gone += 1;
+        match read(path) {
+            Some(s) if s.chat.as_deref() == Some(chat) => {
+                std::fs::remove_file(path)?;
+                gone += 1;
+            }
+            Some(_) => {}
+            None if path.exists() => unreadable += 1,
+            None => {}
         }
         Ok(())
     };
@@ -484,7 +493,18 @@ pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    Ok(gone)
+    Ok(SceneForget {
+        removed: gone,
+        unreadable,
+    })
+}
+
+/// What [`forget_chat`] did: the records it removed, and the ones it could
+/// not read and so kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SceneForget {
+    pub removed: usize,
+    pub unreadable: usize,
 }
 
 /// Whether `chat` can be a chat id here, where it is a file name: the shape
@@ -616,9 +636,13 @@ mod tests {
         let mut edit = change(false, "a");
         edit.declared = vec![("maya".into(), "a coat".into(), "reading".into())];
         edit.carried = (0..40)
-            .map(|i| (format!("{long}{i}"), "w".repeat(5_000), "d".into()))
+            // Distinct before the cut, so the first round measures the cap,
+            // not the dedupe of names the cut made equal (review of #589,
+            // pass 9).
+            .map(|i| (format!("p{i}-{long}"), "w".repeat(5_000), "d".into()))
             .collect();
         let mut s = Scene::advance(None, edit, Origin::Clean, "c1");
+        assert_eq!(s.people.len(), MAX_PEOPLE, "the cap, on the first write");
         for _ in 0..5 {
             let mut next = change(false, "b");
             next.carried = (0..40)
@@ -831,23 +855,34 @@ mod tests {
             ))
             .unwrap();
         let persona = root.join("persona");
+        // A record nobody can read is kept, and said, not passed over as a
+        // clean forget (review of #589, pass 9).
+        std::fs::write(root.join("persona/scene/index/broken.json"), b"{ half").unwrap();
         assert_eq!(
             forget_chat(&persona, "c1").unwrap(),
-            2,
+            SceneForget {
+                removed: 2,
+                unreadable: 1
+            },
             "c1's own copy and its index entry"
         );
+        assert!(root.join("persona/scene/index/broken.json").exists());
+        std::fs::remove_file(root.join("persona/scene/index/broken.json")).unwrap();
         assert!(slot.lookup(b"one").is_none());
         assert!(slot.lookup(b"two").is_some());
         // The forgotten chat now starts from the latest, which is c2's: its
         // own scene is gone, and its next render cannot land it back.
         assert_eq!(slot.current().unwrap().chat.as_deref(), Some("c2"));
         assert_eq!(
-            forget_chat(&persona, "c2").unwrap(),
+            forget_chat(&persona, "c2").unwrap().removed,
             3,
             "c2's copy, its entry and the latest"
         );
         assert_eq!(slot.current(), None);
-        assert_eq!(forget_chat(&root.join("nowhere"), "c1").unwrap(), 0);
+        assert_eq!(
+            forget_chat(&root.join("nowhere"), "c1").unwrap(),
+            SceneForget::default()
+        );
         assert!(forget_chat(&persona, "../escape").is_err());
         std::fs::remove_dir_all(root).ok();
     }
