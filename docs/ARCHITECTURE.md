@@ -2046,8 +2046,17 @@ out, the `pre_tool` hooks, outbox staging, the approval rules and the approver,
 in that order. The gates are not copied, so they cannot drift, and no
 assistant turn is forged to carry the call. The call gets an id of its own
 (`harness_…`), never a model call's, because jobs and orphan repair are keyed
-by it. The caller passes the conversation's taint, and the result arms it as
-a turn's would (`a_harness_call_meets_every_gate_a_model_call_does`).
+by it. The caller passes the conversation itself, so the gate reads its taint
+and the result arms it as a turn's would; a caller cannot hand over a clean
+slate (`a_harness_call_meets_every_gate_a_model_call_does`). **It runs inline,
+never as a job:** a job answers its call late, into that call's transcript
+slot, and a harness call has none, so the result would be lost and the
+chat's one job seat held. A job still out from a turn still counts in the
+interlock's taint, and while one is out a deferring harness call is refused
+in the tool's own busy words (`a_harness_call_runs_inline_and_meets_the_one_job_rule`).
+`Dispatched` says whether the call was staged rather than run, and carries
+the trace and refused sends, so the caller can record them where `doctor`
+reads them.
 
 Two distinctions that are easy to get wrong:
 

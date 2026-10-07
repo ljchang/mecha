@@ -4172,6 +4172,7 @@ impl Agent {
             blocked_sends,
             output_budget,
             context,
+            true,
         )
         .await
     }
@@ -4190,10 +4191,24 @@ impl Agent {
     /// keyed by it, and an orphaned call is repaired by it, so a reused id
     /// would let one stand in for the other. `taint` is the conversation's,
     /// and it is armed by what the call returns, as a turn's would be.
+    ///
+    /// **It runs inline, never as a job** (review of #592). A job's result is
+    /// delivered late into the transcript slot of the call it answers, and a
+    /// harness call has no slot, so a deferred result would be lost and hold
+    /// the chat's one job seat. The job sink stays on `cx` all the same: a
+    /// job still out from a turn is folded into the interlock's taint, and
+    /// while one is out a deferring harness call is refused in the tool's own
+    /// busy words, as a second picture would be. The caller runs this off its
+    /// request if it must not wait.
+    ///
+    /// The taint is `convo`'s, by type: a caller cannot hand over a clean
+    /// slate, and the result arms the conversation it was gated against.
+    /// There is no context forecast (`ToolCtx::context` is `None`): no model
+    /// turn is being planned.
     pub async fn dispatch_one(
         &self,
         cx: &RunContext,
-        taint: &mut Taint,
+        convo: &mut Conversation,
         name: &str,
         input: Value,
         events: &Option<UnboundedSender<AgentEvent>>,
@@ -4207,10 +4222,11 @@ impl Agent {
                 vec![(call_id.clone(), name.to_string(), input)],
                 events,
                 &mut trace,
-                taint,
+                &mut convo.taint,
                 &mut blocked_sends,
                 cx.tools.output_budget_bytes,
                 None,
+                false,
             )
             .await;
         let (content, is_error) = blocks
@@ -4226,11 +4242,14 @@ impl Agent {
             .unwrap_or_else(|| ("the call produced no result".to_string(), true));
         Dispatched {
             denied: trace.iter().any(|t| t.denied),
+            staged: trace.iter().any(|t| t.staged),
             external: provenance.get(&call_id).copied().unwrap_or(false),
             call_id,
             content,
             is_error,
             blocks,
+            blocked_sends,
+            trace,
         }
     }
 
@@ -4247,6 +4266,9 @@ impl Agent {
         blocked_sends: &mut u32,
         output_budget: usize,
         context: Option<crate::pressure::Forecast>,
+        // Whether a deferred call may go to the host's job queue: a model
+        // turn's may; a harness call's runs inline (`dispatch_one`).
+        defer: bool,
     ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
         // Refusals and staging notices are ours; executed results overwrite
         // their entries with the tool's actual per-call classification.
@@ -5181,11 +5203,19 @@ impl Agent {
                     .is_some_and(|c| c.egress != Egress::Chosen);
                 let sink = cx.jobs.as_ref().filter(|_| may_defer);
                 out = match sink {
-                    Some(sink) => match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
-                        Ok(()) => out,
-                        Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
-                    },
-                    None => crate::jobs::run_inline(&job, cx.cancel.as_ref()).await,
+                    Some(sink) if defer => {
+                        match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
+                            Ok(()) => out,
+                            Err(crate::jobs::Busy) => ToolOutput::refusal(job.busy()),
+                        }
+                    }
+                    // A harness call, inline; while the chat has a job out it
+                    // is refused as the queue would refuse a second (review
+                    // of #592).
+                    Some(sink) if !sink.pending_tools().is_empty() => {
+                        ToolOutput::refusal(job.busy())
+                    }
+                    _ => crate::jobs::run_inline(&job, cx.cancel.as_ref()).await,
                 };
             }
             provenance.insert(id.clone(), out.external);
@@ -5281,10 +5311,18 @@ pub struct Dispatched {
     pub is_error: bool,
     /// A gate refused it: the interlock, a hook, a rule or the approver.
     pub denied: bool,
+    /// Staged in the outbox for review rather than executed: not an error,
+    /// and nothing ran (review of #592).
+    pub staged: bool,
     /// Whether the result came from outside (`ToolOutput::external`).
     pub external: bool,
     /// The result block, then any pictures it carried, as a turn returns them.
     pub blocks: Vec<Block>,
+    /// Sends the harness refused, as a run counts them (`RunStats`), so the
+    /// caller can record a refused harness call where `doctor` reads it.
+    pub blocked_sends: u32,
+    /// The call as it happened, for the same records a turn's trace feeds.
+    pub trace: Vec<ToolCallTrace>,
 }
 
 /// The text of a panic payload, for the tool result and the log.
@@ -6929,6 +6967,42 @@ mod tests {
         assert_eq!(result_of(&convo, "d1"), "image: images/made.png");
     }
 
+    /// A harness call that defers runs inline even with a host's queue on
+    /// the context: its result is the finished one, never "being made" into
+    /// a transcript slot it does not have, and no job seat is taken. While a
+    /// turn's job is out, it is refused in the tool's busy words, as the
+    /// queue would refuse a second (review of #592).
+    #[tokio::test]
+    async fn a_harness_call_runs_inline_and_meets_the_one_job_rule() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let queue = crate::jobs::JobQueue::new(move |d| sink.lock().unwrap().push(d));
+        let (agent, _) = agent_with_tools(
+            draw_then("It is on its way."),
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        go.notify_one();
+        let mut convo = Conversation::user("x");
+        let d = agent
+            .dispatch_one(&cx, &mut convo, "draw", json!({}), &None)
+            .await;
+        assert_eq!(d.content, "image: images/made.png");
+        assert!(queue.pending("chat").is_none(), "no job seat taken");
+        // A turn's job out: the harness call is refused, and nothing waits.
+        let mut turn = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut turn, None).await.unwrap();
+        assert!(queue.pending("chat").is_some());
+        let d = agent
+            .dispatch_one(&cx, &mut convo, "draw", json!({}), &None)
+            .await;
+        assert_eq!(d.content, "not made: a picture is already being made");
+        go.notify_one();
+    }
+
     /// A chat host's queue: the call answers "being made" at once, the run
     /// ends without waiting for the picture, and the job is delivered after
     /// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1, the first test of §5).
@@ -7924,12 +7998,13 @@ mod tests {
         // The interlock: `send` panics if it runs.
         let agent = trifecta_agent(TrifectaPolicy::Block);
         let cx = Arc::clone(agent.context());
-        let mut taint = Taint {
+        let mut convo = Conversation::user("x");
+        convo.taint = Taint {
             private: true,
             untrusted: true,
         };
         let d = agent
-            .dispatch_one(&cx, &mut taint, "send", json!({}), &None)
+            .dispatch_one(&cx, &mut convo, "send", json!({}), &None)
             .await;
         assert!(d.is_error && d.denied, "{d:?}");
         assert!(
@@ -7945,9 +8020,9 @@ mod tests {
             .insert(Arc::new(WatchedTool(Arc::clone(&ran))));
         agent.set_hooks(hooked("echo not in this workspace; exit 2", Vec::new()));
         let cx = Arc::clone(agent.context());
-        let mut taint = Taint::default();
+        let mut convo = Conversation::user("x");
         let d = agent
-            .dispatch_one(&cx, &mut taint, "watched", json!({}), &None)
+            .dispatch_one(&cx, &mut convo, "watched", json!({}), &None)
             .await;
         assert_eq!(d.content, "Blocked by a hook: not in this workspace");
         assert!(d.denied && !ran.load(std::sync::atomic::Ordering::SeqCst));
@@ -7955,7 +8030,7 @@ mod tests {
         let (agent, _) = agent_with(Vec::new(), PermissionMode::ReadOnly);
         let cx = Arc::clone(agent.context());
         let d = agent
-            .dispatch_one(&cx, &mut taint, "fs_write", json!({}), &None)
+            .dispatch_one(&cx, &mut convo, "fs_write", json!({}), &None)
             .await;
         assert!(d.is_error && d.denied, "{d:?}");
         assert!(d.content.starts_with("Blocked by policy:"), "{}", d.content);
@@ -7963,18 +8038,19 @@ mod tests {
         let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
         agent.registry.insert(Arc::new(PrivateTool));
         let cx = Arc::clone(agent.context());
-        let mut taint = Taint::default();
+        let mut convo = Conversation::user("x");
         let one = agent
-            .dispatch_one(&cx, &mut taint, "read_private", json!({}), &None)
+            .dispatch_one(&cx, &mut convo, "read_private", json!({}), &None)
             .await;
         let two = agent
-            .dispatch_one(&cx, &mut taint, "read_private", json!({}), &None)
+            .dispatch_one(&cx, &mut convo, "read_private", json!({}), &None)
             .await;
         assert_eq!(one.content, "SECRET-42");
         assert!(!one.is_error && !one.denied);
         assert!(one.call_id.starts_with("harness_"), "{}", one.call_id);
         assert_ne!(one.call_id, two.call_id);
-        assert!(taint.private, "armed as a turn would be");
+        assert!(convo.taint.private, "armed as a turn would be");
+        assert!(!one.staged);
     }
 
     #[tokio::test]
