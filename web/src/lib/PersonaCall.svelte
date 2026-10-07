@@ -400,7 +400,7 @@
         {:else if line.making}
           <div class="heard makingline">{line.text}</div>
         {:else}
-          <div class="heard"><ChatProse text={line.text} /></div>
+          <div class="heard"><ChatProse text={line.text} hidePictureRefs /></div>
         {/if}
       {/each}
       {#if resources}
@@ -414,7 +414,7 @@
         {/if}
       {/if}
       {#if replying}
-        <div class="heard"><ChatProse text={replying} /></div>
+        <div class="heard"><ChatProse text={replying} hidePictureRefs /></div>
       {/if}
       {#each speaking as entry}
         {#if entry.who === 'notice'}
