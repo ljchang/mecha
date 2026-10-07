@@ -376,6 +376,12 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
 
 ### 5.5 Edits only on the owner's initiative
 
+> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R4):** the rule stands, and its
+> assumption does not. The picture the owner points at chooses the scene and the retouch canvas,
+> and it does not carry identity by itself: the people's crops and descriptions come along on
+> every call. Pose, camera and people changes restage from the place rather than editing the
+> picture (R2). The text below is kept as written.
+
 - `reference_images` in the persona form accepts only a picture the owner **pointed at, by a typed
   reference** in the turn being answered: the Edit button's message, a picture they attached, or a
   "reply to this picture" action. Nothing is parsed out of the owner's words.
