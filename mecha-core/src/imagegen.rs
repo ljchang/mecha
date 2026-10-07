@@ -1668,6 +1668,32 @@ const CANVAS_CAMERA_MOVES: &str = " <image1> is the canvas: keep its room and fu
 /// 66 s); four is the research's cliff (+120 s, E2).
 const EDIT_REFERENCE_BUDGET: usize = 3;
 
+/// A declared person, as the compiler words one (`imagelib::compile`): the
+/// name, the library description in brackets, then what the call says they
+/// wear and do. Wardrobe and pose are stated per person in every scene
+/// (IMAGE-COMPILER-RESEARCH.md E3, E8): left out, the edit invents them —
+/// the first real-path run of this added a person with no clothes stated and
+/// got none (2026-10-07). A person carried over from a manifest declares
+/// nothing new, so keeps what the picture shows.
+fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> String {
+    let mut out = format!(" {shown}");
+    if !text.is_empty() {
+        out.push_str(&format!(" ({text})"));
+    }
+    let (wearing, doing) = (m.wearing.trim(), m.doing.trim().trim_end_matches('.'));
+    if !wearing.is_empty() {
+        out.push_str(&format!(", wearing {wearing}"));
+    }
+    if !doing.is_empty() {
+        out.push_str(&format!(", {doing}"));
+    }
+    if text.is_empty() && wearing.is_empty() && doing.is_empty() {
+        return String::new();
+    }
+    out.push('.');
+    out
+}
+
 /// A library name as the edit prompt says it: "maya" → "Maya".
 fn capitalized(name: &str) -> String {
     let mut chars = name.chars();
@@ -2392,8 +2418,17 @@ impl ImageGenerate {
     /// How to redraw a picture from the library, when its manifest says it
     /// was drawn from one: names only, each still an approved entry — the
     /// manifest is a workspace file, so none of its free text is repeated.
+    /// Not for an edit, whose `cast` names the people it declared over a
+    /// canvas: drawn afresh from the library, an owner photo's room would be
+    /// lost, so "drawn from the library" would be untrue advice.
     fn library_redraw(&self, manifest: &Value) -> Option<String> {
         use crate::imagelib::{Kind, Status};
+        if manifest
+            .get("reference_images")
+            .is_some_and(|r| !r.is_null())
+        {
+            return None;
+        }
         let (lib, _) = crate::imagelib::Library::load(self.library_dir.as_ref()?);
         let approved = |kind, name: &str| {
             lib.get(kind, name)
@@ -3540,16 +3575,10 @@ impl Tool for ImageGenerate {
                             });
                             crops += 1;
                             let k = req.references.len();
-                            if text.is_empty() {
-                                said.push_str(&format!(
-                                    " Take only {shown}'s facial identity from <image{k}>, nothing else."
-                                ));
-                            } else {
-                                said.push_str(&format!(
-                                    " {shown} is {text}. Take only {shown}'s facial identity from \
-                                     <image{k}>, nothing else."
-                                ));
-                            }
+                            said.push_str(&person_sentence(&shown, &text, &m));
+                            said.push_str(&format!(
+                                " Take only {shown}'s facial identity from <image{k}>, nothing else."
+                            ));
                             people.push(json!({"name": name, "version": e.version,
                                 "portrait": e.portrait, "crop": true}));
                         }
@@ -8553,7 +8582,7 @@ mod tests {
         let sent = last_prompt(&seen);
         assert!(
             sent.contains("images.image_2")
-                && sent.contains("Maya is maya, a memorable face")
+                && sent.contains(" Maya (maya, a memorable face).")
                 && sent.contains("Take only Maya's facial identity from <image2>, nothing else.")
                 && sent.contains("keep its camera position"),
             "{sent}"
@@ -8653,7 +8682,12 @@ mod tests {
         )
         .await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(last_prompt(&seen).contains("Maya's facial identity from <image2>"));
+        let sent = last_prompt(&seen);
+        assert!(
+            sent.contains(" Maya (maya, a memorable face), wearing a coat, sitting.")
+                && sent.contains("Maya's facial identity from <image2>"),
+            "a declared person's wardrobe and pose are stated: {sent}"
+        );
         assert_eq!(
             manifest_of(&dir, &out.content)["identity"]["from"],
             "the call"
@@ -8715,6 +8749,22 @@ mod tests {
             "the face detector is not installed"
         );
         std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// An edit's manifest records the people it declared in `cast`, but it was
+    /// not drawn from the library: redrawn afresh with that cast, an owner
+    /// photo's room would be lost, so a near-copy of an edit never says it
+    /// was (found on the first real-path run, 2026-10-07).
+    #[test]
+    fn only_a_new_picture_offers_a_library_redraw() {
+        let lib = library_with(&["maya"]);
+        let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
+        let cast = json!([{"name": "maya", "version": 1}]);
+        let drawn = json!({"reference_images": null, "cast": cast});
+        let edited = json!({"reference_images": ["inbox/room.png"], "cast": cast});
+        assert!(t.library_redraw(&drawn).is_some());
+        assert!(t.library_redraw(&edited).is_none());
         std::fs::remove_dir_all(lib).ok();
     }
 
