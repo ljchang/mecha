@@ -3070,7 +3070,8 @@ impl Tool for ImageGenerate {
          edit, put in cast the owner's characters who are in the picture or being added to it \
          (yourself as \"self\" in a persona chat), each with what they wear and do after the \
          change: the tool brings each face from the library. A picture you made already \
-         records its people, so cast can be left out for it. Pass \"cast\": [] only when a \
+         records its people, so cast can be left out for it, and a cast you give adds to \
+         them rather than replacing them. Pass \"cast\": [] only when a \
          name in the change means someone else who shares a library character's name; \
          \"cast\": [] turns off their faces and the name check. Do not describe their looks \
          in the edit. If the user's \
@@ -3237,7 +3238,11 @@ impl Tool for ImageGenerate {
             .map(own)
             .collect();
         let mut inherited: std::collections::BTreeSet<String> = Default::default();
-        if is_edit && !waived && input.get("cast").is_none_or(Value::is_null) {
+        // The record is read whether or not the call names anyone: the call's
+        // `cast` adds to the people the picture records and never erases
+        // them, so a retry that names one person cannot drop the others
+        // (review of #588). Only `"cast": []` turns the record off.
+        if is_edit && !waived {
             // What they wore and did is kept for the record, never sent: the
             // canvas already shows them (review of #586).
             let recorded: Vec<crate::imagelib::CastMember> = read_manifest(ctx, &paths[0])
@@ -3266,17 +3271,26 @@ impl Tool for ImageGenerate {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Only the people the call does not name itself: theirs is the
+            // call's word, with what they wear now.
+            let recorded: Vec<crate::imagelib::CastMember> = recorded
+                .into_iter()
+                .filter(|m| !declared.contains(&m.name.trim().to_lowercase()))
+                .collect();
             inherited = recorded
                 .iter()
                 .map(|m| m.name.trim().to_lowercase())
                 .collect();
-            people_from = if recorded.is_empty() {
-                "nobody named"
-            } else {
-                "the picture's manifest"
+            people_from = match (declared.is_empty(), recorded.is_empty()) {
+                (true, true) => "nobody named",
+                (true, false) => "the picture's manifest",
+                (false, true) => "the call",
+                (false, false) => "the call and the picture's manifest",
             };
             if !recorded.is_empty() {
-                ask.get_or_insert_with(LibraryAsk::default).cast = recorded;
+                ask.get_or_insert_with(LibraryAsk::default)
+                    .cast
+                    .extend(recorded);
             }
         }
         // A persona drawing itself: before the guard below, which would
@@ -9213,6 +9227,61 @@ mod tests {
         let edited = json!({"reference_images": ["inbox/room.png"], "cast": cast});
         assert!(t.library_redraw(&drawn).is_some());
         assert!(t.library_redraw(&edited).is_none());
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A call's `cast` adds to the people a picture records and never erases
+    /// them (review of #588): "add me to this picture" names only her, and
+    /// the man already in it keeps his crop and his place in the record.
+    #[tokio::test]
+    async fn a_named_cast_adds_to_the_picture_record() {
+        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let john = maya
+            .call(
+                json!({"prompt": "a kitchen", "cast": [
+                    {"name": "john", "wearing": "an apron", "doing": "cooking"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!john.is_error, "{}", john.content);
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Add a woman beside the stove.", "keep": "the kitchen"},
+                       "reference_images": [picture_of(&john.content)],
+                       "cast": [{"name": "self", "wearing": "a coat", "doing": "standing"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last_prompt(&seen);
+        assert!(
+            sent.contains("Maya's facial identity from <image2>")
+                && sent.contains("John's facial identity from <image3>"),
+            "{sent}"
+        );
+        let m = manifest_of(&dir, &out.content);
+        let names: Vec<&str> = m["cast"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["maya", "john"], "{m}");
+        assert_eq!(
+            m["identity"]["from"], "the call and the picture's manifest",
+            "{m}"
+        );
+        std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 

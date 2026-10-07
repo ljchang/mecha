@@ -767,10 +767,14 @@ conversation, so the capabilities do not change. Three rules:
   a carried-over picture is a bare inbox file), a second picture, or a chain
   that began from words. Each time `face_anchor` was left `null` with no
   reason. Now the people are declared:
-  - **Who.** The call's `cast`; failing that, the people the edited picture's
-    own manifest records (that one record, never a walk), with `self` and the
-    persona's name resolved by `cast_self`. An attached photo names nobody
-    unless the call does, and `"cast": []` is nobody.
+  - **Who.** The call's `cast` together with the people the edited picture's
+    own manifest records (that one record, never a walk): the call's `cast`
+    adds to the record and never erases it, so a retry that names one person
+    cannot drop the others (review of #588). `self` and the persona's name are
+    resolved by `cast_self`. A persona named only in an edit's words, whom
+    the picture does not record, is refused until she is cast with what she
+    wears and does. An attached photo names nobody unless the call does, and
+    `"cast": []` is nobody.
   - **The crop and the sentences.** Each approved character gets a tight crop
     of its portrait (1.12× the face box) at the canvas's size, its library
     description verbatim, and "take only X's facial identity from
