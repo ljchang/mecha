@@ -147,7 +147,8 @@ The rules, each a measurement:
   stranger in its place is the substitution the cast exists to prevent. A
   persona chat's form of the tool keeps refusing an unknown name.
 - **The style's text is appended verbatim**, never paraphrased.
-- **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
+- *(Lifted 2026-10-07; see the amendment at the head of this section.)*
+  **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
   portraits at 512² cannot share one; editing a cast image works already by
   passing the image, whose people carry their own identity. `extras` are
