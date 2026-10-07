@@ -362,7 +362,6 @@ C. That is switched on per case.
   every library person enters every call.
 - `edit.camera` as the switch for the anchor.
 - The refusal of `cast` beside `reference_images`.
-
 - The near-copy recovery advice, already reduced by #581. A restage is not an edit of the last
   picture.
 - `PERSONA-CONTEXT-DESIGN.md` §5.5 keeps its rule (edit only what the owner points at) and loses
