@@ -512,7 +512,8 @@ from the scene's place.
    and lookup by content hash through a harness-written index in the persona store, never
    through workspace manifests (§5.1). An incognito chat's write-back path does not exist
    rather than being switched off, and every scene carries its origin (§5.1).
-3. The canvas rule and restage, with the scene change as the call's type, replacing the typed
+3. *(Built 2026-10-07, the `scene` field; owner's ruling: option A.)* The canvas rule and
+   restage, with the scene change as the call's type, replacing the typed
    edit.
 4. *(Built 2026-10-07.)* The scene in run notes.
 5. §8's measurements, each before the step that depends on it.
