@@ -643,6 +643,29 @@ mod tests {
         );
     }
 
+    /// A person the call changed only in part keeps their old origin joined
+    /// with the run's: a clean write over one field of an untrusted person
+    /// leaves them untrusted (review of #591).
+    #[test]
+    fn an_amended_person_keeps_the_origin_they_had() {
+        let mut first = change(true, "a");
+        first.declared = vec![("john".into(), "an apron".into(), "cooking".into())];
+        let s1 = Scene::advance(None, first, Origin::Untrusted, "c1");
+        let mut part = change(false, "b");
+        part.amended = vec![("john".into(), "a coat".into(), "cooking".into())];
+        let s2 = Scene::advance(Some(&s1), part, Origin::Clean, "c1");
+        assert_eq!(s2.people[0].wearing, "a coat");
+        assert_eq!(s2.people[0].origin, Origin::Untrusted);
+        let mut stranger = change(false, "c");
+        stranger.amended = vec![("wren".into(), "a hat".into(), String::new())];
+        let s3 = Scene::advance(None, stranger, Origin::Clean, "c1");
+        assert_eq!(
+            s3.people[0].origin,
+            Origin::Untrusted,
+            "no entry reads untrusted"
+        );
+    }
+
     /// Someone carried over from a record the scene does not hold is
     /// untrusted: the record is a file a run could write.
     #[test]

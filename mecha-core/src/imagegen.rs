@@ -3378,8 +3378,15 @@ impl ImageGenerate {
                     .and_then(|s| s.camera.as_ref())
                     .map(|c| c.value.clone())
             });
+            // Only a style the library still holds approved: the scene
+            // outlives the library, and a retired style would refuse every
+            // restage of it (review of #591, pass 7).
             if style.is_none() {
-                if let Some(st) = base.as_ref().and_then(|s| s.style.as_ref()) {
+                if let Some(st) = base.as_ref().and_then(|s| s.style.as_ref()).filter(|st| {
+                    lib.as_ref()
+                        .and_then(|l| l.get(crate::imagelib::Kind::Style, &st.value))
+                        .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+                }) {
                     obj.insert("style".into(), json!(st.value));
                 }
             }
@@ -3519,6 +3526,29 @@ impl ImageGenerate {
                 .filter_map(|c| people.iter().find(|p| p.0 == c.name))
                 .map(|(n, w, d)| json!({"name": n, "wearing": w, "doing": d}))
                 .collect();
+            // An edit holds the faces beside the picture that a restage on a
+            // place photo does; said in the scene's terms, as there (review of
+            // #591, pass 7).
+            let room = EDIT_REFERENCE_BUDGET - 1;
+            let faces = named
+                .iter()
+                .filter_map(|v| v["name"].as_str())
+                .filter(|n| listed(n))
+                .count();
+            if faces > room {
+                let names: Vec<String> = named
+                    .iter()
+                    .filter_map(|v| v["name"].as_str())
+                    .map(capitalized)
+                    .collect();
+                return Err(format!(
+                    "This change names {} people ({}), and an edit of the picture draws at most \
+                     {room} with their faces, beside the picture itself. Change them in turns, \
+                     {room} at a time.",
+                    names.len(),
+                    names.join(", "),
+                ));
+            }
             let change = given_change.clone().unwrap_or_else(|| {
                 let mut lines: Vec<String> = Vec::new();
                 for c in changes.iter().filter(|c| !c.remove) {
@@ -3533,7 +3563,10 @@ impl ImageGenerate {
                         lines.push(format!("Dress {shown} in {w}."));
                     }
                 }
-                if lines.is_empty() && place.is_none() {
+                if lines.is_empty() && place.is_none() && named.is_empty() {
+                    // Nobody described below: a camera alone, say.
+                    "Keep everything in the picture as it is.".into()
+                } else if lines.is_empty() && place.is_none() {
                     "Make the change described for each person below.".into()
                 } else {
                     lines.join(" ")
@@ -11495,6 +11528,77 @@ mod tests {
         assert!(sent.contains("John, wearing a cap, fishing"), "{sent}");
         let now = cx.scene.as_ref().unwrap().current().unwrap();
         assert!(now.people.iter().any(|p| p.name == "john"), "{now:?}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// The scene outlives the library: a style retired since the scene was
+    /// drawn is left out of a restage rather than refusing it; and a retouch
+    /// naming more people than an edit holds faces for is refused in the
+    /// scene's terms (review of #591, pass 7).
+    #[tokio::test]
+    async fn a_restage_survives_a_retired_style_and_a_retouch_is_bounded() {
+        let (url, _) = distinct(3).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john", "wren"]);
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "inkwash".into(),
+                text: "loose ink wash on cream paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        let who = |n: &str| json!({"name": n, "wearing": "a coat", "doing": "waving"});
+        let drawn = maya
+            .call(
+                json!({"prompt": "a market square", "style": "inkwash",
+                       "cast": [who("self"), who("john"), who("wren")]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!drawn.is_error, "{}", drawn.content);
+        crate::imagelib::remove(&lib, crate::imagelib::Kind::Style, "inkwash").unwrap();
+        let out = maya
+            .call(
+                json!({"scene": {"camera": "From a rooftop."},
+                       "reference_images": [picture_of(&drawn.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let dressed = |n: &str| json!({"name": n, "wearing": "a raincoat"});
+        let out = maya
+            .call(
+                json!({"scene": {"people": [dressed("self"), dressed("john"), dressed("wren")]},
+                       "reference_images": [picture_of(&out.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("This change names 3 people"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("`cast`"), "{}", out.content);
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
