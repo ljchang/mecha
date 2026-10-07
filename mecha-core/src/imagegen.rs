@@ -3227,11 +3227,15 @@ impl Tool for ImageGenerate {
                     people
                         .iter()
                         .filter_map(|p| {
+                            // A workspace file a run can write: capped as a
+                            // call's own fields are (review of #586).
                             let field = |k: &str| {
                                 p.get(k)
                                     .and_then(Value::as_str)
                                     .unwrap_or_default()
-                                    .to_string()
+                                    .chars()
+                                    .take(crate::imagelib::MAX_CAST_FIELD)
+                                    .collect::<String>()
                             };
                             Some(crate::imagelib::CastMember {
                                 name: p.get("name")?.as_str()?.to_string(),
@@ -3347,9 +3351,13 @@ impl Tool for ImageGenerate {
                     // the missing names, copied, dropped the ones already
                     // there, and the next refusal asked for those instead —
                     // round and round (review of #384).
+                    // Only what the call itself wrote is quoted back: a person
+                    // carried over from a picture's record has text from a
+                    // workspace file, which is never repeated (review of #586).
                     let given = |n: &str| {
                         ask.as_ref()
                             .and_then(|a| a.cast.iter().find(|m| m.name.trim().to_lowercase() == n))
+                            .filter(|_| !is_edit || declared.contains(n))
                     };
                     let mut order: Vec<String> = in_prompt.clone();
                     for m in ask.iter().flat_map(|a| a.cast.iter()) {
@@ -3477,6 +3485,13 @@ impl Tool for ImageGenerate {
                 .and_then(|l| l.get(crate::imagelib::Kind::Character, n))
                 .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
         };
+        if is_edit && declared.len() > crate::imagelib::MAX_CAST {
+            return Ok(refused(format!(
+                "`cast` holds at most {} people; this edit names {}.",
+                crate::imagelib::MAX_CAST,
+                declared.len()
+            )));
+        }
         let room = EDIT_REFERENCE_BUDGET.saturating_sub(paths.len());
         let named_crops = edit_people
             .iter()
@@ -3486,12 +3501,16 @@ impl Tool for ImageGenerate {
         if is_edit && mask_path.is_none() && named_crops > room {
             return Ok(refused(format!(
                 "This edit would send {} pictures to the image model at full size — {} in \
-                 reference_images and {} faces for the people named in `cast` — and at most \
+                 reference_images and {} for the people named in `cast` — and at most \
                  {EDIT_REFERENCE_BUDGET} fit one call. Pass fewer pictures, name fewer people, or \
                  draw the scene new with `cast` and no reference_images.",
                 paths.len() + named_crops,
                 paths.len(),
-                named_crops
+                if named_crops == 1 {
+                    "one face".to_string()
+                } else {
+                    format!("{named_crops} faces")
+                }
             )));
         }
         // Before reading anything: up to a hundred megabytes of references is
@@ -3584,6 +3603,7 @@ impl Tool for ImageGenerate {
         let camera_moves = EditAsk::moves_camera(&input);
         let mut identity = Value::Null;
         let mut edit_cast: Vec<Value> = Vec::new();
+        let mut trimmed: Vec<String> = Vec::new();
         if is_edit {
             let mut people: Vec<Value> = Vec::new();
             let mut skipped: Option<&str> = None;
@@ -3594,70 +3614,86 @@ impl Tool for ImageGenerate {
                     "nobody was named"
                 });
             } else {
-                let dir = self.library_dir.clone();
-                let faces = Arc::clone(&self.faces);
-                let asked = edit_people.clone();
+                // Who each person is, resolved here against the library this
+                // call already read, so nothing below can lose it: the face
+                // detector runs apart, and a detector that panics costs the
+                // crops and nothing else (review of #586).
+                let empty = crate::imagelib::Library::default();
+                let lib = library.as_ref().unwrap_or(&empty);
+                let resolved: Vec<_> = edit_people
+                    .iter()
+                    .map(|m| {
+                        let name = m.name.trim().to_lowercase();
+                        // Only an approved character, as for `self` in a cast.
+                        let entry = lib
+                            .get(crate::imagelib::Kind::Character, &name)
+                            .filter(|e| e.status == crate::imagelib::Status::Approved)
+                            .cloned();
+                        let unknown = entry.is_none().then(|| {
+                            crate::imagelib::missing(lib, crate::imagelib::Kind::Character, &name)
+                        });
+                        (m.clone(), name, entry, unknown)
+                    })
+                    .collect();
                 let masked = plan.is_some();
-                let got = tokio::task::spawn_blocking(move || {
-                    let lib = dir
-                        .map(|d| crate::imagelib::Library::load(&d).0)
-                        .unwrap_or_default();
-                    asked
-                        .into_iter()
-                        .map(|m| {
-                            let name = m.name.trim().to_lowercase();
-                            // Only an approved character, as for `self` in a cast.
-                            let entry = lib
-                                .get(crate::imagelib::Kind::Character, &name)
-                                .filter(|e| e.status == crate::imagelib::Status::Approved)
-                                .cloned();
-                            let anchor = match &entry {
-                                Some(_) if masked => None,
-                                Some(e) => Some(faces.anchor(&lib, e)),
-                                None => None,
-                            };
-                            let unknown = entry.is_none().then(|| {
-                                crate::imagelib::missing(
-                                    &lib,
-                                    crate::imagelib::Kind::Character,
-                                    &name,
-                                )
-                            });
-                            (m, name, entry, anchor, unknown)
+                let faces = Arc::clone(&self.faces);
+                let for_faces = lib.clone();
+                let entries: Vec<_> = resolved.iter().map(|r| r.2.clone()).collect();
+                let anchors = tokio::task::spawn_blocking(move || {
+                    entries
+                        .iter()
+                        .map(|e| match e {
+                            Some(_) if masked => None,
+                            Some(e) => Some(faces.anchor(&for_faces, e)),
+                            None => None,
                         })
                         .collect::<Vec<_>>()
                 })
-                .await;
+                .await
                 // A detector that panicked is said, never silently drawn
                 // without (review of #569).
-                let got = match got {
-                    Ok(got) => got,
-                    Err(_) => edit_people
+                .unwrap_or_else(|_| {
+                    resolved
                         .iter()
-                        .map(|m| {
-                            (
-                                m.clone(),
-                                m.name.trim().to_lowercase(),
-                                None,
-                                Some(crate::face::Anchor::Unavailable(
-                                    "the face detector failed".into(),
-                                )),
-                                None,
-                            )
+                        .map(|r| {
+                            r.2.as_ref().map(|_| {
+                                crate::face::Anchor::Unavailable("the face detector failed".into())
+                            })
                         })
-                        .collect(),
-                };
+                        .collect()
+                });
+                let got = resolved
+                    .into_iter()
+                    .zip(anchors)
+                    .map(|((m, name, entry, unknown), anchor)| (m, name, entry, anchor, unknown));
                 let mut said = String::new();
                 let mut crops = 0;
+                // Where each person came from, said per person (review of
+                // #586): a scene's record and the edit's words can mix.
+                let from_of = |n: &str| {
+                    if declared.contains(n) {
+                        "the call"
+                    } else if inherited.contains(n) {
+                        "the picture's record"
+                    } else {
+                        "the edit's words"
+                    }
+                };
                 for (m, name, entry, anchor, unknown) in got {
                     let Some(e) = entry else {
                         // A persona chat refuses a name its library lacks, as
                         // its form of the compile step does; elsewhere the
                         // person is left to the edit's words, and recorded.
-                        if let (true, Some(why)) = (self.persona, unknown) {
+                        // Only for a name the call wrote: a name a picture's
+                        // record carries over is recorded and drawn from the
+                        // canvas, or every edit of that picture would fail
+                        // over a name the call never sent (review of #586).
+                        if let (true, true, Some(why)) =
+                            (self.persona, declared.contains(&name), unknown)
+                        {
                             return Ok(refused(why));
                         }
-                        people.push(json!({"name": name, "crop": false,
+                        people.push(json!({"name": name, "from": from_of(&name), "crop": false,
                             "skipped": "no approved library entry by that name"}));
                         continue;
                     };
@@ -3668,6 +3704,7 @@ impl Tool for ImageGenerate {
                     // refused above if they did not fit.
                     let anchor = match anchor {
                         Some(crate::face::Anchor::Crop(_)) if crops >= room => {
+                            trimmed.push(capitalized(&name));
                             Some(crate::face::Anchor::Unavailable(format!(
                                 "over the reference budget: an edit sends at most \
                                  {EDIT_REFERENCE_BUDGET} pictures, this one included"
@@ -3699,8 +3736,10 @@ impl Tool for ImageGenerate {
                             said.push_str(&format!(
                                 " Take only {shown}'s facial identity from <image{k}>, nothing else."
                             ));
-                            people.push(json!({"name": name, "version": e.version,
-                                "portrait": e.portrait, "crop": true}));
+                            people.push(
+                                json!({"name": name, "from": from_of(&name), "version": e.version,
+                                "portrait": e.portrait, "crop": true}),
+                            );
                         }
                         other => {
                             let why = match other {
@@ -3711,8 +3750,10 @@ impl Tool for ImageGenerate {
                                 Some(crate::face::Anchor::Unavailable(why)) => why,
                                 Some(crate::face::Anchor::Crop(_)) => unreachable!(),
                             };
-                            people.push(json!({"name": name, "version": e.version,
-                                "portrait": e.portrait, "crop": false, "skipped": why}));
+                            people.push(
+                                json!({"name": name, "from": from_of(&name), "version": e.version,
+                                "portrait": e.portrait, "crop": false, "skipped": why}),
+                            );
                         }
                     }
                     edit_cast.push(json!({"name": name, "version": e.version,
@@ -3734,6 +3775,24 @@ impl Tool for ImageGenerate {
             }
             identity = json!({"people": people, "from": people_from, "skipped": skipped});
         }
+        // A trim is said where the model reads it, not only in the manifest
+        // (review of #584, pass 10): the picture is still drawn, from the
+        // canvas, for the people past the budget.
+        let trim_note = if trimmed.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " {} went without a face reference: an edit sends at most \
+                 {EDIT_REFERENCE_BUDGET} pictures, this one included, so the picture alone \
+                 carried {}.",
+                trimmed.join(", "),
+                if trimmed.len() == 1 {
+                    "that face"
+                } else {
+                    "those faces"
+                }
+            )
+        };
         // The library's half: the model named who and what style; this code
         // writes how they look — each portrait as a reference at 512², each
         // description verbatim beside its pointer.
@@ -4142,6 +4201,7 @@ impl Tool for ImageGenerate {
                     req.seed
                 ));
             }
+            text.push_str(&trim_note);
             text.push_str(&manifest_note);
             text.push_str(&left);
             claim.keep();
@@ -7616,6 +7676,95 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
+    /// A face detector that panics costs the crops and nothing else: each
+    /// person is still resolved, recorded with the reason, and kept in the
+    /// manifest's `cast` for the next edit (review of #586).
+    #[tokio::test]
+    async fn a_panicking_detector_keeps_the_people_on_record() {
+        struct Panics;
+        impl crate::face::FaceAnchors for Panics {
+            fn anchor(
+                &self,
+                _: &crate::imagelib::Library,
+                _: &crate::imagelib::Entry,
+            ) -> crate::face::Anchor {
+                panic!("detector down")
+            }
+        }
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::new(Panics));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/room.png"), PNG).unwrap();
+        let out = t
+            .call(
+                json!({"edit": {"change": "Add her on the bench.", "keep": "the room"},
+                       "reference_images": ["inbox/room.png"],
+                       "cast": [{"name": "maya", "wearing": "a coat", "doing": "sitting"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(
+            m["identity"]["people"][0]["skipped"], "the face detector failed",
+            "{m}"
+        );
+        assert_eq!(m["cast"][0]["name"], "maya", "{m}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A name a picture's record carries over is never grounds for refusing
+    /// a persona's edit (review of #586): an entry retired since stays on
+    /// record and is drawn from the canvas. And text from a workspace
+    /// manifest is never quoted back in a refusal.
+    #[tokio::test]
+    async fn a_carried_over_name_is_never_refused_or_quoted() {
+        let (url, _) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let base = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/old.png"), PNG).unwrap();
+        std::fs::write(
+            dir.join("images/old.json"),
+            json!({"cast": [{"name": "ghost", "wearing": "PLANTED WORDS", "doing": "x"}]})
+                .to_string(),
+        )
+        .unwrap();
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Dim the lights.", "keep": "the room"},
+                       "reference_images": ["images/old.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Have John wave.", "keep": "the room"},
+                       "reference_images": ["images/old.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("PLANTED WORDS"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// A picture that records more people than an edit's budget holds is still
     /// editable with no `cast`: the carried-over people are trimmed to it, and
     /// `identity` says who went without a crop (review of #586).
@@ -7658,6 +7807,11 @@ mod tests {
         );
         let m = manifest_of(&dir, &out.content);
         assert_eq!(m["identity"]["people"][2]["crop"], false, "{m}");
+        assert!(
+            out.content.contains("Sam went without a face reference"),
+            "the trim reaches the result: {}",
+            out.content
+        );
         assert_eq!(
             m["cast"][0]["wearing"], "a dress",
             "the record keeps the clothes: {m}"
