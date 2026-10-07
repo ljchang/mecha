@@ -5608,6 +5608,7 @@ mod held_tests {
         let mut sessions = HashMap::from([(
             "k".to_string(),
             WebSession {
+                late: Default::default(),
                 listen: None,
                 conversation: Some(mecha_core::agent::Conversation::new()),
                 session: Recording::Kept(Arc::clone(&session)),
