@@ -3084,6 +3084,9 @@ impl ImageGenerate {
         let Some(sc) = input.get("scene").filter(|v| !v.is_null()).cloned() else {
             return Ok((input, None));
         };
+        // The memory guard before any read, as `call` keeps it: routing reads
+        // the picture and may read the scene's place (review of #589, pass 7).
+        self.memory_guard().await?;
         let Value::Object(sc) = sc else {
             return Err("`scene` must be an object: people, camera, place.".into());
         };
