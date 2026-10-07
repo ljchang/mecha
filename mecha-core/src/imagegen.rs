@@ -3214,7 +3214,10 @@ impl Tool for ImageGenerate {
         // back through its history, which missed 63 of 69 persona edits
         // (R5). An attached photo records nobody, so it names nobody unless
         // the call does.
-        let mut people_from = "the call";
+        // Overwritten wherever someone is merged; an edit that names nobody
+        // says so here, so `from` never disagrees with `skipped` (review of
+        // #588, pass 4).
+        let mut people_from = "nobody named";
         // Who the call itself named, as library names (`self` is the
         // persona's character): held to the compiler's bar below, where a
         // person carried over from the picture's record is not.
@@ -3299,7 +3302,7 @@ impl Tool for ImageGenerate {
         // person the words also name is the recorded person, with what the
         // record says they wear; past `MAX_CAST`, the rest of the record is
         // left out and `identity` says who.
-        let mut left_out: Vec<String> = Vec::new();
+        let mut left_out: Vec<crate::imagelib::CastMember> = Vec::new();
         // Only when there is someone to merge, so an edit with nobody keeps no
         // library ask and its prompt goes through untouched.
         if is_edit && (!record.is_empty() || ask.is_some()) {
@@ -3311,7 +3314,7 @@ impl Tool for ImageGenerate {
                 if a.cast.len() < crate::imagelib::MAX_CAST {
                     a.cast.push(m);
                 } else {
-                    left_out.push(m.name.trim().to_lowercase());
+                    left_out.push(m);
                 }
             }
             people_from = match (declared.is_empty(), inherited.is_empty(), worded_in) {
@@ -3852,8 +3855,23 @@ impl Tool for ImageGenerate {
                 }
                 req.prompt.push_str(&worded);
             }
-            identity = json!({"people": people, "from": people_from, "skipped": skipped,
-                "left_out": (!left_out.is_empty()).then_some(&left_out)});
+            // Past `MAX_CAST` a recorded person gets no face, but is still in
+            // the picture: kept in the record, and said in the result line,
+            // as a budget trim is (review of #588, pass 4).
+            for m in &left_out {
+                let name = m.name.trim().to_lowercase();
+                let entry = library
+                    .as_ref()
+                    .and_then(|l| l.get(crate::imagelib::Kind::Character, &name))
+                    .filter(|e| e.status == crate::imagelib::Status::Approved);
+                people.push(json!({"name": name, "from": "the picture's record", "crop": false,
+                    "skipped": format!("past {} people in one picture", crate::imagelib::MAX_CAST)}));
+                edit_cast.push(json!({"name": name, "version": entry.map(|e| e.version),
+                    "portrait": entry.and_then(|e| e.portrait.clone()),
+                    "wearing": m.wearing.trim(), "doing": m.doing.trim()}));
+                trimmed.push(capitalized(&name));
+            }
+            identity = json!({"people": people, "from": people_from, "skipped": skipped});
         }
         // A trim is said where the model reads it, not only in the manifest
         // (review of #584, pass 10): the picture is still drawn, from the
@@ -3862,10 +3880,11 @@ impl Tool for ImageGenerate {
             String::new()
         } else {
             format!(
-                " {} went without a face reference: an edit sends at most \
-                 {EDIT_REFERENCE_BUDGET} pictures, this one included, so the picture alone \
-                 carried {}.",
+                " {} went without a face reference this time (an edit sends at most \
+                 {EDIT_REFERENCE_BUDGET} pictures, and holds at most {} library people), so the \
+                 picture alone carried {}.",
                 trimmed.join(", "),
+                crate::imagelib::MAX_CAST,
                 if trimmed.len() == 1 {
                     "that face"
                 } else {
@@ -9140,6 +9159,10 @@ mod tests {
         assert!(!last_prompt(&seen).contains("images.image_2"));
         let m = manifest_of(&dir, &out.content);
         assert_eq!(m["identity"]["skipped"], "nobody was named", "{m}");
+        assert_eq!(
+            m["identity"]["from"], "nobody named",
+            "from agrees with skipped: {m}"
+        );
         assert!(m["cast"].is_null(), "{m}");
         // Declared: herself, onto the photo.
         let out = edit(
@@ -9283,10 +9306,22 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(last_prompt(&seen).contains("Maya's facial identity from <image2>"));
         let m = manifest_of(&dir, &out.content);
-        assert_eq!(
-            m["identity"]["left_out"].as_array().map(Vec::len),
-            Some(1),
+        let people = m["identity"]["people"].as_array().unwrap();
+        assert!(
+            people.iter().any(|p| p["skipped"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("past 4"))),
             "{m}"
+        );
+        assert_eq!(
+            m["cast"].as_array().map(Vec::len),
+            Some(5),
+            "the record keeps everyone: {m}"
+        );
+        assert!(
+            out.content.contains("went without a face reference"),
+            "{}",
+            out.content
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();

@@ -233,7 +233,10 @@ This is ruling R9 (owner, 2026-10-07).
 ### 5.2 People are declared on every call
 
 - **Each library person in a render enters as their detector head crop plus their library
-  description, on every call, whatever the canvas, except a masked edit** (§7). A masked edit
+  description, on every call, whatever the canvas, except a masked edit** (§7). Where no crop
+  can be had (no detector, no face in the portrait, past the budget), a declared person still
+  enters as their description, clothes and pose in words; only the face reference is missing,
+  and the result line says so. A masked edit
   still runs the name guard; declaring the person satisfies it, and their crop is simply not
   sent. The crop is the anchor's existing crop. The
   description is the entry's text, verbatim: build, and features such as a tattoo, worded so
@@ -463,8 +466,9 @@ Each is judged by the owner on face-sized, labelled sheets. ArcFace only flags g
 3. Why the seated, facing-the-camera placement in P1 failed for crop alone and for words, but
    held with the description.
 4. How often the model waives with `"cast": []` (the one-token opt-out of declared identity),
-   counted from manifests' `identity`. The tool description says it is only for someone else who
-   shares a library character's name; whether that holds in use is a measurement.
+   counted from manifests' `identity`. The tool description gives it two uses: someone else who
+   shares a library character's name, and resetting a record whose people have left the picture,
+   until the scene record can remove one person. Which use it is put to is the measurement.
 5. A location library entry beside owner photos (`IMAGE-COMPILER-DESIGN.md` §1 left locations as
    free text until measured).
 6. A third crop beside a canvas (§5.2, budget), and adding a person by restaging from the place
