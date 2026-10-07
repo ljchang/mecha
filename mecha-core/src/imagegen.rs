@@ -3160,7 +3160,13 @@ impl ImageGenerate {
                         name: name.to_lowercase(),
                         wearing: f("wearing"),
                         doing: f("doing"),
-                        remove: v.get("remove").and_then(Value::as_bool).unwrap_or(false),
+                        remove: match v.get("remove") {
+                            None | Some(Value::Null) => false,
+                            Some(Value::Bool(b)) => *b,
+                            // A "true" in quotes is a removal meant, never a
+                            // retouch (review of #591, pass 4).
+                            Some(_) => return Err("`remove` must be true or false.".into()),
+                        },
                     });
                 }
             }
@@ -3216,6 +3222,15 @@ impl ImageGenerate {
                 Some(i) if c.remove => {
                     people.remove(i);
                     removed = true;
+                }
+                // A name alone changes nothing, and would spend a render
+                // (review of #591, pass 4).
+                Some(_) if c.wearing.is_none() && c.doing.is_none() => {
+                    return Err(format!(
+                        "The change names {} but says nothing new: give what they wear, what \
+                         they are doing, or `remove`.",
+                        capitalized(&c.name)
+                    ))
                 }
                 Some(i) => {
                     if let Some(w) = &c.wearing {
@@ -3345,6 +3360,30 @@ impl ImageGenerate {
                 Some(crate::scene::Place::Words { text }) => Some(text.clone()),
                 _ => None,
             });
+            // An edit-shaped restage (on the held place photo, or on the
+            // current picture) sends that picture beside the faces, so it
+            // holds fewer faces than a new picture does; said in the scene's
+            // terms, since the model sent no `cast` (review of #591, pass 4).
+            let faces = people
+                .iter()
+                .filter(|p| {
+                    lib.as_ref()
+                        .and_then(|l| l.get(crate::imagelib::Kind::Character, &p.0))
+                        .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+                })
+                .count();
+            let room = EDIT_REFERENCE_BUDGET - 1;
+            if words.is_none() && faces > room {
+                let names: Vec<String> = people.iter().map(|p| capitalized(&p.0)).collect();
+                return Err(format!(
+                    "This scene holds {} people ({}), and a restage on its place picture draws \
+                     at most {room} with their faces, beside the picture itself. Take someone \
+                     out with `remove` in the same change, or change only what they wear, which \
+                     edits the picture as it is.",
+                    people.len(),
+                    names.join(", "),
+                ));
+            }
             match (held, words) {
                 (Some(path), _) => {
                     on_place = true;
@@ -11187,6 +11226,83 @@ mod tests {
             "{}",
             last_prompt(&seen)
         );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A restage on the place photo is an edit, which holds fewer faces than
+    /// a new picture: three people placed on a room photo are refused in the
+    /// scene's terms, not the `cast` the model never sent; and a change that
+    /// says nothing new, or a `remove` that is not a bool, is refused rather
+    /// than spending a render (review of #591, pass 4).
+    #[tokio::test]
+    async fn a_restage_on_the_place_photo_is_bounded_in_the_scenes_terms() {
+        let (url, _) = distinct(2).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john", "wren"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/room.png"), picture(8, [10, 10, 10])).unwrap();
+        let who = |n: &str| json!({"name": n, "wearing": "a coat", "doing": "sitting"});
+        let placed = maya
+            .call(
+                json!({"edit": {"change": "Add two people on the sofa."},
+                       "reference_images": ["inbox/room.png"],
+                       "cast": [who("self"), who("john")]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!placed.is_error, "{}", placed.content);
+        let three = maya
+            .call(
+                json!({"scene": {"people": [who("wren")]},
+                       "reference_images": [picture_of(&placed.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!three.is_error, "{}", three.content);
+        let out = maya
+            .call(
+                json!({"scene": {"camera": "From the doorway."},
+                       "reference_images": [picture_of(&three.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("draws at most 2"), "{}", out.content);
+        assert!(!out.content.contains("`cast`"), "{}", out.content);
+        for (bad, says) in [
+            (json!({"name": "john"}), "says nothing new"),
+            (
+                json!({"name": "john", "remove": "true"}),
+                "must be true or false",
+            ),
+        ] {
+            let out = maya
+                .call(
+                    json!({"scene": {"people": [bad]},
+                           "reference_images": [picture_of(&three.content)]}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content.contains(says),
+                "{}",
+                out.content
+            );
+        }
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
