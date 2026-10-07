@@ -1682,7 +1682,17 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
     if !text.is_empty() {
         out.push_str(&format!(" ({text})"));
     }
-    let (wearing, doing) = (m.wearing.trim(), m.doing.trim().trim_end_matches('.'));
+    // A placeholder (the refusal skeleton's "…", or what `cast_self` fills
+    // in) is no answer, so it is never printed (review of #586, pass 3).
+    fn said(s: &str) -> &str {
+        let s = s.trim();
+        if unstated(s) {
+            ""
+        } else {
+            s
+        }
+    }
+    let (wearing, doing) = (said(&m.wearing), said(&m.doing).trim_end_matches('.'));
     if !wearing.is_empty() {
         out.push_str(&format!(", wearing {wearing}"));
     }
@@ -1694,6 +1704,14 @@ fn person_sentence(shown: &str, text: &str, m: &crate::imagelib::CastMember) -> 
     }
     out.push('.');
     out
+}
+
+/// No answer about clothes or pose: empty, the refusal skeleton's "…", or the
+/// self-cast's stand-in, which on an edit points at a scene that is only the
+/// change (review of #586, pass 3).
+fn unstated(s: &str) -> bool {
+    let s = s.trim();
+    crate::imagelib::blank(s) || s == SELF_WEARING || s == SELF_DOING
 }
 
 /// A library name as the edit prompt says it, each word capitalised: "maya" →
@@ -3052,8 +3070,10 @@ impl Tool for ImageGenerate {
          edit, put in cast the owner's characters who are in the picture or being added to it \
          (yourself as \"self\" in a persona chat), each with what they wear and do after the \
          change: the tool brings each face from the library. A picture you made already \
-         records its people, so cast can be left out for it; pass \"cast\": [] when none of \
-         them is in it. Do not describe their looks in the edit. If the user's \
+         records its people, so cast can be left out for it. Pass \"cast\": [] only when a \
+         name in the change means someone else who shares a library character's name; \
+         \"cast\": [] turns off their faces and the name check. Do not describe their looks \
+         in the edit. If the user's \
          message names a mask (a picture they painted over the part to change), pass it as \
          mask, with the picture in reference_images, and put only the change in edit.change: \
          everything outside the mask is kept exactly. The first line of a result is the new \
@@ -3453,13 +3473,25 @@ impl Tool for ImageGenerate {
                 }
                 continue;
             }
-            if theirs {
+            // Someone only the edit's words name, whom the picture's record
+            // does not carry, is new to this picture, so meets the same bar
+            // (review of #586, pass 3): "Add Maya on the bench" with no `cast`.
+            let new_here = !theirs && !inherited.contains(&name);
+            if theirs || new_here {
                 let (wearing, doing) = (m.wearing.trim(), m.doing.trim());
-                if crate::imagelib::blank(wearing) || crate::imagelib::blank(doing) {
-                    return Ok(refused(format!(
-                        "`{name}` needs `wearing` and `doing`: in an edit, what they wear and do \
-                         after the change. Left out, the edit invents them."
-                    )));
+                if unstated(wearing) || unstated(doing) {
+                    return Ok(refused(if theirs {
+                        format!(
+                            "`{name}` needs `wearing` and `doing`: in an edit, what they wear and \
+                             do after the change. Left out, the edit invents them."
+                        )
+                    } else {
+                        format!(
+                            "`{name}` is named in the edit but this picture does not record \
+                             them: put them in `cast` with what they wear and do after the \
+                             change, or the edit invents both."
+                        )
+                    }));
                 }
                 if wearing.chars().count() > crate::imagelib::MAX_CAST_FIELD
                     || doing.chars().count() > crate::imagelib::MAX_CAST_FIELD
@@ -3667,6 +3699,7 @@ impl Tool for ImageGenerate {
                     .zip(anchors)
                     .map(|((m, name, entry, unknown), anchor)| (m, name, entry, anchor, unknown));
                 let mut said = String::new();
+                let mut worded = String::new();
                 let mut crops = 0;
                 // Where each person came from, said per person (review of
                 // #586): a scene's record and the edit's words can mix.
@@ -3712,6 +3745,18 @@ impl Tool for ImageGenerate {
                         }
                         other => other,
                     };
+                    // A carried-over person's clothes are on the canvas
+                    // already: only what the call says is sent.
+                    let told = if inherited.contains(&name) && !declared.contains(&name) {
+                        crate::imagelib::CastMember {
+                            name: m.name.clone(),
+                            wearing: String::new(),
+                            doing: String::new(),
+                        }
+                    } else {
+                        m.clone()
+                    };
+                    let sentence = person_sentence(&shown, &text, &told);
                     match anchor {
                         Some(crate::face::Anchor::Crop(bytes)) => {
                             req.references.push(Reference {
@@ -3721,18 +3766,7 @@ impl Tool for ImageGenerate {
                             });
                             crops += 1;
                             let k = req.references.len();
-                            // A carried-over person's clothes are on the
-                            // canvas already: only what the call says is sent.
-                            let told = if inherited.contains(&name) && !declared.contains(&name) {
-                                crate::imagelib::CastMember {
-                                    name: m.name.clone(),
-                                    wearing: String::new(),
-                                    doing: String::new(),
-                                }
-                            } else {
-                                m.clone()
-                            };
-                            said.push_str(&person_sentence(&shown, &text, &told));
+                            said.push_str(&sentence);
                             said.push_str(&format!(
                                 " Take only {shown}'s facial identity from <image{k}>, nothing else."
                             ));
@@ -3750,6 +3784,16 @@ impl Tool for ImageGenerate {
                                 Some(crate::face::Anchor::Unavailable(why)) => why,
                                 Some(crate::face::Anchor::Crop(_)) => unreachable!(),
                             };
+                            // No crop, but what the call says they wear and do
+                            // still goes in: without a detector, or past one
+                            // that failed, a person added with no clothes
+                            // stated gets invented ones (review of #586, pass
+                            // 3). Not on a masked edit, whose prompt is the
+                            // change alone.
+                            let states = !unstated(&told.wearing) || !unstated(&told.doing);
+                            if !masked && states {
+                                worded.push_str(&sentence);
+                            }
                             people.push(
                                 json!({"name": name, "from": from_of(&name), "version": e.version,
                                 "portrait": e.portrait, "crop": false, "skipped": why}),
@@ -3772,6 +3816,7 @@ impl Tool for ImageGenerate {
                         req.prompt.push_str(" Each of them appears exactly once.");
                     }
                 }
+                req.prompt.push_str(&worded);
             }
             identity = json!({"people": people, "from": people_from, "skipped": skipped});
         }
@@ -9130,7 +9175,12 @@ mod tests {
         )
         .await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(!last_prompt(&seen).contains("images.image_2"));
+        let sent = last_prompt(&seen);
+        assert!(!sent.contains("images.image_2"), "{sent}");
+        assert!(
+            sent.contains(" Maya (maya, a memorable face), wearing a coat, sitting."),
+            "no crop, but the declared clothes still go in (review of #586, pass 3): {sent}"
+        );
         assert_eq!(
             manifest_of(&dir, &out.content)["identity"]["people"][0]["skipped"],
             "the face detector is not installed"
@@ -9152,6 +9202,39 @@ mod tests {
         let edited = json!({"reference_images": ["inbox/room.png"], "cast": cast});
         assert!(t.library_redraw(&drawn).is_some());
         assert!(t.library_redraw(&edited).is_none());
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Someone only the edit's words name, whom the picture does not record,
+    /// is new to it, so is asked for in `cast` with what they wear and do
+    /// rather than drawn in invented clothes (review of #586, pass 3).
+    #[tokio::test]
+    async fn a_person_named_only_in_an_edits_words_must_be_declared_with_clothes() {
+        let lib = library_with(&["maya"]);
+        let base = Arc::new(
+            tool("http://127.0.0.1:1")
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        );
+        let maya = base.persona_form(Some(persona_maya()));
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/room.png"), PNG).unwrap();
+        let out = maya
+            .call(
+                json!({"edit": {"change": "Add Maya sitting on the bench.", "keep": "the room"},
+                       "reference_images": ["inbox/room.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("does not record them"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 
