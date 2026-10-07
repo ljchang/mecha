@@ -3217,11 +3217,14 @@ impl ImageGenerate {
             .collect();
         let mut added = false;
         let mut removed = false;
+        // Who a removal takes out, said where the canvas still shows them.
+        let mut gone: Vec<String> = Vec::new();
         for c in &changes {
             match people.iter().position(|p| p.0 == c.name) {
                 Some(i) if c.remove => {
                     people.remove(i);
                     removed = true;
+                    gone.push(capitalized(&c.name));
                 }
                 // A name alone changes nothing, and would spend a render
                 // (review of #591, pass 4).
@@ -3375,11 +3378,16 @@ impl ImageGenerate {
             let room = EDIT_REFERENCE_BUDGET - 1;
             if words.is_none() && faces > room {
                 let names: Vec<String> = people.iter().map(|p| capitalized(&p.0)).collect();
+                let on = if held.is_some() {
+                    "on its place picture"
+                } else {
+                    "on this picture, since the scene's place could not be found,"
+                };
                 return Err(format!(
-                    "This scene holds {} people ({}), and a restage on its place picture draws \
-                     at most {room} with their faces, beside the picture itself. Take someone \
-                     out with `remove` in the same change, or change only what they wear, which \
-                     edits the picture as it is.",
+                    "This scene holds {} people ({}), and a restage {on} draws at most {room} \
+                     with their faces, beside the picture itself. Take someone out with \
+                     `remove` in the same change, or change only what they wear, which edits \
+                     the picture as it is.",
                     people.len(),
                     names.join(", "),
                 ));
@@ -3419,8 +3427,20 @@ impl ImageGenerate {
                 // A scene whose place is neither held nor in words: the
                 // current picture is the only place there is.
                 (None, None) => {
-                    let mut edit = json!({"change": given_change.clone()
-                        .unwrap_or_else(|| "Place the people as described below.".into())});
+                    // The current picture still shows whoever was removed, so
+                    // the change says so; the other two branches draw on a
+                    // canvas without them (review of #591, pass 5).
+                    let mut change = given_change
+                        .clone()
+                        .unwrap_or_else(|| "Place the people as described below.".into());
+                    if !gone.is_empty() {
+                        change = format!(
+                            "{}. Take {} out of the picture.",
+                            change.trim_end_matches('.'),
+                            gone.join(" and ")
+                        );
+                    }
+                    let mut edit = json!({"change": change});
                     if let Some(c) = &camera {
                         edit["camera"] = json!(c);
                     }
@@ -11303,6 +11323,58 @@ mod tests {
                 out.content
             );
         }
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A removal whose scene's place cannot be found edits the current
+    /// picture, which still shows the person: the change says to take them
+    /// out, so the picture agrees with the record (review of #591, pass 5).
+    #[tokio::test]
+    async fn a_removal_on_the_current_picture_says_who_goes() {
+        let (url, seen) = distinct(3).await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let maya = Arc::new(
+            tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(stub_faces(crate::face::Anchor::Crop(PNG.to_vec()))),
+        )
+        .persona_form(Some(persona_maya()));
+        let cx = scene_ctx(&dir, &store, "c1");
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/room.png"), picture(8, [10, 10, 10])).unwrap();
+        let who = |n: &str| json!({"name": n, "wearing": "a coat", "doing": "sitting"});
+        let placed = maya
+            .call(
+                json!({"edit": {"change": "Add two people on the sofa."},
+                       "reference_images": ["inbox/room.png"],
+                       "cast": [who("self"), who("john")]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!placed.is_error, "{}", placed.content);
+        std::fs::remove_file(dir.join("inbox/room.png")).unwrap();
+        let out = maya
+            .call(
+                json!({"scene": {"people": [{"name": "john", "remove": true}]},
+                       "reference_images": [picture_of(&placed.content)]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            last_prompt(&seen).contains("Take John out of the picture"),
+            "{}",
+            last_prompt(&seen)
+        );
+        let now = cx.scene.as_ref().unwrap().current().unwrap();
+        let names: Vec<_> = now.people.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["maya"], "{now:?}");
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
