@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
-  taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking,
+  taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking, withJob, clockOf,
   fileUrl, uploadUrl,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
@@ -218,6 +218,22 @@ assert.equal(keptCharacter('priya', undefined), '');
   // Not twice, and not when nothing is running.
   assert.equal(withWorking(entries, working).length, entries.length);
   assert.equal(withWorking(entries, null), entries);
+}
+
+// A picture drawn past its turn is no longer `working`: a re-read takes its
+// row's start from the server's `job`, so the row still counts the render
+// (2026-10-07: after #583 the clock was gone). Only the row the job answers,
+// and only while it is still out.
+{
+  const out = { kind: 'tool', id: 'p1', name: 'image_generate', is_error: false, preview: 'being made: pictures/a.png' };
+  const done = { kind: 'tool', id: 'p0', name: 'image_generate', is_error: false, preview: 'pictures/b.png' };
+  const entries = withJob([done, out], { id: 'p1', elapsed_ms: 84_000 }, 100_000);
+  assert.equal(clockOf(100_000 - entries[1].started), '1:24');
+  assert.equal(entries[0].started, undefined, 'a drawn picture has no clock');
+  // A job that answers a finished row stamps nothing.
+  assert.equal(withJob([done], { id: 'p0', elapsed_ms: 1 }, 5)[0].started, undefined);
+  assert.equal(withJob(entries, null), entries);
+  assert.equal(withJob(entries, { id: 'p1' }), entries, 'no duration, no clock');
 }
 
 // A picture the persona drew: fetched and edited through this chat's own
