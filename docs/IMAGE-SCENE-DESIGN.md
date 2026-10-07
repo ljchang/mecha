@@ -249,9 +249,13 @@ This is ruling R9 (owner, 2026-10-07).
   through `ToolCtx::resolve` before any crop is read. The model can propose them for the library
   through the existing candidate path.
 - The persona's own character comes in when something names her. **The picture's record**
-  carries her over. **Her name in the edit's words**, on a picture that does not record her, is
-  refused until the call puts her in `cast` with what she wears and does, because she is new to
-  that picture and stand-in clothes would be invented ones. That costs use case 2 one round trip.
+  carries her over. **Her name in the edit's words**, on a picture that does not record her,
+  brings her in when those words say what she wears and does. Otherwise the call is refused and
+  asks for her in `cast`, because she is new to that picture and stand-in clothes would be
+  invented ones; that costs use case 2 one round trip.
+- **A call's `cast` adds to a picture's record and never erases it.** Removing one person from
+  the record waits for the scene record (§10 step 2). Until then `"cast": []` resets the whole
+  record when the recorded people have left the picture.
   An owner photo with no record and no mention of her names nobody (§6, case 12).
 
 **Resolution and slots.** One call has one reference size.
