@@ -494,12 +494,6 @@ impl RunContext {
         }
     }
 
-    /// End this run as soon as it queues a picture; see the field.
-    pub fn with_end_after_deferral(mut self) -> Self {
-        self.end_after_deferral = true;
-        self
-    }
-
     /// Cap the model's reasoning per request in this run; see the field.
     pub fn with_think_budget(mut self, tokens: u32) -> Self {
         self.think_budget = Some(tokens);
@@ -1263,7 +1257,9 @@ already know, or make the single next tool call. Keep your reasoning short this 
 
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Eight of them now (the arms below number the later ones), and the miner
+/// Ten of them now (the arms below number the later ones; the two closing
+/// lines of one picture per run, `PICTURE_ON_ITS_WAY` and
+/// `PICTURE_STILL_BEING_MADE`, are the newest), and the miner
 /// has to know every one: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
@@ -2474,7 +2470,16 @@ impl Agent {
             // Anything the user typed while the previous turn was running.
             // This lands *inside* the message carrying the tool results, so
             // the model is steered without the run being stopped and restarted.
-            for queued in cx.take_queued_input() {
+            // Not on a closing turn, which may answer only in words: a steer
+            // taken there could not be acted on, so it stays queued and the
+            // front end says it came too late, as the mailbox's `stopping`
+            // guard does below (review of #596, pass 4).
+            for queued in closing
+                .is_none()
+                .then(|| cx.take_queued_input())
+                .into_iter()
+                .flatten()
+            {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
                 append_user_text(messages, queued);
             }
@@ -2888,9 +2893,11 @@ impl Agent {
             // nothing worth summarising, freed by thinning alone), and the
             // next overflow propagated as a raw 400 with no recovery
             // attempted at all.
-            // The closing request is not streamed: a reply written as a tool
-            // call would reach the screen before it could be taken out. Its
-            // cleaned text goes out once, below (§5.5).
+            // The closing request's deltas are not forwarded: a reply written
+            // as a tool call would reach the screen before it could be taken
+            // out. The request may still stream to the provider (a
+            // cancellable run always does); its cleaned text goes out once,
+            // below, and a cut-off partial is cleaned the same way (§5.5).
             let stream = if closing.is_some() {
                 None
             } else {
@@ -2977,6 +2984,13 @@ impl Agent {
                 // see how far it got.
                 Completion::Interrupted(partial, spent) => {
                     tracing::info!(turns, "interrupted mid-stream");
+                    // A closing reply cut off mid-call is cleaned like a whole
+                    // one, so a Stop never shows the markup (review of #596).
+                    let partial = if closing.is_some() {
+                        strip_call_markup(&partial).trim().to_string()
+                    } else {
+                        partial
+                    };
                     if !partial.trim().is_empty() {
                         messages.push(Message::assistant(vec![Block::text(partial.clone())]));
                     }
@@ -3055,7 +3069,9 @@ impl Agent {
             // sees the words that remain, or that the picture is on its way
             // (§5.5). An empty reply is replaced the same way, not retried.
             let mut response = response;
-            if let Some(line) = closing {
+            // A refusal is the envelope, and is left as the provider said it
+            // (CLAUDE.md: check the envelope before the content).
+            if let Some(line) = closing.filter(|_| response.stop_reason != StopReason::Refusal) {
                 let said = strip_call_markup(&response.message.text());
                 let said = if said.trim().is_empty() {
                     if line == PICTURE_STILL_BEING_MADE {
@@ -3072,7 +3088,11 @@ impl Agent {
                     .content
                     .retain(|b| !matches!(b, Block::ToolUse { .. } | Block::Text { .. }));
                 response.message.content.push(Block::text(said.clone()));
-                response.stop_reason = StopReason::EndTurn;
+                // Only a tool-use turn is ended here; a truncation is still
+                // reported as one (review of #596, pass 4).
+                if response.stop_reason == StopReason::ToolUse {
+                    response.stop_reason = StopReason::EndTurn;
+                }
                 emit(&events, AgentEvent::TextDelta(said));
             }
             let text = response.message.text();
@@ -4585,7 +4605,7 @@ impl Agent {
             // The repeat is not run, and the run's next request closes it.
             if run_pictures.started.contains(name) {
                 let content = format!(
-                    "Not run: `{name}` was already started in this turn, and its result is on \
+                    "Not run: `{name}` was already started in this run, and its result is on \
                      its way. Answer the owner now."
                 );
                 run_pictures.repeated = true;
@@ -7369,6 +7389,94 @@ mod tests {
         assert_eq!(outcome.text, PICTURE_ON_ITS_WAY_REPLY);
         let last = convo.messages.last().unwrap().text();
         assert!(!last.contains("tool_call"), "{last}");
+        go.notify_one();
+    }
+
+    /// A refusal on the closing request is the envelope: the run reports it
+    /// as the provider said it, never as a clean end carrying the fixed line
+    /// (review of #596, pass 4).
+    #[tokio::test]
+    async fn a_refusal_on_the_closing_turn_is_left_as_the_provider_said_it() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let mut turns = draw_then("unused");
+        turns[1] = assistant(
+            vec![Block::text("I can't help with that.")],
+            StopReason::Refusal,
+        );
+        let (agent, _provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let mut convo = Conversation::user("draw the harbour");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_reason, StopReason::Refusal);
+        assert_eq!(outcome.text, "I can't help with that.");
+        go.notify_one();
+    }
+
+    /// A draw that the owner steers while it is being queued: the steer
+    /// lands for the closing turn, which can only answer in words.
+    struct SteeredLater {
+        go: Arc<tokio::sync::Notify>,
+        queue: Arc<Mutex<VecDeque<String>>>,
+    }
+
+    #[async_trait]
+    impl Tool for SteeredLater {
+        fn name(&self) -> &str {
+            "draw"
+        }
+        fn description(&self) -> &str {
+            "Draw something."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.queue.lock().unwrap().push_back("make it blue".into());
+            Later(Arc::clone(&self.go)).call(input, ctx).await
+        }
+    }
+
+    /// A steer that arrives for the closing turn is left queued, for the
+    /// front end to say it came too late, rather than folded into a turn
+    /// that cannot act on it (review of #596, pass 4).
+    #[tokio::test]
+    async fn a_steer_on_the_closing_turn_stays_queued() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let jobs = crate::jobs::JobQueue::new(|_| {});
+        let steers = Arc::new(Mutex::new(VecDeque::new()));
+        let (agent, provider) = agent_with_tools(
+            draw_then("On its way."),
+            vec![Arc::new(SteeredLater {
+                go: Arc::clone(&go),
+                queue: Arc::clone(&steers),
+            })],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_queued_input(Arc::clone(&steers));
+        cx.jobs = Some(jobs.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let mut convo = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(!tail_text(&seen[1]).contains("make it blue"));
+        }
+        assert_eq!(steers.lock().unwrap().len(), 1, "the steer is still queued");
         go.notify_one();
     }
 
