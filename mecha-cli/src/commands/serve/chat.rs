@@ -97,6 +97,10 @@ pub struct ChatState {
     pub(super) personas: Arc<super::persona_chat::PersonaChats>,
     pub(super) stopping: tokio_util::sync::CancellationToken,
     pub(super) runs: tokio_util::task::TaskTracker,
+    /// The assistant chats' background jobs (`late`): a picture drawn past
+    /// the turn that asked for it. Kept chats only — an incognito one keeps
+    /// no record to land a late result in, and draws inline.
+    jobs: super::late::Jobs,
 }
 
 /// Where a web session's turns go.
@@ -205,6 +209,9 @@ struct WebSession {
     /// The reply being read aloud, while a Listen tap speaks it
     /// (`listen::Reply`): here so it goes when this conversation does.
     listen: Option<Arc<super::listen::Reply>>,
+    /// Pictures that finished after the turn that asked for them, and what
+    /// the next run is owed about them (`late`).
+    late: super::late::LateState,
 }
 
 struct Live {
@@ -335,6 +342,7 @@ impl ChatState {
             personas: Arc::new(super::persona_chat::PersonaChats::new()?),
             stopping: Default::default(),
             runs: Default::default(),
+            jobs: Default::default(),
         })
     }
 }
@@ -422,6 +430,7 @@ impl ChatState {
         sessions.insert(
             key.clone(),
             WebSession {
+                late: Default::default(),
                 listen: None,
                 conversation: Some(Conversation::new()),
                 workspace: room.workspace.clone(),
@@ -472,6 +481,12 @@ impl ChatState {
         };
         if sessions.get(&key).is_some_and(|ws| ws.live.is_some()) {
             return Err("a run is in flight in this conversation — stop it first");
+        }
+        // A picture still being drawn lands in this conversation's record:
+        // letting go of it first would leave the result "being made" for
+        // good (review of #583).
+        if !self.jobs.queue.pending_tools(&key).is_empty() {
+            return Err("a picture is being made in this conversation — stop it first");
         }
         let ws = sessions.remove(&key).expect("found above");
         ws.questions.shutdown();
@@ -1039,6 +1054,12 @@ pub enum Entry {
     },
     Tool {
         name: String,
+        /// The call this row answers. A late result (a picture drawn past its
+        /// turn) finds its row by it, so a page that read the transcript
+        /// while the picture was out still gets the picture when it lands
+        /// (review of #583).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         is_error: Option<bool>,
         /// What the call was made with, shaped and clipped exactly as
         /// [`WireEvent::Tool`] sends it live. A reload that showed less
@@ -1059,7 +1080,7 @@ pub enum Entry {
 /// The first stretch of a tool result, char-safe, with the cut declared.
 /// 1,500 chars is a screenful on a phone: enough to see what came back,
 /// small enough that a transcript of forty calls stays a page, not a dump.
-fn result_preview(content: &str) -> String {
+pub(super) fn result_preview(content: &str) -> String {
     const CAP: usize = 1_500;
     if content.chars().count() <= CAP {
         return content.to_string();
@@ -1150,6 +1171,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             };
                             entries.push(Entry::Tool {
                                 name,
+                                id: Some(tool_use_id.clone()),
                                 is_error: Some(*is_error),
                                 draft,
                                 args,
@@ -1371,6 +1393,14 @@ pub(super) async fn release_task_conversation(
             "it is working right now — let it finish, or stop it first, then hand it over"
         );
     }
+    // Nor while a picture it asked for is still being drawn: the result
+    // lands in this process's copy, which the hand-over gives up, and a
+    // reopen would settle it as never made (review of #583).
+    if !chat.jobs.queue.pending_tools(&key).is_empty() {
+        anyhow::bail!(
+            "a picture is being made in it right now — let it finish, or stop it first, then hand it over"
+        );
+    }
     let id = ws.session.id().to_string();
     sessions.remove(&key);
     if let Ok(mut routes) = chat.routes.lock() {
@@ -1581,9 +1611,14 @@ fn ensure_session_as<'a>(
         if let Ok(mut routes) = chat.routes.lock() {
             routes.insert(key.to_string(), (questions.clone(), events.clone(), park));
         }
+        // A picture still "being made" when the server stopped has no job
+        // behind it now: settled from what the workspace holds (`late`).
+        super::late::repair_orphans(&session, &workspace, &mut conversation);
+        let late = super::late::LateState::of_file(&session.path);
         sessions.insert(
             key.to_string(),
             WebSession {
+                late,
                 listen: None,
                 conversation: Some(conversation),
                 session: Recording::Kept(Arc::new(session)),
@@ -2291,6 +2326,54 @@ struct Started {
 /// outbox stamp or the recording contract. The caller holds the sessions
 /// lock across this whole call, which is what keeps the map single-writer
 /// (the Slack connector's pattern).
+/// Start the task that hands finished jobs to their chats — once, on the
+/// first turn that can defer one. It holds the chat state weakly, so it ends
+/// with it.
+fn start_delivery(chat: &Arc<ChatState>) {
+    chat.jobs.start(|mut rx| {
+        let chat = Arc::downgrade(chat);
+        tokio::spawn(async move {
+            while let Some(late) = rx.recv().await {
+                let Some(chat) = chat.upgrade() else { break };
+                deliver(&chat, late).await;
+            }
+        });
+    });
+}
+
+/// A finished job, to its chat (§2.3). Into the record at once when the
+/// chat is idle, and only then to the page, so a page that re-reads finds it
+/// there; held for the run's hand-back when a run has the conversation, with
+/// the page shown it now, as a preview the hand-back makes true before
+/// `Done`.
+async fn deliver(chat: &Arc<ChatState>, late: mecha_core::jobs::Delivered) {
+    let mut sessions = chat.sessions.lock().await;
+    let Some(ws) = sessions.get_mut(&late.key) else {
+        tracing::warn!(key = %late.key, "a finished job's chat is gone");
+        chat.jobs.queue.landed(&late.key, &late.call_id);
+        return;
+    };
+    let Some(session) = ws.session.kept().cloned() else {
+        // Never submitted from one (`begin_turn`); nothing to record into,
+        // and nothing left pending to the send gate.
+        chat.jobs.queue.landed(&late.key, &late.call_id);
+        return;
+    };
+    let event = WireEvent::ToolResult {
+        name: late.tool.clone(),
+        id: late.call_id.clone(),
+        is_error: late.output.is_error,
+        preview: result_preview(&late.output.content),
+    };
+    if let Some(convo) = ws.conversation.as_mut() {
+        super::late::land(&mut ws.late, &session, convo, &late);
+        chat.jobs.queue.landed(&late.key, &late.call_id);
+    } else {
+        ws.late.held.push(late);
+    }
+    let _ = ws.events.send(event);
+}
+
 fn begin_turn(
     chat: &Arc<ChatState>,
     bound: &Arc<crate::follow::Bound>,
@@ -2607,6 +2690,32 @@ fn begin_turn(
     // across runs.
     cx = cx.with_cancel_handle(cancel.clone());
     cx.queued_input = Some(Arc::clone(&queue));
+    // A picture outlives the turn that asked for it (§5.4): a kept chat's
+    // run hands it to the chat's slot in the queue and answers at once, and
+    // is told what arrived since its last reply. An incognito chat has no
+    // record to land a late result in, so it draws inline, as before.
+    // Notes a failed run took, owed again at its hand-back.
+    let mut owed_back = Vec::new();
+    let turn = match ws.session.kept() {
+        Some(session) => {
+            start_delivery(chat);
+            let turn = chat.jobs.number();
+            cx.jobs = Some(chat.jobs.queue.sink(key, turn));
+            let owed = ws.late.take_notes();
+            owed_back = owed.clone();
+            if !owed.is_empty() {
+                // Recorded ahead of the run, as every door records its notes.
+                if let Err(e) = session.append(&Record::Notes {
+                    notes: owed.clone(),
+                }) {
+                    tracing::warn!("a late result's note was not recorded: {e:#}");
+                }
+                cx.notes = owed.into();
+            }
+            Some(turn)
+        }
+        None => None,
+    };
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
     cx.withheld = incognito_withheld.unwrap_or_else(|| Arc::clone(&ws.withheld));
@@ -2780,11 +2889,12 @@ fn begin_turn(
         // nothing — its conversation is rolled back all the same on failure,
         // below, because the next request reads it from memory.
         let kept = session.kept().cloned();
+        let mut outcome_recorded = false;
         match &outcome {
             Ok(o) => {
                 if let Some(session) = &kept {
                     let _ = session.record_run(&before, &conversation);
-                    let _ = session.record_outcome(o);
+                    outcome_recorded = session.record_outcome(o).is_ok();
                 }
             }
             // The transcript must agree with the rollback, or the failure
@@ -2955,6 +3065,28 @@ fn begin_turn(
             }
             ws.conversation = Some(conversation);
             ws.live = None;
+            // Two orderings, as in the persona host: the outcome is numbered
+            // before held pictures land, and they land before `Done`.
+            if let Some(turn) = turn {
+                ws.late.ended(turn, outcome.is_ok(), outcome_recorded);
+                if outcome.is_err() {
+                    ws.late.owe(std::mem::take(&mut owed_back));
+                    state_for_task.jobs.queue.cancel_run(&key_for_task, turn);
+                }
+            }
+            // Pictures that finished while this run held the chat: into the
+            // record now, before `Done` sends the page to re-read.
+            if let Some(session) = ws.session.kept().cloned() {
+                for late in std::mem::take(&mut ws.late.held) {
+                    if let Some(convo) = ws.conversation.as_mut() {
+                        super::late::land(&mut ws.late, &session, convo, &late);
+                    }
+                    state_for_task
+                        .jobs
+                        .queue
+                        .landed(&key_for_task, &late.call_id);
+                }
+            }
             // Only an ordinary chat is renamed: a delegation already carries
             // the task's name (and `task_withholding` reads that title), and
             // a voice session is the same conversation from another door.
@@ -3231,12 +3363,20 @@ impl crate::voice::SessionHost for VoiceHost {
 pub async fn cancel(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
+    body: Option<Json<CancelBody>>,
 ) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
     let sessions = chat.sessions.lock().await;
+    // The owner's Stop ends the chat's picture too, where talking over a
+    // reply ends only the reply (`docs/BACKGROUND-JOBS-DESIGN.md` §2.4); the
+    // call screen's picture slot asks for the picture alone (ruling Q2).
+    let picture = sessions.contains_key(&key) && chat.jobs.queue.cancel(&key);
+    if body.is_some_and(|Json(b)| b.picture) {
+        return Json(serde_json::json!({ "cancelled": picture })).into_response();
+    }
     match sessions.get(&key) {
         Some(ws) if ws.live.is_some() => {
             // Order matters: a run parked in `approve()` or `ask_user` never
@@ -3248,8 +3388,16 @@ pub async fn cancel(
             }
             Json(serde_json::json!({ "cancelled": true })).into_response()
         }
-        _ => Json(serde_json::json!({ "cancelled": false })).into_response(),
+        _ => Json(serde_json::json!({ "cancelled": picture })).into_response(),
     }
+}
+
+#[derive(Default, serde::Deserialize)]
+pub struct CancelBody {
+    /// Stop only the chat's picture (the call screen's picture slot), not
+    /// the reply in flight.
+    #[serde(default)]
+    picture: bool,
 }
 
 /// GET /api/chat/{key}/events — the run, streamed. Subscribing is legal at
@@ -3791,9 +3939,13 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             .flatten();
         routes.insert(key.clone(), (questions.clone(), events.clone(), park));
     }
+    let mut conversation = conversation;
+    super::late::repair_orphans(&session, &workspace, &mut conversation);
+    let late = super::late::LateState::of_file(&session.path);
     sessions.insert(
         key.clone(),
         WebSession {
+            late,
             listen: None,
             conversation: Some(conversation),
             // Resumed from its transcript, so recorded by definition.
@@ -4425,6 +4577,7 @@ mod wire_tests {
                 },
                 Entry::Tool {
                     name: "mail_search".into(),
+                    id: Some("t1".into()),
                     is_error: Some(false),
                     // An empty call has no shape to read, and the arguments
                     // beside it are `{}` — shown, because "called with
@@ -4784,6 +4937,34 @@ mod wire_tests {
         }
     }
 
+    /// A row read back from the transcript names its call, so a picture
+    /// that lands after the page read it — a reload while it was drawn —
+    /// finds its row (review of #583).
+    #[test]
+    fn a_picture_being_made_names_its_call_on_a_reread() {
+        let messages = vec![
+            Message::user("draw it"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "c1".into(),
+                name: "image_generate".into(),
+                input: serde_json::json!({}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "being made: images/a.png".into(),
+                is_error: false,
+            }]),
+        ];
+        let wire = serde_json::to_value(transcript_entries(&messages)).unwrap();
+        let row = wire
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool")
+            .unwrap();
+        assert_eq!(row["id"], "c1", "{row}");
+    }
+
     #[test]
     fn a_tool_result_only_message_adds_no_empty_user_entry() {
         let messages = vec![Message {
@@ -4802,6 +4983,7 @@ mod wire_tests {
             entries,
             vec![Entry::Tool {
                 name: "tool".into(),
+                id: Some("t9".into()),
                 is_error: Some(true),
                 draft: None,
                 args: None,
@@ -4855,6 +5037,7 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         personas: Arc::new(super::persona_chat::PersonaChats::for_tests()),
         stopping: Default::default(),
         runs: Default::default(),
+        jobs: Default::default(),
     })
 }
 
@@ -4980,6 +5163,53 @@ pub(super) fn test_chat_planned(
         answering_config(true),
         Some(todo),
     )
+}
+
+/// A picture still being drawn for `key`, until the returned token stops it.
+#[cfg(test)]
+pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::CancellationToken {
+    let token = tokio_util::sync::CancellationToken::new();
+    let watched = token.clone();
+    let job = mecha_core::jobs::DeferredJob::new(
+        async move {
+            watched.cancelled().await;
+            mecha_core::tool::ToolOutput::err("stopped")
+        },
+        token.clone(),
+        "busy",
+    );
+    chat.jobs
+        .queue
+        .submit(key, 0, "c1", "image_generate", job)
+        .unwrap();
+    token
+}
+
+/// The first tool result `key`'s conversation holds, as it stands.
+#[cfg(test)]
+pub(super) async fn test_first_result(chat: &ChatState, key: &str) -> Option<String> {
+    let sessions = chat.sessions.lock().await;
+    sessions[key]
+        .conversation
+        .as_ref()?
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            mecha_core::message::Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+}
+
+/// The transcript `key`'s kept session records into.
+#[cfg(test)]
+pub(super) async fn test_transcript(chat: &ChatState, key: &str) -> PathBuf {
+    chat.sessions.lock().await[key]
+        .session
+        .kept()
+        .expect("a kept chat")
+        .path
+        .clone()
 }
 
 /// The jail `key`'s session runs in — what its plan is keyed by (D14).
@@ -5235,6 +5465,7 @@ pub(super) fn test_chat_built(
         personas: Arc::new(personas),
         stopping: Default::default(),
         runs: Default::default(),
+        jobs: Default::default(),
     })
 }
 
@@ -5288,6 +5519,7 @@ mod held_tests {
         let mut sessions = HashMap::from([(
             "k".to_string(),
             WebSession {
+                late: Default::default(),
                 listen: None,
                 // Still held by a finished run landing: the `Held` return.
                 conversation: None,
@@ -5375,6 +5607,7 @@ mod held_tests {
         let mut sessions = HashMap::from([(
             key.clone(),
             WebSession {
+                late: Default::default(),
                 listen: None,
                 conversation: None,
                 session: Recording::Incognito(Arc::new(room)),
@@ -5500,6 +5733,7 @@ mod workflow_recording_tests {
             let mut sessions = HashMap::from([(
                 case.into(),
                 WebSession {
+                    late: Default::default(),
                     listen: None,
                     conversation: Some(conversation),
                     session: Recording::Kept(Arc::new(session)),

@@ -151,6 +151,8 @@ quarantine.rs a one-shot with no tools and no history: the property in the type
 mail_triage.rs the front door's shape one directory over: a typed verdict per
              thread, out of a quarantined pass the privileged run never reads
 tool/        Tool trait, Registry, Approver, builtin.rs
+jobs.rs      a tool's slow half past its turn: one per chat, delivered late by
+             appended records, stopped by Stop and never by speech
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
 search.rs    web_search: a chain of backends, first to answer wins
 agent.rs     the loop: ask → run tools → feed results back → repeat

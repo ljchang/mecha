@@ -2114,6 +2114,7 @@ mod tests {
                     refusal: false,
                     not_dispatched: self.0,
                     image: None,
+                    deferred: None,
                 })
             }
         }

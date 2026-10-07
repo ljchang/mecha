@@ -72,6 +72,12 @@ pub struct ToolOutput {
     /// `Taint::arm_for_content` would read them at the next run's start
     /// (`docs/ARCHITECTURE.md` §Images).
     pub image: Option<crate::message::Block>,
+    /// The slow half of this call, handed over rather than awaited
+    /// (`ToolOutput::deferred`): `content` is what the call says at once
+    /// ("being made: …"), and the job's own output answers the call when it
+    /// ends — late, on a chat host's queue, or inline where the run has none
+    /// (`docs/BACKGROUND-JOBS-DESIGN.md`).
+    pub deferred: Option<Arc<crate::jobs::DeferredJob>>,
 }
 
 impl ToolOutput {
@@ -83,6 +89,7 @@ impl ToolOutput {
             refusal: false,
             not_dispatched: false,
             image: None,
+            deferred: None,
         }
     }
 
@@ -94,6 +101,7 @@ impl ToolOutput {
             refusal: false,
             not_dispatched: false,
             image: None,
+            deferred: None,
         }
     }
 
@@ -107,6 +115,7 @@ impl ToolOutput {
             refusal: true,
             not_dispatched: false,
             image: None,
+            deferred: None,
         }
     }
 
@@ -114,6 +123,15 @@ impl ToolOutput {
     pub fn with_image(mut self, image: crate::message::Block) -> Self {
         self.image = Some(image);
         self
+    }
+
+    /// Answer at once with `now` and hand the slow half over as `job`
+    /// (`jobs::DeferredJob`): the run gives it to its host's queue, or awaits
+    /// it inline when it has none, and its output answers the call.
+    pub fn deferred(now: impl Into<String>, job: Arc<crate::jobs::DeferredJob>) -> Self {
+        let mut out = ToolOutput::ok(now);
+        out.deferred = Some(job);
+        out
     }
 
     /// Mark this content as having come from outside the machine.

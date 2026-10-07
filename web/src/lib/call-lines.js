@@ -2,7 +2,7 @@
 // call shows the whole conversation, in persona chats and the assistant's
 // alike). Pure, so `web/test/call-lines.mjs` imports it.
 
-import { pictureOf } from './picture.js';
+import { pictureOf, stillOut } from './picture.js';
 import { ownWords } from './persona.js';
 
 // A line of the owner's that the chat received: not one still queued.
@@ -57,6 +57,10 @@ export function historyLines(entries) {
       if (picture && !pictures.has(picture)) {
         pictures.add(picture);
         lines.push({ who: 'persona', picture, text: 'a picture' });
+      } else if (stillOut(e)) {
+        // Still being drawn past its turn (§5.4): its place in the
+        // conversation, which the picture takes when it lands.
+        lines.push({ who: 'persona', making: true, text: 'drawing a picture…' });
       }
     }
   }
