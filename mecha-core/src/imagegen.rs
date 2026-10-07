@@ -1665,7 +1665,9 @@ const CANVAS_CAMERA_MOVES: &str = " <image1> is the canvas: keep its room and fu
 /// (IMAGE-SCENE-DESIGN.md §5.2). Every reference in an edit is encoded at
 /// [`EDIT_REFERENCE_SIZE`] whatever its own size, so counting them is counting
 /// decoded size. Three at 1024² is the measured shape (canvas and two crops,
-/// 66 s); four is the research's cliff (+120 s, E2).
+/// 66 s); four is the research's cliff (+120 s, E2). Crops never take a call
+/// past it; pictures the model passes itself keep `MAX_REFERENCES`, as before
+/// (four plain references at 1024² draw, slowly, as they always did).
 const EDIT_REFERENCE_BUDGET: usize = 3;
 
 /// A declared person, as the compiler words one (`imagelib::compile`): the
@@ -3386,7 +3388,7 @@ impl Tool for ImageGenerate {
         } else {
             edit_people.len()
         };
-        if is_edit && paths.len() + crops_asked > EDIT_REFERENCE_BUDGET {
+        if is_edit && crops_asked > 0 && paths.len() + crops_asked > EDIT_REFERENCE_BUDGET {
             return Ok(refused(format!(
                 "This edit would send {} pictures to the image model at full size — {} in \
                  reference_images and {} for the people in `cast` — and at most \
@@ -7456,6 +7458,25 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Crops never take an edit past the budget, but pictures the model passes
+    /// itself keep `MAX_REFERENCES`: four plain references with nobody named
+    /// are not refused by the budget (review of #584, pass 7).
+    #[tokio::test]
+    async fn four_plain_references_are_not_refused_by_the_budget() {
+        let t = tool("http://127.0.0.1:1");
+        let dir = tempdir();
+        let out = t
+            .call(
+                json!({"edit": {"change": "x", "keep": "the rest"}, "cast": [],
+                       "reference_images": ["images/a.png", "images/b.png", "images/c.png", "images/d.png"]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.content.contains("fit one call"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// One budget per edit, the picture included (IMAGE-SCENE-DESIGN.md
