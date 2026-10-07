@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pictures can be changed by what changes in the scene.** `image_generate`
+  takes a `scene` change (who is in it, what they wear and do, the camera,
+  the place). A new pose, camera or place redraws the people in the scene's
+  place instead of editing the last picture again, so a low angle actually
+  moves the camera and a face doesn't drift down a chain of edits. New clothes
+  or someone added still edit the picture.
 - **A persona remembers what her last picture showed.** Each picture a
   persona chat draws records its scene: where it is, who is in it, and what
   they wear and do. A picture brought into another chat is recognised by its

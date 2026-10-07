@@ -874,6 +874,34 @@ conversation, so the capabilities do not change. Three rules:
     another chat wrote by editing this chat's picture stays, and can hold
     words from this one; forgetting by lineage is owed with the retention
     sweep.
+  - **A scene change routes by what it changes (step 3).** `image_generate`
+    takes a `scene` object: people (name, wearing, doing, `remove`), camera
+    and place. Only what is sent counts as changed (the owner's ruling,
+    2026-10-07). `ImageGenerate::route_scene` reads it against the picture's
+    scene, found by its bytes, and rewrites the call into one the paths below
+    already draw, so step 1's checks and step 2's landing apply unchanged:
+    - **Restage:** a camera, a place, a new pose for someone already there,
+      or a removal. Everyone is drawn afresh with their crops on the scene's
+      place: an edit of the place picture when this chat holds it (its hash
+      checked), else a new picture from the place's words (the M3 shape).
+      With neither, the people are redrawn on the current picture, and the
+      result says the place could not be found. The scene's camera and
+      style are drawn unless the change sets new ones.
+    - **Add:** someone new is added onto the current picture.
+    - **Retouch:** anything else edits the current picture.
+    - **No scene:** the assistant's chats, or a photo from outside, edit the
+      picture.
+
+    The result says when a call was restaged, so the model does not read
+    "an edit of" the place's photo as a lost picture. A change built on
+    another chat's scene keeps step 2's rule: the prompt carries that chat's
+    words to the model, while this chat's manifest records a placeholder
+    prompt and the cast by name only.
+
+    The manifest's `scene_route` says which. On landing, only the people the
+    change named take the run's origin; the rest keep their own, or a camera
+    move would launder an untrusted person clean. A newcomer's `doing`
+    describes them; it is not a pose change.
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
