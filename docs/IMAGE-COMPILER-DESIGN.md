@@ -90,6 +90,13 @@ as `model_untrusted`** — never approved, never clean.
 
 ## 3. Compiling a scene
 
+> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1):** the bullet below that makes `cast` and
+> `reference_images` exclusive is lifted.
+> Every library person enters every render, edits included, as a head crop plus their
+> description, under one reference size and one budget per call (`IMAGE-SCENE-DESIGN.md` §5.2).
+> "Its people carry their own identity" held for a pose change on a picture of them, and failed
+> for everything else a picture is passed for (§2 there). That bullet is kept as written.
+
 `image_generate` gains two optional fields. The model writes only what
 varies; code writes what persists.
 
@@ -140,12 +147,6 @@ The rules, each a measurement:
   stranger in its place is the substitution the cast exists to prevent. A
   persona chat's form of the tool keeps refusing an unknown name.
 - **The style's text is appended verbatim**, never paraphrased.
-> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1):** the exclusion below is lifted.
-> Every library person enters every render, edits included, as a head crop plus their
-> description, under one reference size and one budget per call (`IMAGE-SCENE-DESIGN.md` §5.2).
-> "Its people carry their own identity" held for a pose change on a picture of them, and failed
-> for everything else a picture is passed for (§2 there). The text below is kept as written.
-
 - **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
   portraits at 512² cannot share one; editing a cast image works already by

@@ -213,8 +213,10 @@ This is ruling R9 (owner, 2026-10-07).
 - The library-name guard runs on every call, edits included.
 - A person from an owner photo who is not in the library is declared as "the person in picture
   X", which uses their crop from that picture. Picture X itself is not sent to the generator;
-  only the crop is. The model can propose them for the library through the existing candidate
-  path.
+  only the crop is. Picture X passes the same test as an edit's canvas (`PERSONA-CONTEXT-DESIGN.md`
+  §5.5): the owner pointed at it, by a typed reference in the turn being answered. It also goes
+  through `ToolCtx::resolve` before any crop is read. The model can propose them for the library
+  through the existing candidate path.
 - The persona's own character is added by default, as `cast_self` does today for new pictures.
 
 **Resolution and slots.** One call has one reference size.
@@ -228,9 +230,12 @@ This is ruling R9 (owner, 2026-10-07).
   pictures and harness crops alike, is counted at the size it will be encoded at. The measured
   ceiling is **three references at 1024², canvas included**: canvas plus one crop took 52–54 s;
   canvas plus two crops took 66 s. Four full-size references are the research's cliff (+120 s).
-  A call over budget is refused before the GPU and says why. A restage over budget goes without a
-  canvas, at 512², where four people held in one pass (E3). A third crop beside a canvas is a
-  measurement (§8). The cap is therefore a function of the encode size, not a larger constant
+  **A call over budget is refused before the GPU and says why. Nothing falls back to another
+  shape silently.** Drawing the scene without the place's picture is a different call, one the
+  model makes on purpose, and its result says the room was redrawn: R2's canvas is what keeps an
+  owner photo's room (M1, layout 0.84–0.97). That call goes at 512²; E3's four people held there
+  as whole portraits standing apart, and touching is measured for two (M3). A third crop beside a
+  canvas is a measurement (§8). The cap is therefore a function of the encode size, not a larger constant
   beside `MAX_REFERENCES`.
 
 **New pictures keep the whole portrait until §8.1 passes.** R1's crop is measured only on paths
@@ -289,9 +294,10 @@ checked against #583's branch on 2026-10-07; check them again against the tree o
   where it was. Steps 1–3 of §10 sit inside #583's `let job = async move { … }`, after
   `backend.generate`, where the face anchor and `write_manifest` already run.
 - **Two chats with one persona can render at once.** Jobs are one in flight per chat, and the
-  scene is kept per persona (§5.1). Proposed: each chat works on its own copy of the scene, taken
+  scene is kept per persona (§5.1). Each chat works on its own copy of the scene, taken
   from the persona's latest when the chat starts. A landing writes back to the persona's latest,
-  and the last render to land wins. That is ruling R7.
+  and the last render to land wins. That is ruling R7, and an incognito chat never writes back
+  (R9).
 - **The scene note goes in the run notes' tail** (`cx.notes`, #577), beside #583's note about a
   picture that arrived late. It never goes in the cached head: the scene changes from turn to
   turn, and the head is the cached prefix.
@@ -317,9 +323,11 @@ picture.
   the model what to do about it. The persona then knows which picture is current, because the
   history is what happened (`PERSONA-CONTEXT-DESIGN.md` §5.3).
 - **On a call it runs as a job** (#583).
-- **The new version shows on the same card** (‹ 1/2 ›), and the version showing is the one Edit,
-  Regenerate and later restages build on (owner, 2026-10-07). The other versions stay on the
-  card, one swipe away.
+- **The new version shows on the same card** (‹ 1/2 ›), and the version showing is the current
+  one (owner, 2026-10-07). The other versions stay on the card, one swipe away. Edit, a retouch,
+  works on the version showing, as does Regenerate. **A restage takes the showing version's
+  scene** (who is in it, what they wear) and starts from the place, never from its pixels
+  (§5.3).
 - **It can ship before the rest of this design.** Today's manifests already record the compiled
   prompt, the references, the size and the steps, so a redraw with a new seed works now. Identity
   improves when R1 lands.
@@ -353,8 +361,9 @@ picture.
 | 15 | A picture during a call (`PERSONA-CONTEXT-DESIGN.md` §5.4 jobs) | any | the scene is data a job can carry |
 | 16 | Variations | the same scene | new seeds |
 
-Five or more people, or close physical interaction beyond M3's four, may need the research's tier
-C. That is switched on per case.
+Five or more people, or physical interaction beyond M3's two people, may need the research's
+tier C, which `IMAGE-COMPILER-RESEARCH.md` keeps for five or more people and for interaction. E3's
+four were whole portraits standing apart. Tier C is switched on per case.
 
 ## 7. What this replaces
 
@@ -401,7 +410,7 @@ build follows them without asking again.
 - **R5.** #569's lineage path is retired rather than kept beside this.
 - **R6.** The owner's eye on face-sized sheets is the gate for every step. ArcFace is a backstop.
 - **R7.** With two chats rendering for one persona (incognito chats never write back, R9 and
-  `INCOGNITO-DESIGN.md` R3, whatever else is ruled), each chat works on its own copy of the scene,
+  `INCOGNITO-DESIGN.md` R3), each chat works on its own copy of the scene,
   and the last render to land updates the persona's latest (§5.6).
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
   turn (§5.7). This replaces drawing two variants of every picture. Versions stay on one card, and the version showing
