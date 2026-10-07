@@ -20,7 +20,7 @@
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
-    toolStatus, waitingLine, withWorking, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
+    toolStatus, waitingLine, withWorking, withJob, clockOf, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
   } from './persona.js';
@@ -98,13 +98,15 @@
   // owner turned it off for this persona. The open chat's live switch wins
   // over the list's reading of the persona.
   const disclosed = $derived(((key && safety) || chosen?.safety)?.disclosure !== false);
-  // A clock for the waiting line, ticking only while a run is live.
+  // A clock for the waiting line, ticking only while a run is live or a
+  // picture is still being drawn past its turn (§5.4).
   let now = $state(Date.now());
-  // On `running` alone, not the whole run: `run` is replaced on every
+  // On booleans alone, not the whole run: `run` is replaced on every
   // streamed word, and the tick would restart with each (review of #431).
   const running = $derived(run.running);
+  const drawing = $derived(run.entries.some(stillOut));
   $effect(() => {
-    if (!running) return;
+    if (!running && !drawing) return;
     now = Date.now();
     const tick = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(tick);
@@ -810,7 +812,8 @@
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
-    const entries = t.running ? withWorking(settle(t.entries, run), t.working) : settle(t.entries, run);
+    const settled = withJob(settle(t.entries, run), t.job);
+    const entries = t.running ? withWorking(settled, t.working) : settled;
     run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
     safety = t.safety ?? null;
     chatModel = t.model ?? '';
@@ -1845,7 +1848,7 @@
                  lands here when done. Its Stop ends the picture alone, never
                  a reply that is running (review of #583). -->
             {#if stillOut(entry)}
-              <span class="genwait">drawing a picture…</span>
+              <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
               <button class="genedit" onclick={stopPicture}>Stop</button>
             {/if}
           {:else if entry.kind === 'notice'}

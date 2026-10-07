@@ -9,6 +9,7 @@
 
 import { changesOf } from './tomlform.js';
 import { isDirty as mdDirty } from './mdform.js';
+import { stillOut } from './picture.js';
 
 // A persona chat key, exactly as the server mints one: `p-` and twelve hex.
 const KEY = /^p-[0-9a-f]{12}$/;
@@ -324,7 +325,7 @@ const DOING = {
   fs_read: 'reading a file',
 };
 
-const clockOf = (ms) => {
+export const clockOf = (ms) => {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
@@ -355,6 +356,17 @@ export function withWorking(entries, working, now = Date.now()) {
   const elapsed = Number(working.elapsed_ms);
   const started = Number.isFinite(elapsed) ? now - elapsed : undefined;
   return [...entries, { kind: 'tool', id: working.id, name: working.name, is_error: null, started }];
+}
+
+// A picture drawn past its turn (§5.4) is no longer `working` — the turn
+// handed it off — so the server names it apart (`job`), with how long it has
+// run, and the row still being drawn takes its start from that: a reload
+// mid-render still reads "drawing a picture… 1:24". Only the row the job
+// answers, and only while it is still out.
+export function withJob(entries, job, now = Date.now()) {
+  const elapsed = Number(job?.elapsed_ms);
+  if (!job?.id || !Number.isFinite(elapsed)) return entries;
+  return entries.map((e) => (e.kind === 'tool' && e.id === job.id && stillOut(e) ? { ...e, started: now - elapsed } : e));
 }
 
 export function emptyRun(entries = [], taint = null, citations = []) {

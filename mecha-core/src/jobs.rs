@@ -212,6 +212,9 @@ struct Running {
     tool: String,
     run: usize,
     cancel: CancellationToken,
+    /// When the queue took it, by this process's monotonic clock: what a
+    /// page counts "drawing a picture… 1:24" from ([`JobQueue::running`]).
+    started: std::time::Instant,
 }
 
 /// One job in flight per key — per conversation, by the host's session key
@@ -263,6 +266,7 @@ impl JobQueue {
                 tool: tool.to_string(),
                 run,
                 cancel: job.cancel_token().clone(),
+                started: std::time::Instant::now(),
             },
         );
         let terms = job.terms.get().cloned().unwrap_or_default();
@@ -329,6 +333,17 @@ impl JobQueue {
     pub fn pending(&self, key: &str) -> Option<String> {
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         running.get(key).map(|r| r.call_id.clone())
+    }
+
+    /// The call `key`'s running job answers, and how long it has run. A
+    /// duration, never a timestamp: a page adds it to its own clock, so one
+    /// whose clock disagrees with this server's still counts from the right
+    /// moment (as `working.elapsed_ms` does, review of #431).
+    pub fn running(&self, key: &str) -> Option<(String, std::time::Duration)> {
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        running
+            .get(key)
+            .map(|r| (r.call_id.clone(), r.started.elapsed()))
     }
 
     /// The tools of `key`'s jobs whose results have not landed: the one
@@ -475,6 +490,26 @@ mod tests {
             None,
             "the slot frees when the job ends"
         );
+    }
+
+    /// A running job says how long it has run, counted from when the queue
+    /// took it — the page's clock on "drawing a picture…" — and says
+    /// nothing once it has ended.
+    #[tokio::test]
+    async fn a_running_job_says_how_long_it_has_run() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = gated(Arc::clone(&go), CancellationToken::new());
+        assert!(queue.running("chat").is_none());
+        queue.submit("chat", 0, "c1", "draw", job).unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let (id, ran) = queue.running("chat").expect("a job is running");
+        assert_eq!(id, "c1");
+        assert!(ran >= Duration::from_millis(30), "ran {ran:?}");
+        assert!(queue.running("other").is_none(), "another chat's clock");
+        go.notify_one();
+        delivered(&got, 1).await;
+        assert!(queue.running("chat").is_none(), "an ended job has no clock");
     }
 
     /// A failed run's job is cancelled by its run number only: a later run's
