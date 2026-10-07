@@ -502,6 +502,7 @@ impl McpClient {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         Ok(ToolOutput {
+            deferred: None,
             content: if text.is_empty() {
                 "(no content)".into()
             } else {

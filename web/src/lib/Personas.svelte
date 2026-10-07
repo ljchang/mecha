@@ -12,7 +12,7 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
+  import { pictureOf, stillOut, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -1290,6 +1290,17 @@
     }).catch(() => {});
   }
 
+  // The call screen's picture slot: the picture alone, never the reply the
+  // persona is speaking (ruling Q2, 2026-10-05).
+  async function stopPicture() {
+    if (!key) return;
+    await fetch(chatUrl(key, '/cancel'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ unlock: token ?? undefined, picture: true }),
+    }).catch(() => {});
+  }
+
   function onKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1830,6 +1841,13 @@
               <button class="genedit" onclick={() => savePicture(picture)}>Download</button>
               {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
             {/if}
+            <!-- Still being drawn past the turn that asked for it (§5.4): it
+                 lands here when done. Its Stop ends the picture alone, never
+                 a reply that is running (review of #583). -->
+            {#if stillOut(entry)}
+              <span class="genwait">drawing a picture…</span>
+              <button class="genedit" onclick={stopPicture}>Stop</button>
+            {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -2044,6 +2062,8 @@
       {dismissed}
       ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
+      making={callEntries.some(stillOut)}
+      onstoppicture={stopPicture}
       ondownload={savePicture}
       onedit={editInCall}
     />
@@ -2144,6 +2164,7 @@
   .genimg { display: block; max-width: min(100%, 512px); }
   .genimg img { display: block; width: 100%; height: auto; border-radius: 8px; }
   .genfail { font-size: 12px; color: var(--hazard); }
+  .genwait { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .genedit {
     align-self: flex-start; margin-top: -4px; padding: 4px 12px;
     font-family: var(--mono); font-size: 12px; color: var(--accent-400);

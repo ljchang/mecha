@@ -119,4 +119,19 @@ import { historyLines, pendingSpeech } from '../src/lib/call-lines.js';
   assert.deepEqual(bots, ['bot-transcription']);
 }
 
+// A picture still being drawn past its turn holds its place in the call's
+// transcript, and the picture takes that place when it lands (§5.4).
+{
+  const row = (preview) => ({ kind: 'tool', name: 'image_generate', id: 'c1', is_error: false, preview });
+  const asked = [{ kind: 'user', text: 'Draw the harbour.' }];
+  assert.deepEqual(historyLines([...asked, row('being made: images/a.png')]), [
+    { who: 'user', text: 'Draw the harbour.' },
+    { who: 'persona', making: true, text: 'drawing a picture…' },
+  ]);
+  assert.deepEqual(historyLines([...asked, row('image: images/a.png')]), [
+    { who: 'user', text: 'Draw the harbour.' },
+    { who: 'persona', picture: 'images/a.png', text: 'a picture' },
+  ]);
+}
+
 console.log('call-lines: ok');

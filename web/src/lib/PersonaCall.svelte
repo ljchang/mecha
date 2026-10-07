@@ -55,6 +55,12 @@
     // closed in the chat stays closed here, and Close here closes it there.
     dismissed = new Set(),
     ondismiss = null,
+    // A picture still being drawn past the turn that asked for it, and how
+    // to stop it alone: the stage holds its slot and its Stop (owner ruling
+    // Q2, 2026-10-05). Talking never stops a picture; this does, and leaves
+    // the persona speaking.
+    making = false,
+    onstoppicture = null,
   } = $props();
   let showResources = $state(false);
 
@@ -343,6 +349,12 @@
           <span class="tick" class:lit={level * 14 > i} style:height="{14 + (i % 2 ? 6 : 0)}px"></span>
         {/each}
       </div>
+      {#if making}
+        <div class="making" role="status">
+          <span>drawing a picture…</span>
+          {#if onstoppicture}<button class="stoppic" onclick={onstoppicture}>Stop</button>{/if}
+        </div>
+      {/if}
       {#if shown}
         <div class="shot">
           <button class="shotbtn" bind:this={shotButton} onclick={() => view(shown)} aria-label="look at the picture full screen">
@@ -385,6 +397,8 @@
                  #576). -->
             <img src={pictureUrl(line.picture)} alt={line.text} loading="lazy" onload={() => stick && pane && (pane.scrollTop = pane.scrollHeight)} />
           </button>
+        {:else if line.making}
+          <div class="heard makingline">{line.text}</div>
         {:else}
           <div class="heard"><ChatProse text={line.text} /></div>
         {/if}
@@ -777,6 +791,30 @@
   }
   .interim {
     color: var(--text-muted);
+  }
+  .makingline {
+    color: var(--text-muted);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  /* A picture still being drawn: its slot on the stage, and its own Stop. */
+  .making {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .stoppic {
+    padding: 6px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--hazard);
+    background: none;
+    border: 1px solid var(--hazard);
+    border-radius: 999px;
+    cursor: pointer;
   }
   .typerow {
     display: flex;

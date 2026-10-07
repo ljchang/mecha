@@ -70,6 +70,19 @@ export function picturesSince(entries, before) {
 // new turn — `queued` while it is live, `steered` as the transcript reads it
 // back, where it comes after the turn's tool rows (review of #444). A turn still running, or with a call still out, is not
 // judged yet.
+// A picture still being drawn past the turn that asked for it
+// (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1): its result came back at once as
+// `being made: <path>`, `is_error: false`, and the finished one replaces it
+// when the job ends. Neither drawn nor failed — still out.
+export function stillOut(entry) {
+  return (
+    entry?.kind === 'tool' &&
+    entry.name === 'image_generate' &&
+    entry.is_error === false &&
+    String(entry.preview ?? '').startsWith('being made: ')
+  );
+}
+
 export function turnsWithoutPicture(entries, running = false) {
   const out = new Set();
   let asked = 0;
@@ -89,7 +102,10 @@ export function turnsWithoutPicture(entries, running = false) {
     if (entry.kind === 'assistant' || entry.kind === 'tool') last = i;
     if (entry.kind !== 'tool' || entry.name !== 'image_generate') return;
     asked += 1;
-    if (entry.is_error === false) drawn += 1;
+    // A picture being made is still out, never drawn: the counter's own
+    // check, since `pictureOf`'s pattern already refuses its first line.
+    if (stillOut(entry)) open += 1;
+    else if (entry.is_error === false) drawn += 1;
     else if (entry.is_error !== true) open += 1;
   });
   if (!running) close();
