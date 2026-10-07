@@ -248,9 +248,11 @@ This is ruling R9 (owner, 2026-10-07).
   §5.5): the owner pointed at it, by a typed reference in the turn being answered. It also goes
   through `ToolCtx::resolve` before any crop is read. The model can propose them for the library
   through the existing candidate path.
-- The persona's own character is added when something names her: the picture's record, or her
-  name in the edit's words, which `cast_self` resolves as it does for new pictures. An owner photo
-  with no record and no mention of her names nobody (§6, case 12).
+- The persona's own character comes in when something names her. **The picture's record**
+  carries her over. **Her name in the edit's words**, on a picture that does not record her, is
+  refused until the call puts her in `cast` with what she wears and does, because she is new to
+  that picture and stand-in clothes would be invented ones. That costs use case 2 one round trip.
+  An owner photo with no record and no mention of her names nobody (§6, case 12).
 
 **Resolution and slots.** One call has one reference size.
 
