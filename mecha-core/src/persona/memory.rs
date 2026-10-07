@@ -1884,6 +1884,11 @@ pub fn forget_chat(store_dir: &Path, persona: &str, chat: &str) -> Result<Forgot
     if chat.trim().is_empty() {
         bail!("which chat?");
     }
+    // Checked before anything is deleted: the scene store below takes the
+    // id as a file name and refuses one that is not (review of #589).
+    if !crate::scene::is_chat_id(chat) {
+        bail!("invalid chat id {chat:?}");
+    }
     let mut out = Forgotten::default();
     let memory = if store_dir.join(persona).join(MEMORY_DB).is_file() {
         let m = Memory::open(store_dir, persona)?;

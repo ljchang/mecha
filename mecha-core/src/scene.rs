@@ -297,12 +297,7 @@ impl SceneSlot {
 /// is the persona's folder. The count removed; nothing there is zero, never
 /// an error. A chat id is a file name here, so it must be one.
 pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
-    if chat.is_empty()
-        || chat.len() > 128
-        || !chat
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
+    if !is_chat_id(chat) {
         return Err(std::io::Error::other(format!("invalid chat id {chat:?}")));
     }
     let store = persona_dir.join("scene");
@@ -333,6 +328,17 @@ pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<usize> {
         Err(e) => return Err(e),
     }
     Ok(gone)
+}
+
+/// Whether `chat` can be a chat id here, where it is a file name: the shape
+/// a session id has, and nothing that could walk out of a folder. A caller
+/// that deletes elsewhere first asks this before deleting anything.
+pub fn is_chat_id(chat: &str) -> bool {
+    !chat.is_empty()
+        && chat.len() <= 128
+        && chat
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn is_hash(h: &str) -> bool {
