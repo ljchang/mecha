@@ -32,7 +32,7 @@ The parts that work, the renderer, the jail, masks, face crops, the library comp
 
 These are measured, mostly with the owner's eye as ground truth (M1–M4, #408, E1–E12, the replay of 10-07).
 
-1. **Identity comes from the library.** A head crop plus the library's own description works on every edit (M1, by the owner's eye). New pictures use the whole portrait at 512², which the owner rated good (M3) until §8.1's crop-on-new-pictures measurement passes. A model-drawn portrait does not help (M4), and neither does 1536² resolution (M4).
+1. **Identity comes from the library.** A head crop plus the library's own description works on every edit (M1, by the owner's eye). New pictures use the whole portrait at 512², which the owner rated good (M3) until the crop-on-new-pictures measurement passes (`IMAGE-SCENE-DESIGN.md` §8.1, which survives that document's supersession; §9 carries it as an open measurement). A model-drawn portrait does not help (M4), and neither does 1536² resolution (M4).
 2. **Restage, never chain.** A new pose or camera drawn afresh on the scene's setting beat the edit chain at every step (M2). An edit chain never moves the camera (0/2), and loses identity by step 4.
 3. **A place photo works as the canvas** (24/24 placed, M1).
 4. **Two people touching, cast in one pass:** 8/8 interactions with no identity bleed (M3).
@@ -152,7 +152,7 @@ The planner reads the call against the picture's record and picks one render. No
 
 | Call | Render |
 |---|---|
-| no `picture`; a whole scene | **New picture.** Library portraits, the E1–E12 compile, the call's seed or a new one. |
+| no `picture`; a whole scene | **New picture.** Library portraits, the E1–E12 compile, a new seed (or, on the CLI and in evals only, the call's). |
 | `scene.setting` is a photo; a scene with people | **Place on the photo.** An edit of the photo with each person's head crop and description (M1). The photo becomes the scene's setting. |
 | a `picture` with no record | **The current picture.** Edited as any recorded picture is, with its record started from the call; its people are unknown until a call declares them, and a restage of unknown people is drawn as an edit (reviews B3, N1, N2). |
 | a change to someone's pose, the camera, the setting, or a removal | **Restage.** Everyone drawn afresh on the scene's setting, at the base picture's seed (§2.6): an edit of the setting photo with crops when the setting is a photo, a new picture from the setting's words when it is words. |
@@ -168,7 +168,7 @@ The planner reads the call against the picture's record and picks one render. No
 
   The owner's verdict (2026-10-07): C3 keeps the scene, RN3 is close with some distortions, and W3 is clearly not the same room. The cost is time: about 150 s against about 46 s at three people, and about 240 s at five. The owner chose scene fidelity, so one budget serves every edit-shaped render: placing on a photo, restaging on a photo setting, adding someone, and clothes.
 - **A new picture carries up to `MAX_CAST` 5 portraits** (up from 4; five whole portraits with the room in words drew all five correctly, 3/3).
-- **A scene keeps up to 8 people.**
+- **A scene keeps up to 10 people** (`MAX_PEOPLE`, twice `MAX_CAST`); people without library entries count here, not against the face budget.
 
 A change that does not fit falls back before it refuses (review S4):
 - **On a words setting,** a restage that needs more faces than an edit holds is drawn as a new picture from the words, with up to `MAX_CAST` portraits, at the base seed.
@@ -201,11 +201,12 @@ Two rules (review B1).
 
 - **Structural, in every chat.** A deferred job of a tool already started in a run is never started again in that run. The agent loop enforces this on the tool's job kind, not the model, and not a refusal string. The assistant keeps working after drawing (it went on to `image_view`, `shell` or `fs_read` in 43 runs), so its run is not ended.
 - **The clean end fires on the first repeat call** to that tool. The repeat is not run, and the next request goes with `tool_choice: "none"`, the turn's note once, and "the picture is on its way; answer in a line". That combination was measured clean 5/6. In a persona chat it fires right after the picture is queued, because nothing after the picture is the persona's job.
+- **A busy refusal** (an earlier turn's picture still drawing) closes a persona run, with a line that says this turn's picture was not started. Any other run keeps working after one and closes on a retry of the refused call. A picture this run started is always the fact said first.
 - **The backstop:** a reply that is only a tool-call block is replaced, never shown.
 
 **Retired:** `REPEAT_REFUSED` and `REPEAT_IN_FLIGHT`, which never fired in any session.
 
-**LoopGuard stays.** It is generic, not an image guard. Its blind spot is that a harness refusal never counts toward its limit (`denied: out.refusal`). That is fixed in the guard for every tool.
+**LoopGuard stays as it is.** It is generic, not an image guard, and by design it never counts a call the harness refused — the approver, a hook, a policy, the interlock (the `refused_by_harness` filter on the trace's `denied` flag; review of #448: "that is the harness working"). The queue's busy refusal is one of those, which is why it never stopped a picture loop; the rules above close that loop for pictures without touching the guard. Whether the guard should also count harness refusals, for every tool, reverses #448's rule and is the owner's question (§11 item 8), not part of this build.
 
 ## 6. The record
 
@@ -259,6 +260,8 @@ mecha-a3 runs these on each implementation branch, on the branch's own tool surf
 | **G4b a real person through the library** (§4.1) | the same real person, added to the library from the owner's photo, drawn new, beside a drawn library character, placed on a photo, and restaged, plus a small-face arm; ≥ 3 seeds each | owner's verdict |
 | **G5 after deploy** (first real chats) | pose and camera changes go through restage; restages pass the owner's eye; edit-shaped renders that should move something (adding a person, placing on a photo) are not near-copies; no runaways | restage share ≥ 90%; edit-shaped near-copy ≤ 30%; runaways 0 |
 
+**Open measurement, not a merge gate:** the head crop on new pictures (`IMAGE-SCENE-DESIGN.md` §8.1). New pictures keep the whole portrait at 512² until it passes on the owner's sheets for each path (§11 item 5).
+
 ## 10. Build order
 
 Each PR goes through its review loop, then a3's gates, then the owner's merge word.
@@ -278,9 +281,10 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 2. **The scene's fields** (§4, after the survey in §13): `setting`, `light`, `camera`, `style`, `together`, `text`, and per person `who`, `where`, `wearing`, `doing`, `expression`? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling.* The survey added `together`, `where` and `text`. It confirmed `camera` absorbing shot size and angle, `light` absorbing mood and colour, and the compiler (not the model) writing the keep list on edits. Rendered words go in `text`, never in `setting`. **Ruled 2026-10-07: this set.** `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%).
 3. **Close #593 unmerged** (§5.4)? **Ruled 2026-10-07: closed.**
 4. **The thresholds in §9.** **Ruled 2026-10-07: accepted as proposed.**
-5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
+5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until `IMAGE-SCENE-DESIGN.md` §8.1's crop measurement passes on the owner's sheets**, as for R1.
 6. **Seeds off the chat schemas** (§5.1)? **Ruled 2026-10-07: off;** every seed reuse that helps is the harness's.
 7. **Up to five people** (§5.2)? **Ruled provisionally 2026-10-07: C5,** a canvas plus five crops in one pass; the owner may revisit after a closer look. The budget is one constant.
+8. **Should LoopGuard count harness refusals** (§5.5)? Open. Today it never does, by #448's rule. Counting them would end a run that keeps hitting the same approver denial or interlock refusal, for every tool; the picture loop no longer needs it.
 
 ## 12. Review and how each point is met
 
@@ -288,7 +292,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 
 | Point | Met in |
 |---|---|
-| B1: the forced end breaks the assistant; LoopGuard is generic | §5.5, split into two rules; the guard's refusal blind spot fixed for every tool |
+| B1: the forced end breaks the assistant; LoopGuard is generic | §5.5, split into two rules; LoopGuard unchanged, and counting harness refusals is an open question (§11 item 8) |
 | B2: retiring the name guard reopens E1 through prose fields | §4, every prose field checked; `who` resolves names and the persona's names |
 | B3, N1: a no-record picture is not an empty room, and faces cannot tell | §5.1 and §5.2: the call says a photo's role; a no-record `picture` is always the current picture |
 | N2: no people is not the same as people unknown | §5.1: unknown people are recorded as unknown; a restage of them is drawn as an edit |
@@ -305,15 +309,15 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
 | S2: `doing` conflates pose and expression | §4 and §5.2: `expression` per person, retouched |
-| S3: use case 4 dropped | §4.1: a real person from a photo, first-class, with its crop kept in the scene store and its own gate (G4b) |
-| S4: budget refusals are round trips | §5.2: fall back before refusing. Measured: a canvas plus three crops keeps the scene (the owner's verdict), so the edit budget is 4 references; four or more faces on a photo are refused |
+| S3: use case 4 dropped | §4.1: a real person, first-class, through the library (approval is consent), its portraits in the library store, and its own gate (G4b) |
+| S4: budget refusals are round trips | §5.2: fall back before refusing. Measured: a canvas plus three crops keeps the scene, and five held in one pass (C5, the owner's provisional ruling), so `EDIT_REFERENCE_BUDGET` is 6 references; more than five faces on a photo are refused |
 | S5: `tool_choice` for the reply | §5.3 step 4 |
 | S6: the safety check on the panel path | §5.3 step 0 |
 | S7: extraction failure | §5.3 step 5 |
 | S8: the scene note | §6, kept for typed turns |
 | S9: `place` is wrong for a logo | §4: `setting` covers the whole subject without people |
 | Q1: near-copy as a fact | §8: the layout number stays in the result line |
-| Q2: the assistant record | §11.1, with B3's classification |
+| Q2: the assistant record | §11 item 1, with B3's classification |
 | Q3: `light` | §4 and §11.2 |
 | Q4: the G5 metric | §9 |
 | Q5: a typed-turn arm | §9, G1b |
@@ -340,7 +344,7 @@ The owner asked for a survey before ruling on the fields. It covered the officia
 - **Noted for later, not in this build:**
   - outpainting, re-framing a picture to another shape, which Qwen has a template for and would be a separate operation;
   - pose-from-photo and garment-from-photo reference roles (Qwen-Image-Edit-2509);
-  - Qwen-Edit works best with 1–3 input images. The edit budget allows a canvas plus three crops (four), past that range and slower (about 150 s). The owner chose it on the three-person measurement because only it kept the scene (§5.2). Two people or fewer stay inside the range.
+  - Qwen-Edit works best with 1–3 input images. The edit budget allows a canvas plus five crops (six), past that range and slower (about 150 s at three people, 240 s at five). The owner chose it on the three- and five-person measurements because only it kept the scene (§5.2). Two people or fewer stay inside the range.
 - **Not measured anywhere found:** whether JSON-shaped prompts help Qwen-Image. Qwen's own tooling compiles everything to prose of 200 words or fewer. That supports this design's typed fields compiled to prose by the tool.
 
 Sources: docs.bfl.ai (FLUX.2 prompting, JSON prompting); developers.googleblog.com and ai.google.dev (Gemini image); developers.openai.com (image prompting) and the OpenAI cookbook (input fidelity); docs.midjourney.com (parameters); github.com/QwenLM/Qwen-Image (`prompt_utils.py`, README); huggingface.co/Qwen/Qwen-Image-Edit-2509; arXiv 2312.05849 (InteractDiffusion), 2412.08580 (LAION-SG), 2307.06350 (T2I-CompBench).
