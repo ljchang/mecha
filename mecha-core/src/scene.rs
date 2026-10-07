@@ -140,6 +140,10 @@ pub struct Change {
     /// Otherwise their origin is untrusted, because the record came from a
     /// file a run could write.
     pub carried: Vec<(String, String, String)>,
+    /// People the call changed in part: their new fields as sent, beside
+    /// the rest of their entry, under their old origin joined with the
+    /// run's, so one new field never launders the others (review of #591).
+    pub amended: Vec<(String, String, String)>,
     /// The call said `"cast": []`: the people have left the picture, so an
     /// edit keeps none of the scene's. Otherwise an edit keeps everyone the
     /// scene had that it did not name, as it keeps the place and the camera
@@ -220,6 +224,18 @@ impl Scene {
                 wearing,
                 doing,
                 origin: by,
+            });
+        }
+        for (name, wearing, doing) in change.amended {
+            let name = name.trim().to_lowercase();
+            let was = prev
+                .and_then(|s| s.people.iter().find(|p| p.name == name))
+                .map_or(Origin::Untrusted, |p| p.origin);
+            push(Person {
+                name,
+                wearing,
+                doing,
+                origin: was.union(by),
             });
         }
         for (name, wearing, doing) in change.carried {
@@ -624,6 +640,29 @@ mod tests {
             s3.origin(),
             Origin::Clean,
             "a new picture replaces every field"
+        );
+    }
+
+    /// A person the call changed only in part keeps their old origin joined
+    /// with the run's: a clean write over one field of an untrusted person
+    /// leaves them untrusted (review of #591).
+    #[test]
+    fn an_amended_person_keeps_the_origin_they_had() {
+        let mut first = change(true, "a");
+        first.declared = vec![("john".into(), "an apron".into(), "cooking".into())];
+        let s1 = Scene::advance(None, first, Origin::Untrusted, "c1");
+        let mut part = change(false, "b");
+        part.amended = vec![("john".into(), "a coat".into(), "cooking".into())];
+        let s2 = Scene::advance(Some(&s1), part, Origin::Clean, "c1");
+        assert_eq!(s2.people[0].wearing, "a coat");
+        assert_eq!(s2.people[0].origin, Origin::Untrusted);
+        let mut stranger = change(false, "c");
+        stranger.amended = vec![("wren".into(), "a hat".into(), String::new())];
+        let s3 = Scene::advance(None, stranger, Origin::Clean, "c1");
+        assert_eq!(
+            s3.people[0].origin,
+            Origin::Untrusted,
+            "no entry reads untrusted"
         );
     }
 
