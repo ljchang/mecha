@@ -206,10 +206,9 @@ pub fn render_for_summary(messages: &[Message], max_result_chars: usize) -> Stri
                     // Relabelled rather than dropped, because each of these
                     // *is* something that happened in the stretch and a
                     // summary that loses "a peer sent you this" loses a fact.
-                    // Role-scoped for the reason
-                    // `Agent::fold_calendar_reference` is: only a user-role
-                    // block can be the harness speaking here, and a model
-                    // echoing a nudge back is the model's own words.
+                    // Role-scoped: only a user-role block can be the harness
+                    // speaking here, and a model echoing a nudge back is the
+                    // model's own words.
                     let who = if message.role == Role::User && crate::agent::is_harness_voice(text)
                     {
                         "harness"
@@ -353,9 +352,9 @@ pub fn rebuild(
     // midnight kept "today is Sunday" in `messages[0]` for the rest of its
     // life while the fresher reference — folded at some later index when the
     // day actually changed — was dropped by the very cut that runs here, so
-    // the stale one became the most recent in the transcript. `Agent::
-    // fold_calendar_reference` runs again after this and puts the current one
-    // back, so dropping it here leaves no gap.
+    // the stale one became the most recent in the transcript. Since
+    // 2026-10-06 the current reading is a note on every request
+    // (`Agent::calendar_note`), so dropping an old one here leaves no gap.
     head.content.retain(|block| match block {
         Block::Text { text } => {
             let t = text.trim_start();
@@ -1398,6 +1397,42 @@ mod tests {
         assert_eq!(
             rebuilt.last().unwrap().text(),
             messages.last().unwrap().text()
+        );
+    }
+
+    /// An old chat's head can hold a calendar reference folded into the
+    /// owner's first turn, from before the reading became a run note
+    /// (2026-10-06). A rebuild drops it from the head: left in, it would be
+    /// a stale date with no newer one folded anywhere after it. The owner's
+    /// words in the same message stay. Nothing else pins this since the loop
+    /// stopped folding (review of the run-notes change).
+    #[test]
+    fn a_rebuild_drops_an_old_folded_calendar_reference_from_the_head() {
+        let mut messages = transcript(6);
+        let folded = crate::date_context::render(
+            "2026-09-13T13:00:00Z".parse().unwrap(),
+            Some(chrono_tz::America::New_York),
+        );
+        messages[0].content.push(Block::text(folded));
+        let cut = cut_point(&messages, 5).unwrap();
+        let rebuilt = rebuild(&messages, cut, "s", &[]);
+        let head: Vec<&str> = rebuilt[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !head.iter().any(|t| t
+                .trim_start()
+                .starts_with(crate::date_context::REFERENCE_STEM)),
+            "the rebuilt head kept a stale date: {head:?}"
+        );
+        assert!(
+            rebuilt[0].text().contains("do the thing"),
+            "the owner's words went with it"
         );
     }
 

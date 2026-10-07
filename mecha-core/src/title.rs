@@ -83,9 +83,10 @@ const MAX_INPUT_CHARS: usize = 1_200;
 /// whole block or a whole message, which is why a block filter answers it.
 /// A door that *decorates* an owner turn — prefixing its own preamble onto
 /// the person's words inside one block — is invisible here by construction,
-/// and `mecha serve` has one: a spoken turn arrives as
-/// `voice::open_spoken_turn`'s `VOICE_BLOCK` followed by what was said, in
-/// the same `web:` conversation as the typed turns (D3). That constant
+/// and `mecha serve` had one: until 2026-10-06 a spoken turn was stored as
+/// `voice::VOICE_BLOCK` followed by what was said, in the same `web:`
+/// conversation as the typed turns (D3), and old transcripts still hold
+/// them (a spoken turn's guidance is a run note now). That constant
 /// belongs to the front-end, not to this crate, so the front-end strips it
 /// before calling here — `serve::chat` does, through the same
 /// `strip_voice_preamble` its session listing already uses. Stated rather

@@ -856,6 +856,73 @@ pub fn attach_notes<'a>(
     std::borrow::Cow::Owned(owned)
 }
 
+/// `messages` with the harness's head notes — the calendar reference — added
+/// as text blocks at the end of the **first** message: inside the cached
+/// prefix, where a block identical all day costs no request anything until
+/// the date changes (`agent::RequestNotes`). After a compaction the first
+/// message is the summary head, and the note rides there. Never a message of
+/// its own: a first message is the owner's, so the note joins it.
+pub fn attach_head_notes<'a>(
+    messages: std::borrow::Cow<'a, [Message]>,
+    notes: &[String],
+) -> std::borrow::Cow<'a, [Message]> {
+    if notes.is_empty() {
+        return messages;
+    }
+    let mut owned = messages.into_owned();
+    let blocks = notes.iter().map(|n| Block::text(n.clone()));
+    let replaces_reference = carries_reference(notes);
+    match owned.first_mut() {
+        Some(first) if first.role == Role::User => {
+            // A chat recorded before the reference became a note holds the
+            // one it was folded with in `messages[0]` (§Timezones, 3a-3);
+            // left in, it sits just ahead of the fresh one, both "at the
+            // start of the conversation", and is read first (review of
+            // #577). `compact::rebuild` strips the same block from the head
+            // for the same reason.
+            if replaces_reference {
+                first.content.retain(|b| !is_head_reference(b));
+            }
+            first.content.extend(blocks)
+        }
+        // Not a request any caller makes (a conversation opens on the
+        // owner's turn), but the note still reaches the model and
+        // alternation still holds.
+        _ => {
+            let mut m = Message::user("");
+            m.content = blocks.collect();
+            owned.insert(0, m);
+        }
+    }
+    std::borrow::Cow::Owned(owned)
+}
+
+fn carries_reference(notes: &[String]) -> bool {
+    notes.iter().any(|n| {
+        n.trim_start()
+            .starts_with(crate::date_context::REFERENCE_STEM)
+    })
+}
+
+fn is_head_reference(b: &Block) -> bool {
+    matches!(b, Block::Text { text }
+        if text.trim_start().starts_with(crate::date_context::REFERENCE_STEM))
+}
+
+/// The bytes [`attach_head_notes`] leaves out of the first message — an
+/// old chat's recorded reference, superseded by the note — for `wire_bytes`.
+pub fn superseded_head_bytes(messages: &[Message], notes: &[String]) -> usize {
+    match messages.first() {
+        Some(first) if first.role == Role::User && carries_reference(notes) => first
+            .content
+            .iter()
+            .filter(|b| is_head_reference(b))
+            .map(crate::pressure::block_bytes)
+            .sum(),
+        _ => 0,
+    }
+}
+
 /// The bytes [`attach_notes`] adds, for `wire_bytes`.
 pub fn notes_bytes(notes: &[String]) -> usize {
     notes.iter().map(String::len).sum()

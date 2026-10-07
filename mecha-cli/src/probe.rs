@@ -782,7 +782,7 @@ fn artifact_prep(
             "recorded task differs from fixture"
         );
         mecha_core::mismatch::validate_recording(&recorded)?;
-        mecha_core::mismatch::validate_transcript(&transcript.convo.messages)?;
+        mecha_core::mismatch::validate_transcript(&transcript.convo.messages, &transcript.notes)?;
         let registry = mecha_core::mismatch::registry(&recorded.tools)?;
         let recorded_system = recorded.system_prompt.clone().unwrap_or_default();
         let recorded_specs = registry.specs();
