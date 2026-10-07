@@ -166,7 +166,7 @@ The planner reads the call against the picture's record and picks one render. No
 | `retouch` (with or without `mask`) | **Retouch** of the picture, in the #408 keep form; masked as today. |
 
 **Budgets, as measured:**
-- **An edit-shaped render carries the canvas plus up to three face crops** (`EDIT_REFERENCE_BUDGET` 4, up from 3). mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (§13 of the evidence):
+- **An edit-shaped render carries the canvas plus up to three face crops** (`EDIT_REFERENCE_BUDGET` 4, up from 3). mecha-a3's three-person set put three library characters on an owner photo, 3 seeds per approach (evidence §F):
   - **C3, canvas plus three crops:** kept the owner's actual room. All three approaches placed the three people correctly, and face identity was close across them.
   - **RN3, portraits with the photo as material:** recomposed the room.
   - **W3, the room in words:** drew a different room every time.
@@ -284,7 +284,7 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 ## 11. Questions for the owner
 
 1. **Record the scene for the assistant chat too** (§6)? **Ruled 2026-10-07: yes, one path.**
-2. **The scene's fields** (§4, after the survey in §13): `setting`, `light`, `camera`, `style`, `together`, `text`, and per person `who`, `where`, `wearing`, `doing`, `expression`? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling.* The survey added `together`, `where` and `text`. It confirmed `camera` absorbing shot size and angle, `light` absorbing mood and colour, and the compiler (not the model) writing the keep list on edits. Rendered words go in `text`, never in `setting`. **Ruled 2026-10-07: this set.** `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%), and quoted text goes in `setting`.
+2. **The scene's fields** (§4, after the survey in §13): `setting`, `light`, `camera`, `style`, `together`, `text`, and per person `who`, `where`, `wearing`, `doing`, `expression`? *Owner, 2026-10-07: research how other image tools structure their inputs before ruling.* The survey added `together`, `where` and `text`. It confirmed `camera` absorbing shot size and angle, `light` absorbing mood and colour, and the compiler (not the model) writing the keep list on edits. Rendered words go in `text`, never in `setting`. **Ruled 2026-10-07: this set.** `light` covers mood (79% of what prompts carried beyond people), `camera` covers framing (11%).
 3. **Close #593 unmerged** (§5.4)? **Ruled 2026-10-07: closed.**
 4. **The thresholds in §9.** **Ruled 2026-10-07: accepted as proposed.**
 5. **Crop or whole portrait on new pictures** (§2.1)? **Ruled 2026-10-07: the whole portrait until §8.1's crop measurement passes on the owner's sheets**, as for R1.
