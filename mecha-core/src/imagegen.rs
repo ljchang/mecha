@@ -201,6 +201,30 @@ impl Size {
         }
     }
 
+    /// The size whose shape is nearest a picture's, read from its header:
+    /// a picture this tool drew is exactly one of them. `None` when the
+    /// bytes do not decode.
+    pub(crate) fn nearest(bytes: &[u8]) -> Option<Self> {
+        let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?
+            .into_dimensions()
+            .ok()?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let aspect = (w as f64 / h as f64).ln();
+        [Size::Square, Size::Landscape, Size::Portrait]
+            .into_iter()
+            .min_by(|a, b| {
+                let d = |s: Size| {
+                    let (sw, sh) = s.dims();
+                    ((sw as f64 / sh as f64).ln() - aspect).abs()
+                };
+                d(*a).total_cmp(&d(*b))
+            })
+    }
+
     /// Width and height; both multiples of 32, which the model requires.
     pub fn dims(self) -> (u32, u32) {
         match self {
@@ -2345,7 +2369,12 @@ impl Tool for ImageGenerate {
                 if asked != req.seed && plan.seed == crate::picture::Seed::Given(asked) {
                     reseeded = Some(asked);
                 }
-                req.size = Some(call.size.unwrap_or(Size::Square).dims());
+                // A restage or redraw drawn new from the setting's words
+                // keeps the picture's shape: the base seed holds the room only
+                // at the same latent size (§2.6; mecha-a3's G4 on #597, as
+                // #591 pass 6 had it).
+                let shape = picture.as_ref().and_then(|r| Size::nearest(&r.bytes));
+                req.size = Some(call.size.or(shape).unwrap_or(Size::Square).dims());
             }
             crate::picture::Render::Edit {
                 canvas,
@@ -2530,6 +2559,39 @@ impl Tool for ImageGenerate {
                     prompt.push_str(&format!("Keep {} unchanged. ", plan.keep));
                 }
                 prompt.push_str(&close(&plan.instruction));
+                // A style the edit changes to: its own words, as a new
+                // picture's compile pastes them (review of #597).
+                if plan.delta.style {
+                    let Some(name) = plan
+                        .next
+                        .style
+                        .as_ref()
+                        .map(|f| f.value.trim().to_lowercase())
+                    else {
+                        return Ok(refused("The style to redraw in was empty."));
+                    };
+                    match lib
+                        .get(crate::imagelib::Kind::Style, &name)
+                        .filter(|e| e.status == crate::imagelib::Status::Approved)
+                    {
+                        Some(entry) => {
+                            prompt.push(' ');
+                            prompt.push_str(&close(&entry.text));
+                            used.push(crate::imagelib::Used {
+                                kind: crate::imagelib::Kind::Style,
+                                name,
+                                version: entry.version,
+                                portrait: None,
+                            });
+                        }
+                        None => {
+                            return Ok(refused(format!(
+                                "No approved style named `{name}`. Call image_library to see \
+                                 what exists."
+                            )))
+                        }
+                    }
+                }
                 // Placed afresh on a room photo, the people are drawn into
                 // the whole scene: its camera, light, what they do together
                 // and its words. The photo is the setting, so it says none.
@@ -6090,6 +6152,112 @@ mod tests {
         assert!(last_prompt(&seen).contains("a fisherman, wearing oilskins, mending a net"));
         assert_eq!(uploads(&seen), 5, "five portraits, none for the fisherman");
         for d in [dir, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A style on a picture with no record edits it in that style: the
+    /// library's own words for the style reach the prompt, and the result
+    /// names it (review of #597).
+    #[tokio::test]
+    async fn a_style_edit_carries_the_styles_own_words() {
+        let (url, seen) = distinct(1).await;
+        let (dir, lib) = (tempdir(), library_with(&["maya"]));
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "ink-wash".into(),
+                text: "soft grey ink wash on rice paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/her.png"), picture(20, [200, 30, 30])).unwrap();
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"picture": "inbox/her.png", "scene": {"style": "ink-wash"}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("style ink-wash (v1)"),
+            "{}",
+            out.content
+        );
+        let prompt = last_prompt(&seen);
+        assert!(
+            prompt.contains("ink-wash style")
+                && prompt.contains("soft grey ink wash on rice paper"),
+            "{prompt}"
+        );
+        for d in [dir, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A restage drawn new from the setting's words keeps the picture's
+    /// shape: the base seed holds the room only at the same latent size
+    /// (mecha-a3's G4 on #597: a landscape base came back square, its window
+    /// gone). A size the call names still wins.
+    #[tokio::test]
+    async fn a_words_restage_keeps_the_pictures_shape() {
+        let wide = |c: u8| {
+            let img = image::RgbImage::from_fn(64, 36, |x, _| image::Rgb([c, (x * 3) as u8, 90]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            png.into_inner()
+        };
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 3],
+            views: vec![wide(10), wide(120), wide(200)],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let width = |seen: &Arc<Mutex<Vec<String>>>| {
+            let p = last_prompt(seen);
+            let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
+            body["prompt"]["latent"]["inputs"]["width"].as_u64()
+        };
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a study with a tall window",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]},
+                       "size": "landscape"}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(width(&seen), Some(1344));
+        let p1 = picture_of(&first.content);
+        let second = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(second.content.contains("restaged"), "{}", second.content);
+        assert_eq!(width(&seen), Some(1344), "the restage kept the shape");
+        let p2 = picture_of(&second.content);
+        t.call(
+            json!({"picture": p2, "scene": {"camera": "from above"}, "size": "square"}),
+            &cx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(width(&seen), Some(1024), "a size the call names wins");
+        for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
     }

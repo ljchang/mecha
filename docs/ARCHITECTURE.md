@@ -673,8 +673,8 @@ The routes, in the result's own words and the manifest's `route`:
 |---|---|---|
 | `new` | no `picture` | the E1–E12 compile, library portraits at 512², up to `MAX_CAST` (5) |
 | `placed` | no `picture`, the setting a photo | an edit of the photo, each face's head crop |
-| `restaged` | a pose, the camera, the setting, the style, or a removal, on a picture whose people are known | words setting: a new picture at the base picture's seed (it keeps the room: 1/1 with, 6/6 different rooms without). Photo setting: the photo again, everyone's crops, the photo's hash checked so a different file under its name is refused |
-| `edited` | clothes, an expression, someone added, the text, or a restage on a picture with no record | an edit of the picture, crops for the people it changes |
+| `restaged` | a pose or a place in the frame (`where`), the camera, the setting, the light, the style, `together` as the call states it, or a removal, on a picture whose people are known | words setting: a new picture at the base picture's seed (it keeps the room: 1/1 with, 6/6 different rooms without). Photo setting: the photo again, everyone's crops, the photo's hash checked so a different file under its name is refused |
+| `edited` | clothes, an expression, someone added (a relation their arrival ends is cleared, not restaged), the text, or a restage on a picture with no record, whose keep sentence names only what the change leaves alone | an edit of the picture, crops for the people it changes |
 | `retouched` | `retouch`, on its own | an edit of the picture, no crops, a `mask` if given |
 | `redrawn` | nothing changed | the same render plan at a fresh seed |
 
