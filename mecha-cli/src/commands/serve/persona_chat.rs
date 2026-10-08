@@ -261,7 +261,7 @@ struct PinRecord {
     goal: Option<String>,
 }
 
-/// A chat's scene slot (IMAGE-SCENE-DESIGN.md §5.1): its own copy beside
+/// A chat's scene slot (IMAGE-DESIGN.md §6): its own copy beside
 /// its transcript, and the persona's latest and index in its folder, all
 /// outside the jail. One place, so the tool's slot and the run's scene note
 /// read the same files.
@@ -3223,7 +3223,7 @@ impl PersonaChats {
         // Owed again if the run fails: it is rolled back, and the file still
         // owes them.
         let arrived_back = arrived.clone();
-        // The scene as it stands (IMAGE-SCENE-DESIGN.md §5.5): the chat's
+        // The scene as it stands (IMAGE-DESIGN.md §6): the chat's
         // own copy, so what she wears and where she is come from her last
         // picture rather than a recalled day. Its own note, arming taint by
         // the stem its origin picks (`scene::stem_of`).
@@ -3448,7 +3448,7 @@ impl PersonaChats {
         // No brief, homeostat, outbox or hooks: each is the owner's.
         let mut cx = (**agent.context()).clone();
         let mut tools = agent.ctx().for_session(ps.workspace.clone());
-        // This chat's scene (IMAGE-SCENE-DESIGN.md §5.1): its own copy beside
+        // This chat's scene (IMAGE-DESIGN.md §6): its own copy beside
         // its transcript, and the persona's latest and index in its folder,
         // all outside the jail. Stamped here, never by a model.
         tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));

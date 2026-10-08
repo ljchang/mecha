@@ -604,6 +604,13 @@ pub fn plan(
         ));
     }
     let base_seed = base.and_then(|b| b.seed);
+    // Whether the scene has words to draw it afresh from: a restage or a
+    // redraw drawn new needs them, or it draws an empty scene (review of
+    // #597, pass 3; #591's `on_place` was this rule).
+    let words_setting = matches!(
+        next.setting.as_ref().map(|f| &f.value),
+        Some(Setting::Words { .. })
+    );
     let setting_photo = match next.setting.as_ref().map(|f| &f.value) {
         Some(Setting::Photo { path, .. }) => Some(path.clone()),
         _ => None,
@@ -624,7 +631,7 @@ pub fn plan(
         also: call
             .retouch
             .clone()
-            .filter(|_| call.picture.is_none() || !delta.is_empty()),
+            .filter(|_| call.picture.is_none() || !delta.is_empty() || !unknown_removes.is_empty()),
     };
     // A new picture: its setting is a photo (people placed in it), or words.
     let Some(picture) = call.picture.clone() else {
@@ -640,7 +647,11 @@ pub fn plan(
         return Ok(out);
     };
     // A retouch: the one free-text change to the picture itself.
-    if let Some(r) = call.retouch.as_ref().filter(|_| delta.is_empty()) {
+    if let Some(r) = call
+        .retouch
+        .as_ref()
+        .filter(|_| delta.is_empty() && unknown_removes.is_empty())
+    {
         out.render = Render::Edit {
             canvas: Canvas::Picture(picture),
             camera_moves: false,
@@ -664,9 +675,10 @@ pub fn plan(
                 keep: "the room and its furniture".into(),
                 ..out
             },
-            (None, true) => out,
-            // No record: there is no scene to redraw, only the picture.
-            (None, false) => Plan {
+            (None, true) if words_setting => out,
+            // No record, or one with no setting to draw from: there is no
+            // scene to redraw, only the picture.
+            (None, _) => Plan {
                 render: Render::Edit {
                     canvas: Canvas::Picture(picture),
                     camera_moves: false,
@@ -681,7 +693,7 @@ pub fn plan(
     }
     let restage = delta.restages() || delta.style;
     let known = out.next.people_known;
-    if restage && known {
+    if restage && known && (setting_photo.is_some() || words_setting) {
         out.route = "restaged";
         return Ok(match setting_photo {
             Some(photo) => Plan {
@@ -699,6 +711,7 @@ pub fn plan(
             },
         });
     }
+    let no_setting = restage && known;
     // An edit of the current picture: clothes, an expression, someone added,
     // the words it renders, or a restage on a picture whose people are not
     // known yet.
@@ -813,7 +826,10 @@ pub fn plan(
     let mut keep: Vec<&str> = Vec::new();
     if delta.style {
         keep.push("the people and what they are doing");
-    } else if touched.is_empty() && delta.removed.is_empty() {
+    } else if delta.together {
+        // A relation moves the people it names; only their clothes stay.
+        keep.push("everyone's clothes");
+    } else if touched.is_empty() && delta.removed.is_empty() && unknown_removes.is_empty() {
         keep.push("the people, their clothes and poses");
     } else {
         keep.push("everyone else as they are");
@@ -833,10 +849,14 @@ pub fn plan(
         None => String::new(),
     };
     out.route = "edited";
-    if restage && !known {
-        let line = "The picture's people are not known yet, so this was drawn as an edit of it \
-                    rather than redrawn from its setting. Saying who is in it lets later changes \
-                    redraw it.";
+    if restage && (!known || no_setting) {
+        let line = if no_setting {
+            "The scene has no setting to redraw it from, so this was drawn as an edit of the \
+             picture. Giving `scene.setting` lets later changes redraw it."
+        } else {
+            "The picture's people are not known yet, so this was drawn as an edit of it rather \
+             than redrawn from its setting. Saying who is in it lets later changes redraw it."
+        };
         out.said = Some(match out.said.take() {
             Some(said) => format!("{said} {line}"),
             None => line.to_string(),
@@ -996,6 +1016,48 @@ mod tests {
         .unwrap();
         assert_eq!(p.next.people[0].wearing, "clothes that suit the scene");
         assert!(p.said.unwrap().contains("John had no clothes given"));
+    }
+
+    /// Review of #597, pass 3: a restage of a scene with no setting is an
+    /// edit, said, never a new picture from an empty scene; the keep
+    /// sentence never keeps the people a removal or a relation moves; a
+    /// retouch beside a removal on a picture with no record rides along.
+    #[test]
+    fn a_scene_without_a_setting_restages_as_an_edit_and_keeps_honestly() {
+        let first = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {"people": [
+                {"who": "maya", "wearing": "a coat", "doing": "standing"}]}})),
+            None,
+        );
+        let base = landed(&first, 9);
+        assert!(base.people_known && base.setting.is_none());
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"camera": "from a low angle"}})),
+            Some(&base),
+        );
+        assert_eq!(p.route, "edited");
+        assert!(matches!(p.render, Render::Edit { .. }));
+        assert!(p.said.unwrap().contains("no setting to redraw it from"));
+        // A removal on a picture with no record keeps everyone else.
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "retouch": "a red hat",
+                "scene": {"people": [{"who": "a man in a hat", "remove": true}]}})),
+            None,
+        );
+        assert!(!p.keep.contains("the people, their clothes"), "{}", p.keep);
+        assert_eq!(p.also.as_deref(), Some("a red hat"));
+        // A relation keeps only the clothes.
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/two.jpg", "scene": {"together": "Maya and John wave at each other"}}),
+            ),
+            None,
+        );
+        assert!(
+            p.keep.contains("everyone's clothes") && !p.keep.contains("poses"),
+            "{}",
+            p.keep
+        );
     }
 
     /// mecha-a3's G1b and G1: `self` and the persona's own name are one

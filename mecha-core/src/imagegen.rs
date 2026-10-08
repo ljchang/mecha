@@ -1982,8 +1982,6 @@ impl ImageGenerate {
     }
 }
 
-impl ImageGenerate {}
-
 /// What the model is told the tool does (`IMAGE-DESIGN.md` §5.1). A named
 /// constant, so the acceptance gates read the same words the model does.
 pub const DESCRIPTION: &str = "Draw a picture with the local image model, or change one, and save \
@@ -2555,7 +2553,19 @@ impl Tool for ImageGenerate {
                         .collect::<Vec<_>>()
                 })
                 .await
-                .unwrap_or_else(|_| vec![None; entries.len()]);
+                // A detector that panicked costs the crops, and is said like
+                // any other reason a face could not be had (`face.rs`: "said,
+                // never silently drawn without"; review of #597, pass 3).
+                .unwrap_or_else(|_| {
+                    entries
+                        .iter()
+                        .map(|e| {
+                            e.as_ref().filter(|_| !masked).map(|_| {
+                                crate::face::Anchor::Unavailable("the face detector failed".into())
+                            })
+                        })
+                        .collect()
+                });
                 let mut said = String::new();
                 let mut crops = 0usize;
                 for ((p, entry), anchor) in described.iter().zip(&entries).zip(anchors) {
@@ -2565,18 +2575,30 @@ impl Tool for ImageGenerate {
                         .map(|e| e.text.trim().trim_end_matches('.').to_string())
                         .unwrap_or_default();
                     said.push_str(&edit_person(&name, &text, p));
-                    if let Some(crate::face::Anchor::Crop(bytes)) = anchor {
-                        req.references.push(Reference {
-                            path: format!("{FACE_REFERENCE}{}", p.who.key()),
-                            bytes,
-                            ext: "png",
-                        });
-                        crops += 1;
-                        let k = req.references.len();
-                        said.push_str(&format!(
-                            " Take only {name}'s facial identity from <image{k}>, nothing else."
-                        ));
-                        crops_said.push(name.clone());
+                    match anchor {
+                        Some(crate::face::Anchor::Crop(bytes)) => {
+                            req.references.push(Reference {
+                                path: format!("{FACE_REFERENCE}{}", p.who.key()),
+                                bytes,
+                                ext: "png",
+                            });
+                            crops += 1;
+                            let k = req.references.len();
+                            said.push_str(&format!(
+                                " Take only {name}'s facial identity from <image{k}>, nothing \
+                                 else."
+                            ));
+                            crops_said.push(name.clone());
+                        }
+                        Some(crate::face::Anchor::NoFace) => dropped.push(format!(
+                            "No face was found in {name}'s library portrait, so {name} was \
+                             drawn from the description alone."
+                        )),
+                        Some(crate::face::Anchor::Unavailable(why)) => dropped.push(format!(
+                            "{name}'s face could not be taken from the library ({why}), so \
+                             {name} was drawn from the description alone."
+                        )),
+                        None => {}
                     }
                     if let Some(e) = entry {
                         used.push(crate::imagelib::Used {
@@ -5206,7 +5228,7 @@ mod tests {
 
     /// A face detector that panics costs the crops and nothing else: the
     /// person is still drawn and kept in the manifest's `cast` (review of
-    /// #586).
+    /// #586), and the result says why there was no crop (review of #597).
     #[tokio::test]
     async fn a_panicking_detector_keeps_the_people_on_record() {
         struct Panics;
@@ -5239,6 +5261,14 @@ mod tests {
         let m = manifest_of(&dir, &out.content);
         assert_eq!(m["cast"][0]["name"], "maya", "{m}");
         assert_eq!(m["crops"], json!([]), "{m}");
+        // And the reason is said, never a silent draw without the face.
+        assert!(
+            out.content.contains(
+                "Maya's face could not be taken from the library (the face detector failed)"
+            ),
+            "{}",
+            out.content
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
