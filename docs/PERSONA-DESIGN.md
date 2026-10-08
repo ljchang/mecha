@@ -738,7 +738,8 @@ picker, the lock (§8.3) and the voice binding (§11) live.
 ### 8.6 Self-portraits (R23)
 
 *Built 2026-09-30:* `Tool::for_persona_as` hands `image_generate` a
-`PersonaSelf`, and `ImageGenerate::cast_self` casts the persona's character
+`PersonaSelf`, and `ImageGenerate::cast_self` (since 2026-10-08, `picture::parse` resolving
+`who: "self"`; `IMAGE-DESIGN.md` §4) casts the persona's character
 when the prompt names the persona (character, folder or display name, whole
 words) or `cast` says `self`, filling `wearing`/`doing` from a prompt that
 opens with the persona. An `extras` entry that opens with the persona is

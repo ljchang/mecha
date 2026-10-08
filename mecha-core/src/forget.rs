@@ -276,6 +276,19 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
+    // The chat's picture records (IMAGE-DESIGN.md §6): its copy, and each
+    // index entry it last advanced. One that cannot be read cannot be shown
+    // to be this chat's, so it is kept and said.
+    let scene = crate::scene::forget_assistant_chat(&roots.sessions, id);
+    if let Ok(f) = &scene {
+        if f.unreadable > 0 {
+            report.residue.push(format!(
+                "{} picture record(s) in the scene store could not be read, so they were kept",
+                f.unreadable
+            ));
+        }
+    }
+    report.attempt("scene", scene.map(|f| f.removed).map_err(Into::into));
     // The graph before the learning store: whether the session was distilled
     // is read from the ledger the learning purge is about to empty, and a
     // graph that failed this time must still be owed the episode next time.

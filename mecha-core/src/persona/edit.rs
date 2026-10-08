@@ -23,7 +23,9 @@
 //!
 //! Typed turns only: on a call the panel's words go out as speech, and the
 //! call note already says a picture reaches the owner unseen
-//! (`persona::call`).
+//! (`persona::call`). The note names the image tool's fields since its
+//! redesign (`IMAGE-DESIGN.md` §5.1); the panel's own one-shot extraction
+//! (§5.3) replaces it.
 
 /// What the note opens with; registered as the harness's voice.
 pub const EDIT_STEM: &str = "(From the harness: this message came from the picture edit panel";
@@ -32,9 +34,10 @@ pub const EDIT_STEM: &str = "(From the harness: this message came from the pictu
 /// (`RunContext::notes`), so it lasts exactly the edit's run.
 pub fn note() -> String {
     format!(
-        "{EDIT_STEM}. Make the edit with their words as edit.change, then answer in a \
-sentence or two, in your own voice. You have not seen the result, so don't describe the \
-picture or retell the scene.)"
+        "{EDIT_STEM}. Make the change with that picture as `picture`: a new pose, the camera, \
+clothes, an expression or who is there go in `scene`, only what changes; any other change to the \
+picture itself goes in `retouch`, in their words. Then answer in a sentence or two, in your own \
+voice. You have not seen the result, so don't describe the picture or retell the scene.)"
     )
 }
 

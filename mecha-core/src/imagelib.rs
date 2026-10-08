@@ -27,8 +27,9 @@ pub const MAX_NAME: usize = 64;
 pub const MAX_DESCRIPTION: usize = 400;
 /// A style's text, pasted verbatim at the end of every prompt that names it.
 pub const MAX_STYLE_TEXT: usize = 1000;
-/// People per scene. E3 held four in one pass; five is unmeasured.
-pub const MAX_CAST: usize = 4;
+/// People per new picture. E3 held four in one pass; five is the owner's
+/// provisional ceiling (IMAGE-DESIGN.md §6, C5).
+pub const MAX_CAST: usize = 5;
 /// `wearing` and `doing`, each.
 pub const MAX_CAST_FIELD: usize = 300;
 /// People in a scene who are no library character — a waiter, a crowd's
@@ -909,59 +910,6 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
-/// Cast members the library has no trace of, moved to extras: a name the
-/// model put in `cast` that is no character here is someone to draw from
-/// what the model wrote, not a reason to draw nothing (owner, 2026-09-30:
-/// "a named character that isn't in the image library … blocks image
-/// generation when it shouldn't"). Only a name with **no** trace moves: a
-/// candidate or an entry that did not load stays in the cast, where its own
-/// refusal says what is wrong, since drawing a stranger in its place would
-/// be the substitution the cast exists to prevent. Returns the cast that
-/// stays, the extras the moved ones became, and their names.
-pub fn demote_unknown(
-    lib: &Library,
-    cast: &[CastMember],
-) -> (Vec<CastMember>, Vec<String>, Vec<String>) {
-    let (mut kept, mut extras, mut names) = (Vec::new(), Vec::new(), Vec::new());
-    let cast_names: Vec<String> = cast.iter().map(|m| m.name.trim().to_lowercase()).collect();
-    for member in cast {
-        let name = member.name.trim().to_lowercase();
-        let dir = lib.dir.join(Kind::Character.dir()).join(&name);
-        // Words naming a library character who is not in this cast would
-        // draw that character from words — what `named_in` refuses everywhere
-        // else: `Maya.` for maya, or a `doing` naming someone uncast (review
-        // of #434). Such a member stays in the cast, where its refusal says
-        // what to fix. A name in the cast is fine: "pouring coffee for maya".
-        let said = format!("{} {} {}", member.name, member.wearing, member.doing);
-        let names_someone = named_in(lib, &said)
-            .into_iter()
-            .chain(broken_named_in(lib, &said))
-            .any(|n| !cast_names.contains(&n));
-        let traced = !name.chars().any(char::is_alphanumeric)
-            || names_someone
-            || lib.get(Kind::Character, &name).is_some()
-            || lib
-                .errors
-                .iter()
-                .any(|e| e.path.parent() == Some(dir.as_path()));
-        if traced {
-            kept.push(member.clone());
-            continue;
-        }
-        let mut described = member.name.trim().to_string();
-        let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
-        if !wearing.is_empty() && !blank(wearing) {
-            described.push_str(&format!(", wearing {wearing}"));
-        }
-        if !doing.is_empty() && !blank(doing) {
-            described.push_str(&format!(", {doing}"));
-        }
-        extras.push(described.chars().take(MAX_CAST_FIELD).collect());
-        names.push(member.name.trim().to_string());
-    }
-    (kept, extras, names)
-}
-
 /// Empty, or only the refusal's own placeholder copied back — no answer.
 pub(crate) fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')
@@ -984,55 +932,27 @@ pub fn compile(
     extras: &[String],
     style: Option<&str>,
 ) -> std::result::Result<Compiled, String> {
-    compile_with(lib, scene, cast, extras, &[], style)
-}
-
-/// [`compile`], with `demoted`: the extras [`demote_unknown`] made of cast
-/// names the library does not hold. They are drawn like any extra, but they
-/// are not the model's `extras` — so the checks that answer the model about
-/// its own list (its count, its shape, a cast member named in it) are not
-/// asked of them (review of #434: "pouring coffee for maya" beside a cast
-/// maya refused the whole picture, with advice the model had already taken).
-pub fn compile_with(
-    lib: &Library,
-    scene: &str,
-    cast: &[CastMember],
-    extras: &[String],
-    demoted: &[String],
-    style: Option<&str>,
-) -> std::result::Result<Compiled, String> {
     if extras.len() > MAX_EXTRAS {
         return Err(format!(
-            "At most {MAX_EXTRAS} people in `extras`, not {}.",
+            "At most {MAX_EXTRAS} people who are not library characters fit one new picture, \
+             not {}.",
             extras.len()
-        ));
-    }
-    if extras.len() + demoted.len() > MAX_EXTRAS {
-        return Err(format!(
-            "At most {MAX_EXTRAS} people who are not library characters, not {}: {} of the \
-             names in `cast` are not in the library and are drawn as extras.",
-            extras.len() + demoted.len(),
-            demoted.len()
         ));
     }
     let extras: Vec<&str> = extras
         .iter()
         .map(|e| e.trim().trim_end_matches('.'))
         .collect();
+    // Each person's fields are capped where the call is read; a described
+    // person here is those fields joined, so no cap of its own.
     if extras.iter().any(|e| blank(e)) {
         return Err(
-            "Each entry in `extras` is a person: what they look like and what they are doing."
-                .into(),
+            "Each person not from the library is described in `who`: what they look like.".into(),
         );
-    }
-    if extras.iter().any(|e| e.chars().count() > MAX_CAST_FIELD) {
-        return Err(format!(
-            "Each entry in `extras` is capped at {MAX_CAST_FIELD} characters."
-        ));
     }
     if cast.len() > MAX_CAST {
         return Err(format!(
-            "At most {MAX_CAST} people in `cast`, not {}.",
+            "At most {MAX_CAST} library characters fit one new picture, not {}.",
             cast.len()
         ));
     }
@@ -1046,16 +966,12 @@ pub fn compile_with(
             .find(|n| cast.iter().any(|m| m.name.trim().to_lowercase() == *n))
         {
             return Err(format!(
-                "`{name}` is in `cast` and also in `extras`; `extras` is for people who are \
-                 not in the library. Leave `{name}` in `cast` only, and put what they are \
-                 doing in their `doing`."
+                "`{name}` is drawn from the library already, and a description naming them \
+                 draws them twice. Describe the other person without the name, and put what \
+                 they do together in `together`."
             ));
         }
     }
-    let extras: Vec<&str> = extras
-        .into_iter()
-        .chain(demoted.iter().map(|d| d.trim().trim_end_matches('.')))
-        .collect();
     let mut refs = Vec::with_capacity(cast.len());
     let mut used = Vec::new();
     let mut source_seeds = Vec::new();
@@ -1067,7 +983,7 @@ pub fn compile_with(
             .any(|m| m.name.trim().to_lowercase() == name)
         {
             return Err(format!(
-                "`{name}` appears twice in `cast`; each person is drawn once."
+                "`{name}` is in `scene.people` twice; each person is drawn once."
             ));
         }
         let entry = lib
@@ -1199,14 +1115,16 @@ pub fn compile_with(
 /// Approved characters a prompt names as whole words, sorted.
 ///
 /// The guard behind a failure the first real run hit: the model looked the
-/// characters up, then wrote their descriptions into the prompt and left
-/// `cast` out — and from words alone they came out as two strangers (ArcFace
-/// 0.02–0.17 against their portraits; E1 measured the same, 0.33).
+/// characters up, then wrote their descriptions into the prompt without
+/// naming them as people — and from words alone they came out as two
+/// strangers (ArcFace 0.02–0.17 against their portraits; E1 measured the
+/// same, 0.33). So the image tool never draws a library name from a prose
+/// field: for someone not in the picture the image model reads "the
+/// viewer" (`picture::plan`'s `offstage` and `picture::as_viewer`; the
+/// owner's ruling of 2026-10-08).
 ///
-/// **In order of first mention**, because the refusal hands these back as a
-/// `cast` to copy and cast order is left to right: sorted, "Maya and John"
-/// came back as `[john, maya]` and a copied retry swapped them (review of
-/// #384).
+/// **In order of first mention**, so a note names them as written:
+/// sorted, "Maya and John" came back as `[john, maya]` (review of #384).
 pub fn named_in(lib: &Library, prompt: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for word in prompt
@@ -1262,96 +1180,6 @@ fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// Only a name with no trace moves: a known character stays, a
-    /// candidate and an entry that did not load stay and keep their own
-    /// refusals, and an unknown name becomes an extra with what it wore and
-    /// did (review of #434: the load-error branch is the load-bearing one).
-    #[test]
-    fn only_a_name_with_no_trace_is_demoted() {
-        let dir = std::env::temp_dir().join(format!("mecha-demote-{}", uuid::Uuid::new_v4()));
-        let png = {
-            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 9, 9]));
-            let mut out = std::io::Cursor::new(Vec::new());
-            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
-            out.into_inner()
-        };
-        for (name, origin) in [
-            ("maya", Origin::Owner),
-            ("wren", Origin::ModelClean),
-            ("theo", Origin::Owner),
-        ] {
-            create(
-                &dir,
-                NewEntry {
-                    kind: Kind::Character,
-                    name: name.into(),
-                    text: format!("{name}, a face"),
-                    portrait: Some(png.clone()),
-                    source_seed: None,
-                    origin,
-                    locked: false,
-                },
-            )
-            .unwrap();
-        }
-        std::fs::write(dir.join("characters/theo/entry.toml"), "not = [toml").unwrap();
-        let lib = Library::load(&dir).0;
-        let member = |name: &str| CastMember {
-            name: name.into(),
-            wearing: "a coat".into(),
-            doing: "waving".into(),
-        };
-        let (kept, extras, names) = demote_unknown(
-            &lib,
-            &[
-                member("maya"),
-                member("wren"),
-                member("theo"),
-                member("Sam"),
-            ],
-        );
-        let kept: Vec<&str> = kept.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(kept, ["maya", "wren", "theo"]);
-        assert_eq!(extras, ["Sam, wearing a coat, waving"]);
-        assert_eq!(names, ["Sam"]);
-
-        // A library character in another spelling, a `doing` naming someone
-        // uncast, and a name of no letters all stay, to be refused; an action
-        // naming someone in the cast does not stop a demotion.
-        let with = |name: &str, doing: &str| CastMember {
-            name: name.into(),
-            wearing: "a coat".into(),
-            doing: doing.into(),
-        };
-        let (kept, extras, _) = demote_unknown(
-            &lib,
-            &[
-                with("Maya.", "laughing"),
-                with("Sam", "waving at maya"),
-                with(".", "…"),
-            ],
-        );
-        let kept: Vec<&str> = kept.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(kept, ["Maya.", "Sam", "."], "{extras:?}");
-        let (kept, extras, _) = demote_unknown(
-            &lib,
-            &[with("maya", "laughing"), with("Sam", "waving at maya")],
-        );
-        assert_eq!(kept.len(), 1);
-        assert_eq!(extras, ["Sam, wearing a coat, waving at maya"]);
-
-        // Four written extras and one demoted is five people who are not
-        // library characters: refused, saying why.
-        let four: Vec<String> = (0..4).map(|i| format!("a stranger {i}")).collect();
-        let err =
-            compile_with(&lib, "a park", &[], &four, &["Sam, waving".into()], None).unwrap_err();
-        assert!(
-            err.contains("are not in the library and are drawn as extras"),
-            "{err}"
-        );
-        std::fs::remove_dir_all(dir).ok();
-    }
-
     use super::*;
 
     /// A real 2×2 PNG, so the header decodes.
@@ -1876,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cast_member_named_again_in_extras_is_refused() {
+    fn a_library_person_named_again_in_a_description_is_refused() {
         let dir = scratch();
         for n in ["maya", "john"] {
             create(dir.path(), character(n, Origin::Owner)).unwrap();
@@ -1892,7 +1720,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            why.contains("`john` is in `cast` and also in `extras`"),
+            why.contains("`john` is drawn from the library already"),
             "{why}"
         );
         // A stranger who shares no name with the cast is fine.
@@ -1913,7 +1741,7 @@ mod tests {
         let (lib, _) = Library::load(dir.path());
         for bad in ["", "  ", "…", "..."] {
             let why = compile(&lib, "x", &[member("maya")], &[bad.to_string()], None).unwrap_err();
-            assert!(why.contains("`extras`"), "{bad:?}: {why}");
+            assert!(why.contains("described in `who`"), "{bad:?}: {why}");
         }
         let five: Vec<String> = (0..5).map(|i| format!("person {i}")).collect();
         assert!(compile(&lib, "x", &[], &five, None)
@@ -1948,22 +1776,22 @@ mod tests {
     }
 
     #[test]
-    fn a_person_is_drawn_once_and_at_most_four() {
+    fn a_person_is_drawn_once_and_at_most_five() {
         let dir = scratch();
-        for n in ["a", "b", "c", "d", "e"] {
+        let names = ["a", "b", "c", "d", "e", "f"];
+        for n in names {
             create(dir.path(), character(n, Origin::Owner)).unwrap();
         }
         let (lib, _) = Library::load(dir.path());
         assert!(compile(&lib, "x", &[member("a"), member("a")], &[], None)
             .unwrap_err()
             .contains("twice"));
-        let five: Vec<_> = ["a", "b", "c", "d", "e"]
-            .iter()
-            .map(|n| member(n))
-            .collect();
-        assert!(compile(&lib, "x", &five, &[], None)
+        let five: Vec<_> = names[..5].iter().map(|n| member(n)).collect();
+        assert!(compile(&lib, "x", &five, &[], None).is_ok());
+        let six: Vec<_> = names.iter().map(|n| member(n)).collect();
+        assert!(compile(&lib, "x", &six, &[], None)
             .unwrap_err()
-            .contains("At most 4"));
+            .contains("At most 5"));
     }
 
     #[test]
