@@ -107,21 +107,24 @@ pub fn not_understood(why: &str) -> String {
 /// for the reader, never words to draw.
 pub const PHOTO_SETTING: &str = "the owner's photo";
 
-/// A `setting` that restates the photo stand-in ("the owner's photo, in
-/// watercolour") would replace the owner's photo in the record with words,
-/// and the picture would no longer be placed in it (review of #605). That
-/// one is refused with the way on; a real change of place over the photo
-/// still goes through, as the owner asked.
-pub fn photo_kept(extracted: &Extracted) -> Result<(), String> {
-    let echoes = extracted
-        .scene
-        .get("setting")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|s| s.to_lowercase().contains(PHOTO_SETTING));
-    if echoes {
+/// The photo stand-in coming back as `setting`: said alone it is the record
+/// restated, so it is left out and the photo stays; with more words ("the
+/// owner's photo, in watercolour") they would replace the owner's photo in
+/// the record and the picture would no longer be placed in it, so that is
+/// refused with the way on (review of #605). A real change of place over the
+/// photo still goes through, as the owner asked. Inside the reader, so every
+/// caller has it.
+fn photo_setting(scene: &mut serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    let Some(said) = scene.get("setting").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+    let said = said.trim().trim_end_matches('.').to_lowercase();
+    if said == PHOTO_SETTING {
+        scene.remove("setting");
+    } else if said.contains(PHOTO_SETTING) {
         return Err(
-            "this picture is placed on the owner's photo, and a look in words would \
-                    replace the photo: name one of the library's styles instead"
+            "this picture is placed on the owner's photo, and words in its setting \
+                    would replace the photo: name one of the library's styles instead"
                 .into(),
         );
     }
@@ -288,14 +291,24 @@ fn look_into(
 ) -> Result<(), String> {
     let words = look.trim();
     let lower = words.to_lowercase();
+    // The whole spelling first, so a style named `…-look` is found; then
+    // without a trailing "style" or "look".
     let bare = ["style", "look"]
         .iter()
         .find_map(|tail| lower.strip_suffix(tail))
         .map_or(lower.as_str(), str::trim);
-    let key = crate::imagelib::spelled_as_name(bare);
-    if looks.styles.contains(&key) {
-        scene.insert("style".into(), key.into());
+    if bare.is_empty() {
+        // "style" alone names no look.
         return Ok(());
+    }
+    for key in [
+        crate::imagelib::spelled_as_name(&lower),
+        crate::imagelib::spelled_as_name(bare),
+    ] {
+        if looks.styles.contains(&key) {
+            scene.insert("style".into(), key.into());
+            return Ok(());
+        }
     }
     use crate::scene::Setting;
     let base = match scene.get("setting").and_then(serde_json::Value::as_str) {
@@ -400,7 +413,10 @@ pub fn read_extraction_for(
             scene.insert("people".into(), out.into());
         }
     }
-    match obj.get("look") {
+    photo_setting(&mut scene)?;
+    // `style` too: the record shows that key, and a reader without the
+    // schema answers in it (review of #605).
+    match obj.get("look").or_else(|| obj.get("style")) {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
         Some(serde_json::Value::String(t)) => look_into(t, looks, &mut scene)?,
@@ -696,6 +712,42 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(record_for(&styled)["style"], "ink-wash");
+    }
+
+    /// The photo stand-in said alone is the record restated and left out;
+    /// with a look added it would replace the owner's photo, and is refused;
+    /// a real change of place goes through. And a style named `…-look`, the
+    /// record's own `style` key, and "style" alone are each read right
+    /// (review of #605).
+    #[test]
+    fn a_look_over_the_owners_photo_never_replaces_it() {
+        let known = |_: &str| true;
+        let styles = vec!["secret-look".to_string(), "ink-wash".to_string()];
+        let looks = Looks {
+            styles: &styles,
+            record: None,
+        };
+        let read = |t: &str| read_extraction_for(t, &known, None, &looks);
+        let why = read(r#"{"setting": "The owner's photo, in watercolour"}"#).unwrap_err();
+        assert!(why.contains("would replace the photo"), "{why}");
+        let e = read(
+            r#"{"setting": "the owner's photo.", "people": [{"who": "Maya", "expression": "a smile"}]}"#,
+        )
+        .unwrap();
+        assert!(e.scene.get("setting").is_none(), "{:?}", e.scene);
+        assert_eq!(e.scene["people"][0]["expression"], "a smile");
+        let e = read(r#"{"setting": "a windswept beach"}"#).unwrap();
+        assert_eq!(e.scene["setting"], "a windswept beach");
+        assert_eq!(
+            read(r#"{"look": "secret look"}"#).unwrap().scene["style"],
+            "secret-look"
+        );
+        assert_eq!(
+            read(r#"{"style": "Ink Wash"}"#).unwrap().scene["style"],
+            "ink-wash"
+        );
+        let e = read(r#"{"look": "style", "light": "dusk"}"#).unwrap();
+        assert!(e.scene.get("setting").is_none() && e.scene.get("style").is_none());
     }
 
     #[test]
