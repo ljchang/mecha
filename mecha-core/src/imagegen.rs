@@ -2101,7 +2101,7 @@ pub const SETTING_DESC: &str = "Everything in the picture except its people and 
 pub const PEOPLE_DESC: &str = "Who is in the picture, each once. For a change, only the people \
      who change, with only what changes: for new clothes alone send only `wearing`, since a \
      `doing` you send, even reworded, is a new pose and redraws the scene. Someone new needs \
-     `wearing` and `doing`.";
+     `wearing`, and `doing` unless `together` says what they do.";
 /// `retouch`'s description.
 pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words: an object, a \
      colour, a detail (\"Give the man a red umbrella.\"). Never clothes, a pose, an expression \

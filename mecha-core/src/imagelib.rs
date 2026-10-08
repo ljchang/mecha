@@ -1029,8 +1029,9 @@ pub fn compile(
         // (`imagegen::doing_words` says a plain pose otherwise).
         if blank(wearing) || (!doing.is_empty() && blank(doing)) {
             return Err(format!(
-                "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
-                 pose when the scene does not say."
+                "`{name}` needs `wearing`, and `doing` unless the scene says what its people \
+                 do together: a reference supplies its own outfit and pose when the scene does \
+                 not say."
             ));
         }
         if wearing.chars().count() > MAX_CAST_FIELD || doing.chars().count() > MAX_CAST_FIELD {
