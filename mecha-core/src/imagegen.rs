@@ -1608,19 +1608,6 @@ const CANVAS_CAMERA_MOVES: &str = " <image1> is the canvas: keep its room and fu
 /// sixth face rather than drop one.
 const EDIT_REFERENCE_BUDGET: usize = 1 + crate::picture::MAX_FACES;
 
-/// `words` spelled as a library name could be: trimmed, lowercased, and each
-/// run of spaces or underscores a single hyphen. Names allow only lowercase
-/// letters, digits and hyphens, so this can only find the name meant.
-fn library_spelling(words: &str) -> String {
-    words
-        .trim()
-        .to_lowercase()
-        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
 /// A library name as the edit prompt says it, each word capitalised: "maya" →
 /// "Maya", "mara quinn" → "Mara Quinn" — the name is what binds a face to a
 /// person in the prompt (review of #586).
@@ -2406,7 +2393,7 @@ impl Tool for ImageGenerate {
             // and hyphens, so "Digital painting" can only mean
             // `digital-painting` (mecha-a3, 2026-10-08: the live chat wrote
             // the words eight times beside a library that now holds the name).
-            let key = library_spelling(&name);
+            let key = crate::imagelib::spelled_as_name(&name);
             let kind = crate::imagelib::Kind::Style;
             let held = lib
                 .get(kind, &key)

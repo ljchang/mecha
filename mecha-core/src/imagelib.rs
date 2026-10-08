@@ -922,6 +922,20 @@ pub(crate) fn styles_to_name(lib: &Library) -> Option<String> {
     (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
 }
 
+/// `words` spelled as a library name could be: trimmed, lowercased, and each
+/// run of spaces, underscores or hyphens a single hyphen. Names allow only
+/// lowercase letters, digits and hyphens, so this can only find the name
+/// meant.
+pub fn spelled_as_name(words: &str) -> String {
+    words
+        .trim()
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// The approved, unlocked styles' names, in the library's order: what a
 /// model may be offered (see [`styles_to_name`]).
 pub fn style_names(lib: &Library) -> Vec<String> {
