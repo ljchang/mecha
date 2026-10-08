@@ -660,6 +660,7 @@ mod failover_tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
     }
 
@@ -913,6 +914,7 @@ mod halt_tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         };
         assert!(p.complete(&req, None).await.is_ok());
         FLAG.set("switched with --now".into()).unwrap();

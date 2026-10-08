@@ -155,6 +155,9 @@ impl Anthropic {
                 })
                 .collect();
             obj.insert("tools".into(), json!(tools));
+            if req.tool_choice == crate::message::ToolChoice::None {
+                obj.insert("tool_choice".into(), json!({"type": "none"}));
+            }
         }
 
         if let Some(system) = &req.system {
@@ -881,7 +884,22 @@ mod tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
+    }
+
+    /// A closing request (IMAGE-DESIGN.md §5.5): Anthropic's form of "answer
+    /// in words", with the tools still listed.
+    #[test]
+    fn tool_choice_none_is_sent_in_anthropics_form() {
+        let mut r = req();
+        r.tools = vec![spec("draw")];
+        let body = client().body(&r, false).unwrap();
+        assert!(body.get("tool_choice").is_none(), "{body}");
+        r.tool_choice = crate::message::ToolChoice::None;
+        let body = client().body(&r, false).unwrap();
+        assert_eq!(body["tool_choice"], json!({"type": "none"}));
+        assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
     }
 
     fn spec(name: &str) -> ToolSpec {
@@ -1020,6 +1038,7 @@ mod tests {
                 last,
             ],
             trailing_notes: 2,
+            tool_choice: crate::message::ToolChoice::Auto,
             ..req()
         };
         let body = client().body(&r, false).unwrap();
@@ -1040,6 +1059,7 @@ mod tests {
                 only,
             ],
             trailing_notes: 1,
+            tool_choice: crate::message::ToolChoice::Auto,
             ..req()
         };
         let body = client().body(&r, false).unwrap();
@@ -1323,6 +1343,7 @@ mod retry_tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
     }
 
@@ -2910,6 +2931,7 @@ text = "Leave work better than you found it."
                 think: None,
                 think_budget: None,
                 trailing_notes: 0,
+                tool_choice: crate::message::ToolChoice::Auto,
             }
         };
         let plain_result = "1. [>] Draft a reply".to_string();
