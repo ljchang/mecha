@@ -950,10 +950,10 @@ compute and memory bandwidth, and nothing queues one behind the other.
 
 ## Image library
 
-> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1).** Two rules below are lifted:
-> `cast` and `reference_images` refused together, and the name guard skipping edits. An edit
-> declares its people, and each enters as a head crop with their description. Until that build
-> (`image/declared-identity`) lands, the text below describes what ships.
+> **Superseded 2026-10-08 for `image_generate`'s call (`IMAGE-DESIGN.md`; see §Image generation
+> above).** `cast`, `extras` and `reference_images` are retired: people are `scene.people[].who`,
+> and the planner, not a name guard, decides what is drawn. The store, approval and the library's
+> own tools below stand as written.
 
 `imagelib.rs` is the store of recurring characters and styles, and the
 compiler that turns a scene into what `image_generate` sends;
