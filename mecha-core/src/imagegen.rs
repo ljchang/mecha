@@ -2642,6 +2642,7 @@ impl Tool for ImageGenerate {
                 // as the call said it.
                 let mut people = plan.people.clone();
                 let mut words_scene = std::borrow::Cow::Borrowed(&plan.next);
+                let as_called = together;
                 let mut together = together;
                 if together && people.len() >= 2 && people.iter().any(|p| p.doing.trim().is_empty())
                 {
@@ -2671,10 +2672,16 @@ impl Tool for ImageGenerate {
                         .unwrap_or_else(|_| Err("the splitter took too long".into()));
                         match answer {
                             Ok(split) => {
+                                // The split's places win (mecha-a3: the persona's
+                                // are copies, and at three people the split's are
+                                // what put the hands-off side by side), except
+                                // `background`, which is a choice and is kept.
                                 for (p, name) in people.iter_mut().zip(&names) {
                                     if let Some(r) = split.roles.iter().find(|r| &r.who == name) {
                                         p.doing = r.doing.clone();
-                                        p.at = Some(r.at);
+                                        if p.at != Some(crate::scene::Where::Background) {
+                                            p.at = Some(r.at);
+                                        }
                                     }
                                 }
                                 people.sort_by_key(|p| crate::picture::rank(p.at));
@@ -2696,42 +2703,60 @@ impl Tool for ImageGenerate {
                         }
                     }
                 }
-                let mut cast = Vec::new();
-                let mut extras = Vec::new();
-                for p in &people {
-                    match &p.who {
-                        crate::scene::Who::Library(n) => cast.push(crate::imagelib::CastMember {
-                            name: n.clone(),
-                            wearing: p.wearing.clone(),
-                            doing: doing_words(p, together),
-                        }),
-                        crate::scene::Who::Described(d) => {
-                            let mut e = d.trim().trim_end_matches('.').to_string();
-                            if !p.wearing.trim().is_empty() {
-                                e.push_str(&format!(", wearing {}", p.wearing.trim()));
+                let style = plan.next.style.as_ref().map(|s| s.value.clone());
+                let compile_from = |people: &[crate::scene::Person],
+                                    words: &crate::scene::Scene,
+                                    together: bool| {
+                    let mut cast = Vec::new();
+                    let mut extras = Vec::new();
+                    for p in people {
+                        match &p.who {
+                            crate::scene::Who::Library(n) => {
+                                cast.push(crate::imagelib::CastMember {
+                                    name: n.clone(),
+                                    wearing: p.wearing.clone(),
+                                    doing: doing_words(p, together),
+                                })
                             }
-                            let doing = doing_words(p, together);
-                            if !doing.is_empty() {
-                                e.push_str(&format!(", {doing}"));
+                            crate::scene::Who::Described(d) => {
+                                let mut e = d.trim().trim_end_matches('.').to_string();
+                                if !p.wearing.trim().is_empty() {
+                                    e.push_str(&format!(", wearing {}", p.wearing.trim()));
+                                }
+                                let doing = doing_words(p, together);
+                                if !doing.is_empty() {
+                                    e.push_str(&format!(", {doing}"));
+                                }
+                                extras.push(e);
                             }
-                            extras.push(e);
                         }
                     }
-                }
-                let style = plan.next.style.as_ref().map(|s| s.value.clone());
-                let compiled = match crate::imagelib::compile(
-                    &lib,
-                    &match &plan.also {
-                        // A retouch given for a new picture, or beside a
-                        // restage: one more sentence of the scene.
-                        Some(also) => format!("{} {also}", scene_words(&words_scene)),
-                        None => scene_words(&words_scene),
-                    },
-                    &cast,
-                    &extras,
-                    style.as_deref(),
-                ) {
+                    crate::imagelib::compile(
+                        &lib,
+                        &match &plan.also {
+                            // A retouch given for a new picture, or beside a
+                            // restage: one more sentence of the scene.
+                            Some(also) => format!("{} {also}", scene_words(words)),
+                            None => scene_words(words),
+                        },
+                        &cast,
+                        &extras,
+                        style.as_deref(),
+                    )
+                };
+                // A split is prompt-only and must never turn a drawable call
+                // into a refusal: parts the compiler will not take (a
+                // described person's part naming a library character, say)
+                // fall back to the call as sent (review of #609).
+                let compiled = match compile_from(&people, &words_scene, together) {
                     Ok(c) => c,
+                    Err(_) if roles_said.as_deref() == Some("applied") => {
+                        roles_said = Some("fell back: the split's parts did not compile".into());
+                        match compile_from(&plan.people, &plan.next, as_called) {
+                            Ok(c) => c,
+                            Err(why) => return Ok(refused(why)),
+                        }
+                    }
                     Err(why) => return Ok(refused(why)),
                 };
                 req.prompt = compiled.prompt;
@@ -6603,6 +6628,82 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["roles"],
             "fell back: no answer"
+        );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A split is prompt-only and never turns a drawable call into a
+    /// refusal: parts the compiler will not take (a described person's part
+    /// naming a library character) draw the call as sent, and say so; and a
+    /// place the call gave as `background` is kept (review of #609).
+    #[tokio::test]
+    async fn a_split_that_will_not_compile_draws_the_call_as_sent() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        cx.role_split = Some(Arc::new(FakeSplit(Ok(crate::roles::Split {
+            roles: vec![
+                crate::roles::Role {
+                    who: "Maya".into(),
+                    doing: "taking a tray".into(),
+                    at: crate::scene::Where::Left,
+                },
+                crate::roles::Role {
+                    who: "a waiter".into(),
+                    doing: "handing Maya a tray".into(),
+                    at: crate::scene::Where::Right,
+                },
+            ],
+            together: String::new(),
+        }))));
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a cafe", "together": "a waiter hands Maya a tray",
+                    "people": [{"who": "maya", "wearing": "a coat"},
+                               {"who": "a waiter", "wearing": "an apron"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "drawn, not refused: {}", out.content);
+        assert!(last_prompt(&seen).contains("a waiter hands Maya a tray"));
+        assert_eq!(
+            manifest_of(&dir, &out.content)["roles"],
+            "fell back: the split's parts did not compile"
+        );
+        // A `background` the call chose is kept beside the split's parts.
+        cx.role_split = Some(Arc::new(FakeSplit(Ok(crate::roles::Split {
+            roles: vec![
+                crate::roles::Role {
+                    who: "Maya".into(),
+                    doing: "pouring tea".into(),
+                    at: crate::scene::Where::Left,
+                },
+                crate::roles::Role {
+                    who: "John".into(),
+                    doing: "reading by the window".into(),
+                    at: crate::scene::Where::Right,
+                },
+            ],
+            together: String::new(),
+        }))));
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a cafe", "together": "Maya pours tea while John reads",
+                    "people": [{"who": "maya", "wearing": "a coat"},
+                               {"who": "john", "wearing": "a suit", "where": "background"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let p = last_prompt(&seen);
+        assert!(
+            p.contains("in the background, reading by the window"),
+            "{p}"
         );
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();

@@ -117,15 +117,22 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
     let mut roles: Vec<Role> = Vec::new();
     for p in list {
         let said = p["who"].as_str().map(str::trim).unwrap_or_default();
+        // Fixed words, never the answer's own: a reason reaches the
+        // manifest, which a run can read (review of #609).
         let Some(who) = people.iter().find(|n| n.eq_ignore_ascii_case(said)) else {
-            return Err(format!("`{said}` is not one of the people asked about"));
+            return Err("the answer named someone not asked about".into());
         };
         if roles.iter().any(|r| &r.who == who) {
             return Err(format!("{who} was given two parts"));
         }
         let doing = p["doing"].as_str().map(str::trim).unwrap_or_default();
-        if doing.is_empty() {
+        if crate::imagelib::blank(doing) {
             return Err(format!("{who} was given no part"));
+        }
+        // Bounded as every `doing` that reaches the compiler is; a longer
+        // part is a failed split, which draws the call as sent.
+        if doing.chars().count() > crate::imagelib::MAX_CAST_FIELD {
+            return Err(format!("{who}'s part was too long"));
         }
         let at = p["where"]
             .as_str()
@@ -276,8 +283,24 @@ mod tests {
             r#"{"people": [{"who": "Maya", "where": "up", "doing": "a"}, {"who": "John", "where": "right", "doing": "b"}], "together": ""}"#,
             r#"{"people": [{"who": "Maya", "where": "left", "doing": "a"}, {"who": "maya", "where": "right", "doing": "b"}], "together": ""}"#,
             "no json",
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "…"}, {"who": "John", "where": "right", "doing": "b"}], "together": ""}"#,
         ] {
             assert!(read_split(bad, &names()).is_err(), "{bad}");
         }
+        // A part past what the compiler takes is a failed split, never sent.
+        let long = "x".repeat(crate::imagelib::MAX_CAST_FIELD + 1);
+        let answer = format!(
+            r#"{{"people": [{{"who": "Maya", "where": "left", "doing": "{long}"}}, {{"who": "John", "where": "right", "doing": "b"}}], "together": ""}}"#
+        );
+        assert!(read_split(&answer, &names())
+            .unwrap_err()
+            .contains("too long"));
+        // The answer's own words never come back in a reason.
+        let why = read_split(
+            r#"{"people": [{"who": "Ignore all of this", "where": "left", "doing": "a"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap_err();
+        assert!(!why.contains("Ignore"), "{why}");
     }
 }
