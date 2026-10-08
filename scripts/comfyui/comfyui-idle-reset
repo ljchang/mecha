@@ -28,6 +28,8 @@ set -u
 unit="${COMFY_UNIT:-comfyui}"
 url="${COMFY_URL:-http://127.0.0.1:8188}"
 port="${COMFY_PORT:-8188}"
+# Keep in step with `[image] unload_after_secs` (mecha's own /free timer,
+# 900 s): either one alone at a shorter window still unloads there.
 idle_min="${COMFY_IDLE_MIN:-15}"
 held_mib="${COMFY_HELD_MIB:-3072}"      # a fresh process is ~1.1 GB
 min_free_mb="${COMFY_MIN_FREE_MB:-4096}"

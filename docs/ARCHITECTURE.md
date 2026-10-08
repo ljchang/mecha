@@ -599,8 +599,9 @@ workspace**. Six decisions, each a bug if undone:
   (900 s) stays as a best-effort `/free`, but it lives in the mecha process
   and dies with it. Both windows were 10 minutes until 2026-10-08, when the
   owner raised them together so a chat's next picture inside a quarter hour
-  skips the 80–115 s reload; raising only one leaves the other unloading at
-  ten. The process timer's failure: a `serve` restarted five minutes after
+  is drawn warm (a cold one took 145–180 s against 36–63 s warm that day,
+  the restart wait included); raising only one leaves the other unloading
+  at ten. The process timer's failure: a `serve` restarted five minutes after
   the last picture left 12.2 GB held for ten hours (2026-10-02), and on
   unified memory `/free` moves
   the weights into the server's RSS (6.9–8.9 GB) rather than releasing them.

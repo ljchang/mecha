@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The image server stays loaded for 15 idle minutes, up from 10.** A
-  picture asked for within a quarter hour of the last one no longer waits
-  80–115 s for the model to reload, at the cost of about 14 GB held a little
-  longer.
+- **The image server stays loaded for a quarter hour after a picture.** A
+  picture asked for within 15 minutes of the last one is drawn warm: on
+  2026-10-08 a cold one (the server restarting, then loading the model) took
+  145–180 s against 36–63 s warm. The cost is about 14 GB held that long.
 
 - **A retouch keeps who is in the picture.** Edits got faster on 2026-10-08
   by sending smaller reference pictures, but a retouch has no face crop to
@@ -179,7 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stderr too, as the plain listing always did.
 - **An idle image server gives its memory back.** A new user timer
   (`scripts/comfyui/install.sh`) restarts ComfyUI once it has held a model
-  for ten idle minutes, with nothing queued and nobody connected. That takes
+  for fifteen idle minutes, with nothing queued and nobody connected. That takes
   it from ~13.6 GB to ~1.1 GB with its port still up. The next picture loads
   the model again, ~15–22 s. mecha's own unload timer dies whenever
   `mecha serve` restarts, and on unified memory it only moved the weights
