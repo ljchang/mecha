@@ -103,6 +103,31 @@ pub fn not_understood(why: &str) -> String {
     format!("Nothing was drawn. The change was not understood: {why}.")
 }
 
+/// How the record names a setting that is the owner's photo: a stand-in
+/// for the reader, never words to draw.
+pub const PHOTO_SETTING: &str = "the owner's photo";
+
+/// A `setting` that restates the photo stand-in ("the owner's photo, in
+/// watercolour") would replace the owner's photo in the record with words,
+/// and the picture would no longer be placed in it (review of #605). That
+/// one is refused with the way on; a real change of place over the photo
+/// still goes through, as the owner asked.
+pub fn photo_kept(extracted: &Extracted) -> Result<(), String> {
+    let echoes = extracted
+        .scene
+        .get("setting")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|s| s.to_lowercase().contains(PHOTO_SETTING));
+    if echoes {
+        return Err(
+            "this picture is placed on the owner's photo, and a look in words would \
+                    replace the photo: name one of the library's styles instead"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// The extraction's instructions: a3's measured wording (EVIDENCE §B.8,
 /// §D), with the clothes home the fast misses lacked and the `kind`
 /// discriminator gone.
@@ -156,7 +181,7 @@ pub fn record_for(scene: &crate::scene::Scene) -> serde_json::Value {
             out.insert("setting".into(), text.clone().into());
         }
         Some(Setting::Photo { .. }) => {
-            out.insert("setting".into(), "the owner's photo".into());
+            out.insert("setting".into(), PHOTO_SETTING.into());
         }
         _ => {}
     }
@@ -541,6 +566,23 @@ mod tests {
             origin: crate::scene::Origin::Clean,
         });
         assert_eq!(record_for(&scene)["style"], "ink-wash");
+    }
+
+    /// A look restated over the photo stand-in is refused, never written
+    /// over the owner's photo; a real change of place still goes through.
+    #[test]
+    fn a_look_over_the_owners_photo_never_replaces_it() {
+        let known = |_: &str| true;
+        let echo = read_extraction(
+            r#"{"setting": "The owner's photo, in watercolour"}"#,
+            &known,
+        )
+        .unwrap();
+        assert!(photo_kept(&echo)
+            .unwrap_err()
+            .contains("name one of the library's styles"));
+        let moved = read_extraction(r#"{"setting": "a windswept beach"}"#, &known).unwrap();
+        assert!(photo_kept(&moved).is_ok());
     }
 
     #[test]
