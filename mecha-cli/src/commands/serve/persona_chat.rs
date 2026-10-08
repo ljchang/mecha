@@ -11621,6 +11621,21 @@ mod tests {
             "a prompt log is stamped elsewhere"
         );
         assert!(gated, "the assistant chat stamps a log only without a room");
+        // And the scene reader only off a panel turn, whose own reader has
+        // drawn the change: a second read could turn a clothes edit into a
+        // pose (review of #610).
+        let src = std::fs::read_to_string(root.join("src/commands/serve/persona_chat.rs")).unwrap();
+        let code = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let stamp = code
+            .find("tools.scene_reader =")
+            .expect("the reader is stamped");
+        let gate = code[..stamp]
+            .rfind("if panel.is_none() {")
+            .expect("behind the panel gate");
+        assert!(
+            !code[gate..stamp].contains("\n        }\n"),
+            "the stamp sits inside the panel gate"
+        );
     }
 
     #[test]

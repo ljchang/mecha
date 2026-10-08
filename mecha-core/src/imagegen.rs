@@ -2696,6 +2696,10 @@ impl Tool for ImageGenerate {
                     }
                 })
             }
+            // A scene call where no reader was stamped says so, so a merge
+            // that was due and did not happen is never a silent null
+            // (review of #610).
+            (None, false) => Some("not read: no reader here".into()),
             _ => None,
         };
         // A merge that read an untrusted record lands untrusted, whatever the
@@ -2757,6 +2761,9 @@ impl Tool for ImageGenerate {
         // one place a picture says what happened (mecha-a3's G5). The
         // prompt itself stays out of the manifest (ARCHITECTURE §images).
         let mut roles_said: Option<String> = None;
+        // The words a split put in the prompt, for the owner's prompt log
+        // (`words`), which the privacy guard reads.
+        let mut split_words: Vec<String> = Vec::new();
         let mut reseeded: Option<u64> = None;
         let mut dropped: Vec<String> = Vec::new();
         let is_edit = matches!(plan.render, crate::picture::Render::Edit { .. });
@@ -2838,6 +2845,8 @@ impl Tool for ImageGenerate {
                                     }
                                 });
                                 together = scene.together.is_some();
+                                split_words.extend(split.roles.iter().map(|r| r.doing.clone()));
+                                split_words.push(split.together.clone());
                                 words_scene = std::borrow::Cow::Owned(scene);
                                 roles_said = Some("applied".into());
                             }
@@ -3478,6 +3487,15 @@ impl Tool for ImageGenerate {
                     "roles": manifest["roles"],
                     "reader": manifest["reader"],
                     "prompt": req.prompt,
+                    // The chat-derived words in it, apart from the compiler's
+                    // own sentences: what `check-private` reads, so a prompt
+                    // studied here is never pasted into the repository.
+                    "words": record_prose(&plan.next)
+                        .into_iter()
+                        .chain(plan.also.clone())
+                        .chain(split_words.iter().cloned())
+                        .filter(|w| !w.trim().is_empty())
+                        .collect::<Vec<_>>(),
                 });
                 if let Err(e) = append_prompt(log, &line) {
                     tracing::warn!("image_generate: prompt log: {e:#}");
@@ -6984,6 +7002,18 @@ mod tests {
         let line: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert!(line["prompt"].as_str().unwrap().contains("a quiet harbour"));
         assert_eq!(line["image"], picture_of(&out.content));
+        // The chat's own words, apart, for the privacy guard.
+        let words: Vec<&str> = line["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(words.contains(&"a quiet harbour"), "{words:?}");
+        assert!(words.contains(&"waving"), "{words:?}");
+        assert!(!words.iter().any(|w| w.contains("<image")), "{words:?}");
+        // No reader stamped on a scene call: said, never a silent null.
+        assert_eq!(line["reader"], "not read: no reader here");
         assert_eq!(
             std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
             0o600
