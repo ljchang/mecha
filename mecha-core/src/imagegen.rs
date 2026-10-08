@@ -2037,7 +2037,7 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      {\"photo\": <its path>}, not the room described in words; a photo attached earlier in \
      the chat is still a setting you can name by its path. Nobody is drawn twice, and at most \
      five people with faces fit one picture. The library supplies how its characters look \
-     (image_library lists who exists), so do not describe their faces. The image model renders \
+     (their portraits), so do not describe their faces. The image model renders \
      text well: put the exact words in `scene.text`. The first line of a result is the new \
      picture's file path: name it in `picture` to change that picture, and leave the path out \
      of replies, since the owner is shown the picture. In a chat the result can come at once as \
@@ -2354,20 +2354,7 @@ impl Tool for ImageGenerate {
                 .get(crate::imagelib::Kind::Style, &key)
                 .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
             if !held {
-                let styles: Vec<String> = lib
-                    .all()
-                    .iter()
-                    .filter(|e| {
-                        e.kind == crate::imagelib::Kind::Style
-                            && e.status == crate::imagelib::Status::Approved
-                    })
-                    .map(|e| format!("`{}`", e.name))
-                    .collect();
-                let there = if styles.is_empty() {
-                    "The image library has no styles".to_string()
-                } else {
-                    format!("The image library's styles are {}", styles.join(", "))
-                };
+                let there = crate::imagelib::what_there_is(&lib, crate::imagelib::Kind::Style);
                 call.change.style = None;
                 if call.change == crate::scene::SceneChange::default()
                     && call.setting_photo.is_none()
@@ -2830,10 +2817,13 @@ impl Tool for ImageGenerate {
                             });
                         }
                         None => {
-                            return Ok(refused(format!(
-                                "No approved style named `{name}`. Call image_library to see \
-                                 what exists."
-                            )))
+                            // A recorded style since retired: said as the
+                            // library's own answer, naming what it holds.
+                            return Ok(refused(crate::imagelib::missing(
+                                &lib,
+                                crate::imagelib::Kind::Style,
+                                &name,
+                            )));
                         }
                     }
                 }
