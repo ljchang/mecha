@@ -263,7 +263,9 @@ pub struct Request {
 pub const EDIT_REFERENCE_SIZE: u32 = 1024;
 
 /// The reference size for every other edit-shaped render (placed, restaged
-/// on a photo, edited): the owner's trial of 2026-10-08. mecha-a3 measured
+/// on a photo, edited with head crops; an edit of the picture with no crop
+/// keeps [`EDIT_REFERENCE_SIZE`], since its canvas is its only identity
+/// source): the owner's trial of 2026-10-08. mecha-a3 measured
 /// one person placed on the owner's photo at 1024, 768 and 512 against her
 /// portrait (ArcFace .88/.88/.87 over three seeds, within seed noise, and
 /// near-identical by eye at one seed); the references are most of an edit's
@@ -2842,7 +2844,16 @@ impl Tool for ImageGenerate {
                         }
                         crate::picture::Canvas::Picture(_) => call.size.map(Size::dims).or(own),
                     };
-                    if size.is_some() {
+                    // An edit of the picture that sends no head crop (a
+                    // retouch; a change to someone not in the library) has
+                    // the canvas as its only source of who is in it, and at
+                    // 512 that is too thin: mecha-a3 measured a retouch's
+                    // ArcFace fall from .66–.70 to .42–.53 over three seeds
+                    // (2026-10-08), for 8 s saved. Crops carry identity on
+                    // every other edit, which held at 512.
+                    let canvas_only =
+                        matches!(canvas, crate::picture::Canvas::Picture(_)) && crops == 0;
+                    if size.is_some() && !canvas_only {
                         req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
                     }
                     size
@@ -6191,6 +6202,9 @@ mod tests {
         );
         assert!(prompt.contains("maya, a memorable face"), "{prompt}");
         assert!(prompt.contains("a red scarf"), "{prompt}");
+        // The crop carries who she is, so the references go small.
+        let body: Value = serde_json::from_str(&prompt[prompt.find('{').unwrap()..]).unwrap();
+        assert_eq!(body["prompt"]["encode"]["inputs"]["resolution"], 512);
         assert_eq!(
             manifest_of(&dir, &dressed.content)["crops"],
             json!(["Maya"])
@@ -6700,7 +6714,8 @@ mod tests {
         assert!(canvas_dims(&wide).unwrap().0 > 2048);
 
         // An unmasked retouch of a picture: named at the picture's shape,
-        // references at 512.
+        // references at 1024, since no crop carries who is in it and the
+        // canvas alone at 512 lost them (mecha-a3, 2026-10-08).
         let png = |w, h| {
             png_bytes(&image::RgbImage::from_pixel(
                 w,
@@ -6727,7 +6742,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let p = last_prompt(&seen);
         let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
-        assert_eq!(latent(&p).0, 512);
+        assert_eq!(latent(&p).0, 1024);
         assert_eq!(body["prompt"]["latent"]["inputs"]["width"], 896);
         assert_eq!(body["prompt"]["latent"]["inputs"]["height"], 1184);
 
