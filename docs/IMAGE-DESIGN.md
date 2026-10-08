@@ -185,9 +185,10 @@ A panel press is the owner's instruction to the image model, not something said 
 1. **The owner's words plus the picture's record go through a one-shot extraction,** a `quarantine::QuarantinedPass`: the record's fields may carry untrusted origin, and that type holds "no tools, no history" structurally rather than by convention. It has no tools and no history, and is constrained to the scene-change schema: `scene` fields plus an optional `retouch`, with **no `kind` discriminator** (§2.7: clothes need an obvious home, which is `people[].wearing`).
 2. **The extracted call is dispatched through `Agent::dispatch_one`** (#592). It goes through every gate a model call meets, with its own call id, inline, on the chat's job seat, with taint recorded.
 3. **The history records one fact,** a `HarnessPicture` record: "Picture X was changed into Y: <the typed change>". The card shows the new version from it.
-4. **The persona replies in a line or two,** in its own voice. That reply goes with `tool_choice: "none"`, not with the tools removed: removing them re-sends the whole context (12,277 tokens against 4 measured), while `tool_choice` keeps the cache (review S5). It carries no edit note, and G3's calls-as-text check covers it.
+4. **The persona replies in a line or two,** in its own voice. That reply goes with `tool_choice: "none"`, not with the tools removed: on llama-server, removing them re-sent the whole context (12,277 tokens against 4 measured), while `tool_choice` kept the cache (review S5). That measurement is the local server's; Anthropic's caching rules list a `tool_choice` change as invalidating cached message blocks, so on that path the closing request may re-read the history, and the cache lens reports it as a surface change, not an unexplained drop. It carries no edit note, and G3's calls-as-text check covers it.
 5. **"Try again" is a redraw, not a failure** (review N3). An extraction that comes back empty, or restates the record, on a recorded picture means the owner wants another attempt. It is drawn as a redraw at a new seed (§5.1), and the card says it was drawn again.
 6. **An extraction that fails is said, never dropped and never retried in a loop** (review S7). Only these are failures: a 400, unparsable or schema-invalid output, or a name the library does not hold. The card says the edit was not understood and why, in a line, and nothing is drawn. G1 counts it.
+7. **A dispatch that the tool refuses is said the same way.** A schema-valid extraction can still meet the tool's own refusals: a library name in prose for someone not in the picture (§4), more than five faces (§5.2), or the chat's picture seat busy (§5.5). With no model left on this path to read the refusal, the card shows the tool's sentence as the edit's result, the `HarnessPicture` records it as not drawn, and the persona does not reply. G1 counts a refusal for shape against the extraction.
 
 This removes the panel loop at its source (§2.9), because the persona never makes the call. It also removes the model's field choice for the turns where it chose wrong. Typed requests in chat ("draw us at the beach") still go through the persona model, with the one-shape schema (§5.1).
 
@@ -200,7 +201,7 @@ The same scene, a new seed, the same render plan. It goes through `dispatch_one`
 Two rules (review B1).
 
 - **Structural, in every chat.** A deferred job of a tool already started in a run is never started again in that run. The agent loop enforces this on the tool's job kind, not the model, and not a refusal string. The closing lines are the picture's own today, because `image_generate` is the only tool that defers; a second deferred tool brings its lines through its job (`DeferredJob`, as its busy text already does), never as new text in `agent.rs`. The assistant keeps working after drawing (it went on to `image_view`, `shell` or `fs_read` in 43 runs), so its run is not ended.
-- **The clean end fires on the first repeat call** to that tool. The repeat is not run, and the next request goes with `tool_choice: "none"`, the turn's note once, and "the picture is on its way; answer in a line". That combination was measured clean 5/6. In a persona chat it fires right after the picture is queued, because nothing after the picture is the persona's job.
+- **The clean end fires on the first repeat call** to that tool. The repeat is not run: its `tool_use` gets a refusing `tool_result` ("Not run: … already started in this run"), so every call is still answered. The next request then goes with `tool_choice: "none"`, the turn's note once, and "the picture is on its way; answer in a line" as its last note. That combination was measured clean 5/6. In a persona chat it fires right after the picture is queued, because nothing after the picture is the persona's job.
 - **A busy refusal** (an earlier turn's picture still drawing) closes a persona run, with a line that says this turn's picture was not started. Any other run keeps working after one and closes on a retry of the refused call. A picture this run started is always the fact said first.
 - **The backstop:** a reply that is only a tool-call block is replaced, never shown.
 
@@ -211,11 +212,11 @@ Two rules (review B1).
 ## 6. The record
 
 - **Where:** one scene store per chat, outside the jail, harness-written.
-  - **Persona chats** also write the persona's latest and the content-hash index, so a picture carried into another chat is found by its bytes (R3, R7).
+  - **Persona chats** also write the persona's latest and the content-hash index, so a picture carried into another chat is found by its bytes (`IMAGE-SCENE-DESIGN.md` rulings R3 and R7).
   - **Incognito** keeps its copy in the room and never writes back (R9).
 - **What:** the scene, with origins per field. The place is the setting only (§4). Plus the picture's hash, its seed, size, render plan and the library versions used.
 - **The scene note** (`scene::note` in each persona run's notes) stays, for typed turns, which still have the persona choosing the call. Its stems and origin rules stand. With the setting recorded as the setting only, it no longer carries an old pose, and G3 covers it (review S8).
-- **The manifest** in the jail keeps only what the owner-facing doors read: the image path, the call id (orphan repair), the seed and the cast names (save-to-library), plus a pointer to the scene by hash. A run can write the jail, so nothing reads a scene back out of a manifest.
+- **The manifest** in the jail keeps only what the owner-facing doors read: the image path, the call id (orphan repair), the seed and the cast names (save-to-library), plus a pointer to the scene by hash. A run can write the jail, so nothing reads a scene back out of a manifest, and where the manifest and the record disagree the record wins. The cast names there only prefill save-to-library's form, whose save crosses the owner.
 
 ## 7. What stays
 
@@ -307,6 +308,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 | T1: `together` with one person drawn | §4: folded into that person's `doing`; an off-camera control in G1 |
 | T2: a stale relation | §4: a change to the acts clears `together` unless restated |
 | T3: G1 and relations in either field | §9, G1 |
+| T4: `where` (positions in 38% of calls with two or more people) | §4: `where` per person, also anchoring which portrait or crop goes to which body |
 | T5: text in `setting` and in `text` | §4: `text` holds rendered words; `setting` excludes them |
 | B4: equal-is-unchanged makes "try again" a no-op | §5.1 and §5.2: an all-equal call is a redraw at a new seed |
 | S1: model-sent seeds copy earlier ones | §5.1 and §8, seeds off the chat schemas |
