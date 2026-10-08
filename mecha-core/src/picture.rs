@@ -293,6 +293,10 @@ pub fn parse(
     })
 }
 
+/// How the tool opens the sentence for words the picture renders: the one
+/// place `as_viewer` leaves a name as written.
+pub(crate) const RENDERED: &str = "The words ";
+
 /// `text` with each whole-word mention of `names` (library keys, any case,
 /// possessives kept) read as "the viewer": what the image model reads for
 /// someone named but not in the picture. The words the picture renders
@@ -306,11 +310,15 @@ pub fn as_viewer(text: &str, names: &[String], keep: &[&str]) -> String {
     }
     // Each rendered phrase, set aside under a marker no prompt holds.
     let mut held = text.to_string();
-    // Only the phrase as the prompt renders it, in its own quotes: a bare
-    // substring ("John", or "o") would shield the name everywhere else in
-    // the prompt (review of #597, pass 8).
+    // Only the phrase where the tool renders it, in the sentence it writes
+    // for rendered words (`RENDERED`): a bare substring ("John", or "o"), or
+    // the same phrase quoted in prose, would shield the name there too
+    // (review of #597, passes 8 and 9).
     for (i, k) in keep.iter().enumerate().filter(|(_, k)| !k.is_empty()) {
-        held = held.replace(&format!("\"{k}\""), &format!("\"\u{E000}{i}\u{E000}\""));
+        held = held.replace(
+            &format!("{RENDERED}\"{k}\""),
+            &format!("{RENDERED}\"\u{E000}{i}\u{E000}\""),
+        );
     }
     let mut out = String::with_capacity(held.len());
     let mut word = String::new();
@@ -884,7 +892,7 @@ pub fn plan(
             } else {
                 format!(", in {}", w.look)
             };
-            lines.push(format!("The words \"{}\" appear{at}{look}.", w.words));
+            lines.push(format!("{RENDERED}\"{}\" appear{at}{look}.", w.words));
         }
     }
     if delta.camera {
@@ -1170,14 +1178,15 @@ mod tests {
             as_viewer("A 32\" screen; Maya waves at John.", &names, &[]),
             "A 32\" screen; Maya waves at the viewer."
         );
-        // A rendered word that is also a name shields only itself.
+        // A rendered word that is also a name shields only itself, and
+        // the same phrase quoted in prose is still rewritten.
         assert_eq!(
             as_viewer(
-                "Maya waves at John. The words \"John\" appear.",
+                "A sign reading \"John\". Maya waves at John. The words \"John\" appear.",
                 &names,
                 &["John", "o"]
             ),
-            "Maya waves at the viewer. The words \"John\" appear."
+            "A sign reading \"the viewer\". Maya waves at the viewer. The words \"John\" appear."
         );
         // The fold is the persona's only: another library name in a relation
         // is not drawn from it.
