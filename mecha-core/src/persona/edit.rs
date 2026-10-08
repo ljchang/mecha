@@ -104,7 +104,8 @@ pub fn not_understood(why: &str) -> String {
 const EXTRACTION_SYSTEM: &str = "You turn the owner's request to change a picture into the \
 fields that change. Given the picture's scene record and the owner's words, fill only what \
 changes: people (by `who` from the record) with `doing` for a new pose or action, `expression` \
-for the face, `wearing` for clothes, `where` for their place in the frame; `remove` to take \
+for the face, `wearing` for clothes (clothes alone: only `wearing`), `where` for their place \
+in the frame; `remove` to take \
 someone out; someone new with their `who`, `wearing` and `doing`; `together` for what the people \
 in the picture do with each other, as one line naming them; `camera`, `light`, `setting` when \
 those change; `retouch` for a small change to something that is not a person. Leave out \
@@ -240,7 +241,19 @@ pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extra
             Some(_) => return Err(format!("`{k}` was not text")),
         }
     }
-    if let Some(people) = obj.get("people").filter(|p| !p.is_null()) {
+    // One person answered at the top level, as a model without the schema
+    // does: that person, as `people`'s one entry (mecha-a3's G1: with no
+    // record and no schema, 20 pose and camera asks came back this way and
+    // were read as nothing, then drawn again).
+    let top_level = obj
+        .get("who")
+        .filter(|w| w.as_str().is_some_and(|w| !w.trim().is_empty()))
+        .map(|_| serde_json::Value::Array(vec![v.clone()]));
+    let people = obj
+        .get("people")
+        .filter(|p| !p.is_null())
+        .or(top_level.as_ref());
+    if let Some(people) = people {
         let list = people.as_array().ok_or("`people` was not a list")?;
         let mut out = Vec::new();
         for p in list {
@@ -273,6 +286,16 @@ pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extra
         None | Some(serde_json::Value::Null) | Some(serde_json::Value::String(_)) => None,
         Some(_) => return Err("`retouch` was not text".into()),
     };
+    // Only an answer with nothing in it is "another try" (§5.3 step 5). One
+    // whose keys this reader could not use is a failure, said, never a redraw
+    // (mecha-a3's G1).
+    if scene.is_empty() && retouch.is_none() && !obj.is_empty() {
+        let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        return Err(format!(
+            "the answer held nothing this change can use (it gave {})",
+            keys.join(", ")
+        ));
+    }
     let (retouch, left_out) = if scene.is_empty() {
         (retouch, None)
     } else {
@@ -414,6 +437,19 @@ mod tests {
             &known
         )
         .is_ok());
+        // One person at the top level, as a model without the schema answers.
+        let e = read_extraction(
+            r#"{"who": "Maya", "doing": "sitting on the steps"}"#,
+            &known,
+        )
+        .unwrap();
+        assert_eq!(
+            e.call("p"),
+            serde_json::json!({"picture": "p", "scene": {"people": [{"who": "Maya", "doing": "sitting on the steps"}]}})
+        );
+        // Keys this reader cannot use are a failure, never a redraw.
+        let why = read_extraction(r#"{"pose": "sitting", "mood": "calm"}"#, &known).unwrap_err();
+        assert!(why.contains("nothing this change can use"), "{why}");
         for bad in [
             "no json here",
             "[1, 2]",
