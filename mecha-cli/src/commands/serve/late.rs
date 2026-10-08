@@ -11,9 +11,6 @@ use mecha_core::agent::Conversation;
 use mecha_core::jobs::Delivered;
 use mecha_core::session::{Record, Session, Transcript};
 
-/// A host's job queue and the hand-off from it: every conversation's jobs,
-/// one in flight per key (`JobQueue`), and the finished ones waiting for the
-/// host's delivery task, which the first turn starts (`start`).
 /// What the queue tells its host, in the order it happened: a finished job,
 /// or a conversation whose line changed. One channel, so a page sees a
 /// picture land before the line that no longer holds it.
@@ -22,6 +19,9 @@ pub(super) enum Late {
     Changed(String),
 }
 
+/// A host's job queue and the hand-off from it: every conversation's jobs,
+/// one in flight per key (`JobQueue`), and the finished ones waiting for the
+/// host's delivery task, which the first turn starts (`start`).
 pub(super) struct Jobs {
     pub(super) queue: std::sync::Arc<mecha_core::jobs::JobQueue>,
     delivered: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Late>>>,

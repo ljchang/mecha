@@ -2176,15 +2176,18 @@ fn queue_label(scene: &crate::scene::Scene) -> String {
         .collect();
     let mut parts = Vec::new();
     if !who.is_empty() {
-        let doing = scene
+        // What the first is doing goes with the first, never after everyone
+        // (review of #607: "Maya, a waiter reading" read as both reading).
+        let mut names = who.clone();
+        if let Some(d) = scene
             .people
             .first()
             .map(|p| p.doing.trim())
-            .filter(|d| !d.is_empty());
-        parts.push(match doing {
-            Some(d) => format!("{} {d}", who.join(", ")),
-            None => who.join(", "),
-        });
+            .filter(|d| !d.is_empty())
+        {
+            names[0] = format!("{} {d}", names[0]);
+        }
+        parts.push(names.join(", "));
     }
     match scene.setting.as_ref().map(|f| &f.value) {
         Some(crate::scene::Setting::Words { text }) if !text.trim().is_empty() => {
@@ -4280,7 +4283,7 @@ mod tests {
         ];
         assert_eq!(
             queue_label(&scene),
-            "Maya, a waiter reading — a park bench in the rain"
+            "Maya reading, a waiter — a park bench in the rain"
         );
         assert_eq!(queue_label(&Scene::default()), "a picture");
         scene.setting = Some(Field {
