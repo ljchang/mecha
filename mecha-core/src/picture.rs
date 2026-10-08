@@ -600,6 +600,14 @@ pub fn plan(
     // pose left out is a plain one; clothes left out are what the chat's
     // record has them in (`worn`), else, for a library character, asked for
     // (G1b: 8 of 65 shape refusals were a newcomer missing one of the two).
+    // A scene that says what its people do together needs no pose for each:
+    // a "standing naturally" beside "she kneels to tie his shoelace" drew her
+    // twice, standing and kneeling, in 3 of 4 (mecha-a3, 2026-10-08; 0 of 12
+    // without the fill).
+    let together = next
+        .together
+        .as_ref()
+        .is_some_and(|f| !f.value.trim().is_empty());
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
@@ -609,7 +617,7 @@ pub fn plan(
                 crate::scene::MAX_PEOPLE
             ));
         };
-        if p.doing.trim().is_empty() {
+        if p.doing.trim().is_empty() && !together {
             p.doing = "standing naturally".into();
         }
         if p.wearing.trim().is_empty() {
@@ -1441,6 +1449,20 @@ mod tests {
             ("an apron", "standing naturally")
         );
         assert!(p.said.unwrap().contains("what this chat last drew them in"));
+        // With `together` saying what they do, nobody is given a pose of
+        // their own beside it (mecha-a3: "standing naturally" beside a kneel
+        // drew her twice).
+        let p = planned(
+            &call(json!({"scene": {"setting": "a clinic room",
+                "together": "Maya ties John's shoelace",
+                "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}})),
+            None,
+        );
+        assert!(
+            p.next.people.iter().all(|q| q.doing.is_empty()),
+            "{:?}",
+            p.next.people
+        );
         // A described newcomer without clothes is dressed for the scene.
         let p = planned(
             &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),
