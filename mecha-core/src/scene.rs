@@ -812,6 +812,14 @@ fn forget_in(copies: &Path, store: &Path, chat: &str) -> std::io::Result<SceneFo
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    // The chat's saved picture prompts sit beside its copy, for either front
+    // end, and are a superset of the scene words going here (`ToolCtx::
+    // prompt_log`; review of #610). Not counted as a record.
+    match std::fs::remove_file(copies.join(format!("{chat}.prompts.jsonl"))) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     // A record that cannot be read cannot be shown to be this chat's, so it
     // is kept, and counted, so the owner is told rather than shown a clean
     // forget (review of #589, pass 9).
@@ -1302,6 +1310,10 @@ mod tests {
             .land(&landed(kitchen(Origin::Clean), "two", "c2"))
             .unwrap();
         let persona = root.join("persona");
+        // Each chat's saved picture prompts sit beside its copy.
+        let prompts = |c: &str| root.join(format!("persona/sessions/{c}.prompts.jsonl"));
+        std::fs::write(prompts("c1"), "{}\n").unwrap();
+        std::fs::write(prompts("c2"), "{}\n").unwrap();
         std::fs::write(root.join("persona/scene/index/broken.json"), b"{ half").unwrap();
         assert_eq!(
             forget_chat(&persona, "c1").unwrap(),
@@ -1311,6 +1323,8 @@ mod tests {
             }
         );
         std::fs::remove_file(root.join("persona/scene/index/broken.json")).unwrap();
+        assert!(!prompts("c1").exists(), "its prompts go with it");
+        assert!(prompts("c2").exists(), "another chat's stay");
         assert!(slot.lookup(b"one").is_none());
         assert!(slot.lookup(b"two").is_some());
         assert_eq!(slot.current().unwrap().chat.as_deref(), Some("c2"));

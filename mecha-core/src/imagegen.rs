@@ -2250,7 +2250,13 @@ fn merge_read(
             .map(str::trim)
             .filter(|t| !t.is_empty())
         {
-            change.together = Some(t.to_string());
+            // Bounded as the call's own `together` is at the door.
+            let cap = crate::imagelib::MAX_CAST_FIELD;
+            change.together = Some(if t.chars().count() > cap {
+                crate::picture::clip_at_sentence(t, cap)
+            } else {
+                t.to_string()
+            });
             merged.push("together".to_string());
         }
     }
@@ -2269,10 +2275,12 @@ fn merge_read(
         }) else {
             continue;
         };
+        // Past what the call's own may carry, a part is not merged.
         let text = |k: &str| {
             r[k].as_str()
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
+                .filter(|t| t.chars().count() <= crate::imagelib::MAX_CAST_FIELD)
                 .map(str::to_string)
         };
         if p.doing.is_none() {
@@ -2649,8 +2657,26 @@ impl Tool for ImageGenerate {
                     .unwrap_or_else(|_| Err("the reader took too long".into()));
                 Some(match read {
                     Ok(extracted) => {
+                        let before = call.change.clone();
                         let merged = merge_read(&mut call.change, &extracted.scene);
-                        if merged.is_empty() {
+                        // The reader's words pass the door the call's did: a
+                        // library character whose entry did not load, named
+                        // in them, would be drawn as a stranger (review of
+                        // #610; the #383 shape). The merge is dropped.
+                        let mut words: Vec<&str> =
+                            call.change.together.iter().map(String::as_str).collect();
+                        for p in &call.change.people {
+                            words.extend(p.doing.as_deref());
+                            words.extend(p.wearing.as_deref());
+                        }
+                        if words
+                            .iter()
+                            .any(|t| !crate::imagelib::broken_named_in(&lib, t).is_empty())
+                        {
+                            call.change = before;
+                            "fell back: the reader named a library entry that could not be read"
+                                .to_string()
+                        } else if merged.is_empty() {
                             "nothing to merge".to_string()
                         } else {
                             format!("merged: {}", merged.join(", "))
@@ -2745,6 +2771,12 @@ impl Tool for ImageGenerate {
                 // people's own poses drew a person twice (mecha-a3's gate of
                 // #610, 2 of 3). A pose given is kept verbatim (`roles`).
                 if together && people.len() >= 2 {
+                    // A door with no splitter says so, so a picture drawn
+                    // unsplit where one was due is never a silent null
+                    // (review of #609).
+                    if ctx.role_split.is_none() {
+                        roles_said = Some("not split: no splitter here".into());
+                    }
                     if let (Some(splitter), Some(sentence)) =
                         (&ctx.role_split, plan.next.together.as_ref())
                     {
@@ -3657,9 +3689,6 @@ fn refused(why: impl std::fmt::Display) -> ToolOutput {
     ToolOutput::err(format!("Nothing was drawn. {why}"))
 }
 
-/// Write a generation's manifest beside its PNG — `images/<stem>.json`, new
-/// or not at all, like the picture. It is what makes the image reproducible,
-/// and what "save to library" and lineage read.
 /// One line to the owner's prompt log, owner-only (0600) as the transcript
 /// beside it is.
 fn append_prompt(log: &std::path::Path, line: &Value) -> std::io::Result<()> {
@@ -3676,6 +3705,9 @@ fn append_prompt(log: &std::path::Path, line: &Value) -> std::io::Result<()> {
     writeln!(f, "{line}")
 }
 
+/// Write a generation's manifest beside its PNG — `images/<stem>.json`, new
+/// or not at all, like the picture. It is what makes the image reproducible,
+/// and what "save to library" and lineage read.
 async fn write_manifest(ctx: &ToolCtx, png: &str, manifest: &Value) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let stem = png
@@ -6733,6 +6765,25 @@ mod tests {
         assert_eq!(change.people.len(), 2, "nobody added");
         assert!(change.setting.is_none(), "the setting stays the call's");
         assert_eq!(merged, ["together", "doing×1", "wearing×1"]);
+        // Bounded as the call's own: a long act is clipped, a long part left.
+        let long = format!("{}.", "Maya laughs ".repeat(40));
+        let mut change = crate::scene::SceneChange {
+            people: vec![crate::scene::PersonChange {
+                who: crate::scene::Who::Library("maya".into()),
+                at: None,
+                wearing: None,
+                doing: None,
+                expression: None,
+                remove: false,
+            }],
+            ..Default::default()
+        };
+        let read = json!({"together": long, "people": [{"who": "Maya", "doing": long}]});
+        merge_read(&mut change, read.as_object().unwrap());
+        assert!(
+            change.together.as_ref().unwrap().chars().count() <= crate::imagelib::MAX_CAST_FIELD
+        );
+        assert!(change.people[0].doing.is_none(), "too long to merge");
     }
 
     /// A reader that answers as told, standing in for the persona host's.
@@ -6759,7 +6810,7 @@ mod tests {
     /// fails leaves the call as sent.
     #[tokio::test]
     async fn a_bare_call_is_filled_from_the_turns_words() {
-        let (url, seen) = distinct(3).await;
+        let (url, seen) = distinct(4).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = scene_ctx(&dir, &store, "chat-a");
@@ -6796,6 +6847,28 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["reader"],
             "fell back: no answer"
+        );
+        // A library character whose entry did not load, named only in the
+        // reader's words, is never drawn as a stranger: the merge is dropped.
+        let wren = lib.join("characters/wren");
+        std::fs::create_dir_all(&wren).unwrap();
+        std::fs::write(wren.join("entry.toml"), "not = [toml").unwrap();
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
+            "together": "Maya and John dance with Wren"
+        })))));
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a park",
+                    "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!last_prompt(&seen).contains("Wren"));
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "fell back: the reader named a library entry that could not be read"
         );
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();

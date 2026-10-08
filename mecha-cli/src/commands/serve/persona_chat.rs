@@ -3632,10 +3632,16 @@ impl PersonaChats {
         // persona puts the whole act in one sentence, and drawn as one it
         // duplicated a person in 6 of 12 real calls. A model that cannot be
         // had leaves the tool drawing the call as sent.
-        tools.role_split = (self.provider)(&bound, PersonaUse::Judge).ok().map(|p| {
-            Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
-                as Arc<dyn mecha_core::roles::RoleSplit>
-        });
+        tools.role_split = match (self.provider)(&bound, PersonaUse::Judge) {
+            Ok(p) => Some(
+                Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
+                    as Arc<dyn mecha_core::roles::RoleSplit>,
+            ),
+            Err(e) => {
+                tracing::warn!("persona chat: no role splitter this turn: {e:#}");
+                None
+            }
+        };
         // This turn's ask, read for what the persona's picture call leaves
         // out (`SceneReader`): the owner's words and the persona's latest
         // reply, on its own model. Not on a panel turn, whose change the
