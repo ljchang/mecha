@@ -6332,7 +6332,10 @@ mod tests {
     async fn a_together_after_the_people_carries_no_standing_pose() {
         let (url, seen) = distinct(3).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
-        let t = tool(&url).with_library_dir(lib.clone());
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [200, 150, 120])));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::clone(&faces) as Arc<dyn crate::face::FaceAnchors>);
         let cx = clean(scene_ctx(&dir, &store, "chat-a"));
         let first = t
             .call(
@@ -6356,6 +6359,20 @@ mod tests {
         assert!(!then.is_error, "{}", then.content);
         let p = last_prompt(&seen);
         assert!(p.contains("kneels to tie"), "{p}");
+        assert!(!p.contains("standing naturally"), "{p}");
+        // A change of clothes under that `together` is an edit; its prompt
+        // gives Maya no standing pose either (`edit_person`).
+        let dressed = t
+            .call(
+                json!({"picture": picture_of(&then.content),
+                       "scene": {"people": [{"who": "maya", "wearing": "a red coat"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!dressed.is_error, "{}", dressed.content);
+        let p = last_prompt(&seen);
+        assert!(p.contains("a red coat"), "{p}");
         assert!(!p.contains("standing naturally"), "{p}");
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();

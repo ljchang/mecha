@@ -881,7 +881,15 @@ pub fn plan(
             touched.push(key.clone());
         }
         if delta.posed.contains(&key) {
-            lines.push(format!("Have {name} {}.", p.doing.trim_end_matches('.')));
+            // A pose is empty in the record when none was given (the plain
+            // one is said at the prompt), and a move of place alone is a pose
+            // change too: never "Have Maya ." (review of #608).
+            let doing = p.doing.trim().trim_end_matches('.');
+            lines.push(match (doing.is_empty(), p.at) {
+                (false, _) => format!("Have {name} {doing}."),
+                (true, Some(at)) => format!("Place {name} {}.", at.name()),
+                (true, None) => format!("Have {name} standing naturally."),
+            });
             touched.push(key.clone());
         }
     }
@@ -1473,6 +1481,28 @@ mod tests {
             .find(|q| q.who.key() == "john")
             .unwrap();
         assert_eq!(john.doing, "");
+        // A move of place alone over an empty pose is said as the move,
+        // never "Have Maya ." (review of #608).
+        let placed = planned(
+            &call(json!({"scene": {"people": [{"who": "maya", "wearing": "a coat"}]}})),
+            None,
+        );
+        let moved = planned(
+            &call(
+                json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya", "where": "left"}]}}),
+            ),
+            Some(&placed.next),
+        );
+        assert!(
+            !moved.instruction.contains("Have Maya ."),
+            "{}",
+            moved.instruction
+        );
+        assert!(
+            moved.instruction.contains("Place Maya on the left."),
+            "{}",
+            moved.instruction
+        );
         // A described newcomer without clothes is dressed for the scene.
         let p = planned(
             &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),

@@ -1026,7 +1026,7 @@ pub fn compile(
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
         // A placeholder copied from a refusal's example is no answer. An
         // empty `doing` is a scene that says what its people do together
-        // (`picture::plan` fills one otherwise).
+        // (`imagegen::doing_words` says a plain pose otherwise).
         if blank(wearing) || (!doing.is_empty() && blank(doing)) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
