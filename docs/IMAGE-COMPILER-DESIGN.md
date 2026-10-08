@@ -90,12 +90,11 @@ as `model_untrusted`** — never approved, never clean.
 
 ## 3. Compiling a scene
 
-> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1):** the bullet below that makes `cast` and
-> `reference_images` exclusive is lifted.
-> Every library person enters every render, edits included, as a head crop plus their
-> description, under one reference size and one budget per call (`IMAGE-SCENE-DESIGN.md` §5.2).
-> "Its people carry their own identity" held for a pose change on a picture of them, and failed
-> for everything else a picture is passed for (§2 there). That bullet is kept as written.
+> **Superseded 2026-10-07 for the call (`IMAGE-DESIGN.md` §5.1):** `cast`, `extras` and
+> `reference_images` are retired. The model sends a `scene` whose people name library characters
+> in `who`, and the compiler below is what a new picture still runs through. The store (§2), the
+> `image_library` tools (§4), the owner's door (§6) and the web surface (§7) stand as written; §4's
+> `image_generate` bullet and §5's manifest contents are superseded, each with its own note.
 
 `image_generate` gains two optional fields. The model writes only what
 varies; code writes what persists.
@@ -164,6 +163,10 @@ The rules, each a measurement:
 
 ## 4. Tools
 
+> **Superseded 2026-10-07 for `image_generate`'s call (`IMAGE-DESIGN.md` §5.1):** the first
+> bullet's `cast` and name guard became `scene.people[].who` and the planner's prose check. The
+> `image_library` tools stand as written.
+
 - **`image_generate`** — `cast` and `style` as above. The result names each
   entry and its version. **A prompt naming an approved character who is
   not in `cast` is refused** before any GPU time: the first real run (2026-09-28)
@@ -196,6 +199,11 @@ system prompt (the cached prefix). An incognito chat may call
 room.
 
 ## 5. Manifests
+
+> **Narrowed 2026-10-07 (`IMAGE-DESIGN.md` §6):** the manifest keeps only what the owner-facing
+> doors read (the image, the call id, the route, the seed, the cast names and versions, the crops,
+> the layout reading, a pointer to the scene by hash). No prompt; the scene record outside the jail
+> is the record.
 
 Every `image_generate` result writes `images/<stem>.json` beside its PNG,
 `create_new` like the PNG: the scene prompt as the model wrote it, the

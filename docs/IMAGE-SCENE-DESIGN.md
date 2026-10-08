@@ -1,7 +1,9 @@
 # Image scenes — design
 
-**Status:** accepted 2026-10-07: the owner ruled R1–R9 (§9). Nothing here is built
-yet; #583 and #577, which it builds on, merged on 2026-10-07.
+**Superseded 2026-10-07 by [`IMAGE-DESIGN.md`](IMAGE-DESIGN.md)** for the mechanism (the call, the routing and the record). The measurements here (§4), the owner's rulings R1–R9 (§9), and the open crop-on-new-pictures measurement (§8.1) stand, and `IMAGE-DESIGN.md` cites them.
+
+**Status:** accepted 2026-10-07: the owner ruled R1–R9 (§9). Steps 1–4 were built (#584–#591,
+2026-10-07) and their mechanism then superseded by `IMAGE-DESIGN.md` (see the note above).
 It amends `IMAGE-COMPILER-DESIGN.md` §3, where `cast` and `reference_images` are exclusive,
 and `PERSONA-CONTEXT-DESIGN.md` §5.5, where edits happen only on the owner's initiative. It
 replaces the lineage rule of #569's face anchor. The measurements are in §4. The owner judged
