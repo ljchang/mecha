@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A picture asked for while another is being drawn waits its turn instead
+  of failing.** A chat draws one picture at a time and keeps up to three
+  more in line behind it, in order; a panel edit waits its turn too. A
+  chat shows its line while two or more are out — the one drawing, with
+  its clock, then the ones waiting — and each can be stopped on its own or
+  dragged (or moved with ↑/↓) into a new place; the one drawing never
+  moves. Stop on a picture stops that one; the call screen's Stop stops
+  them all.
+
 - **A picture asked for in a style the library doesn't have still draws.**
   A model that wrote a look like "hyperreal render" or "oil on linen"
   where only a library style's name fits was refused every time, and in a

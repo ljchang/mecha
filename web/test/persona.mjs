@@ -310,6 +310,18 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   const line = [{ kind: 'user', text: 'a' }, out('a'), { kind: 'user', text: 'b' }, out('b'), out('c')];
   assert.deepEqual([...waitingPictures(line)], [3, 4]);
   assert.deepEqual([...waitingPictures([out('a')])], [], 'one alone is drawing');
+  // The queue panel's reorder (review of #607): ↑/↓ move to a position; a
+  // drop lands in the gap the marker shows, down as well as up.
+  const { moveTo, dropAt } = await import('../src/lib/picture.js');
+  const line3 = ['a', 'b', 'c'];
+  assert.deepEqual(moveTo(line3, 'c', 0), ['c', 'a', 'b']);
+  assert.deepEqual(moveTo(line3, 'a', 1), ['b', 'a', 'c']);
+  assert.equal(moveTo(line3, 'z', 0), null, 'a row that left the line');
+  assert.deepEqual(dropAt(line3, 'a', 2), ['b', 'a', 'c'], 'above c, moving down');
+  assert.deepEqual(dropAt(line3, 'a', 3), ['b', 'c', 'a'], 'below the last');
+  assert.deepEqual(dropAt(line3, 'c', 0), ['c', 'a', 'b'], 'above a, moving up');
+  assert.equal(dropAt(line3, 'b', 1), null, 'its own gap moves nothing');
+  assert.equal(dropAt(line3, 'b', 2), null, 'the gap below itself moves nothing');
   // A row the page read back from the transcript (a reload while the picture
   // was drawn) carries its call's id, and the late result lands on it.
   const { applyEvent, emptyRun } = await import('../src/lib/persona.js');
