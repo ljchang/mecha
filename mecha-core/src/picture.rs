@@ -705,8 +705,13 @@ pub fn plan(
                 keep: "the room and its furniture".into(),
                 ..out
             },
+            // At another latent size the base seed cannot hold the room, so
+            // a restage that names a size samples afresh (§5.2).
             None => Plan {
-                seed: base_seed.map_or(Seed::Fresh, Seed::Base),
+                seed: match (call.size, base_seed) {
+                    (None, Some(seed)) => Seed::Base(seed),
+                    _ => Seed::Fresh,
+                },
                 ..out
             },
         });
@@ -1016,6 +1021,25 @@ mod tests {
         .unwrap();
         assert_eq!(p.next.people[0].wearing, "clothes that suit the scene");
         assert!(p.said.unwrap().contains("John had no clothes given"));
+    }
+
+    /// A restage that names a size draws at a fresh seed: the base seed holds
+    /// the room only at the same latent size (§5.2).
+    #[test]
+    fn a_restage_that_names_a_size_samples_afresh() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a study", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "reading"}]}})),
+            None,
+        );
+        let base = landed(&first, 21);
+        let on = |v: Value| planned(&call(v), Some(&base));
+        let p = on(json!({"picture": "images/a.png", "scene": {"camera": "from above"}}));
+        assert_eq!((p.route, p.seed), ("restaged", Seed::Base(21)));
+        let p = on(
+            json!({"picture": "images/a.png", "size": "landscape", "scene": {"camera": "from above"}}),
+        );
+        assert_eq!((p.route, p.seed), ("restaged", Seed::Fresh));
     }
 
     /// Review of #597, pass 3: a restage of a scene with no setting is an
