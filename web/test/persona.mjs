@@ -31,8 +31,23 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 // the docs demo to — so a new endpoint cannot slip past that guard.
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
+// Every suffix the persona page asks `chatUrl` for is one it allows, read out
+// of the components that ship: `chatUrl` throws on any other, and a throw
+// inside a `try` is a button that silently does nothing — the queue panel's
+// reorder did exactly that (review of #607). `check-demo` cannot see this, as
+// it derives its list from the same allowed suffixes.
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../src/lib/', import.meta.url);
+  const used = new Set();
+  for (const f of readdirSync(dir).filter((f) => f.endsWith('.svelte') || f.endsWith('.js'))) {
+    for (const m of readFileSync(new URL(f, dir), 'utf8').matchAll(/chatUrl\([^,()]+,\s*'([^']*)'/g)) used.add(m[1]);
+  }
+  assert.ok(used.has('/jobs/order'), [...used].join(' '));
+  for (const suffix of used) assert.doesNotThrow(() => chatUrl('p-0123456789ab', suffix), suffix);
+}
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 26);
+assert.equal(ENDPOINTS.length, 27);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
@@ -310,6 +325,23 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   const line = [{ kind: 'user', text: 'a' }, out('a'), { kind: 'user', text: 'b' }, out('b'), out('c')];
   assert.deepEqual([...waitingPictures(line)], [3, 4]);
   assert.deepEqual([...waitingPictures([out('a')])], [], 'one alone is drawing');
+  // After a reorder the server's line is the truth: 'c' drawing though 'b'
+  // was asked for first (review of #607).
+  const reordered = [{ kind: 'user', text: 'x' }, out('b'), out('c')];
+  const served = [{ call_id: 'c', running: true }, { call_id: 'b', running: false }];
+  assert.deepEqual([...waitingPictures(reordered, served)], [1], 'b waits, c draws');
+  // The queue panel's reorder (review of #607): ↑/↓ move to a position; a
+  // drop lands in the gap the marker shows, down as well as up.
+  const { moveTo, dropAt } = await import('../src/lib/picture.js');
+  const line3 = ['a', 'b', 'c'];
+  assert.deepEqual(moveTo(line3, 'c', 0), ['c', 'a', 'b']);
+  assert.deepEqual(moveTo(line3, 'a', 1), ['b', 'a', 'c']);
+  assert.equal(moveTo(line3, 'z', 0), null, 'a row that left the line');
+  assert.deepEqual(dropAt(line3, 'a', 2), ['b', 'a', 'c'], 'above c, moving down');
+  assert.deepEqual(dropAt(line3, 'a', 3), ['b', 'c', 'a'], 'below the last');
+  assert.deepEqual(dropAt(line3, 'c', 0), ['c', 'a', 'b'], 'above a, moving up');
+  assert.equal(dropAt(line3, 'b', 1), null, 'its own gap moves nothing');
+  assert.equal(dropAt(line3, 'b', 2), null, 'the gap below itself moves nothing');
   // A row the page read back from the transcript (a reload while the picture
   // was drawn) carries its call's id, and the late result lands on it.
   const { applyEvent, emptyRun } = await import('../src/lib/persona.js');

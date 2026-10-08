@@ -4724,6 +4724,19 @@ invariants:
   fill the line. A harness call (the edit panel's draw) renders inline
   after the queue empties — it waits on running and waiting jobs only, since
   a finished one lands at the hand-back of the very run that is waiting.
+- **The owner sees the line and moves it.** `JobQueue::list` is the line
+  as it stands (the running job, with how long it has run, then the
+  waiting ones in order, each with the tool's few words for it —
+  `DeferredJob::with_label`; `image_generate` labels by who, doing what,
+  where). Every change — queued, started, ended, stopped, moved — is told
+  through `JobQueue::set_watch`, on the same channel as deliveries
+  (`late::Late`), so a page sees a picture land before the line that no
+  longer holds it; the hosts send it as a `queue` event, and each transcript
+  carries `queue`. A row's Stop is `cancel_one`; `reorder` takes the waiting
+  ids in a new order and refuses a stale one, and the running job never
+  moves — a render cannot be set aside. The panel (`PictureQueue.svelte`)
+  shows while two or more are out, and its drag is pointer events, so a
+  finger works where HTML5 drag does not (owner, 2026-10-08).
 - **A late result is finished by the loop's own rule** — the turn's cap, the
   envelope, taint armed from what came back — through `jobs::settle`, the
   one function `run_tools` uses for an inline result too, so the two cannot

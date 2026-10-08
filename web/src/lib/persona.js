@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
 const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
-const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call'];
+const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/jobs/order'];
 
 export const ENDPOINTS = [
   '/api/personas',

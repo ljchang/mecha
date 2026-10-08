@@ -2148,6 +2148,50 @@ fn collect_strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
     }
 }
 
+/// A picture's line in its chat's queue (`jobs::DeferredJob::with_label`):
+/// who is in it, what the first of them is doing, and where — a handle the
+/// owner reads to tell one queued picture from another, never the prompt.
+/// Capped, since a phone shows it on one line.
+fn queue_label(scene: &crate::scene::Scene) -> String {
+    const MAX: usize = 80;
+    let who: Vec<String> = scene
+        .people
+        .iter()
+        .map(|p| crate::picture::shown(&p.who))
+        .collect();
+    let mut parts = Vec::new();
+    if !who.is_empty() {
+        // What the first is doing goes with the first, never after everyone
+        // (review of #607: "Maya, a waiter reading" read as both reading).
+        let mut names = who.clone();
+        if let Some(d) = scene
+            .people
+            .first()
+            .map(|p| p.doing.trim())
+            .filter(|d| !d.is_empty())
+        {
+            names[0] = format!("{} {d}", names[0]);
+        }
+        parts.push(names.join(", "));
+    }
+    match scene.setting.as_ref().map(|f| &f.value) {
+        Some(crate::scene::Setting::Words { text }) if !text.trim().is_empty() => {
+            parts.push(text.trim().to_string())
+        }
+        Some(crate::scene::Setting::Photo { .. }) => parts.push("in your photo".to_string()),
+        _ => {}
+    }
+    let mut label = if parts.is_empty() {
+        "a picture".to_string()
+    } else {
+        parts.join(" — ")
+    };
+    if label.chars().count() > MAX {
+        label = label.chars().take(MAX - 1).collect::<String>() + "…";
+    }
+    label
+}
+
 /// The scene's words for a new picture: the setting, light, camera, what the
 /// people do together, and the words it renders, quoted exactly.
 fn scene_words(scene: &crate::scene::Scene) -> String {
@@ -3020,6 +3064,8 @@ impl Tool for ImageGenerate {
             }),
         };
         let size_asked = call.size.is_some();
+        // Its line in the chat's queue, taken before the job owns the plan.
+        let label = queue_label(&plan.next);
         let job = async move {
             let (me, ctx) = (&me, &job_ctx);
             me.generation.fetch_add(1, Ordering::SeqCst);
@@ -3291,7 +3337,7 @@ impl Tool for ImageGenerate {
         };
         Ok(ToolOutput::deferred(
             format!("{BEING_MADE}{reserved}"),
-            crate::jobs::DeferredJob::new(job, cancel, BUSY),
+            crate::jobs::DeferredJob::new(job, cancel, BUSY).with_label(label),
         ))
     }
 }
@@ -4206,6 +4252,48 @@ mod tests {
             assert!(names.contains(&json), "{json} missing from {names:?}");
         }
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A queued picture is told apart by who, doing what, where — the
+    /// scene's own words, capped for one line on a phone.
+    #[test]
+    fn a_queued_picture_is_labelled_by_its_scene() {
+        use crate::scene::{Field, Origin, Person, Scene, Setting, Who};
+        let person = |who: Who, doing: &str| Person {
+            who,
+            at: None,
+            wearing: String::new(),
+            doing: doing.into(),
+            expression: String::new(),
+            origin: Origin::default(),
+        };
+        let mut scene = Scene {
+            setting: Some(Field {
+                value: Setting::Words {
+                    text: "a park bench in the rain".into(),
+                },
+                origin: Origin::default(),
+            }),
+            ..Scene::default()
+        };
+        scene.people = vec![
+            person(Who::Library("maya".into()), "reading"),
+            person(Who::Described("a waiter".into()), ""),
+        ];
+        assert_eq!(
+            queue_label(&scene),
+            "Maya reading, a waiter — a park bench in the rain"
+        );
+        assert_eq!(queue_label(&Scene::default()), "a picture");
+        scene.setting = Some(Field {
+            value: Setting::Words {
+                text: "x".repeat(200),
+            },
+            origin: Origin::default(),
+        });
+        let long = queue_label(&scene);
+        assert_eq!(long.chars().count(), 80);
+        assert!(long.ends_with('…'));
     }
 
     /// A deferred render holds nothing of the run that started it: once the

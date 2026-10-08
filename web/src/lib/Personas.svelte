@@ -7,6 +7,7 @@
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
   import ChatProse from './ChatProse.svelte';
+  import PictureQueue from './PictureQueue.svelte';
   import { replyContext } from './speech.js';
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
@@ -101,6 +102,12 @@
   // A clock for the waiting line, ticking only while a run is live or a
   // picture is still being drawn past its turn (§5.4).
   let now = $state(Date.now());
+  // The chat's background jobs as the server last said (`queue` events and
+  // the transcript's `queue`), for the queue panel.
+  let queue = $state([]);
+  // Counts `queue` events, so a re-read that left before one arrived does
+  // not lay its older line over it (review of #607).
+  let queueSeq = 0;
   // On booleans alone, not the whole run: `run` is replaced on every
   // streamed word, and the tick would restart with each (review of #431).
   const running = $derived(run.running);
@@ -148,7 +155,7 @@
   const repeats = $derived(repeatedPictures(run.entries));
   const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
   // Pictures waiting behind the one drawing (`waitingPictures`).
-  const queuedPictures = $derived(waitingPictures(run.entries));
+  const queuedPictures = $derived(waitingPictures(run.entries, queue));
   // Each answer's citations with the check made of each (§10.4).
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
@@ -811,10 +818,12 @@
   let readGen = 0;
   async function reread(k) {
     const gen = ++readGen;
+    const qSeq = queueSeq;
     const res = await fetch(chatUrl(k, '', token));
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
+    if (queueSeq === qSeq) queue = t.queue ?? [];
     const settled = withJob(settle(t.entries, run), t.job);
     const entries = t.running ? withWorking(settled, t.working) : settled;
     run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
@@ -841,6 +850,8 @@
     attachments = [];
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
+    // And its pictures in line (review of #607).
+    queue = [];
     crisisShown = false;
     chatModel = '';
     dismissed = new Set();
@@ -854,6 +865,11 @@
         ev = JSON.parse(m.data);
       } catch {
         return; /* a malformed event is dropped, never drawn */
+      }
+      if (ev.type === 'queue') {
+        queueSeq += 1;
+        queue = ev.jobs ?? [];
+        return;
       }
       run = applyEvent(run, ev);
       scrollDown();
@@ -1308,6 +1324,26 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ unlock: token ?? undefined, picture: true, call: one }),
     }).catch(() => {});
+  }
+
+  // The queue panel's drag: the waiting pictures in a new order. The line
+  // that comes back is the server's, refused order or not.
+  async function reorderPictures(order) {
+    const k = key;
+    if (!k) return;
+    try {
+      const res = await fetch(chatUrl(k, '/jobs/order'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ unlock: token ?? undefined, order }),
+      });
+      const line = res.ok ? (await res.json()).queue : null;
+      // A switch while the answer travelled: that line is the last chat's
+      // (the #418 pattern; review of #607).
+      if (line && key === k) queue = line;
+    } catch {
+      // The next `queue` event says how the line stands.
+    }
   }
 
   function onKey(e) {
@@ -1855,7 +1891,7 @@
                  a reply that is running (review of #583). -->
             {#if stillOut(entry)}
               {#if queuedPictures.has(i)}
-                <span class="genwait">waiting its turn, after the picture before it…</span>
+                <span class="genwait">waiting its turn…</span>
               {:else}
                 <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
               {/if}
@@ -1921,6 +1957,7 @@
           {/each}
         </div>
       {/if}
+      <PictureQueue items={queue} oncancel={(id) => stopPicture(id)} onreorder={reorderPictures} />
       <div class="composer">
         <input type="file" multiple hidden bind:this={fileInput} onchange={uploadPicked} />
         <button class="attachbtn" disabled={uploads > 0} onclick={() => fileInput?.click()} aria-label="Attach a file" title="attach a file — it lands in this chat's inbox/">

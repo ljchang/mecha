@@ -110,6 +110,11 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 ### 2.2 The job queue (core): one per conversation
 
+**And the owner sees the line and moves it (2026-10-08):** `JobQueue::list`, `cancel_one`
+(a row's Stop), `reorder` (the waiting ids, each once; the running one never moves) and
+`set_watch` (every change told to the host, which sends a `queue` event). ARCHITECTURE
+§Background jobs holds the rules as built.
+
 **Amended 2026-10-08 (owner: "queueing images does not work. they just fail"): one job runs,
 and up to three wait behind it, first in first out.** The refusal below now applies only past
 that line; ARCHITECTURE §Background jobs holds the rule as built. The runaway bound holds

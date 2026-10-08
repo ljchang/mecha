@@ -814,6 +814,12 @@ pub enum WireEvent {
     Delta {
         text: String,
     },
+    /// A conversation's line of background jobs as it stands — running first,
+    /// then the waiting ones in order — sent whenever it changes, so a page
+    /// can show it, stop one, and drag the waiting ones into a new order.
+    Queue {
+        jobs: Vec<mecha_core::jobs::QueueItem>,
+    },
     /// Accepted input, shared by every browser watching the conversation.
     /// The request id correlates a typed POST response with its SSE echo.
     User {
@@ -1835,6 +1841,10 @@ pub async fn transcript(
         "model": bound.model,
         "mode": mode,
         "running": running,
+        // Its background jobs as they stand — the one running, then the ones
+        // waiting in order — for the page's queue panel; kept current after
+        // by `queue` events.
+        "queue": chat.jobs.queue.list(&key),
         // What this conversation is *about*, when it is about a board task.
         // The record as the board returned it, so the page can head the
         // transcript with the goal, the dates and where it came from —
@@ -2341,9 +2351,19 @@ fn start_delivery(chat: &Arc<ChatState>) {
     chat.jobs.start(|mut rx| {
         let chat = Arc::downgrade(chat);
         tokio::spawn(async move {
-            while let Some(late) = rx.recv().await {
+            while let Some(event) = rx.recv().await {
                 let Some(chat) = chat.upgrade() else { break };
-                deliver(&chat, late).await;
+                match event {
+                    super::late::Late::Delivered(late) => deliver(&chat, *late).await,
+                    super::late::Late::Changed(key) => {
+                        let sessions = chat.sessions.lock().await;
+                        if let Some(ws) = sessions.get(&key) {
+                            let _ = ws.events.send(WireEvent::Queue {
+                                jobs: chat.jobs.queue.list(&key),
+                            });
+                        }
+                    }
+                }
             }
         });
     });
@@ -3440,6 +3460,33 @@ pub struct CancelBody {
     /// the line.
     #[serde(default)]
     call: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct OrderBody {
+    /// The waiting jobs' call ids, in the order wanted.
+    #[serde(default)]
+    order: Vec<String>,
+}
+
+/// POST /api/chat/{key}/jobs/order — put the chat's waiting background jobs
+/// in a new order (the queue panel's drag). The running one never moves. A
+/// stale order — the line changed since the page read it — changes nothing,
+/// and the line as it stands comes back either way.
+pub async fn reorder_jobs(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<OrderBody>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if !chat.sessions.lock().await.contains_key(&key) {
+        return (StatusCode::NOT_FOUND, "no such session\n").into_response();
+    }
+    let moved = chat.jobs.queue.reorder(&key, &body.order);
+    Json(serde_json::json!({ "moved": moved, "queue": chat.jobs.queue.list(&key) })).into_response()
 }
 
 /// GET /api/chat/{key}/events — the run, streamed. Subscribing is legal at
@@ -5217,6 +5264,16 @@ pub(super) fn test_chat_planned(
 /// A picture still being drawn for `key`, until the returned token stops it.
 #[cfg(test)]
 pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::CancellationToken {
+    test_job_out_as(chat, key, "c1")
+}
+
+/// [`test_job_out`] under its own call id, so a test can line several up.
+#[cfg(test)]
+pub(super) fn test_job_out_as(
+    chat: &ChatState,
+    key: &str,
+    id: &str,
+) -> tokio_util::sync::CancellationToken {
     let token = tokio_util::sync::CancellationToken::new();
     let watched = token.clone();
     let job = mecha_core::jobs::DeferredJob::new(
@@ -5229,7 +5286,7 @@ pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::Can
     );
     chat.jobs
         .queue
-        .submit(key, 0, "c1", "image_generate", job)
+        .submit(key, 0, id, "image_generate", job)
         .unwrap();
     token
 }
