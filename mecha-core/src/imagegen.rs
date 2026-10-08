@@ -2616,6 +2616,11 @@ impl Tool for ImageGenerate {
         let mut used: Vec<crate::imagelib::Used> = Vec::new();
         let mut mask_plan: Option<MaskPlan> = None;
         let mut crops_said: Vec<String> = Vec::new();
+        // Whether the people's parts were split (`roles`), for the manifest:
+        // the split is prompt-only and its fallback silent, so this is the
+        // one place a picture says what happened (mecha-a3's G5). The
+        // prompt itself stays out of the manifest (ARCHITECTURE §images).
+        let mut roles_said: Option<String> = None;
         let mut reseeded: Option<u64> = None;
         let mut dropped: Vec<String> = Vec::new();
         let is_edit = matches!(plan.render, crate::picture::Render::Edit { .. });
@@ -2682,8 +2687,12 @@ impl Tool for ImageGenerate {
                                 });
                                 together = scene.together.is_some();
                                 words_scene = std::borrow::Cow::Owned(scene);
+                                roles_said = Some("applied".into());
                             }
-                            Err(why) => tracing::warn!("image_generate: role split: {why}"),
+                            Err(why) => {
+                                tracing::warn!("image_generate: role split: {why}");
+                                roles_said = Some(format!("fell back: {why}"));
+                            }
                         }
                     }
                 }
@@ -3276,6 +3285,7 @@ impl Tool for ImageGenerate {
                 "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
+                "roles": roles_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
                 "model": {
@@ -6580,11 +6590,20 @@ mod tests {
             .unwrap();
         assert!(landed.people.iter().all(|q| q.doing.is_empty()));
         assert!(landed.together.is_some());
+        // The manifest says the split ran; never the prompt, which carries
+        // the library's descriptions into a file a run can read.
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(m["roles"], "applied");
+        assert!(m.get("prompt").is_none());
         // A split that fails draws the call as it was.
         cx.role_split = Some(Arc::new(FakeSplit(Err("no answer".into()))));
         let out = t.call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(last_prompt(&seen).contains("Maya hands John a cup"));
+        assert_eq!(
+            manifest_of(&dir, &out.content)["roles"],
+            "fell back: no answer"
+        );
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
