@@ -44,6 +44,15 @@ pub struct Call {
     pub notes: Vec<String>,
 }
 
+impl Call {
+    /// Whether the call describes something to draw without a `picture`: a
+    /// scene change or a photo for the setting. Parsing refuses a call with
+    /// neither, and a made-up `picture` is left out only beside one.
+    pub fn has_scene(&self) -> bool {
+        self.change != SceneChange::default() || self.setting_photo.is_some()
+    }
+}
+
 /// Read a call. `approved` says whether a name is an approved library
 /// character; `me` resolves `self` and the persona's names; `seeds` admits a
 /// new picture's `seed`, which no chat schema carries.
@@ -275,13 +284,7 @@ pub fn parse(
             }
         }
     }
-    let has_scene = change != SceneChange::default() || setting_photo.is_some();
-    if picture.is_none() && !has_scene {
-        return Err(
-            "Nothing to draw: give a `scene` for a new picture, or the `picture` to change.".into(),
-        );
-    }
-    Ok(Call {
+    let call = Call {
         picture,
         change,
         setting_photo,
@@ -290,7 +293,13 @@ pub fn parse(
         size,
         seed,
         notes,
-    })
+    };
+    if call.picture.is_none() && !call.has_scene() {
+        return Err(
+            "Nothing to draw: give a `scene` for a new picture, or the `picture` to change.".into(),
+        );
+    }
+    Ok(call)
 }
 
 /// How the tool opens the sentence for words the picture renders: the one
