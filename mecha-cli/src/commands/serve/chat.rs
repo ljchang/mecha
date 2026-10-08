@@ -3417,11 +3417,18 @@ pub async fn cancel(
         Err(resp) => return resp,
     };
     let sessions = chat.sessions.lock().await;
-    // The owner's Stop ends the chat's picture too, where talking over a
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    // One picture, from its own row: that one alone, running or waiting; the
+    // rest of the line stays (review of #606).
+    if let Some(call) = &body.call {
+        let one = sessions.contains_key(&key) && chat.jobs.queue.cancel_one(&key, call);
+        return Json(serde_json::json!({ "cancelled": one })).into_response();
+    }
+    // The owner's Stop ends the chat's pictures too, where talking over a
     // reply ends only the reply (`docs/BACKGROUND-JOBS-DESIGN.md` §2.4); the
-    // call screen's picture slot asks for the picture alone (ruling Q2).
+    // call screen's picture slot asks for the pictures alone (ruling Q2).
     let picture = sessions.contains_key(&key) && chat.jobs.queue.cancel(&key);
-    if body.is_some_and(|Json(b)| b.picture) {
+    if body.picture {
         return Json(serde_json::json!({ "cancelled": picture })).into_response();
     }
     match sessions.get(&key) {
@@ -3441,10 +3448,14 @@ pub async fn cancel(
 
 #[derive(Default, serde::Deserialize)]
 pub struct CancelBody {
-    /// Stop only the chat's picture (the call screen's picture slot), not
+    /// Stop only the chat's pictures (the call screen's picture slot), not
     /// the reply in flight.
     #[serde(default)]
     picture: bool,
+    /// Stop only this picture — a row's own Stop — and leave the rest of
+    /// the line.
+    #[serde(default)]
+    call: Option<String>,
 }
 
 /// GET /api/chat/{key}/events — the run, streamed. Subscribing is legal at

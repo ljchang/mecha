@@ -1296,14 +1296,17 @@
     }).catch(() => {});
   }
 
-  // The call screen's picture slot: the picture alone, never the reply the
-  // persona is speaking (ruling Q2, 2026-10-05).
-  async function stopPicture() {
+  // A picture Stop, never the reply the persona is speaking (ruling Q2,
+  // 2026-10-05). With `call`, that one picture alone — a row's own Stop —
+  // and the rest of the line stays; without, the chat's pictures (the call
+  // screen's slot) (review of #606).
+  async function stopPicture(call) {
     if (!key) return;
+    const one = typeof call === 'string' ? call : undefined;
     await fetch(chatUrl(key, '/cancel'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ unlock: token ?? undefined, picture: true }),
+      body: JSON.stringify({ unlock: token ?? undefined, picture: true, call: one }),
     }).catch(() => {});
   }
 
@@ -1856,7 +1859,7 @@
               {:else}
                 <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
               {/if}
-              <button class="genedit" onclick={stopPicture}>Stop</button>
+              <button class="genedit" onclick={() => stopPicture(entry.id)}>Stop</button>
             {/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
@@ -2073,7 +2076,7 @@
       ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
       making={callEntries.some(stillOut)}
-      onstoppicture={stopPicture}
+      onstoppicture={() => stopPicture()}
       ondownload={savePicture}
       onedit={editInCall}
     />

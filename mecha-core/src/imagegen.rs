@@ -2086,7 +2086,8 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      of replies, since the owner is shown the picture. In a chat the result can come at once as \
      `being made: <path>`: the picture is still being drawn, reaches the owner's screen when it \
      is done, and you are told then; it is not a failure, so do not draw it again, and change \
-     it only after you are told it is done. Results are not shown to you, so never say what a \
+     it only after you are told it is done. A line under it beginning `Queued:` means it waits \
+     behind other pictures and starts when they are done. Results are not shown to you, so never say what a \
      picture shows. A change always makes a new file and leaves the original as it was: never \
      write or copy a result over the picture it was edited from. If image_view is among your \
      tools, look at a picture only when the task needs you to see it (the user asked you to \
@@ -3342,8 +3343,9 @@ impl Tool for ImageGenerate {
 /// What a second picture in the same conversation is told while one is being
 /// made (`jobs::DeferredJob::busy`): a refusal before any GPU time, with
 /// `refused`'s lead.
-const BUSY: &str = "Nothing was drawn. A picture is already being made in this conversation; it \
-                    appears on the owner's screen when it is done.";
+const BUSY: &str = "Nothing was drawn. This conversation already has a picture being made and \
+                    the queue behind it is full; each appears on the owner's screen when it is \
+                    done.";
 
 /// The tests call the tool directly and read the finished picture: an
 /// inherent `call`, which the concrete type resolves before the trait's,
