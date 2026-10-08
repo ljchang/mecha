@@ -123,7 +123,10 @@ The rules, each a measurement:
   no extras erased a waiter the prose described, and without it four cast
   still drew exactly four (E12). With `extras`, a total that counts them.
 - **`wearing` and `doing` are required** (E3, E8: a reference supplies its own
-  outfit, pose and stare when the scene is silent; stated, they land).
+  outfit, pose and stare when the scene is silent; stated, they land), except
+  that `doing` is left empty when the scene's `together` says what its people
+  do: a plain pose beside it drew a person twice (mecha-a3, 2026-10-08), and
+  `imagegen::doing_words` says the plain pose only when the scene is silent.
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
