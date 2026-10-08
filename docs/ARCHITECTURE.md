@@ -4664,6 +4664,17 @@ invariants:
   (`Egress::Chosen`), or whose reach is unknown, has its job awaited inline
   even with a sink: the interlock cleared it against this turn's taint, and
   a job run later would send against that snapshot.
+- **One picture per run, structurally** (`IMAGE-DESIGN.md` §5.5). `RunPictures` records the deferred tools a run has started.
+  - **The repeat is not run.** A later call to one of them in the same run is answered "Not run: … already started in this run" and never reaches the tool. In all sessions, the queue's busy refusal and the old repeat guard never stopped a model that kept calling.
+  - **Then the run closes.** Its next request is the closing one, which keeps the tools listed (so the cached prefix holds on llama-server; the cache lens counts the `tool_choice` change as a surface change), asks for words with `ToolChoice::None`, ends with `PICTURE_ON_ITS_WAY` as its last note, and its deltas are not forwarded (the request still streams to the provider when the run is cancellable). A steer that arrives for it stays queued and is said to have come too late, and a peer's message stays unclaimed in the mailbox, since a closing turn could not act on either. A refusal on it is left as the provider said it.
+  - **What the owner sees.** The closing reply's call markup (Qwen's `<tool_call>` blocks, written as text) is stripped, from a reply cut off by Stop too, whose cleaned words are then sent once. Only the wrapped form is: a bare `<function=…>` was not measured. Nothing left, or an empty reply, becomes `PICTURE_ON_ITS_WAY_REPLY` (`PICTURE_NOT_STARTED_REPLY` after a busy refusal, where nothing was started), so a `<tool_call>` block written out as text never reaches the screen.
+  - **When the close fires.**
+    - A persona chat sets `RunContext::end_after_deferral`, so its run closes right after the picture is queued.
+    - Every other run closes only on a repeat: the assistant keeps working after drawing (`image_view`, `shell` and `fs_read` in 43 measured runs).
+    - A call refused because an earlier turn's picture is still being made closes a run set to end on its picture, with `PICTURE_STILL_BEING_MADE` as the line. Any other run keeps working after one such refusal, since a slow picture says nothing about its run, and closes on a retry of the refused call.
+    - A second call in one batch that the queue refuses because this run's own picture is out counts as a repeat: the picture this run started is the fact said, first.
+  - **On a voice call** the closing reply arrives whole rather than streamed. It is a sentence or two.
+  - **The panel's note rides every request before the run's first tool result,** empty-reply retries included, and none after it (`persona::edit::is_note`). The ceiling's final answer does not re-send it. Re-sent beside a "being made" result, it was the measured loop trigger. With `ToolChoice::None` and the note sent once, the closing reply was clean 5 times in 6, against 1 in 6 for the LoopGuard's exit.
 - **One job per conversation, refused in the tool's words.** A second is a
   `refusal: true` result with the tool's own busy text, never a tool failure.
 - **A late result is finished by the loop's own rule** — the turn's cap, the
