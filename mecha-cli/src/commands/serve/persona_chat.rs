@@ -339,9 +339,9 @@ async fn draw_panel_edit(
                 .character
                 .as_deref()
                 .map(|c| mecha_core::picture::shown(&mecha_core::scene::Who::Library(c.into())));
-            let styles = mecha_core::imagelib::style_names(
-                &mecha_core::imagelib::Library::load(&names.library).0,
-            );
+            // Read once: the styles offered here, and who is known below.
+            let lib = mecha_core::imagelib::Library::load(&names.library).0;
+            let styles = mecha_core::imagelib::style_names(&lib);
             let request = edit::extraction_request(
                 model,
                 record.as_ref(),
@@ -361,7 +361,6 @@ async fn draw_panel_edit(
             if text.trim().is_empty() {
                 return fail("the reader's answer was empty".into());
             }
-            let lib = mecha_core::imagelib::Library::load(&names.library).0;
             let known = |who: &str| {
                 let key = who.trim().to_lowercase();
                 lib.get(mecha_core::imagelib::Kind::Character, &key)
