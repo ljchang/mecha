@@ -7,7 +7,7 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, repeatedPictures, downloadPicture } from './picture.js';
+  import { pictureOf, stillOut, waitingPictures, repeatedPictures, downloadPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
@@ -1345,6 +1345,8 @@
   let attachments = $state([]); // workspace-relative paths, announced on send
 
   const repeats = $derived(repeatedPictures(entries));
+  // Pictures waiting behind the one drawing (`waitingPictures`).
+  const queuedPictures = $derived(waitingPictures(entries));
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 
@@ -1966,7 +1968,7 @@
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>
-          {:else if stillOut(entry)}<span class="tool-state">drawing a picture…</span>{/if}
+          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : 'drawing a picture…'}</span>{/if}
         </div>
         <!-- Still being drawn past the turn that asked for it (§5.4): it
              lands on this row when done. Its Stop ends the picture alone,

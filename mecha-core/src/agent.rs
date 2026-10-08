@@ -5502,17 +5502,46 @@ impl Agent {
                     .is_some_and(|c| c.egress != Egress::Chosen);
                 let sink = cx.jobs.as_ref().filter(|_| may_defer);
                 out = match sink {
+                    // A second call of a tool this run already started, in the
+                    // same batch: its gate ran before the first was submitted,
+                    // so it is caught here. With a queue it would otherwise be
+                    // queued, a second picture from one run (one picture per
+                    // run, IMAGE-DESIGN.md §5.5).
+                    Some(_) if defer && run_pictures.started.contains(&name) => {
+                        run_pictures.repeated = true;
+                        let mut refused = ToolOutput::err(format!(
+                            "Not run: `{name}` was already started in this run, and its result \
+                             is on its way. Answer the owner now."
+                        ));
+                        refused.refusal = true;
+                        refused
+                    }
                     Some(sink) if defer => {
                         match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
-                            Ok(()) => {
+                            Ok(submitted) => {
                                 run_pictures.started.insert(name.clone());
                                 run_pictures.started_now = true;
-                                out
+                                // Queued, not started: the first line stays the
+                                // tool's own ("being made: …"), which the page
+                                // and the restart repair read; the queue's words
+                                // follow it (owner, 2026-10-08: a queue, not a
+                                // refusal).
+                                if let crate::jobs::Submitted::Queued { ahead } = submitted {
+                                    let mut out = out;
+                                    out.content.push_str(&format!(
+                                        "\nQueued: {ahead} ahead of it in this conversation. It \
+                                         starts when the one before it is done."
+                                    ));
+                                    out
+                                } else {
+                                    out
+                                }
                             }
-                            // Busy because this run's own picture is out (a
-                            // second call in one batch) is a repeat; busy
-                            // from an earlier turn is said once, and a retry
-                            // of it is the loop (review of #596, pass 3).
+                            // Busy — the queue is full — because this run's own
+                            // picture is out (a second call in one batch) is a
+                            // repeat; busy from an earlier turn is said once,
+                            // and a retry of it is the loop (review of #596,
+                            // pass 3).
                             Err(crate::jobs::Busy) => {
                                 if run_pictures.started.contains(&name) {
                                     run_pictures.repeated = true;
@@ -5525,12 +5554,35 @@ impl Agent {
                             }
                         }
                     }
-                    // A harness call, inline; while the chat has any job out
-                    // it is refused. It takes no seat itself, so a turn's job
-                    // is not refused by it: its caller owes that (review of
+                    // A harness call (the edit panel's draw) renders inline, so
+                    // its result reaches its caller's own path. While the chat
+                    // has a job running or waiting it takes its turn behind
+                    // them, rather than being refused (owner, 2026-10-08). It
+                    // waits on running and waiting jobs only: a finished one
+                    // not yet landed lands at this very run's hand-back, and
+                    // waiting on it would never end. A Stop while it waits
+                    // ends it undrawn. It takes no seat itself (review of
                     // #592, passes 2 and 3).
-                    Some(sink) if !sink.pending_tools().is_empty() => {
-                        ToolOutput::refusal(job.busy())
+                    Some(sink) => {
+                        let stop = cx.cancel.clone();
+                        let waited = match &stop {
+                            Some(stop) => tokio::select! {
+                                () = sink.idle() => true,
+                                () = stop.cancelled() => false,
+                            },
+                            None => {
+                                sink.idle().await;
+                                true
+                            }
+                        };
+                        if waited {
+                            crate::jobs::run_inline(&job, cx.cancel.as_ref()).await
+                        } else {
+                            ToolOutput::refusal(
+                                "Nothing was drawn: stopped while it waited for the picture \
+                                 before it.",
+                            )
+                        }
                     }
                     _ => crate::jobs::run_inline(&job, cx.cancel.as_ref()).await,
                 };
@@ -7328,10 +7380,10 @@ mod tests {
     /// A harness call that defers runs inline even with a host's queue on
     /// the context: its result is the finished one, never "being made" into
     /// a transcript slot it does not have, and no job seat is taken. While a
-    /// turn's job is out, it is refused in the tool's busy words, as the
-    /// queue would refuse a second (review of #592).
+    /// turn's job is out it waits its turn behind it, then draws, rather than
+    /// being refused (owner, 2026-10-08; it was refused, review of #592).
     #[tokio::test]
-    async fn a_harness_call_runs_inline_and_meets_the_one_job_rule() {
+    async fn a_harness_call_runs_inline_and_waits_its_turn_behind_a_job() {
         let go = Arc::new(tokio::sync::Notify::new());
         let got = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&got);
@@ -7350,14 +7402,110 @@ mod tests {
             .await;
         assert_eq!(d.content, "image: images/made.png");
         assert!(queue.pending("chat").is_none(), "no job seat taken");
-        // A turn's job out: the harness call is refused, and nothing waits.
+        // A turn's job out: the harness call waits, and draws after it.
         let mut turn = Conversation::user("draw the harbour");
         agent.run_in(&cx, &mut turn, None).await.unwrap();
         assert!(queue.pending("chat").is_some());
-        let d = agent
-            .dispatch_one(&cx, &mut convo, "draw", json!({}), &None)
-            .await;
-        assert_eq!(d.content, "not made: a picture is already being made");
+        let harness = agent.dispatch_one(&cx, &mut convo, "draw", json!({}), &None);
+        tokio::pin!(harness);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut harness)
+                .await
+                .is_err(),
+            "it waits its turn"
+        );
+        go.notify_one();
+        for _ in 0..200 {
+            if !got.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            got.lock().unwrap().len(),
+            1,
+            "the turn's picture ended first"
+        );
+        go.notify_one();
+        let d = tokio::time::timeout(std::time::Duration::from_secs(2), harness)
+            .await
+            .expect("it drew once the queue was idle");
+        assert_eq!(d.content, "image: images/made.png");
+    }
+
+    /// A second turn's picture while the first is out is queued, not refused:
+    /// its result keeps the tool's own first line ("being made: …"), which
+    /// the page and the restart repair read, with the queue's words after it.
+    #[tokio::test]
+    async fn a_second_turns_picture_is_queued_behind_the_first() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let mut script = draw_then("On its way.");
+        script.extend(draw_then("That one too."));
+        let (agent, _) = agent_with_tools(
+            script,
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut first = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut first, None).await.unwrap();
+        let mut second = Conversation::user("and the lighthouse");
+        agent.run_in(&cx, &mut second, None).await.unwrap();
+        let result = result_of(&second, "d1");
+        let mut lines = result.lines();
+        assert_eq!(
+            lines.next(),
+            Some("being made: images/made.png"),
+            "{result}"
+        );
+        assert!(
+            lines
+                .next()
+                .is_some_and(|l| l.starts_with("Queued: 1 ahead")),
+            "{result}"
+        );
+        assert_eq!(queue.waiting("chat"), 1);
+        go.notify_one();
+        go.notify_one();
+    }
+
+    /// The owner's Stop while a harness call waits its turn ends it undrawn.
+    #[tokio::test]
+    async fn a_harness_call_stopped_while_it_waits_draws_nothing() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let (agent, _) = agent_with_tools(
+            draw_then("It is on its way."),
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut turn = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut turn, None).await.unwrap();
+        assert!(queue.pending("chat").is_some());
+        let stop = CancellationToken::new();
+        let mut waiting = cx.clone();
+        waiting.cancel = Some(stop.clone());
+        let mut convo = Conversation::user("x");
+        let stopper = stop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            stopper.cancel();
+        });
+        let d = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.dispatch_one(&waiting, &mut convo, "draw", json!({}), &None),
+        )
+        .await
+        .expect("the stop ended the wait");
+        assert!(
+            d.content.starts_with("Nothing was drawn: stopped"),
+            "{}",
+            d.content
+        );
         go.notify_one();
     }
 
@@ -7627,6 +7775,17 @@ mod tests {
             "busy",
         );
         queue.submit("chat", 0, "e1", "draw", earlier).unwrap();
+        // And the queue behind it full, so the next is refused busy.
+        for n in 0..crate::jobs::MAX_WAITING {
+            let wait = crate::jobs::DeferredJob::new(
+                async { ToolOutput::ok("image: images/later.png") },
+                CancellationToken::new(),
+                "busy",
+            );
+            queue
+                .submit("chat", 0, &format!("w{n}"), "draw", wait)
+                .unwrap();
+        }
         let mut convo = Conversation::user("draw it again");
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         {
@@ -7718,6 +7877,17 @@ mod tests {
             "busy",
         );
         queue.submit("chat", 0, "e1", "draw", earlier).unwrap();
+        // And the queue behind it full, so the next is refused busy.
+        for n in 0..crate::jobs::MAX_WAITING {
+            let wait = crate::jobs::DeferredJob::new(
+                async { ToolOutput::ok("image: images/later.png") },
+                CancellationToken::new(),
+                "busy",
+            );
+            queue
+                .submit("chat", 0, &format!("w{n}"), "draw", wait)
+                .unwrap();
+        }
         let mut convo = Conversation::user("draw it, then carry on");
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         {
@@ -7767,6 +7937,17 @@ mod tests {
             "busy",
         );
         queue.submit("chat", 0, "e1", "draw", earlier).unwrap();
+        // And the queue behind it full, so the next is refused busy.
+        for n in 0..crate::jobs::MAX_WAITING {
+            let wait = crate::jobs::DeferredJob::new(
+                async { ToolOutput::ok("image: images/later.png") },
+                CancellationToken::new(),
+                "busy",
+            );
+            queue
+                .submit("chat", 0, &format!("w{n}"), "draw", wait)
+                .unwrap();
+        }
         let mut convo = Conversation::user("draw it again");
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         assert_eq!(outcome.text, PICTURE_NOT_STARTED_REPLY);
@@ -7812,11 +7993,11 @@ mod tests {
         );
     }
 
-    /// One job per conversation: a second deferred call while one runs is
-    /// refused in the tool's own words, as a refusal, never a tool failure —
-    /// and nothing of it starts.
+    /// One picture per run, queue or not: a second call of the tool in the
+    /// same batch is not run — not queued — and is answered as a refusal,
+    /// never a tool failure; nothing of it starts.
     #[tokio::test]
-    async fn a_second_job_while_one_runs_is_refused_in_the_tools_words() {
+    async fn a_second_job_in_one_batch_is_not_run_even_with_a_queue() {
         let go = Arc::new(tokio::sync::Notify::new());
         let queue = crate::jobs::JobQueue::new(|_| {});
         let (agent, _) = agent_with_tools(
@@ -7849,11 +8030,18 @@ mod tests {
         let mut both = [a, b];
         both.sort();
         assert_eq!(
-            both,
-            [
-                "being made: images/made.png".to_string(),
-                "not made: a picture is already being made".to_string()
-            ]
+            both.iter()
+                .filter(|r| *r == "being made: images/made.png")
+                .count(),
+            1,
+            "{both:?}"
+        );
+        assert_eq!(
+            both.iter()
+                .filter(|r| r.starts_with("Not run: `draw` was already started in this run"))
+                .count(),
+            1,
+            "one picture per run, queue or not: {both:?}"
         );
         assert!(
             outcome
@@ -16094,8 +16282,11 @@ mod tests {
                 _: &str,
                 _: &str,
                 _: Arc<crate::jobs::DeferredJob>,
-            ) -> std::result::Result<(), crate::jobs::Busy> {
+            ) -> std::result::Result<crate::jobs::Submitted, crate::jobs::Busy> {
                 Err(crate::jobs::Busy)
+            }
+            fn idle(&self) -> futures::future::BoxFuture<'static, ()> {
+                Box::pin(async {})
             }
             fn pending_tools(&self) -> Vec<String> {
                 if self.0 {

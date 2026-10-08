@@ -8277,6 +8277,59 @@ mod tests {
         assert_eq!(t.pending_notes.len(), 1);
     }
 
+    /// A queued picture is the chat's too: the picture Stop ends the one
+    /// drawing and the one waiting behind it, and the waiting one's "being
+    /// made" result is settled on file as never started — not left out
+    /// (owner, 2026-10-08: a queue, not a refusal).
+    #[tokio::test]
+    async fn stop_ends_a_queued_picture_and_settles_it_as_not_started() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let path = deferred_picture(&w, &key).await;
+        let job = |id: &'static str| {
+            let token = tokio_util::sync::CancellationToken::new();
+            let watched = token.clone();
+            (
+                id,
+                mecha_core::jobs::DeferredJob::new(
+                    async move {
+                        watched.cancelled().await;
+                        mecha_core::tool::ToolOutput::err("Cancelled — nothing was saved.")
+                    },
+                    token,
+                    "busy",
+                ),
+            )
+        };
+        let queue = &w.personas().jobs.queue;
+        let (first, drawing) = job("c0");
+        assert_eq!(
+            queue.submit(&key, 0, first, "image_generate", drawing),
+            Ok(mecha_core::jobs::Submitted::Started)
+        );
+        let (second, waiting) = job("c1");
+        assert_eq!(
+            queue.submit(&key, 0, second, "image_generate", waiting),
+            Ok(mecha_core::jobs::Submitted::Queued { ahead: 1 })
+        );
+        w.personas().start_delivery();
+        assert!(w
+            .personas()
+            .cancel(&w.library, &key, None, true)
+            .await
+            .unwrap());
+        for _ in 0..200 {
+            if result_on_file(&path) == mecha_core::jobs::NOT_STARTED {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "the queued picture was left being made: {}",
+            result_on_file(&path)
+        );
+    }
+
     /// The owner's Stop ends the chat's picture even when no reply is
     /// running (§2.4); the job ends by its own cancelled output.
     #[tokio::test]
