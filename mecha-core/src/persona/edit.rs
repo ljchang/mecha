@@ -409,9 +409,18 @@ fn look_into(
         Some(at) => b[..at].to_string(),
         None => b,
     });
+    // No setting to join: "in the look of X" alone names no place, and a
+    // restage would draw the picture from those words. Refused as the photo
+    // is, for the same reason (review of #605).
     let setting = match base.as_deref().map(|b| b.trim().trim_end_matches('.')) {
         Some(b) if !b.is_empty() => format!("{b}{LOOK_JOIN}{words}"),
-        _ => format!("in the look of {words}"),
+        _ => {
+            return Err(
+                "this picture has no setting a look can join, and words alone would \
+                        replace what it shows: name one of the library's styles instead"
+                    .into(),
+            )
+        }
     };
     scene.insert("setting".into(), setting.into());
     Ok(true)
@@ -511,7 +520,7 @@ pub fn read_extraction_for(
     // schema answers in it (review of #605).
     match obj
         .get("look")
-        .filter(|v| !v.is_null())
+        .filter(|v| v.as_str().is_none_or(|t| !t.trim().is_empty()))
         .or_else(|| obj.get("style"))
     {
         None | Some(serde_json::Value::Null) => {}
@@ -795,6 +804,20 @@ mod tests {
             "a quiet harbour, in the look of pencil sketch"
         );
         assert!(e.scene.get("style").is_none());
+        // With no setting to join, words alone would replace the picture:
+        // refused, as the photo is.
+        let bare_record = crate::scene::Scene::default();
+        let no_setting = Looks {
+            styles: &styles,
+            record: Some(&bare_record),
+            ..Default::default()
+        };
+        let why = read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &no_setting)
+            .unwrap_err();
+        assert!(why.contains("no setting a look can join"), "{why}");
+        // An empty `look` beside a `style` falls through to the style.
+        let e = read(r#"{"look": "", "style": "ink wash"}"#).unwrap();
+        assert_eq!(e.scene["style"], "ink-wash");
         // Beside a new place, it joins that one.
         let e = read(r#"{"setting": "a windswept beach", "look": "1920s postcard"}"#).unwrap();
         assert_eq!(
