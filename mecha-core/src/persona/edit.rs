@@ -304,7 +304,10 @@ pub struct Looks<'a> {
 /// A held style replacing an earlier look in words: those words come off
 /// the setting, the change's own or the record's, so the old look does not
 /// ride beside the new style (review of #605).
-fn drop_earlier_look(looks: &Looks, scene: &mut serde_json::Map<String, serde_json::Value>) {
+fn drop_earlier_look(
+    looks: &Looks,
+    scene: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
     let words = match scene.get("setting").and_then(serde_json::Value::as_str) {
         Some(given) => Some(given.to_string()),
         None => match looks
@@ -316,8 +319,12 @@ fn drop_earlier_look(looks: &Looks, scene: &mut serde_json::Map<String, serde_js
             _ => None,
         },
     };
-    if let Some((before, _)) = words.as_deref().and_then(|w| w.split_once(LOOK_JOIN)) {
-        scene.insert("setting".into(), before.trim().into());
+    match words.as_deref().and_then(|w| w.split_once(LOOK_JOIN)) {
+        Some((before, _)) => {
+            scene.insert("setting".into(), before.trim().into());
+            true
+        }
+        None => false,
     }
 }
 
@@ -360,7 +367,10 @@ fn look_into(
         .and_then(|r| r.style.as_ref())
         .map(|f| crate::imagelib::spelled_as_name(&f.value));
     if keys.iter().any(|k| Some(k) == current.as_ref()) {
-        return Ok(false);
+        // Unless an earlier look in words rides beside it: naming the style
+        // again takes those words off, and that is a change (review of
+        // #605: "put it back to ink wash" otherwise kept the sketch).
+        return Ok(drop_earlier_look(looks, scene));
     }
     for key in &keys {
         let approved = looks.library.is_some_and(|lib| {
@@ -520,7 +530,7 @@ pub fn read_extraction_for(
     // schema answers in it (review of #605).
     match obj
         .get("look")
-        .filter(|v| v.as_str().is_none_or(|t| !t.trim().is_empty()))
+        .filter(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()))
         .or_else(|| obj.get("style"))
     {
         None | Some(serde_json::Value::Null) => {}
@@ -815,9 +825,27 @@ mod tests {
         let why = read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &no_setting)
             .unwrap_err();
         assert!(why.contains("no setting a look can join"), "{why}");
-        // An empty `look` beside a `style` falls through to the style.
+        // An empty or null `look` beside a `style` falls through to it.
         let e = read(r#"{"look": "", "style": "ink wash"}"#).unwrap();
         assert_eq!(e.scene["style"], "ink-wash");
+        let e = read(r#"{"look": null, "style": "ink wash"}"#).unwrap();
+        assert_eq!(e.scene["style"], "ink-wash");
+        // The picture's own style named again, over an earlier look in
+        // words, takes those words off: a change, not a redraw.
+        let both = crate::scene::Scene {
+            style: Some(crate::scene::Field {
+                value: "ink-wash".to_string(),
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..words("a quiet harbour, in the look of pencil sketch")
+        };
+        let back = Looks {
+            styles: &styles,
+            record: Some(&both),
+            ..Default::default()
+        };
+        let e = read_extraction_for(r#"{"look": "ink wash"}"#, &known, None, &back).unwrap();
+        assert_eq!(e.scene["setting"], "a quiet harbour");
         // Beside a new place, it joins that one.
         let e = read(r#"{"setting": "a windswept beach", "look": "1920s postcard"}"#).unwrap();
         assert_eq!(
