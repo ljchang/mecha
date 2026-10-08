@@ -2505,6 +2505,9 @@ impl PersonaChats {
             // The picture still being drawn past its turn, and how long it
             // has run: the page's clock on its "drawing a picture…" row,
             // which `working` stops covering once the turn hands it off.
+            // The chat's background jobs as they stand, for the queue panel;
+            // kept current after by `queue` events.
+            "queue": self.jobs.queue.list(key),
             "job": self.jobs.queue.running(key).map(|(id, ran)| serde_json::json!({
                 "id": id,
                 "elapsed_ms": ran.as_millis() as u64,
@@ -2585,6 +2588,21 @@ impl PersonaChats {
         })
     }
 
+    /// Put the chat's waiting background jobs in `order` (the queue panel's
+    /// drag): whether it moved, and the line as it stands. The caller must
+    /// be able to see the persona, as for every route of the chat.
+    pub async fn reorder_jobs(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+        order: &[String],
+    ) -> Result<(bool, Vec<mecha_core::jobs::QueueItem>), Refusal> {
+        self.persona_of(library, key, token).await?;
+        let moved = self.jobs.queue.reorder(key, order);
+        Ok((moved, self.jobs.queue.list(key)))
+    }
+
     /// Start the task that hands finished jobs to their chats — once, on
     /// the first turn, which is when there is a runtime and a job to wait
     /// for. It holds the chats weakly, so it ends with them.
@@ -2595,7 +2613,7 @@ impl PersonaChats {
                 while let Some(event) = rx.recv().await {
                     let Some(chats) = chats.upgrade() else { break };
                     match event {
-                        super::late::Late::Delivered(late) => chats.deliver(late).await,
+                        super::late::Late::Delivered(late) => chats.deliver(*late).await,
                         super::late::Late::Changed(key) => {
                             let sessions = chats.sessions.lock().await;
                             if let Some(ps) = sessions.get(&key) {
@@ -4887,6 +4905,38 @@ pub struct CancelBody {
     /// the line.
     #[serde(default)]
     call: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct OrderBody {
+    #[serde(default)]
+    unlock: Option<String>,
+    /// The waiting jobs' call ids, in the order wanted.
+    #[serde(default)]
+    order: Vec<String>,
+}
+
+/// POST /api/persona-chat/{key}/jobs/order — the chat's waiting pictures in
+/// a new order (the queue panel's drag); the running one never moves.
+pub async fn reorder_jobs(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<OrderBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    match chat
+        .personas
+        .reorder_jobs(&state.library, &key, body.unlock.as_deref(), &body.order)
+        .await
+    {
+        Ok((moved, queue)) => {
+            Json(serde_json::json!({ "moved": moved, "queue": queue })).into_response()
+        }
+        Err(r) => r.into_response(),
+    }
 }
 
 /// POST /api/persona-chat/{key}/cancel
@@ -8302,6 +8352,82 @@ mod tests {
             vec![0]
         );
         assert_eq!(t.pending_notes.len(), 1);
+    }
+
+    /// The queue panel: the line comes with the transcript, a reorder moves
+    /// the waiting pictures (never the drawing one) and is refused when stale,
+    /// and the page is told the line as it now stands.
+    #[tokio::test]
+    async fn the_queue_is_shown_reordered_and_told_to_the_page() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let job = |label: &str| {
+            let token = tokio_util::sync::CancellationToken::new();
+            let watched = token.clone();
+            mecha_core::jobs::DeferredJob::new(
+                async move {
+                    watched.cancelled().await;
+                    mecha_core::tool::ToolOutput::err("Cancelled.")
+                },
+                token,
+                "busy",
+            )
+            .with_label(label)
+        };
+        let queue = &w.personas().jobs.queue;
+        for (id, label) in [("c1", "harbour"), ("c2", "lighthouse"), ("c3", "boats")] {
+            queue
+                .submit(&key, 0, id, "image_generate", job(label))
+                .unwrap();
+        }
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let ids = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["call_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(ids(&t["queue"]), ["c1", "c2", "c3"]);
+        assert_eq!(t["queue"][1]["label"], "lighthouse");
+
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas().start_delivery();
+        let (moved, line) = w
+            .personas()
+            .reorder_jobs(&w.library, &key, None, &["c3".into(), "c2".into()])
+            .await
+            .unwrap();
+        assert!(moved);
+        let order: Vec<&str> = line.iter().map(|i| i.call_id.as_str()).collect();
+        assert_eq!(order, ["c1", "c3", "c2"]);
+        let (stale, _) = w
+            .personas()
+            .reorder_jobs(&w.library, &key, None, &["c2".into()])
+            .await
+            .unwrap();
+        assert!(!stale, "a stale order changes nothing");
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+                Ok(Ok(WireEvent::Queue { jobs })) => {
+                    let order: Vec<&str> = jobs.iter().map(|i| i.call_id.as_str()).collect();
+                    if order == ["c1", "c3", "c2"] {
+                        break;
+                    }
+                }
+                Ok(Ok(_)) => continue,
+                other => panic!("the page was not told the new line: {other:?}"),
+            }
+        }
+        queue.cancel(&key);
     }
 
     /// A queued picture is the chat's too: the picture Stop ends the one

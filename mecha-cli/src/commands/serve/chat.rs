@@ -1841,6 +1841,10 @@ pub async fn transcript(
         "model": bound.model,
         "mode": mode,
         "running": running,
+        // Its background jobs as they stand — the one running, then the ones
+        // waiting in order — for the page's queue panel; kept current after
+        // by `queue` events.
+        "queue": chat.jobs.queue.list(&key),
         // What this conversation is *about*, when it is about a board task.
         // The record as the board returned it, so the page can head the
         // transcript with the goal, the dates and where it came from —
@@ -2350,7 +2354,7 @@ fn start_delivery(chat: &Arc<ChatState>) {
             while let Some(event) = rx.recv().await {
                 let Some(chat) = chat.upgrade() else { break };
                 match event {
-                    super::late::Late::Delivered(late) => deliver(&chat, late).await,
+                    super::late::Late::Delivered(late) => deliver(&chat, *late).await,
                     super::late::Late::Changed(key) => {
                         let sessions = chat.sessions.lock().await;
                         if let Some(ws) = sessions.get(&key) {
@@ -3456,6 +3460,33 @@ pub struct CancelBody {
     /// the line.
     #[serde(default)]
     call: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct OrderBody {
+    /// The waiting jobs' call ids, in the order wanted.
+    #[serde(default)]
+    order: Vec<String>,
+}
+
+/// POST /api/chat/{key}/jobs/order — put the chat's waiting background jobs
+/// in a new order (the queue panel's drag). The running one never moves. A
+/// stale order — the line changed since the page read it — changes nothing,
+/// and the line as it stands comes back either way.
+pub async fn reorder_jobs(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<OrderBody>,
+) -> axum::response::Response {
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if !chat.sessions.lock().await.contains_key(&key) {
+        return (StatusCode::NOT_FOUND, "no such session\n").into_response();
+    }
+    let moved = chat.jobs.queue.reorder(&key, &body.order);
+    Json(serde_json::json!({ "moved": moved, "queue": chat.jobs.queue.list(&key) })).into_response()
 }
 
 /// GET /api/chat/{key}/events — the run, streamed. Subscribing is legal at

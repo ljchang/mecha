@@ -18,7 +18,7 @@ use mecha_core::session::{Record, Session, Transcript};
 /// or a conversation whose line changed. One channel, so a page sees a
 /// picture land before the line that no longer holds it.
 pub(super) enum Late {
-    Delivered(Delivered),
+    Delivered(Box<Delivered>),
     Changed(String),
 }
 
@@ -37,7 +37,7 @@ impl Default for Jobs {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let changed = tx.clone();
         let queue = mecha_core::jobs::JobQueue::new(move |d| {
-            let _ = tx.send(Late::Delivered(d));
+            let _ = tx.send(Late::Delivered(Box::new(d)));
         });
         queue.set_watch(move |key| {
             let _ = changed.send(Late::Changed(key.to_string()));
