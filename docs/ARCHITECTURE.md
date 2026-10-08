@@ -591,8 +591,9 @@ workspace**. Six decisions, each a bug if undone:
 - **Idle memory is released beside the server, not by mecha.** A loaded
   ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
   user timer, installed by `scripts/comfyui/install.sh`) restarts
-  `comfyui.service` once it has held a model for 10 idle minutes with an
-  empty queue and no open connection, leaving a 1.1 GB process with its port
+  `comfyui.service` once it has held a model for 15 idle minutes (10 until
+  2026-10-08: the owner's ruling, so a chat's next picture inside a quarter
+  hour skips the 80–115 s reload) with an empty queue and no open connection, leaving a 1.1 GB process with its port
   up; below 4 GB of `MemFree` it sends `/free` instead, because a new CUDA
   context failed to come up there. A restart also empties the server's temp
   directory, whoever left files in it. mecha's own `unload_after_secs` timer

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The image server stays loaded for 15 idle minutes, up from 10.** A
+  picture asked for within a quarter hour of the last one no longer waits
+  80–115 s for the model to reload, at the cost of about 14 GB held a little
+  longer.
+
 - **A retouch keeps who is in the picture.** Edits got faster on 2026-10-08
   by sending smaller reference pictures, but a retouch has no face crop to
   carry who is in the picture, and at the smaller size faces drifted. A
