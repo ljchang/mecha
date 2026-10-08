@@ -206,7 +206,7 @@ prompt prefixes in host memory (`scripts/start-router.sh`), which puts the
 total near 95 GiB with a full cache.
 
 **Release the memory beside the server, not from mecha.** mecha's own
-ten-minute unload timer lives in the mecha process that drew the picture, so a
+fifteen-minute unload timer lives in the mecha process that drew the picture, so a
 one-shot `mecha run`, or a `mecha serve` restarted inside the window, exits
 before it fires — on the GB10, 11.9 GiB was still held nine hours after a
 picture drawn just before a restart — and on unified memory its `/free` only
