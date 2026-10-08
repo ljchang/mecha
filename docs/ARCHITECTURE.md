@@ -907,6 +907,8 @@ advances it.
 - `image` and `tool_use_id`, for orphan repair;
 - `seed` and `cast[].name`, for save-to-library;
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
+- `roles`: whether the people's parts were split (`applied`, or `fell back:`
+  and why), since the split is prompt-only and its fallback silent;
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Retired with the old inputs:** `route_scene`, `EditAsk`, `cast_self`,
