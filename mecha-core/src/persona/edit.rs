@@ -114,11 +114,24 @@ pub const PHOTO_SETTING: &str = "the owner's photo";
 /// refused with the way on (review of #605). A real change of place over the
 /// photo still goes through, as the owner asked. Inside the reader, so every
 /// caller has it.
-fn photo_setting(scene: &mut serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+fn photo_setting(
+    scene: &mut serde_json::Map<String, serde_json::Value>,
+    record: Option<&crate::scene::Scene>,
+) -> Result<(), String> {
+    let on_photo = record
+        .and_then(|r| r.setting.as_ref())
+        .is_some_and(|f| matches!(f.value, crate::scene::Setting::Photo { .. }));
+    if !on_photo {
+        return Ok(());
+    }
     let Some(said) = scene.get("setting").and_then(serde_json::Value::as_str) else {
         return Ok(());
     };
-    let said = said.trim().trim_end_matches('.').to_lowercase();
+    let said = said
+        .trim()
+        .trim_end_matches('.')
+        .to_lowercase()
+        .replace(['\u{2018}', '\u{2019}'], "'");
     if said == PHOTO_SETTING {
         scene.remove("setting");
     } else if said.contains(PHOTO_SETTING) {
@@ -273,9 +286,17 @@ pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extra
 /// picture's record, whose setting an unmatched look joins.
 #[derive(Default)]
 pub struct Looks<'a> {
+    /// The styles offered to the reader: approved and unlocked.
     pub styles: &'a [String],
+    /// Every approved style, locked ones too: what a look may match, as
+    /// `image_generate` draws a locked style when it is named. Never offered.
+    pub held: &'a [String],
     pub record: Option<&'a crate::scene::Scene>,
 }
+
+/// The words `look_into` joins a look to a setting with; a later look
+/// replaces the earlier one rather than stacking beside it.
+const LOOK_JOIN: &str = ", in the look of ";
 
 /// The owner's look, in their words, made a change by code (mecha-a3's G605:
 /// the reader copies a look faithfully, 27 of 27, but given `style` it chose
@@ -301,11 +322,21 @@ fn look_into(
         // "style" alone names no look.
         return Ok(());
     }
-    for key in [
+    let keys = [
         crate::imagelib::spelled_as_name(&lower),
         crate::imagelib::spelled_as_name(bare),
-    ] {
-        if looks.styles.contains(&key) {
+    ];
+    // The picture's own style said back is no change (the record shows it,
+    // and a reader restates it): never words in the setting.
+    let current = looks
+        .record
+        .and_then(|r| r.style.as_ref())
+        .map(|f| crate::imagelib::spelled_as_name(&f.value));
+    if keys.iter().any(|k| Some(k) == current.as_ref()) {
+        return Ok(());
+    }
+    for key in keys {
+        if looks.styles.contains(&key) || looks.held.contains(&key) {
             scene.insert("style".into(), key.into());
             return Ok(());
         }
@@ -330,9 +361,14 @@ fn look_into(
             _ => None,
         },
     };
-    let setting = match base {
-        Some(b) => format!("{}, in the look of {words}", b.trim_end_matches('.')),
-        None => format!("in the look of {words}"),
+    // A look asked for before is replaced, not stacked beside this one.
+    let base = base.map(|b| match b.find(LOOK_JOIN) {
+        Some(at) => b[..at].to_string(),
+        None => b,
+    });
+    let setting = match base.as_deref().map(|b| b.trim().trim_end_matches('.')) {
+        Some(b) if !b.is_empty() => format!("{b}{LOOK_JOIN}{words}"),
+        _ => format!("in the look of {words}"),
     };
     scene.insert("setting".into(), setting.into());
     Ok(())
@@ -413,7 +449,7 @@ pub fn read_extraction_for(
             scene.insert("people".into(), out.into());
         }
     }
-    photo_setting(&mut scene)?;
+    photo_setting(&mut scene, looks.record)?;
     // `style` too: the record shows that key, and a reader without the
     // schema answers in it (review of #605).
     match obj.get("look").or_else(|| obj.get("style")) {
@@ -658,6 +694,7 @@ mod tests {
         let looks = Looks {
             styles: &styles,
             record: Some(&harbour),
+            ..Default::default()
         };
         let read = |t: &str| read_extraction_for(t, &known, None, &looks);
         // A held style, however it is said, and a retouch beside it left out.
@@ -697,6 +734,7 @@ mod tests {
         let on_photo = Looks {
             styles: &styles,
             record: Some(&photo),
+            ..Default::default()
         };
         let why = read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &on_photo)
             .unwrap_err();
@@ -712,6 +750,49 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(record_for(&styled)["style"], "ink-wash");
+        // A second look replaces the first, never stacks beside it.
+        let sketched = words("a quiet harbour, in the look of pencil sketch");
+        let again = Looks {
+            styles: &styles,
+            record: Some(&sketched),
+            ..Default::default()
+        };
+        let e = read_extraction_for(r#"{"look": "pixel art"}"#, &known, None, &again).unwrap();
+        assert_eq!(
+            e.scene["setting"],
+            "a quiet harbour, in the look of pixel art"
+        );
+        // The picture's own style said back is no change; a locked style
+        // (held, never offered) is still that style.
+        let locked = vec!["secret-wash".to_string()];
+        let mine = crate::scene::Scene {
+            style: Some(crate::scene::Field {
+                value: "secret-wash".to_string(),
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..words("a quiet harbour")
+        };
+        let held = Looks {
+            styles: &styles,
+            held: &locked,
+            record: Some(&mine),
+        };
+        let e = read_extraction_for(
+            r#"{"style": "secret wash", "light": "dusk"}"#,
+            &known,
+            None,
+            &held,
+        )
+        .unwrap();
+        assert!(e.scene.get("style").is_none() && e.scene.get("setting").is_none());
+        let elsewhere = Looks {
+            styles: &styles,
+            held: &locked,
+            record: Some(&harbour),
+        };
+        let e =
+            read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
+        assert_eq!(e.scene["style"], "secret-wash");
     }
 
     /// The photo stand-in said alone is the record restated and left out;
@@ -723,13 +804,42 @@ mod tests {
     fn a_look_over_the_owners_photo_never_replaces_it() {
         let known = |_: &str| true;
         let styles = vec!["secret-look".to_string(), "ink-wash".to_string()];
+        let photo = crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Photo {
+                    path: "inbox/room.jpg".into(),
+                    hash: "h".into(),
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
         let looks = Looks {
             styles: &styles,
-            record: None,
+            record: Some(&photo),
+            ..Default::default()
         };
         let read = |t: &str| read_extraction_for(t, &known, None, &looks);
-        let why = read(r#"{"setting": "The owner's photo, in watercolour"}"#).unwrap_err();
-        assert!(why.contains("would replace the photo"), "{why}");
+        // A typographic apostrophe is the same stand-in.
+        for said in [
+            "The owner's photo, in watercolour",
+            "the owner\u{2019}s photo, as a sketch",
+        ] {
+            let why = read(&format!(r#"{{"setting": "{said}"}}"#)).unwrap_err();
+            assert!(why.contains("would replace the photo"), "{why}");
+        }
+        // Off a photo there is nothing to replace: the guard stays out.
+        let plain = Looks {
+            styles: &styles,
+            ..Default::default()
+        };
+        assert!(read_extraction_for(
+            r#"{"setting": "the owner's photo, in watercolour"}"#,
+            &known,
+            None,
+            &plain
+        )
+        .is_ok());
         let e = read(
             r#"{"setting": "the owner's photo.", "people": [{"who": "Maya", "expression": "a smile"}]}"#,
         )
