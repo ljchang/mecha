@@ -1234,8 +1234,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mecha-scene-{}", uuid::Uuid::new_v4()));
         let sessions = dir.join("sessions");
         let first = assistant_slot(&sessions, "chat-a");
-        let mut s = Scene::default();
-        s.picture = Some(hash(b"x"));
+        let s = Scene {
+            picture: Some(hash(b"x")),
+            ..Scene::default()
+        };
         first.land(&s).unwrap();
         assert!(first.current().is_some());
         assert!(assistant_slot(&sessions, "chat-b").current().is_none());
