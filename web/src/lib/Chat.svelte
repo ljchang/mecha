@@ -35,6 +35,10 @@
   // The chat's background jobs as the server last said (`queue` events and
   // the transcript's `queue`), for the queue panel.
   let queue = $state([]);
+  // Counts `queue` events, so a transcript read that left before one arrived
+  // does not lay its older line over it: events fire only on a change, and
+  // nothing would put the newer line back (review of #607).
+  let queueSeq = 0;
   // The agent's plan for this session, live. Rendered rather than summarised:
   // a paraphrase of a plan is a different plan, and this is the one part of a
   // long run that says how far it got rather than what is true.
@@ -341,6 +345,7 @@
   // True when it replaced the transcript with the server's.
   async function load(sessionKey = key, signal, { carry = false } = {}) {
     const seq = doneSeq;
+    const qSeq = queueSeq;
     const gen = ++loadGen;
     const planGen = ++todoGen;
     try {
@@ -359,7 +364,7 @@
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
-      queue = data.queue ?? [];
+      if (queueSeq === qSeq) queue = data.queue ?? [];
       partialRun = !!data.held_by_run;
       // Before the carried cards, so they stay page-only for the next re-read.
       liveFrom = entries.length;
@@ -443,6 +448,7 @@
           markDelivery([ev.request_id], 'delivered');
           break;
         case 'queue':
+          queueSeq += 1;
           queue = ev.jobs ?? [];
           break;
         case 'queued_discarded':
@@ -1357,7 +1363,7 @@
 
   const repeats = $derived(repeatedPictures(entries));
   // Pictures waiting behind the one drawing (`waitingPictures`).
-  const queuedPictures = $derived(waitingPictures(entries));
+  const queuedPictures = $derived(waitingPictures(entries, queue));
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 

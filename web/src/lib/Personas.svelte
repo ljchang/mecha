@@ -105,6 +105,9 @@
   // The chat's background jobs as the server last said (`queue` events and
   // the transcript's `queue`), for the queue panel.
   let queue = $state([]);
+  // Counts `queue` events, so a re-read that left before one arrived does
+  // not lay its older line over it (review of #607).
+  let queueSeq = 0;
   // On booleans alone, not the whole run: `run` is replaced on every
   // streamed word, and the tick would restart with each (review of #431).
   const running = $derived(run.running);
@@ -152,7 +155,7 @@
   const repeats = $derived(repeatedPictures(run.entries));
   const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
   // Pictures waiting behind the one drawing (`waitingPictures`).
-  const queuedPictures = $derived(waitingPictures(run.entries));
+  const queuedPictures = $derived(waitingPictures(run.entries, queue));
   // Each answer's citations with the check made of each (§10.4).
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
@@ -815,11 +818,12 @@
   let readGen = 0;
   async function reread(k) {
     const gen = ++readGen;
+    const qSeq = queueSeq;
     const res = await fetch(chatUrl(k, '', token));
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
-    queue = t.queue ?? [];
+    if (queueSeq === qSeq) queue = t.queue ?? [];
     const settled = withJob(settle(t.entries, run), t.job);
     const entries = t.running ? withWorking(settled, t.working) : settled;
     run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
@@ -863,6 +867,7 @@
         return; /* a malformed event is dropped, never drawn */
       }
       if (ev.type === 'queue') {
+        queueSeq += 1;
         queue = ev.jobs ?? [];
         return;
       }
@@ -1886,7 +1891,7 @@
                  a reply that is running (review of #583). -->
             {#if stillOut(entry)}
               {#if queuedPictures.has(i)}
-                <span class="genwait">waiting its turn, after the picture before it…</span>
+                <span class="genwait">waiting its turn…</span>
               {:else}
                 <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
               {/if}

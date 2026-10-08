@@ -310,6 +310,11 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   const line = [{ kind: 'user', text: 'a' }, out('a'), { kind: 'user', text: 'b' }, out('b'), out('c')];
   assert.deepEqual([...waitingPictures(line)], [3, 4]);
   assert.deepEqual([...waitingPictures([out('a')])], [], 'one alone is drawing');
+  // After a reorder the server's line is the truth: 'c' drawing though 'b'
+  // was asked for first (review of #607).
+  const reordered = [{ kind: 'user', text: 'x' }, out('b'), out('c')];
+  const served = [{ call_id: 'c', running: true }, { call_id: 'b', running: false }];
+  assert.deepEqual([...waitingPictures(reordered, served)], [1], 'b waits, c draws');
   // The queue panel's reorder (review of #607): ↑/↓ move to a position; a
   // drop lands in the gap the marker shows, down as well as up.
   const { moveTo, dropAt } = await import('../src/lib/picture.js');

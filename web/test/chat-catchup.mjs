@@ -40,6 +40,7 @@ function page() {
     `let entries = [], running = false, partialRun = false, liveFrom = 0, doneSeq = 0;
      let task, incognito, todo, taint, model, mode, usage, error = null;
      let gone = false, key = 'k', viewSignal = null, loadGen = 0, todoGen = 0;
+     let queue = [], queueSeq = 0;
      function closeIncognito(why) { gone = why; entries = []; }
      function scrollDown() {}
      ${lifted}
