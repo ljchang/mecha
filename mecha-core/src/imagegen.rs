@@ -2364,7 +2364,6 @@ impl Tool for ImageGenerate {
                 return Ok(refused(crate::imagelib::missing(&lib, kind, &key)));
             }
             if !held {
-                let there = crate::imagelib::what_there_is(&lib, kind);
                 call.change.style = None;
                 // Said back at most a name's length: the field is read at its
                 // own cap, and a result is no place to echo a paragraph.
@@ -2374,23 +2373,19 @@ impl Tool for ImageGenerate {
                 } else {
                     name
                 };
+                // Nothing the library holds is named back: the roster is the
+                // owner's (`image_library` declares it private), so the way on
+                // is the look in words, which `scene.setting` takes.
                 if !call.has_scene() && call.retouch.is_none() {
-                    return Ok(refused(match there {
-                        Some(there) => format!(
-                            "There is no style `{name}`. {there}: name one of those, or leave \
-                             `style` out."
-                        ),
-                        None => format!("There is no style `{name}`: leave `style` out."),
-                    }));
+                    return Ok(refused(format!(
+                        "There is no approved style `{name}`. Leave `style` out, and say the \
+                         look in words in `scene.setting`."
+                    )));
                 }
-                let mut note = format!(
-                    "There is no style `{name}`, so it was left out and the picture keeps its \
-                     own look."
-                );
-                if let Some(there) = there {
-                    note.push_str(&format!(" {there}."));
-                }
-                call.notes.push(note);
+                call.notes.push(format!(
+                    "There is no approved style `{name}`, so it was left out. To ask for a \
+                     look, say it in words in `scene.setting`."
+                ));
             }
         }
         // A library name that is not drawable is never drawn as a stranger
@@ -6593,11 +6588,14 @@ mod tests {
             .await
             .unwrap();
         assert!(!first.is_error, "{}", first.content);
+        // The note names only what was asked, and the way on in words: never
+        // the library's other styles (the roster is the owner's).
         assert!(
             first
                 .content
-                .contains("There is no style `hyperreal render`")
-                && first.content.contains("`ink-wash`"),
+                .contains("There is no approved style `hyperreal render`")
+                && first.content.contains("`scene.setting`")
+                && !first.content.contains("ink-wash"),
             "{}",
             first.content
         );
@@ -6613,7 +6611,9 @@ mod tests {
             .unwrap();
         assert!(!again.is_error, "{}", again.content);
         assert!(
-            again.content.contains("There is no style `oil on linen`"),
+            again
+                .content
+                .contains("There is no approved style `oil on linen`"),
             "{}",
             again.content
         );
@@ -6628,7 +6628,7 @@ mod tests {
             .unwrap();
         assert!(alone.is_error, "{}", alone.content);
         assert!(
-            alone.content.contains("name one of those") && alone.content.contains("`ink-wash`"),
+            alone.content.contains("Leave `style` out") && !alone.content.contains("ink-wash"),
             "{}",
             alone.content
         );
@@ -6687,7 +6687,11 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.contains("There is no style"), "{}", out.content);
+        assert!(
+            out.content.contains("There is no approved style"),
+            "{}",
+            out.content
+        );
         assert!(
             !out.content.contains(long),
             "the echo is clipped: {}",
@@ -6706,7 +6710,7 @@ mod tests {
         assert!(bare.is_error, "{}", bare.content);
         assert!(
             bare.content
-                .contains("There is no style `oil on linen`: leave `style` out."),
+                .contains("There is no approved style `oil on linen`. Leave `style` out"),
             "{}",
             bare.content
         );

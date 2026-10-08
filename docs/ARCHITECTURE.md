@@ -719,11 +719,12 @@ The routes, in the result's own words and the manifest's `route`:
     where pictures come from. A bare "cannot open" was retried eleven times
     in one live run (2026-10-08). A path the jail refuses is still refused.
   - a `style` the library does not hold ("hyperreal render", or a
-    description longer than any name) is left out, naming the approved
-    styles (locked ones too: the lock is a browse filter), and the picture
-    keeps its own look; asked alone it is refused naming them. A refusal
-    for a character names no others: listing the roster would break the
-    footing below that a result carries only what the call named.
+    description longer than any name) is left out, and the result says to
+    give a look in words in `scene.setting`; asked alone it is refused the
+    same way. No refusal names a library entry the call did not: the roster
+    is the owner's (`image_library` declares it private, and a locked entry
+    is never named without an unlock token, #385), and the footing below is
+    that a result carries only what the call named.
     A style waiting on the owner, or one whose entry did not load, is still
     refused by name (`imagelib::missing`): a finding, not over-fill. No
     library refusal names a tool: the one replaced pointed at

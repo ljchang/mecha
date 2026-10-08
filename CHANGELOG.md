@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A model that wrote a look like "hyperreal render" or "oil on linen"
   where only a library style's name fits was refused every time, and in a
   persona chat it retried until the run gave up with nothing drawn. The
-  style is now left out, the reply names the styles the library has, and
-  the picture draws.
+  style is now left out, the reply says to describe the look in words
+  instead, and the picture draws.
 
 - **The image server stays loaded for a quarter hour after a picture.** A
   picture asked for within 15 minutes of the last one is drawn warm: on
