@@ -362,6 +362,10 @@ pub struct RunContext {
     /// deferred (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1). Never inherited by
     /// a subagent: its job is the parent's call's, awaited inline.
     pub jobs: Option<Arc<dyn crate::jobs::JobSink>>,
+    /// The host's view of the history each request of this run carries
+    /// ([`RequestView`]): `None` everywhere a host does not attach one, and
+    /// never inherited by a subagent, whose history is its own.
+    pub request_view: Option<Arc<dyn RequestView>>,
     /// End the run cleanly as soon as it has queued a deferred picture: the
     /// next request answers in words (`ToolChoice::None`) with
     /// [`PICTURE_ON_ITS_WAY`] as its last note (IMAGE-DESIGN.md §5.5). A
@@ -476,6 +480,51 @@ pub(crate) fn strip_call_markup(text: &str) -> String {
 pub(crate) struct RequestNotes {
     pub head: Vec<String>,
     pub tail: Vec<String>,
+    /// The host's view of the history for this request
+    /// (`RunContext::request_view`), carried here so every `wire` and
+    /// `wire_bytes` of one request reads the same one.
+    pub view: Option<View>,
+}
+
+/// A host's projection of the history one request carries
+/// (`RunContext::request_view`): applied in `Agent::wire` after the
+/// `PriorThinking`, `PriorTails` and `PriorNudges` views and before the run's
+/// notes. Never stored: the transcript keeps what was said.
+///
+/// **The loop knows nothing of what it does.** A host that knows a tool —
+/// the persona chat rewriting its earlier `image_generate` calls from their
+/// pictures' records — supplies it, so `agent.rs` never matches on a tool or
+/// a provider (CLAUDE.md's invariant).
+///
+/// The views before it remove no message, so `answering` indexes `messages`
+/// as recorded.
+pub trait RequestView: Send + Sync {
+    /// A short stable name, recorded as `RunConfig::request_view` by the door
+    /// that attaches it, so a replay built without the host can say what it
+    /// ran without.
+    fn name(&self) -> &str;
+
+    /// `messages` as this request sends them. `answering` is the index of
+    /// the turn being answered now (`message::answering`): a message at or
+    /// after it is this run's own and must come back as given. Return the
+    /// input as given when nothing changes. **Deterministic per input**, so
+    /// each request stays a byte prefix of the next and the cached prefix
+    /// holds: a rewritten message must read the same on every later request.
+    fn view<'a>(
+        &self,
+        messages: std::borrow::Cow<'a, [Message]>,
+        answering: Option<usize>,
+    ) -> std::borrow::Cow<'a, [Message]>;
+}
+
+/// A [`RequestView`] carried in [`RequestNotes`], which is `Debug`.
+#[derive(Clone)]
+pub(crate) struct View(pub Arc<dyn RequestView>);
+
+impl std::fmt::Debug for View {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("View").field(&self.0.name()).finish()
+    }
 }
 
 /// Per-run ceilings. Every `None` falls through to the agent's own config, so a
@@ -517,6 +566,7 @@ impl RunContext {
             think_budget: None,
             notes: Arc::from(Vec::new()),
             jobs: None,
+            request_view: None,
             end_after_deferral: false,
             close_with: None,
         }
@@ -1803,8 +1853,13 @@ impl Agent {
         notes: &RequestNotes,
     ) -> std::borrow::Cow<'a, [Message]> {
         let earlier = self.prior_tails.wire(self.prior_thinking.wire(messages));
-        let headed =
-            crate::message::attach_head_notes(self.prior_nudges.wire(earlier), &notes.head);
+        let nudged = self.prior_nudges.wire(earlier);
+        // The host's view, on positions the views above kept as recorded.
+        let viewed = match &notes.view {
+            Some(View(view)) => view.view(nudged, crate::message::answering(messages)),
+            None => nudged,
+        };
+        let headed = crate::message::attach_head_notes(viewed, &notes.head);
         crate::message::attach_notes(headed, &notes.tail)
     }
 
@@ -1829,6 +1884,7 @@ impl Agent {
         RequestNotes {
             head: self.calendar_note().into_iter().collect(),
             tail,
+            view: cx.request_view.clone().map(View),
         }
     }
 
@@ -1836,6 +1892,12 @@ impl Agent {
     /// reading measures, so thinking that never reaches the model never
     /// counts toward compacting it away.
     fn wire_bytes(&self, messages: &[Message], notes: &RequestNotes) -> usize {
+        // A host's view rewrites what it likes, so its bytes are read off the
+        // request it builds rather than reckoned beside it: exact, and only
+        // paid where a view is attached.
+        if notes.view.is_some() {
+            return crate::pressure::message_bytes(&self.wire(messages, notes));
+        }
         self.prior_thinking.wire_bytes(messages)
             - self.prior_tails.dropped_bytes(messages)
             - self.prior_nudges.dropped_bytes(messages)
@@ -5924,6 +5986,99 @@ mod tests {
         agent_with_tools(turns, vec![Arc::new(EchoTool), Arc::new(WriteTool)], mode)
     }
 
+    /// A host's view (`RequestView`) reaches what is sent and only that:
+    /// it rewrites the turns before the one being answered and leaves this
+    /// run's own messages as they are — its tool round included — so every
+    /// request is a byte prefix of the next and the cached prefix holds; the
+    /// transcript keeps what was said; and `wire_bytes` measures what went.
+    #[tokio::test]
+    async fn a_request_view_rewrites_earlier_turns_only_and_keeps_the_prefix() {
+        struct Marks;
+        impl RequestView for Marks {
+            fn name(&self) -> &str {
+                "marks"
+            }
+            fn view<'a>(
+                &self,
+                messages: std::borrow::Cow<'a, [Message]>,
+                answering: Option<usize>,
+            ) -> std::borrow::Cow<'a, [Message]> {
+                let Some(cut) = answering else {
+                    return messages;
+                };
+                let mut out = messages.into_owned();
+                for m in out
+                    .iter_mut()
+                    .take(cut)
+                    .filter(|m| m.role == Role::Assistant)
+                {
+                    m.content.push(Block::text("[seen]"));
+                }
+                std::borrow::Cow::Owned(out)
+            }
+        }
+        let (agent, provider) = agent_with(
+            vec![
+                assistant(vec![Block::text("first")], StopReason::EndTurn),
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "e1".into(),
+                        name: "echo".into(),
+                        input: json!({"text": "x"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("second")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.request_view = Some(Arc::new(Marks));
+        let mut convo = Conversation::user("hi");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        convo.push(Message::user("again"));
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        let marked = |r: &CompletionRequest| {
+            r.messages
+                .iter()
+                .filter(|m| {
+                    m.content
+                        .iter()
+                        .any(|b| matches!(b, Block::Text { text } if text == "[seen]"))
+                })
+                .count()
+        };
+        assert_eq!(marked(&seen[0]), 0, "nothing earlier on the first request");
+        // The second run's two requests: the first run's reply rewritten in
+        // both, this run's tool round in neither.
+        assert_eq!(marked(&seen[1]), 1);
+        assert_eq!(
+            marked(&seen[2]),
+            1,
+            "this run's own call is never rewritten"
+        );
+        assert_eq!(
+            &seen[2].messages[..seen[1].messages.len()],
+            &seen[1].messages[..],
+            "a request is a byte prefix of the next"
+        );
+        // Stored as said.
+        assert!(convo.messages.iter().all(|m| !m
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text == "[seen]"))));
+        // Measured as sent.
+        let notes = agent.request_notes(&cx);
+        assert_eq!(
+            agent.wire_bytes(&convo.messages, &notes),
+            crate::pressure::message_bytes(&agent.wire(&convo.messages, &notes))
+        );
+        assert!(notes.view.is_some());
+    }
+
     /// Like [`agent_with`], but the caller picks the registry — a child agent
     /// behind a [`Subagent`] needs its own tools, not the parent's fixtures.
     fn agent_with_tools(
@@ -8321,6 +8476,7 @@ mod tests {
         let notes = RequestNotes {
             head: agent.calendar_note().into_iter().collect(),
             tail: Vec::new(),
+            view: None,
         };
         let sent = crate::pressure::message_bytes(&agent.wire(&history, &notes));
         assert_eq!(

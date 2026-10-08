@@ -419,6 +419,13 @@ pub struct RunConfig {
         deserialize_with = "crate::mismatch::de_lenient"
     )]
     pub mismatch_case: Option<crate::mismatch::ArtifactCase>,
+    /// The host's view of the history this door's requests carried
+    /// (`agent::RequestView::name`), when it attached one: a projection the
+    /// transcript does not hold, so a replay built without the host can say
+    /// what it ran without. `None` for every door that attaches none, and in
+    /// every record from before the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_view: Option<String>,
     /// Which harness produced this. The axis every replay diff is measured on.
     pub mecha_version: String,
     pub provider: String,
@@ -683,6 +690,7 @@ impl Default for RunConfig {
         RunConfig {
             appraisal_evidence: None,
             mismatch_case: None,
+            request_view: None,
             mecha_version: String::new(),
             provider: String::new(),
             model: String::new(),
@@ -757,6 +765,8 @@ impl RunConfig {
                 serde_json::to_value(b.snapshot()).expect("appraisal evidence serializes")
             }),
             mismatch_case: None,
+            // A door that attaches a view sets it before recording.
+            request_view: None,
             mecha_version: crate::VERSION.to_string(),
             provider: provider.to_string(),
             model: agent.model().to_string(),
@@ -5762,6 +5772,27 @@ mod extension_tests {
         assert!(ever.iter().all(|m| !m.text().contains("it arrived")));
         assert!(!format!("{ever:?}").contains("image: images/a.png"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A door's request view is recorded by name, and a record from before
+    /// the field reads as none.
+    #[test]
+    fn a_request_view_is_recorded_by_name_and_old_records_read_none() {
+        let with = RunConfig {
+            request_view: Some("picture-scenes".into()),
+            ..RunConfig::default()
+        };
+        let text = serde_json::to_string(&with).unwrap();
+        assert!(
+            text.contains(r#""request_view":"picture-scenes""#),
+            "{text}"
+        );
+        let back: RunConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.request_view.as_deref(), Some("picture-scenes"));
+        let none = serde_json::to_string(&RunConfig::default()).unwrap();
+        assert!(!none.contains("request_view"), "{none}");
+        let old: RunConfig = serde_json::from_str(r#"{"mecha_version":"0.1.0"}"#).unwrap();
+        assert_eq!(old.request_view, None);
     }
 
     /// A note a delivery left is owed until a run records an outcome.

@@ -338,6 +338,7 @@ impl Tool for Subagent {
             end_after_deferral: false,
             close_with: None,
             jobs: None,
+            request_view: None,
             // Never sampled per child: a subagent is work inside the
             // parent's run, and the parent's snapshot already spans it.
             // Differencing the backlog again here would count a draft the

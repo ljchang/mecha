@@ -9756,6 +9756,35 @@ the full checklist this grows into as each build step lands.
    re-offered because one is missing (`install::fetches_models`), or it
    would be offered, change nothing, and be offered again on every enable.
 
+## What a request carries: the send views
+
+A request is a projection of the recorded history, never the history
+itself: `Agent::wire` runs `PriorThinking`, `PriorTails` and `PriorNudges`
+(each a `Cow<[Message]>`, set on the agent), then a host's `RequestView` if
+the run carries one (`RunContext::request_view`), then the calendar note at
+the head and the run's notes at the tail. The transcript keeps what was
+said. The rules a view keeps, the host's as much as the agent's:
+
+- **The loop never learns what a host's view does.** A host that knows a
+  tool — the persona chat rewriting its earlier `image_generate` calls from
+  their pictures' records — supplies the view; `agent.rs` only applies it.
+- **Deterministic, and never this run's own messages.** The view gets
+  `answering` (the turn being answered now) and must return everything from
+  it on as given; what it rewrites before it must read the same on every
+  later request, or each one re-reads the history from the oldest rewrite.
+  The cost of a view that starts rewriting a message already sent is one
+  re-read from that point, as `PriorNudges` learned.
+- **Measured as sent.** With a view attached, `wire_bytes` reads the bytes
+  off the request `wire` builds rather than reckoning them beside it.
+- **Recorded.** A door that attaches a view names it in
+  `RunConfig::request_view`, so a replay built without the host — `mecha
+  replay`, the validation probes — can say what it ran without; a subagent
+  never inherits one.
+- **Taint is the host's to keep.** A view that writes record text into the
+  model's own past turns must write only what the conversation's taint
+  already covers — the image view rewrites only from records whose origin is
+  clean, and leaves any other call as it was sent.
+
 ## Context, and knowing how much is left
 
 `[providers.X] context_window` is what the model's context holds — for a
