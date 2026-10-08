@@ -273,6 +273,7 @@ fn scene_slot(store: &Path, persona: &str, chat: &str) -> mecha_core::scene::Sce
             .join(format!("{chat}.scene.json")),
         store: persona_dir.join("scene"),
         chat: chat.to_string(),
+        from_latest: true,
     }
 }
 
