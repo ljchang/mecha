@@ -2295,8 +2295,8 @@ impl Tool for ImageGenerate {
                 s.people
                     .iter()
                     .find(|p| p.who.key() == key)
-                    .map(|p| p.wearing.clone())
-                    .filter(|w| !w.trim().is_empty())
+                    .filter(|p| !p.wearing.trim().is_empty())
+                    .map(|p| (p.wearing.clone(), p.origin))
             })
         };
         let plan = match crate::picture::plan(
@@ -5762,6 +5762,7 @@ mod tests {
                 chat_copy: store.join("sessions").join(format!("{chat}.scene.json")),
                 store: store.join("scene"),
                 chat: chat.into(),
+                from_latest: true,
             }),
             ..Default::default()
         }

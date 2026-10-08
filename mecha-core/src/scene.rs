@@ -442,8 +442,11 @@ impl Scene {
             cap(&mut p.doing, crate::imagelib::MAX_CAST_FIELD);
             cap(&mut p.expression, crate::imagelib::MAX_CAST_FIELD);
         }
-        next.people_known =
-            (base.is_some_and(|b| b.people_known)) || people_known || !change.people.is_empty();
+        // Known once a call declares someone in the picture; a removal
+        // declares nobody (review of #597).
+        next.people_known = (base.is_some_and(|b| b.people_known))
+            || people_known
+            || change.people.iter().any(|c| !c.remove);
         (next, d)
     }
 }
@@ -595,6 +598,11 @@ pub struct SceneSlot {
     pub store: PathBuf,
     /// The chat's id, recorded on the scenes it advances.
     pub chat: String,
+    /// Whether a chat with no scene yet starts from the store's latest: a
+    /// persona's chats do (R7, one persona's continuity), the assistant's
+    /// and incognito's never, since their store is shared by unrelated
+    /// conversations (review of #597).
+    pub from_latest: bool,
 }
 
 impl SceneSlot {
@@ -605,8 +613,10 @@ impl SceneSlot {
     pub fn current(&self) -> Option<Scene> {
         if self.chat_copy.exists() {
             read(&self.chat_copy)
-        } else {
+        } else if self.from_latest {
             read(&self.store.join("latest.json"))
+        } else {
+            None
         }
     }
 
@@ -677,6 +687,7 @@ pub fn assistant_slot(sessions: &Path, chat: &str) -> SceneSlot {
         chat_copy: sessions.join(format!("{chat}.scene.json")),
         store: assistant_store(sessions),
         chat: chat.to_string(),
+        from_latest: false,
     }
 }
 
@@ -688,6 +699,7 @@ pub fn room_slot(room: &Path, chat: &str) -> SceneSlot {
         chat_copy: room.join("scene").join(format!("{chat}.scene.json")),
         store: room.join("scene"),
         chat: chat.to_string(),
+        from_latest: false,
     }
 }
 
@@ -805,6 +817,7 @@ mod tests {
                 chat_copy: root.join("persona/sessions/c1.scene.json"),
                 store: root.join("persona/scene"),
                 chat: "c1".into(),
+                from_latest: true,
             },
             root,
         )
@@ -1049,6 +1062,7 @@ mod tests {
         let (good, root) = slot();
         let bad = SceneSlot {
             chat: "../c1".into(),
+            from_latest: true,
             ..good
         };
         assert!(bad
@@ -1111,6 +1125,7 @@ mod tests {
         let other = SceneSlot {
             chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
+            from_latest: true,
             ..slot.clone()
         };
         assert_eq!(
@@ -1186,6 +1201,7 @@ mod tests {
         let other = SceneSlot {
             chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
+            from_latest: true,
             ..slot.clone()
         };
         other
@@ -1208,5 +1224,26 @@ mod tests {
         assert_eq!(slot.current(), None);
         assert!(forget_chat(&persona, "../escape").is_err());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The assistant's and incognito's chats never start from the store's
+    /// latest: it is shared by unrelated conversations (review of #597). A
+    /// persona's do (R7).
+    #[test]
+    fn only_a_persona_chat_starts_from_the_latest() {
+        let dir = std::env::temp_dir().join(format!("mecha-scene-{}", uuid::Uuid::new_v4()));
+        let sessions = dir.join("sessions");
+        let first = assistant_slot(&sessions, "chat-a");
+        let mut s = Scene::default();
+        s.picture = Some(hash(b"x"));
+        first.land(&s).unwrap();
+        assert!(first.current().is_some());
+        assert!(assistant_slot(&sessions, "chat-b").current().is_none());
+        let persona = SceneSlot {
+            from_latest: true,
+            ..assistant_slot(&sessions, "chat-c")
+        };
+        assert!(persona.current().is_some());
+        std::fs::remove_dir_all(dir).ok();
     }
 }
