@@ -658,9 +658,16 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         Origin::Clean => SCENE_STEM,
         Origin::Untrusted => UNTRUSTED_SCENE_STEM,
     };
+    // The last sentence is mecha-a3's measured line (2026-10-08): on the two
+    // turns of a live chat that drew nothing, the persona read this note as
+    // the picture already sent, or looped deciding; with the line it called
+    // the tool 10 times in 10, against 8 in 10 without, and its reasoning on
+    // the looping turn fell from ~8,100 to ~2,500 characters.
     Some(format!(
         "{stem}: what your last picture showed. Clothes and places come from here now, \
-         not from a remembered day.){out}"
+         not from a remembered day. This is a record of what was drawn before, not a \
+         picture the owner has in front of them now: to show them a picture, call \
+         image_generate.){out}"
     ))
 }
 
@@ -1368,5 +1375,25 @@ mod tests {
         let (base, _) = Scene::apply(None, &words("a quiet library"), Origin::Clean, true);
         let (_, d) = Scene::apply(Some(&base), &words("A quiet library."), Origin::Clean, true);
         assert!(!d.setting && d.is_empty(), "{d:?}");
+    }
+
+    /// The note says it is a record, not a picture the owner has, and how a
+    /// picture is shown (mecha-a3's G2 replay of a live chat, 2026-10-08).
+    #[test]
+    fn the_note_says_it_is_a_record_and_how_to_show_a_picture() {
+        let change = SceneChange {
+            setting: Some(Setting::Words {
+                text: "a pier".into(),
+            }),
+            ..SceneChange::default()
+        };
+        let (scene, _) = Scene::apply(None, &change, Origin::Clean, true);
+        let n = note(&scene, None).unwrap();
+        assert!(
+            n.contains("not a picture the owner has in front of them now"),
+            "{n}"
+        );
+        assert!(n.contains("call image_generate.)"), "{n}");
+        assert!(stem_of(&n).is_some());
     }
 }
