@@ -89,12 +89,22 @@ export function stillOut(entry) {
   );
 }
 
-// The pictures still out that wait their turn: every one after the oldest.
-// A chat's queue runs one at a time, first in first out, so the oldest still
-// out is the one drawing and the rest wait behind it (owner, 2026-10-08: a
-// queue, not a refusal). Indices into `entries`.
-export function waitingPictures(entries) {
+// The pictures still out that wait their turn, as indices into `entries`.
+// The server's line (`queue`, `jobs::QueueItem`) names the one drawing, and
+// is the truth whenever the page has one: a reorder permutes the line while
+// the transcript keeps the order the pictures were asked for, so "the oldest
+// still out is drawing" stops holding the moment the owner moves one (review
+// of #607). With no line yet, the queue's own order is the guess: first in,
+// first out, so every one after the oldest waits.
+export function waitingPictures(entries, queue = []) {
   const out = new Set();
+  const drawing = (queue ?? []).find((q) => q.running)?.call_id;
+  if (queue?.length) {
+    (entries ?? []).forEach((e, i) => {
+      if (stillOut(e) && e.id !== drawing) out.add(i);
+    });
+    return out;
+  }
   let first = true;
   (entries ?? []).forEach((e, i) => {
     if (!stillOut(e)) return;
