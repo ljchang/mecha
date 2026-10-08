@@ -271,10 +271,12 @@ pub const EDIT_REFERENCE_SIZE: u32 = 1024;
 /// size is named explicitly ([`canvas_dims`]), so the picture stays full size.
 pub const UNMASKED_EDIT_REFERENCE_SIZE: u32 = 512;
 
-/// About one megapixel in `bytes`' own shape, each side a multiple of 32:
-/// what the encoder drew an edit at when no size was named and references
-/// went at 1024 (1184×896 for a 4:3 photo). Named explicitly now that the
-/// references go smaller, or the picture would come out at their size.
+/// The size an edit is drawn at for the canvas `bytes`: [`edit_canvas`] at
+/// [`EDIT_REFERENCE_SIZE`] over its upright shape, which is what the encoder
+/// drew when no size was named and references went at 1024 (1184×896 for a
+/// 4:3 photo). Named explicitly now that the references go smaller, or the
+/// picture would come out at their size. `None` when the shape cannot be
+/// read; the edit then keeps 1024 references and names no size.
 pub(crate) fn canvas_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     // Upright, as every other reader of a reference: a phone photo stored
     // sideways under the fit threshold keeps its tag, and the server turns it
@@ -284,10 +286,9 @@ pub(crate) fn canvas_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     if w == 0 || h == 0 {
         return None;
     }
-    let aspect = w as f64 / h as f64;
-    let height = (1024.0 * 1024.0 / aspect).sqrt();
-    let side = |v: f64| ((v / 32.0).round() as u32).clamp(8, 64) * 32;
-    Some((side(height * aspect), side(height)))
+    // The encoder's own arithmetic, so a very wide room is not clamped to
+    // another shape (review of #600).
+    Some(edit_canvas(w, h, EDIT_REFERENCE_SIZE))
 }
 
 /// A reference image, read out of the run's workspace.
@@ -2303,7 +2304,7 @@ impl Tool for ImageGenerate {
         };
         // A `picture` no file in this chat answers to: a name the model made
         // up. Beside a scene it is left out and said, and the scene is drawn
-        // as a new picture; on its own it is refused saying where pictures
+        // without it; on its own it is refused saying where pictures
         // come from. A bare "cannot open" was retried eleven times in one run
         // on 2026-10-08. Only a path inside the jail that does not exist:
         // anything the jail refuses is still refused as before.
@@ -2315,9 +2316,7 @@ impl Tool for ImageGenerate {
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             });
             if missing {
-                let has_scene = call.change != crate::scene::SceneChange::default()
-                    || call.setting_photo.is_some();
-                if !has_scene {
+                if !call.has_scene() {
                     return Ok(refused(format!(
                         "There is no picture `{p}` in this chat. Name a picture as a result \
                          gave it (images/…) or as the owner attached it (inbox/…), or leave \
@@ -2326,10 +2325,19 @@ impl Tool for ImageGenerate {
                 }
                 call.picture = None;
                 call.mask = None;
-                call.notes.push(format!(
-                    "There is no picture `{p}` in this chat, so it was left out and the scene \
-                     was drawn as a new picture."
-                ));
+                // Beside a room photo the render is a placement, not a new
+                // picture, so the note says only what was left out.
+                call.notes.push(if call.setting_photo.is_some() {
+                    format!(
+                        "There is no picture `{p}` in this chat, so it was left out and the \
+                         scene was drawn on the room photo."
+                    )
+                } else {
+                    format!(
+                        "There is no picture `{p}` in this chat, so it was left out and the \
+                         scene was drawn as a new picture."
+                    )
+                });
             }
         }
         // A library name that is not drawable is never drawn as a stranger
@@ -2813,12 +2821,15 @@ impl Tool for ImageGenerate {
                 // room photo the room's own shape is kept whatever size was
                 // asked: a portrait from a landscape room drew a slice of
                 // table (owner, 2026-10-08).
+                // A canvas whose shape cannot be read (an animated WebP, one
+                // past the decode cap) keeps 1024 references and no named
+                // size, so the encoder still sizes the picture from it rather
+                // than drawing at 512 (review of #600).
                 req.size = if masked {
                     None
                 } else {
-                    req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
                     let own = canvas_dims(&req.references[0].bytes);
-                    match canvas {
+                    let size = match canvas {
                         crate::picture::Canvas::Setting(_) => {
                             if call.size.is_some() {
                                 dropped.push(
@@ -2830,7 +2841,11 @@ impl Tool for ImageGenerate {
                             own
                         }
                         crate::picture::Canvas::Picture(_) => call.size.map(Size::dims).or(own),
+                    };
+                    if size.is_some() {
+                        req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
                     }
+                    size
                 };
             }
         }
@@ -6631,7 +6646,7 @@ mod tests {
     /// even when another was asked, and said (owner, 2026-10-08).
     #[tokio::test]
     async fn an_edit_encodes_small_and_a_room_keeps_its_shape() {
-        let (url, seen) = distinct(1).await;
+        let (url, seen) = distinct(3).await;
         let (dir, lib) = (tempdir(), library_with(&["maya"]));
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         // A landscape room, 4:3.
@@ -6678,6 +6693,60 @@ mod tests {
             canvas_dims(&std::fs::read(dir.join("inbox/room.png")).unwrap()),
             Some((1184, 896))
         );
+        // A very wide room keeps its shape: the encoder's own arithmetic,
+        // never a per-side clamp that narrows only the width.
+        let wide = png_bytes(&image::RgbImage::new(160, 30)).unwrap();
+        assert_eq!(canvas_dims(&wide), Some(edit_canvas(160, 30, 1024)));
+        assert!(canvas_dims(&wide).unwrap().0 > 2048);
+
+        // An unmasked retouch of a picture: named at the picture's shape,
+        // references at 512.
+        let png = |w, h| {
+            png_bytes(&image::RgbImage::from_pixel(
+                w,
+                h,
+                image::Rgb([200, 90, 40]),
+            ))
+            .unwrap()
+        };
+        std::fs::write(dir.join("inbox/tall.png"), png(48, 64)).unwrap();
+        let latent = |p: &str| -> (Value, Value) {
+            let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
+            (
+                body["prompt"]["encode"]["inputs"]["resolution"].clone(),
+                body["prompt"]["sample"]["inputs"]["latent_image"].clone(),
+            )
+        };
+        let out = tool(&url)
+            .call(
+                json!({"picture": "inbox/tall.png", "retouch": "a red hat"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let p = last_prompt(&seen);
+        let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
+        assert_eq!(latent(&p).0, 512);
+        assert_eq!(body["prompt"]["latent"]["inputs"]["width"], 896);
+        assert_eq!(body["prompt"]["latent"]["inputs"]["height"], 1184);
+
+        // A canvas whose shape cannot be read keeps 1024 references and
+        // names no size, so the encoder sizes the picture from it: never a
+        // picture drawn at the references' 512.
+        let mut broken = png(64, 48);
+        broken.truncate(60);
+        std::fs::write(dir.join("inbox/broken.png"), broken).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "inbox/broken.png", "retouch": "a red hat"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let p = last_prompt(&seen);
+        assert_eq!(latent(&p), (json!(1024), json!(["encode", 2])));
         for d in [dir, lib] {
             std::fs::remove_dir_all(d).ok();
         }
