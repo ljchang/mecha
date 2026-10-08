@@ -258,8 +258,37 @@ pub struct Request {
     pub mask: Option<Reference>,
 }
 
-/// The reference size for an edit: the canvas at full detail.
+/// The reference size for a masked edit: the canvas at full detail, since
+/// the result is laid back over the original pixel for pixel.
 pub const EDIT_REFERENCE_SIZE: u32 = 1024;
+
+/// The reference size for every other edit-shaped render (placed, restaged
+/// on a photo, edited): the owner's trial of 2026-10-08. mecha-a3 measured
+/// one person placed on the owner's photo at 1024, 768 and 512 against her
+/// portrait (ArcFace .88/.88/.87 over three seeds, within seed noise, and
+/// near-identical by eye at one seed); the references are most of an edit's
+/// cost, so they go at the size a library portrait already does. The output
+/// size is named explicitly ([`canvas_dims`]), so the picture stays full size.
+pub const UNMASKED_EDIT_REFERENCE_SIZE: u32 = 512;
+
+/// About one megapixel in `bytes`' own shape, each side a multiple of 32:
+/// what the encoder drew an edit at when no size was named and references
+/// went at 1024 (1184×896 for a 4:3 photo). Named explicitly now that the
+/// references go smaller, or the picture would come out at their size.
+pub(crate) fn canvas_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let aspect = w as f64 / h as f64;
+    let height = (1024.0 * 1024.0 / aspect).sqrt();
+    let side = |v: f64| ((v / 32.0).round() as u32).clamp(8, 64) * 32;
+    Some((side(height * aspect), side(height)))
+}
 
 /// A reference image, read out of the run's workspace.
 #[derive(Debug, Clone, PartialEq)]
@@ -1565,10 +1594,11 @@ const CANVAS_CAMERA_MOVES: &str = " <image1> is the canvas: keep its room and fu
 
 /// How many references fit one edit, the picture being edited included
 /// (IMAGE-DESIGN.md §6, C5, provisional): the canvas and a head crop for each
-/// of up to five faces. Every reference in an edit is encoded at
-/// [`EDIT_REFERENCE_SIZE`] whatever its own size. Three at 1024² is the
-/// measured fast shape (66 s); six is the owner's provisional ceiling, slower,
-/// and the planner refuses a sixth face rather than drop one.
+/// of up to five faces. Every reference in an unmasked edit is encoded at
+/// [`UNMASKED_EDIT_REFERENCE_SIZE`] (a masked one at [`EDIT_REFERENCE_SIZE`])
+/// whatever its own size. Three at 1024² was the measured fast shape (66 s);
+/// six is the owner's provisional ceiling, slower, and the planner refuses a
+/// sixth face rather than drop one.
 const EDIT_REFERENCE_BUDGET: usize = 1 + crate::picture::MAX_FACES;
 
 /// A library name as the edit prompt says it, each word capitalised: "maya" →
@@ -2746,10 +2776,30 @@ impl Tool for ImageGenerate {
                     prompt.push_str(" Each of them appears exactly once.");
                 }
                 req.prompt = prompt.trim().to_string();
+                // A masked edit keeps the picture's own shape and full detail.
+                // Every other edit names its output size and encodes its
+                // references smaller (`UNMASKED_EDIT_REFERENCE_SIZE`). On a
+                // room photo the room's own shape is kept whatever size was
+                // asked: a portrait from a landscape room drew a slice of
+                // table (owner, 2026-10-08).
                 req.size = if masked {
                     None
                 } else {
-                    call.size.map(Size::dims)
+                    req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
+                    let own = canvas_dims(&req.references[0].bytes);
+                    match canvas {
+                        crate::picture::Canvas::Setting(_) => {
+                            if call.size.is_some() {
+                                dropped.push(
+                                    "The room photo's own shape was kept: a picture placed in \
+                                     a room is drawn in the room's shape."
+                                        .into(),
+                                );
+                            }
+                            own
+                        }
+                        crate::picture::Canvas::Picture(_) => call.size.map(Size::dims).or(own),
+                    }
                 };
             }
         }
@@ -6541,6 +6591,58 @@ mod tests {
         );
         assert_eq!(seed_in(&seen), 77, "the restage drew at the room's seed");
         for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// An unmasked edit encodes its references at 512 and names its output
+    /// size in the canvas's own shape; on a room photo that shape is kept
+    /// even when another was asked, and said (owner, 2026-10-08).
+    #[tokio::test]
+    async fn an_edit_encodes_small_and_a_room_keeps_its_shape() {
+        let (url, seen) = distinct(1).await;
+        let (dir, lib) = (tempdir(), library_with(&["maya"]));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        // A landscape room, 4:3.
+        let room = {
+            let img = image::RgbImage::from_pixel(64, 48, image::Rgb([90, 120, 90]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            png.into_inner()
+        };
+        std::fs::write(dir.join("inbox/room.png"), room).unwrap();
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"size": "portrait", "scene": {"setting": {"photo": "inbox/room.png"},
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "sitting"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("The room photo's own shape was kept"),
+            "{}",
+            out.content
+        );
+        let p = last_prompt(&seen);
+        let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
+        assert_eq!(body["prompt"]["encode"]["inputs"]["resolution"], 512);
+        let (w, h) = (
+            body["prompt"]["latent"]["inputs"]["width"]
+                .as_u64()
+                .unwrap(),
+            body["prompt"]["latent"]["inputs"]["height"]
+                .as_u64()
+                .unwrap(),
+        );
+        assert!(w > h, "the landscape room kept its shape: {w}x{h}");
+        assert_eq!(
+            canvas_dims(&std::fs::read(dir.join("inbox/room.png")).unwrap()),
+            Some((1184, 896))
+        );
+        for d in [dir, lib] {
             std::fs::remove_dir_all(d).ok();
         }
     }

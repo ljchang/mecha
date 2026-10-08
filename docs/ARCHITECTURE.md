@@ -726,6 +726,17 @@ The mask path and the layout reading decode upright too: read as stored, a
 portrait phone photo was the other shape from its mask and the masked edit
 was refused.
 
+**References go at 512² on an unmasked edit, with the output size named**
+(owner's trial, 2026-10-08): references are most of an edit's cost (one
+person placed on a photo took 145–180 s at 1024² against ~50 s for a picture
+from words), and mecha-a3 measured identity unchanged at 512 (ArcFace .87
+against .88, within seed noise). The output is named at about a megapixel in
+the canvas's own shape (`canvas_dims`), since with no size the encoder drew
+at the references' size. A masked edit keeps 1024² and its own shape, being
+laid back over the original. On a room photo the room's shape is kept
+whatever size was asked, and said: a portrait from a landscape room drew a
+slice of table.
+
 The pixels go to the loopback server and never into the conversation, so
 the capabilities do not change. Three rules hold every edit-shaped render:
 
