@@ -1647,13 +1647,17 @@
   // The queue panel's drag: the waiting pictures in a new order; the line
   // that comes back is the server's, refused order or not.
   async function reorderPictures(order) {
+    const k = key;
     try {
-      const res = await fetch(`/api/chat/${key}/jobs/order`, {
+      const res = await fetch(`/api/chat/${k}/jobs/order`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ order }),
       });
-      if (res.ok) queue = (await res.json()).queue ?? queue;
+      const line = res.ok ? (await res.json()).queue : null;
+      // A switch while the answer travelled: that line is the last chat's
+      // (the #418 pattern; review of #607).
+      if (line && key === k) queue = line;
     } catch {
       // The next `queue` event says how the line stands.
     }
