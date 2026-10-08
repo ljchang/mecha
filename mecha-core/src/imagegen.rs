@@ -2362,23 +2362,31 @@ impl Tool for ImageGenerate {
             if !held {
                 let there = crate::imagelib::what_there_is(&lib, kind);
                 call.change.style = None;
-                if call.change == crate::scene::SceneChange::default()
-                    && call.setting_photo.is_none()
-                    && call.retouch.is_none()
-                {
-                    let ask = if crate::imagelib::approved_names(&lib, kind).is_empty() {
-                        "leave `style` out"
-                    } else {
-                        "name one of those, or leave `style` out"
-                    };
-                    return Ok(refused(format!(
-                        "There is no style `{name}`. {there}: {ask}."
-                    )));
+                // Said back at most a name's length: the field is read at its
+                // own cap, and a result is no place to echo a paragraph.
+                let name = if name.chars().count() > crate::imagelib::MAX_NAME {
+                    let cut: String = name.chars().take(crate::imagelib::MAX_NAME).collect();
+                    format!("{}…", cut.trim_end())
+                } else {
+                    name
+                };
+                if !call.has_scene() && call.retouch.is_none() {
+                    return Ok(refused(match there {
+                        Some(there) => format!(
+                            "There is no style `{name}`. {there}: name one of those, or leave \
+                             `style` out."
+                        ),
+                        None => format!("There is no style `{name}`: leave `style` out."),
+                    }));
                 }
-                call.notes.push(format!(
+                let mut note = format!(
                     "There is no style `{name}`, so it was left out and the picture keeps its \
-                     own look. {there}."
-                ));
+                     own look."
+                );
+                if let Some(there) = there {
+                    note.push_str(&format!(" {there}."));
+                }
+                call.notes.push(note);
             }
         }
         // A library name that is not drawable is never drawn as a stranger
@@ -6675,6 +6683,11 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("There is no style"), "{}", out.content);
+        assert!(
+            !out.content.contains(long),
+            "the echo is clipped: {}",
+            out.content
+        );
         assert_eq!(posts(), 3);
 
         // With no library at all, nothing is offered to choose from.
@@ -6687,7 +6700,8 @@ mod tests {
             .unwrap();
         assert!(bare.is_error, "{}", bare.content);
         assert!(
-            bare.content.contains("has no styles: leave `style` out"),
+            bare.content
+                .contains("There is no style `oil on linen`: leave `style` out."),
             "{}",
             bare.content
         );
