@@ -482,6 +482,11 @@ fn api() -> gate::Owned {
             Owner::ChatKey,
             axum::routing::post(chat::cancel),
         )
+        .at(
+            "/api/chat/{key}/jobs/order",
+            Owner::ChatKey,
+            axum::routing::post(chat::reorder_jobs),
+        )
         // Persona chats: a door of their own, never the routes above
         // (`persona_chat`, `PERSONA-DESIGN.md` §3.2).
         .at(
@@ -598,6 +603,11 @@ fn api() -> gate::Owned {
             "/api/persona-chat/{key}/cancel",
             Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::cancel),
+        )
+        .at(
+            "/api/persona-chat/{key}/jobs/order",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::reorder_jobs),
         )
         .at(
             "/api/persona-chat/{key}/call",

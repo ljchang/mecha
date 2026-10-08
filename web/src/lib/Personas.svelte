@@ -7,6 +7,7 @@
   import ModelChip from './ModelChip.svelte';
   import EditModal from './EditModal.svelte';
   import ChatProse from './ChatProse.svelte';
+  import PictureQueue from './PictureQueue.svelte';
   import { replyContext } from './speech.js';
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
@@ -101,6 +102,9 @@
   // A clock for the waiting line, ticking only while a run is live or a
   // picture is still being drawn past its turn (§5.4).
   let now = $state(Date.now());
+  // The chat's background jobs as the server last said (`queue` events and
+  // the transcript's `queue`), for the queue panel.
+  let queue = $state([]);
   // On booleans alone, not the whole run: `run` is replaced on every
   // streamed word, and the tick would restart with each (review of #431).
   const running = $derived(run.running);
@@ -815,6 +819,7 @@
     if (!res.ok) throw new Error((await res.text()).trim());
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
+    queue = t.queue ?? [];
     const settled = withJob(settle(t.entries, run), t.job);
     const entries = t.running ? withWorking(settled, t.working) : settled;
     run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
@@ -854,6 +859,10 @@
         ev = JSON.parse(m.data);
       } catch {
         return; /* a malformed event is dropped, never drawn */
+      }
+      if (ev.type === 'queue') {
+        queue = ev.jobs ?? [];
+        return;
       }
       run = applyEvent(run, ev);
       scrollDown();
@@ -1308,6 +1317,22 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ unlock: token ?? undefined, picture: true, call: one }),
     }).catch(() => {});
+  }
+
+  // The queue panel's drag: the waiting pictures in a new order. The line
+  // that comes back is the server's, refused order or not.
+  async function reorderPictures(order) {
+    if (!key) return;
+    try {
+      const res = await fetch(chatUrl(key, '/jobs/order'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ unlock: token ?? undefined, order }),
+      });
+      if (res.ok) queue = (await res.json()).queue ?? queue;
+    } catch {
+      // The next `queue` event says how the line stands.
+    }
   }
 
   function onKey(e) {
@@ -1921,6 +1946,7 @@
           {/each}
         </div>
       {/if}
+      <PictureQueue items={queue} oncancel={(id) => stopPicture(id)} onreorder={reorderPictures} />
       <div class="composer">
         <input type="file" multiple hidden bind:this={fileInput} onchange={uploadPicked} />
         <button class="attachbtn" disabled={uploads > 0} onclick={() => fileInput?.click()} aria-label="Attach a file" title="attach a file — it lands in this chat's inbox/">

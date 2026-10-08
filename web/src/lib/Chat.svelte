@@ -4,6 +4,7 @@
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
   import ChatProse from './ChatProse.svelte';
+  import PictureQueue from './PictureQueue.svelte';
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
@@ -31,6 +32,9 @@
   let entries = $state([]);
   let streaming = $state('');
   let running = $state(false);
+  // The chat's background jobs as the server last said (`queue` events and
+  // the transcript's `queue`), for the queue panel.
+  let queue = $state([]);
   // The agent's plan for this session, live. Rendered rather than summarised:
   // a paraphrase of a plan is a different plan, and this is the one part of a
   // long run that says how far it got rather than what is true.
@@ -355,6 +359,7 @@
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
       running = data.running;
+      queue = data.queue ?? [];
       partialRun = !!data.held_by_run;
       // Before the carried cards, so they stay page-only for the next re-read.
       liveFrom = entries.length;
@@ -436,6 +441,9 @@
           break;
         case 'queued_delivered':
           markDelivery([ev.request_id], 'delivered');
+          break;
+        case 'queue':
+          queue = ev.jobs ?? [];
           break;
         case 'queued_discarded':
           markDelivery(ev.request_ids, 'discarded');
@@ -1633,6 +1641,21 @@
     }
   }
 
+  // The queue panel's drag: the waiting pictures in a new order; the line
+  // that comes back is the server's, refused order or not.
+  async function reorderPictures(order) {
+    try {
+      const res = await fetch(`/api/chat/${key}/jobs/order`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ order }),
+      });
+      if (res.ok) queue = (await res.json()).queue ?? queue;
+    } catch {
+      // The next `queue` event says how the line stands.
+    }
+  }
+
   const pct = $derived(
     usage?.window ? Math.min(100, Math.round((usage.prompt / usage.window) * 100)) : null
   );
@@ -2278,6 +2301,7 @@
         {/each}
       </div>
     {/if}
+    <PictureQueue items={queue} oncancel={(id) => stopPicture(id)} onreorder={reorderPictures} />
     <div class="input-row">
       <input type="file" multiple hidden bind:this={fileInput} onchange={uploadPicked} />
       <button class="round" disabled={uploading} onclick={() => fileInput?.click()} title="attach a file — it lands in this session's inbox/">
