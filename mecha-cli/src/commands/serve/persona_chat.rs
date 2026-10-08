@@ -2558,8 +2558,14 @@ impl PersonaChats {
         key: &str,
         token: Option<&str>,
         picture_only: bool,
+        call: Option<&str>,
     ) -> Result<bool, Refusal> {
         self.persona_of(library, key, token).await?;
+        // One picture, from its own row: that one alone, running or waiting;
+        // the rest of the line stays (review of #606).
+        if let Some(call) = call {
+            return Ok(self.jobs.queue.cancel_one(key, call));
+        }
         let sessions = self.sessions.lock().await;
         // The owner's Stop ends the chat's picture too, where talking over
         // a reply ends only the reply (`docs/BACKGROUND-JOBS-DESIGN.md` §2.4):
@@ -4863,10 +4869,14 @@ pub async fn send(
 pub struct CancelBody {
     #[serde(default)]
     unlock: Option<String>,
-    /// Stop only the chat's picture (the call screen's picture slot), not
+    /// Stop only the chat's pictures (the call screen's picture slot), not
     /// the reply in flight.
     #[serde(default)]
     picture: bool,
+    /// Stop only this picture — a row's own Stop — and leave the rest of
+    /// the line.
+    #[serde(default)]
+    call: Option<String>,
 }
 
 /// POST /api/persona-chat/{key}/cancel
@@ -4879,10 +4889,17 @@ pub async fn cancel(
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
-    let (unlock, picture) = body.map_or((None, false), |Json(b)| (b.unlock, b.picture));
+    let (unlock, picture, call) =
+        body.map_or((None, false, None), |Json(b)| (b.unlock, b.picture, b.call));
     match chat
         .personas
-        .cancel(&state.library, &key, unlock.as_deref(), picture)
+        .cancel(
+            &state.library,
+            &key,
+            unlock.as_deref(),
+            picture,
+            call.as_deref(),
+        )
         .await
     {
         Ok(cancelled) => Json(serde_json::json!({ "cancelled": cancelled })).into_response(),
@@ -8315,7 +8332,7 @@ mod tests {
         w.personas().start_delivery();
         assert!(w
             .personas()
-            .cancel(&w.library, &key, None, true)
+            .cancel(&w.library, &key, None, true, None)
             .await
             .unwrap());
         for _ in 0..200 {
@@ -8353,7 +8370,7 @@ mod tests {
             .unwrap();
         assert!(w
             .personas()
-            .cancel(&w.library, &key, None, true)
+            .cancel(&w.library, &key, None, true, None)
             .await
             .unwrap());
         for _ in 0..200 {

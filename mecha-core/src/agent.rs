@@ -417,7 +417,7 @@ pub const PICTURE_ON_ITS_WAY_REPLY: &str = "The picture is on its way.";
 /// The same, when the closing request follows a busy refusal: this turn's
 /// picture was never started, so "on its way" would be false (mecha-a3's G3
 /// busy cell: 12 of 30 closing replies there were only a call).
-pub const PICTURE_NOT_STARTED_REPLY: &str = "The last picture is still being made, so this one wasn't started. Send it again once that one lands.";
+pub const PICTURE_NOT_STARTED_REPLY: &str = "The pictures already asked for fill the queue, so this one wasn't started. Send it again once one of them lands.";
 
 /// The deferred tools a run has started, and whether it has tried one again.
 /// One picture per run, structurally (IMAGE-DESIGN.md §5.5): a deferred job
@@ -5569,6 +5569,11 @@ impl Agent {
                     // ends it undrawn. It takes no seat itself (review of
                     // #592, passes 2 and 3).
                     Some(sink) => {
+                        // A picture Stop empties the line and so would let
+                        // this wait resolve into a draw; it is read before and
+                        // after, and a Stop meanwhile ends it undrawn as a
+                        // run's own Stop does (review of #606).
+                        let stops = sink.stops();
                         let stop = cx.cancel.clone();
                         let waited = match &stop {
                             Some(stop) => tokio::select! {
@@ -5580,7 +5585,7 @@ impl Agent {
                                 true
                             }
                         };
-                        if waited {
+                        if waited && sink.stops() == stops {
                             crate::jobs::run_inline(&job, cx.cancel.as_ref()).await
                         } else {
                             ToolOutput::refusal(
@@ -7473,6 +7478,43 @@ mod tests {
         );
         assert_eq!(queue.waiting("chat"), 1);
         go.notify_one();
+        go.notify_one();
+    }
+
+    /// The chat's picture Stop — not the run's — while a harness call waits
+    /// its turn ends it undrawn too: it empties the line, which would
+    /// otherwise let the wait resolve into a draw (review of #606).
+    #[tokio::test]
+    async fn a_picture_stop_ends_a_waiting_harness_call_undrawn() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let (agent, _) = agent_with_tools(
+            draw_then("It is on its way."),
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut turn = Conversation::user("draw the harbour");
+        agent.run_in(&cx, &mut turn, None).await.unwrap();
+        assert!(queue.pending("chat").is_some());
+        let stopper = Arc::clone(&queue);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            stopper.cancel("chat");
+        });
+        let mut convo = Conversation::user("x");
+        let d = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent.dispatch_one(&cx, &mut convo, "draw", json!({}), &None),
+        )
+        .await
+        .expect("the stop ended the wait");
+        assert!(
+            d.content.starts_with("Nothing was drawn: stopped"),
+            "{}",
+            d.content
+        );
         go.notify_one();
     }
 
@@ -16292,6 +16334,9 @@ mod tests {
             }
             fn idle(&self) -> futures::future::BoxFuture<'static, ()> {
                 Box::pin(async {})
+            }
+            fn stops(&self) -> u64 {
+                0
             }
             fn pending_tools(&self) -> Vec<String> {
                 if self.0 {
