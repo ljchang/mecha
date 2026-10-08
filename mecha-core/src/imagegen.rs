@@ -2644,8 +2644,11 @@ impl Tool for ImageGenerate {
                 let mut words_scene = std::borrow::Cow::Borrowed(&plan.next);
                 let as_called = together;
                 let mut together = together;
-                if together && people.len() >= 2 && people.iter().any(|p| p.doing.trim().is_empty())
-                {
+                // Whenever the act is one sentence naming two or more people,
+                // posed or not: a `together` left in the words beside the
+                // people's own poses drew a person twice (mecha-a3's gate of
+                // #610, 2 of 3). A pose given is kept verbatim (`roles`).
+                if together && people.len() >= 2 {
                     if let (Some(splitter), Some(sentence)) =
                         (&ctx.role_split, plan.next.together.as_ref())
                     {
@@ -6573,7 +6576,7 @@ mod tests {
     /// split that fails draws the call as it was (mecha-a3, 2026-10-08).
     #[tokio::test]
     async fn a_together_is_drawn_as_each_persons_part() {
-        let (url, seen) = distinct(3).await;
+        let (url, seen) = distinct(4).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -6620,6 +6623,15 @@ mod tests {
         let m = manifest_of(&dir, &out.content);
         assert_eq!(m["roles"], "applied");
         assert!(m.get("prompt").is_none());
+        // Everyone posed and a `together` too: still split, so the named
+        // sentence leaves the words (mecha-a3: a second person in 2 of 3).
+        let posed = json!({"scene": {"setting": "a park", "together": "Maya hands John a cup",
+            "people": [{"who": "maya", "wearing": "a coat", "doing": "smiling"},
+                       {"who": "john", "wearing": "a suit", "doing": "reaching out"}]}});
+        let out = t.call(posed, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(manifest_of(&dir, &out.content)["roles"], "applied");
+        assert!(!last_prompt(&seen).contains("Maya hands John a cup"));
         // A split that fails draws the call as it was.
         cx.role_split = Some(Arc::new(FakeSplit(Err("no answer".into()))));
         let out = t.call(call, &cx).await.unwrap();
