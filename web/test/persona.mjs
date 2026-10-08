@@ -303,6 +303,13 @@ assert.throws(() => uploadUrl('main', 'mask.png'));
   const asked = (row) => [{ kind: 'user', text: 'draw it' }, row, { kind: 'assistant', text: 'On its way.' }];
   assert.deepEqual([...turnsWithoutPicture(asked(making))], [], 'a picture being made is still out');
   assert.deepEqual([...turnsWithoutPicture(asked(failed))], [2], 'one that failed late was not drawn');
+  // A queue runs oldest first: the first picture still out is the one drawing,
+  // the ones after it wait (owner, 2026-10-08).
+  const { waitingPictures } = await import('../src/lib/picture.js');
+  const out = (id) => ({ ...making, id });
+  const line = [{ kind: 'user', text: 'a' }, out('a'), { kind: 'user', text: 'b' }, out('b'), out('c')];
+  assert.deepEqual([...waitingPictures(line)], [3, 4]);
+  assert.deepEqual([...waitingPictures([out('a')])], [], 'one alone is drawing');
   // A row the page read back from the transcript (a reload while the picture
   // was drawn) carries its call's id, and the late result lands on it.
   const { applyEvent, emptyRun } = await import('../src/lib/persona.js');

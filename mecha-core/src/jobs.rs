@@ -119,15 +119,49 @@ impl std::fmt::Debug for DeferredJob {
     }
 }
 
-/// A job refused because the conversation already has one running.
+/// A job refused because the conversation's queue is full: one running and
+/// [`MAX_WAITING`] waiting behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Busy;
+
+/// How many jobs may wait behind a conversation's running one. Beyond it a
+/// job is refused (`Busy`), which keeps the runaway bound (R6); one per run
+/// (`RunPictures`) means no single turn can fill it. The owner asked for a
+/// queue over a refusal (2026-10-08: "queueing images does not work. they
+/// just fail").
+pub const MAX_WAITING: usize = 3;
+
+/// What a waiting job that never ran is answered with — stopped, or its run
+/// rolled back, before its turn came.
+pub const NOT_STARTED: &str = "Not started: it was stopped before its turn in the queue came.";
+
+/// What became of a submitted job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Submitted {
+    /// It is running now.
+    Started,
+    /// It waits its turn, `ahead` jobs before it (the running one counted).
+    Queued { ahead: usize },
+}
 
 /// Where a run hands a deferred job: a chat host's queue, for one
 /// conversation (`RunContext::jobs`).
 pub trait JobSink: Send + Sync {
-    /// Take the job and run it, or refuse it: one at a time.
-    fn submit(&self, call_id: &str, tool: &str, job: Arc<DeferredJob>) -> Result<(), Busy>;
+    /// Take the job: run it, queue it behind the conversation's running
+    /// one, or refuse it when the queue is full.
+    fn submit(&self, call_id: &str, tool: &str, job: Arc<DeferredJob>) -> Result<Submitted, Busy>;
+
+    /// How many times the owner has stopped this conversation's pictures
+    /// (`JobQueue::cancel`). A harness call that waited its turn reads it
+    /// before and after: a Stop while it waited ends it undrawn, though the
+    /// emptied line would let it start (review of #606).
+    fn stops(&self) -> u64;
+
+    /// Resolves when the conversation has no job running or waiting — what
+    /// a harness call that renders inline waits for, so it takes its turn
+    /// behind them instead of being refused. Finished jobs not yet landed do
+    /// not count: they land at the hand-back of the run that is waiting.
+    fn idle(&self) -> BoxFuture<'static, ()>;
 
     /// The tools whose jobs are still out for this conversation. The loop
     /// folds their declared reach into each turn's send gate, so the wait
@@ -207,6 +241,13 @@ pub(crate) fn settle(
 
 type Deliver = dyn Fn(Delivered) + Send + Sync;
 
+struct Waiting {
+    call_id: String,
+    tool: String,
+    run: usize,
+    job: Arc<DeferredJob>,
+}
+
 struct Running {
     call_id: String,
     tool: String,
@@ -230,19 +271,33 @@ pub struct JobQueue {
     /// conversation's taint would cover it (review of #573, pass 9). Locked
     /// after `running`, never before.
     arrived: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// Jobs waiting behind each key's running one, in the order they came.
+    /// Locked after `running` and before `arrived`.
+    waiting: Mutex<HashMap<String, std::collections::VecDeque<Waiting>>>,
+    /// Woken whenever a job ends or a queue empties, for [`JobQueue::idle`].
+    changed: Arc<tokio::sync::Notify>,
+    /// Each key's count of chat-wide Stops ([`JobSink::stops`]).
+    stops: Mutex<HashMap<String, u64>>,
     deliver: Arc<Deliver>,
 }
 
 impl JobQueue {
+    /// `deliver` must not panic: it runs before the finished job's slot is
+    /// freed (so results land in order), and a panic there would hold the
+    /// slot for good, leaving [`JobQueue::idle`] unresolved (review of #606).
     pub fn new(deliver: impl Fn(Delivered) + Send + Sync + 'static) -> Arc<Self> {
         Arc::new(JobQueue {
             running: Mutex::new(HashMap::new()),
             arrived: Mutex::new(HashMap::new()),
+            waiting: Mutex::new(HashMap::new()),
+            changed: Arc::new(tokio::sync::Notify::new()),
+            stops: Mutex::new(HashMap::new()),
             deliver: Arc::new(deliver),
         })
     }
 
-    /// Run `job` for `key`, or refuse it if `key` already has one.
+    /// Run `job` for `key`, queue it behind the one running there, or refuse
+    /// it when [`MAX_WAITING`] already wait.
     pub fn submit(
         self: &Arc<Self>,
         key: &str,
@@ -250,83 +305,282 @@ impl JobQueue {
         call_id: &str,
         tool: &str,
         job: Arc<DeferredJob>,
-    ) -> Result<(), Busy> {
+    ) -> Result<Submitted, Busy> {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         if running.contains_key(key) {
-            return Err(Busy);
+            let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            let line = waiting.entry(key.to_string()).or_default();
+            if line.len() >= MAX_WAITING {
+                return Err(Busy);
+            }
+            line.push_back(Waiting {
+                call_id: call_id.to_string(),
+                tool: tool.to_string(),
+                run,
+                job,
+            });
+            return Ok(Submitted::Queued { ahead: line.len() });
         }
-        let Some(fut) = job.take() else {
+        let started = self.launch(
+            &mut running,
+            key,
+            Waiting {
+                call_id: call_id.to_string(),
+                tool: tool.to_string(),
+                run,
+                job,
+            },
+        );
+        if started {
+            Ok(Submitted::Started)
+        } else {
             // Already run elsewhere: nothing to start, and nothing to claim.
-            return Err(Busy);
+            Err(Busy)
+        }
+    }
+
+    /// Start `w` as `key`'s running job, under the `running` lock the caller
+    /// holds. `false` when its future was already taken.
+    fn launch(
+        self: &Arc<Self>,
+        running: &mut HashMap<String, Running>,
+        key: &str,
+        w: Waiting,
+    ) -> bool {
+        let Some(fut) = w.job.take() else {
+            return false;
         };
         running.insert(
             key.to_string(),
             Running {
-                call_id: call_id.to_string(),
-                tool: tool.to_string(),
-                run,
-                cancel: job.cancel_token().clone(),
+                call_id: w.call_id.clone(),
+                tool: w.tool.clone(),
+                run: w.run,
+                cancel: w.job.cancel_token().clone(),
                 started: std::time::Instant::now(),
             },
         );
-        let terms = job.terms.get().cloned().unwrap_or_default();
-        drop(running);
+        let terms = w.job.terms.get().cloned().unwrap_or_default();
         let queue = Arc::clone(self);
-        let (key, call_id, tool) = (key.to_string(), call_id.to_string(), tool.to_string());
+        let (key, call_id, tool, run) = (key.to_string(), w.call_id, w.tool, w.run);
         tokio::spawn(async move {
             let output = fut.await;
-            {
-                let mut running = queue.running.lock().unwrap_or_else(|e| e.into_inner());
-                if running.get(&key).is_some_and(|r| r.call_id == call_id) {
-                    running.remove(&key);
-                }
-                // Pending until it lands, though the slot is free.
-                queue
-                    .arrived
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .entry(key.clone())
-                    .or_default()
-                    .push((call_id.clone(), tool.clone()));
-            }
+            // Pending until it lands, from the moment it ends.
+            queue
+                .arrived
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(key.clone())
+                .or_default()
+                .push((call_id.clone(), tool.clone()));
+            // Delivered before the next one starts, its slot still held
+            // meanwhile so a submit in between queues: a next job that ends
+            // at once (an unreachable server) would otherwise be delivered
+            // ahead of this one, and results land out of order (review of
+            // #606).
             (queue.deliver)(Delivered {
-                key,
-                call_id,
+                key: key.clone(),
+                call_id: call_id.clone(),
                 tool,
                 output,
                 terms,
                 run,
             });
+            queue.finished(&key, &call_id);
+            queue.changed.notify_waiters();
         });
-        Ok(())
+        true
+    }
+
+    /// `call_id`'s job ended and was delivered: its slot frees, and the next
+    /// one waiting for `key` starts — in order, one at
+    /// a time. A waiting job whose future cannot be taken is delivered as
+    /// not started rather than left in the line.
+    fn finished(self: &Arc<Self>, key: &str, call_id: &str) {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        if running.get(key).is_some_and(|r| r.call_id == call_id) {
+            running.remove(key);
+        }
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        let mut unstartable = Vec::new();
+        while !running.contains_key(key) {
+            let Some(next) = waiting.get_mut(key).and_then(|l| l.pop_front()) else {
+                break;
+            };
+            let (id, tool, run) = (next.call_id.clone(), next.tool.clone(), next.run);
+            let terms = next.job.terms.get().cloned().unwrap_or_default();
+            if !self.launch(&mut running, key, next) {
+                unstartable.push((id, tool, run, terms));
+            }
+        }
+        if waiting.get(key).is_some_and(|l| l.is_empty()) {
+            waiting.remove(key);
+        }
+        drop(waiting);
+        drop(running);
+        for (id, tool, run, terms) in unstartable {
+            self.not_started(key, &id, &tool, run, terms);
+        }
+    }
+
+    /// A waiting job that will never run — stopped, or its run rolled back —
+    /// is still answered, through the same delivery: its "being made" result
+    /// is settled and the host still calls [`JobQueue::landed`]. It never
+    /// ran, so these are the queue's words, not the tool's.
+    ///
+    /// With the job's own terms, as a job that ran is delivered: unset terms
+    /// read as the widest reach, which would arm `private` on the
+    /// conversation from the harness's own words for work that never ran —
+    /// where a stopped *running* job arms nothing (review of #606).
+    fn not_started(
+        self: &Arc<Self>,
+        key: &str,
+        call_id: &str,
+        tool: &str,
+        run: usize,
+        terms: Terms,
+    ) {
+        self.arrived
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_string())
+            .or_default()
+            .push((call_id.to_string(), tool.to_string()));
+        (self.deliver)(Delivered {
+            key: key.to_string(),
+            call_id: call_id.to_string(),
+            tool: tool.to_string(),
+            output: ToolOutput::err(NOT_STARTED),
+            terms,
+            run,
+        });
+        self.changed.notify_waiters();
+    }
+
+    /// Take `key`'s waiting jobs that `which` selects out of the line, and
+    /// answer each as not started. How many there were.
+    fn drop_waiting(self: &Arc<Self>, key: &str, which: impl Fn(&Waiting) -> bool) -> usize {
+        let dropped: Vec<(String, String, usize, Terms)> = {
+            let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(line) = waiting.get_mut(key) else {
+                return 0;
+            };
+            let (out, keep): (Vec<_>, Vec<_>) = line.drain(..).partition(|w| which(w));
+            *line = keep.into();
+            if line.is_empty() {
+                waiting.remove(key);
+            }
+            out.into_iter()
+                .map(|w| {
+                    let terms = w.job.terms.get().cloned().unwrap_or_default();
+                    (w.call_id, w.tool, w.run, terms)
+                })
+                .collect()
+        };
+        for (id, tool, run, terms) in dropped.iter().cloned() {
+            self.not_started(key, &id, &tool, run, terms);
+        }
+        dropped.len()
     }
 
     /// Cancel `key`'s job, if it has one — the owner's Stop (§2.4). The job
     /// ends by its own cancelled output, which is delivered like any other.
-    pub fn cancel(&self, key: &str) -> bool {
+    ///
+    /// The ones waiting behind it go too, each answered as not started:
+    /// Stop means none of this conversation's pictures (§2.4).
+    pub fn cancel(self: &Arc<Self>, key: &str) -> bool {
+        *self
+            .stops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_string())
+            .or_default() += 1;
+        let dropped = self.drop_waiting(key, |_| true);
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
-        match running.get(key) {
+        let stopped = match running.get(key) {
             Some(r) => {
                 r.cancel.cancel();
                 true
             }
             None => false,
-        }
+        };
+        stopped || dropped > 0
     }
 
     /// Cancel `key`'s job if run `run` submitted it — a run that ended in
     /// error was rolled back, call and all, so nothing is left to show its
     /// picture to, and drawing on would only hold the slot (review of #573,
     /// pass 16).
-    pub fn cancel_run(&self, key: &str, run: usize) -> bool {
+    ///
+    /// Waiting or running alike: a rolled-back run's queued picture is no
+    /// one's either.
+    pub fn cancel_run(self: &Arc<Self>, key: &str, run: usize) -> bool {
+        let dropped = self.drop_waiting(key, |w| w.run == run);
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
-        match running.get(key).filter(|r| r.run == run) {
+        let stopped = match running.get(key).filter(|r| r.run == run) {
+            Some(r) => {
+                r.cancel.cancel();
+                true
+            }
+            None => false,
+        };
+        stopped || dropped > 0
+    }
+
+    /// Stop one of `key`'s jobs, by its call: the running one by its own
+    /// token (the next then starts), or a waiting one, answered as not
+    /// started. The rest of the line stays — what a Stop on one row of the
+    /// queue means, where [`JobQueue::cancel`] is the chat's (review of
+    /// #606). `false` when `call_id` is in neither.
+    pub fn cancel_one(self: &Arc<Self>, key: &str, call_id: &str) -> bool {
+        if self.drop_waiting(key, |w| w.call_id == call_id) > 0 {
+            return true;
+        }
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        match running.get(key).filter(|r| r.call_id == call_id) {
             Some(r) => {
                 r.cancel.cancel();
                 true
             }
             None => false,
         }
+    }
+
+    /// `key`'s count of chat-wide Stops ([`JobSink::stops`]).
+    pub fn stops(&self, key: &str) -> u64 {
+        let stops = self.stops.lock().unwrap_or_else(|e| e.into_inner());
+        stops.get(key).copied().unwrap_or(0)
+    }
+
+    /// How many jobs wait behind `key`'s running one.
+    pub fn waiting(&self, key: &str) -> usize {
+        let waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.get(key).map_or(0, |l| l.len())
+    }
+
+    /// Resolves when `key` has no job running or waiting ([`JobSink::idle`]).
+    pub fn idle(self: &Arc<Self>, key: &str) -> BoxFuture<'static, ()> {
+        let queue = Arc::clone(self);
+        let key = key.to_string();
+        Box::pin(async move {
+            loop {
+                // Registered before the check, so a change between the check
+                // and the wait still wakes it.
+                let changed = queue.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let busy = queue
+                    .running
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&key)
+                    || queue.waiting(&key) > 0;
+                if !busy {
+                    return;
+                }
+                changed.await;
+            }
+        })
     }
 
     /// The call `key`'s running job answers, if any.
@@ -351,11 +605,19 @@ impl JobQueue {
     /// put into the conversation.
     pub fn pending_tools(&self, key: &str) -> Vec<String> {
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
         let arrived = self.arrived.lock().unwrap_or_else(|e| e.into_inner());
         running
             .get(key)
             .map(|r| r.tool.clone())
             .into_iter()
+            .chain(
+                waiting
+                    .get(key)
+                    .into_iter()
+                    .flatten()
+                    .map(|w| w.tool.clone()),
+            )
             .chain(
                 arrived
                     .get(key)
@@ -398,8 +660,16 @@ struct KeyedSink {
 }
 
 impl JobSink for KeyedSink {
-    fn submit(&self, call_id: &str, tool: &str, job: Arc<DeferredJob>) -> Result<(), Busy> {
+    fn submit(&self, call_id: &str, tool: &str, job: Arc<DeferredJob>) -> Result<Submitted, Busy> {
         self.queue.submit(&self.key, self.run, call_id, tool, job)
+    }
+
+    fn idle(&self) -> BoxFuture<'static, ()> {
+        self.queue.idle(&self.key)
+    }
+
+    fn stops(&self) -> u64 {
+        self.queue.stops(&self.key)
     }
 
     fn pending_tools(&self) -> Vec<String> {
@@ -548,11 +818,69 @@ mod tests {
         assert!(queue.pending_tools("chat").is_empty());
     }
 
-    /// One job per conversation: a second is refused while the first runs,
-    /// and another conversation's is not.
+    /// One job runs per conversation and the next ones wait, in order, up to
+    /// [`MAX_WAITING`]; one more is refused, and another conversation's runs
+    /// at once (owner, 2026-10-08: a queue, not a refusal).
     #[tokio::test]
-    async fn one_job_per_conversation() {
-        let (queue, _) = collecting();
+    async fn a_conversation_runs_one_job_and_queues_the_next_in_order() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = || gated(Arc::clone(&go), CancellationToken::new());
+        assert_eq!(
+            queue.submit("chat", 0, "c1", "draw", job()),
+            Ok(Submitted::Started)
+        );
+        for (n, id) in ["c2", "c3", "c4"].into_iter().enumerate() {
+            assert_eq!(
+                queue.submit("chat", 0, id, "draw", job()),
+                Ok(Submitted::Queued { ahead: n + 1 })
+            );
+        }
+        assert_eq!(
+            queue.submit("chat", 0, "c5", "draw", job()),
+            Err(Busy),
+            "full"
+        );
+        assert_eq!(queue.waiting("chat"), MAX_WAITING);
+        assert_eq!(
+            queue.pending_tools("chat").len(),
+            1 + MAX_WAITING,
+            "the gate sees them"
+        );
+        let elsewhere = gated(
+            Arc::new(tokio::sync::Notify::new()),
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            queue.submit("other", 0, "x1", "draw", elsewhere),
+            Ok(Submitted::Started)
+        );
+        // Each ends in turn, and the next starts: delivered in the order sent.
+        // `notify_one` keeps a permit for a job that has not polled yet.
+        for n in 1..=4 {
+            assert_eq!(
+                queue.pending("chat").as_deref(),
+                Some(format!("c{n}").as_str())
+            );
+            go.notify_one();
+            delivered(&got, n).await;
+        }
+        let order: Vec<String> = got
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| d.key == "chat")
+            .map(|d| d.call_id.clone())
+            .collect();
+        assert_eq!(order, ["c1", "c2", "c3", "c4"]);
+        assert_eq!(queue.waiting("chat"), 0);
+    }
+
+    /// Results are delivered in the order the jobs were sent, even when the
+    /// next one ends the moment it starts (review of #606).
+    #[tokio::test]
+    async fn a_next_job_that_ends_at_once_is_delivered_after_the_one_before() {
+        let (queue, got) = collecting();
         let go = Arc::new(tokio::sync::Notify::new());
         queue
             .submit(
@@ -563,10 +891,143 @@ mod tests {
                 gated(Arc::clone(&go), CancellationToken::new()),
             )
             .unwrap();
-        let second = gated(Arc::clone(&go), CancellationToken::new());
-        assert_eq!(queue.submit("chat", 0, "c2", "draw", second), Err(Busy));
-        let elsewhere = gated(Arc::clone(&go), CancellationToken::new());
-        assert_eq!(queue.submit("other", 0, "c3", "draw", elsewhere), Ok(()));
+        let instant = DeferredJob::new(
+            async { ToolOutput::err("the server is unreachable") },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "c2", "draw", instant).unwrap();
+        go.notify_one();
+        delivered(&got, 2).await;
+        let order: Vec<String> = got
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|d| d.call_id.clone())
+            .collect();
+        assert_eq!(order, ["c1", "c2"]);
+    }
+
+    /// Stop ends the running job and answers every waiting one as never
+    /// started, through the same delivery, so each "being made" is settled.
+    #[tokio::test]
+    async fn stop_answers_the_waiting_jobs_as_not_started() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = || gated(Arc::clone(&go), CancellationToken::new());
+        queue.submit("chat", 0, "c1", "draw", job()).unwrap();
+        queue.submit("chat", 0, "c2", "draw", job()).unwrap();
+        queue.submit("chat", 1, "c3", "draw", job()).unwrap();
+        // A rolled-back run's waiting job goes alone.
+        assert!(queue.cancel_run("chat", 1));
+        assert_eq!(queue.waiting("chat"), 1);
+        assert!(queue.cancel("chat"));
+        delivered(&got, 3).await;
+        let got = got.lock().unwrap();
+        let by = |id: &str| {
+            got.iter()
+                .find(|d| d.call_id == id)
+                .unwrap()
+                .output
+                .content
+                .clone()
+        };
+        assert_eq!(by("c3"), NOT_STARTED);
+        assert_eq!(by("c2"), NOT_STARTED);
+        assert_eq!(by("c1"), "stopped, nothing made");
+        assert_eq!(queue.waiting("chat"), 0);
+    }
+
+    /// A waiting job stopped before it ran arms no more taint than a running
+    /// one stopped: it is delivered with its own terms, never unset ones,
+    /// which read as the widest reach (review of #606).
+    #[tokio::test]
+    async fn a_never_started_job_arms_no_more_than_a_stopped_running_one() {
+        let (queue, got) = collecting();
+        let job = || {
+            let j = gated(
+                Arc::new(tokio::sync::Notify::new()),
+                CancellationToken::new(),
+            );
+            j.set_terms(Terms {
+                caps: Some(Capabilities::default()),
+                ..Terms::default()
+            });
+            j
+        };
+        queue.submit("chat", 0, "c1", "draw", job()).unwrap();
+        queue.submit("chat", 0, "c2", "draw", job()).unwrap();
+        assert!(queue.cancel("chat"));
+        delivered(&got, 2).await;
+        for d in got.lock().unwrap().iter() {
+            let mut taint = Taint::default();
+            d.settle(&mut taint);
+            assert_eq!(taint, Taint::default(), "{} armed {taint:?}", d.call_id);
+        }
+    }
+
+    /// One row's Stop is that picture alone: a waiting one goes, answered as
+    /// not started, and the one drawing goes on; the drawing one by its own
+    /// token, and the next then starts. Neither counts as the chat's Stop
+    /// (review of #606).
+    #[tokio::test]
+    async fn one_rows_stop_is_that_picture_alone() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = || gated(Arc::clone(&go), CancellationToken::new());
+        for id in ["c1", "c2", "c3"] {
+            queue.submit("chat", 0, id, "draw", job()).unwrap();
+        }
+        assert!(queue.cancel_one("chat", "c2"));
+        delivered(&got, 1).await;
+        assert_eq!(got.lock().unwrap()[0].call_id, "c2");
+        assert_eq!(
+            queue.pending("chat").as_deref(),
+            Some("c1"),
+            "the drawing one goes on"
+        );
+        assert_eq!(queue.waiting("chat"), 1);
+        assert!(queue.cancel_one("chat", "c1"));
+        delivered(&got, 2).await;
+        for _ in 0..200 {
+            if queue.pending("chat").as_deref() == Some("c3") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            queue.pending("chat").as_deref(),
+            Some("c3"),
+            "the next started"
+        );
+        assert!(!queue.cancel_one("chat", "c9"));
+        assert_eq!(queue.stops("chat"), 0, "no chat-wide Stop");
+        assert!(queue.cancel("chat"));
+        assert_eq!(queue.stops("chat"), 1);
+    }
+
+    /// `idle` waits for the running and the waiting, not for a finished job
+    /// still to land — that one lands at the hand-back of the run waiting.
+    #[tokio::test]
+    async fn idle_waits_for_running_and_waiting_only() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = || gated(Arc::clone(&go), CancellationToken::new());
+        queue.submit("chat", 0, "c1", "draw", job()).unwrap();
+        queue.submit("chat", 0, "c2", "draw", job()).unwrap();
+        let idle = tokio::spawn(queue.idle("chat"));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!idle.is_finished(), "a job is still out");
+        go.notify_waiters();
+        delivered(&got, 1).await;
+        assert!(!idle.is_finished(), "the second is running now");
+        go.notify_waiters();
+        delivered(&got, 2).await;
+        tokio::time::timeout(Duration::from_secs(1), idle)
+            .await
+            .expect("idle once nothing runs or waits, though nothing landed")
+            .unwrap();
+        assert_eq!(queue.pending_tools("chat").len(), 2, "both still to land");
     }
 
     /// The owner's Stop cancels the conversation's job, which ends by its own
