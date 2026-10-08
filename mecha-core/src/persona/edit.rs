@@ -221,6 +221,17 @@ pub fn extraction_request(
 /// the library holds; a bare name it does not is a failure (§5.3 step 6),
 /// never a stranger drawn under that name.
 pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extracted, String> {
+    read_extraction_for(text, known, None)
+}
+
+/// [`read_extraction`], knowing the record's one person when it holds
+/// exactly one: a bare `{"remove": true}` then takes them out, since nobody
+/// else could be meant (mecha-a3's G1: 4 removal wordings came back so).
+pub fn read_extraction_for(
+    text: &str,
+    known: &dyn Fn(&str) -> bool,
+    sole: Option<&str>,
+) -> Result<Extracted, String> {
     let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) else {
         return Err("the answer held no JSON object".into());
     };
@@ -245,10 +256,16 @@ pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extra
     // does: that person, as `people`'s one entry (mecha-a3's G1: with no
     // record and no schema, 20 pose and camera asks came back this way and
     // were read as nothing, then drawn again).
-    let top_level = obj
-        .get("who")
-        .filter(|w| w.as_str().is_some_and(|w| !w.trim().is_empty()))
-        .map(|_| serde_json::Value::Array(vec![v.clone()]));
+    let bare_removal = obj.get("who").is_none()
+        && obj.get("people").is_none_or(serde_json::Value::is_null)
+        && obj.get("remove").and_then(serde_json::Value::as_bool) == Some(true);
+    let top_level = match (bare_removal, sole) {
+        (true, Some(who)) => Some(serde_json::json!([{ "who": who, "remove": true }])),
+        _ => obj
+            .get("who")
+            .filter(|w| w.as_str().is_some_and(|w| !w.trim().is_empty()))
+            .map(|_| serde_json::Value::Array(vec![v.clone()])),
+    };
     let people = obj
         .get("people")
         .filter(|p| !p.is_null())
@@ -447,6 +464,12 @@ mod tests {
             e.call("p"),
             serde_json::json!({"picture": "p", "scene": {"people": [{"who": "Maya", "doing": "sitting on the steps"}]}})
         );
+        // A bare removal takes out the record's one person; with no sole
+        // person it is a failure, said.
+        let e = read_extraction_for(r#"{"remove": true}"#, &known, Some("Maya")).unwrap();
+        assert_eq!(e.scene["people"][0]["remove"], true);
+        assert_eq!(e.scene["people"][0]["who"], "Maya");
+        assert!(read_extraction(r#"{"remove": true}"#, &known).is_err());
         // Keys this reader cannot use are a failure, never a redraw.
         let why = read_extraction(r#"{"pose": "sitting", "mood": "calm"}"#, &known).unwrap_err();
         assert!(why.contains("nothing this change can use"), "{why}");

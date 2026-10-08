@@ -370,7 +370,12 @@ async fn draw_panel_edit(
                             .any(|p| mecha_core::picture::shown(&p.who).to_lowercase() == key)
                     })
             };
-            match edit::read_extraction(&text, &known) {
+            // The record's one person, when it holds exactly one.
+            let sole = record
+                .as_ref()
+                .filter(|r| r.people.len() == 1)
+                .map(|r| mecha_core::picture::shown(&r.people[0].who));
+            match edit::read_extraction_for(&text, &known, sole.as_deref()) {
                 Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
                 Err(why) => return fail(why),
             }
