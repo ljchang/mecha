@@ -991,7 +991,7 @@ Rules:
   room to spare (found on review of #435). This is why
   `residency` is on the row: an on-demand OCR server costs nothing until a
   PDF arrives, and image generation is the same class — mecha asks ComfyUI
-  to free its models after `[image] unload_after_secs` (600) — with one leak
+  to free its models after `[image] unload_after_secs` (900; 600 until 2026-10-08) — with one leak
   the row must carry: the timer lives in the process that drew the picture,
   so a one-shot `mecha run` or a serve restart inside the window leaves
   ~12 GiB held (measured on 2026-10-02: 11.9 GiB nine hours after a picture
