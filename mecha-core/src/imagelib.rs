@@ -918,13 +918,18 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
 /// is left out, without a count. Characters are never listed: their names
 /// are the owner's.
 pub(crate) fn styles_to_name(lib: &Library) -> Option<String> {
-    let names: Vec<String> = lib
-        .all()
+    let names: Vec<String> = style_names(lib).iter().map(|n| format!("`{n}`")).collect();
+    (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
+}
+
+/// The approved, unlocked styles' names, in the library's order: what a
+/// model may be offered (see [`styles_to_name`]).
+pub fn style_names(lib: &Library) -> Vec<String> {
+    lib.all()
         .iter()
         .filter(|e| e.kind == Kind::Style && e.status == Status::Approved && !e.locked)
-        .map(|e| format!("`{}`", e.name))
-        .collect();
-    (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
+        .map(|e| e.name.clone())
+        .collect()
 }
 
 /// Whether `name` is simply not in the library as `kind`: no entry in any

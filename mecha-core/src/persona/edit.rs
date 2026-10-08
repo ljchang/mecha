@@ -113,7 +113,9 @@ for the face, `wearing` for clothes (clothes alone: only `wearing`), `where` for
 in the frame; `remove` to take \
 someone out; someone new with their `who`, `wearing` and `doing`; `together` for what the people \
 in the picture do with each other, as one line naming them; `camera`, `light`, `setting` when \
-those change; `retouch` for a small change to something that is not a person. Leave out \
+those change; `style` when the owner asks for a different look, as one of the names in \
+`styles`, never words for it; `retouch` for a small change to something that is not a person. \
+Leave out \
 everything that stays the same. If the words only ask for another try, answer {}. Answer with \
 JSON only.";
 
@@ -135,6 +137,7 @@ pub fn extraction_schema() -> serde_json::Value {
             "camera": {"type": "string"},
             "light": {"type": "string"},
             "setting": {"type": "string"},
+            "style": {"type": "string"},
             "retouch": {"type": "string"}
         }
     })
@@ -160,6 +163,7 @@ pub fn record_for(scene: &crate::scene::Scene) -> serde_json::Value {
         ("light", &scene.light),
         ("camera", &scene.camera),
         ("together", &scene.together),
+        ("style", &scene.style),
     ] {
         if let Some(f) = f {
             out.insert(k.into(), f.value.clone().into());
@@ -201,6 +205,7 @@ pub fn extraction_request(
     record: Option<&crate::scene::Scene>,
     words: &str,
     persona: Option<&str>,
+    styles: &[String],
     structured: bool,
 ) -> crate::message::CompletionRequest {
     let mut user = serde_json::Map::new();
@@ -211,6 +216,12 @@ pub fn extraction_request(
     user.insert("owner".into(), words.into());
     if let Some(p) = persona {
         user.insert("persona".into(), p.into());
+    }
+    // The styles a change may name (not private, the owner's ruling of
+    // 2026-10-08): "change the style to hyperrealistic" had no field and
+    // became a retouch that drew the same picture again.
+    if !styles.is_empty() {
+        user.insert("styles".into(), styles.into());
     }
     crate::quarantine::QuarantinedPass::new(model, crate::provider::LOCAL_MAX_TOKENS)
         .system(EXTRACTION_SYSTEM)
@@ -247,7 +258,7 @@ pub fn read_extraction_for(
         .map_err(|e| format!("the answer did not read as JSON: {e}"))?;
     let obj = v.as_object().ok_or("the answer was not an object")?;
     let mut scene = serde_json::Map::new();
-    for k in ["together", "camera", "light", "setting"] {
+    for k in ["together", "camera", "light", "setting", "style"] {
         match obj.get(k) {
             None | Some(serde_json::Value::Null) => {}
             Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
@@ -503,9 +514,33 @@ mod tests {
         }
     }
 
+    /// A change of look has its own field: "change the style to
+    /// hyperrealistic" had none, became a retouch, and drew the same picture
+    /// again (2026-10-08). The request offers the style names, the record
+    /// says the current one, and the answer's `style` reaches the call.
+    #[test]
+    fn a_change_of_style_is_a_style_not_a_retouch() {
+        assert!(extraction_schema()["properties"]["style"].is_object());
+        assert!(EXTRACTION_SYSTEM.contains("`style` when the owner asks for a different look"));
+        let styles = vec!["ink-wash".to_string(), "noir".to_string()];
+        let r = extraction_request("m", None, "make it noir", None, &styles, true);
+        let body: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
+        assert_eq!(body["styles"], serde_json::json!(["ink-wash", "noir"]));
+        let known = |_: &str| true;
+        let e = read_extraction(r#"{"style": "noir"}"#, &known).unwrap();
+        assert_eq!(e.call("p")["scene"]["style"], "noir");
+        assert_eq!(e.retouch, None);
+        let mut scene = crate::scene::Scene::default();
+        scene.style = Some(crate::scene::Field {
+            value: "ink-wash".to_string(),
+            origin: crate::scene::Origin::Clean,
+        });
+        assert_eq!(record_for(&scene)["style"], "ink-wash");
+    }
+
     #[test]
     fn the_request_is_quarantined_fast_and_names_the_record() {
-        let r = extraction_request("m", None, "make her smile", Some("Maya"), true);
+        let r = extraction_request("m", None, "make her smile", Some("Maya"), &[], true);
         assert!(r.tools.is_empty());
         assert_eq!(r.messages.len(), 1);
         assert_eq!(r.think, Some(false));
@@ -514,7 +549,8 @@ mod tests {
         assert_eq!(body["owner"], "make her smile");
         assert_eq!(body["persona"], "Maya");
         assert_eq!(body["scene"], serde_json::json!({}));
-        assert!(extraction_request("m", None, "x", None, false)
+        assert!(body.get("styles").is_none(), "no styles, no key");
+        assert!(extraction_request("m", None, "x", None, &[], false)
             .response_schema
             .is_none());
     }

@@ -339,11 +339,15 @@ async fn draw_panel_edit(
                 .character
                 .as_deref()
                 .map(|c| mecha_core::picture::shown(&mecha_core::scene::Who::Library(c.into())));
+            let styles = mecha_core::imagelib::style_names(
+                &mecha_core::imagelib::Library::load(&names.library).0,
+            );
             let request = edit::extraction_request(
                 model,
                 record.as_ref(),
                 &edit.words,
                 persona.as_deref(),
+                &styles,
                 provider.structured_output(),
             );
             let response = match provider.complete(&request, None).await {
