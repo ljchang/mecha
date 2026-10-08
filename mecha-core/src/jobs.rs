@@ -396,8 +396,9 @@ impl JobQueue {
                 break;
             };
             let (id, tool, run) = (next.call_id.clone(), next.tool.clone(), next.run);
+            let terms = next.job.terms.get().cloned().unwrap_or_default();
             if !self.launch(&mut running, key, next) {
-                unstartable.push((id, tool, run));
+                unstartable.push((id, tool, run, terms));
             }
         }
         if waiting.get(key).is_some_and(|l| l.is_empty()) {
@@ -405,8 +406,8 @@ impl JobQueue {
         }
         drop(waiting);
         drop(running);
-        for (id, tool, run) in unstartable {
-            self.not_started(key, &id, &tool, run);
+        for (id, tool, run, terms) in unstartable {
+            self.not_started(key, &id, &tool, run, terms);
         }
     }
 
@@ -414,7 +415,19 @@ impl JobQueue {
     /// is still answered, through the same delivery: its "being made" result
     /// is settled and the host still calls [`JobQueue::landed`]. It never
     /// ran, so these are the queue's words, not the tool's.
-    fn not_started(self: &Arc<Self>, key: &str, call_id: &str, tool: &str, run: usize) {
+    ///
+    /// With the job's own terms, as a job that ran is delivered: unset terms
+    /// read as the widest reach, which would arm `private` on the
+    /// conversation from the harness's own words for work that never ran —
+    /// where a stopped *running* job arms nothing (review of #606).
+    fn not_started(
+        self: &Arc<Self>,
+        key: &str,
+        call_id: &str,
+        tool: &str,
+        run: usize,
+        terms: Terms,
+    ) {
         self.arrived
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -426,7 +439,7 @@ impl JobQueue {
             call_id: call_id.to_string(),
             tool: tool.to_string(),
             output: ToolOutput::err(NOT_STARTED),
-            terms: Terms::default(),
+            terms,
             run,
         });
         self.changed.notify_waiters();
@@ -435,7 +448,7 @@ impl JobQueue {
     /// Take `key`'s waiting jobs that `which` selects out of the line, and
     /// answer each as not started. How many there were.
     fn drop_waiting(self: &Arc<Self>, key: &str, which: impl Fn(&Waiting) -> bool) -> usize {
-        let dropped: Vec<(String, String, usize)> = {
+        let dropped: Vec<(String, String, usize, Terms)> = {
             let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
             let Some(line) = waiting.get_mut(key) else {
                 return 0;
@@ -446,11 +459,14 @@ impl JobQueue {
                 waiting.remove(key);
             }
             out.into_iter()
-                .map(|w| (w.call_id, w.tool, w.run))
+                .map(|w| {
+                    let terms = w.job.terms.get().cloned().unwrap_or_default();
+                    (w.call_id, w.tool, w.run, terms)
+                })
                 .collect()
         };
-        for (id, tool, run) in &dropped {
-            self.not_started(key, id, tool, *run);
+        for (id, tool, run, terms) in dropped.iter().cloned() {
+            self.not_started(key, &id, &tool, run, terms);
         }
         dropped.len()
     }
@@ -873,6 +889,34 @@ mod tests {
         assert_eq!(by("c2"), NOT_STARTED);
         assert_eq!(by("c1"), "stopped, nothing made");
         assert_eq!(queue.waiting("chat"), 0);
+    }
+
+    /// A waiting job stopped before it ran arms no more taint than a running
+    /// one stopped: it is delivered with its own terms, never unset ones,
+    /// which read as the widest reach (review of #606).
+    #[tokio::test]
+    async fn a_never_started_job_arms_no_more_than_a_stopped_running_one() {
+        let (queue, got) = collecting();
+        let job = || {
+            let j = gated(
+                Arc::new(tokio::sync::Notify::new()),
+                CancellationToken::new(),
+            );
+            j.set_terms(Terms {
+                caps: Some(Capabilities::default()),
+                ..Terms::default()
+            });
+            j
+        };
+        queue.submit("chat", 0, "c1", "draw", job()).unwrap();
+        queue.submit("chat", 0, "c2", "draw", job()).unwrap();
+        assert!(queue.cancel("chat"));
+        delivered(&got, 2).await;
+        for d in got.lock().unwrap().iter() {
+            let mut taint = Taint::default();
+            d.settle(&mut taint);
+            assert_eq!(taint, Taint::default(), "{} armed {taint:?}", d.call_id);
+        }
     }
 
     /// `idle` waits for the running and the waiting, not for a finished job
