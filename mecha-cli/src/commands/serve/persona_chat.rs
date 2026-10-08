@@ -2586,9 +2586,19 @@ impl PersonaChats {
         self.jobs.start(|mut rx| {
             let chats = Arc::downgrade(self);
             tokio::spawn(async move {
-                while let Some(late) = rx.recv().await {
+                while let Some(event) = rx.recv().await {
                     let Some(chats) = chats.upgrade() else { break };
-                    chats.deliver(late).await;
+                    match event {
+                        super::late::Late::Delivered(late) => chats.deliver(late).await,
+                        super::late::Late::Changed(key) => {
+                            let sessions = chats.sessions.lock().await;
+                            if let Some(ps) = sessions.get(&key) {
+                                let _ = ps.events.send(WireEvent::Queue {
+                                    jobs: chats.jobs.queue.list(&key),
+                                });
+                            }
+                        }
+                    }
                 }
             });
         });

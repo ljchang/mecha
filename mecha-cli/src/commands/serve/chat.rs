@@ -814,6 +814,12 @@ pub enum WireEvent {
     Delta {
         text: String,
     },
+    /// A conversation's line of background jobs as it stands — running first,
+    /// then the waiting ones in order — sent whenever it changes, so a page
+    /// can show it, stop one, and drag the waiting ones into a new order.
+    Queue {
+        jobs: Vec<mecha_core::jobs::QueueItem>,
+    },
     /// Accepted input, shared by every browser watching the conversation.
     /// The request id correlates a typed POST response with its SSE echo.
     User {
@@ -2341,9 +2347,19 @@ fn start_delivery(chat: &Arc<ChatState>) {
     chat.jobs.start(|mut rx| {
         let chat = Arc::downgrade(chat);
         tokio::spawn(async move {
-            while let Some(late) = rx.recv().await {
+            while let Some(event) = rx.recv().await {
                 let Some(chat) = chat.upgrade() else { break };
-                deliver(&chat, late).await;
+                match event {
+                    super::late::Late::Delivered(late) => deliver(&chat, late).await,
+                    super::late::Late::Changed(key) => {
+                        let sessions = chat.sessions.lock().await;
+                        if let Some(ws) = sessions.get(&key) {
+                            let _ = ws.events.send(WireEvent::Queue {
+                                jobs: chat.jobs.queue.list(&key),
+                            });
+                        }
+                    }
+                }
             }
         });
     });
