@@ -38,6 +38,10 @@ pub struct Call {
     /// A new picture's seed: only where `seeds` admits one (the CLI and
     /// evals, never a chat; IMAGE-DESIGN.md §5.1).
     pub seed: Option<u64>,
+    /// What the call over-filled and was left out, said in the result
+    /// rather than refused (mecha-a3's G1b: optional fields a model fills
+    /// with the wrong thing are its most common shape refusal).
+    pub notes: Vec<String>,
 }
 
 /// Read a call. `approved` says whether a name is an approved library
@@ -84,18 +88,34 @@ pub fn parse(
     let prose = crate::imagegen::PROMPT_CAP;
     let picture = text(obj.get("picture"), "picture", 200)?;
     let retouch = text(obj.get("retouch"), "retouch", prose)?;
-    let mask = text(obj.get("mask"), "mask", 200)?;
+    let mut notes: Vec<String> = Vec::new();
+    // A mask is a painted picture's path, from the owner's message. Anything
+    // else in it (prose, a name, an object) is left out and said, never a
+    // refusal (G1b: 3 of 65).
+    let mut mask = match obj.get("mask") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) if t.trim().is_empty() => None,
+        Some(Value::String(t)) if looks_like_a_picture_path(t) => Some(t.trim().to_string()),
+        Some(_) => {
+            notes.push(
+                "The `mask` given was not a painted picture's path, so it was left out.".into(),
+            );
+            None
+        }
+    };
     let size = match text(obj.get("size"), "size", 20)? {
         None => None,
         Some(s) => Some(
             crate::imagegen::Size::parse(&s).ok_or("`size` is square, landscape or portrait.")?,
         ),
     };
-    if mask.is_some() && retouch.is_none() {
-        return Err("A painted area (`mask`) goes with a `retouch`: what to change there.".into());
-    }
-    if mask.is_some() && picture.is_none() {
-        return Err("A painted area (`mask`) needs the `picture` it was painted on.".into());
+    if mask.is_some() && (retouch.is_none() || picture.is_none()) {
+        notes.push(
+            "The `mask` was left out: a painted area goes with a `retouch` of the `picture` it \
+             was painted on."
+                .into(),
+        );
+        mask = None;
     }
     let seed = match obj.get("seed") {
         None | Some(Value::Null) => None,
@@ -103,9 +123,6 @@ pub fn parse(
     };
     if seed.is_some() && picture.is_some() {
         return Err("A `seed` draws a new picture; a change to one samples afresh.".into());
-    }
-    if retouch.is_some() && picture.is_none() {
-        return Err("A `retouch` changes a picture: name it in `picture`.".into());
     }
     let mut change = SceneChange::default();
     let mut setting_photo = None;
@@ -137,7 +154,13 @@ pub fn parse(
             change.light = text(sc.get("light"), "scene.light", field)?;
             change.camera = text(sc.get("camera"), "scene.camera", field)?;
             change.style = text(sc.get("style"), "scene.style", crate::imagelib::MAX_NAME)?;
-            change.together = text(sc.get("together"), "scene.together", field)?;
+            // Clipped at a sentence rather than refused (G1b: 3 of 65).
+            change.together = match sc.get("together") {
+                Some(Value::String(t)) if t.chars().count() > field => {
+                    Some(clip_at_sentence(t.trim(), field))
+                }
+                other => text(other, "scene.together", field)?,
+            };
             if let Some(t) = sc.get("text").filter(|v| !v.is_null()) {
                 let items = t
                     .as_array()
@@ -209,6 +232,25 @@ pub fn parse(
             ));
         }
     }
+    // A relation naming one person, with nobody in `people`: that person,
+    // doing it (review T1 folds a solo relation into the one `doing`; G1b:
+    // 4 of 65 named the persona only there).
+    if change.people.is_empty() && picture.is_none() {
+        if let Some(t) = change.together.clone() {
+            let named: Vec<Who> = names_in(&t, approved, me);
+            if let [who] = named.as_slice() {
+                change.people.push(PersonChange {
+                    who: who.clone(),
+                    at: None,
+                    wearing: None,
+                    doing: Some(t),
+                    expression: None,
+                    remove: false,
+                });
+                change.together = None;
+            }
+        }
+    }
     let has_scene = change != SceneChange::default() || setting_photo.is_some();
     if picture.is_none() && !has_scene {
         return Err(
@@ -223,7 +265,59 @@ pub fn parse(
         mask,
         size,
         seed,
+        notes,
     })
+}
+
+/// A painted picture's workspace path: one plain path to an image file.
+fn looks_like_a_picture_path(t: &str) -> bool {
+    let t = t.trim();
+    let lower = t.to_lowercase();
+    t.len() <= 200
+        && t.contains('/')
+        && !t.contains(char::is_whitespace)
+        && [".png", ".jpg", ".jpeg", ".webp"]
+            .iter()
+            .any(|e| lower.ends_with(e))
+}
+
+/// `t` cut to at most `cap` characters, at the last sentence end inside it,
+/// else at the last word.
+fn clip_at_sentence(t: &str, cap: usize) -> String {
+    let head: String = t.chars().take(cap).collect();
+    let cut = head
+        .rfind(['.', '!', '?'])
+        .map(|i| i + 1)
+        .or_else(|| head.rfind(' '))
+        .unwrap_or(head.len());
+    head[..cut].trim().to_string()
+}
+
+/// The people a sentence names: the persona by any of its names, and
+/// approved library characters, each once.
+fn names_in(text: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Vec<Who> {
+    let mut out: Vec<Who> = Vec::new();
+    for word in text
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+    {
+        let key = word.to_lowercase();
+        let who = if me.names.iter().any(|n| n.trim().to_lowercase() == key)
+            || me.character.as_deref() == Some(key.as_str())
+        {
+            me.character.as_ref().map(|c| Who::Library(c.clone()))
+        } else if approved(&key) {
+            Some(Who::Library(key))
+        } else {
+            None
+        };
+        if let Some(w) = who {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+    }
+    out
 }
 
 /// Who a `who` names: the persona itself, a library character, or someone
@@ -316,6 +410,10 @@ pub struct Plan {
     pub route: &'static str,
     /// Said in the result: e.g. why a restage became an edit.
     pub said: Option<String>,
+    /// A `retouch` given beside a scene change (or for a new picture): one
+    /// more line of the render, folded in rather than refused (G1b: 13 of
+    /// 65 shape refusals were this).
+    pub also: Option<String>,
 }
 
 /// The left-to-right rank of a place in the frame; the background last.
@@ -341,6 +439,7 @@ pub fn plan(
     by: crate::scene::Origin,
     approved: &dyn Fn(&str) -> bool,
     named_in: &dyn Fn(&str) -> Vec<String>,
+    worn: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Plan, String> {
     let mut change = call.change.clone();
     if let (Some(path), Some(hash)) = (&call.setting_photo, setting_photo_hash) {
@@ -351,22 +450,51 @@ pub fn plan(
     }
     let new_picture = call.picture.is_none();
     // A new picture defines its scene; it knows who it drew.
-    let (next, delta) = Scene::apply(base, &change, by, new_picture);
-    // Someone the call introduces needs their clothes and what they do.
+    let (mut next, delta) = Scene::apply(base, &change, by, new_picture);
+    let mut notes: Vec<String> = call.notes.clone();
+    // A painted area keeps everything outside it, so it cannot carry a
+    // scene change: the change is drawn, and the mask left out and said.
+    let mask = call.mask.clone().filter(|_| delta.is_empty());
+    if call.mask.is_some() && mask.is_none() {
+        notes.push(
+            "The `mask` was left out: a scene change redraws more than a painted area.".into(),
+        );
+    }
+    // Someone the call introduces needs their clothes and what they do. A
+    // pose left out is a plain one; clothes left out are what the chat's
+    // record has them in (`worn`), else, for a library character, asked for
+    // (G1b: 8 of 65 shape refusals were a newcomer missing one of the two).
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
-        let Some(p) = next.people.iter().find(|p| &p.who.key() == key) else {
+        let Some(p) = next.people.iter_mut().find(|p| &p.who.key() == key) else {
             return Err(format!(
                 "A picture holds at most {} people; take someone out with `remove` first.",
                 crate::scene::MAX_PEOPLE
             ));
         };
-        if p.wearing.trim().is_empty() || p.doing.trim().is_empty() {
-            return Err(format!(
-                "{} is new to this picture: give what they wear and what they are doing.",
-                shown(&p.who)
-            ));
+        if p.doing.trim().is_empty() {
+            p.doing = "standing naturally".into();
+        }
+        if p.wearing.trim().is_empty() {
+            match (worn(key), &p.who) {
+                (Some(w), _) => {
+                    notes.push(format!(
+                        "{} is wearing {w}, as this chat last drew them.",
+                        shown(&p.who)
+                    ));
+                    p.wearing = w;
+                }
+                (None, Who::Described(_)) => {
+                    p.wearing = "clothes that suit the scene".into();
+                }
+                (None, Who::Library(_)) => {
+                    return Err(format!(
+                        "{} is new to this picture: give what they wear.",
+                        shown(&p.who)
+                    ))
+                }
+            }
         }
     }
     // A library name in prose is someone in the picture, or a stranger drawn
@@ -445,11 +573,15 @@ pub fn plan(
         keep: String::new(),
         seed: call.seed.map_or(Seed::Fresh, Seed::Given),
         size: call.size,
-        mask: call.mask.clone(),
+        mask,
         next,
         delta: delta.clone(),
         route: "new",
-        said: None,
+        said: (!notes.is_empty()).then(|| notes.join(" ")),
+        also: call
+            .retouch
+            .clone()
+            .filter(|_| call.picture.is_none() || !delta.is_empty()),
     };
     // A new picture: its setting is a photo (people placed in it), or words.
     let Some(picture) = call.picture.clone() else {
@@ -465,13 +597,7 @@ pub fn plan(
         return Ok(out);
     };
     // A retouch: the one free-text change to the picture itself.
-    if let Some(r) = &call.retouch {
-        if !delta.is_empty() {
-            return Err(
-                "A `retouch` is one small change on its own; change the scene in a separate call."
-                    .into(),
-            );
-        }
+    if let Some(r) = call.retouch.as_ref().filter(|_| delta.is_empty()) {
         out.render = Render::Edit {
             canvas: Canvas::Picture(picture),
             camera_moves: false,
@@ -649,11 +775,13 @@ pub fn plan(
     };
     out.route = "edited";
     if restage && !known {
-        out.said = Some(
-            "The picture's people are not known yet, so this was drawn as an edit of it rather \
-             than redrawn from its setting. Saying who is in it lets later changes redraw it."
-                .into(),
-        );
+        let line = "The picture's people are not known yet, so this was drawn as an edit of it \
+                    rather than redrawn from its setting. Saying who is in it lets later changes \
+                    redraw it.";
+        out.said = Some(match out.said.take() {
+            Some(said) => format!("{said} {line}"),
+            None => line.to_string(),
+        });
     }
     Ok(out)
 }
@@ -685,7 +813,16 @@ mod tests {
         parse(&v, &lib, &me(), false).unwrap()
     }
     fn planned(c: &Call, base: Option<&Scene>) -> Plan {
-        plan(c, base, Some("h".repeat(64)), Origin::Clean, &lib, &names).unwrap()
+        plan(
+            c,
+            base,
+            Some("h".repeat(64)),
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap()
     }
     fn landed(p: &Plan, seed: u64) -> Scene {
         let mut s = p.next.clone();
@@ -719,14 +856,16 @@ mod tests {
             );
         }
         assert!(parse(&json!({}), &lib, &me(), false).is_err());
-        assert!(parse(
+        // A mask with no retouch is left out and said (G1b), never refused.
+        let c = parse(
             &json!({"picture": "images/a.png", "mask": "inbox/m.png"}),
             &lib,
             &me(),
-            false
+            false,
         )
-        .unwrap_err()
-        .contains("goes with a `retouch`"));
+        .unwrap();
+        assert!(c.mask.is_none() && c.notes[0].contains("goes with a `retouch`"));
+        // A retouch with nothing to change and no scene is nothing to draw.
         assert!(parse(&json!({"retouch": "a red hat"}), &lib, &me(), false).is_err());
     }
 
@@ -784,16 +923,117 @@ mod tests {
             }
         );
         assert_eq!(p.route, "placed");
+        // A library newcomer with no clothes and none on record: asked for.
         let why = plan(
-            &call(json!({"scene": {"setting": "a park", "people": [{"who": "john", "wearing": "a cap"}]}})),
+            &call(json!({"scene": {"setting": "a park", "people": [{"who": "john", "doing": "jogging"}]}})),
             None,
             None,
             Origin::Clean,
             &lib,
             &names,
+            &|_| None,
         )
         .unwrap_err();
-        assert!(why.contains("John is new to this picture"), "{why}");
+        assert!(
+            why.contains("John is new to this picture: give what they wear"),
+            "{why}"
+        );
+    }
+
+    /// mecha-a3's G1b: what a model over-fills is absorbed and said, never a
+    /// shape refusal. A retouch beside a scene change rides along; a
+    /// newcomer's pose defaults and their clothes come from the chat's
+    /// record; a relation naming one person is that person; an overlong
+    /// relation is clipped; a mask that is not a painted picture's path, or
+    /// has no retouch, is left out; an empty `picture` is none.
+    #[test]
+    fn over_filled_calls_are_absorbed_not_refused() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a kitchen", "people": [
+                {"who": "maya", "wearing": "a red coat", "doing": "sitting"}]}})),
+            None,
+        );
+        let base = landed(&first, 5);
+        // a) A retouch beside a scene change.
+        let p = planned(
+            &call(
+                json!({"picture": "images/a.png", "retouch": "a vase of tulips",
+                "scene": {"people": [{"who": "maya", "wearing": "a green dress"}]}}),
+            ),
+            Some(&base),
+        );
+        assert_eq!(p.route, "edited");
+        assert_eq!(p.also.as_deref(), Some("a vase of tulips"));
+        // b) A newcomer without a pose, and with clothes on the chat's record.
+        let p = plan(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "john"}]}})),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &lib,
+            &names,
+            &|k| (k == "john").then(|| "an apron".to_string()),
+        )
+        .unwrap();
+        let john = p
+            .next
+            .people
+            .iter()
+            .find(|q| q.who.key() == "john")
+            .unwrap();
+        assert_eq!(
+            (john.wearing.as_str(), john.doing.as_str()),
+            ("an apron", "standing naturally")
+        );
+        assert!(p.said.unwrap().contains("as this chat last drew them"));
+        // A described newcomer without clothes is dressed for the scene.
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),
+            Some(&base),
+        );
+        assert!(p
+            .next
+            .people
+            .iter()
+            .any(|q| q.wearing == "clothes that suit the scene"));
+        // c) A relation naming the persona alone, with nobody in `people`.
+        let c =
+            call(json!({"scene": {"setting": "a beach", "together": "Maya waves at the viewer"}}));
+        assert_eq!(c.change.people.len(), 1);
+        assert_eq!(c.change.people[0].who, Who::Library("maya".into()));
+        assert!(c.change.together.is_none());
+        // d) An overlong relation, clipped at a sentence.
+        let long = format!(
+            "Maya and John dance. {}",
+            "They laugh and spin. ".repeat(30)
+        );
+        let c = call(
+            json!({"scene": {"setting": "a hall", "together": long, "people": [
+            {"who": "maya", "wearing": "a", "doing": "b"}, {"who": "john", "wearing": "a", "doing": "b"}]}}),
+        );
+        let t = c.change.together.unwrap();
+        assert!(
+            t.chars().count() <= crate::imagelib::MAX_CAST_FIELD && t.ends_with('.'),
+            "{t}"
+        );
+        // e) A mask that is prose, and one with no retouch.
+        let c = call(
+            json!({"picture": "images/a.png", "retouch": "a hat", "mask": "the brass weathervane"}),
+        );
+        assert!(
+            c.mask.is_none() && c.notes[0].contains("left out"),
+            "{:?}",
+            c.notes
+        );
+        let c = call(json!({"picture": "images/a.png", "mask": "inbox/m.png",
+            "scene": {"light": "dusk"}}));
+        assert!(c.mask.is_none() && !c.notes.is_empty());
+        let c =
+            call(json!({"picture": "images/a.png", "retouch": "a hat", "mask": {"camera": "low"}}));
+        assert!(c.mask.is_none());
+        // f) Empty strings are absent.
+        let c = call(json!({"picture": "", "mask": "", "scene": {"setting": "a field"}}));
+        assert!(c.picture.is_none() && c.mask.is_none());
     }
 
     /// Review of #597: someone added past the scene's bound is refused,
@@ -823,6 +1063,7 @@ mod tests {
             Origin::Clean,
             &lib,
             &names,
+            &|_| None,
         )
         .unwrap_err();
         assert!(why.contains("at most 10 people"), "{why}");
@@ -966,6 +1207,7 @@ mod tests {
             Origin::Clean,
             &lib,
             &names,
+            &|_| None,
         )
         .unwrap_err();
         assert!(why.contains("John is named in `doing`"), "{why}");
@@ -981,6 +1223,7 @@ mod tests {
             Origin::Clean,
             &lib,
             &names,
+            &|_| None,
         );
         assert!(ok.is_ok(), "{ok:?}");
     }
@@ -998,6 +1241,7 @@ mod tests {
             Origin::Clean,
             &lib,
             &names,
+            &|_| None,
         )
         .unwrap_err();
         assert!(why.contains("6 people with faces"), "{why}");
