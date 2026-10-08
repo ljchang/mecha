@@ -137,7 +137,8 @@ fn photo_setting(
     } else if said.contains(PHOTO_SETTING) {
         return Err(
             "this picture is placed on the owner's photo, and words in its setting \
-                    would replace the photo: name one of the library's styles instead"
+                    would replace the photo: say the change without restating the photo, or \
+                    name one of the library's styles for a new look"
                 .into(),
         );
     }
@@ -309,7 +310,7 @@ fn look_into(
     look: &str,
     looks: &Looks,
     scene: &mut serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let words = look.trim();
     let lower = words.to_lowercase();
     // The whole spelling first, so a style named `…-look` is found; then
@@ -320,7 +321,7 @@ fn look_into(
         .map_or(lower.as_str(), str::trim);
     if bare.is_empty() {
         // "style" alone names no look.
-        return Ok(());
+        return Ok(false);
     }
     let keys = [
         crate::imagelib::spelled_as_name(&lower),
@@ -333,13 +334,23 @@ fn look_into(
         .and_then(|r| r.style.as_ref())
         .map(|f| crate::imagelib::spelled_as_name(&f.value));
     if keys.iter().any(|k| Some(k) == current.as_ref()) {
-        return Ok(());
+        return Ok(false);
     }
     for key in keys {
         if looks.styles.contains(&key) || looks.held.contains(&key) {
             scene.insert("style".into(), key.into());
-            return Ok(());
+            return Ok(true);
         }
+    }
+    // A picture drawn in a library style keeps that style's words through a
+    // restage, and a style cannot be cleared yet: words for another look
+    // beside them would ask for both (review of #605). Refused with the way
+    // on until a style can be taken off.
+    if let Some(style) = current {
+        return Err(format!(
+            "this picture is drawn in the library style `{style}`, and a look the library has \
+             no style for cannot replace it yet: name one of the library's styles instead"
+        ));
     }
     use crate::scene::Setting;
     let base = match scene.get("setting").and_then(serde_json::Value::as_str) {
@@ -371,7 +382,7 @@ fn look_into(
         _ => format!("in the look of {words}"),
     };
     scene.insert("setting".into(), setting.into());
-    Ok(())
+    Ok(true)
 }
 
 /// [`read_extraction`], knowing the record's one person when it holds
@@ -450,12 +461,19 @@ pub fn read_extraction_for(
         }
     }
     photo_setting(&mut scene, looks.record)?;
+    let mut no_op_look = false;
     // `style` too: the record shows that key, and a reader without the
     // schema answers in it (review of #605).
     match obj.get("look").or_else(|| obj.get("style")) {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
-        Some(serde_json::Value::String(t)) => look_into(t, looks, &mut scene)?,
+        Some(serde_json::Value::String(t)) => {
+            if !look_into(t, looks, &mut scene)? {
+                // A look that changes nothing (the picture's own style, or
+                // "style" alone) was said, and understood: another try.
+                no_op_look = true;
+            }
+        }
         Some(_) => return Err("`look` was not text".into()),
     }
     let retouch = match obj.get("retouch") {
@@ -468,13 +486,17 @@ pub fn read_extraction_for(
     // (mecha-a3's G1).
     // Keys present but empty or null are nothing asked, as a schema-held
     // model writes "nothing changed" (review of #598): another try.
-    let said_something = obj.values().any(|v| match v {
-        serde_json::Value::Null => false,
-        serde_json::Value::String(t) => !t.trim().is_empty(),
-        serde_json::Value::Array(a) => !a.is_empty(),
-        serde_json::Value::Object(o) => !o.is_empty(),
-        _ => true,
-    });
+    let said_something = obj
+        .iter()
+        .filter(|(k, _)| !(no_op_look && (*k == "look" || *k == "style")))
+        .map(|(_, v)| v)
+        .any(|v| match v {
+            serde_json::Value::Null => false,
+            serde_json::Value::String(t) => !t.trim().is_empty(),
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::Object(o) => !o.is_empty(),
+            _ => true,
+        });
     if scene.is_empty() && retouch.is_none() && said_something {
         let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
         return Err(format!(
@@ -793,6 +815,18 @@ mod tests {
         let e =
             read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
         assert_eq!(e.scene["style"], "secret-wash");
+        // Over a picture drawn in a library style, words for an unheld look
+        // would ask for both: refused, naming the way on, until a style can
+        // be taken off.
+        let why =
+            read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &held).unwrap_err();
+        assert!(
+            why.contains("drawn in the library style `secret-wash`"),
+            "{why}"
+        );
+        // The picture's own style said alone is understood: another try.
+        let e = read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &held).unwrap();
+        assert!(e.scene.is_empty() && e.retouch.is_none(), "{:?}", e.scene);
     }
 
     /// The photo stand-in said alone is the record restated and left out;
