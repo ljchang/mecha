@@ -250,8 +250,15 @@ pub fn parse(
     // 4 of 65 named the persona only there), on a new picture or a change.
     if change.people.is_empty() {
         if let Some(t) = change.together.clone() {
+            // Only the persona: someone is drawn only when listed in
+            // `people` (owner, 2026-10-08), and the measured case was the
+            // persona naming itself (review of #597, pass 8).
             let named: Vec<Who> = names_in(&t, approved, me);
-            if let [who] = named.as_slice() {
+            let mine = me.character.as_ref().map(|c| Who::Library(c.clone()));
+            let folded = mine
+                .as_ref()
+                .filter(|m| named.len() == 1 && named[0] == **m);
+            if let Some(who) = folded {
                 // The relation names them; as their own `doing` it reads
                 // without the name, or an edit line says "Have Maya Maya
                 // waves" (review of #597, pass 7).
@@ -289,17 +296,21 @@ pub fn parse(
 /// `text` with each whole-word mention of `names` (library keys, any case,
 /// possessives kept) read as "the viewer": what the image model reads for
 /// someone named but not in the picture. The words the picture renders
-/// (`keep`, from `scene.text`) are left exactly as written, found by their
-/// own text rather than by quote marks, so a stray `"` elsewhere can never
-/// switch the rewrite off (review of #597, pass 7).
+/// (`keep`, from `scene.text`) are left exactly as written, found as their
+/// own quoted phrase, so neither a stray `"` elsewhere (review of #597,
+/// pass 7) nor a rendered word that is also a name (pass 8) can switch the
+/// rewrite off anywhere else.
 pub fn as_viewer(text: &str, names: &[String], keep: &[&str]) -> String {
     if names.is_empty() {
         return text.to_string();
     }
     // Each rendered phrase, set aside under a marker no prompt holds.
     let mut held = text.to_string();
+    // Only the phrase as the prompt renders it, in its own quotes: a bare
+    // substring ("John", or "o") would shield the name everywhere else in
+    // the prompt (review of #597, pass 8).
     for (i, k) in keep.iter().enumerate().filter(|(_, k)| !k.is_empty()) {
-        held = held.replace(k, &format!("\u{E000}{i}\u{E000}"));
+        held = held.replace(&format!("\"{k}\""), &format!("\"\u{E000}{i}\u{E000}\""));
     }
     let mut out = String::with_capacity(held.len());
     let mut word = String::new();
@@ -848,10 +859,12 @@ pub fn plan(
         }
     }
     for key in &delta.removed {
-        lines.push(format!(
-            "Take {} out of the picture.",
-            crate::imagegen::capitalized(key)
-        ));
+        // Named as the record names them: a described person by their words.
+        let name = base
+            .and_then(|b| b.people.iter().find(|p| &p.who.key() == key))
+            .map(|p| shown(&p.who))
+            .unwrap_or_else(|| crate::imagegen::capitalized(key));
+        lines.push(format!("Take {name} out of the picture."));
     }
     for who in &unknown_removes {
         lines.push(format!("Take {who} out of the picture."));
@@ -1157,6 +1170,19 @@ mod tests {
             as_viewer("A 32\" screen; Maya waves at John.", &names, &[]),
             "A 32\" screen; Maya waves at the viewer."
         );
+        // A rendered word that is also a name shields only itself.
+        assert_eq!(
+            as_viewer(
+                "Maya waves at John. The words \"John\" appear.",
+                &names,
+                &["John", "o"]
+            ),
+            "Maya waves at the viewer. The words \"John\" appear."
+        );
+        // The fold is the persona's only: another library name in a relation
+        // is not drawn from it.
+        let c = call(json!({"scene": {"setting": "a beach", "together": "John waves at the sea"}}));
+        assert!(c.change.people.is_empty());
         let c = call(json!({"scene": {"setting": "a beach", "together": "Maya waves at the sea"}}));
         assert_eq!(
             c.change.people[0].doing.as_deref(),
