@@ -1014,6 +1014,22 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   description beside the pointer 0.78 (E1). So `compile` sends each cast
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
+- **A persona's picture call is filled with what it left out of the
+  owner's ask** (`persona::edit::SceneReader`). A persona copies its own
+  earlier calls, which turn into bare lists of who stands where, so the
+  owner's ask reached the call in 3 of 25 replays. On a typed persona turn
+  the host stamps `ToolCtx::scene_reader`: the edit panel's reader over the
+  owner's words and the persona's latest reply, with one sentence ranking
+  the owner's words first, against the picture before the turn. Only a
+  `together`, and each named person's `doing` and `wearing`, are merged,
+  and only where the call has none. 25 of 25 carried the ask, and an open
+  "show me what you want" came back in the persona's own words, 10 of 10
+  (mecha-a3, 2026-10-08). Merged words are stamped with the conversation's
+  origin like the call's own, never clean for being the harness's pass, and
+  the manifest says what was merged (`reader`). Not on a panel turn, whose
+  reader has already drawn the change. Rewriting the persona's earlier calls
+  as full scenes was measured and dropped: its effect came from key order,
+  1 of 25 as the wire sorts them.
 - **A scene whose people act together is drawn from each person's own
   part** (`roles`). A persona puts the whole act in `together` and poses
   nobody; read as one sentence, the image model draws a lineup in list order

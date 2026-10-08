@@ -2233,6 +2233,70 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
     out.join(" ")
 }
 
+/// The reader's change merged into a persona's call where the call is
+/// silent: a `together` when it has none, and each person's `doing` and
+/// `wearing` when theirs has none, for people the call already names (mecha-
+/// a3's rule b). Nothing else: setting, light, camera and look stay the
+/// call's. What was merged, for the manifest.
+fn merge_read(
+    change: &mut crate::scene::SceneChange,
+    read: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    let mut merged = Vec::new();
+    if change.together.is_none() {
+        if let Some(t) = read
+            .get("together")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            change.together = Some(t.to_string());
+            merged.push("together".to_string());
+        }
+    }
+    let said = read
+        .get("people")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (mut doings, mut wearings) = (0, 0);
+    for p in change.people.iter_mut().filter(|p| !p.remove) {
+        let names = [p.who.key(), crate::picture::shown(&p.who).to_lowercase()];
+        let Some(r) = said.iter().find(|r| {
+            r["who"]
+                .as_str()
+                .is_some_and(|w| names.iter().any(|n| n.eq_ignore_ascii_case(w.trim())))
+        }) else {
+            continue;
+        };
+        let text = |k: &str| {
+            r[k].as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+        };
+        if p.doing.is_none() {
+            if let Some(d) = text("doing") {
+                p.doing = Some(d);
+                doings += 1;
+            }
+        }
+        if p.wearing.is_none() {
+            if let Some(w) = text("wearing") {
+                p.wearing = Some(w);
+                wearings += 1;
+            }
+        }
+    }
+    if doings > 0 {
+        merged.push(format!("doing×{doings}"));
+    }
+    if wearings > 0 {
+        merged.push(format!("wearing×{wearings}"));
+    }
+    merged
+}
+
 /// How long a picture waits for its people's parts (`roles`) before it is
 /// drawn as the call said it.
 const ROLE_SPLIT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -2568,6 +2632,38 @@ impl Tool for ImageGenerate {
             None => None,
         };
         let photo_hash = photo.as_ref().map(|r| crate::scene::hash(&r.bytes));
+        // What the persona's own call left out of the owner's ask, read on
+        // the host's reader and merged in: only a `together`, and each
+        // person's `doing` and `wearing`, where the call has none, for people
+        // the call names. The merged words are stamped like the call's own
+        // (`by`, from the conversation's taint), never clean for being the
+        // harness's pass (mecha-05). Before `plan`, so a merged `together`
+        // then splits into parts (`roles`).
+        let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
+            (Some(reader), false) => {
+                let record = base
+                    .clone()
+                    .or_else(|| ctx.scene.as_ref().and_then(|s| s.current()));
+                let read = tokio::time::timeout(ROLE_SPLIT_TIMEOUT, reader.read(record.as_ref()))
+                    .await
+                    .unwrap_or_else(|_| Err("the reader took too long".into()));
+                Some(match read {
+                    Ok(extracted) => {
+                        let merged = merge_read(&mut call.change, &extracted.scene);
+                        if merged.is_empty() {
+                            "nothing to merge".to_string()
+                        } else {
+                            format!("merged: {}", merged.join(", "))
+                        }
+                    }
+                    Err(why) => {
+                        tracing::warn!("image_generate: scene reader: {why}");
+                        format!("fell back: {why}")
+                    }
+                })
+            }
+            _ => None,
+        };
         let by = crate::scene::Origin::of(ctx.taint.as_ref());
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
         // What the chat last drew each person in: clothes a newcomer's call
@@ -3286,6 +3382,7 @@ impl Tool for ImageGenerate {
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
                 "roles": roles_said,
+                "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
                 "model": {
@@ -6522,6 +6619,123 @@ mod tests {
         let p = last_prompt(&seen);
         assert!(p.contains("a red coat"), "{p}");
         assert!(!p.contains("standing naturally"), "{p}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// The reader's change fills only what the call left out: a `together`,
+    /// and each named person's `doing` and `wearing`; never someone the call
+    /// does not name, and never the setting.
+    #[test]
+    fn a_read_fills_only_what_the_call_left_out() {
+        let mut change = crate::scene::SceneChange {
+            together: None,
+            people: vec![
+                crate::scene::PersonChange {
+                    who: crate::scene::Who::Library("maya".into()),
+                    at: None,
+                    wearing: None,
+                    doing: Some("waving".into()),
+                    expression: None,
+                    remove: false,
+                },
+                crate::scene::PersonChange {
+                    who: crate::scene::Who::Library("john".into()),
+                    at: None,
+                    wearing: None,
+                    doing: None,
+                    expression: None,
+                    remove: false,
+                },
+            ],
+            ..Default::default()
+        };
+        let read = json!({
+            "together": "Maya and John dance",
+            "setting": "a ballroom",
+            "people": [
+                {"who": "Maya", "doing": "spinning", "wearing": "a red dress"},
+                {"who": "John", "doing": "leading the dance"},
+                {"who": "Wren", "doing": "watching"}
+            ]
+        });
+        let merged = merge_read(&mut change, read.as_object().unwrap());
+        assert_eq!(change.together.as_deref(), Some("Maya and John dance"));
+        assert_eq!(
+            change.people[0].doing.as_deref(),
+            Some("waving"),
+            "hers is kept"
+        );
+        assert_eq!(change.people[0].wearing.as_deref(), Some("a red dress"));
+        assert_eq!(change.people[1].doing.as_deref(), Some("leading the dance"));
+        assert_eq!(change.people.len(), 2, "nobody added");
+        assert!(change.setting.is_none(), "the setting stays the call's");
+        assert_eq!(merged, ["together", "doing×1", "wearing×1"]);
+    }
+
+    /// A reader that answers as told, standing in for the persona host's.
+    #[derive(Debug)]
+    struct FakeReader(std::result::Result<serde_json::Value, String>);
+
+    #[async_trait]
+    impl crate::persona::edit::SceneReader for FakeReader {
+        async fn read(
+            &self,
+            _record: Option<&crate::scene::Scene>,
+        ) -> std::result::Result<crate::persona::edit::Extracted, String> {
+            self.0.clone().map(|v| crate::persona::edit::Extracted {
+                scene: v.as_object().cloned().unwrap_or_default(),
+                retouch: None,
+                left_out: None,
+            })
+        }
+    }
+
+    /// A persona's bare call is drawn with what the reader found it left
+    /// out, stamped with the conversation's own origin (an untrusted turn's
+    /// merged words land untrusted), and said in the manifest; a reader that
+    /// fails leaves the call as sent.
+    #[tokio::test]
+    async fn a_bare_call_is_filled_from_the_turns_words() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.taint = Some(crate::agent::Taint {
+            private: false,
+            untrusted: true,
+        });
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
+            "together": "Maya hands John a bunch of tulips"
+        })))));
+        let call = json!({"scene": {"setting": "a park",
+            "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}});
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(last_prompt(&seen).contains("bunch of tulips"));
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        let together = landed.together.unwrap();
+        assert_eq!(together.value, "Maya hands John a bunch of tulips");
+        assert_eq!(together.origin, crate::scene::Origin::Untrusted);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "merged: together"
+        );
+        // A reader that fails leaves the call as sent.
+        cx.scene_reader = Some(Arc::new(FakeReader(Err("no answer".into()))));
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!last_prompt(&seen).contains("tulips"));
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "fell back: no answer"
+        );
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }

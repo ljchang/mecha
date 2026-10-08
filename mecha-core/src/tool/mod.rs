@@ -794,6 +794,10 @@ pub struct ToolCtx {
     /// `image_generate` uses it for the prompt only; `None` everywhere else,
     /// which draws the scene as the call said it (`roles`).
     pub role_split: Option<std::sync::Arc<dyn crate::roles::RoleSplit>>,
+    /// Who reads this turn's ask (the owner's words and the persona's latest
+    /// reply) for what a picture call left out, in a persona chat; `None`
+    /// everywhere else (`persona::edit::SceneReader`).
+    pub scene_reader: Option<std::sync::Arc<dyn crate::persona::edit::SceneReader>>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -981,6 +985,7 @@ impl Default for ToolCtx {
             stage_locked: false,
             scene: None,
             role_split: None,
+            scene_reader: None,
         }
     }
 }

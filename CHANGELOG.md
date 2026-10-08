@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A persona's picture shows what you asked for.** A persona copying its
+  own earlier picture calls often left your request out, drawing the same
+  scene again. Each picture call is now checked against your words and the
+  persona's last reply, and whatever the call left out (what people do,
+  what they wear) is filled in. When you ask what the persona would like,
+  the picture follows what it said.
 - **Pictures of people doing something together put each of them in their
   own part.** A persona describing an act between two or three people used
   to get a lineup, with the act applied between neighbours and sometimes a
