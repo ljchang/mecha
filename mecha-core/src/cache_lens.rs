@@ -107,7 +107,12 @@ impl CacheLens {
         let total_input = usage.total_input();
         let current = Prev {
             system: hash_of(&request.system),
-            tools: hash_of(&request.tools),
+            // The tool choice rides with the tools: a provider that keys its
+            // message cache on it (Anthropic lists it as invalidating the
+            // message blocks) re-reads the history on a closing request, and
+            // that is a surface change the harness made, never the
+            // unexplained drop this lens exists to isolate (review of #596).
+            tools: hash_of(&(&request.tools, format!("{:?}", request.tool_choice))),
             messages,
             total_input,
             notes_input: (total_input as f64 * notes_bytes as f64 / total_bytes.max(1) as f64)
@@ -226,6 +231,7 @@ mod tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
     }
 
@@ -269,6 +275,7 @@ mod tests {
             messages.last_mut().unwrap().content.push(note.clone());
             CompletionRequest {
                 trailing_notes: 1,
+                tool_choice: crate::message::ToolChoice::Auto,
                 ..request(messages)
             }
         };
@@ -318,6 +325,24 @@ mod tests {
         }];
         assert_eq!(
             lens.observe(&second, &usage(18_000, 500, 0)),
+            Verdict::SurfaceChanged {
+                system: false,
+                tools: true
+            }
+        );
+    }
+
+    /// A closing request asks for words (`ToolChoice::None`): a provider
+    /// that re-reads the history for it is reading a change the harness
+    /// made, said as one (review of #596).
+    #[test]
+    fn a_changed_tool_choice_is_an_expected_break_not_a_drop() {
+        let mut lens = CacheLens::new();
+        lens.observe(&request(convo(1)), &usage(8, 18_000, 0));
+        let mut closing = request(convo(2));
+        closing.tool_choice = crate::message::ToolChoice::None;
+        assert_eq!(
+            lens.observe(&closing, &usage(18_000, 500, 0)),
             Verdict::SurfaceChanged {
                 system: false,
                 tools: true

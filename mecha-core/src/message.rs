@@ -395,6 +395,26 @@ pub struct CompletionRequest {
     /// them, so a provider that marks a moving cache breakpoint puts it on
     /// the block before them: a cache write on a note is never read back.
     pub trailing_notes: usize,
+    /// Whether the model may call a tool on this request. `None` keeps the
+    /// tools listed and asks the model to answer in words: how a run ends
+    /// cleanly once its picture is queued (`IMAGE-DESIGN.md` §5.5). On
+    /// llama-server the cached prefix survives it, where removing the tools
+    /// re-sent the whole context: 12,277 tokens against 4, measured there on
+    /// 2026-10-07. Not measured on Anthropic, whose caching rules list a
+    /// `tool_choice` change as invalidating the cached message blocks; the
+    /// cache lens counts it as a surface change either way.
+    pub tool_choice: ToolChoice,
+}
+
+/// Whether a request lets the model call a tool.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolChoice {
+    /// The model may call any listed tool, or answer. What every request did
+    /// before this existed, and what a provider sends nothing for.
+    #[default]
+    Auto,
+    /// The model must answer in words; the tools stay listed.
+    None,
 }
 
 #[derive(Debug, Clone)]
