@@ -55,9 +55,14 @@ pub const FACT_STEM: &str = "(From the harness: the owner changed a picture from
 /// into the owner's turn, so the transcript stays valid (no `tool_use` the
 /// model did not make) and the page draws the card from it.
 pub fn fact(picture: &str, change: &str, result: &str) -> String {
+    // One line before the result, whatever the owner typed: the card finds
+    // the result after the first newline (review of #598).
+    let one_line = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
     format!(
-        "{FACT_STEM}, and the harness drew it, not you. The picture: {picture}. The change: \
-         {change}.)\n{result}"
+        "{FACT_STEM}, and the harness drew it, not you. The picture: {}. The change: {}.)\n\
+         {result}",
+        one_line(picture),
+        one_line(change)
     )
 }
 
@@ -306,7 +311,16 @@ pub fn read_extraction_for(
     // Only an answer with nothing in it is "another try" (§5.3 step 5). One
     // whose keys this reader could not use is a failure, said, never a redraw
     // (mecha-a3's G1).
-    if scene.is_empty() && retouch.is_none() && !obj.is_empty() {
+    // Keys present but empty or null are nothing asked, as a schema-held
+    // model writes "nothing changed" (review of #598): another try.
+    let said_something = obj.values().any(|v| match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(t) => !t.trim().is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(o) => !o.is_empty(),
+        _ => true,
+    });
+    if scene.is_empty() && retouch.is_none() && said_something {
         let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
         return Err(format!(
             "the answer held nothing this change can use (it gave {})",
@@ -430,6 +444,12 @@ mod tests {
             serde_json::json!({"picture": "images/a.png"})
         );
         assert_eq!(e.summary(), "drawn again");
+        // Keys a schema-held model sends empty are nothing asked, too.
+        let e = read_extraction(r#"{"light": null, "camera": "", "people": []}"#, &known).unwrap();
+        assert_eq!(e.call("p"), serde_json::json!({"picture": "p"}));
+        // A newline in what the owner typed never moves the result's line.
+        let f = fact("images/a.png", "a red\nscarf", "image: images/b.png");
+        assert_eq!(fact_result(&f), Some("image: images/b.png"));
         // A retouch beside a scene change is left out and said.
         let e =
             read_extraction(r#"{"light": "dusk", "retouch": "a red umbrella"}"#, &known).unwrap();

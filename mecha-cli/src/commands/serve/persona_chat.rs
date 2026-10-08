@@ -3681,6 +3681,11 @@ impl PersonaChats {
                             tracing::warn!("a panel edit's fact was not recorded: {e:#}");
                         }
                         before = conversation.messages.clone().into();
+                        // The arming the draw may have done, checkpointed with
+                        // the fact, not only after the reply (review of #598).
+                        if let Err(e) = session.append(&Record::Taint(conversation.taint)) {
+                            tracing::warn!("a panel edit's taint was not recorded: {e:#}");
+                        }
                         cx.close_with = Some(if drawn {
                             mecha_core::agent::Closing {
                                 line: mecha_core::persona::edit::DONE,
@@ -4195,9 +4200,26 @@ pub struct SendBody {
     #[serde(default)]
     attachments: Vec<String>,
     /// The picture edit panel sent this turn (`persona::edit`, IMAGE-DESIGN.md
-    /// §5.3): what the harness draws, as fields.
-    #[serde(default)]
+    /// §5.3): what the harness draws, as fields. A page loaded before this
+    /// shape sends `true`, read as no edit rather than refusing the whole
+    /// message (review of #598: a stale tab across a deploy).
+    #[serde(default, deserialize_with = "panel_edit_or_flag")]
     edit: Option<PanelEdit>,
+}
+
+/// `edit` as fields, or the older page's bare flag, which carries none.
+fn panel_edit_or_flag<'de, D>(d: D) -> Result<Option<PanelEdit>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        Some(serde_json::Value::Object(_)) => {
+            Some(serde_json::from_value(v.unwrap()).map_err(serde::de::Error::custom)?)
+        }
+        _ => None,
+    })
 }
 
 /// A turn the picture edit panel sent: the picture, the owner's painted
@@ -5710,6 +5732,11 @@ mod tests {
         };
         turn_as(&w, &key, "Edit images/a.png: make the sky pink", Some(edit)).await;
 
+        assert_eq!(
+            w.drawn_untrusted.lock().unwrap().clone(),
+            vec![false],
+            "no record, no arming: the guard is two-sided"
+        );
         let drawn = w.drawn.lock().unwrap().clone();
         assert_eq!(
             drawn,
@@ -5820,6 +5847,20 @@ mod tests {
         };
         turn_as(&w, &key, "Edit images/a.png: make it night", Some(edit)).await;
         assert_eq!(w.drawn_untrusted.lock().unwrap().clone(), vec![true]);
+    }
+
+    /// A page loaded before the edit's fields sends `"edit": true`: read as
+    /// no edit, never a refused message, across a deploy (review of #598).
+    #[test]
+    fn a_stale_pages_edit_flag_is_read_as_no_edit() {
+        let old: SendBody =
+            serde_json::from_str(r#"{"text": "Edit images/a.png: x", "edit": true}"#).unwrap();
+        assert!(old.edit.is_none());
+        let new: SendBody = serde_json::from_str(
+            r#"{"text": "Edit images/a.png: x", "edit": {"picture": "images/a.png", "words": "x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(new.edit.unwrap().picture, "images/a.png");
     }
 
     /// A name the library does not hold is not drawn as a stranger: nothing
