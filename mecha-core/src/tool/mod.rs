@@ -783,10 +783,11 @@ pub struct ToolCtx {
     /// proposing tool may only add the lock with it, never remove one.
     pub stage_locked: bool,
     /// Where this chat's scene lives (`scene::SceneSlot`), stamped by a
-    /// persona chat's front end, never by a model. `image_generate` advances
-    /// it when a render lands and looks an attached picture up in its index.
-    /// `None` everywhere else, the assistant's chats and incognito included,
-    /// which keep no scene (IMAGE-SCENE-DESIGN.md §5.1).
+    /// served chat's front end, never by a model: a persona chat's, the
+    /// assistant's web chat's, and an incognito chat's in its room
+    /// (IMAGE-DESIGN.md §6, one path). `image_generate` advances it when a
+    /// render lands and looks a picture up in its index by its bytes. `None`
+    /// where no front end stamps one (the TUI, the REPL, Slack, `mecha run`).
     pub scene: Option<crate::scene::SceneSlot>,
 }
 

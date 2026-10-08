@@ -282,6 +282,35 @@ pub fn parse(
     })
 }
 
+/// `text` with each whole-word mention of `names` (library keys, any case,
+/// possessives kept) read as "the viewer": what the image model reads for
+/// someone named but not in the picture.
+pub fn as_viewer(text: &str, names: &[String]) -> String {
+    if names.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if names.iter().any(|n| n.eq_ignore_ascii_case(word)) {
+            out.push_str("the viewer");
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '-' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// A painted picture's workspace path: one plain path to an image file.
 fn looks_like_a_picture_path(t: &str) -> bool {
     let t = t.trim();
@@ -427,6 +456,9 @@ pub struct Plan {
     /// more line of the render, folded in rather than refused (G1b: 13 of
     /// 65 shape refusals were this).
     pub also: Option<String>,
+    /// Library characters named in the words but not in the picture: never
+    /// drawn, and "the viewer" in what the image model reads ([`as_viewer`]).
+    pub offstage: Vec<String>,
 }
 
 /// The left-to-right rank of a place in the frame; the background last.
@@ -571,21 +603,30 @@ pub fn plan(
     // a name may well be someone already in it, and an edit keeps their face
     // from the canvas (mecha-a3's G1).
     let checks_names = new_picture || known_before;
-    for (field, text) in prose.iter().filter(|_| checks_names) {
+    // Someone is drawn only when listed in `people` (the owner's ruling,
+    // 2026-10-08). A library name in the words for someone not in the
+    // picture is not drawn and not refused: it reaches the image model as
+    // "the viewer", so no stranger is drawn under it (E1), and the result
+    // says so. A persona addressing the owner by name ("…with Luke
+    // watching") was every G1b refusal.
+    let mut offstage: Vec<String> = Vec::new();
+    for (_, text) in prose.iter().filter(|_| checks_names) {
         for name in named_in(text) {
-            if approved(&name) && !in_picture.contains(&name) {
-                let how = if *field == "retouch" {
-                    "add them in a call of their own, in `scene.people` with what they wear and \
-                     do (a retouch goes on its own)"
-                } else {
-                    "add them to `scene.people` with what they wear and do"
-                };
-                return Err(format!(
-                    "{} is named in `{field}` but is not in the picture: {how}.",
-                    crate::imagegen::capitalized(&name)
-                ));
+            if approved(&name) && !in_picture.contains(&name) && !offstage.contains(&name) {
+                offstage.push(name);
             }
         }
+    }
+    if !offstage.is_empty() {
+        let named: Vec<String> = offstage
+            .iter()
+            .map(|k| crate::imagegen::capitalized(k))
+            .collect();
+        notes.push(format!(
+            "{} named in the words but not in the picture, so not drawn: the image model was \
+             told \"the viewer\". To draw them, put them in `scene.people`.",
+            named.join(", ")
+        ));
     }
     let mut people = next.people.clone();
     people.sort_by_key(|p| rank(p.at));
@@ -604,6 +645,13 @@ pub fn plan(
         ));
     }
     let base_seed = base.and_then(|b| b.seed);
+    // Whether the scene has words to draw it afresh from: a restage or a
+    // redraw drawn new needs them, or it draws an empty scene (review of
+    // #597, pass 3; #591's `on_place` was this rule).
+    let words_setting = matches!(
+        next.setting.as_ref().map(|f| &f.value),
+        Some(Setting::Words { .. })
+    );
     let setting_photo = match next.setting.as_ref().map(|f| &f.value) {
         Some(Setting::Photo { path, .. }) => Some(path.clone()),
         _ => None,
@@ -624,7 +672,8 @@ pub fn plan(
         also: call
             .retouch
             .clone()
-            .filter(|_| call.picture.is_none() || !delta.is_empty()),
+            .filter(|_| call.picture.is_none() || !delta.is_empty() || !unknown_removes.is_empty()),
+        offstage,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
     let Some(picture) = call.picture.clone() else {
@@ -640,7 +689,11 @@ pub fn plan(
         return Ok(out);
     };
     // A retouch: the one free-text change to the picture itself.
-    if let Some(r) = call.retouch.as_ref().filter(|_| delta.is_empty()) {
+    if let Some(r) = call
+        .retouch
+        .as_ref()
+        .filter(|_| delta.is_empty() && unknown_removes.is_empty())
+    {
         out.render = Render::Edit {
             canvas: Canvas::Picture(picture),
             camera_moves: false,
@@ -664,9 +717,10 @@ pub fn plan(
                 keep: "the room and its furniture".into(),
                 ..out
             },
-            (None, true) => out,
-            // No record: there is no scene to redraw, only the picture.
-            (None, false) => Plan {
+            (None, true) if words_setting => out,
+            // No record, or one with no setting to draw from: there is no
+            // scene to redraw, only the picture.
+            (None, _) => Plan {
                 render: Render::Edit {
                     canvas: Canvas::Picture(picture),
                     camera_moves: false,
@@ -681,7 +735,7 @@ pub fn plan(
     }
     let restage = delta.restages() || delta.style;
     let known = out.next.people_known;
-    if restage && known {
+    if restage && known && (setting_photo.is_some() || words_setting) {
         out.route = "restaged";
         return Ok(match setting_photo {
             Some(photo) => Plan {
@@ -693,12 +747,18 @@ pub fn plan(
                 keep: "the room and its furniture".into(),
                 ..out
             },
+            // At another latent size the base seed cannot hold the room, so
+            // a restage that names a size samples afresh (§5.2).
             None => Plan {
-                seed: base_seed.map_or(Seed::Fresh, Seed::Base),
+                seed: match (call.size, base_seed) {
+                    (None, Some(seed)) => Seed::Base(seed),
+                    _ => Seed::Fresh,
+                },
                 ..out
             },
         });
     }
+    let no_setting = restage && known;
     // An edit of the current picture: clothes, an expression, someone added,
     // the words it renders, or a restage on a picture whose people are not
     // known yet.
@@ -813,7 +873,10 @@ pub fn plan(
     let mut keep: Vec<&str> = Vec::new();
     if delta.style {
         keep.push("the people and what they are doing");
-    } else if touched.is_empty() && delta.removed.is_empty() {
+    } else if delta.together {
+        // A relation moves the people it names; only their clothes stay.
+        keep.push("everyone's clothes");
+    } else if touched.is_empty() && delta.removed.is_empty() && unknown_removes.is_empty() {
         keep.push("the people, their clothes and poses");
     } else {
         keep.push("everyone else as they are");
@@ -833,10 +896,14 @@ pub fn plan(
         None => String::new(),
     };
     out.route = "edited";
-    if restage && !known {
-        let line = "The picture's people are not known yet, so this was drawn as an edit of it \
-                    rather than redrawn from its setting. Saying who is in it lets later changes \
-                    redraw it.";
+    if restage && (!known || no_setting) {
+        let line = if no_setting {
+            "The scene has no setting to redraw it from, so this was drawn as an edit of the \
+             picture. Giving `scene.setting` lets later changes redraw it."
+        } else {
+            "The picture's people are not known yet, so this was drawn as an edit of it rather \
+             than redrawn from its setting. Saying who is in it lets later changes redraw it."
+        };
         out.said = Some(match out.said.take() {
             Some(said) => format!("{said} {line}"),
             None => line.to_string(),
@@ -996,6 +1063,67 @@ mod tests {
         .unwrap();
         assert_eq!(p.next.people[0].wearing, "clothes that suit the scene");
         assert!(p.said.unwrap().contains("John had no clothes given"));
+    }
+
+    /// A restage that names a size draws at a fresh seed: the base seed holds
+    /// the room only at the same latent size (§5.2).
+    #[test]
+    fn a_restage_that_names_a_size_samples_afresh() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a study", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "reading"}]}})),
+            None,
+        );
+        let base = landed(&first, 21);
+        let on = |v: Value| planned(&call(v), Some(&base));
+        let p = on(json!({"picture": "images/a.png", "scene": {"camera": "from above"}}));
+        assert_eq!((p.route, p.seed), ("restaged", Seed::Base(21)));
+        let p = on(
+            json!({"picture": "images/a.png", "size": "landscape", "scene": {"camera": "from above"}}),
+        );
+        assert_eq!((p.route, p.seed), ("restaged", Seed::Fresh));
+    }
+
+    /// Review of #597, pass 3: a restage of a scene with no setting is an
+    /// edit, said, never a new picture from an empty scene; the keep
+    /// sentence never keeps the people a removal or a relation moves; a
+    /// retouch beside a removal on a picture with no record rides along.
+    #[test]
+    fn a_scene_without_a_setting_restages_as_an_edit_and_keeps_honestly() {
+        let first = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {"people": [
+                {"who": "maya", "wearing": "a coat", "doing": "standing"}]}})),
+            None,
+        );
+        let base = landed(&first, 9);
+        assert!(base.people_known && base.setting.is_none());
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"camera": "from a low angle"}})),
+            Some(&base),
+        );
+        assert_eq!(p.route, "edited");
+        assert!(matches!(p.render, Render::Edit { .. }));
+        assert!(p.said.unwrap().contains("no setting to redraw it from"));
+        // A removal on a picture with no record keeps everyone else.
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "retouch": "a red hat",
+                "scene": {"people": [{"who": "a man in a hat", "remove": true}]}})),
+            None,
+        );
+        assert!(!p.keep.contains("the people, their clothes"), "{}", p.keep);
+        assert_eq!(p.also.as_deref(), Some("a red hat"));
+        // A relation keeps only the clothes.
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/two.jpg", "scene": {"together": "Maya and John wave at each other"}}),
+            ),
+            None,
+        );
+        assert!(
+            p.keep.contains("everyone's clothes") && !p.keep.contains("poses"),
+            "{}",
+            p.keep
+        );
     }
 
     /// mecha-a3's G1b and G1: `self` and the persona's own name are one
@@ -1353,11 +1481,14 @@ mod tests {
         assert!(p.said.unwrap().contains("not known yet"));
     }
 
-    /// A library name in prose is someone in the picture, or refused; in
-    /// `together` it is expected.
+    /// Someone is drawn only when listed in `people` (the owner's ruling,
+    /// 2026-10-08): a library name in the words for someone not in the
+    /// picture is not refused and not drawn; it is "the viewer" to the image
+    /// model, and said. In `together` between two listed people it is as
+    /// written.
     #[test]
-    fn a_name_in_prose_must_be_someone_in_the_picture() {
-        let why = plan(
+    fn a_name_in_prose_for_someone_not_drawn_is_the_viewer() {
+        let p = plan(
             &call(json!({"scene": {"setting": "a park", "people": [
                 {"who": "maya", "wearing": "a coat", "doing": "holding hands with John"}]}})),
             None,
@@ -1367,8 +1498,16 @@ mod tests {
             &names,
             &|_| None,
         )
-        .unwrap_err();
-        assert!(why.contains("John is named in `doing`"), "{why}");
+        .unwrap();
+        assert_eq!(p.offstage, vec!["john".to_string()]);
+        assert!(p
+            .said
+            .unwrap()
+            .contains("John named in the words but not in the picture"));
+        assert_eq!(
+            as_viewer("Maya holds hands with John, by John's bench.", &p.offstage),
+            "Maya holds hands with the viewer, by the viewer's bench."
+        );
         let ok = plan(
             &call(
                 json!({"scene": {"setting": "a park", "together": "Maya and John hold hands",
@@ -1382,8 +1521,9 @@ mod tests {
             &lib,
             &names,
             &|_| None,
-        );
-        assert!(ok.is_ok(), "{ok:?}");
+        )
+        .unwrap();
+        assert!(ok.offstage.is_empty());
     }
 
     /// More faces than one picture draws are refused, naming them; people
