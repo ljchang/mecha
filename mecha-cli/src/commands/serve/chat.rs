@@ -2655,6 +2655,13 @@ fn begin_turn(
         shell_registry: ws.session.room().map(|room| room.shells.clone()),
         // And its image jobs are recorded there, for a sweep to take back.
         image_trail: ws.session.room().map(|room| room.image_trail.clone()),
+        // The chat's scene (IMAGE-DESIGN.md §6, one path): a kept chat's
+        // beside its transcript, an incognito chat's in its room, never
+        // written back (R9). Stamped here, never by a model.
+        scene: Some(match ws.session.room() {
+            Some(room) => mecha_core::scene::room_slot(&room.root, &room.key),
+            None => mecha_core::scene::assistant_slot(&chat.sessions_dir, ws.session.id()),
+        }),
         // And what it proposes is staged locked (the owner's ruling,
         // 2026-10-01: incognito proposals will mostly be locked profiles).
         stage_locked: ws.session.room().is_some(),
@@ -5307,7 +5314,7 @@ pub(super) fn test_chat_drawing(
                     Block::ToolUse {
                         id: "draw-1".into(),
                         name: "image_generate".into(),
-                        input: serde_json::json!({"prompt": self.prompt}),
+                        input: serde_json::json!({"scene": {"setting": self.prompt}}),
                     },
                     StopReason::ToolUse,
                 )

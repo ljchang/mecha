@@ -1,32 +1,28 @@
-//! What a persona's picture shows now: the scene record
-//! (`IMAGE-SCENE-DESIGN.md` §5.1, §5.6, step 2 of §10).
+//! What a picture shows: the scene record (`IMAGE-DESIGN.md` §4, §6).
 //!
-//! A scene is the place, the people in it (with what they wear and do), the
-//! camera and the style. It is the record, and a picture is a render of it.
-//! Each render that lands advances it:
-//! - a new picture defines it afresh;
-//! - an edit changes what it declared and keeps the rest.
+//! A picture is a render of a scene: its setting (everything but its people
+//! and its words), its light, camera and style, what its people do with each
+//! other, the words it renders, and its people, each with who they are, where
+//! they stand, and what they wear, do and show on their face. The scene is
+//! the record; the image model's prompt is compiled from it, never kept.
 //!
-//! Three files, all written by the harness and none in the model's jail:
-//! - **The chat's copy** beside its transcript. A chat starts from the
-//!   persona's latest and works on its own copy (R7).
-//! - **The persona's latest** (`scene/latest.json`). The last render to land
-//!   wins.
+//! A render that lands advances the record by the call's change
+//! ([`Scene::apply`]). **A value equal to the record's is no change**, so a
+//! model restating everyone costs nothing, and [`Delta`] says what did
+//! change, which is what the planner routes on.
+//!
+//! Three files per chat that keeps scenes, all written by the harness and none
+//! in the model's jail:
+//! - **The chat's copy** beside its transcript.
+//! - **The latest** (`scene/latest.json`), which a persona's new chats start
+//!   from (R7). The last render to land wins.
 //! - **The index** (`scene/index/<sha256>.json`): the scene each picture was
-//!   rendered as, keyed by the picture's bytes. A picture attached in another
-//!   chat is found by its content, never through a workspace manifest, which
-//!   a run can write.
+//!   rendered as, keyed by the picture's bytes, never through a workspace
+//!   manifest, which a run can write.
 //!
 //! **Origin is per field, and a scene's origin is the union over its
 //! fields.** A clean write over a scene with one untrusted field leaves that
-//! field, and the scene, untrusted. Unknown is untrusted: a record with no
-//! origin reads that way, never as the default clean. Nothing here reads a
-//! scene into a prompt yet: that is step 4, which carries the origin by a
-//! stem.
-//!
-//! An incognito chat never holds a slot: incognito is the assistant's chat,
-//! and the assistant has no scene store. So R9's "never writes back" holds by
-//! construction, with no switch to turn.
+//! field, and the scene, untrusted. Unknown is untrusted.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -71,233 +67,494 @@ pub struct Field<T> {
     pub origin: Origin,
 }
 
-/// Where the scene is: described in words, or a picture it was placed in.
+/// Everything in the picture except its people and its words: a place and
+/// its objects, or a whole subject for a picture without people.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Place {
+pub enum Setting {
     Words {
         text: String,
     },
-    /// `path` is a label, local to the chat that placed the scene there;
-    /// `hash` is the handle any other chat finds the picture by.
-    Picture {
+    /// A photo used as the room. `path` is a label, local to the chat that
+    /// set it; `hash` is the handle the planner checks it by. Read under its
+    /// earlier name too (`picture`, before the redesign), so a record on
+    /// disk keeps its room.
+    #[serde(alias = "picture")]
+    Photo {
         path: String,
         hash: String,
     },
-    /// A place this build cannot read: a kind it does not know, or a known
-    /// kind gone wrong. It is no place to draw on and is never clean, so a
-    /// scene holding one reads untrusted (review of #589, pass 8).
+    /// A setting this build cannot read. Never clean, and no setting to draw
+    /// on (a closed enum in a store is a wire format).
     Unknown,
 }
 
-/// Someone in the scene, by library name.
+/// Where someone stands in the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Where {
+    Left,
+    Centre,
+    Right,
+    Background,
+}
+
+impl Where {
+    pub fn parse(s: &str) -> Option<Where> {
+        match s.trim().to_lowercase().as_str() {
+            "left" => Some(Where::Left),
+            "centre" | "center" | "middle" => Some(Where::Centre),
+            "right" => Some(Where::Right),
+            "background" | "behind" | "back" => Some(Where::Background),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Where::Left => "on the left",
+            Where::Centre => "in the centre",
+            Where::Right => "on the right",
+            Where::Background => "in the background",
+        }
+    }
+}
+
+/// Who someone is: a library character by name, or someone described in
+/// words, drawn from those words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Who {
+    Library(String),
+    Described(String),
+}
+
+impl Who {
+    /// The key a person is matched by across changes: the library name, or
+    /// the description, lowercased.
+    pub fn key(&self) -> String {
+        match self {
+            Who::Library(n) | Who::Described(n) => n.trim().to_lowercase(),
+        }
+    }
+}
+
+/// Someone in the scene. Read through [`PersonWire`], so a record written
+/// before the redesign (a library `name`, no `who`) still loads: a store is
+/// a wire format, and a record that cannot be read can never be shown to be
+/// a chat's, so nothing would ever forget it (review of #597, pass 5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "PersonWire")]
 pub struct Person {
-    pub name: String,
+    pub who: Who,
+    #[serde(default)]
+    pub at: Option<Where>,
     #[serde(default)]
     pub wearing: String,
     #[serde(default)]
     pub doing: String,
     #[serde(default)]
+    pub expression: String,
+    #[serde(default)]
     pub origin: Origin,
+}
+
+/// [`Person`] as the store may hold it.
+#[derive(Deserialize)]
+struct PersonWire {
+    #[serde(default)]
+    who: Option<serde_json::Value>,
+    /// Before the redesign: a library character's name.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    at: Option<Where>,
+    #[serde(default)]
+    wearing: String,
+    #[serde(default)]
+    doing: String,
+    #[serde(default)]
+    expression: String,
+    #[serde(default)]
+    origin: Origin,
+}
+
+impl From<PersonWire> for Person {
+    fn from(w: PersonWire) -> Self {
+        let who = w
+            .who
+            .and_then(|v| serde_json::from_value::<Who>(v).ok())
+            .or_else(|| {
+                w.name
+                    .map(|n| n.trim().to_lowercase())
+                    .filter(|n| !n.is_empty())
+                    .map(Who::Library)
+            })
+            // Someone the record holds but this build cannot name: kept as
+            // described, and untrusted, never dropped.
+            .unwrap_or_else(|| Who::Described("someone".into()));
+        let unreadable = matches!(&who, Who::Described(d) if d == "someone");
+        Person {
+            who,
+            at: w.at,
+            wearing: w.wearing,
+            doing: w.doing,
+            expression: w.expression,
+            origin: if unreadable {
+                Origin::Untrusted
+            } else {
+                w.origin
+            },
+        }
+    }
+}
+
+/// Words the picture renders, exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Words {
+    pub words: String,
+    #[serde(default)]
+    pub at: String,
+    #[serde(default)]
+    pub look: String,
 }
 
 /// The scene record.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Scene {
-    /// Read leniently: a place this build does not know (a kind a later step
-    /// adds) reads as no place, and the rest of the record survives. The
-    /// store is a wire format (review of #589).
-    #[serde(default, deserialize_with = "lenient_place")]
-    pub place: Option<Field<Place>>,
+    /// Read leniently: a setting this build does not know is kept as
+    /// `Unknown`, untrusted, and the rest of the record survives.
+    #[serde(default, alias = "place", deserialize_with = "lenient_setting")]
+    pub setting: Option<Field<Setting>>,
     #[serde(default)]
-    pub people: Vec<Person>,
+    pub light: Option<Field<String>>,
     #[serde(default)]
     pub camera: Option<Field<String>>,
     #[serde(default)]
     pub style: Option<Field<String>>,
+    #[serde(default)]
+    pub together: Option<Field<String>>,
+    #[serde(default)]
+    pub text: Option<Field<Vec<Words>>>,
+    #[serde(default)]
+    pub people: Vec<Person>,
+    /// Whether the record knows who is in the picture. A picture with no
+    /// record, changed by a call that declared nobody, does not: its people
+    /// are unknown, never none (`IMAGE-DESIGN.md` §5.1, review N2). Absent
+    /// reads unknown.
+    #[serde(default)]
+    pub people_known: bool,
     /// The content hash of the picture this scene was last rendered as.
     #[serde(default)]
     pub picture: Option<String>,
+    /// The seed the picture was drawn at, so a restage can reuse it and a
+    /// redraw can be sure to differ.
+    #[serde(default)]
+    pub seed: Option<u64>,
     /// The chat whose render last advanced it.
     #[serde(default)]
     pub chat: Option<String>,
 }
 
-/// What one landed render says about its scene.
-#[derive(Debug, Clone, Default)]
-pub struct Change {
-    /// A new picture: the scene is defined afresh, nothing carried.
-    pub fresh: bool,
-    /// The place, when the render says where. An edit that does not keeps
-    /// the scene's; `fallback_place` is used only when there is none yet.
-    pub place: Option<Place>,
-    pub fallback_place: Option<Place>,
-    /// People the call itself named, with what it says they wear and do.
-    pub declared: Vec<(String, String, String)>,
-    /// People carried over from the picture's record or scene, by name, with
-    /// what that record says. They keep the scene's entry when it has one.
-    /// Otherwise their origin is untrusted, because the record came from a
-    /// file a run could write.
-    pub carried: Vec<(String, String, String)>,
-    /// People the call changed in part: their new fields as sent, beside
-    /// the rest of their entry, under their old origin joined with the
-    /// run's, so one new field never launders the others (review of #591).
-    pub amended: Vec<(String, String, String)>,
-    /// The call said `"cast": []`: the people have left the picture, so an
-    /// edit keeps none of the scene's. Otherwise an edit keeps everyone the
-    /// scene had that it did not name, as it keeps the place and the camera
-    /// (review of #589, pass 4): a person whose library entry is gone is
-    /// still in the picture.
-    pub nobody: bool,
+/// What a call says about a scene: only the fields it sends.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SceneChange {
+    pub setting: Option<Setting>,
+    pub light: Option<String>,
     pub camera: Option<String>,
     pub style: Option<String>,
-    /// The landed picture's content hash.
-    pub picture: String,
+    pub together: Option<String>,
+    pub text: Option<Vec<Words>>,
+    pub people: Vec<PersonChange>,
+}
+
+/// What a call says about one person: only the fields it sends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonChange {
+    pub who: Who,
+    pub at: Option<Where>,
+    pub wearing: Option<String>,
+    pub doing: Option<String>,
+    pub expression: Option<String>,
+    pub remove: bool,
+}
+
+/// What a change actually changed against the record. Equal values are no
+/// change; the planner routes on this.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Delta {
+    pub setting: bool,
+    pub light: bool,
+    pub camera: bool,
+    pub style: bool,
+    /// `together` as the call stated it.
+    pub together: bool,
+    /// A recorded `together` the acts' change ended (review T2). It restages
+    /// nothing by itself: adding someone to a scene with a relation is still
+    /// an edit (review of #597).
+    pub together_cleared: bool,
+    pub text: bool,
+    /// People new to the scene.
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    /// People whose pose (`doing`) or place in the frame (`where`) changed.
+    pub posed: Vec<String>,
+    /// People whose clothes changed.
+    pub dressed: Vec<String>,
+    /// People whose expression changed.
+    pub expressed: Vec<String>,
+}
+
+impl Delta {
+    /// Nothing changed: the call is a redraw (§5.1, review B4).
+    pub fn is_empty(&self) -> bool {
+        *self == Delta::default()
+    }
+
+    /// The change redraws everyone: a pose or a place in the frame, the
+    /// camera, the setting, the light, `together` as the call states it, or
+    /// someone removed. A restage.
+    pub fn restages(&self) -> bool {
+        self.setting
+            || self.camera
+            || self.light
+            || self.together
+            || !self.posed.is_empty()
+            || !self.removed.is_empty()
+    }
+}
+
+/// Two prose values are the same when they say the same thing, ignoring
+/// case, surrounding space and a final full stop.
+fn same(a: &str, b: &str) -> bool {
+    let n = |s: &str| s.trim().trim_end_matches('.').trim().to_lowercase();
+    n(a) == n(b)
 }
 
 impl Scene {
     /// The scene's origin: the union over every field it holds.
     pub fn origin(&self) -> Origin {
+        // Every field named, none by `..`: a field added to `Scene` without
+        // a place here is a compile error, never an untrusted scene that
+        // reads clean (review of #595).
+        let Scene {
+            setting,
+            light,
+            camera,
+            style,
+            together,
+            text,
+            people,
+            people_known: _,
+            picture: _,
+            seed: _,
+            chat: _,
+        } = self;
         let mut o = Origin::Clean;
-        if let Some(p) = &self.place {
-            o = o.union(p.origin);
+        for f in [light, camera, style, together].into_iter().flatten() {
+            o = o.union(f.origin);
         }
-        for p in &self.people {
-            o = o.union(p.origin);
-        }
-        if let Some(c) = &self.camera {
-            o = o.union(c.origin);
-        }
-        if let Some(s) = &self.style {
+        if let Some(s) = setting {
             o = o.union(s.origin);
+        }
+        if let Some(t) = text {
+            o = o.union(t.origin);
+        }
+        for p in people {
+            o = o.union(p.origin);
         }
         o
     }
 
-    /// The scene after a render lands: `prev` advanced by `change`, written
-    /// by a run of origin `by`. Every field the change sets takes `by`; every
-    /// field it leaves keeps its own.
-    pub fn advance(prev: Option<&Scene>, change: Change, by: Origin, chat: &str) -> Scene {
-        let prev = if change.fresh { None } else { prev };
-        let set = |v: String| Field {
-            value: v,
-            origin: by,
-        };
-        let place = match change.place {
-            Some(p) => Some(Field {
-                value: p,
-                origin: by,
-            }),
-            // An unknown place is no place to keep: the canvas replaces it.
-            None => prev
-                .and_then(|s| s.place.clone())
-                .filter(|p| p.value != Place::Unknown)
-                .or_else(|| {
-                    change.fallback_place.map(|p| Field {
-                        value: p,
+    /// The scene a change leaves, and what it changed (§5.1).
+    ///
+    /// - A value equal to the record's is no change, and keeps its origin.
+    /// - A changed field takes the run's origin `by`; a person changed in
+    ///   part keeps their old origin joined with `by`, so one new field never
+    ///   launders the others.
+    /// - `together` does not outlive the acts it describes: any pose change,
+    ///   removal or addition clears it unless the change restates it (§4,
+    ///   review T2).
+    /// - A person the change introduces needs `wearing` and `doing`; the
+    ///   caller checks that before calling.
+    /// - With no base, the change defines the scene. Its people are known if
+    ///   it names any, or if `people_known` says the caller knows the picture
+    ///   holds nobody (a new picture).
+    pub fn apply(
+        base: Option<&Scene>,
+        change: &SceneChange,
+        by: Origin,
+        people_known: bool,
+    ) -> (Scene, Delta) {
+        let empty = Scene::default();
+        let prev = base.unwrap_or(&empty);
+        let mut d = Delta::default();
+        let mut next = prev.clone();
+        let set_text = |slot: &mut Option<Field<String>>, v: &Option<String>, flag: &mut bool| {
+            if let Some(v) = v {
+                let changed = slot.as_ref().is_none_or(|f| !same(&f.value, v));
+                if changed {
+                    *slot = (!v.trim().is_empty()).then(|| Field {
+                        value: v.trim().to_string(),
                         origin: by,
-                    })
-                }),
-        };
-        // Bounded here, where everything that reaches the store passes: a
-        // carried person comes from a manifest a run can write, and an edit
-        // keeps the people it did not name, so neither the count nor a name
-        // may grow along a chain of edits (review of #589, pass 5). The
-        // call's people come first, so the cap drops the oldest kept ones.
-        let mut people: Vec<Person> = Vec::new();
-        let cap = |s: String, n: usize| s.chars().take(n).collect::<String>();
-        let mut push = |p: Person| {
-            let p = Person {
-                name: cap(p.name, crate::imagelib::MAX_NAME),
-                wearing: cap(p.wearing, crate::imagelib::MAX_CAST_FIELD),
-                doing: cap(p.doing, crate::imagelib::MAX_CAST_FIELD),
-                ..p
-            };
-            if people.len() < MAX_PEOPLE && !people.iter().any(|q| q.name == p.name) {
-                people.push(p);
+                    });
+                    *flag = true;
+                }
             }
         };
-        for (name, wearing, doing) in change.declared {
-            push(Person {
-                name: name.trim().to_lowercase(),
-                wearing,
-                doing,
-                origin: by,
+        if let Some(s) = &change.setting {
+            // Words are compared as every other prose field is (`same`), so a
+            // restated setting with a capital or a full stop is no change
+            // (review of #597, pass 10).
+            let changed = next.setting.as_ref().is_none_or(|f| match (&f.value, s) {
+                (Setting::Words { text: a }, Setting::Words { text: b }) => !same(a, b),
+                (a, b) => a != b,
             });
-        }
-        for (name, wearing, doing) in change.amended {
-            let name = name.trim().to_lowercase();
-            let was = prev
-                .and_then(|s| s.people.iter().find(|p| p.name == name))
-                .map_or(Origin::Untrusted, |p| p.origin);
-            push(Person {
-                name,
-                wearing,
-                doing,
-                origin: was.union(by),
-            });
-        }
-        for (name, wearing, doing) in change.carried {
-            let name = name.trim().to_lowercase();
-            match prev.and_then(|s| s.people.iter().find(|p| p.name == name)) {
-                Some(kept) => push(kept.clone()),
-                None => push(Person {
-                    name,
-                    wearing,
-                    doing,
-                    origin: Origin::Untrusted,
-                }),
+            if changed {
+                next.setting = Some(Field {
+                    value: s.clone(),
+                    origin: by,
+                });
+                d.setting = true;
             }
         }
-        if !change.nobody {
-            for kept in prev.into_iter().flat_map(|s| s.people.iter()) {
-                push(kept.clone());
+        set_text(&mut next.light, &change.light, &mut d.light);
+        set_text(&mut next.camera, &change.camera, &mut d.camera);
+        set_text(&mut next.style, &change.style, &mut d.style);
+        if let Some(t) = &change.text {
+            if next.text.as_ref().is_none_or(|f| f.value != *t) {
+                next.text = (!t.is_empty()).then(|| Field {
+                    value: t.clone(),
+                    origin: by,
+                });
+                d.text = true;
             }
         }
-        Scene {
-            place,
-            people,
-            camera: match change.camera {
-                Some(c) => Some(set(c)),
-                None => prev.and_then(|s| s.camera.clone()),
-            },
-            style: match change.style {
-                Some(s) => Some(set(s)),
-                None => prev.and_then(|s| s.style.clone()),
-            },
-            picture: Some(change.picture),
-            chat: Some(chat.to_string()),
+        for c in &change.people {
+            let key = c.who.key();
+            let at = next.people.iter().position(|p| p.who.key() == key);
+            match at {
+                Some(i) if c.remove => {
+                    next.people.remove(i);
+                    d.removed.push(key);
+                }
+                None if c.remove => {}
+                Some(i) => {
+                    let p = &mut next.people[i];
+                    let mut touched = false;
+                    if let Some(w) = &c.wearing {
+                        if !same(&p.wearing, w) {
+                            p.wearing = w.trim().to_string();
+                            d.dressed.push(key.clone());
+                            touched = true;
+                        }
+                    }
+                    if let Some(x) = &c.doing {
+                        if !same(&p.doing, x) {
+                            p.doing = x.trim().to_string();
+                            d.posed.push(key.clone());
+                            touched = true;
+                        }
+                    }
+                    if let Some(x) = &c.at {
+                        if p.at != Some(*x) {
+                            p.at = Some(*x);
+                            if !d.posed.contains(&key) {
+                                d.posed.push(key.clone());
+                            }
+                            touched = true;
+                        }
+                    }
+                    if let Some(e) = &c.expression {
+                        if !same(&p.expression, e) {
+                            p.expression = e.trim().to_string();
+                            d.expressed.push(key.clone());
+                            touched = true;
+                        }
+                    }
+                    if touched {
+                        p.origin = p.origin.union(by);
+                    }
+                }
+                None => {
+                    next.people.push(Person {
+                        who: c.who.clone(),
+                        at: c.at,
+                        wearing: c.wearing.clone().unwrap_or_default().trim().to_string(),
+                        doing: c.doing.clone().unwrap_or_default().trim().to_string(),
+                        expression: c.expression.clone().unwrap_or_default().trim().to_string(),
+                        origin: by,
+                    });
+                    d.added.push(key);
+                }
+            }
         }
+        // A relation does not outlive the acts it describes (review T2).
+        let acts_changed = !d.posed.is_empty() || !d.added.is_empty() || !d.removed.is_empty();
+        match &change.together {
+            Some(t) if next.together.as_ref().is_none_or(|f| !same(&f.value, t)) => {
+                next.together = (!t.trim().is_empty()).then(|| Field {
+                    value: t.trim().to_string(),
+                    origin: by,
+                });
+                d.together = true;
+            }
+            Some(_) => {}
+            None if acts_changed && next.together.is_some() => {
+                next.together = None;
+                d.together_cleared = true;
+            }
+            None => {}
+        }
+        // Bounded here, where everything that reaches the store passes.
+        let cap = |s: &mut String, n: usize| {
+            if s.chars().count() > n {
+                *s = s.chars().take(n).collect();
+            }
+        };
+        next.people.truncate(MAX_PEOPLE);
+        for p in &mut next.people {
+            cap(&mut p.wearing, crate::imagelib::MAX_CAST_FIELD);
+            cap(&mut p.doing, crate::imagelib::MAX_CAST_FIELD);
+            cap(&mut p.expression, crate::imagelib::MAX_CAST_FIELD);
+            // Nor may a name grow along a chain of edits.
+            match &mut p.who {
+                Who::Library(n) => cap(n, crate::imagelib::MAX_NAME),
+                Who::Described(d) => cap(d, crate::imagelib::MAX_CAST_FIELD),
+            }
+        }
+        // Known once a call declares someone in the picture; a removal
+        // declares nobody (review of #597).
+        next.people_known = (base.is_some_and(|b| b.people_known))
+            || people_known
+            || change.people.iter().any(|c| !c.remove);
+        (next, d)
     }
 }
 
-/// The most people a scene keeps: twice what one picture draws with faces,
-/// so a picture's record past `MAX_CAST` still fits, and a chain of edits
-/// cannot grow the store without bound.
+/// The most people a scene keeps: twice what one picture draws with faces.
 pub const MAX_PEOPLE: usize = 2 * crate::imagelib::MAX_CAST;
 
-/// A place that does not parse is an unknown place, never a lost record,
-/// and untrusted whatever origin it was written with: unknown is never clean,
-/// and dropping it would drop the label that says so (review of #589, pass 8).
-fn lenient_place<'de, D>(d: D) -> std::result::Result<Option<Field<Place>>, D::Error>
+/// A setting that does not parse is an unknown setting, never a lost record,
+/// and untrusted whatever origin it was written with.
+fn lenient_setting<'de, D>(d: D) -> std::result::Result<Option<Field<Setting>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let v = Option::<serde_json::Value>::deserialize(d)?;
     Ok(v.filter(|v| !v.is_null()).map(|v| {
-        serde_json::from_value::<Field<Place>>(v)
+        serde_json::from_value::<Field<Setting>>(v)
             .ok()
-            .filter(|f| f.value != Place::Unknown)
+            .filter(|f| f.value != Setting::Unknown)
             .unwrap_or(Field {
-                value: Place::Unknown,
+                value: Setting::Unknown,
                 origin: Origin::Untrusted,
             })
     }))
 }
 
 /// The scene note's opening when every field came from a clean run
-/// (`IMAGE-SCENE-DESIGN.md` §5.5, step 4). It rides in a run's notes, and
+/// (`IMAGE-DESIGN.md` §6; built as `IMAGE-SCENE-DESIGN.md` step 4). It rides in a run's notes, and
 /// arms taint by its stem as memory's does: two stems, because notes arm at
 /// every run start, and one stem arming both would make every chat with a
 /// scene untrusted. Both arm `private`: a scene can carry an owner photo, or a
@@ -320,24 +577,18 @@ pub fn stem_of(text: &str) -> Option<(bool, bool)> {
     }
 }
 
-/// The most of a place described in words a note carries.
+/// The most of a setting described in words a note carries.
 const NOTE_PLACE_CHARS: usize = 240;
 
-/// The most of any other field (what someone wears or does, the camera) a
-/// note carries.
+/// The most of any other field a note carries.
 const NOTE_FIELD_CHARS: usize = 160;
 
-/// The scene as a run note: where the persona is, who is with her, what each
-/// wears and does, and the camera. The present comes from here, so a
-/// recalled day's outfit or blocking cannot stand in for it (§5.5). `me` is
-/// the persona's own library character, said as "You". `None` when the
-/// scene holds nothing to say.
+/// The scene as a run note: the setting, who is there, what each wears, does
+/// and shows, and the camera and light. The present comes from here, so a
+/// recalled day's outfit or blocking cannot stand in for it. `me` is the
+/// persona's own library character, said as "You". `None` when the scene
+/// holds nothing to say.
 pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
-    if scene.place.is_none() && scene.people.is_empty() && scene.camera.is_none() {
-        return None;
-    }
-    // Every field is cut to a sentence's length, so the note rides on every
-    // request at a bounded size whatever a scene holds (review of #590).
     let clip = |text: &str, n: usize| {
         let text = text.trim();
         let cut: String = text.chars().take(n).collect();
@@ -349,37 +600,40 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         cut.trim_end_matches('.').to_string()
     };
     let mut out = String::new();
-    match scene.place.as_ref().map(|p| &p.value) {
-        Some(Place::Words { text }) => {
+    match scene.setting.as_ref().map(|p| &p.value) {
+        Some(Setting::Words { text }) => {
             out.push_str(&format!(" Place: {}.", clip(text, NOTE_PLACE_CHARS)));
         }
-        Some(Place::Picture { .. }) => out.push_str(" Place: the picture you were placed in."),
-        // Nothing to say about a place this build cannot read; the scene is
-        // untrusted for it, so the note rides under the untrusted stem.
-        Some(Place::Unknown) | None => {}
+        Some(Setting::Photo { .. }) => out.push_str(" Place: the photo you were placed in."),
+        Some(Setting::Unknown) | None => {}
     }
     let me = me.map(|m| m.trim().to_lowercase());
     for p in &scene.people {
-        let who = if me.as_deref() == Some(p.name.as_str()) {
-            "You".to_string()
-        } else {
-            p.name
-                .split(' ')
-                .map(|w| {
-                    let mut c = w.chars();
-                    c.next()
-                        .map(|f| f.to_uppercase().chain(c).collect::<String>())
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
+        let who = match &p.who {
+            Who::Library(n) if me.as_deref() == Some(n.trim().to_lowercase().as_str()) => {
+                "You".to_string()
+            }
+            Who::Library(n) => crate::imagegen::capitalized(n),
+            Who::Described(d) => {
+                let d = clip(d, NOTE_FIELD_CHARS);
+                let mut c = d.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                    .unwrap_or_default()
+            }
         };
         let mut said = vec![];
+        if let Some(at) = p.at {
+            said.push(at.name().to_string());
+        }
         if !p.wearing.trim().is_empty() {
             said.push(format!("wearing {}", clip(&p.wearing, NOTE_FIELD_CHARS)));
         }
         if !p.doing.trim().is_empty() {
             said.push(clip(&p.doing, NOTE_FIELD_CHARS));
+        }
+        if !p.expression.trim().is_empty() {
+            said.push(clip(&p.expression, NOTE_FIELD_CHARS));
         }
         if said.is_empty() {
             let verb = if who == "You" { "are" } else { "is" };
@@ -388,12 +642,15 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
             out.push_str(&format!(" {who}: {}.", said.join(", ")));
         }
     }
+    if let Some(t) = &scene.together {
+        out.push_str(&format!(" Together: {}.", clip(&t.value, NOTE_FIELD_CHARS)));
+    }
     if let Some(c) = &scene.camera {
         out.push_str(&format!(" Camera: {}.", clip(&c.value, NOTE_FIELD_CHARS)));
     }
-    // Nothing to say is no note: an unknown place alone would otherwise send
-    // the opening sentence by itself, and arm `untrusted` for no content
-    // (review of #590).
+    if let Some(l) = &scene.light {
+        out.push_str(&format!(" Light: {}.", clip(&l.value, NOTE_FIELD_CHARS)));
+    }
     if out.is_empty() {
         return None;
     }
@@ -412,8 +669,8 @@ pub fn hash(bytes: &[u8]) -> String {
     crate::document::sha256_hex(bytes)
 }
 
-/// Where one chat's scene lives, stamped on its runs by the front end (a
-/// persona chat), never by a model.
+/// Where one chat's scene lives, stamped on its runs by the front end, never
+/// by a model.
 #[derive(Debug, Clone)]
 pub struct SceneSlot {
     /// The chat's own copy, beside its transcript.
@@ -422,6 +679,11 @@ pub struct SceneSlot {
     pub store: PathBuf,
     /// The chat's id, recorded on the scenes it advances.
     pub chat: String,
+    /// Whether a chat with no scene yet starts from the store's latest: a
+    /// persona's chats do (R7, one persona's continuity), the assistant's
+    /// and incognito's never, since their store is shared by unrelated
+    /// conversations (review of #597).
+    pub from_latest: bool,
 }
 
 impl SceneSlot {
@@ -432,8 +694,10 @@ impl SceneSlot {
     pub fn current(&self) -> Option<Scene> {
         if self.chat_copy.exists() {
             read(&self.chat_copy)
-        } else {
+        } else if self.from_latest {
             read(&self.store.join("latest.json"))
+        } else {
+            None
         }
     }
 
@@ -482,14 +746,54 @@ impl SceneSlot {
 /// is the persona's folder. The count removed; nothing there is zero, never
 /// an error. A chat id is a file name here, so it must be one.
 pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<SceneForget> {
+    forget_in(
+        &persona_dir.join("sessions"),
+        &persona_dir.join("scene"),
+        chat,
+    )
+}
+
+/// [`forget_chat`] for one of the assistant's kept chats, whose slot is
+/// [`assistant_slot`]: the copy in `sessions`, the store beside it.
+pub fn forget_assistant_chat(sessions: &Path, chat: &str) -> std::io::Result<SceneForget> {
+    forget_in(sessions, &assistant_store(sessions), chat)
+}
+
+/// The assistant's kept chats (IMAGE-DESIGN.md §6, one path): each chat's
+/// copy beside its transcript, and the assistant's latest and index in
+/// `scene/` beside the sessions folder — the persona's layout one level up,
+/// outside every jail, written only by the harness.
+pub fn assistant_slot(sessions: &Path, chat: &str) -> SceneSlot {
+    SceneSlot {
+        chat_copy: sessions.join(format!("{chat}.scene.json")),
+        store: assistant_store(sessions),
+        chat: chat.to_string(),
+        from_latest: false,
+    }
+}
+
+/// An incognito chat's (R9): all of it in the room, beside the jail and
+/// never in it, so it goes when the room does and nothing reaches the mecha
+/// home.
+pub fn room_slot(room: &Path, chat: &str) -> SceneSlot {
+    SceneSlot {
+        chat_copy: room.join("scene").join(format!("{chat}.scene.json")),
+        store: room.join("scene"),
+        chat: chat.to_string(),
+        from_latest: false,
+    }
+}
+
+fn assistant_store(sessions: &Path) -> PathBuf {
+    sessions.parent().unwrap_or(sessions).join("scene")
+}
+
+fn forget_in(copies: &Path, store: &Path, chat: &str) -> std::io::Result<SceneForget> {
     if !is_chat_id(chat) {
         return Err(std::io::Error::other(format!("invalid chat id {chat:?}")));
     }
-    let store = persona_dir.join("scene");
     let mut gone = 0;
-    let copy = persona_dir
-        .join("sessions")
-        .join(format!("{chat}.scene.json"));
+    let copy = copies.join(format!("{chat}.scene.json"));
     match std::fs::remove_file(&copy) {
         Ok(()) => gone += 1,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -594,157 +898,268 @@ mod tests {
                 chat_copy: root.join("persona/sessions/c1.scene.json"),
                 store: root.join("persona/scene"),
                 chat: "c1".into(),
+                from_latest: true,
             },
             root,
         )
     }
 
-    fn change(fresh: bool, picture: &str) -> Change {
-        Change {
-            fresh,
-            picture: hash(picture.as_bytes()),
-            ..Change::default()
+    fn person(name: &str, wearing: &str, doing: &str) -> PersonChange {
+        PersonChange {
+            who: Who::Library(name.into()),
+            at: None,
+            wearing: Some(wearing.into()),
+            doing: Some(doing.into()),
+            expression: None,
+            remove: false,
         }
     }
 
-    /// A clean write over a scene with an untrusted field leaves the field,
-    /// and so the scene, untrusted; only what the clean write replaced takes
-    /// its origin (§5.1).
-    #[test]
-    fn origin_is_per_field_and_the_scene_takes_the_union() {
-        let mut first = change(true, "a");
-        first.place = Some(Place::Words {
-            text: "a beach".into(),
-        });
-        first.declared = vec![("maya".into(), "a dress".into(), "walking".into())];
-        let s1 = Scene::advance(None, first, Origin::Untrusted, "c1");
-        assert_eq!(s1.origin(), Origin::Untrusted);
-        let mut edit = change(false, "b");
-        edit.camera = Some("from above".into());
-        edit.carried = vec![("maya".into(), String::new(), String::new())];
-        let s2 = Scene::advance(Some(&s1), edit, Origin::Clean, "c1");
-        assert_eq!(s2.camera.as_ref().unwrap().origin, Origin::Clean);
-        assert_eq!(
-            s2.people[0].origin,
-            Origin::Untrusted,
-            "kept, with its own origin"
+    /// A new scene: a setting in words and two people.
+    fn kitchen(by: Origin) -> Scene {
+        let (s, _) = Scene::apply(
+            None,
+            &SceneChange {
+                setting: Some(Setting::Words {
+                    text: "a narrow kitchen".into(),
+                }),
+                light: Some("late afternoon sun".into()),
+                people: vec![
+                    person("maya", "a red coat", "sitting at the table"),
+                    person("john", "an apron", "cooking"),
+                ],
+                ..SceneChange::default()
+            },
+            by,
+            true,
         );
-        assert_eq!(s2.place.as_ref().unwrap().origin, Origin::Untrusted);
-        assert_eq!(s2.origin(), Origin::Untrusted);
-        let mut fresh = change(true, "c");
-        fresh.place = Some(Place::Words {
-            text: "a park".into(),
-        });
-        let s3 = Scene::advance(Some(&s2), fresh, Origin::Clean, "c1");
-        assert_eq!(
-            s3.origin(),
+        s
+    }
+
+    fn landed(mut s: Scene, picture: &str, chat: &str) -> Scene {
+        s.picture = Some(hash(picture.as_bytes()));
+        s.chat = Some(chat.into());
+        s
+    }
+
+    /// A value equal to the record's is no change, and a call that restates
+    /// everyone changes nothing: an empty delta is a redraw (§5.1, B4).
+    #[test]
+    fn equal_is_unchanged_and_restating_everyone_is_an_empty_delta() {
+        let base = kitchen(Origin::Clean);
+        let (_, d) = Scene::apply(
+            Some(&base),
+            &SceneChange {
+                setting: Some(Setting::Words {
+                    text: "a narrow kitchen".into(),
+                }),
+                light: Some("Late afternoon sun.".into()),
+                people: vec![
+                    person("Maya", "a red coat", "sitting at the table"),
+                    person("john", "an apron", "cooking"),
+                ],
+                ..SceneChange::default()
+            },
             Origin::Clean,
-            "a new picture replaces every field"
+            false,
         );
+        assert!(d.is_empty(), "{d:?}");
     }
 
-    /// A person the call changed only in part keeps their old origin joined
-    /// with the run's: a clean write over one field of an untrusted person
-    /// leaves them untrusted (review of #591).
+    /// Each kind of change is said for what it is: a pose and a removal
+    /// restage; clothes, an expression and someone added do not.
     #[test]
-    fn an_amended_person_keeps_the_origin_they_had() {
-        let mut first = change(true, "a");
-        first.declared = vec![("john".into(), "an apron".into(), "cooking".into())];
-        let s1 = Scene::advance(None, first, Origin::Untrusted, "c1");
-        let mut part = change(false, "b");
-        part.amended = vec![("john".into(), "a coat".into(), "cooking".into())];
-        let s2 = Scene::advance(Some(&s1), part, Origin::Clean, "c1");
-        assert_eq!(s2.people[0].wearing, "a coat");
-        assert_eq!(s2.people[0].origin, Origin::Untrusted);
-        let mut stranger = change(false, "c");
-        stranger.amended = vec![("wren".into(), "a hat".into(), String::new())];
-        let s3 = Scene::advance(None, stranger, Origin::Clean, "c1");
-        assert_eq!(
-            s3.people[0].origin,
-            Origin::Untrusted,
-            "no entry reads untrusted"
+    fn a_delta_names_what_changed() {
+        let base = kitchen(Origin::Clean);
+        let change = |people: Vec<PersonChange>| {
+            Scene::apply(
+                Some(&base),
+                &SceneChange {
+                    people,
+                    ..SceneChange::default()
+                },
+                Origin::Clean,
+                false,
+            )
+            .1
+        };
+        let d = change(vec![PersonChange {
+            wearing: None,
+            ..person("maya", "", "standing by the window")
+        }]);
+        assert_eq!(d.posed, ["maya"]);
+        assert!(d.restages());
+        let d = change(vec![PersonChange {
+            doing: None,
+            ..person("maya", "a green dress", "")
+        }]);
+        assert_eq!(d.dressed, ["maya"]);
+        assert!(!d.restages());
+        let d = change(vec![PersonChange {
+            wearing: None,
+            doing: None,
+            expression: Some("smiling".into()),
+            ..person("maya", "", "")
+        }]);
+        assert_eq!(d.expressed, ["maya"]);
+        assert!(
+            !d.restages(),
+            "an expression is a retouch, not a restage (S2)"
         );
+        let d = change(vec![person("wren", "a scarf", "reading")]);
+        assert_eq!(d.added, ["wren"]);
+        assert!(!d.restages());
+        let d = change(vec![PersonChange {
+            remove: true,
+            ..person("john", "", "")
+        }]);
+        assert_eq!(d.removed, ["john"]);
+        assert!(d.restages());
     }
 
-    /// Someone carried over from a record the scene does not hold is
-    /// untrusted: the record is a file a run could write.
+    /// A relation does not outlive the acts it describes: a pose change
+    /// clears it unless restated (§4, review T2).
     #[test]
-    fn a_carried_person_not_in_the_scene_is_untrusted() {
-        let mut edit = change(false, "a");
-        edit.carried = vec![("john".into(), "an apron".into(), "cooking".into())];
-        let s = Scene::advance(None, edit, Origin::Clean, "c1");
-        assert_eq!(s.people[0].origin, Origin::Untrusted);
-        assert_eq!(s.people[0].wearing, "an apron");
+    fn together_is_cleared_when_the_acts_change() {
+        let (base, _) = Scene::apply(
+            Some(&kitchen(Origin::Clean)),
+            &SceneChange {
+                together: Some("John hugs Maya from behind".into()),
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        assert!(base.together.is_some());
+        let (next, d) = Scene::apply(
+            Some(&base),
+            &SceneChange {
+                people: vec![PersonChange {
+                    wearing: None,
+                    ..person("john", "", "sitting down")
+                }],
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        assert!(next.together.is_none() && d.together_cleared && !d.together);
+        let (kept, _) = Scene::apply(
+            Some(&base),
+            &SceneChange {
+                light: Some("candlelight".into()),
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        assert!(kept.together.is_some(), "a change to the light keeps it");
     }
 
-    /// A record a run wrote cannot grow the store: a scene keeps at most
-    /// `MAX_PEOPLE`, the call's people first, and no name longer than a
-    /// library name, however long the chain of edits (review of #589,
-    /// pass 5).
+    /// No record and nobody declared: the picture's people are unknown, not
+    /// none (§5.1, review N2). A new picture knows them, even if none.
+    #[test]
+    fn people_are_unknown_until_a_call_declares_them() {
+        let (s, _) = Scene::apply(
+            None,
+            &SceneChange {
+                light: Some("dusk".into()),
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        assert!(!s.people_known);
+        let (s, _) = Scene::apply(Some(&s), &SceneChange::default(), Origin::Clean, false);
+        assert!(!s.people_known);
+        let (s, _) = Scene::apply(
+            Some(&s),
+            &SceneChange {
+                people: vec![person("maya", "a coat", "reading")],
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        assert!(s.people_known);
+        let (s, _) = Scene::apply(None, &SceneChange::default(), Origin::Clean, true);
+        assert!(s.people_known, "a new picture knows who it drew");
+        let absent: Scene = serde_json::from_str(r#"{"people": []}"#).unwrap();
+        assert!(!absent.people_known, "absent reads unknown");
+    }
+
+    /// Origin is per field: a clean change over an untrusted scene leaves
+    /// what it did not touch untrusted, and a person changed in part keeps
+    /// their old origin joined with the run's.
+    #[test]
+    fn origin_is_per_field_and_never_laundered() {
+        let base = kitchen(Origin::Untrusted);
+        let (next, _) = Scene::apply(
+            Some(&base),
+            &SceneChange {
+                camera: Some("from above".into()),
+                people: vec![PersonChange {
+                    doing: None,
+                    ..person("maya", "a green dress", "")
+                }],
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        assert_eq!(next.camera.as_ref().unwrap().origin, Origin::Clean);
+        assert_eq!(next.people[0].origin, Origin::Untrusted, "changed in part");
+        assert_eq!(next.setting.as_ref().unwrap().origin, Origin::Untrusted);
+        assert_eq!(next.origin(), Origin::Untrusted);
+        let (fresh, _) = Scene::apply(None, &SceneChange::default(), Origin::Clean, true);
+        assert_eq!(fresh.origin(), Origin::Clean);
+    }
+
+    /// The store is bounded however long the chain of changes.
     #[test]
     fn a_scene_is_bounded_in_people_and_in_each_field() {
-        let long = "n".repeat(5_000);
-        let mut edit = change(false, "a");
-        edit.declared = vec![("maya".into(), "a coat".into(), "reading".into())];
-        edit.carried = (0..40)
-            // Distinct before the cut, so the first round measures the cap,
-            // not the dedupe of names the cut made equal (review of #589,
-            // pass 9).
-            .map(|i| (format!("p{i}-{long}"), "w".repeat(5_000), "d".into()))
+        let people = (0..20)
+            .map(|i| person(&format!("p{i}"), &"silk ".repeat(200), "waving"))
             .collect();
-        let mut s = Scene::advance(None, edit, Origin::Clean, "c1");
-        assert_eq!(s.people.len(), MAX_PEOPLE, "the cap, on the first write");
-        for _ in 0..5 {
-            let mut next = change(false, "b");
-            next.carried = (0..40)
-                .map(|i| (format!("x{i}"), String::new(), String::new()))
-                .collect();
-            s = Scene::advance(Some(&s), next, Origin::Clean, "c1");
-        }
+        let (s, _) = Scene::apply(
+            None,
+            &SceneChange {
+                people,
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            true,
+        );
         assert_eq!(s.people.len(), MAX_PEOPLE);
         assert!(s
             .people
             .iter()
-            .all(|p| p.name.chars().count() <= crate::imagelib::MAX_NAME
-                && p.wearing.chars().count() <= crate::imagelib::MAX_CAST_FIELD));
-        let first = Scene::advance(
-            None,
-            Change {
-                declared: vec![("maya".into(), String::new(), String::new())],
-                carried: (0..40)
-                    .map(|i| (format!("x{i}"), String::new(), String::new()))
-                    .collect(),
-                ..change(false, "c")
-            },
-            Origin::Clean,
-            "c1",
-        );
-        assert_eq!(first.people[0].name, "maya", "the call's people come first");
+            .all(|p| p.wearing.chars().count() <= crate::imagelib::MAX_CAST_FIELD));
     }
 
-    /// A slot whose chat id forgetting would refuse writes nothing, so no
-    /// record exists that cannot be forgotten (review of #589, pass 7).
+    /// A slot whose chat id forgetting would refuse writes nothing.
     #[test]
     fn a_slot_with_a_bad_chat_id_lands_nothing() {
         let (good, root) = slot();
         let bad = SceneSlot {
             chat: "../c1".into(),
+            from_latest: true,
             ..good
         };
-        let s = Scene::advance(None, change(true, "a"), Origin::Clean, "../c1");
-        assert!(bad.land(&s).is_err());
+        assert!(bad
+            .land(&landed(kitchen(Origin::Clean), "a", "../c1"))
+            .is_err());
         assert!(!root.join("persona/scene/latest.json").exists());
         assert!(!root.join("persona/scene/index").exists());
         std::fs::remove_dir_all(root).ok();
     }
 
     /// A chat whose own copy is broken has no scene; it does not start from
-    /// another chat's latest, which is for a chat with no copy yet (review
-    /// of #589, pass 8).
+    /// another chat's latest.
     #[test]
     fn a_broken_chat_copy_is_no_scene_not_the_latest() {
         let (slot, root) = slot();
-        let s = Scene::advance(None, change(true, "a"), Origin::Clean, "c1");
+        let s = landed(kitchen(Origin::Clean), "a", "c1");
         slot.land(&s).unwrap();
         assert!(slot.current().is_some());
         std::fs::write(&slot.chat_copy, b"{ not json").unwrap();
@@ -754,70 +1169,36 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// A place this build cannot read is an unknown place, untrusted, and
-    /// the rest of the record survives (review of #589, passes 1 and 8); an
-    /// edit replaces it with its canvas.
+    /// A setting this build cannot read is kept as unknown, untrusted, and
+    /// the rest of the record survives; it says nothing in a note.
     #[test]
-    fn an_unknown_place_costs_the_place_only() {
-        for place in [
+    fn an_unknown_setting_costs_the_setting_only() {
+        for setting in [
             r#"{"value": {"kind": "hologram"}, "origin": "clean"}"#,
             r#"{"value": {"kind": "words"}, "origin": "clean"}"#,
-            r#"{"value": {"kind": "unknown"}, "origin": "clean"}"#,
             r#"{"value": "a beach"}"#,
         ] {
             let s: Scene = serde_json::from_str(&format!(
-                r#"{{"place": {place},
-                    "people": [{{"name": "maya", "origin": "clean"}}], "chat": "c1"}}"#
+                r#"{{"setting": {setting}, "people": [{{"who": {{"kind": "library", "value": "maya"}}, "origin": "clean"}}], "chat": "c1"}}"#
             ))
             .unwrap();
-            let p = s.place.as_ref().expect("kept, as unknown");
-            assert_eq!(p.value, Place::Unknown, "{place}");
-            // Unknown is never clean, whatever the record says (pass 8).
-            assert_eq!(p.origin, Origin::Untrusted, "{place}");
-            assert_eq!(s.origin(), Origin::Untrusted, "{place}");
-            assert_eq!(s.people[0].name, "maya");
-            assert_eq!(s.chat.as_deref(), Some("c1"));
-            // And it stays so when written back and read again.
-            let again: Scene = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
-            assert_eq!(again.origin(), Origin::Untrusted);
+            let f = s.setting.as_ref().expect("kept, as unknown");
+            assert_eq!(f.value, Setting::Unknown, "{setting}");
+            assert_eq!(s.origin(), Origin::Untrusted, "{setting}");
+            assert_eq!(s.people[0].who, Who::Library("maya".into()));
         }
-        let none: Scene = serde_json::from_str(r#"{"place": null, "chat": "c1"}"#).unwrap();
-        assert!(none.place.is_none());
         let unknown: Scene =
-            serde_json::from_str(r#"{"place": {"value": {"kind": "hologram"}}, "chat": "c1"}"#)
-                .unwrap();
-        let mut edit = change(false, "b");
-        edit.fallback_place = Some(Place::Picture {
-            path: "images/b.png".into(),
-            hash: hash(b"b"),
-        });
-        let s = Scene::advance(Some(&unknown), edit, Origin::Clean, "c1");
-        assert!(matches!(
-            s.place.as_ref().unwrap().value,
-            Place::Picture { .. }
-        ));
+            serde_json::from_str(r#"{"setting": {"value": {"kind": "hologram"}}}"#).unwrap();
+        assert_eq!(note(&unknown, None), None);
     }
 
-    /// A record with no origin, or one this build does not know, reads
-    /// untrusted.
-    #[test]
-    fn an_unknown_or_missing_origin_reads_untrusted() {
-        let s: Scene = serde_json::from_str(
-            r#"{"people": [{"name": "maya"}, {"name": "john", "origin": "sideways"}]}"#,
-        )
-        .unwrap();
-        assert!(s.people.iter().all(|p| p.origin == Origin::Untrusted));
-    }
-
-    /// Landing writes the chat's copy, the persona's latest and the index;
-    /// a chat with no copy starts from the latest (R7); a picture's bytes find
-    /// its scene; the last render to land wins the latest.
+    /// Landing writes the chat's copy, the latest and the index; a chat with
+    /// no copy starts from the latest (R7); a picture's bytes find its scene;
+    /// the last render to land wins the latest.
     #[test]
     fn landing_writes_three_files_and_a_picture_finds_its_scene() {
         let (slot, root) = slot();
-        let mut c = change(true, "picture one");
-        c.declared = vec![("maya".into(), "a coat".into(), "sitting".into())];
-        let s = Scene::advance(slot.current().as_ref(), c, Origin::Clean, "c1");
+        let s = landed(kitchen(Origin::Clean), "picture one", "c1");
         slot.land(&s).unwrap();
         assert!(slot.chat_copy.is_file());
         assert_eq!(slot.lookup(b"picture one"), Some(s.clone()));
@@ -825,6 +1206,7 @@ mod tests {
         let other = SceneSlot {
             chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
+            from_latest: true,
             ..slot.clone()
         };
         assert_eq!(
@@ -832,128 +1214,159 @@ mod tests {
             Some(s),
             "a new chat starts from the latest"
         );
-        let mut c2 = change(true, "picture two");
-        c2.declared = vec![("maya".into(), "a hat".into(), "laughing".into())];
-        let s2 = Scene::advance(other.current().as_ref(), c2, Origin::Clean, "c2");
-        other.land(&s2).unwrap();
-        assert_eq!(
-            slot.current().unwrap().people[0].wearing,
-            "a coat",
-            "each chat keeps its own copy"
+        let (s2, _) = Scene::apply(
+            other.current().as_ref(),
+            &SceneChange {
+                people: vec![PersonChange {
+                    doing: None,
+                    ..person("maya", "a hat", "")
+                }],
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
         );
+        other.land(&landed(s2, "picture two", "c2")).unwrap();
+        assert_eq!(slot.current().unwrap().people[0].wearing, "a red coat");
         let latest = read(&slot.store.join("latest.json")).unwrap();
         assert_eq!(latest.chat.as_deref(), Some("c2"), "the last to land wins");
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// The note says where she is, who is with her and what each wears and
-    /// does, the persona herself as "You"; its stem is untrusted when any
-    /// field is; and a clean note arms `private` only, an untrusted one both.
+    /// The note says where she is, who is with her and what each wears, does
+    /// and shows, the persona herself as "You", with the light and what they
+    /// do together; its stem follows the scene's origin.
     #[test]
     fn the_note_reads_the_scene_and_arms_by_its_stem() {
-        let mut c = change(true, "a");
-        c.place = Some(Place::Words {
-            text: "a harbour".into(),
-        });
-        c.declared = vec![
-            ("maya".into(), "a red coat".into(), "sitting".into()),
-            ("mara quinn".into(), "a scarf".into(), String::new()),
-        ];
-        let clean = Scene::advance(None, c.clone(), Origin::Clean, "c1");
-        let n = note(&clean, Some("Maya")).unwrap();
+        let (s, _) = Scene::apply(
+            Some(&kitchen(Origin::Clean)),
+            &SceneChange {
+                together: Some("John hands Maya a cup".into()),
+                people: vec![PersonChange {
+                    at: Some(Where::Left),
+                    wearing: None,
+                    doing: None,
+                    expression: Some("smiling".into()),
+                    ..person("maya", "", "")
+                }],
+                ..SceneChange::default()
+            },
+            Origin::Clean,
+            false,
+        );
+        let n = note(&s, Some("Maya")).unwrap();
         assert!(n.starts_with(SCENE_STEM), "{n}");
-        assert!(n.contains("Place: a harbour."), "{n}");
-        assert!(n.contains("You: wearing a red coat, sitting."), "{n}");
-        assert!(n.contains("Mara Quinn: wearing a scarf."), "{n}");
+        assert!(n.contains("Place: a narrow kitchen."), "{n}");
+        assert!(
+            n.contains("You: on the left, wearing a red coat, sitting at the table, smiling."),
+            "{n}"
+        );
+        assert!(n.contains("John: wearing an apron, cooking."), "{n}");
+        assert!(n.contains("Together: John hands Maya a cup."), "{n}");
+        assert!(n.contains("Light: late afternoon sun."), "{n}");
         let mut t = crate::agent::Taint::default();
         t.arm_for_notes(&[n]);
         assert!(t.private && !t.untrusted);
-        let dirty = Scene::advance(None, c, Origin::Untrusted, "c1");
-        let n = note(&dirty, None).unwrap();
+        let n = note(&kitchen(Origin::Untrusted), None).unwrap();
         assert!(n.starts_with(UNTRUSTED_SCENE_STEM), "{n}");
-        let mut t = crate::agent::Taint::default();
-        t.arm_for_notes(&[n]);
-        assert!(t.private && t.untrusted);
         assert_eq!(note(&Scene::default(), None), None);
-        let mut long = change(true, "b");
-        long.place = Some(Place::Words {
-            text: "word ".repeat(100),
-        });
-        let n = note(&Scene::advance(None, long, Origin::Clean, "c1"), None).unwrap();
-        assert!(n.len() < 600 && n.contains("…"), "{n}");
     }
 
-    /// A scene with nothing to say gives no note, so an unknown place alone
-    /// never arms `untrusted` with no content; and every field is cut, so the
-    /// note is bounded whatever the scene holds (review of #590).
-    #[test]
-    fn a_note_says_something_or_nothing_and_is_bounded() {
-        let unknown: Scene =
-            serde_json::from_str(r#"{"place": {"value": {"kind": "hologram"}}, "chat": "c1"}"#)
-                .unwrap();
-        assert_eq!(note(&unknown, None), None);
-        let mut big = change(true, "a");
-        big.camera = Some("low ".repeat(2_000));
-        big.declared = (0..MAX_PEOPLE)
-            .map(|i| (format!("p{i}"), "silk ".repeat(100), "waving ".repeat(100)))
-            .collect();
-        let n = note(&Scene::advance(None, big, Origin::Clean, "c1"), None).unwrap();
-        assert!(n.len() < 4_500, "{} bytes", n.len());
-        assert!(n.contains("Camera: low") && n.contains("…"), "{n}");
-    }
-
-    /// Forgetting a chat removes what its renders left in the persona's
-    /// store, and nothing another chat wrote.
+    /// Forgetting a chat removes what its renders left, and nothing another
+    /// chat wrote; a record nobody can read is kept and counted.
     #[test]
     fn forgetting_a_chat_removes_its_scenes_only() {
         let (slot, root) = slot();
-        let mut c = change(true, "one");
-        c.declared = vec![("maya".into(), "a coat".into(), "sitting".into())];
-        slot.land(&Scene::advance(None, c, Origin::Clean, "c1"))
+        slot.land(&landed(kitchen(Origin::Clean), "one", "c1"))
             .unwrap();
         let other = SceneSlot {
             chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
+            from_latest: true,
             ..slot.clone()
         };
         other
-            .land(&Scene::advance(
-                None,
-                change(true, "two"),
-                Origin::Clean,
-                "c2",
-            ))
+            .land(&landed(kitchen(Origin::Clean), "two", "c2"))
             .unwrap();
         let persona = root.join("persona");
-        // A record nobody can read is kept, and said, not passed over as a
-        // clean forget (review of #589, pass 9).
         std::fs::write(root.join("persona/scene/index/broken.json"), b"{ half").unwrap();
         assert_eq!(
             forget_chat(&persona, "c1").unwrap(),
             SceneForget {
                 removed: 2,
                 unreadable: 1
-            },
-            "c1's own copy and its index entry"
+            }
         );
-        assert!(root.join("persona/scene/index/broken.json").exists());
         std::fs::remove_file(root.join("persona/scene/index/broken.json")).unwrap();
         assert!(slot.lookup(b"one").is_none());
         assert!(slot.lookup(b"two").is_some());
-        // The forgotten chat now starts from the latest, which is c2's: its
-        // own scene is gone, and its next render cannot land it back.
         assert_eq!(slot.current().unwrap().chat.as_deref(), Some("c2"));
-        assert_eq!(
-            forget_chat(&persona, "c2").unwrap().removed,
-            3,
-            "c2's copy, its entry and the latest"
-        );
+        assert_eq!(forget_chat(&persona, "c2").unwrap().removed, 3);
         assert_eq!(slot.current(), None);
-        assert_eq!(
-            forget_chat(&root.join("nowhere"), "c1").unwrap(),
-            SceneForget::default()
-        );
         assert!(forget_chat(&persona, "../escape").is_err());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The assistant's and incognito's chats never start from the store's
+    /// latest: it is shared by unrelated conversations (review of #597). A
+    /// persona's do (R7).
+    #[test]
+    fn only_a_persona_chat_starts_from_the_latest() {
+        let dir = std::env::temp_dir().join(format!("mecha-scene-{}", uuid::Uuid::new_v4()));
+        let sessions = dir.join("sessions");
+        let first = assistant_slot(&sessions, "chat-a");
+        let s = Scene {
+            picture: Some(hash(b"x")),
+            ..Scene::default()
+        };
+        first.land(&s).unwrap();
+        assert!(first.current().is_some());
+        assert!(assistant_slot(&sessions, "chat-b").current().is_none());
+        let persona = SceneSlot {
+            from_latest: true,
+            ..assistant_slot(&sessions, "chat-c")
+        };
+        assert!(persona.current().is_some());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A record written before the redesign still loads (review of #597,
+    /// pass 5): `place` reads as the setting, its `picture` kind as a photo,
+    /// and a person's `name` as a library `who`. Its people are not known,
+    /// since it predates the mark.
+    #[test]
+    fn a_record_from_before_the_redesign_still_reads() {
+        let old = serde_json::json!({
+            "place": {"value": {"kind": "picture", "path": "inbox/room.png", "hash": "ab"}, "origin": "clean"},
+            "people": [{"name": "Maya", "wearing": "a coat", "doing": "reading", "origin": "clean"}],
+            "camera": {"value": "from above", "origin": "untrusted"},
+            "picture": "cd",
+            "chat": "c1"
+        });
+        let s: Scene = serde_json::from_value(old).unwrap();
+        assert!(matches!(
+            s.setting.as_ref().map(|f| &f.value),
+            Some(Setting::Photo { path, .. }) if path == "inbox/room.png"
+        ));
+        assert_eq!(s.people[0].who, Who::Library("maya".into()));
+        assert!(!s.people_known);
+        assert_eq!(s.origin(), Origin::Untrusted);
+        // A person this build cannot name is kept, and untrusted.
+        let odd: Person =
+            serde_json::from_value(serde_json::json!({"who": 7, "origin": "clean"})).unwrap();
+        assert_eq!(odd.origin, Origin::Untrusted);
+    }
+
+    /// A setting restated with a capital or a full stop is no change, as
+    /// every other prose field (review of #597, pass 10).
+    #[test]
+    fn a_restated_setting_is_no_change() {
+        let words = |t: &str| SceneChange {
+            setting: Some(Setting::Words { text: t.into() }),
+            ..SceneChange::default()
+        };
+        let (base, _) = Scene::apply(None, &words("a quiet library"), Origin::Clean, true);
+        let (_, d) = Scene::apply(Some(&base), &words("A quiet library."), Origin::Clean, true);
+        assert!(!d.setting && d.is_empty(), "{d:?}");
     }
 }

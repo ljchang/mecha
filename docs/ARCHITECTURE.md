@@ -544,8 +544,8 @@ fallback turns on image conversations fail.
 ## Image generation
 
 `imagegen.rs` registers `image_generate` when `[image]` is configured: the
-model supplies a prompt, an optional negative prompt, a size from a closed set
-and an optional seed; a local server (ComfyUI running Qwen-Image 2.1 today)
+model supplies a scene, or what changes in one, and the tool writes the
+prompt (below); a local server (ComfyUI running Qwen-Image 2.1 today)
 renders it; the PNG lands at `images/<stamp>-<seed>.png` in **the run's own
 workspace**. Six decisions, each a bug if undone:
 
@@ -631,277 +631,246 @@ workspace**. Six decisions, each a bug if undone:
 unknown fields, so a binary older than this section refuses a config that has
 it — every mecha process, the cron triggers included.
 
-**Editing is the same tool with `reference_images`**: up to four workspace
-paths — a photo the owner attached (`inbox/`) or an earlier result
-(`images/`) — each resolved through the jail, capped at 25 MB, and sniffed by
-magic number (PNG, JPEG, WebP) before anything reaches the server. One over
-`MAX_REFERENCE_PIXELS` (4 Mpx) goes up scaled to it, upright, as a PNG
-(`fit_reference`): the encoder resizes every reference to about 1 Mpx
-itself, so the rest of a 24.5 Mpx phone photo cost ~2 s of server-side
-decoding and resizing an edit for nothing, where fitting it here takes
-~0.25 s (release build, 2026-10-04). It is turned by its
-EXIF orientation first (`image::decode_upright`), because the PNG carries no
-tag and a phone stores a photo sideways; and it happens before the mask is
-sized to it, the near-copy check reads it and the repeat guard hashes it, so
-all three see the picture that is sent, the way the page showed it. Under
-the cap it goes up byte for byte, tag included, and the server reads the tag;
-one that does not decode goes up as it is, for the server to judge as it
-always did. The mask path and the near-copy check decode a reference upright
-too, so a smaller tagged photo is read the way the page painted over it: read
-as stored, a portrait phone photo was the other shape from its mask and the
-masked edit was refused. They are
-uploaded to ComfyUI's *temp* directory, which it empties on start, so a
-private photo is not left in its `input/`; the encoder takes the VAE and splices
-them in as latents, and the canvas follows the first reference's shape unless
-a size is asked for. The pixels go to the loopback server and never into the
-conversation, so the capabilities do not change. Three rules:
+**One call, a scene, and the tool writes the prompt** (`picture.rs`,
+`IMAGE-DESIGN.md` §5, built in its step 1). The model fills a `scene`:
+- `setting`: everything but the people and the words. It is words, or
+  `{"photo": <path>}` for a room.
+- `light`, `camera`, `style` and `together`: `together` is what the people
+  do with each other.
+- `text`: the words to render exactly.
+- `people`: each with `who`, `where`, `wearing`, `doing` and `expression`.
+  `who` is a library name, `self`, or a description.
+
+Beside the scene go `picture` (the one being changed), one free-text
+`retouch`, `mask` and `size`. `picture::parse` reads the call and resolves
+each `who`: an approved character's name or the persona's own names become
+the library character; anything else is a described person. A library name
+that is a candidate, or whose entry did not load, is refused rather than
+drawn as a stranger of that name.
+
+The old inputs are refused by name: `prompt`, `cast`, `extras`, `edit`,
+`negative_prompt` and `reference_images`. Mined from every session on
+2026-10-07, each was either unused or a way the model got the picture wrong
+(`IMAGE-DESIGN.md` §3).
+
+`seed` is in the schema only on the CLI and in evals (`with_seeds`: `mecha
+run`, and the one-shot callers that name no surface). 177 of 211
+model-sent seeds copied an earlier result's.
+
+The description and the field descriptions are named constants
+(`DESCRIPTION`, `SETTING_DESC`, …), so a gate reads the words the model
+does.
+
+**The planner picks the one render** (`picture::plan`, pure). It reads the
+call against the picture's recorded scene; the picture is read once, and its
+bytes find its record. Equal is unchanged: restating what is recorded
+changes nothing, and a call that changes nothing at all is a **redraw** at a
+seed the picture was not drawn at.
+
+The routes, in the result's own words and the manifest's `route`:
+
+| route | when | render |
+|---|---|---|
+| `new` | no `picture` | the E1–E12 compile, library portraits at 512², up to `MAX_CAST` (5) |
+| `placed` | no `picture`, the setting a photo | an edit of the photo, each face's head crop |
+| `restaged` | a pose or a place in the frame (`where`), the camera, the setting, the light, the style, `together` as the call states it, or a removal, on a picture whose people are known | words setting: a new picture at the base picture's seed (it keeps the room: 1/1 with, 6/6 different rooms without). Photo setting: the photo again, everyone's crops, the photo's hash checked so a different file under its name is refused |
+| `edited` | clothes, an expression, someone added (a relation their arrival ends is cleared, not restaged), the text, or a restage on a picture with no record, whose keep sentence names only what the change leaves alone | an edit of the picture, crops for the people it changes |
+| `retouched` | `retouch`, on its own | an edit of the picture, no crops, a `mask` if given |
+| `redrawn` | nothing changed | the same render plan at a fresh seed |
+
+- **The setting is the setting only.** A restage whose place was the model's
+  whole first prompt drew the asked pose 0/3, with the old pose back every
+  time; a room-only setting drew it 3/3 (`IMAGE-DESIGN.md` §2.6).
+- **Someone is drawn only when listed in `people`** (the owner's ruling,
+  2026-10-08). A library name in the words for someone not in the picture is
+  neither drawn nor refused: the image model reads "the viewer" in its place
+  (`picture::as_viewer`, `Plan::offstage`), since from words alone a
+  character comes out as a stranger (E1), and the result says so. A persona
+  addressing the owner by a name the library also holds was every G1b
+  refusal. On a picture with no record the names are left as written: its
+  people are unknown. A character whose entry did not load, named anywhere
+  in the call, is still refused (`broken_named_in`, review of #383).
+- **At most five people with faces** (`picture::MAX_FACES`, the owner's
+  provisional C5 ruling). More are refused, naming them, never trimmed.
+  `EDIT_REFERENCE_BUDGET` is the canvas plus five crops, and `call` refuses
+  past it, so a planner change cannot pass it quietly. A described person
+  costs no face. A scene keeps up to `MAX_PEOPLE` (10).
+- **`together` is cleared when anyone's act changes** unless the call
+  restates it, since a relation between two poses is wrong for the next two.
+- **What a model over-fills is absorbed and said, never a shape refusal**
+  (mecha-a3's G1b on #597: 32 shape refusals in 130 replayed calls, nearly
+  all optional fields filled wrongly). The result names what was left out:
+  - a `retouch` beside a scene change rides along as one more line;
+  - a newcomer's missing pose is a plain one, and missing clothes come from
+    the chat's last scene (`worn`); a library character with neither is
+    asked for;
+  - a relation naming one person, with nobody in `people`, is that person
+    doing it;
+  - an overlong `together` is clipped at a sentence;
+  - a `mask` that is not a painted picture's path, has no retouch, sits
+    beside a scene change, or is not in the chat is left out.
+
+The pictures read go through the jail, as before. They are the picture, the
+setting photo and the mask, each:
+- capped at 25 MB;
+- sniffed by magic number (PNG, JPEG, WebP);
+- uploaded to ComfyUI's *temp* directory, which it empties on start, so a
+  private photo is not left in its `input/`.
+
+One over `MAX_REFERENCE_PIXELS` (4 Mpx) goes up scaled to it, upright, as a
+PNG (`fit_reference`). The encoder resizes every reference to about 1 Mpx
+itself, so the rest of a 24.5 Mpx phone photo cost ~2 s of server-side work
+for nothing, where fitting it here takes ~0.25 s. It is turned by its EXIF
+orientation first, before the mask is sized to it and the layout is read.
+The mask path and the layout reading decode upright too: read as stored, a
+portrait phone photo was the other shape from its mask and the masked edit
+was refused.
+
+The pixels go to the loopback server and never into the conversation, so
+the capabilities do not change. Three rules hold every edit-shaped render:
 
 - **An edit always samples at a fresh seed.** Measured on 2026-09-25: four
-  edits sampled at the seed that drew the reference came back as near-copies,
-  the instruction barely landing, across every model file tried; the same
-  edit at a fresh seed was clean. The rule is keyed on "this is an edit", not
-  on recognising the file — a first cut read the seed off the saved file's
-  name, and a re-attached download or renamed copy carried the same seed with
-  no name to read it from (found on review of #306). A seed the model passes
-  with references is replaced and the result says so; structural, because a
-  text-to-image result tells the model its seed keeps the composition.
-- **An edit prompt is an instruction, never a description of the scene.**
-  The edit model reads a caption of the whole scene, or "keep the picture
-  unchanged", as the picture it already has, and returns it. On 2026-09-29,
-  one picture, model and setting, on the same 12 seeds, with only the prompt
-  varied: a caption of the scene stood a sitting woman up 0 times; "Have Maya
-  stand up…" alone, 8 (3 near-copies, 1 partial); the same after "Keep the
-  watercolor style, the lake, willow tree, and red checkered blanket
-  unchanged.", 12. The seed only decides which way an ambiguous prompt tips,
-  which is why the failure looked random. A guidance that said "describe the
-  finished picture" produced the caption that failed.
-  - **So an edit is typed fields, and the tool writes its prompt**
-    (`EditAsk`, PERSONA-CONTEXT-DESIGN.md §5.5). Asking for the right shape
-    in the description was not enough: on 2026-10-06 a live persona chat's
-    three edits were all scene captions, all came back unchanged (layout
-    similarity 0.99–1.00), and replayed, the caption made the asked-for change
-    3 times in 8 where an instruction did 8 in 8, face anchor on or off. An
-    edit now takes `edit.change` (the one change, as an instruction),
-    `edit.keep` (what stays, named, optional), and `edit.face` and
-    `edit.camera` only when the change is about them. The tool writes "Keep
-    {keep} unchanged. {change} {face} {camera}", leaving the keep sentence out
-    when `keep` is absent or a mask keeps the rest. No stand-in for a missing
-    `keep`: on one edit, 4 seeds, the change alone made it 4/4, "Keep
-    everything else unchanged." 3/4, and a generic list of face, hair, pose,
-    background and light 2/4. A free-text
-    `prompt` with references is refused (`EDIT_REQUIRED`), as is `edit`
-    beside `prompt` or without a picture, each saying what to send instead,
-    so a caption can never reach the edit model. The manifest keeps the
-    fields beside the prompt they became.
-- **An edit that kept the layout says so, and never retries by itself.**
-  The model never sees the result, and reported a near-copy as the change
-  made, so a retry in the same chat repeated the edit. Each edit's
-  `layout_similarity` to its first reference (grayscale 32² thumbnails,
-  correlated) goes in the manifest. At `NEAR_COPY_LAYOUT` (0.78) the result
-  states facts only (PERSONA-CONTEXT-DESIGN.md §5.2): that the layout barely
-  moved, with its similarity score; whether this picture has now done so
-  twice running; which original a near-copy descends from; and, for an
-  original made from the library, the names it was made with (never under a
-  mask, which would redraw the whole picture, #429). Guidance lives
-  once in the description: fine after a recolour or a small detail; after a
-  move or a pose, tell the owner it probably failed; retry only on request,
-  from the original; after two running, stop and explain. A retry is never
-  the result's to suggest: on 2026-10-03 a notice urging an immediate retry
-  led the persona to redo 12 of 13 near-copies unprompted, detail edits among
-  them, and then to redraw edits that had worked.
-  It gives the names only, each checked against the library, since the
-  manifest is a workspace file. The threshold was measured on one scene and
-  on same-shape edits only: every copy, and every edit that left her
-  sitting, scored 0.80 or more, but for one kneeling partial (0.754); every
-  edit that stood someone up scored 0.761 or less. The 0.761 was a small
-  standing figure that 0.75 flagged, which is why the line sits at 0.78. An
-  edit that passes a `size` unlike its reference's squashes both thumbnails
-  and reads as changed, which fails in the safe direction. A recolour also
-  keeps the layout (0.78–1.00), which is why the tool reports rather than
-  retries: only the model knows which it asked for, and a blind retry would
-  cost every recolour a minute. For the same reason no result says the edit
-  failed. A near-copy records
-  `same_layout_as`, so an edit of the near-copy is told which original it
-  came from. Strikes count per picture actually edited: a failed move
-  retried on the original edits the same picture again, and the second
-  within 15 minutes says it is the second in a row, while a
-  recolour chain edits a new result each time and never counts twice. An
-  edit that does change the layout ends the row. Counting per chain root
-  instead told a second successful recolour to stop (review of #408). The
-  record holds a salted hash of each path, never the path, and is swept on
-  every edit, since an incognito room's path must not outlive the room.
-- **The request that just drew a picture is answered, not drawn again.**
-  The guard keys on the request as it goes to the server — prompt, seed,
-  size, steps and every reference, after the tool has filled them in — not
-  on what the model typed, so a default spelled out or a stray space is the
-  same request (`ImageGenerate::claim`). The same request in the same
-  workspace within 15 minutes (`REPEAT_WINDOW`) gets `REPEAT_REFUSED` through
-  `refused` — an error, since the page counts a turn's pictures by
-  `is_error` (`turnsWithoutPicture`) — and no GPU time. A call with no seed,
-  every edit, and a cast call at a portrait's seed get a fresh seed, so the
-  same input is never the same request: "another one", and the retry a
-  near-copy notice describes, always draw (review of #543). The claim is
-  taken before the render, because a turn's calls run concurrently, and
-  lapses unless the request drew, so a failed or cancelled one can be sent
-  again. While the first is still drawing, an identical one is told so
-  (`REPEAT_IN_FLIGHT`), never that the picture exists — the render may yet
-  fail. A new conversation forgets the record
-  (`forget_conversation_state`), and the near-copy strikes with it: a
-  workspace can outlive its chat — a batch's shared one, `/clear` in the TUI
-  or the REPL — and the refusal points at a picture in this chat. A voice
-  slot does not call it: slots share one agent, and clearing it would clear
-  every live slot's tools, so a slot can still be answered over a seeded
-  picture another slot drew in the last 15 minutes. On a call on 2026-10-03 a persona re-sent the seeded call that had
-  just drawn, word for word, four times in one run; ComfyUI ran each in
-  0.00 s as a duplicate of a finished prompt, kept no new output, and
-  `/view` answered 404, which the run read as a failure. The record is
-  salted hashes, as for the strikes.
-- **An edit declares its people, and each comes in as a head crop**
-  (`face.rs`; `IMAGE-SCENE-DESIGN.md` R1 and R5, the owner's rulings of
-  2026-10-07, replacing #569's lineage anchor). An edit keeps only part of
-  the face it is given — about 0.77 ArcFace similarity per step across the
-  owner's persona edits — so a chain ended as somebody else. The anchor that
-  first treated this inferred whose face to send by walking manifests back to
-  a cast scene, and it missed 63 of 69 persona edits after it shipped. Three
-  things ended the walk: a chat boundary (each chat has its own workspace, so
-  a carried-over picture is a bare inbox file), a second picture, or a chain
-  that began from words. Each time `face_anchor` was left `null` with no
-  reason. Now the people are declared:
-  - **Who.** The call's `cast` together with the people the edited picture's
-    own manifest records (that one record, never a walk): the call's `cast`
-    adds to the record and never erases it, so a retry that names one person
-    cannot drop the others (review of #588). `self` and the persona's name are
-    resolved by `cast_self`. A persona named only in an edit's words, whom
-    the picture does not record, comes in when those words say what she
-    wears and does; otherwise the call is refused and asks for her in
-    `cast`. An attached photo names nobody unless the call does, and
-    `"cast": []` is nobody: it also resets a record whose people have left
-    the picture, since removing one person waits for the scene record
-    (`IMAGE-SCENE-DESIGN.md` §10 step 2).
-  - **The crop and the sentences.** Each approved character gets a tight crop
-    of its portrait (1.12× the face box) at the canvas's size, its library
-    description verbatim, and "take only X's facial identity from
-    `<imageN>`". These follow a sentence giving `<image1>` the canvas's role:
-    keep the camera (`CANVAS_KEEPS_CAMERA`), or keep only the room when
-    `edit.camera` moves it (`CANVAS_CAMERA_MOVES`; M2's R moved the camera
-    with the crop on).
-  - **The measurements.** The crop's shape was measured on 2026-10-05:
-    - the whole portrait leaked its outfit and selfie pose into four of six
-      scenes;
-    - a crop at 1.6× the face flattened asked-for expressions;
-    - a masked face-only redraw did not move identity;
-    - without the canvas sentence the crop pulled every scene into a
-      close-up.
+  edits sampled at the seed that drew the reference came back as
+  near-copies, across every model file tried. The rule is keyed on the
+  render being an edit, never on recognising the file (#306). A `seed` beside
+  `picture` is refused.
+- **An edit prompt is an instruction, never a caption.** The edit model reads
+  a caption of the whole scene as the picture it already has, and returns
+  it. On 2026-09-29, one picture on 12 seeds:
+  - a caption stood a sitting woman up 0 times;
+  - "Have Maya stand up…" alone did it 8 times;
+  - the same after "Keep the watercolor style, the lake, willow tree, and
+    red checkered blanket unchanged." did it 12 times.
 
-    Declaration was measured on 2026-10-07: crop plus description held on the
-    owner's sheets where words alone or the crop alone did not.
-  - **The guard and the budget.** The library-name guard now covers edits, so
-    a character named in a change but not declared is refused before the GPU.
-    One budget per edit, `EDIT_REFERENCE_BUDGET` (3, the canvas included):
-    every edit reference is encoded at 1024², and four is the research's
-    cliff.
-  - **What is not covered.** A masked edit carries no crops. A crop that
-    cannot be had (the detector not installed, no face in the portrait) is
-    recorded, never refused: the edit draws without it, but a declared
-    person's description, clothes and pose still go into the prompt, so
-    nothing they wear is invented (review of #586, pass 3). So does a
-    declared person with no library entry, by name. New pictures
-    still send the whole portrait until `IMAGE-SCENE-DESIGN.md` §8.1 is
-    measured.
-  - **The record.** The manifest's `identity` always says who was declared,
-    from where, and whose crop came or why not. Its `cast` records them,
-    which is how the next edit finds them.
-  `edit.face` says what the face does — expression, head angle, gaze — when
-  the change is about faces, because without it the edit hands the face back
-  as it was (which is right when it is not), and `edit.camera` describes a
-  camera change by where the camera is and what is nearest it: named, the
-  angle did not move; described, it did.
-  The detector is py-feat's RetinaFace-R34 (`py-feat/retinaface_r34`, MIT,
-  pinned in `face.rs`), run by `face.rs`'s own small network on
-  `matrixmultiply`, its batch norms folded into the convolutions at load:
-  checked against py-feat to within a pixel on six pictures
+  So the tool writes "Keep {keep} unchanged. {instruction}" (#408). The
+  instruction is one line per change ("Dress Maya in …", "Add John on the
+  left.", "Take Wren out of the picture."). `keep` is named from what the
+  route leaves alone, and is left out under a mask, which keeps the rest by
+  itself.
+- **The layout is read and said as a fact, never as advice.** An edit's
+  `layout_similarity` to its canvas (grayscale 32² thumbnails, correlated,
+  only the painted cells under a mask) goes in the manifest. At
+  `NEAR_COPY_LAYOUT` (0.78) the result says the layout barely moved, with its
+  score, and nothing else.
+  - A recolour also keeps the layout, so only the model knows whether that
+    is a failure.
+  - A notice urging a retry once led a persona to redo 12 of 13 near-copies
+    unprompted (2026-10-03).
+  - Placing and restaging are not read, since they are meant to move
+    everything.
+
+**Identity comes from the library, as a head crop beside its description**
+(`face.rs`; `IMAGE-SCENE-DESIGN.md` R1 and R5, the owner's rulings of
+2026-10-07). An edit keeps only part of the face it is given, about 0.77
+ArcFace similarity per step across the owner's persona edits, so a chain
+ended as somebody else. Inferring whose face to send by walking manifests
+missed 63 of 69 persona edits.
+
+Now every face a render needs is declared by the plan:
+- **New pictures** get the whole portrait at 512² until
+  `IMAGE-SCENE-DESIGN.md` §8.1 measures the crop there.
+- **Edit-shaped renders** get, for each approved character they place or
+  change:
+  - a tight crop of its portrait (1.12× the face box) at the canvas's size;
+  - its library description verbatim;
+  - "Take only X's facial identity from `<imageK>`, nothing else."
+
+  These follow a sentence giving `<image1>` the canvas's role: keep the
+  camera (`CANVAS_KEEPS_CAMERA`), or keep only the room when the camera moves
+  (`CANVAS_CAMERA_MOVES`; M2's restage moved the camera with the crop on).
+
+The crop's shape was measured on 2026-10-05:
+- the whole portrait leaked its outfit and selfie pose into four of six
+  scenes;
+- a crop at 1.6× the face flattened asked-for expressions;
+- without the canvas sentence the crop pulled every scene into a close-up.
+
+Crop plus description held on the owner's sheets where words alone or the
+crop alone did not (2026-10-07).
+
+Edge cases:
+- **No crop under a mask.**
+- **A crop that cannot be had** (the detector not installed, no face in the
+  portrait, the detector panicking) costs the crop and nothing else. The
+  person's description, clothes and pose still go into the prompt (review of
+  #586).
+- **The manifest's `crops`** names whose crop went.
+
+The detector is py-feat's RetinaFace-R34 (`py-feat/retinaface_r34`, MIT,
+pinned in `face.rs`), run by `face.rs`'s own small network on
+`matrixmultiply`, with its batch norms folded into the convolutions at load:
+- **Checked against py-feat** to within a pixel on six pictures
   (`face::tests::the_detector_agrees_with_py_feat`, ignored by default: it
-  needs the weights), about 1.9 s a portrait on one CPU thread, once — the
-  crop is cached. A framework was tried first and dropped (the owner's
-  ruling): candle brought 68 crates into mecha-core, `tokenizers` among them
-  with two C and C++ libraries built from source; its 0.9.2 convolution was
-  silently wrong for a 128-channel 3×3 at 128×128 — RetinaFace's layer2 on a
-  1024² picture, mecha's default size — and found no face there; and its
-  matrix kernels would not assemble unoptimised on aarch64 with Rust 1.99.
-  The network's convolution is checked against its definition at every
-  shape it uses, in bands as well as whole
-  (`the_convolution_matches_its_definition_at_every_shape_used`).
-  `mecha imagelib install-face-detector` fetches the weights; wiring them
-  into the image feature's install plan is FEATURES-DESIGN 7e's.
-- **A persona chat keeps a scene record** (`scene.rs`, `IMAGE-SCENE-DESIGN.md`
-  step 2). A render that lands advances it, beside `write_manifest` in the
-  job, so a cancelled or failed render never does.
-  - **What advances:** a new picture defines the scene afresh; an edit
-    changes what it declared and keeps the rest, people included: someone
-    whose library entry has gone is still in the picture. Only `"cast": []`
-    empties it, the reset step 1 gave the manifest's record.
-  - **Where it lives:** three files, all harness-written and outside the
-    jail. The chat's copy sits beside its transcript (`<id>.scene.json`;
-    a chat starts from the persona's latest, R7, and the run's scene note
-    is what reads it). The persona's
-    `scene/latest.json` is won by the last render to land. The index is
-    `scene/index/<sha256>.json`, and is unbounded for now: an entry per
-    picture ever rendered, outliving the pictures `work.rs` retention sweeps.
-    A cap or age sweep is owed before it grows large. A manifest carries only
-    a pointer to its scene (the picture's hash), never the scene itself, which
-    can hold another chat's words.
-  - **Lookup:** an attached picture whose manifest records nobody is found
-    there by its bytes, so a picture carried in from another chat brings its
-    people. The lookup never reads a workspace manifest across chats.
-  - **Origin:** kept per field, the scene's origin is the union, and unknown
-    reads untrusted.
-  - **Into the prompt (step 4).** The chat's copy rides each run's notes,
-    never a stored message, so what she wears and where she is come from her
-    last picture rather than a recalled day. It opens with one of two stems
-    (`scene::SCENE_STEM`, `UNTRUSTED_SCENE_STEM`), picked by the scene's
-    origin. Both arm `private`, and the second also arms `untrusted`
-    (`Taint::arm_for_content`), as memory's two stems do. Two, because notes
-    arm at every run start, and one stem arming both would make every chat
-    with a scene untrusted. The stems are registered as harness text in
-    `message::is_recorded_note` and `is_harness_voice`.
-    `scripts/check-private.py` exempts only the note's opening sentence; the
-    place and clothes after it come from the chat, and are read.
-  - **Who has a slot:** only a persona chat stamps one (`ToolCtx::scene`).
-    The assistant's chats, incognito included, keep no scene, so R9 holds
-    by construction.
-  - **Forgetting:** `persona memory forget --chat` also removes the records
-    that chat wrote. Each is tagged with the chat that drew it, so an entry
-    another chat wrote by editing this chat's picture stays, and can hold
-    words from this one; forgetting by lineage is owed with the retention
-    sweep.
-  - **A scene change routes by what it changes (step 3).** `image_generate`
-    takes a `scene` object: people (name, wearing, doing, `remove`), camera
-    and place. Only what is sent counts as changed (the owner's ruling,
-    2026-10-07). `ImageGenerate::route_scene` reads it against the picture's
-    scene, found by its bytes, and rewrites the call into one the paths below
-    already draw, so step 1's checks and step 2's landing apply unchanged:
-    - **Restage:** a camera, a place, a new pose for someone already there,
-      or a removal. Everyone is drawn afresh with their crops on the scene's
-      place: an edit of the place picture when this chat holds it (its hash
-      checked), else a new picture from the place's words (the M3 shape).
-      With neither, the people are redrawn on the current picture, and the
-      result says the place could not be found. The scene's camera and
-      style are drawn unless the change sets new ones.
-    - **Add:** someone new is added onto the current picture.
-    - **Retouch:** anything else edits the current picture.
-    - **No scene:** the assistant's chats, or a photo from outside, edit the
-      picture.
+  needs the weights).
+- **Cost:** about 1.9 s a portrait on one CPU thread, once; the crop is
+  cached.
+- **Why not a framework** (the owner's ruling). candle was tried and
+  dropped:
+  - it brought 68 crates into mecha-core;
+  - its 0.9.2 convolution was silently wrong for a 128-channel 3×3 at
+    128×128;
+  - its matrix kernels would not assemble unoptimised on aarch64.
+- **The convolution is checked against its definition** at every shape it
+  uses (`the_convolution_matches_its_definition_at_every_shape_used`).
+- **Install:** `mecha imagelib install-face-detector` fetches the weights.
 
-    The result says when a call was restaged, so the model does not read
-    "an edit of" the place's photo as a lost picture. A change built on
-    another chat's scene keeps step 2's rule: the prompt carries that chat's
-    words to the model, while this chat's manifest records a placeholder
-    prompt and the cast by name only.
+**Every picture's scene is recorded, in every served chat** (`scene.rs`,
+`IMAGE-DESIGN.md` §6, one path: the owner's ruling, 2026-10-07). A render
+that lands records `plan.next` with the picture's hash, its seed and the
+chat, after the picture is saved, so a cancelled or failed render never
+advances it.
 
-    The manifest's `scene_route` says which. On landing, only the people the
-    change named take the run's origin; the rest keep their own, or a camera
-    move would launder an untrusted person clean. A newcomer's `doing`
-    describes them; it is not a pose change.
+- **Where:** three things, all harness-written and outside the jail. They
+  are stamped by the front end (`ToolCtx::scene`), never by a model.
+  - **A persona chat:** its copy beside its transcript
+    (`<id>.scene.json`), and the persona's `scene/latest.json` and
+    `scene/index/<sha256>.json`.
+  - **The assistant's kept web chats:** the same layout one level up
+    (`scene::assistant_slot`): the copy beside the transcript in `sessions/`,
+    the index in `~/.mecha/scene/`.
+  - **An incognito chat:** all of it in its room, beside the jail
+    (`scene::room_slot`). It goes with the room and never reaches the mecha
+    home (R9).
+  - **Elsewhere:** the TUI, the REPL, Slack and `mecha run` stamp no slot,
+    so their pictures carry no record and every change to one is an edit.
+  - **The guard:** `only_the_served_chats_stamp_a_scene_slot` reads the
+    source for any other stamp.
+- **Lookup is by the picture's bytes, through the index**, so a picture
+  carried into another chat brings its scene. Nothing reads a scene back out
+  of a manifest: a run can write the jail.
+- **The index is unbounded for now:** an entry per picture ever rendered,
+  outliving the pictures `work.rs` retention sweeps. A cap or age sweep is
+  owed.
+- **Origin:** kept per field and set from the run's taint
+  (`scene::Origin::of`). Unknown reads untrusted. On landing, only the
+  fields a call changed take the run's origin, so a camera move never
+  launders an untrusted person clean.
+- **Into the prompt:** a persona run carries its chat's scene as a note
+  (`scene::note`), never a stored message. It opens with one of two stems
+  picked by origin (`SCENE_STEM`, `UNTRUSTED_SCENE_STEM`). Both arm
+  `private`, and the second also arms `untrusted`: notes arm at every run
+  start, and one stem arming both would make every chat with a scene
+  untrusted. `scripts/check-private.py` exempts only the note's opening
+  sentence.
+- **Forgetting:**
+  - `persona memory forget --chat` removes the records that persona chat
+    wrote.
+  - Deleting an assistant chat (`forget::forget`, the `scene` store) removes
+    its copy and the index entries it last advanced.
+  - A record that cannot be read is kept and said.
+
+**The manifest keeps what the owner-facing doors read**, and no prompt:
+- `image` and `tool_use_id`, for orphan repair;
+- `seed` and `cast[].name`, for save-to-library;
+- `route`, `picture`, `mask`, `crops` and `layout_similarity`;
+- the scene's picture hash, which is a pointer, never the scene.
+
+**Retired with the old inputs:** `route_scene`, `EditAsk`, `cast_self`,
+`demote_unknown`, the near-copy strikes and the library-redraw offer, and
+`REPEAT_REFUSED`/`REPEAT_IN_FLIGHT` with their claim records. The repeat
+guard never fired in any session: the one-picture-per-run rule in the agent
+loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
+
 - **The web chat's Edit button opens a modal where the owner paints what may
   change** (`EditModal.svelte`). Painted pixels become a mask at the picture's
   own size. The mask goes up through the ordinary upload route but is never
@@ -981,10 +950,10 @@ compute and memory bandwidth, and nothing queues one behind the other.
 
 ## Image library
 
-> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1).** Two rules below are lifted:
-> `cast` and `reference_images` refused together, and the name guard skipping edits. An edit
-> declares its people, and each enters as a head crop with their description. Until that build
-> (`image/declared-identity`) lands, the text below describes what ships.
+> **Superseded 2026-10-08 for `image_generate`'s call (`IMAGE-DESIGN.md`; see §Image generation
+> above).** `cast`, `extras` and `reference_images` are retired: people are `scene.people[].who`,
+> and the planner, not a name guard, decides what is drawn. The store, approval and the library's
+> own tools below stand as written.
 
 `imagelib.rs` is the store of recurring characters and styles, and the
 compiler that turns a scene into what `image_generate` sends;
