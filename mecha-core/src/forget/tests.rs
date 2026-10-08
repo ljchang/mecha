@@ -934,8 +934,8 @@ fn an_assistant_chats_scene_records_go_with_it() {
         .unwrap();
     let copy = roots.sessions.join(format!("{GONE}.scene.json"));
     // Its saved picture prompts go too; another chat's stay.
-    let prompts = roots.sessions.join(format!("{GONE}.prompts.jsonl"));
-    let kept_prompts = roots.sessions.join(format!("{KEPT}.prompts.jsonl"));
+    let prompts = roots.sessions.join(format!("{GONE}.prompts.log"));
+    let kept_prompts = roots.sessions.join(format!("{KEPT}.prompts.log"));
     std::fs::write(&prompts, "{}\n").unwrap();
     std::fs::write(&kept_prompts, "{}\n").unwrap();
     let index = home.0.join("scene/index");

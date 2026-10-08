@@ -3625,7 +3625,7 @@ impl PersonaChats {
             self.store
                 .join(&name)
                 .join("sessions")
-                .join(format!("{}.prompts.jsonl", ps.session.meta.id)),
+                .join(format!("{}.prompts.log", ps.session.meta.id)),
         );
         // Each person's part of a scene's `together`, read on the persona's
         // own model, untouched as the edit panel's reader is (`roles`): the
@@ -3654,19 +3654,22 @@ impl PersonaChats {
                     m.role == mecha_core::message::Role::Assistant && !m.text().trim().is_empty()
                 })
                 .map(|m| m.text());
-            tools.scene_reader = (self.provider)(&bound, PersonaUse::Judge)
-                .ok()
-                .map(|provider| {
-                    Arc::new(mecha_core::persona::edit::ModelReader {
-                        provider,
-                        model: bound.model.clone(),
-                        owner: text.clone(),
-                        reply,
-                        persona: names.persona.clone(),
-                        character: names.character.clone(),
-                        library: names.library.clone(),
-                    }) as Arc<dyn mecha_core::persona::edit::SceneReader>
-                });
+            tools.scene_reader = match (self.provider)(&bound, PersonaUse::Judge) {
+                Ok(provider) => Some(Arc::new(mecha_core::persona::edit::ModelReader {
+                    provider,
+                    model: bound.model.clone(),
+                    owner: text.clone(),
+                    reply,
+                    persona: names.persona.clone(),
+                    character: names.character.clone(),
+                    library: names.library.clone(),
+                })
+                    as Arc<dyn mecha_core::persona::edit::SceneReader>),
+                Err(e) => {
+                    tracing::warn!("persona chat: no scene reader this turn: {e:#}");
+                    None
+                }
+            };
         }
         cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {

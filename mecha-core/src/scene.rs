@@ -815,7 +815,7 @@ fn forget_in(copies: &Path, store: &Path, chat: &str) -> std::io::Result<SceneFo
     // The chat's saved picture prompts sit beside its copy, for either front
     // end, and are a superset of the scene words going here (`ToolCtx::
     // prompt_log`; review of #610). Not counted as a record.
-    match std::fs::remove_file(copies.join(format!("{chat}.prompts.jsonl"))) {
+    match std::fs::remove_file(copies.join(format!("{chat}.prompts.log"))) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
@@ -1311,7 +1311,7 @@ mod tests {
             .unwrap();
         let persona = root.join("persona");
         // Each chat's saved picture prompts sit beside its copy.
-        let prompts = |c: &str| root.join(format!("persona/sessions/{c}.prompts.jsonl"));
+        let prompts = |c: &str| root.join(format!("persona/sessions/{c}.prompts.log"));
         std::fs::write(prompts("c1"), "{}\n").unwrap();
         std::fs::write(prompts("c2"), "{}\n").unwrap();
         std::fs::write(root.join("persona/scene/index/broken.json"), b"{ half").unwrap();
