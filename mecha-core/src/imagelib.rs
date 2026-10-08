@@ -903,22 +903,13 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
             "The {} `{name}` is waiting for the owner's approval and cannot be used yet.",
             kind.label()
         ),
-        _ => match what_there_is(lib, kind) {
-            Some(there) => format!("No approved {} named `{name}`. {there}.", kind.label()),
-            None => format!("No approved {} named `{name}`.", kind.label()),
-        },
+        // Only what the call named, never what else the library holds:
+        // the roster is the owner's (`image_library` declares it private,
+        // and a locked entry is never named where there is no unlock token,
+        // #385), and never a tool to call, which a persona chat does not
+        // have (2026-10-08; review of #603).
+        _ => format!("No approved {} named `{name}`.", kind.label()),
     }
-}
-
-/// The approved entries of `kind`, by name, locked ones included: the lock
-/// is a browse filter, generation ignores it, and `image_library` lists
-/// locked entries to the model (review of #603).
-pub(crate) fn approved_names(lib: &Library, kind: Kind) -> Vec<String> {
-    lib.all()
-        .iter()
-        .filter(|e| e.kind == kind && e.status == Status::Approved)
-        .map(|e| e.name.clone())
-        .collect()
 }
 
 /// Whether `name` is simply not in the library as `kind`: no entry in any
@@ -932,30 +923,6 @@ pub(crate) fn absent(lib: &Library, kind: Kind, name: &str) -> bool {
             .errors
             .iter()
             .any(|e| e.path.parent() == Some(entry_dir.as_path()))
-}
-
-/// The names of `kind` a refusal or a note may offer, as one sentence, or
-/// `None` when there are none to offer. Never a tool to call (a persona chat
-/// has no `image_library`, and one retried a refusal naming it until its
-/// turns ran out, 2026-10-08). Styles only: a character's name is the
-/// owner's, and a result that listed the roster would contradict
-/// `image_generate`'s footing that it returns only what the call named, so
-/// a character is refused without a list (review of #603).
-pub(crate) fn what_there_is(lib: &Library, kind: Kind) -> Option<String> {
-    if kind != Kind::Style {
-        return None;
-    }
-    let names: Vec<String> = approved_names(lib, kind)
-        .iter()
-        .map(|n| format!("`{n}`"))
-        .collect();
-    (!names.is_empty()).then(|| {
-        format!(
-            "{} you can name: {}",
-            capitalize(kind.dir()),
-            names.join(", ")
-        )
-    })
 }
 
 /// Empty, or only the refusal's own placeholder copied back — no answer.
@@ -1274,12 +1241,11 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    /// A style the library does not hold is answered with the styles it does
-    /// hold, locked ones included, and a character with no list at all; never
-    /// a tool to call (2026-10-08: a persona chat has no image_library and
-    /// retried the refusal naming it).
+    /// A name the library does not hold is answered with that name alone:
+    /// never the roster, a locked entry or a tool to call (2026-10-08: a
+    /// persona chat has no image_library and retried the refusal naming it).
     #[test]
-    fn a_missing_entry_names_what_there_is_never_a_tool() {
+    fn a_missing_entry_names_only_what_was_asked() {
         let dir = scratch();
         create(dir.path(), style("noir")).unwrap();
         let mut hidden = style("hidden-look");
@@ -1287,24 +1253,13 @@ mod tests {
         create(dir.path(), hidden).unwrap();
         create(dir.path(), character("wren", Origin::Owner)).unwrap();
         let lib = Library::load(dir.path()).0;
-        let said = missing(&lib, Kind::Style, "pastel");
-        // A locked style still draws, so it is offered like any other.
-        assert!(
-            said.contains("`noir`") && said.contains("`hidden-look`"),
-            "{said}"
+        assert_eq!(
+            missing(&lib, Kind::Style, "pastel"),
+            "No approved style named `pastel`."
         );
-        assert!(!said.contains("image_library"), "{said}");
-        // A character is refused without the roster.
         assert_eq!(
             missing(&lib, Kind::Character, "ivo"),
             "No approved character named `ivo`."
-        );
-        let empty = scratch();
-        let none = Library::load(empty.path()).0;
-        let said = missing(&none, Kind::Style, "pastel");
-        assert_eq!(
-            said, "No approved style named `pastel`.",
-            "nothing offered, no absence claimed"
         );
     }
 
