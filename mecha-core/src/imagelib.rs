@@ -910,13 +910,13 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
-/// The approved, unlocked entries of `kind`, by name: what a refusal or a
-/// note may say the library holds. A locked entry is left out without a
-/// count, as the page leaves it out while browsing.
+/// The approved entries of `kind`, by name, locked ones included: the lock
+/// is a browse filter, generation ignores it, and `image_library` lists
+/// locked entries to the model (review of #603).
 pub(crate) fn approved_names(lib: &Library, kind: Kind) -> Vec<String> {
     lib.all()
         .iter()
-        .filter(|e| e.kind == kind && e.status == Status::Approved && !e.locked)
+        .filter(|e| e.kind == kind && e.status == Status::Approved)
         .map(|e| e.name.clone())
         .collect()
 }
@@ -937,10 +937,14 @@ pub(crate) fn absent(lib: &Library, kind: Kind, name: &str) -> bool {
 /// The names of `kind` a refusal or a note may offer, as one sentence, or
 /// `None` when there are none to offer. Never a tool to call (a persona chat
 /// has no `image_library`, and one retried a refusal naming it until its
-/// turns ran out, 2026-10-08), and never "there are none": a locked entry is
-/// left out of what is offered but still draws, so absence is not claimed
-/// (review of #603).
+/// turns ran out, 2026-10-08). Styles only: a character's name is the
+/// owner's, and a result that listed the roster would contradict
+/// `image_generate`'s footing that it returns only what the call named, so
+/// a character is refused without a list (review of #603).
 pub(crate) fn what_there_is(lib: &Library, kind: Kind) -> Option<String> {
+    if kind != Kind::Style {
+        return None;
+    }
     let names: Vec<String> = approved_names(lib, kind)
         .iter()
         .map(|n| format!("`{n}`"))
@@ -1270,9 +1274,10 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    /// A name the library does not hold is answered with what it does hold,
-    /// never a tool to call, and never a locked entry (2026-10-08: a persona
-    /// chat has no image_library and retried the refusal naming it).
+    /// A style the library does not hold is answered with the styles it does
+    /// hold, locked ones included, and a character with no list at all; never
+    /// a tool to call (2026-10-08: a persona chat has no image_library and
+    /// retried the refusal naming it).
     #[test]
     fn a_missing_entry_names_what_there_is_never_a_tool() {
         let dir = scratch();
@@ -1283,12 +1288,17 @@ mod tests {
         create(dir.path(), character("wren", Origin::Owner)).unwrap();
         let lib = Library::load(dir.path()).0;
         let said = missing(&lib, Kind::Style, "pastel");
-        assert!(said.contains("`noir`"), "{said}");
+        // A locked style still draws, so it is offered like any other.
         assert!(
-            !said.contains("hidden-look") && !said.contains("image_library"),
+            said.contains("`noir`") && said.contains("`hidden-look`"),
             "{said}"
         );
-        assert!(missing(&lib, Kind::Character, "ivo").contains("`wren`"));
+        assert!(!said.contains("image_library"), "{said}");
+        // A character is refused without the roster.
+        assert_eq!(
+            missing(&lib, Kind::Character, "ivo"),
+            "No approved character named `ivo`."
+        );
         let empty = scratch();
         let none = Library::load(empty.path()).0;
         let said = missing(&none, Kind::Style, "pastel");

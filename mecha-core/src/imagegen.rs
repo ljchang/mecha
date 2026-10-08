@@ -2835,8 +2835,9 @@ impl Tool for ImageGenerate {
                             });
                         }
                         None => {
-                            // A recorded style since retired: said as the
-                            // library's own answer, naming what it holds.
+                            // Defence only: the call's style was proved
+                            // approved after parse, so this answers what the
+                            // library would, never naming a tool.
                             return Ok(refused(crate::imagelib::missing(
                                 &lib,
                                 crate::imagelib::Kind::Style,
