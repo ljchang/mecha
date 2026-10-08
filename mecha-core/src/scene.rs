@@ -230,7 +230,12 @@ pub struct Delta {
     pub light: bool,
     pub camera: bool,
     pub style: bool,
+    /// `together` as the call stated it.
     pub together: bool,
+    /// A recorded `together` the acts' change ended (review T2). It restages
+    /// nothing by itself: adding someone to a scene with a relation is still
+    /// an edit (review of #597).
+    pub together_cleared: bool,
     pub text: bool,
     /// People new to the scene.
     pub added: Vec<String>,
@@ -249,8 +254,9 @@ impl Delta {
         *self == Delta::default()
     }
 
-    /// The change redraws everyone: a pose, the camera, the setting, the
-    /// light, someone placed or someone removed. A restage.
+    /// The change redraws everyone: a pose or a place in the frame, the
+    /// camera, the setting, the light, `together` as the call states it, or
+    /// someone removed. A restage.
     pub fn restages(&self) -> bool {
         self.setting
             || self.camera
@@ -420,7 +426,7 @@ impl Scene {
             Some(_) => {}
             None if acts_changed && next.together.is_some() => {
                 next.together = None;
-                d.together = true;
+                d.together_cleared = true;
             }
             None => {}
         }
@@ -943,7 +949,7 @@ mod tests {
             Origin::Clean,
             false,
         );
-        assert!(next.together.is_none() && d.together);
+        assert!(next.together.is_none() && d.together_cleared && !d.together);
         let (kept, _) = Scene::apply(
             Some(&base),
             &SceneChange {

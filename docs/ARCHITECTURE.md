@@ -673,8 +673,8 @@ The routes, in the result's own words and the manifest's `route`:
 |---|---|---|
 | `new` | no `picture` | the E1–E12 compile, library portraits at 512², up to `MAX_CAST` (5) |
 | `placed` | no `picture`, the setting a photo | an edit of the photo, each face's head crop |
-| `restaged` | a pose, the camera, the setting, the style, or a removal, on a picture whose people are known | words setting: a new picture at the base picture's seed (it keeps the room: 1/1 with, 6/6 different rooms without). Photo setting: the photo again, everyone's crops, the photo's hash checked so a different file under its name is refused |
-| `edited` | clothes, an expression, someone added, the text, or a restage on a picture with no record | an edit of the picture, crops for the people it changes |
+| `restaged` | a pose or a place in the frame (`where`), the camera, the setting, the light, the style, `together` as the call states it, or a removal, on a picture whose people are known | words setting: a new picture at the base picture's seed (it keeps the room: 1/1 with, 6/6 different rooms without). Photo setting: the photo again, everyone's crops, the photo's hash checked so a different file under its name is refused |
+| `edited` | clothes, an expression, someone added (a relation their arrival ends is cleared, not restaged), the text, or a restage on a picture with no record, whose keep sentence names only what the change leaves alone | an edit of the picture, crops for the people it changes |
 | `retouched` | `retouch`, on its own | an edit of the picture, no crops, a `mask` if given |
 | `redrawn` | nothing changed | the same render plan at a fresh seed |
 
@@ -691,6 +691,18 @@ The routes, in the result's own words and the manifest's `route`:
   costs no face. A scene keeps up to `MAX_PEOPLE` (10).
 - **`together` is cleared when anyone's act changes** unless the call
   restates it, since a relation between two poses is wrong for the next two.
+- **What a model over-fills is absorbed and said, never a shape refusal**
+  (mecha-a3's G1b on #597: 32 shape refusals in 130 replayed calls, nearly
+  all optional fields filled wrongly). The result names what was left out:
+  - a `retouch` beside a scene change rides along as one more line;
+  - a newcomer's missing pose is a plain one, and missing clothes come from
+    the chat's last scene (`worn`); a library character with neither is
+    asked for;
+  - a relation naming one person, with nobody in `people`, is that person
+    doing it;
+  - an overlong `together` is clipped at a sentence;
+  - a `mask` that is not a painted picture's path, has no retouch, sits
+    beside a scene change, or is not in the chat is left out.
 
 The pictures read go through the jail, as before. They are the picture, the
 setting photo and the mask, each:
