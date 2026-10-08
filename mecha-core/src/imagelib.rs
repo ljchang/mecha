@@ -903,11 +903,10 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
             "The {} `{name}` is waiting for the owner's approval and cannot be used yet.",
             kind.label()
         ),
-        _ => format!(
-            "No approved {} named `{name}`. {}.",
-            kind.label(),
-            what_there_is(lib, kind)
-        ),
+        _ => match what_there_is(lib, kind) {
+            Some(there) => format!("No approved {} named `{name}`. {there}.", kind.label()),
+            None => format!("No approved {} named `{name}`.", kind.label()),
+        },
     }
 }
 
@@ -935,24 +934,24 @@ pub(crate) fn absent(lib: &Library, kind: Kind, name: &str) -> bool {
             .any(|e| e.path.parent() == Some(entry_dir.as_path()))
 }
 
-/// What the library holds of `kind`, said in a refusal or a note: the
-/// approved names, never a tool to call (a persona chat has no
-/// `image_library`, and one retried a refusal naming it until its turns ran
-/// out, 2026-10-08).
-pub(crate) fn what_there_is(lib: &Library, kind: Kind) -> String {
+/// The names of `kind` a refusal or a note may offer, as one sentence, or
+/// `None` when there are none to offer. Never a tool to call (a persona chat
+/// has no `image_library`, and one retried a refusal naming it until its
+/// turns ran out, 2026-10-08), and never "there are none": a locked entry is
+/// left out of what is offered but still draws, so absence is not claimed
+/// (review of #603).
+pub(crate) fn what_there_is(lib: &Library, kind: Kind) -> Option<String> {
     let names: Vec<String> = approved_names(lib, kind)
         .iter()
         .map(|n| format!("`{n}`"))
         .collect();
-    if names.is_empty() {
-        format!("The image library has no {}", kind.dir())
-    } else {
+    (!names.is_empty()).then(|| {
         format!(
-            "The image library's {} are {}",
-            kind.dir(),
+            "{} you can name: {}",
+            capitalize(kind.dir()),
             names.join(", ")
         )
-    }
+    })
 }
 
 /// Empty, or only the refusal's own placeholder copied back — no answer.
@@ -1292,7 +1291,11 @@ mod tests {
         assert!(missing(&lib, Kind::Character, "ivo").contains("`wren`"));
         let empty = scratch();
         let none = Library::load(empty.path()).0;
-        assert!(missing(&none, Kind::Style, "pastel").contains("has no styles"));
+        let said = missing(&none, Kind::Style, "pastel");
+        assert_eq!(
+            said, "No approved style named `pastel`.",
+            "nothing offered, no absence claimed"
+        );
     }
 
     #[test]
