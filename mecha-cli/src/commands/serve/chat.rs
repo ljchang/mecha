@@ -1128,8 +1128,24 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                 // `image: <path>` line (`pictureOf` in picture.js); an
                 // `[image]` here would read as something the owner attached.
                 let results = !mecha_core::agent::is_plain_user_text(message);
+                // A picture the harness drew from the edit panel: its fact
+                // rides in the owner's turn (no `tool_use` was forged), and
+                // the page draws it as the tool's card, after the bubble
+                // (IMAGE-DESIGN.md §5.3).
+                let mut drawn = Vec::new();
                 for block in &message.content {
                     match block {
+                        Block::Text { text: t } if mecha_core::persona::edit::is_fact(t) => {
+                            let result = mecha_core::persona::edit::fact_result(t).unwrap_or("");
+                            drawn.push(Entry::Tool {
+                                name: "image_generate".into(),
+                                id: None,
+                                is_error: Some(!result.starts_with("image: ")),
+                                draft: None,
+                                args: None,
+                                preview: Some(result_preview(result)),
+                            });
+                        }
                         // The owner's bubble carries the owner's words. A
                         // folded harness voice — the loop's calendar
                         // reference, a nudge, a peer's delivered message —
@@ -1186,6 +1202,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                         steered: results,
                     });
                 }
+                entries.extend(drawn);
             }
             Role::Assistant => {
                 for block in &message.content {

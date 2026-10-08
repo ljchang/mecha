@@ -52,7 +52,7 @@ function rig({ live = true } = {}) {
      const maskName = (p) => p + '.mask.png';
      const composeEditMessage = (p, mask, text) => (text ? 'edit ' + p + ': ' + text : null);
      const fetch = async () => ({ ok: true, json: async () => ({ path: 'inbox/mask.png' }) });
-     const send = async (opts) => log.push('chat-send:' + input + (opts?.edit ? ' [edit]' : ''));
+     const send = async (opts) => log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
      ${fns}
      return { editImage, editInCall, closeEdit, sendEdit, log, state: () => ({ imageEdit, input }) };`,
   )(live);
@@ -84,13 +84,17 @@ function rig({ live = true } = {}) {
   const r = rig();
   r.editImage('images/b.png');
   await r.sendEdit({ text: 'add a hat', mask: null });
-  is(r.log, ['chat-send:edit images/b.png: add a hat [edit]'], "an edit from the chat goes through the chat's send, marked as the panel's, the mic untouched");
+  is(
+    r.log,
+    ['chat-send:edit images/b.png: add a hat [edit {"picture":"images/b.png","words":"add a hat"}]'],
+    "an edit from the chat goes through the chat's send, with the edit as fields (IMAGE-DESIGN.md §5.3), the mic untouched",
+  );
 }
 
 // The chat's own send puts `edit` on the wire only for the panel's turn, so
-// the server folds the edit note (`persona::edit`) there and nowhere else.
+// the harness draws the change there and nowhere else (`persona::edit`).
 {
-  const sendSrc = readOut('  async function send({ edit = false } = {}) {');
+  const sendSrc = readOut('  async function send({ edit = null } = {}) {');
   const run = new Function(
     `'use strict';
      const bodies = [];
@@ -106,7 +110,8 @@ function rig({ live = true } = {}) {
      ${sendSrc}
      return async (typed, opts) => { input = typed; await send(opts); return bodies.at(-1); };`,
   )();
-  is((await run('Edit images/a.png: add a hat', { edit: true })).edit, true, "the panel's turn says so");
+  const edit = { picture: 'images/a.png', words: 'add a hat' };
+  is((await run('Edit images/a.png: add a hat', { edit })).edit, edit, "the panel's turn carries its fields");
   is('edit' in (await run('hello')), false, 'a typed turn sends no edit field');
 }
 
