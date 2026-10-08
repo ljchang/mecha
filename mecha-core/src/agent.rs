@@ -2516,7 +2516,14 @@ impl Agent {
             // and the receiver's interlock must treat what the sender read
             // as read here. Written back to `convo` immediately, like the
             // post-tool site, so no early exit can drop it.
-            if let Some(mailbox) = cx.mailbox.as_ref().filter(|mb| mb.delivers() && !stopping) {
+            // Nor on a closing turn, which answers in words only: a message
+            // claimed there would be marked delivered and never acted on
+            // (review of #596, pass 5).
+            if let Some(mailbox) = cx
+                .mailbox
+                .as_ref()
+                .filter(|mb| mb.delivers() && !stopping && closing.is_none())
+            {
                 for msg in mailbox.claim_pending() {
                     emit(
                         &events,
@@ -2987,7 +2994,14 @@ impl Agent {
                     // A closing reply cut off mid-call is cleaned like a whole
                     // one, so a Stop never shows the markup (review of #596).
                     let partial = if closing.is_some() {
-                        strip_call_markup(&partial).trim().to_string()
+                        let cleaned = strip_call_markup(&partial).trim().to_string();
+                        // Its deltas were never forwarded, so the words go
+                        // out once here, as a whole closing reply's do below
+                        // (review of #596, pass 5).
+                        if !cleaned.is_empty() {
+                            emit(&events, AgentEvent::TextDelta(cleaned.clone()));
+                        }
+                        cleaned
                     } else {
                         partial
                     };
@@ -16342,6 +16356,51 @@ mod tests {
             }
             Ok(response)
         }
+    }
+
+    /// The closing reply never streams its markup to the screen: its
+    /// deltas are not forwarded, and the cleaned words go out once. Driven
+    /// through a provider that does write to its sink, so forwarding the
+    /// run's events here would fail it (review of #596, pass 5).
+    #[tokio::test]
+    async fn a_closing_reply_streams_no_markup_to_the_screen() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let jobs = crate::jobs::JobQueue::new(|_| {});
+        let scripted = Arc::new(ScriptedProvider {
+            turns: Mutex::new(draw_then(
+                "<tool_call><function=draw></function></tool_call>",
+            )),
+            seen: Mutex::new(Vec::new()),
+        });
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(Later(Arc::clone(&go))));
+        let agent = Agent::new(
+            Box::new(StreamingScripted(Arc::clone(&scripted))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            Some("scripted-1".into()),
+        )
+        .unwrap();
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(jobs.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let (tx, mut rx) = unbounded_channel::<AgentEvent>();
+        let mut convo = Conversation::user("draw the harbour");
+        let outcome = agent.run_in(&cx, &mut convo, Some(tx)).await.unwrap();
+        assert_eq!(outcome.text, PICTURE_ON_ITS_WAY_REPLY);
+        let mut streamed = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::TextDelta(t) = event {
+                streamed.push_str(&t);
+            }
+        }
+        assert!(!streamed.contains("tool_call"), "{streamed:?}");
+        assert!(streamed.contains(PICTURE_ON_ITS_WAY_REPLY), "{streamed:?}");
+        go.notify_one();
     }
 
     /// The summariser's words are not the assistant's. With the run's event
