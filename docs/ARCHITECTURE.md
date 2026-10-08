@@ -709,6 +709,10 @@ The routes, in the result's own words and the manifest's `route`:
   - an overlong `together` is clipped at a sentence;
   - a `mask` that is not a painted picture's path, has no retouch, sits
     beside a scene change, or is not in the chat is left out.
+  - a `picture` no file in the chat answers to (a made-up name) is left out
+    beside a scene, which then draws as new; on its own it is refused saying
+    where pictures come from. A bare "cannot open" was retried eleven times
+    in one live run (2026-10-08). A path the jail refuses is still refused.
 
 The pictures read go through the jail, as before. They are the picture, the
 setting photo and the mask, each:
