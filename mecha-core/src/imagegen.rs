@@ -2203,13 +2203,18 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
 }
 
 /// What someone does, said with their place in the frame and their face.
-fn doing_words(p: &crate::scene::Person) -> String {
+fn doing_words(p: &crate::scene::Person, together: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(crate::scene::Where::Background) = p.at {
         parts.push("in the background".into());
     }
     if !p.doing.trim().is_empty() {
         parts.push(p.doing.trim().trim_end_matches('.').to_string());
+    } else if !together {
+        // No pose given and nothing said of what the people do together: a
+        // plain one, never the reference's own (E3, E8). Beside a `together`
+        // a pose drew a person twice, 3 of 12 (mecha-a3, 2026-10-08).
+        parts.push("standing naturally".into());
     }
     if !p.expression.trim().is_empty() {
         parts.push(p.expression.trim().trim_end_matches('.').to_string());
@@ -2219,7 +2224,7 @@ fn doing_words(p: &crate::scene::Person) -> String {
 
 /// A person as an edit prompt states them: name, library description,
 /// clothes, what they do and show.
-fn edit_person(name: &str, text: &str, p: &crate::scene::Person) -> String {
+fn edit_person(name: &str, text: &str, p: &crate::scene::Person, together: bool) -> String {
     let mut out = format!(" {name}");
     if !text.is_empty() {
         out.push_str(&format!(" ({text})"));
@@ -2230,7 +2235,7 @@ fn edit_person(name: &str, text: &str, p: &crate::scene::Person) -> String {
             p.wearing.trim().trim_end_matches('.')
         ));
     }
-    let doing = doing_words(p);
+    let doing = doing_words(p, together);
     if !doing.is_empty() {
         out.push_str(&format!(", {doing}"));
     }
@@ -2579,6 +2584,13 @@ impl Tool for ImageGenerate {
         let mut reseeded: Option<u64> = None;
         let mut dropped: Vec<String> = Vec::new();
         let is_edit = matches!(plan.render, crate::picture::Render::Edit { .. });
+        // Whether the scene says what its people do together: then nobody is
+        // given a plain pose of their own (`doing_words`).
+        let together = plan
+            .next
+            .together
+            .as_ref()
+            .is_some_and(|f| !f.value.trim().is_empty());
         match &plan.render {
             crate::picture::Render::New => {
                 let mut cast = Vec::new();
@@ -2588,14 +2600,14 @@ impl Tool for ImageGenerate {
                         crate::scene::Who::Library(n) => cast.push(crate::imagelib::CastMember {
                             name: n.clone(),
                             wearing: p.wearing.clone(),
-                            doing: doing_words(p),
+                            doing: doing_words(p, together),
                         }),
                         crate::scene::Who::Described(d) => {
                             let mut e = d.trim().trim_end_matches('.').to_string();
                             if !p.wearing.trim().is_empty() {
                                 e.push_str(&format!(", wearing {}", p.wearing.trim()));
                             }
-                            let doing = doing_words(p);
+                            let doing = doing_words(p, together);
                             if !doing.is_empty() {
                                 e.push_str(&format!(", {doing}"));
                             }
@@ -2817,7 +2829,7 @@ impl Tool for ImageGenerate {
                         .as_ref()
                         .map(|e| e.text.trim().trim_end_matches('.').to_string())
                         .unwrap_or_default();
-                    said.push_str(&edit_person(&name, &text, p));
+                    said.push_str(&edit_person(&name, &text, p, together));
                     match anchor {
                         Some(crate::face::Anchor::Crop(bytes)) => {
                             req.references.push(Reference {
@@ -6307,6 +6319,44 @@ mod tests {
             "only the person changed gets a crop"
         );
         assert_eq!(resolution(), 1024, "John rides on the canvas alone");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// The plain pose is said at the prompt, never stored: two people drawn
+    /// with no pose stand naturally, and a `together` sent after them is
+    /// drawn without a standing pose beside it, the shape that drew a person
+    /// twice (mecha-a3; review of #608).
+    #[tokio::test]
+    async fn a_together_after_the_people_carries_no_standing_pose() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a clinic room", "people": [
+                    {"who": "maya", "wearing": "a coat"},
+                    {"who": "john", "wearing": "a suit"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        assert!(last_prompt(&seen).contains("standing naturally"));
+        let then = t
+            .call(
+                json!({"picture": picture_of(&first.content),
+                       "scene": {"together": "Maya kneels to tie John's shoelace"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!then.is_error, "{}", then.content);
+        let p = last_prompt(&seen);
+        assert!(p.contains("kneels to tie"), "{p}");
+        assert!(!p.contains("standing naturally"), "{p}");
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
