@@ -110,9 +110,14 @@ from records. A new `Record` variant would be invisible without endpoint and pag
 
 ### 2.2 The job queue (core): one per conversation
 
+**Amended 2026-10-08 (owner: "queueing images does not work. they just fail"): one job runs,
+and up to three wait behind it, first in first out.** The refusal below now applies only past
+that line; ARCHITECTURE §Background jobs holds the rule as built. The runaway bound holds
+because one picture per run (IMAGE-DESIGN.md §5.5) means no single turn can fill the line.
+
 - `jobs.rs`: a `JobQueue` keyed by **the host's session key** (the chat's key, which both chats
   already use for their session maps — `agent::Conversation` has no identity of its own), holding
-  at most **one** job in flight.
+  **one** job in flight, with up to three waiting behind it.
 - A second deferred call while one is pending gets an immediate refusal, which is factual and
   structural, not advice. This bounds the in-turn runaway without any turn cap (R6).
   - **The words are the tool's, not the queue's.** A deferring tool says what its refusal reads

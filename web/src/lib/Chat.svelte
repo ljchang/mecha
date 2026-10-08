@@ -7,7 +7,7 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, repeatedPictures, downloadPicture } from './picture.js';
+  import { pictureOf, stillOut, waitingPictures, repeatedPictures, downloadPicture } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
@@ -1345,6 +1345,8 @@
   let attachments = $state([]); // workspace-relative paths, announced on send
 
   const repeats = $derived(repeatedPictures(entries));
+  // Pictures waiting behind the one drawing (`waitingPictures`).
+  const queuedPictures = $derived(waitingPictures(entries));
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 
@@ -1615,14 +1617,16 @@
     }
   }
 
-  // The call screen's picture Stop: the picture alone, never the reply being
-  // spoken (ruling Q2, 2026-10-05).
-  async function stopPicture() {
+  // A picture Stop, never the reply being spoken (ruling Q2, 2026-10-05).
+  // With `call`, that one picture alone — a row's own Stop — and the rest of
+  // the line stays; without, the chat's pictures (review of #606).
+  async function stopPicture(call) {
+    const one = typeof call === 'string' ? call : undefined;
     try {
       await fetch(`/api/chat/${key}/cancel`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ picture: true }),
+        body: JSON.stringify({ picture: true, call: one }),
       });
     } catch {
       // The picture's own result reports the outcome.
@@ -1966,12 +1970,12 @@
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>
-          {:else if stillOut(entry)}<span class="tool-state">drawing a picture…</span>{/if}
+          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : 'drawing a picture…'}</span>{/if}
         </div>
         <!-- Still being drawn past the turn that asked for it (§5.4): it
              lands on this row when done. Its Stop ends the picture alone,
              never a reply that is running (review of #583). -->
-        {#if stillOut(entry)}<button class="qmore" onclick={stopPicture}>Stop the picture</button>{/if}
+        {#if stillOut(entry)}<button class="qmore" onclick={() => stopPicture(entry.id)}>Stop the picture</button>{/if}
         {#if entry.open}
           <div class="toolpanel">
             {#if entry.draft}
@@ -2386,7 +2390,7 @@
           {:else if line.making}
             <!-- Still being drawn: its place in the call, and a Stop for the
                  picture alone, which leaves the reply being spoken (ruling Q2). -->
-            <span class="vanswer vmaking">{line.text} <button class="qmore" onclick={stopPicture}>Stop</button></span>
+            <span class="vanswer vmaking">{line.text} <button class="qmore" onclick={() => stopPicture()}>Stop</button></span>
           {:else}
             <!-- The chat's own renderer, so a call formats a reply the way
                  the chat does (the owner's ask, 2026-10-06). -->
