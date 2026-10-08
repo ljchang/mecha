@@ -263,7 +263,9 @@ pub struct Request {
 pub const EDIT_REFERENCE_SIZE: u32 = 1024;
 
 /// The reference size for every other edit-shaped render (placed, restaged
-/// on a photo, edited): the owner's trial of 2026-10-08. mecha-a3 measured
+/// on a photo, edited with a head crop for everyone in the picture; an edit
+/// of the picture where anyone has no crop keeps [`EDIT_REFERENCE_SIZE`],
+/// since the canvas is their only identity source): the owner's trial of 2026-10-08. mecha-a3 measured
 /// one person placed on the owner's photo at 1024, 768 and 512 against her
 /// portrait (ArcFace .88/.88/.87 over three seeds, within seed noise, and
 /// near-identical by eye at one seed); the references are most of an edit's
@@ -2816,8 +2818,9 @@ impl Tool for ImageGenerate {
                 }
                 req.prompt = prompt.trim().to_string();
                 // A masked edit keeps the picture's own shape and full detail.
-                // Every other edit names its output size and encodes its
-                // references smaller (`UNMASKED_EDIT_REFERENCE_SIZE`). On a
+                // Every other edit names its output size, and encodes its
+                // references smaller (`UNMASKED_EDIT_REFERENCE_SIZE`) unless
+                // the canvas is somebody's only identity source (below). On a
                 // room photo the room's own shape is kept whatever size was
                 // asked: a portrait from a landscape room drew a slice of
                 // table (owner, 2026-10-08).
@@ -2842,7 +2845,18 @@ impl Tool for ImageGenerate {
                         }
                         crate::picture::Canvas::Picture(_) => call.size.map(Size::dims).or(own),
                     };
-                    if size.is_some() {
+                    // On an edit of the picture, anyone in it without a head
+                    // crop (everyone, on a retouch; a co-subject the edit
+                    // leaves alone; someone not in the library) has the
+                    // canvas as their only identity source, and at 512 that
+                    // is too thin: mecha-a3 measured a retouch's ArcFace fall
+                    // from .66–.70 to .42–.53 over three seeds (2026-10-08).
+                    // Only an edit whose every person has a crop goes small;
+                    // that is the case measured to hold at 512 (review of
+                    // #601).
+                    let canvas_only = matches!(canvas, crate::picture::Canvas::Picture(_))
+                        && crops < plan.people.len().max(1);
+                    if size.is_some() && !canvas_only {
                         req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
                     }
                     size
@@ -6138,6 +6152,53 @@ mod tests {
         }
     }
 
+    /// A co-subject the edit leaves alone has no crop, so the canvas is her
+    /// only identity source and the references stay at 1024; with one person
+    /// and her crop they go at 512 (review of #601).
+    #[tokio::test]
+    async fn a_co_subject_without_a_crop_keeps_full_references() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [200, 150, 120])));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::clone(&faces) as Arc<dyn crate::face::FaceAnchors>);
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let resolution = || {
+            let p = last_prompt(&seen);
+            let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
+            body["prompt"]["encode"]["inputs"]["resolution"].clone()
+        };
+        let two = t
+            .call(
+                json!({"scene": {"setting": "a park bench", "people": [
+                    {"who": "maya", "wearing": "a green coat", "doing": "sitting"},
+                    {"who": "john", "wearing": "a flannel shirt", "doing": "sitting"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!two.is_error, "{}", two.content);
+        let dressed = t
+            .call(
+                json!({"picture": picture_of(&two.content),
+                       "scene": {"people": [{"who": "maya", "wearing": "a red scarf"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!dressed.is_error, "{}", dressed.content);
+        assert_eq!(
+            manifest_of(&dir, &dressed.content)["crops"],
+            json!(["Maya"]),
+            "only the person changed gets a crop"
+        );
+        assert_eq!(resolution(), 1024, "John rides on the canvas alone");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
     /// New clothes edit the picture itself, with the person's head crop and
     /// library description; a call that changes nothing is drawn again at a
     /// new seed (§5.1, review B4).
@@ -6191,6 +6252,9 @@ mod tests {
         );
         assert!(prompt.contains("maya, a memorable face"), "{prompt}");
         assert!(prompt.contains("a red scarf"), "{prompt}");
+        // The crop carries who she is, so the references go small.
+        let body: Value = serde_json::from_str(&prompt[prompt.find('{').unwrap()..]).unwrap();
+        assert_eq!(body["prompt"]["encode"]["inputs"]["resolution"], 512);
         assert_eq!(
             manifest_of(&dir, &dressed.content)["crops"],
             json!(["Maya"])
@@ -6700,7 +6764,8 @@ mod tests {
         assert!(canvas_dims(&wide).unwrap().0 > 2048);
 
         // An unmasked retouch of a picture: named at the picture's shape,
-        // references at 512.
+        // references at 1024, since no crop carries who is in it and the
+        // canvas alone at 512 lost them (mecha-a3, 2026-10-08).
         let png = |w, h| {
             png_bytes(&image::RgbImage::from_pixel(
                 w,
@@ -6727,7 +6792,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let p = last_prompt(&seen);
         let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
-        assert_eq!(latent(&p).0, 512);
+        assert_eq!(latent(&p).0, 1024);
         assert_eq!(body["prompt"]["latent"]["inputs"]["width"], 896);
         assert_eq!(body["prompt"]["latent"]["inputs"]["height"], 1184);
 

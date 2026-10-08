@@ -737,7 +737,12 @@ from words), and mecha-a3 measured identity unchanged at 512 (ArcFace .87
 against .88, within seed noise). The output is named at about a megapixel in
 the canvas's own shape (`canvas_dims`), since with no size the encoder drew
 at the references' size. A masked edit keeps 1024² and its own shape, being
-laid back over the original. On a room photo the room's shape is kept
+laid back over the original. An edit of the picture in which anyone has no
+head crop (everyone, on a retouch; a co-subject the edit leaves alone;
+someone not in the library) keeps the 1024 references too, though it still
+names its output size: the canvas is that person's only identity source,
+and at 512 a retouch's ArcFace fell from .66–.70 to .42–.53 over three
+seeds, while a one-person edit with a crop held (mecha-a3, 2026-10-08). On a room photo the room's shape is kept
 whatever size was asked, and said: a portrait from a landscape room drew a
 slice of table.
 
@@ -994,7 +999,9 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   are given: "Exactly two people" erased a waiter the model had written into
   the prose instead of `extras`, and the softer wording still drew four cast
   as exactly four (E12).
-- **Portraits go at 512² (`REFERENCE_SIZE`), edits at 1024.** Four references
+- **Portraits go at 512² (`REFERENCE_SIZE`).** Edits went at 1024 until
+  2026-10-08; since then only a masked edit or one with no head crop does
+  (the edit-reference paragraph under images). Four references
   at 1024² took 190 s and four at 512² 79 s, and a whole portrait at 512²
   held identity within a few hundredths of a tight crop (E2, E10). `Request`
   carries `reference_size` for this; ComfyUI's encoder takes one size per

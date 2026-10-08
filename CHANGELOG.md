@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A retouch keeps who is in the picture.** Edits got faster on 2026-10-08
+  by sending smaller reference pictures, but a retouch has no face crop to
+  carry who is in the picture, and at the smaller size faces drifted. A
+  retouch, and any edit where someone in the picture has no face crop,
+  now sends the picture at full size again; changing one person's clothes
+  or expression in a picture of just them stays fast.
+
 - **An edit from the picture panel is drawn by mecha itself, and the
   persona only answers.** Your words and what the picture was drawn as are
   read into a typed change by a quick one-shot pass, the change is drawn,
