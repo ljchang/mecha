@@ -1013,7 +1013,11 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
 - **One reference per person, each appearing exactly once, `wearing` and
-  `doing` required.** Every reference slot tends to become a person (two unnamed
+  `doing` required, except that `doing` is left empty when the scene's
+  `together` says what its people do** (a "standing naturally" beside a kneel
+  drew the person twice, 3 of 12, and 0 of 12 without it; mecha-a3,
+  2026-10-08; `picture::plan` decides it over the landed scene and fills a
+  plain pose otherwise). Every reference slot tends to become a person (two unnamed
   references of one character drew it twice, E2, and a bound face-and-body
   pair failed once in four, E9); a reference supplies its own outfit, pose
   and stare when the scene is silent, and stated they land (E3, E8). The
