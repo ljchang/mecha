@@ -2342,27 +2342,37 @@ impl Tool for ImageGenerate {
                 });
             }
         }
-        // A `style` the library holds no approved entry for: the field takes
-        // a library style's name, and a model fills it with words
-        // ("hyperreal render"). Left out and said, with the names there are,
-        // so the picture still draws; refused only when nothing else is
-        // asked. A refusal pointing at image_library, which a persona chat
-        // does not have, was retried ten times in one run (2026-10-08).
+        // A `style` the library does not hold: the field takes a library
+        // style's name, and a model fills it with words ("hyperreal
+        // render"). Left out and said, with the names there are, so the
+        // picture still draws; refused only when nothing else is asked. A
+        // refusal pointing at image_library, which a persona chat does not
+        // have, was retried ten times in one run (2026-10-08). A style
+        // waiting on the owner, or one whose entry did not load, is still
+        // refused by name: those are findings, not over-fill (review of #603).
         if let Some(name) = call.change.style.clone() {
             let key = name.trim().to_lowercase();
+            let kind = crate::imagelib::Kind::Style;
             let held = lib
-                .get(crate::imagelib::Kind::Style, &key)
+                .get(kind, &key)
                 .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
+            if !held && !crate::imagelib::absent(&lib, kind, &key) {
+                return Ok(refused(crate::imagelib::missing(&lib, kind, &key)));
+            }
             if !held {
-                let there = crate::imagelib::what_there_is(&lib, crate::imagelib::Kind::Style);
+                let there = crate::imagelib::what_there_is(&lib, kind);
                 call.change.style = None;
                 if call.change == crate::scene::SceneChange::default()
                     && call.setting_photo.is_none()
                     && call.retouch.is_none()
                 {
+                    let ask = if crate::imagelib::approved_names(&lib, kind).is_empty() {
+                        "leave `style` out"
+                    } else {
+                        "name one of those, or leave `style` out"
+                    };
                     return Ok(refused(format!(
-                        "There is no style `{name}`. {there}: name one of those, or leave \
-                         `style` out."
+                        "There is no style `{name}`. {there}: {ask}."
                     )));
                 }
                 call.notes.push(format!(
@@ -6615,6 +6625,72 @@ mod tests {
             alone.content
         );
         assert_eq!(posts(), 2, "a refused call draws nothing");
+
+        // A style waiting on the owner, or one whose entry did not load, is a
+        // finding: refused by name, never dropped (review of #603).
+        let mut proposed = crate::imagelib::NewEntry {
+            kind: crate::imagelib::Kind::Style,
+            name: "chalk-pastel".into(),
+            text: "soft chalk pastel on toned paper".into(),
+            portrait: None,
+            source_seed: None,
+            origin: crate::imagelib::Origin::ModelUntrusted,
+            locked: false,
+        };
+        crate::imagelib::create(&lib, proposed.clone()).unwrap();
+        proposed.name = "charcoal".into();
+        crate::imagelib::create(&lib, proposed).unwrap();
+        std::fs::write(lib.join("styles/charcoal/entry.toml"), "not = [valid").unwrap();
+        for (style, says) in [
+            ("chalk-pastel", "waiting for the owner's approval"),
+            ("charcoal", "could not be read"),
+        ] {
+            let out = t
+                .call(
+                    json!({"scene": {"setting": "a quiet harbour", "style": style,
+                           "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content.contains(says),
+                "{}",
+                out.content
+            );
+        }
+        assert_eq!(posts(), 2);
+
+        // A description longer than any library name is left out the same
+        // way, never a shape refusal.
+        let long = "a slow dreamy wash of muted teal and amber with heavy grain and soft edges";
+        assert!(long.chars().count() > crate::imagelib::MAX_NAME);
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a quiet harbour", "style": long,
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("There is no style"), "{}", out.content);
+        assert_eq!(posts(), 3);
+
+        // With no library at all, nothing is offered to choose from.
+        let bare = tool(&url)
+            .call(
+                json!({"picture": picture_of(&again.content), "scene": {"style": "oil on linen"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(bare.is_error, "{}", bare.content);
+        assert!(
+            bare.content.contains("has no styles: leave `style` out"),
+            "{}",
+            bare.content
+        );
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }

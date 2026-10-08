@@ -911,17 +911,38 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
+/// The approved, unlocked entries of `kind`, by name: what a refusal or a
+/// note may say the library holds. A locked entry is left out without a
+/// count, as the page leaves it out while browsing.
+pub(crate) fn approved_names(lib: &Library, kind: Kind) -> Vec<String> {
+    lib.all()
+        .iter()
+        .filter(|e| e.kind == kind && e.status == Status::Approved && !e.locked)
+        .map(|e| e.name.clone())
+        .collect()
+}
+
+/// Whether `name` is simply not in the library as `kind`: no entry in any
+/// state, and none that failed to load. A candidate waiting on the owner or
+/// an entry that did not load is a finding, said by [`missing`], never an
+/// absence (review of #603).
+pub(crate) fn absent(lib: &Library, kind: Kind, name: &str) -> bool {
+    let entry_dir = lib.dir.join(kind.dir()).join(name);
+    lib.get(kind, name).is_none()
+        && !lib
+            .errors
+            .iter()
+            .any(|e| e.path.parent() == Some(entry_dir.as_path()))
+}
+
 /// What the library holds of `kind`, said in a refusal or a note: the
 /// approved names, never a tool to call (a persona chat has no
 /// `image_library`, and one retried a refusal naming it until its turns ran
-/// out, 2026-10-08). A locked entry is left out without a count, as the
-/// page leaves it out while browsing.
+/// out, 2026-10-08).
 pub(crate) fn what_there_is(lib: &Library, kind: Kind) -> String {
-    let names: Vec<String> = lib
-        .all()
+    let names: Vec<String> = approved_names(lib, kind)
         .iter()
-        .filter(|e| e.kind == kind && e.status == Status::Approved && !e.locked)
-        .map(|e| format!("`{}`", e.name))
+        .map(|n| format!("`{n}`"))
         .collect();
     if names.is_empty() {
         format!("The image library has no {}", kind.dir())
