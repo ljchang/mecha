@@ -596,10 +596,14 @@ pub fn plan(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
         );
     }
-    // Someone the call introduces needs their clothes and what they do. A
-    // pose left out is a plain one; clothes left out are what the chat's
-    // record has them in (`worn`), else, for a library character, asked for
-    // (G1b: 8 of 65 shape refusals were a newcomer missing one of the two).
+    // Someone the call introduces needs their clothes. Clothes left out are
+    // what the chat's record has them in (`worn`), else, for a library
+    // character, asked for (G1b: 8 of 65 shape refusals were a newcomer
+    // missing one). A pose left out stays empty in the record: the plain one
+    // is said where the prompt is built, and only when the scene does not
+    // say what its people do together (`imagegen::doing_words`). Stored, it
+    // could not be told from one the owner wrote, and came back beside a
+    // later `together` (review of #608).
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
@@ -609,9 +613,6 @@ pub fn plan(
                 crate::scene::MAX_PEOPLE
             ));
         };
-        if p.doing.trim().is_empty() {
-            p.doing = "standing naturally".into();
-        }
         if p.wearing.trim().is_empty() {
             match (worn(key), &p.who) {
                 (Some((w, from)), _) => {
@@ -880,7 +881,15 @@ pub fn plan(
             touched.push(key.clone());
         }
         if delta.posed.contains(&key) {
-            lines.push(format!("Have {name} {}.", p.doing.trim_end_matches('.')));
+            // A pose is empty in the record when none was given (the plain
+            // one is said at the prompt), and a move of place alone is a pose
+            // change too: never "Have Maya ." (review of #608).
+            let doing = p.doing.trim().trim_end_matches('.');
+            lines.push(match (doing.is_empty(), p.at) {
+                (false, _) => format!("Have {name} {doing}."),
+                (true, Some(at)) => format!("Place {name} {}.", at.name()),
+                (true, None) => format!("Have {name} standing naturally."),
+            });
             touched.push(key.clone());
         }
     }
@@ -1438,9 +1447,62 @@ mod tests {
             .unwrap();
         assert_eq!(
             (john.wearing.as_str(), john.doing.as_str()),
-            ("an apron", "standing naturally")
+            ("an apron", "")
         );
         assert!(p.said.unwrap().contains("what this chat last drew them in"));
+        // With `together` saying what they do, nobody is given a pose of
+        // their own beside it (mecha-a3: "standing naturally" beside a kneel
+        // drew her twice).
+        let p = planned(
+            &call(json!({"scene": {"setting": "a clinic room",
+                "together": "Maya ties John's shoelace",
+                "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}})),
+            None,
+        );
+        assert!(
+            p.next.people.iter().all(|q| q.doing.is_empty()),
+            "{:?}",
+            p.next.people
+        );
+        // A later call that poses one of them clears the `together`; the
+        // other's pose stays empty in the record, said plainly at the prompt
+        // (`imagegen::doing_words`), never stored.
+        let posed = planned(
+            &call(
+                json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya", "doing": "waving"}]}}),
+            ),
+            Some(&p.next),
+        );
+        assert!(posed.next.together.is_none());
+        let john = posed
+            .next
+            .people
+            .iter()
+            .find(|q| q.who.key() == "john")
+            .unwrap();
+        assert_eq!(john.doing, "");
+        // A move of place alone over an empty pose is said as the move,
+        // never "Have Maya ." (review of #608).
+        let placed = planned(
+            &call(json!({"scene": {"people": [{"who": "maya", "wearing": "a coat"}]}})),
+            None,
+        );
+        let moved = planned(
+            &call(
+                json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya", "where": "left"}]}}),
+            ),
+            Some(&placed.next),
+        );
+        assert!(
+            !moved.instruction.contains("Have Maya ."),
+            "{}",
+            moved.instruction
+        );
+        assert!(
+            moved.instruction.contains("Place Maya on the left."),
+            "{}",
+            moved.instruction
+        );
         // A described newcomer without clothes is dressed for the scene.
         let p = planned(
             &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),

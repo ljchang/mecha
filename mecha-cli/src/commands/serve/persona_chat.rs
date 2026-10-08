@@ -339,11 +339,15 @@ async fn draw_panel_edit(
                 .character
                 .as_deref()
                 .map(|c| mecha_core::picture::shown(&mecha_core::scene::Who::Library(c.into())));
+            // Read once: the styles offered here, and who is known below.
+            let lib = mecha_core::imagelib::Library::load(&names.library).0;
+            let styles = mecha_core::imagelib::style_names(&lib);
             let request = edit::extraction_request(
                 model,
                 record.as_ref(),
                 &edit.words,
                 persona.as_deref(),
+                &styles,
                 provider.structured_output(),
             );
             let response = match provider.complete(&request, None).await {
@@ -357,7 +361,6 @@ async fn draw_panel_edit(
             if text.trim().is_empty() {
                 return fail("the reader's answer was empty".into());
             }
-            let lib = mecha_core::imagelib::Library::load(&names.library).0;
             let known = |who: &str| {
                 let key = who.trim().to_lowercase();
                 lib.get(mecha_core::imagelib::Kind::Character, &key)
@@ -375,7 +378,12 @@ async fn draw_panel_edit(
                 .as_ref()
                 .filter(|r| r.people.len() == 1)
                 .map(|r| mecha_core::picture::shown(&r.people[0].who));
-            match edit::read_extraction_for(&text, &known, sole.as_deref()) {
+            let looks = edit::Looks {
+                styles: &styles,
+                record: record.as_ref(),
+                library: Some(&lib),
+            };
+            match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
                 Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
                 Err(why) => return fail(why),
             }
