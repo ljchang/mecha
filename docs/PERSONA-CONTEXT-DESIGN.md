@@ -392,7 +392,8 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   the owner's way to fix it.
 - This is the owner's stated intent (2026-10-05). It also removes edit-chain drift at its source.
 - **An edit is typed fields, and the tool writes the edit model's prompt** (built first, 2026-10-06,
-  `imagegen::EditAsk`). The rule that an edit prompt is an instruction, never a scene caption, had
+  `imagegen::EditAsk`; retired 2026-10-08 by `IMAGE-DESIGN.md`, where the planner writes the
+  instruction from a typed scene change). The rule that an edit prompt is an instruction, never a scene caption, had
   been in the tool's guidance since 2026-09-29 (`ARCHITECTURE.md` §images). A live chat showed the
   persona still writing captions: its three edits all came back unchanged.
   - Replayed on one of them (owner-asked, edit panel; 2 seeds per cell, then 4 more for the

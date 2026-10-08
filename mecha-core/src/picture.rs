@@ -315,7 +315,7 @@ pub fn as_viewer(text: &str, names: &[String]) -> String {
 fn looks_like_a_picture_path(t: &str) -> bool {
     let t = t.trim();
     let lower = t.to_lowercase();
-    t.len() <= 200
+    t.chars().count() <= 200
         && t.contains('/')
         && !t.contains(char::is_whitespace)
         && [".png", ".jpg", ".jpeg", ".webp"]
@@ -518,7 +518,10 @@ pub fn plan(
     let mut notes: Vec<String> = call.notes.clone();
     // A painted area keeps everything outside it, so it cannot carry a
     // scene change: the change is drawn, and the mask left out and said.
-    let mask = call.mask.clone().filter(|_| delta.is_empty());
+    let mask = call
+        .mask
+        .clone()
+        .filter(|_| delta.is_empty() && unknown_removes.is_empty());
     if call.mask.is_some() && mask.is_none() {
         notes.push(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
@@ -544,7 +547,10 @@ pub fn plan(
             match (worn(key), &p.who) {
                 (Some((w, from)), _) => {
                     notes.push(format!(
-                        "{} is wearing {w}, as this chat last drew them.",
+                        // Never the recorded words themselves: they may be
+                        // untrusted, and a tool result is not marked from
+                        // outside (review of #597, pass 5).
+                        "{} is wearing what this chat last drew them in.",
                         shown(&p.who)
                     ));
                     p.wearing = w;
@@ -678,6 +684,16 @@ pub fn plan(
     // A new picture: its setting is a photo (people placed in it), or words.
     let Some(picture) = call.picture.clone() else {
         if let Some(photo) = setting_photo {
+            // Placing nobody would send the keep sentence alone, which
+            // returns the photo as it was (#408; review of #597, pass 5).
+            if out.people.is_empty() {
+                return Err(
+                    "A room photo as the setting needs someone to place in it: give \
+                     `scene.people`. To change the photo itself, name it in `picture` and use \
+                     `retouch`."
+                        .into(),
+                );
+            }
             out.render = Render::Edit {
                 canvas: Canvas::Setting(photo),
                 camera_moves: change.camera.is_some(),
@@ -1065,6 +1081,23 @@ mod tests {
         assert!(p.said.unwrap().contains("John had no clothes given"));
     }
 
+    /// A room photo as the setting with nobody to place is refused, never a
+    /// prompt that returns the photo unchanged (review of #597, pass 5).
+    #[test]
+    fn placing_nobody_on_a_photo_is_refused() {
+        let why = plan(
+            &call(json!({"scene": {"setting": {"photo": "inbox/room.jpeg"}, "light": "dusk"}})),
+            None,
+            Some("h".repeat(64)),
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(why.contains("needs someone to place in it"), "{why}");
+    }
+
     /// A restage that names a size draws at a fresh seed: the base seed holds
     /// the room only at the same latent size (§5.2).
     #[test]
@@ -1271,7 +1304,7 @@ mod tests {
             (john.wearing.as_str(), john.doing.as_str()),
             ("an apron", "standing naturally")
         );
-        assert!(p.said.unwrap().contains("as this chat last drew them"));
+        assert!(p.said.unwrap().contains("what this chat last drew them in"));
         // A described newcomer without clothes is dressed for the scene.
         let p = planned(
             &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),

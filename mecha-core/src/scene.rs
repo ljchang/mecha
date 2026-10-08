@@ -76,7 +76,10 @@ pub enum Setting {
         text: String,
     },
     /// A photo used as the room. `path` is a label, local to the chat that
-    /// set it; `hash` is the handle the planner checks it by.
+    /// set it; `hash` is the handle the planner checks it by. Read under its
+    /// earlier name too (`picture`, before the redesign), so a record on
+    /// disk keeps its room.
+    #[serde(alias = "picture")]
     Photo {
         path: String,
         hash: String,
@@ -136,8 +139,12 @@ impl Who {
     }
 }
 
-/// Someone in the scene.
+/// Someone in the scene. Read through [`PersonWire`], so a record written
+/// before the redesign (a library `name`, no `who`) still loads: a store is
+/// a wire format, and a record that cannot be read can never be shown to be
+/// a chat's, so nothing would ever forget it (review of #597, pass 5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "PersonWire")]
 pub struct Person {
     pub who: Who,
     #[serde(default)]
@@ -150,6 +157,56 @@ pub struct Person {
     pub expression: String,
     #[serde(default)]
     pub origin: Origin,
+}
+
+/// [`Person`] as the store may hold it.
+#[derive(Deserialize)]
+struct PersonWire {
+    #[serde(default)]
+    who: Option<serde_json::Value>,
+    /// Before the redesign: a library character's name.
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    at: Option<Where>,
+    #[serde(default)]
+    wearing: String,
+    #[serde(default)]
+    doing: String,
+    #[serde(default)]
+    expression: String,
+    #[serde(default)]
+    origin: Origin,
+}
+
+impl From<PersonWire> for Person {
+    fn from(w: PersonWire) -> Self {
+        let who = w
+            .who
+            .and_then(|v| serde_json::from_value::<Who>(v).ok())
+            .or_else(|| {
+                w.name
+                    .map(|n| n.trim().to_lowercase())
+                    .filter(|n| !n.is_empty())
+                    .map(Who::Library)
+            })
+            // Someone the record holds but this build cannot name: kept as
+            // described, and untrusted, never dropped.
+            .unwrap_or_else(|| Who::Described("someone".into()));
+        let unreadable = matches!(&who, Who::Described(d) if d == "someone");
+        Person {
+            who,
+            at: w.at,
+            wearing: w.wearing,
+            doing: w.doing,
+            expression: w.expression,
+            origin: if unreadable {
+                Origin::Untrusted
+            } else {
+                w.origin
+            },
+        }
+    }
 }
 
 /// Words the picture renders, exactly.
@@ -167,7 +224,7 @@ pub struct Words {
 pub struct Scene {
     /// Read leniently: a setting this build does not know is kept as
     /// `Unknown`, untrusted, and the rest of the record survives.
-    #[serde(default, deserialize_with = "lenient_setting")]
+    #[serde(default, alias = "place", deserialize_with = "lenient_setting")]
     pub setting: Option<Field<Setting>>,
     #[serde(default)]
     pub light: Option<Field<String>>,
@@ -277,20 +334,33 @@ fn same(a: &str, b: &str) -> bool {
 impl Scene {
     /// The scene's origin: the union over every field it holds.
     pub fn origin(&self) -> Origin {
+        // Every field named, none by `..`: a field added to `Scene` without
+        // a place here is a compile error, never an untrusted scene that
+        // reads clean (review of #595).
+        let Scene {
+            setting,
+            light,
+            camera,
+            style,
+            together,
+            text,
+            people,
+            people_known: _,
+            picture: _,
+            seed: _,
+            chat: _,
+        } = self;
         let mut o = Origin::Clean;
-        for f in [&self.light, &self.camera, &self.style, &self.together]
-            .into_iter()
-            .flatten()
-        {
+        for f in [light, camera, style, together].into_iter().flatten() {
             o = o.union(f.origin);
         }
-        if let Some(s) = &self.setting {
+        if let Some(s) = setting {
             o = o.union(s.origin);
         }
-        if let Some(t) = &self.text {
+        if let Some(t) = text {
             o = o.union(t.origin);
         }
-        for p in &self.people {
+        for p in people {
             o = o.union(p.origin);
         }
         o
@@ -441,6 +511,11 @@ impl Scene {
             cap(&mut p.wearing, crate::imagelib::MAX_CAST_FIELD);
             cap(&mut p.doing, crate::imagelib::MAX_CAST_FIELD);
             cap(&mut p.expression, crate::imagelib::MAX_CAST_FIELD);
+            // Nor may a name grow along a chain of edits.
+            match &mut p.who {
+                Who::Library(n) => cap(n, crate::imagelib::MAX_NAME),
+                Who::Described(d) => cap(d, crate::imagelib::MAX_CAST_FIELD),
+            }
         }
         // Known once a call declares someone in the picture; a removal
         // declares nobody (review of #597).
@@ -1247,5 +1322,32 @@ mod tests {
         };
         assert!(persona.current().is_some());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A record written before the redesign still loads (review of #597,
+    /// pass 5): `place` reads as the setting, its `picture` kind as a photo,
+    /// and a person's `name` as a library `who`. Its people are not known,
+    /// since it predates the mark.
+    #[test]
+    fn a_record_from_before_the_redesign_still_reads() {
+        let old = serde_json::json!({
+            "place": {"value": {"kind": "picture", "path": "inbox/room.png", "hash": "ab"}, "origin": "clean"},
+            "people": [{"name": "Maya", "wearing": "a coat", "doing": "reading", "origin": "clean"}],
+            "camera": {"value": "from above", "origin": "untrusted"},
+            "picture": "cd",
+            "chat": "c1"
+        });
+        let s: Scene = serde_json::from_value(old).unwrap();
+        assert!(matches!(
+            s.setting.as_ref().map(|f| &f.value),
+            Some(Setting::Photo { path, .. }) if path == "inbox/room.png"
+        ));
+        assert_eq!(s.people[0].who, Who::Library("maya".into()));
+        assert!(!s.people_known);
+        assert_eq!(s.origin(), Origin::Untrusted);
+        // A person this build cannot name is kept, and untrusted.
+        let odd: Person =
+            serde_json::from_value(serde_json::json!({"who": 7, "origin": "clean"})).unwrap();
+        assert_eq!(odd.origin, Origin::Untrusted);
     }
 }
