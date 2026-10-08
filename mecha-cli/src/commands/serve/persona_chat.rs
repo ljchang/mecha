@@ -5889,12 +5889,12 @@ mod tests {
         }
     }
 
-    /// IMAGE-SCENE-DESIGN.md §5.5: a chat with a scene carries it as a run
-    /// note, in the harness's voice, so what she wears and where she is come
-    /// from her last picture; a note, never stored in a message.
+    /// IMAGE-DESIGN.md §6: a chat with a scene carries it as a run note, in
+    /// the harness's voice, so who wears what and where they are come from
+    /// the last picture; a note, never stored in a message.
     #[tokio::test]
     async fn a_chats_scene_rides_as_a_note() {
-        use mecha_core::scene::{Change, Origin, Place, Scene};
+        use mecha_core::scene::{Origin, PersonChange, Scene, SceneChange, Setting, Who};
         let w = world();
         let opened = w
             .personas()
@@ -5904,17 +5904,24 @@ mod tests {
         let key = opened["key"].as_str().unwrap().to_string();
         let id = opened["session"].as_str().unwrap().to_string();
         let slot = scene_slot(&w.store(), "mara", &id);
-        let change = Change {
-            fresh: true,
-            place: Some(Place::Words {
+        let change = SceneChange {
+            setting: Some(Setting::Words {
                 text: "a harbour at low tide".into(),
             }),
-            declared: vec![("john".into(), "a blue raincoat".into(), "waving".into())],
-            picture: mecha_core::scene::hash(b"a picture"),
-            ..Change::default()
+            people: vec![PersonChange {
+                who: Who::Library("john".into()),
+                at: None,
+                wearing: Some("a blue raincoat".into()),
+                doing: Some("waving".into()),
+                expression: None,
+                remove: false,
+            }],
+            ..SceneChange::default()
         };
-        slot.land(&Scene::advance(None, change, Origin::Clean, &id))
-            .unwrap();
+        let (mut scene, _) = Scene::apply(None, &change, Origin::Clean, true);
+        scene.picture = Some(mecha_core::scene::hash(b"a picture"));
+        scene.chat = Some(id.clone());
+        slot.land(&scene).unwrap();
         turn(&w, &key, "Hello there.").await;
         turn(&w, &key, "And then?").await;
         let seen = w.seen.lock().unwrap().clone();
@@ -10875,13 +10882,15 @@ mod tests {
         assert_eq!(w.assistant_seen.lock().unwrap().len(), 1);
     }
 
-    /// R9 (IMAGE-SCENE-DESIGN.md §9): only the persona chat stamps a scene
-    /// slot, so the assistant's chats, incognito included, never write one
-    /// back. Read from the source, as `every_served_session_builds_its_turn_
-    /// context_through_for_session` is, because nothing at run time says
-    /// which front end built a context (review of #589, pass 6).
+    /// IMAGE-DESIGN.md §6: the persona chat and the assistant's web chat
+    /// stamp a scene slot, and nothing else does; slots are built only by
+    /// those two and `scene.rs`'s constructors. An incognito chat's slot is
+    /// its room's (R9), so it never writes back to the mecha home. Read from
+    /// the source, as `every_served_session_builds_its_turn_context_through_
+    /// for_session` is, because nothing at run time says which front end
+    /// built a context (review of #589, pass 6).
     #[test]
-    fn only_the_persona_chat_stamps_a_scene_slot() {
+    fn only_the_served_chats_stamp_a_scene_slot() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for e in std::fs::read_dir(dir).unwrap().flatten() {
                 let p = e.path();
@@ -10898,9 +10907,11 @@ mod tests {
         walk(&root.join("../mecha-core/src"), &mut files);
         assert!(files.len() > 50, "the walk found the sources");
         let mut stamps = std::collections::BTreeSet::new();
+        let mut room_slot = false;
         for f in files {
             let src = std::fs::read_to_string(&f).unwrap();
             let code = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(&src);
+            let name = f.file_name().unwrap().to_string_lossy().into_owned();
             for line in code.lines().map(str::trim) {
                 if line.starts_with("//") {
                     continue;
@@ -10908,15 +10919,19 @@ mod tests {
                 let builds = line.contains("SceneSlot {")
                     && !line.starts_with("pub struct")
                     && !line.starts_with("impl");
-                if builds || line.contains(".scene = Some(") {
-                    stamps.insert(f.file_name().unwrap().to_string_lossy().into_owned());
+                if builds || line.contains(".scene = Some(") || line.contains("scene: Some(") {
+                    stamps.insert(name.clone());
+                }
+                if name == "chat.rs" && line.contains("scene::room_slot(&room.root") {
+                    room_slot = true;
                 }
             }
         }
         assert_eq!(
             stamps.into_iter().collect::<Vec<_>>(),
-            ["persona_chat.rs"],
+            ["chat.rs", "persona_chat.rs", "scene.rs"],
             "a scene slot is stamped elsewhere"
         );
+        assert!(room_slot, "an incognito chat's slot is its room's");
     }
 }

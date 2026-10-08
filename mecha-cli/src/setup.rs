@@ -1474,6 +1474,17 @@ async fn prepare_tools_carrying(
         if wants {
             match mecha_core::imagegen::ImageGenerate::new(image) {
                 Ok(tool) => {
+                    // A new picture's seed is the CLI's and the evals' only:
+                    // `mecha run`, and the one-shot callers that name no
+                    // surface (eval, batch). Never a chat (IMAGE-DESIGN.md §5.1).
+                    let tool = if matches!(
+                        opts.surface,
+                        None | Some(mecha_core::session::SessionKind::Run)
+                    ) {
+                        tool.with_seeds()
+                    } else {
+                        tool
+                    };
                     registry.insert(Arc::new(tool));
                 }
                 Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
