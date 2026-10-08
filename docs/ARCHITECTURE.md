@@ -1045,7 +1045,9 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   with the act between neighbours (roles right 0 of 30) and, on six real
   calls, a person twice in 6 of 12. Where the host hands the tool a
   splitter (`ToolCtx::role_split`; a persona chat does, on its own model), a
-  quarantined one-shot gives each person a `doing` and a `where`, keeps any
+  quarantined one-shot gives each person a `doing` and a `where` whenever
+  two or more people share a `together`, posed or not (a named `together`
+  left beside the people's own poses drew a person twice, 2 of 3), keeps any
   pose the call gave, and leaves in `together` only what no part says: roles
   right 12 of 15, duplicates 1 of 12 (mecha-a3, 2026-10-08). It feeds the
   prompt only, so the record keeps the call as the persona sent it (a
