@@ -3619,6 +3619,15 @@ impl PersonaChats {
         // its transcript, and the persona's latest and index in its folder,
         // all outside the jail. Stamped here, never by a model.
         tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));
+        // Each person's part of a scene's `together`, read on the persona's
+        // own model, untouched as the edit panel's reader is (`roles`): the
+        // persona puts the whole act in one sentence, and drawn as one it
+        // duplicated a person in 6 of 12 real calls. A model that cannot be
+        // had leaves the tool drawing the call as sent.
+        tools.role_split = (self.provider)(&bound, PersonaUse::Judge).ok().map(|p| {
+            Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
+                as Arc<dyn mecha_core::roles::RoleSplit>
+        });
         cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);

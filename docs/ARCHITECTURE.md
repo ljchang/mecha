@@ -1012,6 +1012,18 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   description beside the pointer 0.78 (E1). So `compile` sends each cast
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
+- **A scene whose people act together is drawn from each person's own
+  part** (`roles`). A persona puts the whole act in `together` and poses
+  nobody; read as one sentence, the image model draws a lineup in list order
+  with the act between neighbours (roles right 0 of 30) and, on six real
+  calls, a person twice in 6 of 12. Where the host hands the tool a
+  splitter (`ToolCtx::role_split`; a persona chat does, on its own model), a
+  quarantined one-shot gives each person a `doing` and a `where`, keeps any
+  pose the call gave, and leaves in `together` only what no part says: roles
+  right 12 of 15, duplicates 1 of 12 (mecha-a3, 2026-10-08). It feeds the
+  prompt only, so the record keeps the call as the persona sent it (a
+  history showing her calls split taught her to drop the act, 31 of 39). A
+  split that fails or takes past `ROLE_SPLIT_TIMEOUT` draws the call as sent.
 - **One reference per person, each appearing exactly once, `wearing` and
   `doing` required, except that `doing` is left empty when the scene's
   `together` says what its people do** (a "standing naturally" beside a kneel

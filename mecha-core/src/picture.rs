@@ -531,7 +531,7 @@ pub struct Plan {
 }
 
 /// The left-to-right rank of a place in the frame; the background last.
-fn rank(at: Option<Where>) -> u8 {
+pub(crate) fn rank(at: Option<Where>) -> u8 {
     match at {
         Some(Where::Left) => 0,
         Some(Where::Centre) | None => 1,

@@ -2233,6 +2233,10 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
     out.join(" ")
 }
 
+/// How long a picture waits for its people's parts (`roles`) before it is
+/// drawn as the call said it.
+const ROLE_SPLIT_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// What someone does, said with their place in the frame and their face.
 fn doing_words(p: &crate::scene::Person, together: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -2624,9 +2628,68 @@ impl Tool for ImageGenerate {
             .is_some_and(|f| !f.value.trim().is_empty());
         match &plan.render {
             crate::picture::Render::New => {
+                // Each person's own part, when the call put the whole act in
+                // `together` and gave nobody a pose: read as one sentence it
+                // drew a lineup with the act between neighbours and, on real
+                // calls, a person twice in 6 of 12; split into parts, 1 of 12
+                // (mecha-a3, 2026-10-08). For the prompt only: the record
+                // keeps the call as sent. A split that fails draws the scene
+                // as the call said it.
+                let mut people = plan.people.clone();
+                let mut words_scene = std::borrow::Cow::Borrowed(&plan.next);
+                let mut together = together;
+                if together && people.len() >= 2 && people.iter().any(|p| p.doing.trim().is_empty())
+                {
+                    if let (Some(splitter), Some(sentence)) =
+                        (&ctx.role_split, plan.next.together.as_ref())
+                    {
+                        let names: Vec<String> = people
+                            .iter()
+                            .map(|p| crate::picture::shown(&p.who))
+                            .collect();
+                        let asked: Vec<crate::roles::Asked> = people
+                            .iter()
+                            .zip(&names)
+                            .map(|(p, n)| crate::roles::Asked {
+                                who: n.clone(),
+                                doing: (!p.doing.trim().is_empty()).then(|| p.doing.clone()),
+                            })
+                            .collect();
+                        // ~1-3 s on the router, 9 s once beside two live
+                        // turns (mecha-a3): bounded, and a late split draws
+                        // the call as sent.
+                        let answer = tokio::time::timeout(
+                            ROLE_SPLIT_TIMEOUT,
+                            splitter.split(&asked, &sentence.value),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err("the splitter took too long".into()));
+                        match answer {
+                            Ok(split) => {
+                                for (p, name) in people.iter_mut().zip(&names) {
+                                    if let Some(r) = split.roles.iter().find(|r| &r.who == name) {
+                                        p.doing = r.doing.clone();
+                                        p.at = Some(r.at);
+                                    }
+                                }
+                                people.sort_by_key(|p| crate::picture::rank(p.at));
+                                let mut scene = plan.next.clone();
+                                scene.together = (!split.together.trim().is_empty()).then(|| {
+                                    crate::scene::Field {
+                                        value: split.together.trim().to_string(),
+                                        origin: sentence.origin,
+                                    }
+                                });
+                                together = scene.together.is_some();
+                                words_scene = std::borrow::Cow::Owned(scene);
+                            }
+                            Err(why) => tracing::warn!("image_generate: role split: {why}"),
+                        }
+                    }
+                }
                 let mut cast = Vec::new();
                 let mut extras = Vec::new();
-                for p in &plan.people {
+                for p in &people {
                     match &p.who {
                         crate::scene::Who::Library(n) => cast.push(crate::imagelib::CastMember {
                             name: n.clone(),
@@ -2652,8 +2715,8 @@ impl Tool for ImageGenerate {
                     &match &plan.also {
                         // A retouch given for a new picture, or beside a
                         // restage: one more sentence of the scene.
-                        Some(also) => format!("{} {also}", scene_words(&plan.next)),
-                        None => scene_words(&plan.next),
+                        Some(also) => format!("{} {also}", scene_words(&words_scene)),
+                        None => scene_words(&words_scene),
                     },
                     &cast,
                     &extras,
@@ -6449,6 +6512,79 @@ mod tests {
         let p = last_prompt(&seen);
         assert!(p.contains("a red coat"), "{p}");
         assert!(!p.contains("standing naturally"), "{p}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A splitter that answers as told, standing in for the persona host's.
+    #[derive(Debug)]
+    struct FakeSplit(std::result::Result<crate::roles::Split, String>);
+
+    #[async_trait]
+    impl crate::roles::RoleSplit for FakeSplit {
+        async fn split(
+            &self,
+            _people: &[crate::roles::Asked],
+            _together: &str,
+        ) -> std::result::Result<crate::roles::Split, String> {
+            self.0.clone()
+        }
+    }
+
+    /// A call that puts the whole act in `together` and poses nobody is
+    /// drawn from each person's own part, in the split's order, with only the
+    /// leftover of `together` said; the record keeps the call as sent; and a
+    /// split that fails draws the call as it was (mecha-a3, 2026-10-08).
+    #[tokio::test]
+    async fn a_together_is_drawn_as_each_persons_part() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let call = json!({"scene": {"setting": "a park", "together": "Maya hands John a cup",
+            "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}});
+        cx.role_split = Some(Arc::new(FakeSplit(Ok(crate::roles::Split {
+            roles: vec![
+                crate::roles::Role {
+                    who: "Maya".into(),
+                    doing: "holding out a paper cup to John".into(),
+                    at: crate::scene::Where::Right,
+                },
+                crate::roles::Role {
+                    who: "John".into(),
+                    doing: "reaching to take the cup from Maya".into(),
+                    at: crate::scene::Where::Left,
+                },
+            ],
+            together: String::new(),
+        }))));
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let p = last_prompt(&seen);
+        assert!(p.contains("holding out a paper cup to John"), "{p}");
+        assert!(
+            !p.contains("Maya hands John a cup"),
+            "the leftover alone: {p}"
+        );
+        assert!(
+            p.find("<image1> (john").unwrap() < p.find("<image2> (maya").unwrap(),
+            "the split's order: {p}"
+        );
+        // The record keeps the call as the persona sent it.
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        assert!(landed.people.iter().all(|q| q.doing.is_empty()));
+        assert!(landed.together.is_some());
+        // A split that fails draws the call as it was.
+        cx.role_split = Some(Arc::new(FakeSplit(Err("no answer".into()))));
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(last_prompt(&seen).contains("Maya hands John a cup"));
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }

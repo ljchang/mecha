@@ -789,6 +789,11 @@ pub struct ToolCtx {
     /// render lands and looks a picture up in its index by its bytes. `None`
     /// where no front end stamps one (the TUI, the REPL, Slack, `mecha run`).
     pub scene: Option<crate::scene::SceneSlot>,
+    /// Who splits a scene's `together` into each person's part, when the
+    /// host has a model to ask (a persona chat stamps one per turn).
+    /// `image_generate` uses it for the prompt only; `None` everywhere else,
+    /// which draws the scene as the call said it (`roles`).
+    pub role_split: Option<std::sync::Arc<dyn crate::roles::RoleSplit>>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -975,6 +980,7 @@ impl Default for ToolCtx {
             image_trail: None,
             stage_locked: false,
             scene: None,
+            role_split: None,
         }
     }
 }
