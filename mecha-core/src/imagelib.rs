@@ -918,13 +918,32 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
 /// is left out, without a count. Characters are never listed: their names
 /// are the owner's.
 pub(crate) fn styles_to_name(lib: &Library) -> Option<String> {
-    let names: Vec<String> = lib
-        .all()
+    let names: Vec<String> = style_names(lib).iter().map(|n| format!("`{n}`")).collect();
+    (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
+}
+
+/// `words` spelled as a library name could be: trimmed, lowercased, and each
+/// run of spaces, underscores or hyphens a single hyphen. Names allow only
+/// lowercase letters, digits and hyphens, so this can only find the name
+/// meant.
+pub fn spelled_as_name(words: &str) -> String {
+    words
+        .trim()
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The approved, unlocked styles' names, in the library's order: what a
+/// model may be offered (see [`styles_to_name`]).
+pub fn style_names(lib: &Library) -> Vec<String> {
+    lib.all()
         .iter()
         .filter(|e| e.kind == Kind::Style && e.status == Status::Approved && !e.locked)
-        .map(|e| format!("`{}`", e.name))
-        .collect();
-    (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
+        .map(|e| e.name.clone())
+        .collect()
 }
 
 /// Whether `name` is simply not in the library as `kind`: no entry in any
@@ -954,7 +973,10 @@ pub(crate) fn blank(s: &str) -> bool {
 /// once — with a total only when `extras` are counted into it (E11), since a
 /// total with no extras erased a person the scene described (E12); every
 /// person carries their stored description beside the pointer (E1) and what
-/// they are wearing and doing (E8: a reference supplies its own otherwise).
+/// they are wearing and doing (E8: a reference supplies its own otherwise),
+/// except that `doing` is empty when the scene says what its people do
+/// together: a pose beside that drew a person twice (`imagegen::doing_words`
+/// says a plain pose whenever the scene does not).
 pub fn compile(
     lib: &Library,
     scene: &str,
@@ -1021,11 +1043,14 @@ pub fn compile(
             .filter(|e| e.status == Status::Approved)
             .ok_or_else(|| missing(lib, Kind::Character, &name))?;
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
-        // A placeholder copied from a refusal's example is no answer.
-        if blank(wearing) || blank(doing) {
+        // A placeholder copied from a refusal's example is no answer. An
+        // empty `doing` is a scene that says what its people do together
+        // (`imagegen::doing_words` says a plain pose otherwise).
+        if blank(wearing) || (!doing.is_empty() && blank(doing)) {
             return Err(format!(
-                "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
-                 pose when the scene does not say."
+                "`{name}` needs `wearing`, and `doing` unless the scene says what its people \
+                 do together: a reference supplies its own outfit and pose when the scene does \
+                 not say."
             ));
         }
         if wearing.chars().count() > MAX_CAST_FIELD || doing.chars().count() > MAX_CAST_FIELD {
@@ -1049,10 +1074,14 @@ pub fn compile(
         } else {
             format!("the person from <image{}>", i + 1)
         };
-        people.push(format!(
-            "{who} ({}), wearing {wearing}, {doing}",
+        let mut line = format!(
+            "{who} ({}), wearing {wearing}",
             entry.text.trim().trim_end_matches('.')
-        ));
+        );
+        if !doing.is_empty() {
+            line.push_str(&format!(", {doing}"));
+        }
+        people.push(line);
     }
     let style_text = match style.map(|s| s.trim().to_lowercase()) {
         None => None,
@@ -1666,6 +1695,45 @@ mod tests {
         assert!(!c.prompt.contains("<image1>"));
         assert_eq!(c.references.len(), 1);
         assert_eq!(c.source_seeds, vec![1001]);
+    }
+
+    /// A scene that says what its people do together sends no pose for each:
+    /// the cast line carries no empty clause, and a placeholder is still no
+    /// answer (mecha-a3, 2026-10-08).
+    #[test]
+    fn people_doing_something_together_need_no_pose_each() {
+        let dir = scratch();
+        for n in ["maya", "john"] {
+            create(dir.path(), character(n, Origin::Owner)).unwrap();
+        }
+        let (lib, _) = Library::load(dir.path());
+        let still = |name: &str| CastMember {
+            name: name.into(),
+            wearing: "a grey coat".into(),
+            doing: String::new(),
+        };
+        let c = compile(
+            &lib,
+            "a clinic room. Maya ties John's shoelace",
+            &[still("maya"), still("john")],
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(
+            c.prompt
+                .contains("wearing a grey coat; the person from <image2>"),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            !c.prompt.contains(", ;") && !c.prompt.contains(", ."),
+            "{}",
+            c.prompt
+        );
+        let mut placeholder = still("maya");
+        placeholder.doing = "…".into();
+        assert!(compile(&lib, "a clinic room", &[placeholder], &[], None).is_err());
     }
 
     #[test]

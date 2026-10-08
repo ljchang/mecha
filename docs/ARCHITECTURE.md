@@ -1013,9 +1013,15 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
 - **One reference per person, each appearing exactly once, `wearing` and
-  `doing` required.** Every reference slot tends to become a person (two unnamed
-  references of one character drew it twice, E2, and a bound face-and-body
-  pair failed once in four, E9); a reference supplies its own outfit, pose
+  `doing` required, except that `doing` is left empty when the scene's
+  `together` says what its people do** (a "standing naturally" beside a kneel
+  drew the person twice, 3 of 12, and 0 of 12 without it; mecha-a3,
+  2026-10-08). The plain pose is said where the prompt is built
+  (`imagegen::doing_words`), never stored in the record, so a `together`
+  sent after the people never meets a pose nobody wrote. Every reference
+  slot tends to become a person (two unnamed references of one character
+  drew it twice, E2, and a bound face-and-body pair failed once in four,
+  E9); a reference supplies its own outfit, pose
   and stare when the scene is silent, and stated they land (E3, E8). The
   prompt's shape — "the person in the image" for one, `<imageN>` left to
   right for more, each appearing exactly once and anyone else a new person —
