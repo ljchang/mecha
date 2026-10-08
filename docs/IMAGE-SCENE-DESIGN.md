@@ -373,7 +373,8 @@ picture.
   involved: no loop, no reasoning, one render. A retouch regenerates as itself, which is the same
   change on the same canvas with a new seed. **The redraw is recompiled from the scene through
   the compiler, never replayed from the manifest's compiled prompt.** That prompt sits in a file
-  a run can write (§5.1). Recompiling runs the pre-GPU checks again: `cast_self`, the name guard,
+  a run can write (§5.1). Recompiling runs the pre-GPU checks again: `cast_self` (now
+  `picture::parse`'s `who` resolution), the name guard,
   unknown names, `MAX_CAST` and the budget. The library re-check covers only the approval half.
 - **Identity follows R1**, because the scene names its people. The live library is checked
   again on every redraw: each entry has to be approved now, as on every other identity path, not

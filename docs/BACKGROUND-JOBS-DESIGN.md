@@ -328,7 +328,8 @@ reaches no hook (review of #583).
 - The in-turn runaway: one job at a time, structurally.
 - `image_generate`'s exception to "a tool is never interrupted mid-call": the job, not the call,
   watches its own token.
-- **Not** the repeat guard's in-flight branch (`REPEAT_IN_FLIGHT`), though its wording changes:
+- **Not** the repeat guard's in-flight branch (`REPEAT_IN_FLIGHT`, retired 2026-10-08 with the
+  repeat guard; one picture per run replaces it, `IMAGE-DESIGN.md` §5.5), though its wording changes:
   it says the colliding call is "in this turn" and offers that call's result, and under jobs the
   collision is another conversation's, whose result this run cannot use. The queue is per
   conversation and Q3 lets a second conversation's picture through, but the claim is keyed on
