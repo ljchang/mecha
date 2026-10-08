@@ -123,6 +123,7 @@ pub mod recommend;
 pub mod replay;
 pub mod replay_priority;
 pub mod replay_run;
+pub mod roles;
 pub mod runlog;
 pub mod runmarker;
 pub mod sample;

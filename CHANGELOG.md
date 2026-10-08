@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Pictures of people doing something together put each of them in their
+  own part.** A persona describing an act between two or three people used
+  to get a lineup, with the act applied between neighbours and sometimes a
+  person drawn twice. The scene is now split into what each person does and
+  where they stand before it is drawn, so whoever hands the cup is the one
+  holding it out. It adds a second or two per picture.
+
 - **A picture asked for while another is being drawn waits its turn instead
   of failing.** A chat draws one picture at a time and keeps up to three
   more in line behind it, in order; a panel edit waits its turn too. A
