@@ -3628,6 +3628,32 @@ impl PersonaChats {
             Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
                 as Arc<dyn mecha_core::roles::RoleSplit>
         });
+        // This turn's ask, read for what the persona's picture call leaves
+        // out (`SceneReader`): the owner's words and the persona's latest
+        // reply, on its own model. Not on a panel turn, whose change the
+        // panel's own reader already drew from these words.
+        if panel.is_none() {
+            let reply = before
+                .iter()
+                .rev()
+                .find(|m| {
+                    m.role == mecha_core::message::Role::Assistant && !m.text().trim().is_empty()
+                })
+                .map(|m| m.text());
+            tools.scene_reader = (self.provider)(&bound, PersonaUse::Judge)
+                .ok()
+                .map(|provider| {
+                    Arc::new(mecha_core::persona::edit::ModelReader {
+                        provider,
+                        model: bound.model.clone(),
+                        owner: text.clone(),
+                        reply,
+                        persona: names.persona.clone(),
+                        character: names.character.clone(),
+                        library: names.library.clone(),
+                    }) as Arc<dyn mecha_core::persona::edit::SceneReader>
+                });
+        }
         cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
