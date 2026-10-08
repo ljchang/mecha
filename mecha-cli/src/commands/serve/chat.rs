@@ -5264,6 +5264,16 @@ pub(super) fn test_chat_planned(
 /// A picture still being drawn for `key`, until the returned token stops it.
 #[cfg(test)]
 pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::CancellationToken {
+    test_job_out_as(chat, key, "c1")
+}
+
+/// [`test_job_out`] under its own call id, so a test can line several up.
+#[cfg(test)]
+pub(super) fn test_job_out_as(
+    chat: &ChatState,
+    key: &str,
+    id: &str,
+) -> tokio_util::sync::CancellationToken {
     let token = tokio_util::sync::CancellationToken::new();
     let watched = token.clone();
     let job = mecha_core::jobs::DeferredJob::new(
@@ -5276,7 +5286,7 @@ pub(super) fn test_job_out(chat: &ChatState, key: &str) -> tokio_util::sync::Can
     );
     chat.jobs
         .queue
-        .submit(key, 0, "c1", "image_generate", job)
+        .submit(key, 0, id, "image_generate", job)
         .unwrap();
     token
 }

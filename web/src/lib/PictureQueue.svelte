@@ -39,24 +39,30 @@
   // still while a finger moves — the target row is marked — so the rows the
   // pointer is measured against never shift under it; `onreorder` asks the
   // server for the new line on release.
-  let dragFrom = $state(-1);
+  // The dragged row is held by its id, never its index: a `queue` event
+  // mid-drag — the running picture ending, which promotes the first waiting
+  // one — shifts every index, and an index would move a different row than
+  // the one under the finger (review of #607).
+  let dragFrom = $state(null);
   let dragTo = $state(-1);
   let rows = $state([]);
   const moved = (from, to) => {
     const out = waiting.map((w) => w.call_id);
-    const [id] = out.splice(from, 1);
+    const at = out.indexOf(from);
+    if (at < 0 || to < 0 || to >= out.length) return null;
+    const [id] = out.splice(at, 1);
     out.splice(to, 0, id);
     return out;
   };
 
   function start(e, i) {
-    dragFrom = i;
+    dragFrom = waiting[i]?.call_id ?? null;
     dragTo = i;
     e.currentTarget.setPointerCapture(e.pointerId);
     e.preventDefault();
   }
   function move(e) {
-    if (dragFrom < 0) return;
+    if (dragFrom === null) return;
     // The row whose middle the pointer is above, or the last one.
     let to = waiting.length - 1;
     for (let i = 0; i < rows.length; i++) {
@@ -69,16 +75,18 @@
     dragTo = to;
   }
   function end() {
-    if (dragFrom >= 0 && dragTo >= 0 && dragFrom !== dragTo) {
-      onreorder(moved(dragFrom, dragTo));
+    if (dragFrom !== null && dragTo >= 0 && waiting[dragTo]?.call_id !== dragFrom) {
+      const order = moved(dragFrom, dragTo);
+      if (order) onreorder(order);
     }
-    dragFrom = -1;
+    dragFrom = null;
     dragTo = -1;
   }
   function step(i, by) {
     const j = i + by;
     if (j < 0 || j >= waiting.length) return;
-    onreorder(moved(i, j));
+    const order = moved(waiting[i].call_id, j);
+    if (order) onreorder(order);
   }
 </script>
 
@@ -94,7 +102,7 @@
       </div>
     {/if}
     {#each waiting as item, i (item.call_id)}
-      <div class="pqrow" class:dragging={dragFrom === i} class:target={dragFrom >= 0 && dragTo === i && dragTo !== dragFrom} bind:this={rows[i]}>
+      <div class="pqrow" class:dragging={dragFrom === item.call_id} class:target={dragFrom !== null && dragTo === i && item.call_id !== dragFrom} bind:this={rows[i]}>
         <span
           class="pqhandle"
           role="button"

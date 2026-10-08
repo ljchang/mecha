@@ -639,13 +639,18 @@ impl JobQueue {
         let moved = {
             let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
             let Some(line) = waiting.get_mut(key) else {
-                return order.is_empty();
+                return false;
             };
             let mut now: Vec<&str> = line.iter().map(|w| w.call_id.as_str()).collect();
             let mut asked: Vec<&str> = order.iter().map(String::as_str).collect();
             now.sort_unstable();
             asked.sort_unstable();
-            if now != asked {
+            // Exactly the waiting jobs, each once: sorted equality alone is a
+            // multiset check, and a repeated id would pass it, then collapse
+            // in `by_id` and leave a job neither in the line nor answered —
+            // a `tool_use` with no `tool_result`, which 400s the next request
+            // (review of #607; an OpenAI-dialect server may leave ids empty).
+            if now != asked || now.windows(2).any(|p| p[0] == p[1]) {
                 return false;
             }
             let mut by_id: HashMap<String, Waiting> =
@@ -1204,6 +1209,21 @@ mod tests {
         assert_eq!(queue.stops("chat"), 0, "no chat-wide Stop");
         assert!(queue.cancel("chat"));
         assert_eq!(queue.stops("chat"), 1);
+    }
+
+    /// Two waiting jobs that share a call id (a server that leaves ids
+    /// empty) are never dropped by a reorder: it is refused, and both stay.
+    #[tokio::test]
+    async fn a_reorder_never_drops_a_job_that_shares_an_id() {
+        let (queue, _) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = || gated(Arc::clone(&go), CancellationToken::new());
+        for id in ["c1", "", ""] {
+            queue.submit("chat", 0, id, "draw", job()).unwrap();
+        }
+        assert!(!queue.reorder("chat", &["".into(), "".into()]));
+        assert_eq!(queue.waiting("chat"), 2);
+        assert!(!queue.reorder("other", &[]), "no line, nothing moved");
     }
 
     /// `idle` waits for the running and the waiting, not for a finished job
