@@ -31,8 +31,23 @@ assert.equal(withUnlock('/x?a=1', 'z'), '/x?a=1&unlock=z');
 // the docs demo to — so a new endpoint cannot slip past that guard.
 assert.throws(() => personaUrl('mara', '/delete', null));
 assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
+// Every suffix the persona page asks `chatUrl` for is one it allows, read out
+// of the components that ship: `chatUrl` throws on any other, and a throw
+// inside a `try` is a button that silently does nothing — the queue panel's
+// reorder did exactly that (review of #607). `check-demo` cannot see this, as
+// it derives its list from the same allowed suffixes.
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../src/lib/', import.meta.url);
+  const used = new Set();
+  for (const f of readdirSync(dir).filter((f) => f.endsWith('.svelte') || f.endsWith('.js'))) {
+    for (const m of readFileSync(new URL(f, dir), 'utf8').matchAll(/chatUrl\([^,()]+,\s*'([^']*)'/g)) used.add(m[1]);
+  }
+  assert.ok(used.has('/jobs/order'), [...used].join(' '));
+  for (const suffix of used) assert.doesNotThrow(() => chatUrl('p-0123456789ab', suffix), suffix);
+}
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 26);
+assert.equal(ENDPOINTS.length, 27);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
