@@ -11,12 +11,20 @@ use mecha_core::agent::Conversation;
 use mecha_core::jobs::Delivered;
 use mecha_core::session::{Record, Session, Transcript};
 
+/// What the queue tells its host, in the order it happened: a finished job,
+/// or a conversation whose line changed. One channel, so a page sees a
+/// picture land before the line that no longer holds it.
+pub(super) enum Late {
+    Delivered(Box<Delivered>),
+    Changed(String),
+}
+
 /// A host's job queue and the hand-off from it: every conversation's jobs,
 /// one in flight per key (`JobQueue`), and the finished ones waiting for the
 /// host's delivery task, which the first turn starts (`start`).
 pub(super) struct Jobs {
     pub(super) queue: std::sync::Arc<mecha_core::jobs::JobQueue>,
-    delivered: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Delivered>>>,
+    delivered: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Late>>>,
     started: std::sync::Once,
     /// Run numbers, unique across the process: a chat removed from the map
     /// and opened again gets a fresh `LateState`, and its numbers must never
@@ -27,10 +35,15 @@ pub(super) struct Jobs {
 impl Default for Jobs {
     fn default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let changed = tx.clone();
+        let queue = mecha_core::jobs::JobQueue::new(move |d| {
+            let _ = tx.send(Late::Delivered(Box::new(d)));
+        });
+        queue.set_watch(move |key| {
+            let _ = changed.send(Late::Changed(key.to_string()));
+        });
         Jobs {
-            queue: mecha_core::jobs::JobQueue::new(move |d| {
-                let _ = tx.send(d);
-            }),
+            queue,
             delivered: std::sync::Mutex::new(Some(rx)),
             started: std::sync::Once::new(),
             next_run: std::sync::atomic::AtomicUsize::new(0),
@@ -47,10 +60,7 @@ impl Jobs {
 
     /// Hand the finished jobs to `deliver`, once: the first call takes the
     /// receiver, every later one does nothing.
-    pub(super) fn start(
-        &self,
-        deliver: impl FnOnce(tokio::sync::mpsc::UnboundedReceiver<Delivered>),
-    ) {
+    pub(super) fn start(&self, deliver: impl FnOnce(tokio::sync::mpsc::UnboundedReceiver<Late>)) {
         self.started.call_once(|| {
             if let Some(rx) = self.delivered.lock().ok().and_then(|mut r| r.take()) {
                 deliver(rx);

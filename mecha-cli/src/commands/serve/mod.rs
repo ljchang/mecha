@@ -482,6 +482,11 @@ fn api() -> gate::Owned {
             Owner::ChatKey,
             axum::routing::post(chat::cancel),
         )
+        .at(
+            "/api/chat/{key}/jobs/order",
+            Owner::ChatKey,
+            axum::routing::post(chat::reorder_jobs),
+        )
         // Persona chats: a door of their own, never the routes above
         // (`persona_chat`, `PERSONA-DESIGN.md` §3.2).
         .at(
@@ -598,6 +603,11 @@ fn api() -> gate::Owned {
             "/api/persona-chat/{key}/cancel",
             Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::cancel),
+        )
+        .at(
+            "/api/persona-chat/{key}/jobs/order",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::reorder_jobs),
         )
         .at(
             "/api/persona-chat/{key}/call",
@@ -4435,6 +4445,57 @@ mod boundary_tests {
         let after = mecha_core::session::Session::read(&path).unwrap();
         assert!(after.pending_notes.is_empty(), "{:?}", after.pending_notes);
         std::fs::remove_dir_all(server_temp).ok();
+    }
+
+    /// The assistant chat's queue panel, through its routes: the transcript
+    /// carries the line, a reorder moves the waiting pictures and returns the
+    /// line, and a stale order changes nothing (review of #607).
+    #[tokio::test]
+    async fn the_assistant_chats_queue_is_read_and_reordered_through_its_routes() {
+        let _home = crate::testenv::HomeGuard::new("queue-routes");
+        let chat = chat::test_chat_answering("hi", true);
+        let app = app(chat.clone());
+        converse(&app, "main", "hello").await;
+        let stops: Vec<_> = ["c1", "c2", "c3"]
+            .into_iter()
+            .map(|id| chat::test_job_out_as(&chat, "main", id))
+            .collect();
+        let ids = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["call_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let t = body(app.clone().oneshot(get("/api/chat/main")).await.unwrap()).await;
+        assert_eq!(ids(&t["queue"]), ["c1", "c2", "c3"]);
+        let moved = body(
+            app.clone()
+                .oneshot(json_post(
+                    "/api/chat/main/jobs/order",
+                    serde_json::json!({ "order": ["c3", "c2"] }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(moved["moved"], true);
+        assert_eq!(ids(&moved["queue"]), ["c1", "c3", "c2"]);
+        let stale = body(
+            app.clone()
+                .oneshot(json_post(
+                    "/api/chat/main/jobs/order",
+                    serde_json::json!({ "order": ["c2"] }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stale["moved"], false);
+        assert_eq!(ids(&stale["queue"]), ["c1", "c3", "c2"]);
+        for stop in stops {
+            stop.cancel();
+        }
     }
 
     /// A conversation whose picture is still being drawn is not let go of —
