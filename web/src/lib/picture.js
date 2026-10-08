@@ -154,3 +154,30 @@ export async function downloadPicture(get, url, path, doc = globalThis.document,
     return String(e?.message ?? e);
   }
 }
+
+// The queue panel's reorder (`PictureQueue.svelte`), pure so node tests it.
+// `ids` is the waiting line; the moved job is named by its id, never an
+// index, which a `queue` event mid-drag would shift (review of #607).
+
+// `id` to position `to` in the new line, or null when either is gone.
+export function moveTo(ids, id, to) {
+  const out = [...ids];
+  const at = out.indexOf(id);
+  if (at < 0 || to < 0 || to >= out.length) return null;
+  out.splice(at, 1);
+  out.splice(to, 0, id);
+  return out;
+}
+
+// `id` dropped at `slot`, the gap above row `slot` as the line stood when the
+// drag began (`ids.length` is below the last row) — where the marker is drawn.
+// Moving down, taking the row out shifts the gaps below it up by one, so the
+// landing is one less: otherwise a row dropped above `c` lands below it
+// (review of #607). Null when nothing would move.
+export function dropAt(ids, id, slot) {
+  const at = ids.indexOf(id);
+  if (at < 0 || slot < 0 || slot > ids.length) return null;
+  const to = slot > at ? slot - 1 : slot;
+  if (to === at) return null;
+  return moveTo(ids, id, to);
+}

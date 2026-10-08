@@ -13,6 +13,8 @@
   // asks for the waiting ones in a new order. Neither changes `items`
   // itself: the server's next `queue` event does, so the panel never shows
   // a line the server refused.
+  import { moveTo, dropAt } from './picture.js';
+
   let { items = [], oncancel = () => {}, onreorder = () => {} } = $props();
 
   // The running one's clock, from what the server said it had run plus this
@@ -42,18 +44,20 @@
   // The dragged row is held by its id, never its index: a `queue` event
   // mid-drag — the running picture ending, which promotes the first waiting
   // one — shifts every index, and an index would move a different row than
-  // the one under the finger (review of #607).
+  // the one under the finger (review of #607). `dragTo` is a gap: above row
+  // `dragTo`, or below the last when it equals the line's length.
   let dragFrom = $state(null);
   let dragTo = $state(-1);
   let rows = $state([]);
-  const moved = (from, to) => {
-    const out = waiting.map((w) => w.call_id);
-    const at = out.indexOf(from);
-    if (at < 0 || to < 0 || to >= out.length) return null;
-    const [id] = out.splice(at, 1);
-    out.splice(to, 0, id);
-    return out;
-  };
+  const ids = $derived(waiting.map((w) => w.call_id));
+  // A row that left the line mid-drag (stopped, or promoted to running) ends
+  // the drag, or its marker would stay drawn (review of #607).
+  $effect(() => {
+    if (dragFrom !== null && !ids.includes(dragFrom)) {
+      dragFrom = null;
+      dragTo = -1;
+    }
+  });
 
   function start(e, i) {
     dragFrom = waiting[i]?.call_id ?? null;
@@ -63,8 +67,9 @@
   }
   function move(e) {
     if (dragFrom === null) return;
-    // The row whose middle the pointer is above, or the last one.
-    let to = waiting.length - 1;
+    // The gap above the first row whose middle the pointer is above, or the
+    // gap below the last.
+    let to = waiting.length;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]?.getBoundingClientRect();
       if (r && e.clientY < r.top + r.height / 2) {
@@ -75,8 +80,8 @@
     dragTo = to;
   }
   function end() {
-    if (dragFrom !== null && dragTo >= 0 && waiting[dragTo]?.call_id !== dragFrom) {
-      const order = moved(dragFrom, dragTo);
+    if (dragFrom !== null && dragTo >= 0) {
+      const order = dropAt(ids, dragFrom, dragTo);
       if (order) onreorder(order);
     }
     dragFrom = null;
@@ -85,7 +90,7 @@
   function step(i, by) {
     const j = i + by;
     if (j < 0 || j >= waiting.length) return;
-    const order = moved(waiting[i].call_id, j);
+    const order = moveTo(ids, waiting[i].call_id, j);
     if (order) onreorder(order);
   }
 </script>
@@ -102,7 +107,13 @@
       </div>
     {/if}
     {#each waiting as item, i (item.call_id)}
-      <div class="pqrow" class:dragging={dragFrom === item.call_id} class:target={dragFrom !== null && dragTo === i && item.call_id !== dragFrom} bind:this={rows[i]}>
+      <div
+        class="pqrow"
+        class:dragging={dragFrom === item.call_id}
+        class:target={dragFrom !== null && dragTo === i}
+        class:targetbelow={dragFrom !== null && dragTo === waiting.length && i === waiting.length - 1}
+        bind:this={rows[i]}
+      >
         <span
           class="pqhandle"
           role="button"
@@ -152,6 +163,9 @@
   }
   .pqrow.target {
     box-shadow: inset 0 2px 0 var(--accent-400);
+  }
+  .pqrow.targetbelow {
+    box-shadow: inset 0 -2px 0 var(--accent-400);
   }
   .pqstate {
     font-family: var(--mono);
