@@ -164,9 +164,9 @@ versions of them) it used.
   12 GB free is enough at the default, since most of the cost is already paid; if it
   doesn't, the tool needs `min_available_mb` (19 GB). Below that it declines
   and says why; try again once a large build or another model has finished.
-  After ten idle minutes it asks the server to unload its models. On a
+  After fifteen idle minutes it asks the server to unload its models. On a
   machine running the `mecha-comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
-  the server is also restarted after ten idle minutes, which returns nearly
+  the server is also restarted after fifteen idle minutes, which returns nearly
   all of its memory, and a picture asked for during a restart waits for it
   instead of failing. An open ComfyUI page in a browser keeps a connection to
   the server and counts as use, so close it to let the memory go.

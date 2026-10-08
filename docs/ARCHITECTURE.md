@@ -591,15 +591,18 @@ workspace**. Six decisions, each a bug if undone:
 - **Idle memory is released beside the server, not by mecha.** A loaded
   ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
   user timer, installed by `scripts/comfyui/install.sh`) restarts
-  `comfyui.service` once it has held a model for 15 idle minutes (10 until
-  2026-10-08: the owner's ruling, so a chat's next picture inside a quarter
-  hour skips the 80–115 s reload) with an empty queue and no open connection, leaving a 1.1 GB process with its port
+  `comfyui.service` once it has held a model for 15 idle minutes with an
+  empty queue and no open connection, leaving a 1.1 GB process with its port
   up; below 4 GB of `MemFree` it sends `/free` instead, because a new CUDA
   context failed to come up there. A restart also empties the server's temp
   directory, whoever left files in it. mecha's own `unload_after_secs` timer
-  stays as a best-effort early `/free`, but it lives in the mecha process and
-  dies with it: a `serve` restarted five minutes after the last picture left
-  12.2 GB held for ten hours (2026-10-02), and on unified memory `/free` moves
+  (900 s) stays as a best-effort `/free`, but it lives in the mecha process
+  and dies with it. Both windows were 10 minutes until 2026-10-08, when the
+  owner raised them together so a chat's next picture inside a quarter hour
+  skips the 80–115 s reload; raising only one leaves the other unloading at
+  ten. The process timer's failure: a `serve` restarted five minutes after
+  the last picture left 12.2 GB held for ten hours (2026-10-02), and on
+  unified memory `/free` moves
   the weights into the server's RSS (6.9–8.9 GB) rather than releasing them.
   The first request of a job waits for a server that is not answering yet
   (`ComfyUi::await_server`), so a picture asked for during a restart waits
