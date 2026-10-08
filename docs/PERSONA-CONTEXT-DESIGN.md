@@ -376,6 +376,10 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
 
 ### 5.5 Edits only on the owner's initiative
 
+> **Superseded 2026-10-07 for the mechanism (`IMAGE-DESIGN.md` §5.3):** a panel press is
+> extracted by the harness into a typed change and drawn through `dispatch_one`; the persona no longer
+> makes the call, and replies in a line. The rule that edits come on the owner's initiative stands.
+>
 > **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R4):** the rule stands, and its
 > assumption does not. The picture the owner points at chooses the scene and the retouch canvas,
 > and it does not carry identity by itself: the people's crops and descriptions come along on
