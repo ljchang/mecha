@@ -301,6 +301,26 @@ pub struct Looks<'a> {
     pub library: Option<&'a crate::imagelib::Library>,
 }
 
+/// A held style replacing an earlier look in words: those words come off
+/// the setting, the change's own or the record's, so the old look does not
+/// ride beside the new style (review of #605).
+fn drop_earlier_look(looks: &Looks, scene: &mut serde_json::Map<String, serde_json::Value>) {
+    let words = match scene.get("setting").and_then(serde_json::Value::as_str) {
+        Some(given) => Some(given.to_string()),
+        None => match looks
+            .record
+            .and_then(|r| r.setting.as_ref())
+            .map(|f| &f.value)
+        {
+            Some(crate::scene::Setting::Words { text }) => Some(text.clone()),
+            _ => None,
+        },
+    };
+    if let Some((before, _)) = words.as_deref().and_then(|w| w.split_once(LOOK_JOIN)) {
+        scene.insert("setting".into(), before.trim().into());
+    }
+}
+
 /// The words `look_into` joins a look to a setting with; a later look
 /// replaces the earlier one rather than stacking beside it.
 const LOOK_JOIN: &str = ", in the look of ";
@@ -349,6 +369,7 @@ fn look_into(
         });
         if looks.styles.contains(key) || approved {
             scene.insert("style".into(), key.clone().into());
+            drop_earlier_look(looks, scene);
             return Ok(true);
         }
     }
@@ -488,7 +509,11 @@ pub fn read_extraction_for(
     let mut no_op_look = false;
     // `style` too: the record shows that key, and a reader without the
     // schema answers in it (review of #605).
-    match obj.get("look").or_else(|| obj.get("style")) {
+    match obj
+        .get("look")
+        .filter(|v| !v.is_null())
+        .or_else(|| obj.get("style"))
+    {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
         Some(serde_json::Value::String(t)) => match look_into(t, looks, &mut scene) {
@@ -827,6 +852,10 @@ mod tests {
             record: Some(&sketched),
             ..Default::default()
         };
+        // And a held style after it takes the earlier look's words off.
+        let e = read_extraction_for(r#"{"look": "ink wash"}"#, &known, None, &again).unwrap();
+        assert_eq!(e.scene["style"], "ink-wash");
+        assert_eq!(e.scene["setting"], "a quiet harbour");
         let e = read_extraction_for(r#"{"look": "pixel art"}"#, &known, None, &again).unwrap();
         assert_eq!(
             e.scene["setting"],
