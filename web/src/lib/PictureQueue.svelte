@@ -23,7 +23,9 @@
   let seenAt = $state(Date.now());
   $effect(() => {
     void items;
-    seenAt = Date.now();
+    // Both clocks from one reading, or the running clock reads up to a
+    // second short until the next tick (review of #607).
+    seenAt = now = Date.now();
   });
   $effect(() => {
     const tick = setInterval(() => (now = Date.now()), 1000);

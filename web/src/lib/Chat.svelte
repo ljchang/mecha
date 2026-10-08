@@ -688,6 +688,9 @@
     receivedInputs.clear();
     inputDelivery.clear();
     entries = [];
+    // Or the last chat's pictures stay in line under this one for a round
+    // trip (the #418 pattern; review of #607).
+    queue = [];
     streaming = '';
     usage = null;
     taint = null;

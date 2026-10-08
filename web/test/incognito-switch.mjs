@@ -37,6 +37,7 @@ function page(start) {
      let pictureNote = { path: 'images/a.png', why: 'no such file' };
      let goneNote = 'incognito is unavailable: no local model';
      let entries = ['x'], streaming = 'y', usage = 1, taint = 1;
+     let queue = [{ call_id: 'c1' }];
      let affect = 1, valence = 1, sawAffectThisRun = true;
      let partialRun = true, liveFrom = 3;
      const receivedInputs = new Set(), inputDelivery = new Map();
@@ -48,7 +49,7 @@ function page(start) {
      let hungUp = 0;
      const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), typed: () => vTyped, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), typed: () => vTyped, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote, queue }) };`,
   )(start);
 }
 
@@ -78,6 +79,13 @@ function is(actual, expected, what) {
   is(p.dropped, ['incognito-ab'], "and the audio its call buffered, by the chat's own key");
   is(p.call(), { hungUp: 1, vEntries: [] }, 'and a call still speaking into it, with its words');
   is(p.typed(), '', 'and a line typed into that call and not sent (review of #499)');
+}
+{
+  // Any switch, ordinary to ordinary included: the last chat's pictures in
+  // line do not show under the next one (review of #607).
+  const p = page({ key: 'main', draft: '', attachments: [], incognito: false, gone: null });
+  p.switchTo('other');
+  is(p.now().queue, [], "a switch drops the last chat's line of pictures");
 }
 {
   // Into an incognito chat with a recorded call live: the call ends rather
