@@ -846,6 +846,8 @@
     attachments = [];
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
+    // And its pictures in line (review of #607).
+    queue = [];
     crisisShown = false;
     chatModel = '';
     dismissed = new Set();
