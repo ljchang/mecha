@@ -151,6 +151,12 @@ pub trait JobSink: Send + Sync {
     /// one, or refuse it when the queue is full.
     fn submit(&self, call_id: &str, tool: &str, job: Arc<DeferredJob>) -> Result<Submitted, Busy>;
 
+    /// How many times the owner has stopped this conversation's pictures
+    /// (`JobQueue::cancel`). A harness call that waited its turn reads it
+    /// before and after: a Stop while it waited ends it undrawn, though the
+    /// emptied line would let it start (review of #606).
+    fn stops(&self) -> u64;
+
     /// Resolves when the conversation has no job running or waiting — what
     /// a harness call that renders inline waits for, so it takes its turn
     /// behind them instead of being refused. Finished jobs not yet landed do
@@ -270,16 +276,22 @@ pub struct JobQueue {
     waiting: Mutex<HashMap<String, std::collections::VecDeque<Waiting>>>,
     /// Woken whenever a job ends or a queue empties, for [`JobQueue::idle`].
     changed: Arc<tokio::sync::Notify>,
+    /// Each key's count of chat-wide Stops ([`JobSink::stops`]).
+    stops: Mutex<HashMap<String, u64>>,
     deliver: Arc<Deliver>,
 }
 
 impl JobQueue {
+    /// `deliver` must not panic: it runs before the finished job's slot is
+    /// freed (so results land in order), and a panic there would hold the
+    /// slot for good, leaving [`JobQueue::idle`] unresolved (review of #606).
     pub fn new(deliver: impl Fn(Delivered) + Send + Sync + 'static) -> Arc<Self> {
         Arc::new(JobQueue {
             running: Mutex::new(HashMap::new()),
             arrived: Mutex::new(HashMap::new()),
             waiting: Mutex::new(HashMap::new()),
             changed: Arc::new(tokio::sync::Notify::new()),
+            stops: Mutex::new(HashMap::new()),
             deliver: Arc::new(deliver),
         })
     }
@@ -477,6 +489,12 @@ impl JobQueue {
     /// The ones waiting behind it go too, each answered as not started:
     /// Stop means none of this conversation's pictures (§2.4).
     pub fn cancel(self: &Arc<Self>, key: &str) -> bool {
+        *self
+            .stops
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_string())
+            .or_default() += 1;
         let dropped = self.drop_waiting(key, |_| true);
         let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         let stopped = match running.get(key) {
@@ -507,6 +525,31 @@ impl JobQueue {
             None => false,
         };
         stopped || dropped > 0
+    }
+
+    /// Stop one of `key`'s jobs, by its call: the running one by its own
+    /// token (the next then starts), or a waiting one, answered as not
+    /// started. The rest of the line stays — what a Stop on one row of the
+    /// queue means, where [`JobQueue::cancel`] is the chat's (review of
+    /// #606). `false` when `call_id` is in neither.
+    pub fn cancel_one(self: &Arc<Self>, key: &str, call_id: &str) -> bool {
+        if self.drop_waiting(key, |w| w.call_id == call_id) > 0 {
+            return true;
+        }
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        match running.get(key).filter(|r| r.call_id == call_id) {
+            Some(r) => {
+                r.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `key`'s count of chat-wide Stops ([`JobSink::stops`]).
+    pub fn stops(&self, key: &str) -> u64 {
+        let stops = self.stops.lock().unwrap_or_else(|e| e.into_inner());
+        stops.get(key).copied().unwrap_or(0)
     }
 
     /// How many jobs wait behind `key`'s running one.
@@ -623,6 +666,10 @@ impl JobSink for KeyedSink {
 
     fn idle(&self) -> BoxFuture<'static, ()> {
         self.queue.idle(&self.key)
+    }
+
+    fn stops(&self) -> u64 {
+        self.queue.stops(&self.key)
     }
 
     fn pending_tools(&self) -> Vec<String> {
@@ -917,6 +964,46 @@ mod tests {
             d.settle(&mut taint);
             assert_eq!(taint, Taint::default(), "{} armed {taint:?}", d.call_id);
         }
+    }
+
+    /// One row's Stop is that picture alone: a waiting one goes, answered as
+    /// not started, and the one drawing goes on; the drawing one by its own
+    /// token, and the next then starts. Neither counts as the chat's Stop
+    /// (review of #606).
+    #[tokio::test]
+    async fn one_rows_stop_is_that_picture_alone() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = || gated(Arc::clone(&go), CancellationToken::new());
+        for id in ["c1", "c2", "c3"] {
+            queue.submit("chat", 0, id, "draw", job()).unwrap();
+        }
+        assert!(queue.cancel_one("chat", "c2"));
+        delivered(&got, 1).await;
+        assert_eq!(got.lock().unwrap()[0].call_id, "c2");
+        assert_eq!(
+            queue.pending("chat").as_deref(),
+            Some("c1"),
+            "the drawing one goes on"
+        );
+        assert_eq!(queue.waiting("chat"), 1);
+        assert!(queue.cancel_one("chat", "c1"));
+        delivered(&got, 2).await;
+        for _ in 0..200 {
+            if queue.pending("chat").as_deref() == Some("c3") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            queue.pending("chat").as_deref(),
+            Some("c3"),
+            "the next started"
+        );
+        assert!(!queue.cancel_one("chat", "c9"));
+        assert_eq!(queue.stops("chat"), 0, "no chat-wide Stop");
+        assert!(queue.cancel("chat"));
+        assert_eq!(queue.stops("chat"), 1);
     }
 
     /// `idle` waits for the running and the waiting, not for a finished job
