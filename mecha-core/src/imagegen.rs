@@ -2095,7 +2095,11 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
         } else {
             format!(", in {}", w.look)
         };
-        out.push(format!("The words \"{}\" appear{at}{look}.", w.words));
+        out.push(format!(
+            "{}\"{}\" appear{at}{look}.",
+            crate::picture::RENDERED,
+            w.words
+        ));
     }
     out.join(" ")
 }
