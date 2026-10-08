@@ -1118,10 +1118,12 @@ pub fn compile(
 /// characters up, then wrote their descriptions into the prompt without
 /// naming them as people — and from words alone they came out as two
 /// strangers (ArcFace 0.02–0.17 against their portraits; E1 measured the
-/// same, 0.33). The image tool refuses a library name in any prose field
-/// whose person is not in the picture (`picture::plan`).
+/// same, 0.33). So the image tool never draws a library name from a prose
+/// field: for someone not in the picture the image model reads "the
+/// viewer" (`picture::plan`'s `offstage` and `picture::as_viewer`; the
+/// owner's ruling of 2026-10-08).
 ///
-/// **In order of first mention**, so a refusal names them as written:
+/// **In order of first mention**, so a note names them as written:
 /// sorted, "Maya and John" came back as `[john, maya]` (review of #384).
 pub fn named_in(lib: &Library, prompt: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();

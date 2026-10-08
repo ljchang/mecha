@@ -2053,6 +2053,26 @@ impl ImageGenerate {
     }
 }
 
+/// The prose a recorded scene carries into a prompt: its setting's words,
+/// light, camera and relation, and each person's description, clothes, pose
+/// and expression. Never paths or hashes.
+fn record_prose(s: &crate::scene::Scene) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(crate::scene::Setting::Words { text }) = s.setting.as_ref().map(|f| &f.value) {
+        out.push(text.clone());
+    }
+    for f in [&s.light, &s.camera, &s.together].into_iter().flatten() {
+        out.push(f.value.clone());
+    }
+    for p in &s.people {
+        if let crate::scene::Who::Described(d) = &p.who {
+            out.push(d.clone());
+        }
+        out.extend([p.wearing.clone(), p.doing.clone(), p.expression.clone()]);
+    }
+    out
+}
+
 /// Every string in a JSON value, for a scan over all of a call's words.
 fn collect_strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
     match v {
@@ -2303,6 +2323,23 @@ impl Tool for ImageGenerate {
             (Some(slot), Some(r)) => slot.lookup(&r.bytes),
             _ => None,
         };
+        // The record's words reach the prompt too, so they are read for a
+        // character whose entry has since broken, as the call's were above
+        // (review of #597, pass 10).
+        if let Some(name) = base
+            .as_ref()
+            .map(record_prose)
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|t| crate::imagelib::broken_named_in(&lib, t))
+            .next()
+        {
+            return Ok(refused(format!(
+                "{}'s library entry could not be read, so it cannot be drawn; the owner can \
+                 check it with `mecha library`.",
+                capitalized(&name)
+            )));
+        }
         let photo = match &call.setting_photo {
             Some(p) => match read_references(ctx, std::slice::from_ref(p)).await {
                 Ok(mut r) => Some(r.remove(0)),
