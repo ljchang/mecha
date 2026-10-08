@@ -1938,6 +1938,23 @@ pub struct ImageGenerate {
     /// cached crop of the character's portrait, else the detector on it.
     /// Stood in for by tests, which have no 88 MB of weights.
     faces: Arc<dyn crate::face::FaceAnchors>,
+    /// [`DESCRIPTION`] with the library's style names after it, read once
+    /// when this form is built and never per request, so the tool list a
+    /// chat caches stays byte-stable; a new style shows from the next chat.
+    description: String,
+}
+
+/// The description a form is built with: [`DESCRIPTION`], then the styles
+/// to name at the very end, so a new style moves no earlier byte.
+fn described(library_dir: Option<&std::path::Path>) -> String {
+    let styles = library_dir
+        .map(|d| crate::imagelib::Library::load(d).0)
+        .as_ref()
+        .and_then(crate::imagelib::styles_to_name);
+    match styles {
+        Some(styles) => format!("{DESCRIPTION} {styles}."),
+        None => DESCRIPTION.to_string(),
+    }
 }
 
 impl ImageGenerate {
@@ -1954,11 +1971,13 @@ impl ImageGenerate {
 
     /// Refuses a configuration whose server is not on this machine.
     pub fn new(cfg: ImageConfig) -> Result<Self> {
+        let library_dir = crate::imagelib::Library::default_dir().ok();
         Ok(ImageGenerate {
             backend: Arc::new(ComfyUi::for_config(&cfg)?),
             cfg,
             generation: Arc::new(AtomicU64::new(0)),
-            library_dir: crate::imagelib::Library::default_dir().ok(),
+            description: described(library_dir.as_deref()),
+            library_dir,
             self_as: None,
             seeds: false,
             reference_pixels: MAX_REFERENCE_PIXELS,
@@ -1969,6 +1988,7 @@ impl ImageGenerate {
     /// Resolve `cast` and `style` against this library instead of the one in
     /// the mecha home.
     pub fn with_library_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.description = described(Some(&dir));
         self.library_dir = Some(dir);
         self
     }
@@ -2004,6 +2024,8 @@ impl ImageGenerate {
             seeds: false,
             reference_pixels: self.reference_pixels,
             faces: Arc::clone(&self.faces),
+            // Read afresh: a persona chat's form is built when the chat is.
+            description: described(self.library_dir.as_deref()),
         }
     }
 
@@ -2232,7 +2254,7 @@ impl Tool for ImageGenerate {
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        &self.description
     }
 
     fn input_schema(&self) -> Value {
@@ -2335,11 +2357,19 @@ impl Tool for ImageGenerate {
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             });
             if missing {
-                if !call.has_scene() {
+                // Only a scene that describes a picture of its own (people or
+                // a setting) draws without it: a style, light or camera alone
+                // is a change to the picture named, and drawn from nothing it
+                // was a stranger in an empty room (mecha-a3, review of #603).
+                let describes = !call.change.people.is_empty()
+                    || call.change.setting.is_some()
+                    || call.setting_photo.is_some();
+                if !describes {
                     return Ok(refused(format!(
                         "There is no picture `{p}` in this chat. Name a picture as a result \
                          gave it (images/…) or as the owner attached it (inbox/…), or leave \
-                         `picture` out and describe a new picture in `scene`."
+                         `picture` out and describe a new picture in `scene`: its setting and \
+                         people."
                     )));
                 }
                 call.picture = None;
@@ -2361,7 +2391,7 @@ impl Tool for ImageGenerate {
         }
         // A `style` the library does not hold: the field takes a library
         // style's name, and a model fills it with words ("hyperreal
-        // render"). Left out and said, with the names there are, so the
+        // render"). Left out and said, naming the unlocked styles, so the
         // picture still draws; refused only when nothing else is asked. A
         // refusal pointing at image_library, which a persona chat does not
         // have, was retried ten times in one run (2026-10-08). A style
@@ -2393,18 +2423,25 @@ impl Tool for ImageGenerate {
                 } else {
                     name
                 };
-                // Nothing the library holds is named back: the roster is the
-                // owner's (`image_library` declares it private), so the way on
-                // is the look in words, which `scene.setting` takes.
+                // The styles there are may be named back (not private, the
+                // owner's ruling of 2026-10-08; locked ones left out), never a
+                // character. A look with no name goes in words in the setting.
+                let named = crate::imagelib::styles_to_name(&lib);
+                let styles = named.as_ref().map(|s| format!(" {s}.")).unwrap_or_default();
                 if !call.has_scene() && call.retouch.is_none() {
+                    let ask = if named.is_some() {
+                        "Name one of those, or leave"
+                    } else {
+                        "Leave"
+                    };
                     return Ok(refused(format!(
-                        "There is no approved style `{name}`. Leave `style` out, and say the \
-                         look in words in `scene.setting`."
+                        "There is no approved style `{name}`.{styles} {ask} `style` out and \
+                         say the look in words in `scene.setting`."
                     )));
                 }
                 call.notes.push(format!(
-                    "There is no approved style `{name}`, so it was left out. To ask for a \
-                     look, say it in words in `scene.setting`."
+                    "There is no approved style `{name}`, so it was left out.{styles} To ask \
+                     for a look, name a style or say it in words in `scene.setting`."
                 ));
             }
         }
@@ -6566,10 +6603,46 @@ mod tests {
         }
     }
 
+    /// The description names the approved, unlocked styles at its very end,
+    /// read when the form is built, and never a character (the owner's
+    /// ruling, 2026-10-08: style names are not private, character names are).
+    #[test]
+    fn the_description_ends_with_the_styles_to_name() {
+        let lib = library_with(&["maya"]);
+        for (name, locked) in [("ink-wash", false), ("secret-look", true)] {
+            crate::imagelib::create(
+                &lib,
+                crate::imagelib::NewEntry {
+                    kind: crate::imagelib::Kind::Style,
+                    name: name.into(),
+                    text: "a look".into(),
+                    portrait: None,
+                    source_seed: None,
+                    origin: crate::imagelib::Origin::Owner,
+                    locked,
+                },
+            )
+            .unwrap();
+        }
+        let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
+        let d = t.description().to_string();
+        assert!(d.starts_with(DESCRIPTION), "earlier bytes never move");
+        assert!(d.ends_with(" Styles you can name: `ink-wash`."), "{d}");
+        assert!(!d.contains("secret-look") && !d.contains("`maya`"), "{d}");
+        // The persona form reads the library when it is built.
+        let persona = Arc::new(t).for_persona().unwrap();
+        assert!(persona.description().ends_with("`ink-wash`."));
+        // No library, no list.
+        let bare = tool("http://127.0.0.1:1");
+        assert_eq!(bare.description(), DESCRIPTION);
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// A `style` the library does not hold is left out and said, with the
-    /// styles there are, and the picture still draws, a new one or one drawn
-    /// over the chat's record; asked alone it is refused naming them. A
-    /// persona chat retried "call image_library" ten times (2026-10-08).
+    /// unlocked styles there are, and the picture still draws, a new one or
+    /// one drawn over the chat's record; asked alone it is refused naming
+    /// them. A persona chat retried "call image_library" ten times
+    /// (2026-10-08).
     #[tokio::test]
     async fn an_unknown_style_is_left_out_and_the_picture_draws() {
         let (url, seen) = distinct(8).await;
@@ -6584,6 +6657,20 @@ mod tests {
                 source_seed: None,
                 origin: crate::imagelib::Origin::Owner,
                 locked: false,
+            },
+        )
+        .unwrap();
+        // A locked style is the owner's way to hide one: never named.
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "secret-look".into(),
+                text: "a look the owner keeps out of sight".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: true,
             },
         )
         .unwrap();
@@ -6614,8 +6701,9 @@ mod tests {
             first
                 .content
                 .contains("There is no approved style `hyperreal render`")
+                && first.content.contains("Styles you can name: `ink-wash`.")
                 && first.content.contains("`scene.setting`")
-                && !first.content.contains("ink-wash"),
+                && !first.content.contains("secret-look"),
             "{}",
             first.content
         );
@@ -6667,7 +6755,9 @@ mod tests {
             .unwrap();
         assert!(alone.is_error, "{}", alone.content);
         assert!(
-            alone.content.contains("Leave `style` out") && !alone.content.contains("ink-wash"),
+            alone.content.contains("Name one of those")
+                && alone.content.contains("`ink-wash`")
+                && !alone.content.contains("secret-look"),
             "{}",
             alone.content
         );
@@ -6677,6 +6767,22 @@ mod tests {
             alone.content
         );
         assert_eq!(posts(), posts_before + 1, "a refused call draws nothing");
+        // A made-up picture beside a scene that describes no picture of its
+        // own (a style alone) is refused, never drawn from nothing: it drew a
+        // stranger in an empty room (mecha-a3, review of #603).
+        let restyle = t
+            .call(
+                json!({"picture": "images/made_up_name.png", "scene": {"style": "Ink Wash"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            restyle.is_error && restyle.content.contains("There is no picture"),
+            "{}",
+            restyle.content
+        );
+        assert_eq!(posts(), posts_before + 1, "nothing drawn from nothing");
 
         // A style waiting on the owner, or one whose entry did not load, is a
         // finding: refused by name, never dropped (review of #603).
