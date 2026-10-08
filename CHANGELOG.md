@@ -43,9 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An edit carries the faces of the people it changes.** Each library
   character an edit places or changes comes in as a head crop of their
   portrait, beside their description, so a chain of edits no longer drifts
-  into somebody else. A library name written anywhere but `who`, for someone
-  not in the picture, is refused rather than drawn as a stranger, and so is
-  a name still waiting for approval.
+  into somebody else. Someone is drawn only when listed as a person: a
+  library name in the other words, for someone not in the picture, is read as
+  "the viewer" rather than drawn as a stranger, and the result says so. A
+  name still waiting for approval is refused.
 
 ### Security
 

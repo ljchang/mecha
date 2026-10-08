@@ -681,9 +681,15 @@ The routes, in the result's own words and the manifest's `route`:
 - **The setting is the setting only.** A restage whose place was the model's
   whole first prompt drew the asked pose 0/3, with the old pose back every
   time; a room-only setting drew it 3/3 (`IMAGE-DESIGN.md` §2.6).
-- **A library name in any prose field must be someone in the picture**, or
-  the call is refused naming the field. From words alone a character comes
-  out as a stranger (E1).
+- **Someone is drawn only when listed in `people`** (the owner's ruling,
+  2026-10-08). A library name in the words for someone not in the picture is
+  neither drawn nor refused: the image model reads "the viewer" in its place
+  (`picture::as_viewer`, `Plan::offstage`), since from words alone a
+  character comes out as a stranger (E1), and the result says so. A persona
+  addressing the owner by a name the library also holds was every G1b
+  refusal. On a picture with no record the names are left as written: its
+  people are unknown. A character whose entry did not load, named anywhere
+  in the call, is still refused (`broken_named_in`, review of #383).
 - **At most five people with faces** (`picture::MAX_FACES`, the owner's
   provisional C5 ruling). More are refused, naming them, never trimmed.
   `EDIT_REFERENCE_BUDGET` is the canvas plus five crops, and `call` refuses
