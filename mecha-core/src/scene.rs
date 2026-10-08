@@ -403,7 +403,13 @@ impl Scene {
             }
         };
         if let Some(s) = &change.setting {
-            let changed = next.setting.as_ref().is_none_or(|f| f.value != *s);
+            // Words are compared as every other prose field is (`same`), so a
+            // restated setting with a capital or a full stop is no change
+            // (review of #597, pass 10).
+            let changed = next.setting.as_ref().is_none_or(|f| match (&f.value, s) {
+                (Setting::Words { text: a }, Setting::Words { text: b }) => !same(a, b),
+                (a, b) => a != b,
+            });
             if changed {
                 next.setting = Some(Field {
                     value: s.clone(),
@@ -1349,5 +1355,18 @@ mod tests {
         let odd: Person =
             serde_json::from_value(serde_json::json!({"who": 7, "origin": "clean"})).unwrap();
         assert_eq!(odd.origin, Origin::Untrusted);
+    }
+
+    /// A setting restated with a capital or a full stop is no change, as
+    /// every other prose field (review of #597, pass 10).
+    #[test]
+    fn a_restated_setting_is_no_change() {
+        let words = |t: &str| SceneChange {
+            setting: Some(Setting::Words { text: t.into() }),
+            ..SceneChange::default()
+        };
+        let (base, _) = Scene::apply(None, &words("a quiet library"), Origin::Clean, true);
+        let (_, d) = Scene::apply(Some(&base), &words("A quiet library."), Origin::Clean, true);
+        assert!(!d.setting && d.is_empty(), "{d:?}");
     }
 }
