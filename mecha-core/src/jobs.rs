@@ -38,6 +38,7 @@ pub struct DeferredJob {
     cancel: CancellationToken,
     busy: String,
     terms: std::sync::OnceLock<Terms>,
+    label: std::sync::OnceLock<String>,
 }
 
 /// What the loop does to a result after the call executes, fixed for a
@@ -86,12 +87,24 @@ impl DeferredJob {
             cancel,
             busy: busy.into(),
             terms: std::sync::OnceLock::new(),
+            label: std::sync::OnceLock::new(),
         })
     }
 
     /// Fix how this job's result is finished (the loop's, at hand-over).
     pub(crate) fn set_terms(&self, terms: Terms) {
         let _ = self.terms.set(terms);
+    }
+
+    /// What this job is, in a few words the owner reads in the chat's queue
+    /// ("Maya reading — a park bench"): the tool's, set once, never a prompt.
+    pub fn with_label(self: Arc<Self>, label: impl Into<String>) -> Arc<Self> {
+        let _ = self.label.set(label.into());
+        self
+    }
+
+    fn label(&self) -> String {
+        self.label.get().cloned().unwrap_or_default()
     }
 
     /// The future, once: whoever takes it runs it.
@@ -242,10 +255,29 @@ struct Waiting {
     job: Arc<DeferredJob>,
 }
 
+/// One job in a conversation's queue, as the owner sees it: the one running
+/// first, then the waiting ones in the order they will run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct QueueItem {
+    pub call_id: String,
+    pub tool: String,
+    /// The tool's few words for it ([`DeferredJob::with_label`]).
+    pub label: String,
+    /// Running now, not waiting.
+    pub running: bool,
+    /// How long it has run, when running: a duration, never a timestamp, so
+    /// a page whose clock disagrees still counts from the right moment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+}
+
+type Watch = dyn Fn(&str) + Send + Sync;
+
 struct Running {
     call_id: String,
     tool: String,
     run: usize,
+    label: String,
     cancel: CancellationToken,
     /// When the queue took it, by this process's monotonic clock: what a
     /// page counts "drawing a picture… 1:24" from ([`JobQueue::running`]).
@@ -270,6 +302,9 @@ pub struct JobQueue {
     waiting: Mutex<HashMap<String, std::collections::VecDeque<Waiting>>>,
     /// Woken whenever a job ends or a queue empties, for [`JobQueue::idle`].
     changed: Arc<tokio::sync::Notify>,
+    /// Told the key of every queue that changed — a job queued, started,
+    /// ended, stopped or moved — so a host can show the line as it stands.
+    watch: Mutex<Option<Arc<Watch>>>,
     deliver: Arc<Deliver>,
 }
 
@@ -280,8 +315,24 @@ impl JobQueue {
             arrived: Mutex::new(HashMap::new()),
             waiting: Mutex::new(HashMap::new()),
             changed: Arc::new(tokio::sync::Notify::new()),
+            watch: Mutex::new(None),
             deliver: Arc::new(deliver),
         })
+    }
+
+    /// Tell `watch` the key of every queue that changes ([`JobQueue::list`]
+    /// says how it stands). One watcher; a second replaces the first.
+    pub fn set_watch(&self, watch: impl Fn(&str) + Send + Sync + 'static) {
+        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(watch));
+    }
+
+    /// `key`'s line changed. Called with no queue lock held, so a watcher
+    /// may read the line.
+    fn touched(&self, key: &str) {
+        let watch = self.watch.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(watch) = watch {
+            watch(key);
+        }
     }
 
     /// Run `job` for `key`, queue it behind the one running there, or refuse
@@ -307,7 +358,11 @@ impl JobQueue {
                 run,
                 job,
             });
-            return Ok(Submitted::Queued { ahead: line.len() });
+            let ahead = line.len();
+            drop(waiting);
+            drop(running);
+            self.touched(key);
+            return Ok(Submitted::Queued { ahead });
         }
         let started = self.launch(
             &mut running,
@@ -319,7 +374,9 @@ impl JobQueue {
                 job,
             },
         );
+        drop(running);
         if started {
+            self.touched(key);
             Ok(Submitted::Started)
         } else {
             // Already run elsewhere: nothing to start, and nothing to claim.
@@ -344,6 +401,7 @@ impl JobQueue {
                 call_id: w.call_id.clone(),
                 tool: w.tool.clone(),
                 run: w.run,
+                label: w.job.label(),
                 cancel: w.job.cancel_token().clone(),
                 started: std::time::Instant::now(),
             },
@@ -409,6 +467,7 @@ impl JobQueue {
         for (id, tool, run, terms) in unstartable {
             self.not_started(key, &id, &tool, run, terms);
         }
+        self.touched(key);
     }
 
     /// A waiting job that will never run — stopped, or its run rolled back —
@@ -468,6 +527,9 @@ impl JobQueue {
         for (id, tool, run, terms) in dropped.iter().cloned() {
             self.not_started(key, &id, &tool, run, terms);
         }
+        if !dropped.is_empty() {
+            self.touched(key);
+        }
         dropped.len()
     }
 
@@ -507,6 +569,78 @@ impl JobQueue {
             None => false,
         };
         stopped || dropped > 0
+    }
+
+    /// `key`'s line as it stands: the running job, then the waiting ones in
+    /// the order they will run.
+    pub fn list(&self, key: &str) -> Vec<QueueItem> {
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        let head = running.get(key).map(|r| QueueItem {
+            call_id: r.call_id.clone(),
+            tool: r.tool.clone(),
+            label: r.label.clone(),
+            running: true,
+            elapsed_ms: Some(r.started.elapsed().as_millis() as u64),
+        });
+        head.into_iter()
+            .chain(waiting.get(key).into_iter().flatten().map(|w| QueueItem {
+                call_id: w.call_id.clone(),
+                tool: w.tool.clone(),
+                label: w.job.label(),
+                running: false,
+                elapsed_ms: None,
+            }))
+            .collect()
+    }
+
+    /// Stop one job of `key`'s: the running one by its own token (the next
+    /// then starts), or a waiting one, answered as not started. `false` when
+    /// `call_id` is in neither.
+    pub fn cancel_one(self: &Arc<Self>, key: &str, call_id: &str) -> bool {
+        if self.drop_waiting(key, |w| w.call_id == call_id) > 0 {
+            return true;
+        }
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        match running.get(key).filter(|r| r.call_id == call_id) {
+            Some(r) => {
+                r.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Put `key`'s waiting jobs in `order`, which must name exactly the jobs
+    /// waiting — no more, no fewer. The running one does not move: a render
+    /// cannot be set aside. `false`, changing nothing, when `order` is not
+    /// the waiting line rearranged (it changed since the page read it).
+    pub fn reorder(&self, key: &str, order: &[String]) -> bool {
+        let moved = {
+            let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(line) = waiting.get_mut(key) else {
+                return order.is_empty();
+            };
+            let mut now: Vec<&str> = line.iter().map(|w| w.call_id.as_str()).collect();
+            let mut asked: Vec<&str> = order.iter().map(String::as_str).collect();
+            now.sort_unstable();
+            asked.sort_unstable();
+            if now != asked {
+                return false;
+            }
+            let mut by_id: HashMap<String, Waiting> =
+                line.drain(..).map(|w| (w.call_id.clone(), w)).collect();
+            for id in order {
+                if let Some(w) = by_id.remove(id) {
+                    line.push_back(w);
+                }
+            }
+            true
+        };
+        if moved {
+            self.touched(key);
+        }
+        moved
     }
 
     /// How many jobs wait behind `key`'s running one.
@@ -917,6 +1051,89 @@ mod tests {
             d.settle(&mut taint);
             assert_eq!(taint, Taint::default(), "{} armed {taint:?}", d.call_id);
         }
+    }
+
+    /// The owner's view of a line: the running job first with its clock,
+    /// then the waiting ones in order, each with its label; one can be
+    /// stopped by id, the waiting ones put in a new order (never the running
+    /// one), and a stale order is refused; every change is told to the watch.
+    #[tokio::test]
+    async fn the_line_can_be_read_stopped_one_at_a_time_and_reordered() {
+        let (queue, got) = collecting();
+        let touched = Arc::new(Mutex::new(0usize));
+        let seen = Arc::clone(&touched);
+        queue.set_watch(move |key| {
+            assert_eq!(key, "chat");
+            *seen.lock().unwrap() += 1;
+        });
+        let go = Arc::new(tokio::sync::Notify::new());
+        let job = |label: &str| gated(Arc::clone(&go), CancellationToken::new()).with_label(label);
+        for (id, label) in [
+            ("c1", "harbour"),
+            ("c2", "lighthouse"),
+            ("c3", "boats"),
+            ("c4", "gulls"),
+        ] {
+            queue.submit("chat", 0, id, "draw", job(label)).unwrap();
+        }
+        let ids = |q: &Arc<JobQueue>| {
+            q.list("chat")
+                .into_iter()
+                .map(|i| i.call_id)
+                .collect::<Vec<_>>()
+        };
+        let list = queue.list("chat");
+        assert_eq!(ids(&queue), ["c1", "c2", "c3", "c4"]);
+        assert!(list[0].running && list[0].elapsed_ms.is_some());
+        assert!(list[1..]
+            .iter()
+            .all(|i| !i.running && i.elapsed_ms.is_none()));
+        assert_eq!(list[1].label, "lighthouse");
+        assert_eq!(*touched.lock().unwrap(), 4, "each submit was told");
+
+        // Reorder the waiting ones; the running one never moves.
+        assert!(queue.reorder("chat", &["c4".into(), "c2".into(), "c3".into()]));
+        assert_eq!(ids(&queue), ["c1", "c4", "c2", "c3"]);
+        assert!(
+            !queue.reorder(
+                "chat",
+                &["c1".into(), "c2".into(), "c3".into(), "c4".into()]
+            ),
+            "the running one is not in the line"
+        );
+        assert!(
+            !queue.reorder("chat", &["c2".into(), "c3".into()]),
+            "a stale order changes nothing"
+        );
+        assert_eq!(ids(&queue), ["c1", "c4", "c2", "c3"]);
+
+        // Stop one waiting job: it alone goes, answered as not started.
+        assert!(queue.cancel_one("chat", "c2"));
+        assert_eq!(ids(&queue), ["c1", "c4", "c3"]);
+        delivered(&got, 1).await;
+        assert_eq!(got.lock().unwrap()[0].call_id, "c2");
+        assert_eq!(got.lock().unwrap()[0].output.content, NOT_STARTED);
+
+        // Stop the running one: the next in the new order starts.
+        assert!(queue.cancel_one("chat", "c1"));
+        delivered(&got, 2).await;
+        for _ in 0..200 {
+            if queue.pending("chat").as_deref() == Some("c4") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(ids(&queue), ["c4", "c3"]);
+        assert!(!queue.cancel_one("chat", "c9"), "not in the line");
+        // Four submits, one reorder, one waiting stop, and the next starting
+        // after the running one stopped; a refused reorder tells nothing.
+        for _ in 0..200 {
+            if *touched.lock().unwrap() >= 7 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*touched.lock().unwrap(), 7);
     }
 
     /// `idle` waits for the running and the waiting, not for a finished job
