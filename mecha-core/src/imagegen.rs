@@ -2161,8 +2161,6 @@ fn collect_strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
     }
 }
 
-/// The scene's words for a new picture: the setting, light, camera, what the
-/// people do together, and the words it renders, quoted exactly.
 /// A picture's line in its chat's queue (`jobs::DeferredJob::with_label`):
 /// who is in it, what the first of them is doing, and where — a handle the
 /// owner reads to tell one queued picture from another, never the prompt.
@@ -2207,6 +2205,8 @@ fn queue_label(scene: &crate::scene::Scene) -> String {
     label
 }
 
+/// The scene's words for a new picture: the setting, light, camera, what the
+/// people do together, and the words it renders, quoted exactly.
 fn scene_words(scene: &crate::scene::Scene) -> String {
     let close = |s: &str| {
         let s = s.trim();

@@ -27,7 +27,14 @@
     // second short until the next tick (review of #607).
     seenAt = now = Date.now();
   });
+  // Ticking only while a picture is drawing: the panel is mounted for the
+  // life of the chat view, and an always-on tick would wake it every second
+  // with nothing out (review of #607; `Personas.svelte`'s clock is gated for
+  // the same reason, review of #431).
+  const drawing = $derived(items.some((i) => i.running));
   $effect(() => {
+    if (!drawing) return;
+    now = Date.now();
     const tick = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(tick);
   });
@@ -108,7 +115,10 @@
         <button class="pqbtn stop" onclick={() => oncancel(running.call_id)} aria-label="stop this picture">Stop</button>
       </div>
     {/if}
-    {#each waiting as item, i (item.call_id)}
+    <!-- Keyed by position, not call id: a server that leaves tool ids empty
+         gives two rows one id (review of #607); the drag holds its row by
+         id on its own. -->
+    {#each waiting as item, i (i)}
       <div
         class="pqrow"
         class:dragging={dragFrom === item.call_id}
