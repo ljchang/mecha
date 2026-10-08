@@ -294,6 +294,10 @@ pub struct Looks<'a> {
     /// `image_generate` draws a locked style when it is named. Never offered.
     pub held: &'a [String],
     pub record: Option<&'a crate::scene::Scene>,
+    /// The library itself, when there is one: a look naming a style that
+    /// waits on the owner or did not load is that finding, said by name as
+    /// `image_generate` says it, never words in the setting (review of #605).
+    pub library: Option<&'a crate::imagelib::Library>,
 }
 
 /// The words `look_into` joins a look to a setting with; a later look
@@ -337,10 +341,16 @@ fn look_into(
     if keys.iter().any(|k| Some(k) == current.as_ref()) {
         return Ok(false);
     }
-    for key in keys {
-        if looks.styles.contains(&key) || looks.held.contains(&key) {
-            scene.insert("style".into(), key.into());
+    for key in &keys {
+        if looks.styles.contains(key) || looks.held.contains(key) {
+            scene.insert("style".into(), key.clone().into());
             return Ok(true);
+        }
+    }
+    if let Some(lib) = looks.library {
+        let kind = crate::imagelib::Kind::Style;
+        if let Some(key) = keys.iter().find(|k| !crate::imagelib::absent(lib, kind, k)) {
+            return Err(crate::imagelib::missing(lib, kind, key));
         }
     }
     // Over a picture drawn in a library style, that style's words still ride
@@ -797,6 +807,7 @@ mod tests {
             styles: &styles,
             held: &locked,
             record: Some(&mine),
+            library: None,
         };
         let e = read_extraction_for(
             r#"{"style": "secret wash", "light": "dusk"}"#,
@@ -810,6 +821,7 @@ mod tests {
             styles: &styles,
             held: &locked,
             record: Some(&harbour),
+            library: None,
         };
         let e =
             read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
@@ -892,6 +904,36 @@ mod tests {
         );
         let e = read(r#"{"look": "style", "light": "dusk"}"#).unwrap();
         assert!(e.scene.get("setting").is_none() && e.scene.get("style").is_none());
+    }
+
+    /// A look naming a style that waits on the owner is that finding, said
+    /// by name, never words in the setting (review of #605).
+    #[test]
+    fn a_look_naming_a_waiting_style_is_said_by_name() {
+        let dir = std::env::temp_dir().join(format!("mecha-edit-{}", uuid::Uuid::new_v4()));
+        crate::imagelib::create(
+            &dir,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "chalk-pastel".into(),
+                text: "soft chalk pastel on toned paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::ModelUntrusted,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let lib = crate::imagelib::Library::load(&dir).0;
+        let looks = Looks {
+            library: Some(&lib),
+            ..Default::default()
+        };
+        let known = |_: &str| true;
+        let why =
+            read_extraction_for(r#"{"look": "chalk pastel"}"#, &known, None, &looks).unwrap_err();
+        assert!(why.contains("waiting for the owner's approval"), "{why}");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

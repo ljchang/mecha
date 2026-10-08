@@ -391,6 +391,7 @@ async fn draw_panel_edit(
                 styles: &styles,
                 held: &held,
                 record: record.as_ref(),
+                library: Some(&lib),
             };
             match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
                 Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
