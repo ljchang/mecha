@@ -4433,8 +4433,9 @@ impl Agent {
     /// harness call has no slot, so a deferred result would be lost and hold
     /// the chat's one job seat. The job sink stays on `cx` all the same: a
     /// job still out from a turn is folded into the interlock's taint, and
-    /// while one is out a deferring harness call is refused in the tool's own
-    /// busy words, as a second picture would be. The caller runs this off its
+    /// while jobs run or wait for this chat a deferring harness call **waits
+    /// its turn behind them** (`JobSink::idle`), then renders — it is never
+    /// refused for them (owner, 2026-10-08). The caller runs this off its
     /// request if it must not wait.
     ///
     /// The taint is `convo`'s, by type: a caller cannot hand over a clean
@@ -4452,9 +4453,15 @@ impl Agent {
     ///   `tool_result` answers no `tool_use` there (none was forged), and an
     ///   orphaned result is a 400. The blocks are for the caller to show or
     ///   record in its own terms.
-    /// - **Its render takes no job seat.** While any job is out for this
-    ///   chat, a deferring harness call is refused; but the reverse is not
-    ///   guarded here: a model turn's job can start while this one renders,
+    /// - **It can wait for minutes, and only `cx.cancel` ends the wait.** A
+    ///   deferring harness call waits for every job running or waiting for
+    ///   this chat — behind a full line, three pictures, about 3–4 minutes —
+    ///   and only on those: a finished job not yet landed lands at the
+    ///   hand-back of the very run that is waiting, so waiting on it would
+    ///   never end. With `cx.cancel` set, a Stop ends the wait undrawn; with
+    ///   it `None`, the wait has no bound but the jobs ahead.
+    /// - **Its render takes no job seat.** It waits its turn and draws, but
+    ///   the reverse is not guarded here: a model turn's job can start while this one renders,
     ///   archiving or handing over the chat does not wait for it, and
     ///   `JobQueue::cancel` cannot reach it (`cx.cancel` can). A caller that
     ///   must keep one picture at a time holds the chat's seat itself
@@ -5509,12 +5516,10 @@ impl Agent {
                     // run, IMAGE-DESIGN.md §5.5).
                     Some(_) if defer && run_pictures.started.contains(&name) => {
                         run_pictures.repeated = true;
-                        let mut refused = ToolOutput::err(format!(
+                        ToolOutput::refusal(format!(
                             "Not run: `{name}` was already started in this run, and its result \
                              is on its way. Answer the owner now."
-                        ));
-                        refused.refusal = true;
-                        refused
+                        ))
                     }
                     Some(sink) if defer => {
                         match sink.submit(&id, &name, std::sync::Arc::clone(&job)) {
