@@ -2647,6 +2647,9 @@ impl Tool for ImageGenerate {
         // (`by`, from the conversation's taint), never clean for being the
         // harness's pass (mecha-05). Before `plan`, so a merged `together`
         // then splits into parts (`roles`).
+        // The record the reader read, when it merged anything: its words may
+        // come back restated, so its origin joins the call's (review of #610).
+        let mut read_from: Option<crate::scene::Origin> = None;
         let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
             (Some(reader), false) => {
                 let record = base
@@ -2679,6 +2682,7 @@ impl Tool for ImageGenerate {
                         } else if merged.is_empty() {
                             "nothing to merge".to_string()
                         } else {
+                            read_from = record.as_ref().map(crate::scene::Scene::origin);
                             format!("merged: {}", merged.join(", "))
                         }
                     }
@@ -2690,7 +2694,13 @@ impl Tool for ImageGenerate {
             }
             _ => None,
         };
-        let by = crate::scene::Origin::of(ctx.taint.as_ref());
+        // A merge that read an untrusted record lands untrusted, whatever the
+        // conversation's own label: the reader may restate what it read, and
+        // a scene's origin is what arms the next turn's note.
+        let by = match read_from {
+            Some(o) => crate::scene::Origin::of(ctx.taint.as_ref()).union(o),
+            None => crate::scene::Origin::of(ctx.taint.as_ref()),
+        };
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
         // What the chat last drew each person in: clothes a newcomer's call
         // left out come from it (mecha-a3's G1b).
@@ -6875,6 +6885,52 @@ mod tests {
         }
     }
 
+    /// A merge that read an untrusted record lands untrusted, even in a clean
+    /// turn: the reader may restate what it read, and a scene's origin is
+    /// what arms the next turn's note (review of #610).
+    #[tokio::test]
+    async fn a_merge_from_an_untrusted_record_lands_untrusted() {
+        let (url, _seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.taint = Some(crate::agent::Taint {
+            private: false,
+            untrusted: true,
+        });
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a park", "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let mut cx = clean(cx);
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
+            "people": [{"who": "Maya", "doing": "waving at the camera"}]
+        })))));
+        let out = t
+            .call(
+                json!({"picture": picture_of(&first.content), "scene": {"people": [{"who": "maya"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        assert_eq!(landed.origin(), crate::scene::Origin::Untrusted);
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
     /// Each picture's prompt is saved for the owner where the host stamps a
     /// log (owner-only, outside the jail), and nowhere when it does not.
     #[tokio::test]
@@ -6884,7 +6940,7 @@ mod tests {
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
-        let log = store.join("sessions/chat-a.prompts.jsonl");
+        let log = store.join("sessions/chat-a.prompts.log");
         cx.prompt_log = Some(log.clone());
         let call = json!({"scene": {"setting": "a quiet harbour",
             "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}});

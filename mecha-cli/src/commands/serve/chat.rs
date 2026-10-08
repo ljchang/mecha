@@ -2704,7 +2704,7 @@ fn begin_turn(
         // nothing past its room.
         prompt_log: ws.session.room().is_none().then(|| {
             chat.sessions_dir
-                .join(format!("{}.prompts.jsonl", ws.session.id()))
+                .join(format!("{}.prompts.log", ws.session.id()))
         }),
         // And what it proposes is staged locked (the owner's ruling,
         // 2026-10-01: incognito proposals will mostly be locked profiles).

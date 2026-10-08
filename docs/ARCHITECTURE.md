@@ -902,7 +902,7 @@ advances it.
   - Deleting an assistant chat (`forget::forget`, the `scene` store) removes
     its copy and the index entries it last advanced.
   - Either forgetting also removes the chat's saved picture prompts,
-    `<chat>.prompts.jsonl` beside its copy (`scene::forget_in`).
+    `<chat>.prompts.log` beside its copy (`scene::forget_in`).
   - A record that cannot be read is kept and said.
 
 **The manifest keeps what the owner-facing doors read**, and no prompt:
@@ -917,7 +917,7 @@ advances it.
 **Each picture's compiled prompt is saved for the owner, never in the
 manifest** (the owner's ruling, 2026-10-08: "save them for now so we can learn
 to improve prompts"). A kept chat's host stamps `ToolCtx::prompt_log`, a
-`<chat>.prompts.jsonl` beside the transcript (outside every jail, 0600, read
+`<chat>.prompts.log` beside the transcript (outside every jail, 0600, read
 by no tool), and `image_generate` appends one line per render: the image,
 route, seed, `roles`, `reader` and the prompt. An incognito chat stamps none.
 Unstamping it is how it is turned off.
