@@ -737,11 +737,12 @@ from words), and mecha-a3 measured identity unchanged at 512 (ArcFace .87
 against .88, within seed noise). The output is named at about a megapixel in
 the canvas's own shape (`canvas_dims`), since with no size the encoder drew
 at the references' size. A masked edit keeps 1024² and its own shape, being
-laid back over the original. So does an edit of the picture that sends no
-head crop (a retouch, or a change to someone not in the library): its
-canvas is the only source of who is in it, and at 512 a retouch's ArcFace
-fell from .66–.70 to .42–.53 over three seeds for 8 s saved, while edits
-with a crop held (mecha-a3, 2026-10-08). On a room photo the room's shape is kept
+laid back over the original. An edit of the picture in which anyone has no
+head crop (everyone, on a retouch; a co-subject the edit leaves alone;
+someone not in the library) keeps the 1024 references too, though it still
+names its output size: the canvas is that person's only identity source,
+and at 512 a retouch's ArcFace fell from .66–.70 to .42–.53 over three
+seeds, while a one-person edit with a crop held (mecha-a3, 2026-10-08). On a room photo the room's shape is kept
 whatever size was asked, and said: a portrait from a landscape room drew a
 slice of table.
 
