@@ -3417,6 +3417,23 @@ impl Tool for ImageGenerate {
                     "vae": me.cfg.vae,
                 },
             });
+            // The prompt, for the owner only, outside the jail (the manifest
+            // never carries it): a line that cannot be written costs the
+            // picture nothing.
+            if let Some(log) = &ctx.prompt_log {
+                let line = json!({
+                    "created": manifest["created"],
+                    "image": path,
+                    "route": plan.route,
+                    "seed": req.seed,
+                    "roles": manifest["roles"],
+                    "reader": manifest["reader"],
+                    "prompt": req.prompt,
+                });
+                if let Err(e) = append_prompt(log, &line) {
+                    tracing::warn!("image_generate: prompt log: {e:#}");
+                }
+            }
             let manifest_note = match write_manifest(ctx, &path, &manifest).await {
                 Ok(()) => String::new(),
                 Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
@@ -3640,6 +3657,22 @@ fn refused(why: impl std::fmt::Display) -> ToolOutput {
 /// Write a generation's manifest beside its PNG — `images/<stem>.json`, new
 /// or not at all, like the picture. It is what makes the image reproducible,
 /// and what "save to library" and lineage read.
+/// One line to the owner's prompt log, owner-only (0600) as the transcript
+/// beside it is.
+fn append_prompt(log: &std::path::Path, line: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log)?;
+    writeln!(f, "{line}")
+}
+
 async fn write_manifest(ctx: &ToolCtx, png: &str, manifest: &Value) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let stem = png
@@ -6761,6 +6794,40 @@ mod tests {
             manifest_of(&dir, &out.content)["reader"],
             "fell back: no answer"
         );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// Each picture's prompt is saved for the owner where the host stamps a
+    /// log (owner-only, outside the jail), and nowhere when it does not.
+    #[tokio::test]
+    async fn a_pictures_prompt_is_saved_only_where_the_host_asks() {
+        use std::os::unix::fs::PermissionsExt;
+        let (url, _seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let log = store.join("sessions/chat-a.prompts.jsonl");
+        cx.prompt_log = Some(log.clone());
+        let call = json!({"scene": {"setting": "a quiet harbour",
+            "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}});
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let text = std::fs::read_to_string(&log).unwrap();
+        let line: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert!(line["prompt"].as_str().unwrap().contains("a quiet harbour"));
+        assert_eq!(line["image"], picture_of(&out.content));
+        assert_eq!(
+            std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Not stamped: nothing saved.
+        cx.prompt_log = None;
+        std::fs::remove_file(&log).unwrap();
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!log.exists());
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }

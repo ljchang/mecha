@@ -909,6 +909,15 @@ advances it.
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
+- `reader`: what the scene reader merged into the call, or why it fell back.
+
+**Each picture's compiled prompt is saved for the owner, never in the
+manifest** (the owner's ruling, 2026-10-08: "save them for now so we can learn
+to improve prompts"). A kept chat's host stamps `ToolCtx::prompt_log`, a
+`<chat>.prompts.jsonl` beside the transcript (outside every jail, 0600, read
+by no tool), and `image_generate` appends one line per render: the image,
+route, seed, `roles`, `reader` and the prompt. An incognito chat stamps none.
+Forgetting a chat removes its log. Unstamping it is how it is turned off.
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Retired with the old inputs:** `route_scene`, `EditAsk`, `cast_self`,
