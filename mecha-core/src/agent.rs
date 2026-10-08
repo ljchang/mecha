@@ -370,7 +370,34 @@ pub struct RunContext {
     /// because the assistant keeps working after drawing: it went on to
     /// `image_view`, `shell` or `fs_read` in 43 measured runs.
     pub end_after_deferral: bool,
+    /// Start the run already closing: its first request answers in words
+    /// (`ToolChoice::None`) with this line last, and its reply is cleaned
+    /// as any closing reply is. The edit panel's reply after the harness drew
+    /// the owner's change (`persona::edit::DONE`, IMAGE-DESIGN.md §5.3).
+    pub close_with: Option<Closing>,
 }
+
+/// A closing request's last note, and what the owner sees in place of a
+/// reply to it that was empty or only a tool call written out as text
+/// (IMAGE-DESIGN.md §5.5). The lines come from the work that closes the run:
+/// the loop names none of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closing {
+    pub line: &'static str,
+    pub reply: &'static str,
+}
+
+/// This run's picture is queued.
+pub const ON_ITS_WAY: Closing = Closing {
+    line: PICTURE_ON_ITS_WAY,
+    reply: PICTURE_ON_ITS_WAY_REPLY,
+};
+
+/// This turn's picture was refused because an earlier one is still drawing.
+pub const STILL_BEING_MADE: Closing = Closing {
+    line: PICTURE_STILL_BEING_MADE,
+    reply: PICTURE_NOT_STARTED_REPLY,
+};
 
 /// The last note on a run's closing request, once its picture is queued
 /// (IMAGE-DESIGN.md §5.5). Verbatim as measured on 2026-10-07: with
@@ -491,6 +518,7 @@ impl RunContext {
             notes: Arc::from(Vec::new()),
             jobs: None,
             end_after_deferral: false,
+            close_with: None,
         }
     }
 
@@ -1338,9 +1366,13 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona's own repetitions named back to it (`persona::variety`):
         // the harness's note on what it keeps opening and closing with.
         || crate::persona::variety::is_note(text)
-        // A turn the picture edit panel sent (`persona::edit`): how to answer
-        // an instruction to the image model, never the owner's words.
+        // A turn the picture edit panel sent (`persona::edit`): the retired
+        // note in older transcripts, and the fact the harness's own drawing
+        // of the owner's change leaves in the turn, never the owner's words.
         || crate::persona::edit::is_note(text)
+        || crate::persona::edit::is_fact(text)
+        || text == crate::persona::edit::DONE
+        || text == crate::persona::edit::NOT_DRAWN
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -1781,35 +1813,18 @@ impl Agent {
     /// its tail. Read **once per request** and handed to both `wire` and
     /// `wire_bytes`, so a request sent across midnight is measured as the
     /// bytes it carries.
-    /// The notes as a later request of the run carries them: for the
-    /// measurements and the ceiling's final answer, which must not re-send
-    /// the panel's note (review of #596).
+    /// The notes as a request of the run carries them: for the
+    /// measurements and the ceiling's final answer.
     fn request_notes(&self, cx: &RunContext) -> RequestNotes {
-        self.request_notes_for(cx, false, None)
+        self.request_notes_for(cx, None)
     }
 
-    /// The notes for one request of a run: `first` is the run's first
-    /// request, `closing` is its closing one (§5.5).
-    ///
-    /// The edit panel's note describes the owner's message, so it rides the
-    /// run's first request only. Re-sent beside a "being made" result it is
-    /// the measured loop trigger: panel turns ran away 5 times in 13, typed
-    /// ones 0 in 19, and with the note sent once 0 in 10. Every other note
-    /// stays as it was. A closing request ends with [`PICTURE_ON_ITS_WAY`].
-    fn request_notes_for(
-        &self,
-        cx: &RunContext,
-        first: bool,
-        closing: Option<&str>,
-    ) -> RequestNotes {
-        let mut tail: Vec<String> = cx
-            .notes
-            .iter()
-            .filter(|n| first || !crate::persona::edit::is_note(n))
-            .cloned()
-            .collect();
-        if let Some(line) = closing {
-            tail.push(line.to_string());
+    /// The notes for one request of a run, the closing line last on a
+    /// closing request (§5.5).
+    fn request_notes_for(&self, cx: &RunContext, closing: Option<Closing>) -> RequestNotes {
+        let mut tail: Vec<String> = cx.notes.to_vec();
+        if let Some(c) = closing {
+            tail.push(c.line.to_string());
         }
         RequestNotes {
             head: self.calendar_note().into_iter().collect(),
@@ -2403,12 +2418,9 @@ impl Agent {
         // One picture per run (IMAGE-DESIGN.md §5.5): what this run has
         // queued, and whether its next request is the closing one.
         let mut pictures = RunPictures::default();
-        // The closing request's line, when the next request closes the run.
-        let mut closing: Option<&'static str> = None;
-        // Whether any tool result has come back in this run: the panel's
-        // note rides every request before the first, empty-reply retries
-        // included (review of #596).
-        let mut answered = false;
+        // The closing request's line, when the next request closes the run;
+        // from the start, for a run the caller opens closing.
+        let mut closing: Option<Closing> = cx.close_with;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -2855,7 +2867,7 @@ impl Agent {
             // one request.
             // This request's notes, read once: the bytes measured, the bytes
             // sent and the count the provider marks are one reading.
-            let notes = self.request_notes_for(cx, !answered, closing);
+            let notes = self.request_notes_for(cx, closing);
             // The harness's part of them is what the recording keeps: the
             // reading this request carried, so a run that crosses midnight
             // records the date the model last saw.
@@ -3085,15 +3097,10 @@ impl Agent {
             let mut response = response;
             // A refusal is the envelope, and is left as the provider said it
             // (CLAUDE.md: check the envelope before the content).
-            if let Some(line) = closing.filter(|_| response.stop_reason != StopReason::Refusal) {
+            if let Some(close) = closing.filter(|_| response.stop_reason != StopReason::Refusal) {
                 let said = strip_call_markup(&response.message.text());
                 let said = if said.trim().is_empty() {
-                    if line == PICTURE_STILL_BEING_MADE {
-                        PICTURE_NOT_STARTED_REPLY
-                    } else {
-                        PICTURE_ON_ITS_WAY_REPLY
-                    }
-                    .to_string()
+                    close.reply.to_string()
                 } else {
                     said.trim().to_string()
                 };
@@ -3328,7 +3335,6 @@ impl Agent {
                     // The next request closes the run (§5.5): on a repeat
                     // call in every chat, or right after the picture is
                     // queued where the run is set to end then.
-                    answered = true;
                     // A picture this run started is the stronger fact, so
                     // it is said first. A busy refusal closes a run set to
                     // end on its picture; any other run keeps working after
@@ -3336,9 +3342,9 @@ impl Agent {
                     // pass 3).
                     closing =
                         if pictures.repeated || (cx.end_after_deferral && pictures.started_now) {
-                            Some(PICTURE_ON_ITS_WAY)
+                            Some(ON_ITS_WAY)
                         } else if pictures.busy_again || (cx.end_after_deferral && pictures.busy) {
-                            Some(PICTURE_STILL_BEING_MADE)
+                            Some(STILL_BEING_MADE)
                         } else {
                             None
                         };
@@ -7406,6 +7412,38 @@ mod tests {
         go.notify_one();
     }
 
+    /// A run opened closing (the edit panel's reply, after the harness drew
+    /// the owner's change) answers in words on its first request, with the
+    /// caller's line last, and a reply that is only a call shows the
+    /// caller's fallback (IMAGE-DESIGN.md §5.3 step 4).
+    #[tokio::test]
+    async fn a_run_opened_closing_answers_in_words_at_once() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let (agent, provider) = agent_with_tools(
+            vec![assistant(
+                vec![Block::text(
+                    "<tool_call><function=draw></function></tool_call>",
+                )],
+                StopReason::EndTurn,
+            )],
+            vec![Arc::new(Later(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.close_with = Some(Closing {
+            line: crate::persona::edit::DONE,
+            reply: crate::persona::edit::DONE_REPLY,
+        });
+        let mut convo = Conversation::user("Edit images/a.png: make her smile");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one request, and the run ends");
+        assert_eq!(seen[0].tool_choice, crate::message::ToolChoice::None);
+        assert!(!seen[0].tools.is_empty(), "the tools stay listed");
+        assert!(tail_text(&seen[0]).ends_with(crate::persona::edit::DONE));
+        assert_eq!(outcome.text, crate::persona::edit::DONE_REPLY);
+    }
+
     /// A refusal on the closing request is the envelope: the run reports it
     /// as the provider said it, never as a clean end carrying the fixed line
     /// (review of #596, pass 4).
@@ -7549,42 +7587,6 @@ mod tests {
         go.notify_one();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(got.lock().unwrap().len(), 1, "one picture made, not two");
-    }
-
-    /// The edit panel's note describes the owner's message, so it rides the
-    /// run's first request only: re-sent beside a "being made" result it was
-    /// the measured loop trigger (§5.5). Other notes keep their place.
-    #[tokio::test]
-    async fn the_panel_note_rides_the_first_request_only() {
-        let go = Arc::new(tokio::sync::Notify::new());
-        go.notify_one();
-        let (agent, provider) = agent_with_tools(
-            draw_then("Here."),
-            vec![Arc::new(Later(go))],
-            PermissionMode::Allow,
-        );
-        let mut cx = agent.context().as_ref().clone();
-        cx.notes = vec![crate::persona::edit::note(), "(A run note.)".to_string()].into();
-        let mut convo = Conversation::user("make it dusk");
-        agent.run_in(&cx, &mut convo, None).await.unwrap();
-        let seen = provider.seen.lock().unwrap();
-        assert!(crate::persona::edit::is_note(
-            &seen[0]
-                .messages
-                .last()
-                .unwrap()
-                .content
-                .iter()
-                .find_map(|b| match b {
-                    Block::Text { text } if crate::persona::edit::is_note(text) =>
-                        Some(text.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default()
-        ));
-        let later = tail_text(&seen[1]);
-        assert!(!later.contains(crate::persona::edit::EDIT_STEM), "{later}");
-        assert!(later.contains("(A run note.)"), "{later}");
     }
 
     /// In a run set to end on its picture, a call refused because an earlier
@@ -7770,26 +7772,6 @@ mod tests {
         assert_eq!(outcome.text, PICTURE_NOT_STARTED_REPLY);
         hold.notify_one();
         go.notify_one();
-    }
-
-    /// The panel's note rides every request until a tool result comes back,
-    /// an empty-reply retry included (review of #596).
-    #[tokio::test]
-    async fn the_panel_note_survives_an_empty_retry() {
-        let go = Arc::new(tokio::sync::Notify::new());
-        go.notify_one();
-        let mut turns = vec![assistant(vec![], StopReason::EndTurn)];
-        turns.extend(draw_then("Here."));
-        let (agent, provider) =
-            agent_with_tools(turns, vec![Arc::new(Later(go))], PermissionMode::Allow);
-        let mut cx = agent.context().as_ref().clone();
-        cx.notes = vec![crate::persona::edit::note()].into();
-        let mut convo = Conversation::user("make it dusk");
-        agent.run_in(&cx, &mut convo, None).await.unwrap();
-        let seen = provider.seen.lock().unwrap();
-        let has = |r: &CompletionRequest| tail_text(r).contains(crate::persona::edit::EDIT_STEM);
-        assert!(has(&seen[0]) && has(&seen[1]), "the retry keeps it");
-        assert!(!has(&seen[2]), "after the result it is gone");
     }
 
     /// A chat host's queue: the call answers "being made" at once, the run
@@ -17691,7 +17673,10 @@ justification = "this box never sends from an armed conversation"
                 content: vec![
                     Block::text("mm"),
                     // Recorded before run notes existed: left off the wire.
-                    Block::text(crate::persona::edit::note()),
+                    Block::text(format!(
+                        "{}. An older transcript's note.)",
+                        crate::persona::edit::EDIT_STEM
+                    )),
                 ],
                 ..Message::user("")
             },
