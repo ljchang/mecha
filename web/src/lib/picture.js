@@ -89,6 +89,21 @@ export function stillOut(entry) {
   );
 }
 
+// The pictures still out that wait their turn: every one after the oldest.
+// A chat's queue runs one at a time, first in first out, so the oldest still
+// out is the one drawing and the rest wait behind it (owner, 2026-10-08: a
+// queue, not a refusal). Indices into `entries`.
+export function waitingPictures(entries) {
+  const out = new Set();
+  let first = true;
+  (entries ?? []).forEach((e, i) => {
+    if (!stillOut(e)) return;
+    if (first) first = false;
+    else out.add(i);
+  });
+  return out;
+}
+
 export function turnsWithoutPicture(entries, running = false) {
   const out = new Set();
   let asked = 0;

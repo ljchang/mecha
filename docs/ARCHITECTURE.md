@@ -4705,8 +4705,19 @@ invariants:
     - A second call in one batch that the queue refuses because this run's own picture is out counts as a repeat: the picture this run started is the fact said, first.
   - **On a voice call** the closing reply arrives whole rather than streamed. It is a sentence or two.
   - **A run can open closing** (`RunContext::close_with`): the edit panel's reply, after the harness drew the change itself. The closing line and its fixed reply come from the caller (`agent::Closing`), never from the loop. The panel's retired note was the measured loop trigger when re-sent beside a "being made" result; with `ToolChoice::None` and a closing line, the closing reply was clean 5 times in 6, against 1 in 6 for the LoopGuard's exit.
-- **One job per conversation, refused in the tool's words.** A second is a
-  `refusal: true` result with the tool's own busy text, never a tool failure.
+- **One job runs per conversation; the next ones queue.** Up to
+  `jobs::MAX_WAITING` (3) wait behind it, first in first out, each started
+  when the one before it ends (owner, 2026-10-08: "queueing images does not
+  work. they just fail"). A queued call keeps the tool's first line
+  (`being made: <path>`), which the page and the restart repair read, with
+  the queue's line after it. Past the line, a call is a `refusal: true`
+  result in the tool's busy words, never a tool failure. Stop ends the
+  running job and answers each waiting one as `jobs::NOT_STARTED` through
+  the same delivery, so no "being made" is left out. One picture per run
+  still holds, a second call in one batch included, so no single turn can
+  fill the line. A harness call (the edit panel's draw) renders inline
+  after the queue empties — it waits on running and waiting jobs only, since
+  a finished one lands at the hand-back of the very run that is waiting.
 - **A late result is finished by the loop's own rule** — the turn's cap, the
   envelope, taint armed from what came back — through `jobs::settle`, the
   one function `run_tools` uses for an inline result too, so the two cannot

@@ -12,7 +12,7 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
+  import { pictureOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -147,6 +147,8 @@
   // needs neither, so its URL is safe to open full size.
   const repeats = $derived(repeatedPictures(run.entries));
   const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
+  // Pictures waiting behind the one drawing (`waitingPictures`).
+  const queuedPictures = $derived(waitingPictures(run.entries));
   // Each answer's citations with the check made of each (§10.4).
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
@@ -1849,7 +1851,11 @@
                  lands here when done. Its Stop ends the picture alone, never
                  a reply that is running (review of #583). -->
             {#if stillOut(entry)}
-              <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
+              {#if queuedPictures.has(i)}
+                <span class="genwait">waiting its turn, after the picture before it…</span>
+              {:else}
+                <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
+              {/if}
               <button class="genedit" onclick={stopPicture}>Stop</button>
             {/if}
           {:else if entry.kind === 'notice'}
