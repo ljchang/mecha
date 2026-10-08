@@ -798,6 +798,12 @@ pub struct ToolCtx {
     /// reply) for what a picture call left out, in a persona chat; `None`
     /// everywhere else (`persona::edit::SceneReader`).
     pub scene_reader: Option<std::sync::Arc<dyn crate::persona::edit::SceneReader>>,
+    /// Where each picture's compiled prompt is saved, one line per render,
+    /// for the owner to learn to improve prompts (the owner's ruling,
+    /// 2026-10-08: "save them for now"). Beside the chat's transcript, outside
+    /// every jail, read by no tool; stamped by a kept chat's host, never an
+    /// incognito one. `None` saves nothing, which is how it is turned off.
+    pub prompt_log: Option<std::path::PathBuf>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -986,6 +992,7 @@ impl Default for ToolCtx {
             scene: None,
             role_split: None,
             scene_reader: None,
+            prompt_log: None,
         }
     }
 }

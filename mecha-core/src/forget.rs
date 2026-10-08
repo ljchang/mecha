@@ -289,6 +289,16 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     }
     report.attempt("scene", scene.map(|f| f.removed).map_err(Into::into));
+    // The chat's saved picture prompts, beside its transcript.
+    let prompts = roots.sessions.join(format!("{id}.prompts.jsonl"));
+    report.attempt(
+        "picture prompts",
+        match std::fs::remove_file(&prompts) {
+            Ok(()) => Ok(1),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(anyhow::anyhow!("{}: {e}", prompts.display())),
+        },
+    );
     // The graph before the learning store: whether the session was distilled
     // is read from the ledger the learning purge is about to empty, and a
     // graph that failed this time must still be owed the episode next time.

@@ -3619,6 +3619,14 @@ impl PersonaChats {
         // its transcript, and the persona's latest and index in its folder,
         // all outside the jail. Stamped here, never by a model.
         tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));
+        // Each picture's prompt, saved beside the transcript for the owner
+        // ("save them for now", 2026-10-08), read by no tool.
+        tools.prompt_log = Some(
+            self.store
+                .join(&name)
+                .join("sessions")
+                .join(format!("{}.prompts.jsonl", ps.session.meta.id)),
+        );
         // Each person's part of a scene's `together`, read on the persona's
         // own model, untouched as the edit panel's reader is (`roles`): the
         // persona puts the whole act in one sentence, and drawn as one it
