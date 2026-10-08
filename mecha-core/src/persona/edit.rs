@@ -117,15 +117,15 @@ pub const PHOTO_SETTING: &str = "the owner's photo";
 fn photo_setting(
     scene: &mut serde_json::Map<String, serde_json::Value>,
     record: Option<&crate::scene::Scene>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let on_photo = record
         .and_then(|r| r.setting.as_ref())
         .is_some_and(|f| matches!(f.value, crate::scene::Setting::Photo { .. }));
     if !on_photo {
-        return Ok(());
+        return Ok(false);
     }
     let Some(said) = scene.get("setting").and_then(serde_json::Value::as_str) else {
-        return Ok(());
+        return Ok(false);
     };
     let said = said
         .trim()
@@ -134,6 +134,7 @@ fn photo_setting(
         .replace(['\u{2018}', '\u{2019}'], "'");
     if said == PHOTO_SETTING {
         scene.remove("setting");
+        return Ok(true);
     } else if said.contains(PHOTO_SETTING) {
         return Err(
             "this picture is placed on the owner's photo, and words in its setting \
@@ -142,7 +143,7 @@ fn photo_setting(
                 .into(),
         );
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The extraction's instructions: a3's measured wording (EVIDENCE §B.8,
@@ -342,16 +343,11 @@ fn look_into(
             return Ok(true);
         }
     }
-    // A picture drawn in a library style keeps that style's words through a
-    // restage, and a style cannot be cleared yet: words for another look
-    // beside them would ask for both (review of #605). Refused with the way
-    // on until a style can be taken off.
-    if let Some(style) = current {
-        return Err(format!(
-            "this picture is drawn in the library style `{style}`, and a look the library has \
-             no style for cannot replace it yet: name one of the library's styles instead"
-        ));
-    }
+    // Over a picture drawn in a library style, that style's words still ride
+    // the restage beside these: a style cannot be cleared yet. Refusing would
+    // block nearly every look on this owner's pictures (24 of 24 today carry
+    // a style, mecha-a3), so the words go in and the gap is a known
+    // follow-up.
     use crate::scene::Setting;
     let base = match scene.get("setting").and_then(serde_json::Value::as_str) {
         Some(given) => Some(given.to_string()),
@@ -460,7 +456,9 @@ pub fn read_extraction_for(
             scene.insert("people".into(), out.into());
         }
     }
-    photo_setting(&mut scene, looks.record)?;
+    // The stand-in said back alone was understood: the photo stays, and it
+    // counts as nothing asked, like a no-op look (review of #605).
+    let restated_photo = photo_setting(&mut scene, looks.record)?;
     let mut no_op_look = false;
     // `style` too: the record shows that key, and a reader without the
     // schema answers in it (review of #605).
@@ -489,6 +487,7 @@ pub fn read_extraction_for(
     let said_something = obj
         .iter()
         .filter(|(k, _)| !(no_op_look && (*k == "look" || *k == "style")))
+        .filter(|(k, _)| !(restated_photo && *k == "setting"))
         .map(|(_, v)| v)
         .any(|v| match v {
             serde_json::Value::Null => false,
@@ -815,14 +814,12 @@ mod tests {
         let e =
             read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
         assert_eq!(e.scene["style"], "secret-wash");
-        // Over a picture drawn in a library style, words for an unheld look
-        // would ask for both: refused, naming the way on, until a style can
-        // be taken off.
-        let why =
-            read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &held).unwrap_err();
-        assert!(
-            why.contains("drawn in the library style `secret-wash`"),
-            "{why}"
+        // Over a picture drawn in a library style, an unheld look still goes
+        // in the setting's words, never refused.
+        let e = read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &held).unwrap();
+        assert_eq!(
+            e.scene["setting"],
+            "a quiet harbour, in the look of pencil sketch"
         );
         // The picture's own style said alone is understood: another try.
         let e = read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &held).unwrap();
@@ -880,6 +877,9 @@ mod tests {
         .unwrap();
         assert!(e.scene.get("setting").is_none(), "{:?}", e.scene);
         assert_eq!(e.scene["people"][0]["expression"], "a smile");
+        // Said back alone, it is nothing asked: another try, not a failure.
+        let e = read(r#"{"setting": "the owner's photo"}"#).unwrap();
+        assert!(e.scene.is_empty() && e.retouch.is_none());
         let e = read(r#"{"setting": "a windswept beach"}"#).unwrap();
         assert_eq!(e.scene["setting"], "a windswept beach");
         assert_eq!(
