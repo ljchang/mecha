@@ -439,7 +439,7 @@ pub fn plan(
     by: crate::scene::Origin,
     approved: &dyn Fn(&str) -> bool,
     named_in: &dyn Fn(&str) -> Vec<String>,
-    worn: &dyn Fn(&str) -> Option<String>,
+    worn: &dyn Fn(&str) -> Option<(String, crate::scene::Origin)>,
 ) -> Result<Plan, String> {
     let mut change = call.change.clone();
     if let (Some(path), Some(hash)) = (&call.setting_photo, setting_photo_hash) {
@@ -449,6 +449,25 @@ pub fn plan(
         });
     }
     let new_picture = call.picture.is_none();
+    // Someone to take out whom the record does not hold: on a picture whose
+    // people are known, there is nobody to take out, and that is said; on
+    // one whose people are not known yet, it is an edit of the picture
+    // (review of #597: it was dropped, and the call read as a redraw).
+    let known_before = base.is_some_and(|b| b.people_known);
+    let mut unknown_removes: Vec<String> = Vec::new();
+    for c in change.people.iter().filter(|c| c.remove) {
+        let held = base.is_some_and(|b| b.people.iter().any(|p| p.who.key() == c.who.key()));
+        if held {
+            continue;
+        }
+        if known_before {
+            return Err(format!(
+                "{} is not in this picture, so there is nobody to take out.",
+                shown(&c.who)
+            ));
+        }
+        unknown_removes.push(shown(&c.who));
+    }
     // A new picture defines its scene; it knows who it drew.
     let (mut next, delta) = Scene::apply(base, &change, by, new_picture);
     let mut notes: Vec<String> = call.notes.clone();
@@ -478,12 +497,15 @@ pub fn plan(
         }
         if p.wearing.trim().is_empty() {
             match (worn(key), &p.who) {
-                (Some(w), _) => {
+                (Some((w, from)), _) => {
                     notes.push(format!(
                         "{} is wearing {w}, as this chat last drew them.",
                         shown(&p.who)
                     ));
                     p.wearing = w;
+                    // Copied words keep where they came from: an untrusted
+                    // record's clothes never land clean (review of #597).
+                    p.origin = p.origin.union(from);
                 }
                 (None, Who::Described(_)) => {
                     p.wearing = "clothes that suit the scene".into();
@@ -609,7 +631,7 @@ pub fn plan(
         return Ok(out);
     }
     // Nothing changed at all: draw the scene again at a new seed (§5.1, B4).
-    if delta.is_empty() {
+    if delta.is_empty() && unknown_removes.is_empty() {
         out.route = "redrawn";
         return Ok(match (setting_photo, base.is_some()) {
             (Some(photo), _) => Plan {
@@ -695,6 +717,12 @@ pub fn plan(
             crate::imagegen::capitalized(key)
         ));
     }
+    for who in &unknown_removes {
+        lines.push(format!("Take {who} out of the picture."));
+    }
+    if delta.text && out.next.text.as_ref().is_none_or(|t| t.value.is_empty()) {
+        lines.push("Take the words out of the picture.".into());
+    }
     if delta.text {
         for w in out.next.text.iter().flat_map(|t| t.value.iter()) {
             let at = if w.at.is_empty() {
@@ -747,6 +775,16 @@ pub fn plan(
         canvas: Canvas::Picture(picture),
         camera_moves: delta.camera,
     };
+    // An edit with no line would send the keep sentence alone, the shape
+    // that returns the picture unchanged (#408): refused, saying what would
+    // draw (review of #597).
+    if lines.is_empty() {
+        return Err(
+            "This change gives the picture nothing to draw: say who is in it, or put the change \
+             in `retouch`."
+                .into(),
+        );
+    }
     out.instruction = lines.join(" ");
     // What stays, named from what the change leaves alone: the keep
     // sentence must never name the axis the instruction moves (review of
@@ -940,6 +978,78 @@ mod tests {
         );
     }
 
+    /// Review of #597, pass 2: copied clothes keep their origin; a removal
+    /// of someone the record does not hold is said, or on a picture whose
+    /// people are unknown is an edit; a removal alone does not make the
+    /// people known; clearing the words is a line; an edit with no line is
+    /// refused rather than sent as a keep sentence alone.
+    #[test]
+    fn removals_words_and_copied_clothes_are_honest() {
+        let first = planned(
+            &call(
+                json!({"scene": {"setting": "a deck", "text": [{"words": "OPEN"}], "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "standing"}]}}),
+            ),
+            None,
+        );
+        let base = landed(&first, 3);
+        // Clothes copied from an untrusted record stay untrusted.
+        let p = plan(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "john", "doing": "waving"}]}})),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| Some(("a striped scarf".to_string(), Origin::Untrusted)),
+        )
+        .unwrap();
+        let john = p
+            .next
+            .people
+            .iter()
+            .find(|q| q.who.key() == "john")
+            .unwrap();
+        assert_eq!(john.origin, Origin::Untrusted);
+        // Nobody to take out, on a known picture: said.
+        let why = plan(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "wren", "remove": true}]}})),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(why.contains("Wren is not in this picture"), "{why}");
+        // On a picture with no record: an edit, and the people stay unknown.
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "scene": {"people": [{"who": "a man in a hat", "remove": true}]}}),
+            ),
+            None,
+        );
+        assert_eq!(p.route, "edited");
+        assert!(
+            p.instruction
+                .contains("Take a man in a hat out of the picture."),
+            "{}",
+            p.instruction
+        );
+        assert!(!p.next.people_known);
+        // Clearing the words is a line of its own.
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"text": []}})),
+            Some(&base),
+        );
+        assert!(
+            p.instruction.contains("Take the words out of the picture."),
+            "{}",
+            p.instruction
+        );
+    }
+
     /// mecha-a3's G1b: what a model over-fills is absorbed and said, never a
     /// shape refusal. A retouch beside a scene change rides along; a
     /// newcomer's pose defaults and their clothes come from the chat's
@@ -972,7 +1082,7 @@ mod tests {
             Origin::Clean,
             &lib,
             &names,
-            &|k| (k == "john").then(|| "an apron".to_string()),
+            &|k| (k == "john").then(|| ("an apron".to_string(), Origin::Clean)),
         )
         .unwrap();
         let john = p
