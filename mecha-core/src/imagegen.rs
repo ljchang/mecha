@@ -201,6 +201,30 @@ impl Size {
         }
     }
 
+    /// The size whose shape is nearest a picture's, read from its header:
+    /// a picture this tool drew is exactly one of them. `None` when the
+    /// bytes do not decode.
+    pub(crate) fn nearest(bytes: &[u8]) -> Option<Self> {
+        let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?
+            .into_dimensions()
+            .ok()?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let aspect = (w as f64 / h as f64).ln();
+        [Size::Square, Size::Landscape, Size::Portrait]
+            .into_iter()
+            .min_by(|a, b| {
+                let d = |s: Size| {
+                    let (sw, sh) = s.dims();
+                    ((sw as f64 / sh as f64).ln() - aspect).abs()
+                };
+                d(*a).total_cmp(&d(*b))
+            })
+    }
+
     /// Width and height; both multiples of 32, which the model requires.
     pub fn dims(self) -> (u32, u32) {
         match self {
@@ -1975,9 +1999,11 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      or camera redraws the scene, new clothes, an expression or someone added edit the \
      picture, and restating what is already true changes nothing (a call that changes \
      nothing draws the scene again). Take someone out with `remove`. One small change to the \
-     picture itself (an object, a colour, a detail) goes in `retouch`, in words; with a \
-     painted area, also pass its `mask`, and never make one up. To put people in a room from \
-     a photo, give `scene.setting` as {\"photo\": <path>}. Nobody is drawn twice, and at most \
+     picture itself (an object, a colour, a detail) goes in `retouch`, in words: never \
+     clothes, a pose, an expression or a person, which are `scene.people`. With a painted \
+     area, also pass its `mask`, and never make one up. When the user attaches a photo of a \
+     place and wants someone in it, that photo is the setting: `scene.setting` is \
+     {\"photo\": <its path>}, not the room described in words. Nobody is drawn twice, and at most \
      five people with faces fit one picture. The library supplies how its characters look \
      (image_library lists who exists), so do not describe their faces. The image model renders \
      text well: put the exact words in `scene.text`. The first line of a result is the new \
@@ -2000,8 +2026,8 @@ pub const PEOPLE_DESC: &str = "Who is in the picture, each once. For a change, o
      who change, with only what changes; someone new needs `wearing` and `doing`.";
 /// `retouch`'s description.
 pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words: an object, a \
-     colour, a detail (\"Give the man a red umbrella.\"). On its own, never beside a scene \
-     change.";
+     colour, a detail (\"Give the man a red umbrella.\"). Never clothes, a pose, an expression \
+     or a person: those are `scene.people`.";
 /// `picture`'s description.
 pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
      an earlier result (images/...). Leave it out for a new picture.";
@@ -2261,11 +2287,30 @@ impl Tool for ImageGenerate {
         let photo_hash = photo.as_ref().map(|r| crate::scene::hash(&r.bytes));
         let by = crate::scene::Origin::of(ctx.taint.as_ref());
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
-        let plan =
-            match crate::picture::plan(&call, base.as_ref(), photo_hash, by, &approved, &named) {
-                Ok(p) => p,
-                Err(why) => return Ok(refused(why)),
-            };
+        // What the chat last drew each person in: clothes a newcomer's call
+        // left out come from it (mecha-a3's G1b).
+        let current = ctx.scene.as_ref().and_then(|slot| slot.current());
+        let worn = |key: &str| {
+            current.as_ref().and_then(|s| {
+                s.people
+                    .iter()
+                    .find(|p| p.who.key() == key)
+                    .map(|p| p.wearing.clone())
+                    .filter(|w| !w.trim().is_empty())
+            })
+        };
+        let plan = match crate::picture::plan(
+            &call,
+            base.as_ref(),
+            photo_hash,
+            by,
+            &approved,
+            &named,
+            &worn,
+        ) {
+            Ok(p) => p,
+            Err(why) => return Ok(refused(why)),
+        };
         let mut req = Request {
             prompt: String::new(),
             negative: String::new(),
@@ -2289,6 +2334,7 @@ impl Tool for ImageGenerate {
         let mut mask_plan: Option<MaskPlan> = None;
         let mut crops_said: Vec<String> = Vec::new();
         let mut reseeded: Option<u64> = None;
+        let mut dropped: Vec<String> = Vec::new();
         let is_edit = matches!(plan.render, crate::picture::Render::Edit { .. });
         match &plan.render {
             crate::picture::Render::New => {
@@ -2317,7 +2363,12 @@ impl Tool for ImageGenerate {
                 let style = plan.next.style.as_ref().map(|s| s.value.clone());
                 let compiled = match crate::imagelib::compile(
                     &lib,
-                    &scene_words(&plan.next),
+                    &match &plan.also {
+                        // A retouch given for a new picture, or beside a
+                        // restage: one more sentence of the scene.
+                        Some(also) => format!("{} {also}", scene_words(&plan.next)),
+                        None => scene_words(&plan.next),
+                    },
                     &cast,
                     &extras,
                     style.as_deref(),
@@ -2345,7 +2396,12 @@ impl Tool for ImageGenerate {
                 if asked != req.seed && plan.seed == crate::picture::Seed::Given(asked) {
                     reseeded = Some(asked);
                 }
-                req.size = Some(call.size.unwrap_or(Size::Square).dims());
+                // A restage or redraw drawn new from the setting's words
+                // keeps the picture's shape: the base seed holds the room only
+                // at the same latent size (§2.6; mecha-a3's G4 on #597, as
+                // #591 pass 6 had it).
+                let shape = picture.as_ref().and_then(|r| Size::nearest(&r.bytes));
+                req.size = Some(call.size.or(shape).unwrap_or(Size::Square).dims());
             }
             crate::picture::Render::Edit {
                 canvas,
@@ -2409,11 +2465,23 @@ impl Tool for ImageGenerate {
                     }
                 };
                 // The owner's painted mask, sized with the picture.
-                if let Some(raw) = &plan.mask {
-                    let mask = match read_references(ctx, std::slice::from_ref(raw)).await {
-                        Ok(mut read) => read.remove(0),
-                        Err(why) => return Ok(refused(why)),
-                    };
+                // A mask that is not a picture in this chat is left out and
+                // said, never a refusal (mecha-a3's G1b); one that reads but
+                // marks nothing is still refused by `prepare_mask`.
+                let mask_read = match &plan.mask {
+                    Some(raw) => match read_references(ctx, std::slice::from_ref(raw)).await {
+                        Ok(mut read) => Some((raw, read.remove(0))),
+                        Err(why) => {
+                            dropped.push(format!(
+                                "The mask {raw} was left out ({why}), so the change was made \
+                                 to the whole picture."
+                            ));
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                if let Some((raw, mask)) = mask_read {
                     let pic = req.references[0].bytes.clone();
                     let resolution = req.reference_size;
                     let prepared = tokio::task::spawn_blocking(move || {
@@ -2530,6 +2598,44 @@ impl Tool for ImageGenerate {
                     prompt.push_str(&format!("Keep {} unchanged. ", plan.keep));
                 }
                 prompt.push_str(&close(&plan.instruction));
+                // A retouch given beside the scene change: one more line.
+                if let Some(also) = &plan.also {
+                    prompt.push(' ');
+                    prompt.push_str(&close(also));
+                }
+                // A style the edit changes to: its own words, as a new
+                // picture's compile pastes them (review of #597).
+                if plan.delta.style {
+                    let Some(name) = plan
+                        .next
+                        .style
+                        .as_ref()
+                        .map(|f| f.value.trim().to_lowercase())
+                    else {
+                        return Ok(refused("The style to redraw in was empty."));
+                    };
+                    match lib
+                        .get(crate::imagelib::Kind::Style, &name)
+                        .filter(|e| e.status == crate::imagelib::Status::Approved)
+                    {
+                        Some(entry) => {
+                            prompt.push(' ');
+                            prompt.push_str(&close(&entry.text));
+                            used.push(crate::imagelib::Used {
+                                kind: crate::imagelib::Kind::Style,
+                                name,
+                                version: entry.version,
+                                portrait: None,
+                            });
+                        }
+                        None => {
+                            return Ok(refused(format!(
+                                "No approved style named `{name}`. Call image_library to see \
+                                 what exists."
+                            )))
+                        }
+                    }
+                }
                 // Placed afresh on a room photo, the people are drawn into
                 // the whole scene: its camera, light, what they do together
                 // and its words. The photo is the setting, so it says none.
@@ -2833,6 +2939,10 @@ impl Tool for ImageGenerate {
             if let Some(said) = &plan.said {
                 text.push(' ');
                 text.push_str(said);
+            }
+            for d in &dropped {
+                text.push(' ');
+                text.push_str(d);
             }
             if let Some(r) = similarity.filter(|r| *r >= NEAR_COPY_LAYOUT) {
                 text.push_str(&format!(
@@ -6092,5 +6202,139 @@ mod tests {
         for d in [dir, lib] {
             std::fs::remove_dir_all(d).ok();
         }
+    }
+
+    /// A style on a picture with no record edits it in that style: the
+    /// library's own words for the style reach the prompt, and the result
+    /// names it (review of #597).
+    #[tokio::test]
+    async fn a_style_edit_carries_the_styles_own_words() {
+        let (url, seen) = distinct(1).await;
+        let (dir, lib) = (tempdir(), library_with(&["maya"]));
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "ink-wash".into(),
+                text: "soft grey ink wash on rice paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/her.png"), picture(20, [200, 30, 30])).unwrap();
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"picture": "inbox/her.png", "scene": {"style": "ink-wash"}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("style ink-wash (v1)"),
+            "{}",
+            out.content
+        );
+        let prompt = last_prompt(&seen);
+        assert!(
+            prompt.contains("ink-wash style")
+                && prompt.contains("soft grey ink wash on rice paper"),
+            "{prompt}"
+        );
+        for d in [dir, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A restage drawn new from the setting's words keeps the picture's
+    /// shape: the base seed holds the room only at the same latent size
+    /// (mecha-a3's G4 on #597: a landscape base came back square, its window
+    /// gone). A size the call names still wins.
+    #[tokio::test]
+    async fn a_words_restage_keeps_the_pictures_shape() {
+        let wide = |c: u8| {
+            let img = image::RgbImage::from_fn(64, 36, |x, _| image::Rgb([c, (x * 3) as u8, 90]));
+            let mut png = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+            png.into_inner()
+        };
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 3],
+            views: vec![wide(10), wide(120), wide(200)],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let width = |seen: &Arc<Mutex<Vec<String>>>| {
+            let p = last_prompt(seen);
+            let body: Value = serde_json::from_str(&p[p.find('{').unwrap()..]).unwrap();
+            body["prompt"]["latent"]["inputs"]["width"].as_u64()
+        };
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a study with a tall window",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]},
+                       "size": "landscape"}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(width(&seen), Some(1344));
+        let p1 = picture_of(&first.content);
+        let second = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(second.content.contains("restaged"), "{}", second.content);
+        assert_eq!(width(&seen), Some(1344), "the restage kept the shape");
+        let p2 = picture_of(&second.content);
+        t.call(
+            json!({"picture": p2, "scene": {"camera": "from above"}, "size": "square"}),
+            &cx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(width(&seen), Some(1024), "a size the call names wins");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A mask the chat does not hold is left out and said, and the retouch
+    /// is made to the whole picture (mecha-a3's G1b: a model filled `mask`
+    /// with prose or a name 3 times in 65).
+    #[tokio::test]
+    async fn a_mask_that_is_not_in_the_chat_is_left_out_and_said() {
+        let (url, seen) = distinct(1).await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/her.png"), picture(20, [200, 30, 30])).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "inbox/her.png", "retouch": "a red hat",
+                       "mask": "inbox/never-painted.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("The mask inbox/never-painted.png was left out"),
+            "{}",
+            out.content
+        );
+        assert_eq!(uploads(&seen), 1, "the picture, and no mask");
+        std::fs::remove_dir_all(dir).ok();
     }
 }
