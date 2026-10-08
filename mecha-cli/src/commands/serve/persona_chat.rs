@@ -276,6 +276,104 @@ fn scene_slot(store: &Path, persona: &str, chat: &str) -> mecha_core::scene::Sce
     }
 }
 
+/// Whom the panel's extraction may name: the library's approved
+/// characters, and the persona by its character and its own name.
+struct PanelNames {
+    library: PathBuf,
+    character: Option<String>,
+    persona: String,
+}
+
+/// The edit panel's change, drawn by the harness (IMAGE-DESIGN.md §5.3):
+/// the owner's words and the picture's record through a one-shot extraction
+/// (a painted area skips it: that is a retouch), then the typed call through
+/// `Agent::dispatch_one`, every gate a model's call meets. The fact the turn
+/// keeps, and whether a picture was drawn. A failure is said in the fact,
+/// never retried.
+async fn draw_panel_edit(
+    agent: &mecha_core::agent::Agent,
+    cx: &mecha_core::agent::RunContext,
+    conversation: &mut mecha_core::agent::Conversation,
+    edit: &PanelEdit,
+    extractor: &Result<(Box<dyn mecha_core::provider::Provider>, String), String>,
+    names: &PanelNames,
+    events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+) -> (String, bool) {
+    use mecha_core::persona::edit;
+    let fail = |why: String| {
+        (
+            edit::fact(&edit.picture, "not understood", &edit::not_understood(&why)),
+            false,
+        )
+    };
+    let (call, change) = match &edit.mask {
+        Some(mask) => (
+            edit::masked_call(&edit.picture, mask, &edit.words),
+            format!("retouch inside the painted area: {}", edit.words),
+        ),
+        None => {
+            let (provider, model) = match extractor {
+                Ok(p) => p,
+                Err(why) => return fail(why.clone()),
+            };
+            // The picture's record, found by its bytes as the tool finds it.
+            let record = match (&cx.tools.scene, cx.tools.resolve(&edit.picture)) {
+                (Some(slot), Ok(path)) => tokio::fs::read(&path)
+                    .await
+                    .ok()
+                    .and_then(|bytes| slot.lookup(&bytes)),
+                _ => None,
+            };
+            let persona = names
+                .character
+                .as_deref()
+                .map(|c| mecha_core::picture::shown(&mecha_core::scene::Who::Library(c.into())));
+            let request = edit::extraction_request(
+                model,
+                record.as_ref(),
+                &edit.words,
+                persona.as_deref(),
+                provider.structured_output(),
+            );
+            let response = match provider.complete(&request, None).await {
+                Ok(r) => r,
+                Err(e) => return fail(format!("the reader could not be reached ({e:#})")),
+            };
+            if response.stop_reason == mecha_core::message::StopReason::Refusal {
+                return fail("the reader refused".into());
+            }
+            let text = response.message.text();
+            if text.trim().is_empty() {
+                return fail("the reader's answer was empty".into());
+            }
+            let lib = mecha_core::imagelib::Library::load(&names.library).0;
+            let known = |who: &str| {
+                let key = who.trim().to_lowercase();
+                lib.get(mecha_core::imagelib::Kind::Character, &key)
+                    .is_some_and(|e| e.status == mecha_core::imagelib::Status::Approved)
+                    || names.character.as_deref() == Some(key.as_str())
+                    || names.persona.to_lowercase() == key
+                    || record.as_ref().is_some_and(|r| {
+                        r.people
+                            .iter()
+                            .any(|p| mecha_core::picture::shown(&p.who).to_lowercase() == key)
+                    })
+            };
+            match edit::read_extraction(&text, &known) {
+                Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
+                Err(why) => return fail(why),
+            }
+        }
+    };
+    let dispatched = agent
+        .dispatch_one(cx, conversation, "image_generate", call, events)
+        .await;
+    (
+        edit::fact(&edit.picture, &change, &dispatched.content),
+        !dispatched.is_error,
+    )
+}
+
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
     sessions.join(format!("{id}.persona.json"))
 }
@@ -2775,7 +2873,7 @@ impl PersonaChats {
                     None,
                     token.as_deref(),
                     Vec::new(),
-                    false,
+                    None,
                     Some(spoken),
                 )
                 .await
@@ -2829,7 +2927,7 @@ impl PersonaChats {
             request_id,
             token,
             Vec::new(),
-            false,
+            None,
         )
         .await
     }
@@ -2840,8 +2938,9 @@ impl PersonaChats {
     /// (`chat::attached_images`), which arms `private_data`; a blind model,
     /// the cap or an unreadable file leave it to its path, and the answer
     /// says how many were not shown. `edit`: the picture edit panel sent
-    /// it, and the persona is told so (`persona::edit`); a message that
-    /// steers a run in flight carries text only, and no note.
+    /// it, and the harness draws the change itself before the persona
+    /// replies (`persona::edit`, IMAGE-DESIGN.md §5.3); a message that steers
+    /// a run in flight carries text only.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_with(
         self: &Arc<Self>,
@@ -2852,7 +2951,7 @@ impl PersonaChats {
         request_id: Option<String>,
         token: Option<&str>,
         attachments: Vec<String>,
-        edit: bool,
+        edit: Option<PanelEdit>,
     ) -> Result<serde_json::Value, Refusal> {
         self.start(
             chat,
@@ -2881,7 +2980,7 @@ impl PersonaChats {
         request_id: Option<String>,
         token: Option<&str>,
         attachments: Vec<String>,
-        edit: bool,
+        edit: Option<PanelEdit>,
         spoken: Option<Spoken>,
     ) -> Result<serde_json::Value, Refusal> {
         let text = text.trim().to_string();
@@ -3151,10 +3250,10 @@ impl PersonaChats {
         // What the persona keeps opening and closing with, named back to it in
         // the harness's voice (`persona::variety`, measured 2026-10-04).
         let variety_note = mecha_core::persona::variety::note(&conversation.messages);
-        // A turn the picture edit panel sent: answered in a line, not by
-        // retelling a picture the persona has not seen (`persona::edit`,
-        // measured 2026-10-05). Typed only; a spoken turn has the call note.
-        let edit_note = (edit && spoken.is_none()).then(mecha_core::persona::edit::note);
+        // A turn the picture edit panel sent: the harness draws the change
+        // itself, and the persona only replies (IMAGE-DESIGN.md §5.3). Typed
+        // only; a spoken turn is the persona's own, under the call note.
+        let panel = edit.filter(|_| spoken.is_none());
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -3237,7 +3336,6 @@ impl PersonaChats {
             anchor,
             call_note,
             variety_note,
-            edit_note,
             scene_note,
         ]
         .into_iter()
@@ -3398,13 +3496,25 @@ impl PersonaChats {
                 .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
                 .map_err(|e| format!("the judge could not be reached: {e:#}"))
         });
+        // The panel's one-shot reads the owner's words on the persona's own
+        // model, untouched as the judge's is (§5.3 step 1).
+        let extractor = panel.as_ref().map(|_| {
+            (self.provider)(&bound, PersonaUse::Judge)
+                .map(|p| (p, bound.model.clone()))
+                .map_err(|e| format!("the change could not be read: {e:#}"))
+        });
+        let names = PanelNames {
+            library: library.dir.clone(),
+            character: pinned.settings.character.clone(),
+            persona: name.clone(),
+        };
         if anchored {
             ps.turns_since_anchor = 0;
             ps.anchor_due = false;
         } else {
             ps.turns_since_anchor += 1;
         }
-        let before: Arc<[Message]> = conversation.messages.clone().into();
+        let mut before: Arc<[Message]> = conversation.messages.clone().into();
 
         // A spoken turn's handle is the facade's, made before the turn was
         // asked for, so a hang-up stops exactly this run.
@@ -3526,7 +3636,49 @@ impl PersonaChats {
             };
             let mut stopped_by_judge = false;
             let outcome = {
-                let run = agent.run_in(&cx, &mut conversation, Some(tx));
+                let run = async {
+                    // The edit panel's change, drawn by the harness before the
+                    // persona replies (IMAGE-DESIGN.md §5.3), and kept in the
+                    // owner's turn as one fact, recorded at once: a reply that
+                    // fails after it must not take the picture's record with it.
+                    let mut cx = cx;
+                    if let (Some(edit), Some(extractor)) = (&panel, &extractor) {
+                        let (fact, drawn) = draw_panel_edit(
+                            &agent,
+                            &cx,
+                            &mut conversation,
+                            edit,
+                            extractor,
+                            &names,
+                            &Some(tx.clone()),
+                        )
+                        .await;
+                        mecha_core::agent::append_user_text(
+                            &mut conversation.messages,
+                            fact.clone(),
+                        );
+                        let index = conversation.messages.len() - 1;
+                        if let Err(e) = session.append(&Record::Extend {
+                            index,
+                            blocks: vec![mecha_core::message::Block::text(fact)],
+                        }) {
+                            tracing::warn!("a panel edit's fact was not recorded: {e:#}");
+                        }
+                        before = conversation.messages.clone().into();
+                        cx.close_with = Some(if drawn {
+                            mecha_core::agent::Closing {
+                                line: mecha_core::persona::edit::DONE,
+                                reply: mecha_core::persona::edit::DONE_REPLY,
+                            }
+                        } else {
+                            mecha_core::agent::Closing {
+                                line: mecha_core::persona::edit::NOT_DRAWN,
+                                reply: mecha_core::persona::edit::NOT_DRAWN_REPLY,
+                            }
+                        });
+                    }
+                    agent.run_in(&cx, &mut conversation, Some(tx)).await
+                };
                 tokio::pin!(run);
                 match judge_handle.as_mut() {
                     Some(handle) => tokio::select! {
@@ -4026,9 +4178,22 @@ pub struct SendBody {
     /// named in `text` (`PersonaChats::send_with`).
     #[serde(default)]
     attachments: Vec<String>,
-    /// The picture edit panel sent this turn (`persona::edit`).
+    /// The picture edit panel sent this turn (`persona::edit`, IMAGE-DESIGN.md
+    /// §5.3): what the harness draws, as fields.
     #[serde(default)]
-    edit: bool,
+    edit: Option<PanelEdit>,
+}
+
+/// A turn the picture edit panel sent: the picture, the owner's painted
+/// mask if any, and their words, as fields, so nothing is parsed back out of
+/// the message the owner sees. Each path still goes through the jail when the
+/// tool reads it.
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct PanelEdit {
+    picture: String,
+    #[serde(default)]
+    mask: Option<String>,
+    words: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -5063,6 +5228,33 @@ mod tests {
                     malformed_tool_args: 0,
                 });
             }
+            // The edit panel's one-shot (`persona::edit`): answered from the
+            // owner's words, as a model would type them. A name the library
+            // does not hold comes back as one.
+            if req
+                .system
+                .as_deref()
+                .is_some_and(|s| s.starts_with("You turn the owner's request to change a picture"))
+            {
+                let asked: serde_json::Value =
+                    serde_json::from_str(&req.messages[0].text()).unwrap();
+                let words = asked["owner"].as_str().unwrap_or_default();
+                let text = if words.contains("Bob") {
+                    serde_json::json!({"people": [{"who": "Bob", "wearing": "a coat", "doing": "waving"}]})
+                } else {
+                    serde_json::json!({ "light": words })
+                };
+                return Ok(CompletionResponse {
+                    message: Message::assistant(vec![Block::Text {
+                        text: text.to_string(),
+                    }]),
+                    stop_reason: StopReason::EndTurn,
+                    usage: Usage::default(),
+                    refusal: None,
+                    model: "test".into(),
+                    malformed_tool_args: 0,
+                });
+            }
             self.0.lock().unwrap().push(req.clone());
             match &self.1 {
                 Mode::Answer => {}
@@ -5107,6 +5299,8 @@ mod tests {
         sees: Arc<std::sync::atomic::AtomicBool>,
         judge: Arc<StdMutex<JudgeSays>>,
         judged: Arc<StdMutex<usize>>,
+        /// What the stand-in `image_generate` was called with.
+        drawn: Arc<StdMutex<Vec<serde_json::Value>>>,
     }
 
     impl Drop for World {
@@ -5142,8 +5336,9 @@ mod tests {
     }
 
     /// A stand-in `image_generate`: there to be in a persona's registry, for
-    /// what the harness says to a persona that can draw (§5.6).
-    struct DrawStub;
+    /// what the harness says to a persona that can draw (§5.6). It keeps each
+    /// call's input and answers as the tool's first line does.
+    struct DrawStub(Arc<StdMutex<Vec<serde_json::Value>>>);
 
     #[async_trait::async_trait]
     impl mecha_core::tool::Tool for DrawStub {
@@ -5156,15 +5351,22 @@ mod tests {
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
+        // As the real tool is, by the owner's ruling (2026-09-25).
+        fn read_only(&self) -> bool {
+            true
+        }
         fn for_persona(self: Arc<Self>) -> Option<Arc<dyn mecha_core::tool::Tool>> {
             Some(self)
         }
         async fn call(
             &self,
-            _: serde_json::Value,
+            input: serde_json::Value,
             _: &mecha_core::tool::ToolCtx,
         ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
-            Ok(mecha_core::tool::ToolOutput::ok("drawn"))
+            self.0.lock().unwrap().push(input);
+            Ok(mecha_core::tool::ToolOutput::ok(
+                "image: images/stub.png\nA new picture. It is on the owner's screen; you have not seen it.",
+            ))
         }
     }
 
@@ -5230,8 +5432,9 @@ mod tests {
         let mut pool = mecha_core::tool::Registry::new();
         pool.insert(Arc::new(mecha_core::tool::builtin::FsRead));
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
+        let drawn = Arc::new(StdMutex::new(Vec::new()));
         if draws {
-            pool.insert(Arc::new(DrawStub));
+            pool.insert(Arc::new(DrawStub(Arc::clone(&drawn))));
         }
         let mut config = mecha_core::config::Config::default();
         tune(&mut config);
@@ -5259,16 +5462,17 @@ mod tests {
             sees,
             judge,
             judged,
+            drawn,
         }
     }
 
     /// Run one turn and wait for it to finish.
     async fn turn(w: &World, key: &str, text: &str) {
-        turn_as(w, key, text, false).await
+        turn_as(w, key, text, None).await
     }
 
     /// `turn`, sent from the picture edit panel when `edit`.
-    async fn turn_as(w: &World, key: &str, text: &str, edit: bool) {
+    async fn turn_as(w: &World, key: &str, text: &str, edit: Option<PanelEdit>) {
         let (mut rx, _) = w.personas().subscribe(&w.library, key, None).await.unwrap();
         w.personas()
             .send_with(&w.chat, &w.library, key, text, None, None, Vec::new(), edit)
@@ -5456,41 +5660,114 @@ mod tests {
         );
     }
 
-    /// A turn the edit panel sent carries the edit note in the harness's
-    /// voice (`persona::edit`), never as the owner's words; a typed turn
-    /// does not, and the next turn's request leaves the stale note out.
+    /// The panel's change from words: the harness reads it through the
+    /// one-shot extraction and draws it itself (`dispatch_one`), the turn
+    /// keeps one fact, and the persona answers in words only, under `DONE`
+    /// (IMAGE-DESIGN.md §5.3). The page reads the picture as the tool's card.
     #[tokio::test]
-    async fn an_edit_panel_turn_is_told_to_answer_in_a_line() {
-        let w = world_with(Mode::Think("they asked for an edit".into()));
+    async fn a_panel_edit_is_drawn_by_the_harness_and_the_persona_replies_in_words() {
+        let w = world_built(
+            Mode::Say("Ochre gulls wheel overhead.".into()),
+            |_| {},
+            true,
+        );
         let key = open_chat(&w).await;
-        let edit_notes = |m: &Message| {
-            m.content
-                .iter()
-                .filter(|b| {
-                    matches!(b, mecha_core::message::Block::Text { text }
-                    if mecha_core::persona::edit::is_note(text))
-                })
-                .count()
-        };
         turn(&w, &key, "hello").await;
-        turn_as(&w, &key, "Edit images/a.png: make the sky pink", true).await;
-        turn(&w, &key, "lovely").await;
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "make the sky pink".into(),
+        };
+        turn_as(&w, &key, "Edit images/a.png: make the sky pink", Some(edit)).await;
 
+        let drawn = w.drawn.lock().unwrap().clone();
+        assert_eq!(
+            drawn,
+            vec![
+                serde_json::json!({"picture": "images/a.png", "scene": {"light": "make the sky pink"}})
+            ],
+            "the extraction's typed change, drawn by the harness"
+        );
         let seen = w.seen.lock().unwrap().clone();
+        let reply = seen.last().unwrap();
+        assert_eq!(reply.tool_choice, mecha_core::message::ToolChoice::None);
+        let owner = reply.messages.last().unwrap();
         assert_eq!(
-            edit_notes(seen[0].messages.last().unwrap()),
-            0,
-            "a typed turn"
-        );
-        let edited = seen[1].messages.last().unwrap();
-        assert_eq!(edit_notes(edited), 1, "the edit turn carries the note");
-        assert_eq!(
-            mecha_core::agent::owner_text(edited),
+            mecha_core::agent::owner_text(owner),
             "Edit images/a.png: make the sky pink",
-            "the note is the harness's, never the owner's words"
+            "the fact is the harness's, never the owner's words"
         );
-        let on_wire: usize = seen[2].messages.iter().map(edit_notes).sum();
-        assert_eq!(on_wire, 0, "a stale edit note went back to the model");
+        let fact = owner.text();
+        assert!(
+            fact.contains(mecha_core::persona::edit::FACT_STEM),
+            "{fact}"
+        );
+        assert!(fact.contains("image: images/stub.png"), "{fact}");
+        let tail = reply.messages.last().unwrap();
+        assert!(
+            tail.text().contains(mecha_core::persona::edit::DONE),
+            "the reply closes under DONE: {}",
+            tail.text()
+        );
+        // The page draws the picture as the tool's card, after the bubble.
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let entries = t["entries"].as_array().unwrap();
+        let card = entries
+            .iter()
+            .position(|e| e["kind"] == "tool" && e["name"] == "image_generate")
+            .expect("a card");
+        assert_eq!(entries[card - 1]["kind"], "user");
+        assert!(entries[card]["preview"]
+            .as_str()
+            .unwrap()
+            .starts_with("image: images/stub.png"));
+    }
+
+    /// A name the library does not hold is not drawn as a stranger: nothing
+    /// is drawn, the fact says why, and the persona says so in words under
+    /// `NOT_DRAWN`. A painted area skips the extraction: it is a retouch.
+    #[tokio::test]
+    async fn a_panel_edit_that_was_not_understood_is_said_and_a_mask_is_a_retouch() {
+        let w = world_built(Mode::Say("Hm.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "add Bob waving".into(),
+        };
+        turn_as(&w, &key, "Edit images/a.png: add Bob waving", Some(edit)).await;
+        assert!(w.drawn.lock().unwrap().is_empty(), "nothing drawn");
+        let reply = w.seen.lock().unwrap().last().unwrap().clone();
+        let owner = reply.messages.last().unwrap().text();
+        assert!(owner.contains("Bob is not in this picture"), "{owner}");
+        assert!(
+            owner.contains(mecha_core::persona::edit::NOT_DRAWN),
+            "{owner}"
+        );
+
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: Some("inbox/mask-a.png".into()),
+            words: "a red umbrella".into(),
+        };
+        turn_as(
+            &w,
+            &key,
+            "Edit images/a.png with mask inbox/mask-a.png: a red umbrella",
+            Some(edit),
+        )
+        .await;
+        assert_eq!(
+            w.drawn.lock().unwrap().clone(),
+            vec![
+                serde_json::json!({"picture": "images/a.png", "retouch": "a red umbrella",
+                "mask": "inbox/mask-a.png"})
+            ]
+        );
     }
 
     /// A persona that keeps opening and closing alike is told so, in the
@@ -7087,7 +7364,7 @@ mod tests {
                     .unwrap();
                 let answer = w
                     .personas()
-                    .send_with(&w.chat, &w.library, &key, text, None, None, attached, false)
+                    .send_with(&w.chat, &w.library, &key, text, None, None, attached, None)
                     .await
                     .unwrap();
                 loop {
@@ -8120,7 +8397,7 @@ mod tests {
                 None,
                 None,
                 vec!["inbox/photo.png".into()],
-                false,
+                None,
             )
             .await
             .unwrap();
