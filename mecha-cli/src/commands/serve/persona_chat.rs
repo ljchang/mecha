@@ -379,7 +379,12 @@ async fn draw_panel_edit(
                 .filter(|r| r.people.len() == 1)
                 .map(|r| mecha_core::picture::shown(&r.people[0].who));
             match edit::read_extraction_for(&text, &known, sole.as_deref()) {
-                Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
+                Ok(extracted) => {
+                    if let Err(why) = edit::photo_kept(&extracted) {
+                        return fail(why);
+                    }
+                    (extracted.call(&edit.picture), extracted.summary())
+                }
                 Err(why) => return fail(why),
             }
         }
