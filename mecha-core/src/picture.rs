@@ -13,7 +13,7 @@ use serde_json::Value;
 /// The most people with faces one picture draws: a new picture's portraits,
 /// or an edit's crops beside its canvas. Five, on the owner's ruling of
 /// 2026-10-07 (C5 and N5 drew five correctly; provisional).
-pub const MAX_FACES: usize = 5;
+pub const MAX_FACES: usize = crate::imagelib::MAX_CAST;
 
 /// The persona's own names, which `who` resolves to its linked character.
 #[derive(Debug, Clone, Default)]
@@ -291,8 +291,11 @@ pub fn as_viewer(text: &str, names: &[String]) -> String {
     }
     let mut out = String::with_capacity(text.len());
     let mut word = String::new();
-    let flush = |word: &mut String, out: &mut String| {
-        if names.iter().any(|n| n.eq_ignore_ascii_case(word)) {
+    // Words inside double quotes are rendered as written (`scene.text`),
+    // never rewritten (review of #597, pass 6).
+    let mut quoted = false;
+    let flush = |word: &mut String, out: &mut String, quoted: bool| {
+        if !quoted && names.iter().any(|n| n.eq_ignore_ascii_case(word)) {
             out.push_str("the viewer");
         } else {
             out.push_str(word);
@@ -303,11 +306,14 @@ pub fn as_viewer(text: &str, names: &[String]) -> String {
         if c.is_alphanumeric() || c == '-' {
             word.push(c);
         } else {
-            flush(&mut word, &mut out);
+            flush(&mut word, &mut out, quoted);
+            if c == '"' {
+                quoted = !quoted;
+            }
             out.push(c);
         }
     }
-    flush(&mut word, &mut out);
+    flush(&mut word, &mut out, quoted);
     out
 }
 
@@ -577,27 +583,34 @@ pub fn plan(
     // A library name in prose is someone in the picture, or a stranger drawn
     // from words (E1): refused plainly unless they are in it.
     let in_picture: Vec<String> = next.people.iter().map(|p| p.who.key()).collect();
+    // The words the prompt will carry: the scene as it lands (`next`), not
+    // only the call's own fields, since a restage recompiles the record's
+    // words too; one innocuous follow-up re-sent a recorded "Maya waves at
+    // John" (review of #597, pass 6). Rendered `text` is not prose: it is
+    // drawn as written, and `as_viewer` leaves quoted words alone.
     let mut prose: Vec<(&str, String)> = Vec::new();
     for (k, v) in [
-        ("light", &change.light),
-        ("camera", &change.camera),
-        ("together", &change.together),
-        ("retouch", &call.retouch),
+        ("light", &next.light),
+        ("camera", &next.camera),
+        ("together", &next.together),
     ] {
-        if let Some(v) = v {
-            prose.push((k, v.clone()));
+        if let Some(f) = v {
+            prose.push((k, f.value.clone()));
         }
     }
-    if let Some(Setting::Words { text }) = &change.setting {
+    if let Some(r) = &call.retouch {
+        prose.push(("retouch", r.clone()));
+    }
+    if let Some(Setting::Words { text }) = next.setting.as_ref().map(|f| &f.value) {
         prose.push(("setting", text.clone()));
     }
-    for p in &change.people {
+    for p in &next.people {
         for (k, v) in [
             ("wearing", &p.wearing),
             ("doing", &p.doing),
             ("expression", &p.expression),
         ] {
-            if let Some(v) = v {
+            if !v.trim().is_empty() {
                 prose.push((k, v.clone()));
             }
         }
@@ -1079,6 +1092,33 @@ mod tests {
         .unwrap();
         assert_eq!(p.next.people[0].wearing, "clothes that suit the scene");
         assert!(p.said.unwrap().contains("John had no clothes given"));
+    }
+
+    /// Review of #597, pass 6: a name the record carries is read as the
+    /// prompt will carry it, so a follow-up that changes only the light still
+    /// makes a recorded "John" the viewer; words to render stay as written.
+    #[test]
+    fn a_recorded_name_is_the_viewer_on_a_follow_up_and_text_is_kept() {
+        let first = planned(
+            &call(
+                json!({"scene": {"setting": "a pier", "together": "Maya waves at John", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "standing"}]}}),
+            ),
+            None,
+        );
+        let base = landed(&first, 4);
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"light": "dusk"}})),
+            Some(&base),
+        );
+        assert_eq!(p.offstage, vec!["john".to_string()]);
+        assert_eq!(
+            as_viewer(
+                "Maya waves at John. The words \"Happy Birthday John\" appear.",
+                &p.offstage
+            ),
+            "Maya waves at the viewer. The words \"Happy Birthday John\" appear."
+        );
     }
 
     /// A room photo as the setting with nobody to place is refused, never a
