@@ -461,7 +461,7 @@ pub enum PriorThinking {
 /// is answering now. Tool results come back as user messages, so "the last
 /// user message" would move the cut inside a run and take the reasoning that
 /// chose a call away from the step that reads its result.
-fn answering(messages: &[Message]) -> Option<usize> {
+pub(crate) fn answering(messages: &[Message]) -> Option<usize> {
     messages.iter().rposition(Message::is_plain_user_text)
 }
 
