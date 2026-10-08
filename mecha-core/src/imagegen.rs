@@ -2842,7 +2842,18 @@ impl Tool for ImageGenerate {
             let secs = started.elapsed().as_secs();
             // An edit whose layout came back nearly the same is said as a
             // fact, never as advice (IMAGE-DESIGN.md §8, review Q1).
-            let similarity = if is_edit && plan.route != "placed" && plan.route != "restaged" {
+            // Read only against the picture it edited: a render on the room
+            // photo (placed, restaged or redrawn there) is meant to move
+            // everything, and its canvas is not `picture` (review of #597,
+            // pass 8).
+            let on_picture = matches!(
+                plan.render,
+                crate::picture::Render::Edit {
+                    canvas: crate::picture::Canvas::Picture(_),
+                    ..
+                }
+            );
+            let similarity = if on_picture {
                 let (was, now) = (req.references[0].bytes.clone(), bytes.clone());
                 let painted = mask_plan.as_ref().map(|p| (p.soft.clone(), p.bounds));
                 tokio::task::spawn_blocking(move || match painted {
