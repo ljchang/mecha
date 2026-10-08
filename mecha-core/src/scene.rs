@@ -375,8 +375,9 @@ impl Scene {
     /// - `together` does not outlive the acts it describes: any pose change,
     ///   removal or addition clears it unless the change restates it (§4,
     ///   review T2).
-    /// - A person the change introduces needs `wearing` and `doing`; the
-    ///   caller checks that before calling.
+    /// - A person the change introduces needs `wearing`, and `doing` unless
+    ///   the scene's `together` says what they do; the caller checks that
+    ///   before calling, and an empty pose is said plainly at the prompt.
     /// - With no base, the change defines the scene. Its people are known if
     ///   it names any, or if `people_known` says the caller knows the picture
     ///   holds nobody (a new picture).
