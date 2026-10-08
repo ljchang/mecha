@@ -1940,7 +1940,9 @@ pub struct ImageGenerate {
     faces: Arc<dyn crate::face::FaceAnchors>,
     /// [`DESCRIPTION`] with the library's style names after it, read once
     /// when this form is built and never per request, so the tool list a
-    /// chat caches stays byte-stable; a new style shows from the next chat.
+    /// chat caches stays byte-stable. A new style reaches a running serve's
+    /// forms when they are next built: a restart, or a persona's agent rebuilt
+    /// on an edit or a rebinding (serve caches it per persona version).
     description: String,
 }
 
@@ -2024,7 +2026,8 @@ impl ImageGenerate {
             seeds: false,
             reference_pixels: self.reference_pixels,
             faces: Arc::clone(&self.faces),
-            // Read afresh: a persona chat's form is built when the chat is.
+            // Read afresh whenever a persona's agent is built (serve caches
+            // one per persona version and binding, not per chat).
             description: described(self.library_dir.as_deref()),
         }
     }
@@ -2061,7 +2064,8 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      tool writes the image model's prompt. For a new picture, give the whole scene: `setting` \
      (everything but the people and the words: the place and its objects, or the whole subject \
      of a picture without people), `light` (light, mood, time of day), `camera` (shot size, \
-     angle, framing), `style` (a library style's name), `people`, `together` (what people do \
+     angle, framing), `style` (a library style's name, only when the user asks for a look), \
+     `people`, `together` (what people do \
      with each other) and `text` (words to render exactly). Each person has `who` (a library \
      character's name, \"self\" for you, or a description of someone not in the library), \
      `where` (left, centre, right or background), `wearing`, `doing` and `expression`. To \
@@ -2280,7 +2284,7 @@ impl Tool for ImageGenerate {
                         "setting": {"description": SETTING_DESC},
                         "light": {"type": "string", "description": "Light, mood, time of day, colour tone."},
                         "camera": {"type": "string", "description": "Shot size, angle, framing."},
-                        "style": {"type": "string", "description": "A library style's name; a look the library has no name for goes in words in `setting`."},
+                        "style": {"type": "string", "description": "A library style's name, only when the user asks for a look; leave it out for the usual photograph. A look the library has no name for goes in words in `setting`."},
                         "people": {"type": "array", "items": person, "maxItems": crate::scene::MAX_PEOPLE, "description": PEOPLE_DESC},
                         "together": {"type": "string", "description": "What the people do with each other, once, by name."},
                         "text": {
@@ -6601,6 +6605,25 @@ mod tests {
         for d in [dir, lib] {
             std::fs::remove_dir_all(d).ok();
         }
+    }
+
+    /// `style` is for a look the user asked for: with the styles listed, a
+    /// description that said to fill it on every new picture had a persona
+    /// pick an unasked-for style 4 times in 5 (mecha-a3, 2026-10-08).
+    #[test]
+    fn style_is_only_for_a_look_the_user_asked_for() {
+        let t = tool("http://127.0.0.1:1");
+        assert!(t
+            .description()
+            .contains("`style` (a library style's name, only when the user asks for a look)"));
+        let schema = t.input_schema();
+        let said = schema["properties"]["scene"]["properties"]["style"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            said.contains("leave it out for the usual photograph"),
+            "{said}"
+        );
     }
 
     /// The description names the approved, unlocked styles at its very end,
