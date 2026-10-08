@@ -512,6 +512,11 @@ impl Scene {
                 *s = s.chars().take(n).collect();
             }
         };
+        // A style is a library name: the tool drops any it does not hold
+        // before this, and this keeps the record bounded whoever calls.
+        if let Some(st) = &mut next.style {
+            cap(&mut st.value, crate::imagelib::MAX_NAME);
+        }
         next.people.truncate(MAX_PEOPLE);
         for p in &mut next.people {
             cap(&mut p.wearing, crate::imagelib::MAX_CAST_FIELD);
