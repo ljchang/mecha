@@ -92,15 +92,9 @@ as `model_untrusted`** — never approved, never clean.
 
 > **Superseded 2026-10-07 for the call (`IMAGE-DESIGN.md` §5.1):** `cast`, `extras` and
 > `reference_images` are retired. The model sends a `scene` whose people name library characters
-> in `who`, and the compiler below is what a new picture still runs through. The store (§2, §4–§7)
-> stands as written.
->
-> **Amended 2026-10-07 (owner, `IMAGE-SCENE-DESIGN.md` R1):** the bullet below that makes `cast` and
-> `reference_images` exclusive is lifted.
-> Every library person enters every render, edits included, as a head crop plus their
-> description, under one reference size and one budget per call (`IMAGE-SCENE-DESIGN.md` §5.2).
-> "Its people carry their own identity" held for a pose change on a picture of them, and failed
-> for everything else a picture is passed for (§2 there). That bullet is kept as written.
+> in `who`, and the compiler below is what a new picture still runs through. The store (§2), the
+> `image_library` tools (§4), the owner's door (§6) and the web surface (§7) stand as written; §4's
+> `image_generate` bullet and §5's manifest contents are superseded, each with its own note.
 
 `image_generate` gains two optional fields. The model writes only what
 varies; code writes what persists.
