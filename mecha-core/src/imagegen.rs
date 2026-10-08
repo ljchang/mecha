@@ -138,7 +138,10 @@ impl Default for ImageConfig {
             // 20 GiB since the int8 default: its ~19.2 GiB load no longer
             // fit under the Q4's 19 (2026-10-04).
             min_available_mb: 20_480,
-            unload_after_secs: 600,
+            // Fifteen minutes, matching `comfyui-idle-reset`'s window: a
+            // picture inside a quarter hour of the last skips the 80–115 s
+            // reload (the owner's ruling, 2026-10-08).
+            unload_after_secs: 900,
             server_temp_dir: None,
         }
     }
