@@ -11571,6 +11571,58 @@ mod tests {
     /// the source, as `every_served_session_builds_its_turn_context_through_
     /// for_session` is, because nothing at run time says which front end
     /// built a context (review of #589, pass 6).
+    /// Only the kept chats stamp a prompt log, and the assistant's only when
+    /// the chat has no room: an incognito chat keeps nothing past its room
+    /// (R9). Read from the source, as the scene slot's rule is, because
+    /// nothing at run time says which front end built a context (review of
+    /// #610).
+    #[test]
+    fn only_the_kept_chats_stamp_a_prompt_log() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+        walk(&root.join("../mecha-core/src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        let mut stamps = std::collections::BTreeSet::new();
+        let mut gated = false;
+        for f in files {
+            let src = std::fs::read_to_string(&f).unwrap();
+            let code = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(&src);
+            let name = f.file_name().unwrap().to_string_lossy().into_owned();
+            for line in code.lines().map(str::trim) {
+                if line.starts_with("//") {
+                    continue;
+                }
+                let stamps_here = line.contains("prompt_log = Some(")
+                    || (line.contains("prompt_log:")
+                        && !line.contains("pub prompt_log")
+                        && !line.contains("prompt_log: None"));
+                if stamps_here {
+                    stamps.insert(name.clone());
+                    if name == "chat.rs" && line.contains("room().is_none()") {
+                        gated = true;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            stamps.into_iter().collect::<Vec<_>>(),
+            ["chat.rs", "persona_chat.rs"],
+            "a prompt log is stamped elsewhere"
+        );
+        assert!(gated, "the assistant chat stamps a log only without a room");
+    }
+
     #[test]
     fn only_the_served_chats_stamp_a_scene_slot() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
