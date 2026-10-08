@@ -252,11 +252,15 @@ pub fn parse(
         if let Some(t) = change.together.clone() {
             let named: Vec<Who> = names_in(&t, approved, me);
             if let [who] = named.as_slice() {
+                // The relation names them; as their own `doing` it reads
+                // without the name, or an edit line says "Have Maya Maya
+                // waves" (review of #597, pass 7).
+                let doing = strip_leading_name(&t, who, me);
                 change.people.push(PersonChange {
                     who: who.clone(),
                     at: None,
                     wearing: None,
-                    doing: Some(t),
+                    doing: Some(doing),
                     expression: None,
                     remove: false,
                 });
@@ -284,37 +288,59 @@ pub fn parse(
 
 /// `text` with each whole-word mention of `names` (library keys, any case,
 /// possessives kept) read as "the viewer": what the image model reads for
-/// someone named but not in the picture.
-pub fn as_viewer(text: &str, names: &[String]) -> String {
+/// someone named but not in the picture. The words the picture renders
+/// (`keep`, from `scene.text`) are left exactly as written, found by their
+/// own text rather than by quote marks, so a stray `"` elsewhere can never
+/// switch the rewrite off (review of #597, pass 7).
+pub fn as_viewer(text: &str, names: &[String], keep: &[&str]) -> String {
     if names.is_empty() {
         return text.to_string();
     }
-    let mut out = String::with_capacity(text.len());
+    // Each rendered phrase, set aside under a marker no prompt holds.
+    let mut held = text.to_string();
+    for (i, k) in keep.iter().enumerate().filter(|(_, k)| !k.is_empty()) {
+        held = held.replace(k, &format!("\u{E000}{i}\u{E000}"));
+    }
+    let mut out = String::with_capacity(held.len());
     let mut word = String::new();
-    // Words inside double quotes are rendered as written (`scene.text`),
-    // never rewritten (review of #597, pass 6).
-    let mut quoted = false;
-    let flush = |word: &mut String, out: &mut String, quoted: bool| {
-        if !quoted && names.iter().any(|n| n.eq_ignore_ascii_case(word)) {
+    let flush = |word: &mut String, out: &mut String| {
+        if names.iter().any(|n| n.eq_ignore_ascii_case(word)) {
             out.push_str("the viewer");
         } else {
             out.push_str(word);
         }
         word.clear();
     };
-    for c in text.chars() {
+    for c in held.chars() {
         if c.is_alphanumeric() || c == '-' {
             word.push(c);
         } else {
-            flush(&mut word, &mut out, quoted);
-            if c == '"' {
-                quoted = !quoted;
-            }
+            flush(&mut word, &mut out);
             out.push(c);
         }
     }
-    flush(&mut word, &mut out, quoted);
+    flush(&mut word, &mut out);
+    for (i, k) in keep.iter().enumerate().filter(|(_, k)| !k.is_empty()) {
+        out = out.replace(&format!("\u{E000}{i}\u{E000}"), k);
+    }
     out
+}
+
+/// `t` without a leading mention of `who` (or the persona's own names).
+fn strip_leading_name(t: &str, who: &Who, me: &SelfNames) -> String {
+    let mut names: Vec<String> = vec![shown(who)];
+    names.extend(me.names.iter().cloned());
+    for n in names.iter().filter(|n| !n.trim().is_empty()) {
+        let n = n.trim();
+        if t.len() > n.len()
+            && t.is_char_boundary(n.len())
+            && t[..n.len()].eq_ignore_ascii_case(n)
+            && t[n.len()..].starts_with(' ')
+        {
+            return t[n.len()..].trim().to_string();
+        }
+    }
+    t.to_string()
 }
 
 /// A painted picture's workspace path: one plain path to an image file.
@@ -1115,9 +1141,26 @@ mod tests {
         assert_eq!(
             as_viewer(
                 "Maya waves at John. The words \"Happy Birthday John\" appear.",
-                &p.offstage
+                &p.offstage,
+                &["Happy Birthday John"]
             ),
             "Maya waves at the viewer. The words \"Happy Birthday John\" appear."
+        );
+    }
+
+    /// Review of #597, pass 7: a stray quote mark never switches the viewer
+    /// rewrite off, and a folded solo relation reads without the name.
+    #[test]
+    fn a_stray_quote_keeps_the_rewrite_and_a_fold_drops_the_name() {
+        let names = vec!["john".to_string()];
+        assert_eq!(
+            as_viewer("A 32\" screen; Maya waves at John.", &names, &[]),
+            "A 32\" screen; Maya waves at the viewer."
+        );
+        let c = call(json!({"scene": {"setting": "a beach", "together": "Maya waves at the sea"}}));
+        assert_eq!(
+            c.change.people[0].doing.as_deref(),
+            Some("waves at the sea")
         );
     }
 
@@ -1578,7 +1621,11 @@ mod tests {
             .unwrap()
             .contains("John named in the words but not in the picture"));
         assert_eq!(
-            as_viewer("Maya holds hands with John, by John's bench.", &p.offstage),
+            as_viewer(
+                "Maya holds hands with John, by John's bench.",
+                &p.offstage,
+                &[]
+            ),
             "Maya holds hands with the viewer, by the viewer's bench."
         );
         let ok = plan(

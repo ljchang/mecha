@@ -193,7 +193,7 @@ pub enum Size {
 
 impl Size {
     pub(crate) fn parse(s: &str) -> Option<Self> {
-        match s {
+        match s.trim().to_lowercase().as_str() {
             "square" => Some(Size::Square),
             "landscape" => Some(Size::Landscape),
             "portrait" => Some(Size::Portrait),
@@ -2722,7 +2722,13 @@ impl Tool for ImageGenerate {
         }
         // Someone named but not in the picture is never drawn: the image
         // model reads "the viewer" (the owner's ruling, 2026-10-08).
-        req.prompt = crate::picture::as_viewer(&req.prompt, &plan.offstage);
+        let rendered: Vec<&str> = plan
+            .next
+            .text
+            .iter()
+            .flat_map(|t| t.value.iter().map(|w| w.words.as_str()))
+            .collect();
+        req.prompt = crate::picture::as_viewer(&req.prompt, &plan.offstage, &rendered);
         if req.prompt.chars().count() > crate::imagelib::MAX_COMPILED_PROMPT {
             return Ok(refused(format!(
                 "The picture's description came to over {} characters; say less in the scene.",
@@ -2855,7 +2861,13 @@ impl Tool for ImageGenerate {
             let landed = ctx.scene.as_ref().map(|slot| {
                 let mut next = plan.next.clone();
                 next.picture = Some(picture_hash.clone());
-                next.seed = Some(req.seed);
+                // The record keeps the seed that drew its room: a new picture's
+                // or a restage's own. An edit samples fresh (#306) over a room
+                // it did not draw, so it keeps the base's, or a later restage
+                // would redraw a different room (review of #597, pass 7).
+                if !is_edit {
+                    next.seed = Some(req.seed);
+                }
                 next.chat = Some(slot.chat.clone());
                 (slot.clone(), next)
             });
@@ -6432,5 +6444,51 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The record keeps the seed that drew its room: an edit between a new
+    /// picture and a restage samples fresh but leaves the base's seed, so
+    /// the restage still keeps the room (review of #597, pass 7).
+    #[tokio::test]
+    async fn an_edit_between_keeps_the_rooms_seed_for_a_restage() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a greenhouse", "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "watering plants"}]}, "seed": 77}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(seed_in(&seen), 77);
+        let p1 = picture_of(&first.content);
+        let edited = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "wearing": "a red scarf"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(edited.content.contains("An edit of"), "{}", edited.content);
+        let p2 = picture_of(&edited.content);
+        let restaged = t
+            .call(
+                json!({"picture": p2, "scene": {"people": [{"who": "maya", "doing": "sitting on a bench"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            restaged.content.contains("restaged"),
+            "{}",
+            restaged.content
+        );
+        assert_eq!(seed_in(&seen), 77, "the restage drew at the room's seed");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 }
