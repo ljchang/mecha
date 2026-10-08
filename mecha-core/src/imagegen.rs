@@ -2023,7 +2023,9 @@ pub const SETTING_DESC: &str = "Everything in the picture except its people and 
      {\"photo\": <path>} to put the people in that room.";
 /// `scene.people`'s description.
 pub const PEOPLE_DESC: &str = "Who is in the picture, each once. For a change, only the people \
-     who change, with only what changes; someone new needs `wearing` and `doing`.";
+     who change, with only what changes: for new clothes alone send only `wearing`, since a \
+     `doing` you send, even reworded, is a new pose and redraws the scene. Someone new needs \
+     `wearing` and `doing`.";
 /// `retouch`'s description.
 pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words: an object, a \
      colour, a detail (\"Give the man a red umbrella.\"). Never clothes, a pose, an expression \
@@ -5786,19 +5788,19 @@ mod tests {
         .await
     }
 
-    /// A library character named in a retouch but not in the picture would be
-    /// drawn from words, as a stranger: refused before the GPU
-    /// (IMAGE-DESIGN.md §4).
+    /// A library character named in a new picture's prose but not in it
+    /// would be drawn from words, as a stranger: refused before the GPU
+    /// (IMAGE-DESIGN.md §4). On a picture with no record the check is not
+    /// made: its people are unknown, and an edit keeps a face from the canvas.
     #[tokio::test]
-    async fn a_library_name_in_an_edit_must_be_declared() {
+    async fn a_library_name_in_prose_must_be_in_the_picture() {
         let lib = library_with(&["maya", "john"]);
         let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
         let dir = tempdir();
-        std::fs::create_dir_all(dir.join("inbox")).unwrap();
-        std::fs::write(dir.join("inbox/room.png"), PNG).unwrap();
         let out = t
             .call(
-                json!({"picture": "inbox/room.png", "retouch": "Add John sitting on the bench."}),
+                json!({"scene": {"setting": "a park bench where John sits",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
                 &ctx(&dir),
             )
             .await
@@ -5806,7 +5808,7 @@ mod tests {
         assert!(out.is_error, "{}", out.content);
         assert!(
             out.content
-                .contains("John is named in `retouch` but is not in the picture"),
+                .contains("John is named in `setting` but is not in the picture"),
             "{}",
             out.content
         );

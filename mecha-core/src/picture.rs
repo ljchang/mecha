@@ -189,12 +189,20 @@ pub fn parse(
                     for v in items {
                         let who = text(v.get("who"), "scene.people.who", field)?
                             .ok_or("each `scene.people` entry needs `who`.")?;
-                        let at = match text(v.get("where"), "scene.people.where", 20)? {
-                            None => None,
-                            Some(w) => Some(
-                                Where::parse(&w)
-                                    .ok_or("`where` is left, centre, right or background.")?,
-                            ),
+                        // A place in the frame outside the four is left out
+                        // and said, never a refusal (mecha-a3's G1).
+                        let at = match v.get("where").and_then(Value::as_str).map(str::trim) {
+                            None | Some("") => None,
+                            Some(w) => match Where::parse(w) {
+                                Some(at) => Some(at),
+                                None => {
+                                    notes.push(format!(
+                                        "`where` for {who} was left out: it is left, centre, \
+                                         right or background."
+                                    ));
+                                    None
+                                }
+                            },
                         };
                         let remove = match v.get("remove") {
                             None | Some(Value::Null) => false,
@@ -220,22 +228,27 @@ pub fn parse(
         }
         Some(_) => return Err("`scene` must be an object.".into()),
     }
-    // One person once.
-    for (i, p) in change.people.iter().enumerate() {
-        if change.people[..i]
-            .iter()
-            .any(|q| q.who.key() == p.who.key())
-        {
-            return Err(format!(
-                "{} appears twice in `scene.people`; each person is drawn once.",
-                shown(&p.who)
-            ));
+    // One person once: two entries that resolve to the same person (`self`
+    // and the persona's own name, say) are one, the first's fields filled
+    // from the second's (mecha-a3's G1b: 3 of 65 refused as "twice").
+    let mut merged: Vec<PersonChange> = Vec::new();
+    for p in std::mem::take(&mut change.people) {
+        match merged.iter_mut().find(|q| q.who.key() == p.who.key()) {
+            Some(q) => {
+                q.at = q.at.or(p.at);
+                q.wearing = q.wearing.take().or(p.wearing);
+                q.doing = q.doing.take().or(p.doing);
+                q.expression = q.expression.take().or(p.expression);
+                q.remove = q.remove || p.remove;
+            }
+            None => merged.push(p),
         }
     }
+    change.people = merged;
     // A relation naming one person, with nobody in `people`: that person,
     // doing it (review T1 folds a solo relation into the one `doing`; G1b:
-    // 4 of 65 named the persona only there).
-    if change.people.is_empty() && picture.is_none() {
+    // 4 of 65 named the persona only there), on a new picture or a change.
+    if change.people.is_empty() {
         if let Some(t) = change.together.clone() {
             let named: Vec<Who> = names_in(&t, approved, me);
             if let [who] = named.as_slice() {
@@ -511,10 +524,14 @@ pub fn plan(
                     p.wearing = "clothes that suit the scene".into();
                 }
                 (None, Who::Library(_)) => {
-                    return Err(format!(
-                        "{} is new to this picture: give what they wear.",
+                    // Absorbed, and said (mecha-a3's G1: a refusal here was
+                    // the panel's most common one on a picture with no record).
+                    notes.push(format!(
+                        "{} had no clothes given or on record, so they wear clothes that suit \
+                         the scene.",
                         shown(&p.who)
-                    ))
+                    ));
+                    p.wearing = "clothes that suit the scene".into();
                 }
             }
         }
@@ -550,7 +567,11 @@ pub fn plan(
             prose.push(("who", d.clone()));
         }
     }
-    for (field, text) in &prose {
+    // Only where the picture's people are known: on a picture with no record
+    // a name may well be someone already in it, and an edit keeps their face
+    // from the canvas (mecha-a3's G1).
+    let checks_names = new_picture || known_before;
+    for (field, text) in prose.iter().filter(|_| checks_names) {
         for name in named_in(text) {
             if approved(&name) && !in_picture.contains(&name) {
                 let how = if *field == "retouch" {
@@ -961,8 +982,9 @@ mod tests {
             }
         );
         assert_eq!(p.route, "placed");
-        // A library newcomer with no clothes and none on record: asked for.
-        let why = plan(
+        // A library newcomer with no clothes and none on record: dressed for
+        // the scene, and said (mecha-a3's G1).
+        let p = plan(
             &call(json!({"scene": {"setting": "a park", "people": [{"who": "john", "doing": "jogging"}]}})),
             None,
             None,
@@ -971,11 +993,37 @@ mod tests {
             &names,
             &|_| None,
         )
-        .unwrap_err();
-        assert!(
-            why.contains("John is new to this picture: give what they wear"),
-            "{why}"
+        .unwrap();
+        assert_eq!(p.next.people[0].wearing, "clothes that suit the scene");
+        assert!(p.said.unwrap().contains("John had no clothes given"));
+    }
+
+    /// mecha-a3's G1b and G1: `self` and the persona's own name are one
+    /// person, merged; a `where` outside the four is left out and said; on a
+    /// picture with no record a library name in prose is not refused, since
+    /// they may be in it already.
+    #[test]
+    fn one_person_twice_is_merged_and_a_loose_where_is_dropped() {
+        let c = call(json!({"scene": {"setting": "a cafe", "people": [
+            {"who": "self", "wearing": "a coat"},
+            {"who": "Maya", "doing": "reading", "where": "by the window, slightly left"}]}}));
+        assert_eq!(c.change.people.len(), 1);
+        let maya = &c.change.people[0];
+        assert_eq!(
+            (maya.wearing.as_deref(), maya.doing.as_deref()),
+            (Some("a coat"), Some("reading"))
         );
+        assert!(maya.at.is_none());
+        assert!(
+            c.notes.iter().any(|n| n.contains("`where`")),
+            "{:?}",
+            c.notes
+        );
+        let p = planned(
+            &call(json!({"picture": "inbox/photo.jpg", "retouch": "give Maya a red umbrella"})),
+            None,
+        );
+        assert_eq!(p.route, "retouched");
     }
 
     /// Review of #597, pass 2: copied clothes keep their origin; a removal
