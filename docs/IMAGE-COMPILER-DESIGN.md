@@ -163,6 +163,10 @@ The rules, each a measurement:
 
 ## 4. Tools
 
+> **Superseded 2026-10-07 for `image_generate`'s call (`IMAGE-DESIGN.md` §5.1):** the first
+> bullet's `cast` and name guard became `scene.people[].who` and the planner's prose check. The
+> `image_library` tools stand as written.
+
 - **`image_generate`** — `cast` and `style` as above. The result names each
   entry and its version. **A prompt naming an approved character who is
   not in `cast` is refused** before any GPU time: the first real run (2026-09-28)
@@ -195,6 +199,11 @@ system prompt (the cached prefix). An incognito chat may call
 room.
 
 ## 5. Manifests
+
+> **Narrowed 2026-10-07 (`IMAGE-DESIGN.md` §6):** the manifest keeps only what the owner-facing
+> doors read (the image, the call id, the route, the seed, the cast names and versions, the crops,
+> the layout reading, a pointer to the scene by hash). No prompt; the scene record outside the jail
+> is the record.
 
 Every `image_generate` result writes `images/<stem>.json` beside its PNG,
 `create_new` like the PNG: the scene prompt as the model wrote it, the
