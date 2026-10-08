@@ -354,7 +354,14 @@ pub fn plan(
     let (next, delta) = Scene::apply(base, &change, by, new_picture);
     // Someone the call introduces needs their clothes and what they do.
     for key in &delta.added {
-        let p = next.people.iter().find(|p| &p.who.key() == key).unwrap();
+        // Someone added past the scene's bound was cut from it (`apply`):
+        // refused here, never drawn as a picture without them.
+        let Some(p) = next.people.iter().find(|p| &p.who.key() == key) else {
+            return Err(format!(
+                "A picture holds at most {} people; take someone out with `remove` first.",
+                crate::scene::MAX_PEOPLE
+            ));
+        };
         if p.wearing.trim().is_empty() || p.doing.trim().is_empty() {
             return Err(format!(
                 "{} is new to this picture: give what they wear and what they are doing.",
@@ -396,9 +403,14 @@ pub fn plan(
     for (field, text) in &prose {
         for name in named_in(text) {
             if approved(&name) && !in_picture.contains(&name) {
+                let how = if *field == "retouch" {
+                    "add them in a call of their own, in `scene.people` with what they wear and \
+                     do (a retouch goes on its own)"
+                } else {
+                    "add them to `scene.people` with what they wear and do"
+                };
                 return Err(format!(
-                    "{} is named in `{field}` but is not in the picture: add them to \
-                     `scene.people` with what they wear and do.",
+                    "{} is named in `{field}` but is not in the picture: {how}.",
                     crate::imagegen::capitalized(&name)
                 ));
             }
@@ -425,7 +437,6 @@ pub fn plan(
         Some(Setting::Photo { path, .. }) => Some(path.clone()),
         _ => None,
     };
-    let keep_all = "the people, their clothes and poses, the room, the light and the camera";
     let mut out = Plan {
         render: Render::New,
         people: people.clone(),
@@ -593,6 +604,16 @@ pub fn plan(
             lines.push(format!("{}.", t.value.trim_end_matches('.')));
         }
     }
+    // A style on a picture whose people are not known: the whole picture
+    // redrawn in it, and the style's own words follow (`imagegen`).
+    if delta.style {
+        if let Some(st) = &out.next.style {
+            lines.push(format!(
+                "Redraw the whole picture in the {} style.",
+                st.value.trim_end_matches('.')
+            ));
+        }
+    }
     // Crops go to the people this edit changes, who must look like themselves
     // after it; everyone else is on the canvas already.
     out.faces.retain(|k| touched.contains(k));
@@ -601,10 +622,30 @@ pub fn plan(
         camera_moves: delta.camera,
     };
     out.instruction = lines.join(" ");
-    out.keep = if touched.is_empty() {
-        keep_all.into()
+    // What stays, named from what the change leaves alone: the keep
+    // sentence must never name the axis the instruction moves (review of
+    // #597), and it is load-bearing (#408: 12/12 against 8/12 without it).
+    let mut keep: Vec<&str> = Vec::new();
+    if delta.style {
+        keep.push("the people and what they are doing");
+    } else if touched.is_empty() && delta.removed.is_empty() {
+        keep.push("the people, their clothes and poses");
     } else {
-        "the room, the light and everyone else as they are".into()
+        keep.push("everyone else as they are");
+    }
+    if !delta.setting && !delta.style {
+        keep.push("the room");
+    }
+    if !delta.light && !delta.style {
+        keep.push("the light");
+    }
+    if !delta.camera {
+        keep.push("the camera");
+    }
+    out.keep = match keep.split_last() {
+        Some((last, [])) => last.to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
     };
     out.route = "edited";
     if restage && !known {
@@ -753,6 +794,74 @@ mod tests {
         )
         .unwrap_err();
         assert!(why.contains("John is new to this picture"), "{why}");
+    }
+
+    /// Review of #597: someone added past the scene's bound is refused,
+    /// never a panic; adding someone to a scene with a relation is an edit,
+    /// not a restage; and an edit of a picture with no record names in its
+    /// keep sentence only what the change leaves alone, a style included.
+    #[test]
+    fn edits_keep_only_what_they_leave_and_a_full_scene_refuses() {
+        let two = planned(
+            &call(
+                json!({"scene": {"setting": "a pier", "together": "maya and john share a coat",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "standing"},
+                    {"who": "john", "wearing": "a coat", "doing": "standing"}]}}),
+            ),
+            None,
+        );
+        let base = landed(&two, 7);
+        // Ten more, described: no face budget, past the scene's bound.
+        let crowd: Vec<Value> = (0..10)
+            .map(|i| json!({"who": format!("a fisherman number {i}"), "wearing": "oilskins", "doing": "mending a net"}))
+            .collect();
+        let why = plan(
+            &call(json!({"picture": "images/a.png", "scene": {"people": crowd}})),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &lib,
+            &names,
+        )
+        .unwrap_err();
+        assert!(why.contains("at most 10 people"), "{why}");
+        // Someone added to a scene with a relation: an edit.
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "wren", "wearing": "a scarf", "doing": "waving"}]}})),
+            Some(&base),
+        );
+        assert_eq!(p.route, "edited");
+        // No record: a light change keeps everything but the light.
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {"light": "candlelight"}})),
+            None,
+        );
+        assert_eq!(p.route, "edited");
+        assert!(!p.keep.contains("the light"), "{}", p.keep);
+        assert!(
+            p.keep.contains("the camera") && p.keep.contains("the room"),
+            "{}",
+            p.keep
+        );
+        assert!(p.instruction.contains("candlelight"), "{}", p.instruction);
+        // No record: a style says what to do, and keeps the people.
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {"style": "ink wash"}})),
+            None,
+        );
+        assert_eq!(p.route, "edited");
+        assert!(
+            p.instruction.contains("ink wash style"),
+            "{}",
+            p.instruction
+        );
+        assert!(
+            !p.keep.contains("the light") && !p.keep.contains("the room"),
+            "{}",
+            p.keep
+        );
     }
 
     /// The planner routes by what changed (§5.2): a pose or camera restages
