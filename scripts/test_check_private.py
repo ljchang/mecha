@@ -69,6 +69,21 @@ class Guard(unittest.TestCase):
         self.assertIn("fixture.py:1: words said in a conversation", r.stdout)
         self.assertNotIn("lighthouse", r.stdout)
 
+    def test_a_prompt_logs_words_are_refused_and_its_template_is_not(self):
+        # The owner's saved picture prompts: the chat's words in them are
+        # read, the compiler's own sentences (in the repository by design)
+        # are not.
+        words = "the ferryman ties a crimson ribbon around the old brass bell"
+        template = "Each of the two people from the images appears exactly once"
+        log = os.path.join(self.home, "personas", "quillon", "sessions", f"{SESSION}.prompts.log")
+        with open(log, "w") as f:
+            f.write(json.dumps({"prompt": f"{words}. {template}.", "words": [words]}) + "\n")
+        self.stage("fixture.py", f"X = {words!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+        git(self.repo, "reset", "-q")
+        self.stage("compile.py", f"T = {template!r}\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
     def test_a_short_quoted_phrase_is_refused(self):
         self.stage("fixture.py", 'X = "every second stair"\n')
         self.assertEqual(self.run_guard("--staged").returncode, 1)

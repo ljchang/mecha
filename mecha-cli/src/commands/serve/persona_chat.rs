@@ -3619,15 +3619,58 @@ impl PersonaChats {
         // its transcript, and the persona's latest and index in its folder,
         // all outside the jail. Stamped here, never by a model.
         tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));
+        // Each picture's prompt, saved beside the transcript for the owner
+        // ("save them for now", 2026-10-08), read by no tool.
+        tools.prompt_log = Some(
+            self.store
+                .join(&name)
+                .join("sessions")
+                .join(format!("{}.prompts.log", ps.session.meta.id)),
+        );
         // Each person's part of a scene's `together`, read on the persona's
         // own model, untouched as the edit panel's reader is (`roles`): the
         // persona puts the whole act in one sentence, and drawn as one it
         // duplicated a person in 6 of 12 real calls. A model that cannot be
         // had leaves the tool drawing the call as sent.
-        tools.role_split = (self.provider)(&bound, PersonaUse::Judge).ok().map(|p| {
-            Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
-                as Arc<dyn mecha_core::roles::RoleSplit>
-        });
+        tools.role_split = match (self.provider)(&bound, PersonaUse::Judge) {
+            Ok(p) => Some(
+                Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
+                    as Arc<dyn mecha_core::roles::RoleSplit>,
+            ),
+            Err(e) => {
+                tracing::warn!("persona chat: no role splitter this turn: {e:#}");
+                None
+            }
+        };
+        // This turn's ask, read for what the persona's picture call leaves
+        // out (`SceneReader`): the owner's words and the persona's latest
+        // reply, on its own model. Not on a panel turn, whose change the
+        // panel's own reader already drew from these words.
+        if panel.is_none() {
+            let reply = before
+                .iter()
+                .rev()
+                .find(|m| {
+                    m.role == mecha_core::message::Role::Assistant && !m.text().trim().is_empty()
+                })
+                .map(|m| m.text());
+            tools.scene_reader = match (self.provider)(&bound, PersonaUse::Judge) {
+                Ok(provider) => Some(Arc::new(mecha_core::persona::edit::ModelReader {
+                    provider,
+                    model: bound.model.clone(),
+                    owner: text.clone(),
+                    reply,
+                    persona: names.persona.clone(),
+                    character: names.character.clone(),
+                    library: names.library.clone(),
+                })
+                    as Arc<dyn mecha_core::persona::edit::SceneReader>),
+                Err(e) => {
+                    tracing::warn!("persona chat: no scene reader this turn: {e:#}");
+                    None
+                }
+            };
+        }
         cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);
@@ -11528,6 +11571,73 @@ mod tests {
     /// the source, as `every_served_session_builds_its_turn_context_through_
     /// for_session` is, because nothing at run time says which front end
     /// built a context (review of #589, pass 6).
+    /// Only the kept chats stamp a prompt log, and the assistant's only when
+    /// the chat has no room: an incognito chat keeps nothing past its room
+    /// (R9). Read from the source, as the scene slot's rule is, because
+    /// nothing at run time says which front end built a context (review of
+    /// #610).
+    #[test]
+    fn only_the_kept_chats_stamp_a_prompt_log() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+        walk(&root.join("../mecha-core/src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        let mut stamps = std::collections::BTreeSet::new();
+        let mut gated = false;
+        for f in files {
+            let src = std::fs::read_to_string(&f).unwrap();
+            let code = src.split("#[cfg(test)]\nmod tests").next().unwrap_or(&src);
+            let name = f.file_name().unwrap().to_string_lossy().into_owned();
+            for line in code.lines().map(str::trim) {
+                if line.starts_with("//") {
+                    continue;
+                }
+                let stamps_here = line.contains("prompt_log = Some(")
+                    || (line.contains("prompt_log:")
+                        && !line.contains("pub prompt_log")
+                        && !line.contains("prompt_log: None"));
+                if stamps_here {
+                    stamps.insert(name.clone());
+                    if name == "chat.rs" && line.contains("room().is_none()") {
+                        gated = true;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            stamps.into_iter().collect::<Vec<_>>(),
+            ["chat.rs", "persona_chat.rs"],
+            "a prompt log is stamped elsewhere"
+        );
+        assert!(gated, "the assistant chat stamps a log only without a room");
+        // And the scene reader only off a panel turn, whose own reader has
+        // drawn the change: a second read could turn a clothes edit into a
+        // pose (review of #610).
+        let src = std::fs::read_to_string(root.join("src/commands/serve/persona_chat.rs")).unwrap();
+        let code = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let stamp = code
+            .find("tools.scene_reader =")
+            .expect("the reader is stamped");
+        let gate = code[..stamp]
+            .rfind("if panel.is_none() {")
+            .expect("behind the panel gate");
+        assert!(
+            !code[gate..stamp].contains("\n        }\n"),
+            "the stamp sits inside the panel gate"
+        );
+    }
+
     #[test]
     fn only_the_served_chats_stamp_a_scene_slot() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
