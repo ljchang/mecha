@@ -1608,6 +1608,19 @@ const CANVAS_CAMERA_MOVES: &str = " <image1> is the canvas: keep its room and fu
 /// sixth face rather than drop one.
 const EDIT_REFERENCE_BUDGET: usize = 1 + crate::picture::MAX_FACES;
 
+/// `words` spelled as a library name could be: trimmed, lowercased, and each
+/// run of spaces or underscores a single hyphen. Names allow only lowercase
+/// letters, digits and hyphens, so this can only find the name meant.
+fn library_spelling(words: &str) -> String {
+    words
+        .trim()
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// A library name as the edit prompt says it, each word capitalised: "maya" →
 /// "Maya", "mara quinn" → "Mara Quinn" — the name is what binds a face to a
 /// person in the prompt (review of #586).
@@ -2245,7 +2258,7 @@ impl Tool for ImageGenerate {
                         "setting": {"description": SETTING_DESC},
                         "light": {"type": "string", "description": "Light, mood, time of day, colour tone."},
                         "camera": {"type": "string", "description": "Shot size, angle, framing."},
-                        "style": {"type": "string", "description": "A library style's name."},
+                        "style": {"type": "string", "description": "A library style's name; a look the library has no name for goes in words in `setting`."},
                         "people": {"type": "array", "items": person, "maxItems": crate::scene::MAX_PEOPLE, "description": PEOPLE_DESC},
                         "together": {"type": "string", "description": "What the people do with each other, once, by name."},
                         "text": {
@@ -2355,13 +2368,20 @@ impl Tool for ImageGenerate {
         // waiting on the owner, or one whose entry did not load, is still
         // refused by name: those are findings, not over-fill (review of #603).
         if let Some(name) = call.change.style.clone() {
-            let key = name.trim().to_lowercase();
+            // Spelled as a library name: a name is lowercase letters, digits
+            // and hyphens, so "Digital painting" can only mean
+            // `digital-painting` (mecha-a3, 2026-10-08: the live chat wrote
+            // the words eight times beside a library that now holds the name).
+            let key = library_spelling(&name);
             let kind = crate::imagelib::Kind::Style;
             let held = lib
                 .get(kind, &key)
                 .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
             if !held && !crate::imagelib::absent(&lib, kind, &key) {
                 return Ok(refused(crate::imagelib::missing(&lib, kind, &key)));
+            }
+            if held {
+                call.change.style = Some(key.clone());
             }
             if !held {
                 call.change.style = None;
@@ -2419,7 +2439,7 @@ impl Tool for ImageGenerate {
         {
             return Ok(refused(format!(
                 "{}'s library entry could not be read, so it cannot be drawn; the owner can \
-                 check it with `mecha library`.",
+                 check it with `mecha imagelib list`.",
                 capitalized(&name)
             )));
         }
@@ -2454,7 +2474,7 @@ impl Tool for ImageGenerate {
         {
             return Ok(refused(format!(
                 "{}'s library entry could not be read, so it cannot be drawn; the owner can \
-                 check it with `mecha library`.",
+                 check it with `mecha imagelib list`.",
                 capitalized(&name)
             )));
         }
@@ -6552,7 +6572,7 @@ mod tests {
     /// persona chat retried "call image_library" ten times (2026-10-08).
     #[tokio::test]
     async fn an_unknown_style_is_left_out_and_the_picture_draws() {
-        let (url, seen) = distinct(3).await;
+        let (url, seen) = distinct(8).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
         crate::imagelib::create(
             &lib,
@@ -6600,6 +6620,25 @@ mod tests {
             first.content
         );
         assert_eq!(posts(), 1);
+        // Words for a library style's name are that style: case, spaces and
+        // underscores are spelling, not a different style.
+        for words in ["Ink Wash", "ink_wash", " INK  wash "] {
+            let out = t
+                .call(
+                    json!({"scene": {"setting": "a quiet harbour", "style": words,
+                           "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert!(!out.content.contains("There is no"), "{}", out.content);
+            assert!(
+                last_prompt(&seen).contains("soft grey ink wash on rice paper"),
+                "{words}: the style's own words reach the prompt"
+            );
+        }
+        let posts_before = posts();
         // Over the chat's record, where the persona's calls went.
         let again = t
             .call(
@@ -6617,7 +6656,7 @@ mod tests {
             "{}",
             again.content
         );
-        assert_eq!(posts(), 2);
+        assert_eq!(posts(), posts_before + 1);
         let alone = t
             .call(
                 json!({"picture": picture_of(&again.content),
@@ -6637,7 +6676,7 @@ mod tests {
             "{}",
             alone.content
         );
-        assert_eq!(posts(), 2, "a refused call draws nothing");
+        assert_eq!(posts(), posts_before + 1, "a refused call draws nothing");
 
         // A style waiting on the owner, or one whose entry did not load, is a
         // finding: refused by name, never dropped (review of #603).
@@ -6672,7 +6711,7 @@ mod tests {
                 out.content
             );
         }
-        assert_eq!(posts(), 2);
+        assert_eq!(posts(), posts_before + 1);
 
         // A description longer than any library name is left out the same
         // way, never a shape refusal.
@@ -6697,7 +6736,7 @@ mod tests {
             "the echo is clipped: {}",
             out.content
         );
-        assert_eq!(posts(), 3);
+        assert_eq!(posts(), posts_before + 2);
 
         // With no library at all, nothing is offered to choose from.
         let bare = tool(&url)
