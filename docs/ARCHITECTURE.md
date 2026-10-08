@@ -691,6 +691,18 @@ The routes, in the result's own words and the manifest's `route`:
   costs no face. A scene keeps up to `MAX_PEOPLE` (10).
 - **`together` is cleared when anyone's act changes** unless the call
   restates it, since a relation between two poses is wrong for the next two.
+- **What a model over-fills is absorbed and said, never a shape refusal**
+  (mecha-a3's G1b on #597: 32 shape refusals in 130 replayed calls, nearly
+  all optional fields filled wrongly). The result names what was left out:
+  - a `retouch` beside a scene change rides along as one more line;
+  - a newcomer's missing pose is a plain one, and missing clothes come from
+    the chat's last scene (`worn`); a library character with neither is
+    asked for;
+  - a relation naming one person, with nobody in `people`, is that person
+    doing it;
+  - an overlong `together` is clipped at a sentence;
+  - a `mask` that is not a painted picture's path, has no retouch, sits
+    beside a scene change, or is not in the chat is left out.
 
 The pictures read go through the jail, as before. They are the picture, the
 setting photo and the mask, each:
