@@ -139,8 +139,9 @@ impl Default for ImageConfig {
             // fit under the Q4's 19 (2026-10-04).
             min_available_mb: 20_480,
             // Fifteen minutes, matching `comfyui-idle-reset`'s window: a
-            // picture inside a quarter hour of the last skips the 80–115 s
-            // reload (the owner's ruling, 2026-10-08).
+            // picture inside a quarter hour of the last is drawn warm. A cold
+            // one took 145–180 s against 36–63 s warm, 2026-10-08, the
+            // restart wait included (the owner's ruling, that day).
             unload_after_secs: 900,
             server_temp_dir: None,
         }
