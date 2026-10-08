@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An edit from the picture panel is drawn by mecha itself, and the
+  persona only answers.** Your words and what the picture was drawn as are
+  read into a typed change by a quick one-shot pass, the change is drawn,
+  and the persona replies in a line or two without a tool. A painted area is
+  drawn as written. A name the library doesn't hold, or a change that can't
+  be read, is said on the card instead of drawn as a stranger, and nothing
+  is drawn. Asking for another try draws the same scene again at a new seed.
 - **Pictures are described as a scene, and the tool writes the prompt**
   (`IMAGE-DESIGN.md`). `image_generate` takes a `scene`:
   - `setting`, which is everything but the people and the words, as text or

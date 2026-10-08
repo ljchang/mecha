@@ -1915,23 +1915,38 @@ module.
       nor the note's parenthetical and read on as a harness clause. This is
       the first registered harness voice whose body carries model-written
       text, and a reply can carry what a tool read back.
-  - **A turn the picture edit panel sent is answered in a line**
-    (`persona::edit`, 2026-10-05). The page marks the turn
-    (`SendBody::edit`), so it is known by the door it came through, never by
-    parsing `Edit <picture>: …`; the server adds a run note: make the edit,
-    answer in a sentence or two, and don't describe a picture you have not
-    seen (`image_generate` never shows the persona its result). Unmarked,
-    edit replies retold the scene and then reused the rest of the previous
-    reply: 11 of 34 edit replies across every persona chat were at least
-    half copied, against 9 of 201 turns that drew nothing. Replayed on 22
-    edit turns, the recorded tool call kept: at least half copied 37/64 →
-    16/66, longest copy 206 → 126 words, median length 744 → 209 chars,
-    judged blind 66–59 (a tie), and the edit prompts unchanged. Typed turns
-    only: on a call the panel's words go out as speech, and the call note
-    already says a picture reaches the owner unseen. A message that steers a
-    run in flight adds no note of its own. As a run note it lasts exactly the
-    edit's run, so a later typed message is never told it came from the
-    panel.
+  - **A turn the picture edit panel sent is drawn by the harness, and the
+    persona only replies** (`persona::edit`, IMAGE-DESIGN.md §5.3, built in
+    step 3). The page sends the edit as fields (`SendBody::edit`: picture,
+    mask, words), so nothing is parsed back out of `Edit <picture>: …`.
+    - **Safety first.** The turn meets the crisis check before anything
+      runs, as any persona turn does.
+    - **The extraction.** The owner's words and the picture's record go
+      through a one-shot `QuarantinedPass` on the persona's model
+      (`PersonaUse::Judge`): no tools, no history, no thinking, and the
+      schema where the provider honours one (`extraction_request`; a3's
+      measured flat shape with no `kind`). A painted area skips it: a mask
+      is a retouch of the owner's words. A bare name the picture and the
+      library do not hold is a failure, never a stranger drawn under it.
+      Nothing asked is a redraw (§5.3 step 5).
+    - **The draw.** The typed call goes through `Agent::dispatch_one`, every
+      gate a model's call meets, inline, before the reply.
+    - **The record.** The turn keeps one fact, a harness-voice block folded
+      into the owner's message (`edit::fact`: the picture, the typed change,
+      and the tool's own result), recorded at once with `Record::Extend` so
+      a reply that fails cannot take it back. No `tool_use` is forged. The
+      transcript draws the fact as the `image_generate` card after the
+      owner's bubble (`chat::transcript_entries`).
+    - **The reply.** The persona's run opens closing (`RunContext::close_with`):
+      `tool_choice: none` on its first request, under `edit::DONE`, or
+      `edit::NOT_DRAWN` when nothing was drawn (the reason is in the fact),
+      with a fixed line in place of an empty reply or a call written as text.
+    - The retired edit note (`edit::is_note`) is still recognised in older
+      transcripts. Its measurement (2026-10-05) stands as the reason the
+      reply is a line: unmarked, 11 of 34 edit replies were at least half
+      copied from the five before.
+    - Typed turns only: on a call the panel's words go out as speech and the
+      persona makes the call, under the call note.
   - **A spoken turn reasons within `SPOKEN_THINK_BUDGET` (1024 tokens)** on
     every request the loop makes, the forced final turn included, sent as
     llama-server's `reasoning_budget_tokens` (`CompletionRequest::think_budget`,
@@ -4643,7 +4658,7 @@ invariants:
     - A call refused because an earlier turn's picture is still being made closes a run set to end on its picture, with `PICTURE_STILL_BEING_MADE` as the line. Any other run keeps working after one such refusal, since a slow picture says nothing about its run, and closes on a retry of the refused call.
     - A second call in one batch that the queue refuses because this run's own picture is out counts as a repeat: the picture this run started is the fact said, first.
   - **On a voice call** the closing reply arrives whole rather than streamed. It is a sentence or two.
-  - **The panel's note rides every request before the run's first tool result,** empty-reply retries included, and none after it (`persona::edit::is_note`). The ceiling's final answer does not re-send it. Re-sent beside a "being made" result, it was the measured loop trigger. With `ToolChoice::None` and the note sent once, the closing reply was clean 5 times in 6, against 1 in 6 for the LoopGuard's exit.
+  - **A run can open closing** (`RunContext::close_with`): the edit panel's reply, after the harness drew the change itself. The closing line and its fixed reply come from the caller (`agent::Closing`), never from the loop. The panel's retired note was the measured loop trigger when re-sent beside a "being made" result; with `ToolChoice::None` and a closing line, the closing reply was clean 5 times in 6, against 1 in 6 for the LoopGuard's exit.
 - **One job per conversation, refused in the tool's words.** A second is a
   `refusal: true` result with the tool's own busy text, never a tool failure.
 - **A late result is finished by the loop's own rule** — the turn's cap, the
