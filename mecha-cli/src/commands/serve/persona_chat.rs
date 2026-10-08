@@ -325,6 +325,16 @@ async fn draw_panel_edit(
                     .and_then(|bytes| slot.lookup(&bytes)),
                 _ => None,
             };
+            // The extraction reads the record, so what it writes is no cleaner
+            // than the record: an untrusted one arms the conversation before
+            // the dispatch stamps the fields it sets (IMAGE-DESIGN.md §5.3
+            // step 2; review of #595: a re-wording would launder it).
+            if record
+                .as_ref()
+                .is_some_and(|r| r.origin() == mecha_core::scene::Origin::Untrusted)
+            {
+                conversation.taint.untrusted = true;
+            }
             let persona = names
                 .character
                 .as_deref()
@@ -5302,6 +5312,8 @@ mod tests {
         judged: Arc<StdMutex<usize>>,
         /// What the stand-in `image_generate` was called with.
         drawn: Arc<StdMutex<Vec<serde_json::Value>>>,
+        /// Whether each of those calls ran with the conversation untrusted.
+        drawn_untrusted: Arc<StdMutex<Vec<bool>>>,
     }
 
     impl Drop for World {
@@ -5339,7 +5351,10 @@ mod tests {
     /// A stand-in `image_generate`: there to be in a persona's registry, for
     /// what the harness says to a persona that can draw (§5.6). It keeps each
     /// call's input and answers as the tool's first line does.
-    struct DrawStub(Arc<StdMutex<Vec<serde_json::Value>>>);
+    struct DrawStub(
+        Arc<StdMutex<Vec<serde_json::Value>>>,
+        Arc<StdMutex<Vec<bool>>>,
+    );
 
     #[async_trait::async_trait]
     impl mecha_core::tool::Tool for DrawStub {
@@ -5362,9 +5377,13 @@ mod tests {
         async fn call(
             &self,
             input: serde_json::Value,
-            _: &mecha_core::tool::ToolCtx,
+            ctx: &mecha_core::tool::ToolCtx,
         ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
             self.0.lock().unwrap().push(input);
+            self.1
+                .lock()
+                .unwrap()
+                .push(ctx.taint.is_some_and(|t| t.untrusted));
             Ok(mecha_core::tool::ToolOutput::ok(
                 "image: images/stub.png\nA new picture. It is on the owner's screen; you have not seen it.",
             ))
@@ -5434,8 +5453,12 @@ mod tests {
         pool.insert(Arc::new(mecha_core::tool::builtin::FsRead));
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
         let drawn = Arc::new(StdMutex::new(Vec::new()));
+        let drawn_untrusted = Arc::new(StdMutex::new(Vec::new()));
         if draws {
-            pool.insert(Arc::new(DrawStub(Arc::clone(&drawn))));
+            pool.insert(Arc::new(DrawStub(
+                Arc::clone(&drawn),
+                Arc::clone(&drawn_untrusted),
+            )));
         }
         let mut config = mecha_core::config::Config::default();
         tune(&mut config);
@@ -5464,6 +5487,7 @@ mod tests {
             judge,
             judged,
             drawn,
+            drawn_untrusted,
         }
     }
 
@@ -5726,6 +5750,71 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("image: images/stub.png"));
+    }
+
+    /// The extraction reads the picture's record, so an untrusted record
+    /// arms the conversation before the harness draws: the fields the call
+    /// sets are stamped untrusted, never laundered by a re-wording
+    /// (IMAGE-DESIGN.md §5.3 step 2; review of #595).
+    #[tokio::test]
+    async fn a_panel_edit_of_an_untrusted_record_draws_untrusted() {
+        use mecha_core::scene::{Field, Origin, Scene, Setting};
+        let w = world_built(
+            Mode::Say("Ochre gulls wheel overhead.".into()),
+            |_| {},
+            true,
+        );
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        let id = opened["session"].as_str().unwrap().to_string();
+        let ws = w
+            .personas()
+            .workspace_of(&w.library, &key, None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(ws.join("images")).unwrap();
+        let bytes = b"a picture drawn from a stranger's words".to_vec();
+        std::fs::write(ws.join("images/a.png"), &bytes).unwrap();
+        let scene = Scene {
+            setting: Some(Field {
+                value: Setting::Words {
+                    text: "a pier at dusk".into(),
+                },
+                origin: Origin::Untrusted,
+            }),
+            picture: Some(mecha_core::scene::hash(&bytes)),
+            people_known: true,
+            chat: Some(id.clone()),
+            ..Scene::default()
+        };
+        let slot = scene_slot(&w.store(), "mara", &id);
+        slot.land(&scene).unwrap();
+        // A later picture, clean, is the chat's scene now: its note arms
+        // nothing, so only the edited picture's own record can.
+        slot.land(&Scene {
+            setting: Some(Field {
+                value: Setting::Words {
+                    text: "a quiet library".into(),
+                },
+                origin: Origin::Clean,
+            }),
+            picture: Some(mecha_core::scene::hash(b"a later picture")),
+            people_known: true,
+            chat: Some(id.clone()),
+            ..Scene::default()
+        })
+        .unwrap();
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "make it night".into(),
+        };
+        turn_as(&w, &key, "Edit images/a.png: make it night", Some(edit)).await;
+        assert_eq!(w.drawn_untrusted.lock().unwrap().clone(), vec![true]);
     }
 
     /// A name the library does not hold is not drawn as a stranger: nothing
