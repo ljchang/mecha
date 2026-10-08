@@ -276,11 +276,11 @@ pub const UNMASKED_EDIT_REFERENCE_SIZE: u32 = 512;
 /// went at 1024 (1184×896 for a 4:3 photo). Named explicitly now that the
 /// references go smaller, or the picture would come out at their size.
 pub(crate) fn canvas_dims(bytes: &[u8]) -> Option<(u32, u32)> {
-    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()?;
+    // Upright, as every other reader of a reference: a phone photo stored
+    // sideways under the fit threshold keeps its tag, and the server turns it
+    // before encoding (review of #600).
+    let img = crate::image::decode_upright(bytes, "the canvas").ok()?;
+    let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
         return None;
     }
@@ -2308,9 +2308,12 @@ impl Tool for ImageGenerate {
         // on 2026-10-08. Only a path inside the jail that does not exist:
         // anything the jail refuses is still refused as before.
         if let Some(p) = call.picture.clone() {
-            let missing = ctx
-                .resolve(&p)
-                .is_ok_and(|path| std::fs::symlink_metadata(path).is_err());
+            let missing = ctx.resolve(&p).is_ok_and(|path| {
+                // Only absence: a picture present but unreadable is
+                // refused by the read below, as before (review of #600).
+                std::fs::symlink_metadata(path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            });
             if missing {
                 let has_scene = call.change != crate::scene::SceneChange::default()
                     || call.setting_photo.is_some();
@@ -6666,6 +6669,11 @@ mod tests {
                 .unwrap(),
         );
         assert!(w > h, "the landscape room kept its shape: {w}x{h}");
+        // A photo stored sideways is sized as the page shows it, upright.
+        assert_eq!(
+            canvas_dims(&jpeg_with_orientation(64, 48, 6)),
+            Some((896, 1184))
+        );
         assert_eq!(
             canvas_dims(&std::fs::read(dir.join("inbox/room.png")).unwrap()),
             Some((1184, 896))
@@ -6724,7 +6732,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(outside.is_error, "{}", outside.content);
+        assert!(
+            outside.is_error && outside.content.contains("is not a file in the workspace"),
+            "the jail refuses it, never the absorb: {}",
+            outside.content
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }
