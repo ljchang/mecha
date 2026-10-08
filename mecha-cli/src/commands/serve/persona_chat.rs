@@ -378,7 +378,11 @@ async fn draw_panel_edit(
                 .as_ref()
                 .filter(|r| r.people.len() == 1)
                 .map(|r| mecha_core::picture::shown(&r.people[0].who));
-            match edit::read_extraction_for(&text, &known, sole.as_deref()) {
+            let looks = edit::Looks {
+                styles: &styles,
+                record: record.as_ref(),
+            };
+            match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
                 Ok(extracted) => {
                     if let Err(why) = edit::photo_kept(&extracted) {
                         return fail(why);

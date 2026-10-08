@@ -138,9 +138,9 @@ for the face, `wearing` for clothes (clothes alone: only `wearing`), `where` for
 in the frame; `remove` to take \
 someone out; someone new with their `who`, `wearing` and `doing`; `together` for what the people \
 in the picture do with each other, as one line naming them; `camera`, `light`, `setting` when \
-those change; `style` when the owner asks for a different look, as one of the names in \
-`styles`, never words for it; a look none of `styles` names goes in `setting`, as the record's \
-setting again with the look added; `retouch` for a small change to something that is not a person. \
+those change; `look` when the owner asks for a different look (a style, a medium, an era), \
+copied short in the owner's own words; `retouch` for a small change to something that is not a \
+person. \
 Leave out \
 everything that stays the same. If the words only ask for another try, answer {}. Answer with \
 JSON only.";
@@ -163,7 +163,7 @@ pub fn extraction_schema() -> serde_json::Value {
             "camera": {"type": "string"},
             "light": {"type": "string"},
             "setting": {"type": "string"},
-            "style": {"type": "string"},
+            "look": {"type": "string"},
             "retouch": {"type": "string"}
         }
     })
@@ -263,7 +263,66 @@ pub fn extraction_request(
 /// the library holds; a bare name it does not is a failure (§5.3 step 6),
 /// never a stranger drawn under that name.
 pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extracted, String> {
-    read_extraction_for(text, known, None)
+    read_extraction_for(text, known, None, &Looks::default())
+}
+
+/// What a `look` is matched against: the library's style names, and the
+/// picture's record, whose setting an unmatched look joins.
+#[derive(Default)]
+pub struct Looks<'a> {
+    pub styles: &'a [String],
+    pub record: Option<&'a crate::scene::Scene>,
+}
+
+/// The owner's look, in their words, made a change by code (mecha-a3's G605:
+/// the reader copies a look faithfully, 27 of 27, but given `style` it chose
+/// the nearest name or invented one, 0 of 18 unheld looks right). A look the
+/// library has a style for is that `style`, spelled as names are and with a
+/// trailing "style" or "look" dropped; any other look joins the setting in
+/// words. Over the owner's photo it cannot: words would replace the photo,
+/// so that is refused with the way on.
+fn look_into(
+    look: &str,
+    looks: &Looks,
+    scene: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let words = look.trim();
+    let lower = words.to_lowercase();
+    let bare = ["style", "look"]
+        .iter()
+        .find_map(|tail| lower.strip_suffix(tail))
+        .map_or(lower.as_str(), str::trim);
+    let key = crate::imagelib::spelled_as_name(bare);
+    if looks.styles.contains(&key) {
+        scene.insert("style".into(), key.into());
+        return Ok(());
+    }
+    use crate::scene::Setting;
+    let base = match scene.get("setting").and_then(serde_json::Value::as_str) {
+        Some(given) => Some(given.to_string()),
+        None => match looks
+            .record
+            .and_then(|r| r.setting.as_ref())
+            .map(|f| &f.value)
+        {
+            Some(Setting::Photo { .. }) => {
+                return Err(
+                    "this picture is placed on the owner's photo, and a look the \
+                            library has no style for would replace the photo: name one of the \
+                            library's styles instead"
+                        .into(),
+                )
+            }
+            Some(Setting::Words { text }) => Some(text.clone()),
+            _ => None,
+        },
+    };
+    let setting = match base {
+        Some(b) => format!("{}, in the look of {words}", b.trim_end_matches('.')),
+        None => format!("in the look of {words}"),
+    };
+    scene.insert("setting".into(), setting.into());
+    Ok(())
 }
 
 /// [`read_extraction`], knowing the record's one person when it holds
@@ -273,6 +332,7 @@ pub fn read_extraction_for(
     text: &str,
     known: &dyn Fn(&str) -> bool,
     sole: Option<&str>,
+    looks: &Looks,
 ) -> Result<Extracted, String> {
     let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) else {
         return Err("the answer held no JSON object".into());
@@ -284,7 +344,7 @@ pub fn read_extraction_for(
         .map_err(|e| format!("the answer did not read as JSON: {e}"))?;
     let obj = v.as_object().ok_or("the answer was not an object")?;
     let mut scene = serde_json::Map::new();
-    for k in ["together", "camera", "light", "setting", "style"] {
+    for k in ["together", "camera", "light", "setting"] {
         match obj.get(k) {
             None | Some(serde_json::Value::Null) => {}
             Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
@@ -339,6 +399,12 @@ pub fn read_extraction_for(
         if !out.is_empty() {
             scene.insert("people".into(), out.into());
         }
+    }
+    match obj.get("look") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
+        Some(serde_json::Value::String(t)) => look_into(t, looks, &mut scene)?,
+        Some(_) => return Err("`look` was not text".into()),
     }
     let retouch = match obj.get("retouch") {
         Some(serde_json::Value::String(t)) if !t.trim().is_empty() => Some(t.trim().to_string()),
@@ -523,7 +589,13 @@ mod tests {
         );
         // A bare removal takes out the record's one person; with no sole
         // person it is a failure, said.
-        let e = read_extraction_for(r#"{"remove": true}"#, &known, Some("Maya")).unwrap();
+        let e = read_extraction_for(
+            r#"{"remove": true}"#,
+            &known,
+            Some("Maya"),
+            &Looks::default(),
+        )
+        .unwrap();
         assert_eq!(e.scene["people"][0]["remove"], true);
         assert_eq!(e.scene["people"][0]["who"], "Maya");
         assert!(read_extraction(r#"{"remove": true}"#, &known).is_err());
@@ -540,49 +612,90 @@ mod tests {
         }
     }
 
-    /// A change of look has its own field: "change the style to
-    /// hyperrealistic" had none, became a retouch, and drew the same picture
-    /// again (2026-10-08). The request offers the style names, the record
-    /// says the current one, and the answer's `style` reaches the call.
+    /// A change of look is the owner's words in `look`, made a change by
+    /// code: a held style by name, any other look in the setting's words, and
+    /// over the owner's photo a refusal. "Change the style to hyperrealistic"
+    /// once had no field and became a retouch that drew the same picture
+    /// again; given `style`, the reader then chose the nearest name for a look
+    /// the library lacks (mecha-a3's G605, 2026-10-08).
     #[test]
-    fn a_change_of_style_is_a_style_not_a_retouch() {
-        assert!(extraction_schema()["properties"]["style"].is_object());
-        assert!(EXTRACTION_SYSTEM.contains("`style` when the owner asks for a different look"));
-        let styles = vec!["ink-wash".to_string(), "noir".to_string()];
+    fn a_change_of_look_is_matched_by_code() {
+        assert!(extraction_schema()["properties"]["look"].is_object());
+        assert!(extraction_schema()["properties"].get("style").is_none());
+        assert!(EXTRACTION_SYSTEM.contains("`look` when the owner asks for a different look"));
+        let styles = vec!["ink-wash".to_string(), "black-and-white".to_string()];
         let r = extraction_request("m", None, "make it noir", None, &styles, true);
         let body: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
-        assert_eq!(body["styles"], serde_json::json!(["ink-wash", "noir"]));
+        assert_eq!(
+            body["styles"],
+            serde_json::json!(["ink-wash", "black-and-white"])
+        );
         let known = |_: &str| true;
-        // The look said as a retouch beside it is left out, never drawn as
-        // the near-copy retouch it was.
-        let e = read_extraction(r#"{"style": "noir", "retouch": "noir style"}"#, &known).unwrap();
-        assert_eq!(e.call("p")["scene"]["style"], "noir");
-        assert!(e.call("p").get("retouch").is_none());
-        assert_eq!(e.left_out.as_deref(), Some("noir style"));
-        assert!(EXTRACTION_SYSTEM.contains("a look none of `styles` names goes in `setting`"));
-        let mut scene = crate::scene::Scene::default();
-        scene.style = Some(crate::scene::Field {
-            value: "ink-wash".to_string(),
-            origin: crate::scene::Origin::Clean,
-        });
-        assert_eq!(record_for(&scene)["style"], "ink-wash");
-    }
-
-    /// A look restated over the photo stand-in is refused, never written
-    /// over the owner's photo; a real change of place still goes through.
-    #[test]
-    fn a_look_over_the_owners_photo_never_replaces_it() {
-        let known = |_: &str| true;
-        let echo = read_extraction(
-            r#"{"setting": "The owner's photo, in watercolour"}"#,
-            &known,
-        )
-        .unwrap();
-        assert!(photo_kept(&echo)
-            .unwrap_err()
-            .contains("name one of the library's styles"));
-        let moved = read_extraction(r#"{"setting": "a windswept beach"}"#, &known).unwrap();
-        assert!(photo_kept(&moved).is_ok());
+        let words = |text: &str| crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Words { text: text.into() },
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
+        let harbour = words("a quiet harbour.");
+        let looks = Looks {
+            styles: &styles,
+            record: Some(&harbour),
+        };
+        let read = |t: &str| read_extraction_for(t, &known, None, &looks);
+        // A held style, however it is said, and a retouch beside it left out.
+        for said in ["Black and white", "black-and-white style", "INK WASH look"] {
+            let e = read(&format!(r#"{{"look": "{said}", "retouch": "{said}"}}"#)).unwrap();
+            assert!(
+                ["black-and-white", "ink-wash"].contains(&e.scene["style"].as_str().unwrap()),
+                "{said}: {:?}",
+                e.scene
+            );
+            assert!(e.call("p").get("retouch").is_none() && e.left_out.is_some());
+        }
+        // Any other look joins the record's setting, in the owner's words.
+        let e = read(r#"{"look": "pencil sketch"}"#).unwrap();
+        assert_eq!(
+            e.scene["setting"],
+            "a quiet harbour, in the look of pencil sketch"
+        );
+        assert!(e.scene.get("style").is_none());
+        // Beside a new place, it joins that one.
+        let e = read(r#"{"setting": "a windswept beach", "look": "1920s postcard"}"#).unwrap();
+        assert_eq!(
+            e.scene["setting"],
+            "a windswept beach, in the look of 1920s postcard"
+        );
+        // Over the owner's photo, words would replace it: refused.
+        let photo = crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Photo {
+                    path: "inbox/room.jpg".into(),
+                    hash: "h".into(),
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
+        let on_photo = Looks {
+            styles: &styles,
+            record: Some(&photo),
+        };
+        let why = read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &on_photo)
+            .unwrap_err();
+        assert!(why.contains("name one of the library's styles"), "{why}");
+        // A held style over the photo is fine: the photo stays.
+        let e = read_extraction_for(r#"{"look": "ink wash"}"#, &known, None, &on_photo).unwrap();
+        assert_eq!(e.scene["style"], "ink-wash");
+        let styled = crate::scene::Scene {
+            style: Some(crate::scene::Field {
+                value: "ink-wash".to_string(),
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(record_for(&styled)["style"], "ink-wash");
     }
 
     #[test]
