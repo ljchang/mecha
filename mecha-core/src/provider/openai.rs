@@ -151,6 +151,9 @@ impl OpenAiCompatible {
                 })
                 .collect();
             obj.insert("tools".into(), json!(tools));
+            if req.tool_choice == crate::message::ToolChoice::None {
+                obj.insert("tool_choice".into(), json!("none"));
+            }
         }
         body
     }
@@ -863,7 +866,34 @@ mod tests {
             think: None,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
+    }
+
+    /// A closing request asks for words with the tools still listed, so the
+    /// cached prefix holds (IMAGE-DESIGN.md §5.5); every other request sends
+    /// no `tool_choice` at all, as before it existed.
+    #[test]
+    fn tool_choice_none_is_sent_only_when_asked_and_only_with_tools() {
+        let spec = crate::message::ToolSpec {
+            name: "draw".into(),
+            description: "Draw.".into(),
+            input_schema: json!({"type": "object"}),
+        };
+        let mut req = plain_req();
+        req.tools = vec![spec];
+        let body = provider(None, None).body(&req, false);
+        assert!(body.get("tool_choice").is_none(), "{body}");
+        req.tool_choice = crate::message::ToolChoice::None;
+        let body = provider(None, None).body(&req, false);
+        assert_eq!(body["tool_choice"], json!("none"));
+        assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
+        req.tools.clear();
+        let body = provider(None, None).body(&req, false);
+        assert!(
+            body.get("tool_choice").is_none(),
+            "no tools, nothing to choose"
+        );
     }
 
     #[test]
@@ -894,6 +924,7 @@ mod tests {
         let capped = CompletionRequest {
             think_budget: Some(1024),
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
             ..plain_req()
         };
         let body = local.body(&capped, false);
@@ -948,6 +979,7 @@ mod tests {
                 think: Some(false),
                 think_budget: None,
                 trailing_notes: 0,
+                tool_choice: crate::message::ToolChoice::Auto,
                 ..plain_req()
             },
             false,

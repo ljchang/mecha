@@ -153,6 +153,7 @@ impl QuarantinedPass {
             think: self.think,
             think_budget: None,
             trailing_notes: 0,
+            tool_choice: crate::message::ToolChoice::Auto,
         }
     }
 
