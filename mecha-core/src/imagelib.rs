@@ -904,9 +904,33 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
             kind.label()
         ),
         _ => format!(
-            "No approved {} named `{name}`. Call image_library to see what exists.",
-            kind.label()
+            "No approved {} named `{name}`. {}.",
+            kind.label(),
+            what_there_is(lib, kind)
         ),
+    }
+}
+
+/// What the library holds of `kind`, said in a refusal or a note: the
+/// approved names, never a tool to call (a persona chat has no
+/// `image_library`, and one retried a refusal naming it until its turns ran
+/// out, 2026-10-08). A locked entry is left out without a count, as the
+/// page leaves it out while browsing.
+pub(crate) fn what_there_is(lib: &Library, kind: Kind) -> String {
+    let names: Vec<String> = lib
+        .all()
+        .iter()
+        .filter(|e| e.kind == kind && e.status == Status::Approved && !e.locked)
+        .map(|e| format!("`{}`", e.name))
+        .collect();
+    if names.is_empty() {
+        format!("The image library has no {}", kind.dir())
+    } else {
+        format!(
+            "The image library's {} are {}",
+            kind.dir(),
+            names.join(", ")
+        )
     }
 }
 
@@ -1226,6 +1250,30 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    /// A name the library does not hold is answered with what it does hold,
+    /// never a tool to call, and never a locked entry (2026-10-08: a persona
+    /// chat has no image_library and retried the refusal naming it).
+    #[test]
+    fn a_missing_entry_names_what_there_is_never_a_tool() {
+        let dir = scratch();
+        create(dir.path(), style("noir")).unwrap();
+        let mut hidden = style("hidden-look");
+        hidden.locked = true;
+        create(dir.path(), hidden).unwrap();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let said = missing(&lib, Kind::Style, "pastel");
+        assert!(said.contains("`noir`"), "{said}");
+        assert!(
+            !said.contains("hidden-look") && !said.contains("image_library"),
+            "{said}"
+        );
+        assert!(missing(&lib, Kind::Character, "ivo").contains("`wren`"));
+        let empty = scratch();
+        let none = Library::load(empty.path()).0;
+        assert!(missing(&none, Kind::Style, "pastel").contains("has no styles"));
+    }
+
     #[test]
     fn a_failed_install_leaves_no_temp_file_behind() {
         let dir = scratch();
