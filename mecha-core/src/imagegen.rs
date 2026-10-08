@@ -2305,6 +2305,10 @@ fn merge_read(
     merged
 }
 
+/// How long a persona's picture waits for the scene reader before it is drawn
+/// as the call said it. Before the split, so a turn can spend both.
+const SCENE_READ_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// How long a picture waits for its people's parts (`roles`) before it is
 /// drawn as the call said it.
 const ROLE_SPLIT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -2655,7 +2659,7 @@ impl Tool for ImageGenerate {
                 let record = base
                     .clone()
                     .or_else(|| ctx.scene.as_ref().and_then(|s| s.current()));
-                let read = tokio::time::timeout(ROLE_SPLIT_TIMEOUT, reader.read(record.as_ref()))
+                let read = tokio::time::timeout(SCENE_READ_TIMEOUT, reader.read(record.as_ref()))
                     .await
                     .unwrap_or_else(|_| Err("the reader took too long".into()));
                 Some(match read {
@@ -3712,6 +3716,9 @@ fn append_prompt(log: &std::path::Path, line: &Value) -> std::io::Result<()> {
         .append(true)
         .mode(0o600)
         .open(log)?;
+    // `mode` holds only when the file is made: an older one is narrowed too.
+    use std::os::unix::fs::PermissionsExt;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     writeln!(f, "{line}")
 }
 
@@ -6890,41 +6897,68 @@ mod tests {
     /// what arms the next turn's note (review of #610).
     #[tokio::test]
     async fn a_merge_from_an_untrusted_record_lands_untrusted() {
-        let (url, _seen) = distinct(3).await;
+        let (url, _seen) = distinct(2).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
         let t = tool(&url).with_library_dir(lib.clone());
-        let mut cx = scene_ctx(&dir, &store, "chat-a");
-        cx.taint = Some(crate::agent::Taint {
-            private: false,
-            untrusted: true,
-        });
-        let first = t
-            .call(
-                json!({"scene": {"setting": "a park", "people": [
-                    {"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
-                &cx,
-            )
-            .await
-            .unwrap();
-        assert!(!first.is_error, "{}", first.content);
-        let mut cx = clean(cx);
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        // A picture whose record is clean but for its `together`, which the
+        // next call clears by posing someone: without the union, nothing
+        // untrusted would be left in the scene that lands.
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        let bytes = picture(8, [120, 90, 60]);
+        std::fs::write(dir.join("images/base.png"), &bytes).unwrap();
+        let clean_field = |v: &str| {
+            Some(crate::scene::Field {
+                value: v.to_string(),
+                origin: crate::scene::Origin::Clean,
+            })
+        };
+        let person = |key: &str, wearing: &str| crate::scene::Person {
+            who: crate::scene::Who::Library(key.into()),
+            at: None,
+            wearing: wearing.into(),
+            doing: String::new(),
+            expression: String::new(),
+            origin: crate::scene::Origin::Clean,
+        };
+        let base = crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Words {
+                    text: "a park".into(),
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            light: clean_field("a flat grey overcast"),
+            together: Some(crate::scene::Field {
+                value: "Maya hands John a cup".into(),
+                origin: crate::scene::Origin::Untrusted,
+            }),
+            people: vec![person("maya", "a coat"), person("john", "a suit")],
+            people_known: true,
+            picture: Some(crate::scene::hash(&bytes)),
+            chat: Some("chat-a".into()),
+            ..Default::default()
+        };
+        cx.scene.as_ref().unwrap().land(&base).unwrap();
         cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
-            "people": [{"who": "Maya", "doing": "waving at the camera"}]
+            "people": [{"who": "Maya", "doing": "tying a shoelace"}]
         })))));
         let out = t
             .call(
-                json!({"picture": picture_of(&first.content), "scene": {"people": [{"who": "maya"}]}}),
+                json!({"picture": "images/base.png", "scene": {"people": [{"who": "maya"}]}}),
                 &cx,
             )
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
+        assert_eq!(manifest_of(&dir, &out.content)["reader"], "merged: doing×1");
         let landed = cx
             .scene
             .as_ref()
             .unwrap()
             .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
             .unwrap();
+        assert!(landed.together.is_none(), "the pose change cleared it");
         assert_eq!(landed.origin(), crate::scene::Origin::Untrusted);
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
