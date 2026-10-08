@@ -473,7 +473,7 @@ where
 }
 
 /// The scene note's opening when every field came from a clean run
-/// (`IMAGE-SCENE-DESIGN.md` §5.5, step 4). It rides in a run's notes, and
+/// (`IMAGE-DESIGN.md` §6; built as `IMAGE-SCENE-DESIGN.md` step 4). It rides in a run's notes, and
 /// arms taint by its stem as memory's does: two stems, because notes arm at
 /// every run start, and one stem arming both would make every chat with a
 /// scene untrusted. Both arm `private`: a scene can carry an owner photo, or a
