@@ -2001,7 +2001,8 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      clothes, a pose, an expression or a person, which are `scene.people`. With a painted \
      area, also pass its `mask`, and never make one up. When the user attaches a photo of a \
      place and wants someone in it, that photo is the setting: `scene.setting` is \
-     {\"photo\": <its path>}, not the room described in words. Nobody is drawn twice, and at most \
+     {\"photo\": <its path>}, not the room described in words; a photo attached earlier in \
+     the chat is still a setting you can name by its path. Nobody is drawn twice, and at most \
      five people with faces fit one picture. The library supplies how its characters look \
      (image_library lists who exists), so do not describe their faces. The image model renders \
      text well: put the exact words in `scene.text`. The first line of a result is the new \

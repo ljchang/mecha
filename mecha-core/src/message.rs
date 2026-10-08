@@ -1406,8 +1406,13 @@ mod tests {
             variety.clone(),
         ]);
         let mut edit = Message::user("Edit images/a.png: make the sky pink");
-        edit.content
-            .extend([variety.clone(), Block::text(crate::persona::edit::note())]);
+        edit.content.extend([
+            variety.clone(),
+            Block::text(format!(
+                "{}. An older transcript's note.)",
+                crate::persona::edit::EDIT_STEM
+            )),
+        ]);
         // A second chat-start block, which no recorded chat holds, goes as a
         // stale copy; the first stays.
         second.content.push(memory.clone());

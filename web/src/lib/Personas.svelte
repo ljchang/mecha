@@ -331,9 +331,10 @@
       }
       input = message;
       imageEdit = null;
-      // Marked as the panel's, so the persona is told it was an edit and
-      // answers in a line rather than retelling a picture it has not seen.
-      await send({ edit: true });
+      // The edit as fields beside the message the owner sees: the harness
+      // draws it itself and the persona only replies (IMAGE-DESIGN.md §5.3),
+      // so nothing is parsed back out of the words.
+      await send({ edit: { picture: edit.path, mask: maskPath ?? undefined, words: text.trim() } });
     } catch (err) {
       if (imageEdit === edit) {
         edit.busy = false;
@@ -1247,7 +1248,7 @@
     }
   }
 
-  async function send({ edit = false } = {}) {
+  async function send({ edit = null } = {}) {
     const typed = input.trim();
     const attached = [...attachments];
     const text = withAttachments(typed, attached);
@@ -1258,7 +1259,7 @@
       const res = await fetch(chatUrl(key, '/send'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, attachments: attached, unlock: token ?? undefined, edit: edit || undefined }),
+        body: JSON.stringify({ text, attachments: attached, unlock: token ?? undefined, edit: edit ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
