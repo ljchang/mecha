@@ -282,6 +282,35 @@ pub fn parse(
     })
 }
 
+/// `text` with each whole-word mention of `names` (library keys, any case,
+/// possessives kept) read as "the viewer": what the image model reads for
+/// someone named but not in the picture.
+pub fn as_viewer(text: &str, names: &[String]) -> String {
+    if names.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if names.iter().any(|n| n.eq_ignore_ascii_case(word)) {
+            out.push_str("the viewer");
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '-' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 /// A painted picture's workspace path: one plain path to an image file.
 fn looks_like_a_picture_path(t: &str) -> bool {
     let t = t.trim();
@@ -427,6 +456,9 @@ pub struct Plan {
     /// more line of the render, folded in rather than refused (G1b: 13 of
     /// 65 shape refusals were this).
     pub also: Option<String>,
+    /// Library characters named in the words but not in the picture: never
+    /// drawn, and "the viewer" in what the image model reads ([`as_viewer`]).
+    pub offstage: Vec<String>,
 }
 
 /// The left-to-right rank of a place in the frame; the background last.
@@ -571,21 +603,30 @@ pub fn plan(
     // a name may well be someone already in it, and an edit keeps their face
     // from the canvas (mecha-a3's G1).
     let checks_names = new_picture || known_before;
-    for (field, text) in prose.iter().filter(|_| checks_names) {
+    // Someone is drawn only when listed in `people` (the owner's ruling,
+    // 2026-10-08). A library name in the words for someone not in the
+    // picture is not drawn and not refused: it reaches the image model as
+    // "the viewer", so no stranger is drawn under it (E1), and the result
+    // says so. A persona addressing the owner by name ("…with Luke
+    // watching") was every G1b refusal.
+    let mut offstage: Vec<String> = Vec::new();
+    for (_, text) in prose.iter().filter(|_| checks_names) {
         for name in named_in(text) {
-            if approved(&name) && !in_picture.contains(&name) {
-                let how = if *field == "retouch" {
-                    "add them in a call of their own, in `scene.people` with what they wear and \
-                     do (a retouch goes on its own)"
-                } else {
-                    "add them to `scene.people` with what they wear and do"
-                };
-                return Err(format!(
-                    "{} is named in `{field}` but is not in the picture: {how}.",
-                    crate::imagegen::capitalized(&name)
-                ));
+            if approved(&name) && !in_picture.contains(&name) && !offstage.contains(&name) {
+                offstage.push(name);
             }
         }
+    }
+    if !offstage.is_empty() {
+        let named: Vec<String> = offstage
+            .iter()
+            .map(|k| crate::imagegen::capitalized(k))
+            .collect();
+        notes.push(format!(
+            "{} named in the words but not in the picture, so not drawn: the image model was \
+             told \"the viewer\". To draw them, put them in `scene.people`.",
+            named.join(", ")
+        ));
     }
     let mut people = next.people.clone();
     people.sort_by_key(|p| rank(p.at));
@@ -632,6 +673,7 @@ pub fn plan(
             .retouch
             .clone()
             .filter(|_| call.picture.is_none() || !delta.is_empty() || !unknown_removes.is_empty()),
+        offstage,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
     let Some(picture) = call.picture.clone() else {
@@ -1439,11 +1481,14 @@ mod tests {
         assert!(p.said.unwrap().contains("not known yet"));
     }
 
-    /// A library name in prose is someone in the picture, or refused; in
-    /// `together` it is expected.
+    /// Someone is drawn only when listed in `people` (the owner's ruling,
+    /// 2026-10-08): a library name in the words for someone not in the
+    /// picture is not refused and not drawn; it is "the viewer" to the image
+    /// model, and said. In `together` between two listed people it is as
+    /// written.
     #[test]
-    fn a_name_in_prose_must_be_someone_in_the_picture() {
-        let why = plan(
+    fn a_name_in_prose_for_someone_not_drawn_is_the_viewer() {
+        let p = plan(
             &call(json!({"scene": {"setting": "a park", "people": [
                 {"who": "maya", "wearing": "a coat", "doing": "holding hands with John"}]}})),
             None,
@@ -1453,8 +1498,16 @@ mod tests {
             &names,
             &|_| None,
         )
-        .unwrap_err();
-        assert!(why.contains("John is named in `doing`"), "{why}");
+        .unwrap();
+        assert_eq!(p.offstage, vec!["john".to_string()]);
+        assert!(p
+            .said
+            .unwrap()
+            .contains("John named in the words but not in the picture"));
+        assert_eq!(
+            as_viewer("Maya holds hands with John, by John's bench.", &p.offstage),
+            "Maya holds hands with the viewer, by the viewer's bench."
+        );
         let ok = plan(
             &call(
                 json!({"scene": {"setting": "a park", "together": "Maya and John hold hands",
@@ -1468,8 +1521,9 @@ mod tests {
             &lib,
             &names,
             &|_| None,
-        );
-        assert!(ok.is_ok(), "{ok:?}");
+        )
+        .unwrap();
+        assert!(ok.offstage.is_empty());
     }
 
     /// More faces than one picture draws are refused, naming them; people
