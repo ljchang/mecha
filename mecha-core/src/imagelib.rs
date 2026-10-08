@@ -956,8 +956,8 @@ pub(crate) fn blank(s: &str) -> bool {
 /// person carries their stored description beside the pointer (E1) and what
 /// they are wearing and doing (E8: a reference supplies its own otherwise),
 /// except that `doing` is empty when the scene says what its people do
-/// together: a pose beside that drew a person twice (`picture::plan`, which
-/// fills a plain pose whenever the scene does not).
+/// together: a pose beside that drew a person twice (`imagegen::doing_words`
+/// says a plain pose whenever the scene does not).
 pub fn compile(
     lib: &Library,
     scene: &str,

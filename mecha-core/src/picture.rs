@@ -596,18 +596,14 @@ pub fn plan(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
         );
     }
-    // Someone the call introduces needs their clothes and what they do. A
-    // pose left out is a plain one; clothes left out are what the chat's
-    // record has them in (`worn`), else, for a library character, asked for
-    // (G1b: 8 of 65 shape refusals were a newcomer missing one of the two).
-    // A scene that says what its people do together needs no pose for each:
-    // a "standing naturally" beside "she kneels to tie his shoelace" drew her
-    // twice, standing and kneeling, in 3 of 4 (mecha-a3, 2026-10-08; 0 of 12
-    // without the fill).
-    let together = next
-        .together
-        .as_ref()
-        .is_some_and(|f| !f.value.trim().is_empty());
+    // Someone the call introduces needs their clothes. Clothes left out are
+    // what the chat's record has them in (`worn`), else, for a library
+    // character, asked for (G1b: 8 of 65 shape refusals were a newcomer
+    // missing one). A pose left out stays empty in the record: the plain one
+    // is said where the prompt is built, and only when the scene does not
+    // say what its people do together (`imagegen::doing_words`). Stored, it
+    // could not be told from one the owner wrote, and came back beside a
+    // later `together` (review of #608).
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
@@ -646,18 +642,6 @@ pub fn plan(
                     p.wearing = "clothes that suit the scene".into();
                 }
             }
-        }
-    }
-    // A pose left out is a plain one, decided over the scene as it lands and
-    // not only for newcomers, since the record outlives the call: a later
-    // call that clears `together` (posing or adding anyone does) leaves the
-    // rest with no pose, and the prompt would say nothing of what they do
-    // (review of #608). One case is left: a `together` sent after people
-    // were drawn with a filled pose keeps that pose beside it, since nothing
-    // on the record tells a filled pose from one the owner wrote.
-    if !together {
-        for p in next.people.iter_mut().filter(|p| p.doing.trim().is_empty()) {
-            p.doing = "standing naturally".into();
         }
     }
     // A library name in prose is someone in the picture, or a stranger drawn
@@ -1455,7 +1439,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (john.wearing.as_str(), john.doing.as_str()),
-            ("an apron", "standing naturally")
+            ("an apron", "")
         );
         assert!(p.said.unwrap().contains("what this chat last drew them in"));
         // With `together` saying what they do, nobody is given a pose of
@@ -1472,8 +1456,9 @@ mod tests {
             "{:?}",
             p.next.people
         );
-        // A later call that poses one of them clears the `together`, and the
-        // other is given a plain pose again rather than none at all.
+        // A later call that poses one of them clears the `together`; the
+        // other's pose stays empty in the record, said plainly at the prompt
+        // (`imagegen::doing_words`), never stored.
         let posed = planned(
             &call(
                 json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya", "doing": "waving"}]}}),
@@ -1487,7 +1472,7 @@ mod tests {
             .iter()
             .find(|q| q.who.key() == "john")
             .unwrap();
-        assert_eq!(john.doing, "standing naturally");
+        assert_eq!(john.doing, "");
         // A described newcomer without clothes is dressed for the scene.
         let p = planned(
             &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),
