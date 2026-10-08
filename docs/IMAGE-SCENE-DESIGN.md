@@ -1,6 +1,6 @@
 # Image scenes — design
 
-**Superseded 2026-10-07 by [`IMAGE-DESIGN.md`](IMAGE-DESIGN.md)** for the mechanism (the call, the routing and the record). The measurements here (§4) and the open crop-on-new-pictures measurement (§8.1) stand, and `IMAGE-DESIGN.md` cites them.
+**Superseded 2026-10-07 by [`IMAGE-DESIGN.md`](IMAGE-DESIGN.md)** for the mechanism (the call, the routing and the record). The measurements here (§4), the owner's rulings R1–R9 (§9), and the open crop-on-new-pictures measurement (§8.1) stand, and `IMAGE-DESIGN.md` cites them.
 
 **Status:** accepted 2026-10-07: the owner ruled R1–R9 (§9). Nothing here is built
 yet; #583 and #577, which it builds on, merged on 2026-10-07.
