@@ -1006,6 +1006,7 @@ pub fn compile(
     let mut used = Vec::new();
     let mut source_seeds = Vec::new();
     let mut people = Vec::with_capacity(cast.len());
+    let mut legend: Vec<String> = Vec::with_capacity(cast.len());
     for (i, member) in cast.iter().enumerate() {
         let name = member.name.trim().to_lowercase();
         if cast[..i]
@@ -1021,8 +1022,10 @@ pub fn compile(
             .filter(|e| e.status == Status::Approved)
             .ok_or_else(|| missing(lib, Kind::Character, &name))?;
         let (wearing, doing) = (member.wearing.trim(), member.doing.trim());
-        // A placeholder copied from a refusal's example is no answer.
-        if blank(wearing) || blank(doing) {
+        // A placeholder copied from a refusal's example is no answer. An
+        // empty `doing` is a scene that says what its people do together
+        // (`picture::plan` fills one otherwise).
+        if blank(wearing) || (blank(doing) && !doing.is_empty()) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
                  pose when the scene does not say."
@@ -1049,10 +1052,18 @@ pub fn compile(
         } else {
             format!("the person from <image{}>", i + 1)
         };
-        people.push(format!(
-            "{who} ({}), wearing {wearing}, {doing}",
+        let mut line = format!(
+            "{who} ({}), wearing {wearing}",
             entry.text.trim().trim_end_matches('.')
-        ));
+        );
+        if !doing.is_empty() {
+            line.push_str(&format!(", {doing}"));
+        }
+        people.push(line);
+        // The name the scene's words use for them, bound to their image:
+        // without it "Maya kneels before John" names two people the
+        // prompt has not met (the owner, 2026-10-08).
+        legend.push(format!("{} is {who}", capitalize_words(&name)));
     }
     let style_text = match style.map(|s| s.trim().to_lowercase()) {
         None => None,
@@ -1078,6 +1089,10 @@ pub fn compile(
     } else {
         format!("{scene}.")
     };
+    // Who the scene's names are, before anything else is said of them.
+    if !legend.is_empty() {
+        prompt.push_str(&format!(" {}.", capitalize(&legend.join("; "))));
+    }
     // Two measured rules. With extras, the head count counts everyone (E11):
     // "Exactly three people" beside a scene with a waiter pushed him into the
     // background, and counted as a new person he stood where the scene put
@@ -1198,6 +1213,12 @@ pub fn broken_named_in(lib: &Library, prompt: &str) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// Each word's first letter upper case: "mara quinn" → "Mara Quinn", the
+/// way the scene's words name a library character.
+fn capitalize_words(s: &str) -> String {
+    s.split(' ').map(capitalize).collect::<Vec<_>>().join(" ")
 }
 
 fn capitalize(s: &str) -> String {
@@ -1652,20 +1673,60 @@ mod tests {
         let c = compile(&lib, "a diner at night.", &[member("maya")], &[], None).unwrap();
         assert!(c
             .prompt
-            .starts_with("a diner at night. The person in the image (maya, a person"));
+            .starts_with("a diner at night. Maya is the person in the image. The person in the image (maya, a person"));
         assert!(c.prompt.contains("wearing a yellow raincoat, laughing"));
         assert!(c
             .prompt
             .contains("The person from the image appears exactly once"));
         let c = compile(&lib, "a surprise party!", &[member("maya")], &[], None).unwrap();
         assert!(
-            c.prompt.starts_with("a surprise party! The person"),
+            c.prompt
+                .starts_with("a surprise party! Maya is the person in the image. The person"),
             "{}",
             c.prompt
         );
         assert!(!c.prompt.contains("<image1>"));
         assert_eq!(c.references.len(), 1);
         assert_eq!(c.source_seeds, vec![1001]);
+    }
+
+    /// A scene that says what its people do together sends no pose for each:
+    /// the cast line carries no empty clause, and a placeholder is still no
+    /// answer (mecha-a3, 2026-10-08).
+    #[test]
+    fn people_doing_something_together_need_no_pose_each() {
+        let dir = scratch();
+        for n in ["maya", "john"] {
+            create(dir.path(), character(n, Origin::Owner)).unwrap();
+        }
+        let (lib, _) = Library::load(dir.path());
+        let still = |name: &str| CastMember {
+            name: name.into(),
+            wearing: "a grey coat".into(),
+            doing: String::new(),
+        };
+        let c = compile(
+            &lib,
+            "a clinic room. Maya ties John's shoelace",
+            &[still("maya"), still("john")],
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(
+            c.prompt
+                .contains("wearing a grey coat; the person from <image2>"),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            !c.prompt.contains(", ;") && !c.prompt.contains(", ."),
+            "{}",
+            c.prompt
+        );
+        let mut placeholder = still("maya");
+        placeholder.doing = "…".into();
+        assert!(compile(&lib, "a clinic room", &[placeholder], &[], None).is_err());
     }
 
     #[test]
@@ -1678,6 +1739,15 @@ mod tests {
         let (lib, _) = Library::load(dir.path());
         let cast = [member("maya"), member("John"), member("priya")];
         let c = compile(&lib, "a diner booth", &cast, &[], Some("noir")).unwrap();
+        // The names the scene's words use are bound to their images first.
+        let legend = c
+            .prompt
+            .find(
+                "Maya is the person from <image1>; John is the person from <image2>; Priya \
+                 is the person from <image3>.",
+            )
+            .unwrap();
+        assert!(legend < c.prompt.find("From left to right").unwrap());
         let first = c.prompt.find("<image1> (maya").unwrap();
         let second = c.prompt.find("<image2> (john").unwrap();
         assert!(first < second);
