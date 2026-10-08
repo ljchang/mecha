@@ -253,6 +253,39 @@ pub fn extraction_request(
     styles: &[String],
     structured: bool,
 ) -> crate::message::CompletionRequest {
+    reading_request(model, record, words, None, persona, styles, structured)
+}
+
+/// The sentence that ranks the owner's words over the persona's reply when
+/// the reader is given both (mecha-a3's (A), 2026-10-08: on explicit asks the
+/// owner's content landed 10 of 10 and hers 0; on open ones, "show me what
+/// you want", hers 10 of 10).
+pub const REPLY_DECIDES: &str = "The owner's words decide; the persona's reply, when given, fills \
+in only what the owner left to it.";
+
+/// The reader's request with the persona's latest reply beside the owner's
+/// words, as mecha-a3 measured it: appended to the words, and the deciding
+/// sentence before the last one of the instructions. Without a reply it is
+/// the edit panel's request exactly.
+pub fn reading_request(
+    model: &str,
+    record: Option<&crate::scene::Scene>,
+    words: &str,
+    reply: Option<&str>,
+    persona: Option<&str>,
+    styles: &[String],
+    structured: bool,
+) -> crate::message::CompletionRequest {
+    let (words, system) = match reply.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => (
+            format!("{words}\n\n(What the persona said in its last reply: {r})"),
+            EXTRACTION_SYSTEM.replace(
+                "Answer with JSON only.",
+                &format!("{REPLY_DECIDES} Answer with JSON only."),
+            ),
+        ),
+        None => (words.to_string(), EXTRACTION_SYSTEM.to_string()),
+    };
     let mut user = serde_json::Map::new();
     user.insert(
         "scene".into(),
@@ -269,10 +302,101 @@ pub fn extraction_request(
         user.insert("styles".into(), styles.into());
     }
     crate::quarantine::QuarantinedPass::new(model, crate::provider::LOCAL_MAX_TOKENS)
-        .system(EXTRACTION_SYSTEM)
+        .system(system)
         .no_thinking()
         .response_schema(structured.then(extraction_schema))
         .ask(serde_json::Value::Object(user).to_string())
+}
+
+/// Who reads a persona turn's picture ask for what the persona's own call
+/// left out: a persona copies its earlier calls and drops the owner's ask
+/// from them (3 of 25 carried it), while this reader over the owner's words
+/// and the persona's latest reply carried it 25 of 25 (mecha-a3, 2026-10-08).
+/// Handed to `image_generate` per turn (`ToolCtx::scene_reader`).
+#[async_trait::async_trait]
+pub trait SceneReader: Send + Sync + std::fmt::Debug {
+    /// The ask as a typed change against `record` (the picture before the
+    /// turn), or why it could not be read.
+    async fn read(&self, record: Option<&crate::scene::Scene>) -> Result<Extracted, String>;
+}
+
+/// The reader on the persona's own model, holding this turn's words.
+pub struct ModelReader {
+    pub provider: Box<dyn crate::provider::Provider>,
+    pub model: String,
+    /// The owner's words this turn.
+    pub owner: String,
+    /// The persona's latest reply before this turn, in words.
+    pub reply: Option<String>,
+    /// The persona's display name and its library character, which "her"
+    /// and "you" most likely mean, and which the reader may name.
+    pub persona: String,
+    pub character: Option<String>,
+    pub library: std::path::PathBuf,
+}
+
+impl std::fmt::Debug for ModelReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelReader")
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl SceneReader for ModelReader {
+    async fn read(&self, record: Option<&crate::scene::Scene>) -> Result<Extracted, String> {
+        let lib = crate::imagelib::Library::load(&self.library).0;
+        let styles = crate::imagelib::style_names(&lib);
+        let shown_persona = self
+            .character
+            .as_deref()
+            .map(|c| crate::picture::shown(&crate::scene::Who::Library(c.into())));
+        let request = reading_request(
+            &self.model,
+            record,
+            &self.owner,
+            self.reply.as_deref(),
+            shown_persona.as_deref(),
+            &styles,
+            self.provider.structured_output(),
+        );
+        let response = self
+            .provider
+            .complete(&request, None)
+            .await
+            .map_err(|e| format!("the reader could not be reached ({e:#})"))?;
+        // The envelope before the content: a refusal arrives as success.
+        if response.stop_reason == crate::message::StopReason::Refusal {
+            return Err("the reader refused".into());
+        }
+        let text = response.message.text();
+        if text.trim().is_empty() {
+            return Err("the reader's answer was empty".into());
+        }
+        let known = |who: &str| {
+            let key = who.trim().to_lowercase();
+            lib.get(crate::imagelib::Kind::Character, &key)
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+                || self.character.as_deref() == Some(key.as_str())
+                || self.persona.to_lowercase() == key
+                || record.is_some_and(|r| {
+                    r.people
+                        .iter()
+                        .any(|p| crate::picture::shown(&p.who).to_lowercase() == key)
+                })
+        };
+        read_extraction_for(
+            &text,
+            &known,
+            None,
+            &Looks {
+                styles: &styles,
+                record,
+                library: Some(&lib),
+            },
+        )
+    }
 }
 
 /// The extraction's answer, read: the JSON object in it, with only the
@@ -1066,6 +1190,43 @@ mod tests {
             read_extraction_for(r#"{"look": "chalk pastel"}"#, &known, None, &looks).unwrap_err();
         assert!(why.contains("waiting for the owner's approval"), "{why}");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// With the persona's latest reply, the reader is asked as mecha-a3
+    /// measured: the reply appended to the owner's words, and the sentence
+    /// that ranks them before the last instruction; without one, the edit
+    /// panel's request exactly.
+    #[test]
+    fn a_reply_rides_beside_the_owners_words_ranked_below_them() {
+        let r = reading_request(
+            "m",
+            None,
+            "draw us",
+            Some("a walk by the sea"),
+            None,
+            &[],
+            true,
+        );
+        let body: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
+        assert_eq!(
+            body["owner"],
+            "draw us\n\n(What the persona said in its last reply: a walk by the sea)"
+        );
+        let system = r.system.as_deref().unwrap_or_default().to_string();
+        assert!(system.contains(REPLY_DECIDES), "{system}");
+        assert!(
+            system.ends_with(&format!("{REPLY_DECIDES} Answer with JSON only.")),
+            "{system}"
+        );
+        let plain = reading_request("m", None, "draw us", None, None, &[], true);
+        let panel = extraction_request("m", None, "draw us", None, &[], true);
+        assert_eq!(plain.system, panel.system);
+        assert_eq!(plain.messages[0].text(), panel.messages[0].text());
+        assert!(!plain
+            .system
+            .as_deref()
+            .unwrap_or_default()
+            .contains(REPLY_DECIDES));
     }
 
     #[test]

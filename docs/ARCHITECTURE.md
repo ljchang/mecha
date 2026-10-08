@@ -901,6 +901,8 @@ advances it.
     wrote.
   - Deleting an assistant chat (`forget::forget`, the `scene` store) removes
     its copy and the index entries it last advanced.
+  - Either forgetting also removes the chat's saved picture prompts,
+    `<chat>.prompts.log` beside its copy (`scene::forget_in`).
   - A record that cannot be read is kept and said.
 
 **The manifest keeps what the owner-facing doors read**, and no prompt:
@@ -909,7 +911,16 @@ advances it.
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
+- `reader`: what the scene reader merged into the call, or why it fell back;
 - the scene's picture hash, which is a pointer, never the scene.
+
+**Each picture's compiled prompt is saved for the owner, never in the
+manifest** (the owner's ruling, 2026-10-08: "save them for now so we can learn
+to improve prompts"). A kept chat's host stamps `ToolCtx::prompt_log`, a
+`<chat>.prompts.log` beside the transcript (outside every jail, 0600, read
+by no tool), and `image_generate` appends one line per render: the image,
+route, seed, `roles`, `reader` and the prompt. An incognito chat stamps none.
+Unstamping it is how it is turned off.
 
 **Retired with the old inputs:** `route_scene`, `EditAsk`, `cast_self`,
 `demote_unknown`, the near-copy strikes and the library-redraw offer, and
@@ -1014,6 +1025,22 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   description beside the pointer 0.78 (E1). So `compile` sends each cast
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
+- **A persona's picture call is filled with what it left out of the
+  owner's ask** (`persona::edit::SceneReader`). A persona copies its own
+  earlier calls, which turn into bare lists of who stands where, so the
+  owner's ask reached the call in 3 of 25 replays. On a typed persona turn
+  the host stamps `ToolCtx::scene_reader`: the edit panel's reader over the
+  owner's words and the persona's latest reply, with one sentence ranking
+  the owner's words first, against the picture before the turn. Only a
+  `together`, and each named person's `doing` and `wearing`, are merged,
+  and only where the call has none. 25 of 25 carried the ask, and an open
+  "show me what you want" came back in the persona's own words, 10 of 10
+  (mecha-a3, 2026-10-08). Merged words are stamped with the conversation's
+  origin like the call's own, never clean for being the harness's pass, and
+  the manifest says what was merged (`reader`). Not on a panel turn, whose
+  reader has already drawn the change. Rewriting the persona's earlier calls
+  as full scenes was measured and dropped: its effect came from key order,
+  1 of 25 as the wire sorts them.
 - **A scene whose people act together is drawn from each person's own
   part** (`roles`). A persona puts the whole act in `together` and poses
   nobody; read as one sentence, the image model draws a lineup in list order

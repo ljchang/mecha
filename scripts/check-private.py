@@ -520,6 +520,21 @@ def corpus():
                 said.extend(spoken(r))
         else:
             said.extend(spoken_turns(records))
+    # The owner's saved picture prompts: only their chat-derived `words`, never
+    # the compiler's own sentences, which the repository holds by design.
+    for f in glob.glob(f"{MECHA}/personas/*/sessions/*.prompts.log") + glob.glob(f"{MECHA}/sessions/*.prompts.log"):
+        try:
+            with open(f, errors="replace") as fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(r, dict):
+                        said.extend(w for w in (r.get("words") or []) if isinstance(w, str))
+        except OSError as e:
+            print(f"check-private: the prompt log {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     # The worker journal is this machine's; a test of the check itself sets

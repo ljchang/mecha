@@ -2233,6 +2233,82 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
     out.join(" ")
 }
 
+/// The reader's change merged into a persona's call where the call is
+/// silent: a `together` when it has none, and each person's `doing` and
+/// `wearing` when theirs has none, for people the call already names (mecha-
+/// a3's rule b). Nothing else: setting, light, camera and look stay the
+/// call's. What was merged, for the manifest.
+fn merge_read(
+    change: &mut crate::scene::SceneChange,
+    read: &serde_json::Map<String, Value>,
+) -> Vec<String> {
+    let mut merged = Vec::new();
+    if change.together.is_none() {
+        if let Some(t) = read
+            .get("together")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            // Bounded as the call's own `together` is at the door.
+            let cap = crate::imagelib::MAX_CAST_FIELD;
+            change.together = Some(if t.chars().count() > cap {
+                crate::picture::clip_at_sentence(t, cap)
+            } else {
+                t.to_string()
+            });
+            merged.push("together".to_string());
+        }
+    }
+    let said = read
+        .get("people")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (mut doings, mut wearings) = (0, 0);
+    for p in change.people.iter_mut().filter(|p| !p.remove) {
+        let names = [p.who.key(), crate::picture::shown(&p.who).to_lowercase()];
+        let Some(r) = said.iter().find(|r| {
+            r["who"]
+                .as_str()
+                .is_some_and(|w| names.iter().any(|n| n.eq_ignore_ascii_case(w.trim())))
+        }) else {
+            continue;
+        };
+        // Past what the call's own may carry, a part is not merged.
+        let text = |k: &str| {
+            r[k].as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .filter(|t| t.chars().count() <= crate::imagelib::MAX_CAST_FIELD)
+                .map(str::to_string)
+        };
+        if p.doing.is_none() {
+            if let Some(d) = text("doing") {
+                p.doing = Some(d);
+                doings += 1;
+            }
+        }
+        if p.wearing.is_none() {
+            if let Some(w) = text("wearing") {
+                p.wearing = Some(w);
+                wearings += 1;
+            }
+        }
+    }
+    if doings > 0 {
+        merged.push(format!("doing×{doings}"));
+    }
+    if wearings > 0 {
+        merged.push(format!("wearing×{wearings}"));
+    }
+    merged
+}
+
+/// How long a persona's picture waits for the scene reader before it is drawn
+/// as the call said it. Before the split, so a turn can spend both.
+const SCENE_READ_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// How long a picture waits for its people's parts (`roles`) before it is
 /// drawn as the call said it.
 const ROLE_SPLIT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -2568,7 +2644,71 @@ impl Tool for ImageGenerate {
             None => None,
         };
         let photo_hash = photo.as_ref().map(|r| crate::scene::hash(&r.bytes));
-        let by = crate::scene::Origin::of(ctx.taint.as_ref());
+        // What the persona's own call left out of the owner's ask, read on
+        // the host's reader and merged in: only a `together`, and each
+        // person's `doing` and `wearing`, where the call has none, for people
+        // the call names. The merged words are stamped like the call's own
+        // (`by`, from the conversation's taint), never clean for being the
+        // harness's pass (mecha-05). Before `plan`, so a merged `together`
+        // then splits into parts (`roles`).
+        // The record the reader read, when it merged anything: its words may
+        // come back restated, so its origin joins the call's (review of #610).
+        let mut read_from: Option<crate::scene::Origin> = None;
+        let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
+            (Some(reader), false) => {
+                let record = base
+                    .clone()
+                    .or_else(|| ctx.scene.as_ref().and_then(|s| s.current()));
+                let read = tokio::time::timeout(SCENE_READ_TIMEOUT, reader.read(record.as_ref()))
+                    .await
+                    .unwrap_or_else(|_| Err("the reader took too long".into()));
+                Some(match read {
+                    Ok(extracted) => {
+                        let before = call.change.clone();
+                        let merged = merge_read(&mut call.change, &extracted.scene);
+                        // The reader's words pass the door the call's did: a
+                        // library character whose entry did not load, named
+                        // in them, would be drawn as a stranger (review of
+                        // #610; the #383 shape). The merge is dropped.
+                        let mut words: Vec<&str> =
+                            call.change.together.iter().map(String::as_str).collect();
+                        for p in &call.change.people {
+                            words.extend(p.doing.as_deref());
+                            words.extend(p.wearing.as_deref());
+                        }
+                        if words
+                            .iter()
+                            .any(|t| !crate::imagelib::broken_named_in(&lib, t).is_empty())
+                        {
+                            call.change = before;
+                            "fell back: the reader named a library entry that could not be read"
+                                .to_string()
+                        } else if merged.is_empty() {
+                            "nothing to merge".to_string()
+                        } else {
+                            read_from = record.as_ref().map(crate::scene::Scene::origin);
+                            format!("merged: {}", merged.join(", "))
+                        }
+                    }
+                    Err(why) => {
+                        tracing::warn!("image_generate: scene reader: {why}");
+                        format!("fell back: {why}")
+                    }
+                })
+            }
+            // A scene call where no reader was stamped says so, so a merge
+            // that was due and did not happen is never a silent null
+            // (review of #610).
+            (None, false) => Some("not read: no reader here".into()),
+            _ => None,
+        };
+        // A merge that read an untrusted record lands untrusted, whatever the
+        // conversation's own label: the reader may restate what it read, and
+        // a scene's origin is what arms the next turn's note.
+        let by = match read_from {
+            Some(o) => crate::scene::Origin::of(ctx.taint.as_ref()).union(o),
+            None => crate::scene::Origin::of(ctx.taint.as_ref()),
+        };
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
         // What the chat last drew each person in: clothes a newcomer's call
         // left out come from it (mecha-a3's G1b).
@@ -2621,6 +2761,9 @@ impl Tool for ImageGenerate {
         // one place a picture says what happened (mecha-a3's G5). The
         // prompt itself stays out of the manifest (ARCHITECTURE §images).
         let mut roles_said: Option<String> = None;
+        // The words a split put in the prompt, for the owner's prompt log
+        // (`words`), which the privacy guard reads.
+        let mut split_words: Vec<String> = Vec::new();
         let mut reseeded: Option<u64> = None;
         let mut dropped: Vec<String> = Vec::new();
         let is_edit = matches!(plan.render, crate::picture::Render::Edit { .. });
@@ -2649,6 +2792,12 @@ impl Tool for ImageGenerate {
                 // people's own poses drew a person twice (mecha-a3's gate of
                 // #610, 2 of 3). A pose given is kept verbatim (`roles`).
                 if together && people.len() >= 2 {
+                    // A door with no splitter says so, so a picture drawn
+                    // unsplit where one was due is never a silent null
+                    // (review of #609).
+                    if ctx.role_split.is_none() {
+                        roles_said = Some("not split: no splitter here".into());
+                    }
                     if let (Some(splitter), Some(sentence)) =
                         (&ctx.role_split, plan.next.together.as_ref())
                     {
@@ -2696,6 +2845,8 @@ impl Tool for ImageGenerate {
                                     }
                                 });
                                 together = scene.together.is_some();
+                                split_words.extend(split.roles.iter().map(|r| r.doing.clone()));
+                                split_words.push(split.together.clone());
                                 words_scene = std::borrow::Cow::Owned(scene);
                                 roles_said = Some("applied".into());
                             }
@@ -3314,6 +3465,7 @@ impl Tool for ImageGenerate {
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
                 "roles": roles_said,
+                "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
                 "model": {
@@ -3323,6 +3475,32 @@ impl Tool for ImageGenerate {
                     "vae": me.cfg.vae,
                 },
             });
+            // The prompt, for the owner only, outside the jail (the manifest
+            // never carries it): a line that cannot be written costs the
+            // picture nothing.
+            if let Some(log) = &ctx.prompt_log {
+                let line = json!({
+                    "created": manifest["created"],
+                    "image": path,
+                    "route": plan.route,
+                    "seed": req.seed,
+                    "roles": manifest["roles"],
+                    "reader": manifest["reader"],
+                    "prompt": req.prompt,
+                    // The chat-derived words in it, apart from the compiler's
+                    // own sentences: what `check-private` reads, so a prompt
+                    // studied here is never pasted into the repository.
+                    "words": record_prose(&plan.next)
+                        .into_iter()
+                        .chain(plan.also.clone())
+                        .chain(split_words.iter().cloned())
+                        .filter(|w| !w.trim().is_empty())
+                        .collect::<Vec<_>>(),
+                });
+                if let Err(e) = append_prompt(log, &line) {
+                    tracing::warn!("image_generate: prompt log: {e:#}");
+                }
+            }
             let manifest_note = match write_manifest(ctx, &path, &manifest).await {
                 Ok(()) => String::new(),
                 Err(e) => format!(" (The new picture's manifest was not written: {e:#}.)"),
@@ -3541,6 +3719,25 @@ pub fn repair_orphan(
 /// without the lead (review of #384).
 fn refused(why: impl std::fmt::Display) -> ToolOutput {
     ToolOutput::err(format!("Nothing was drawn. {why}"))
+}
+
+/// One line to the owner's prompt log, owner-only (0600) as the transcript
+/// beside it is.
+fn append_prompt(log: &std::path::Path, line: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log)?;
+    // `mode` holds only when the file is made: an older one is narrowed too.
+    use std::os::unix::fs::PermissionsExt;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    writeln!(f, "{line}")
 }
 
 /// Write a generation's manifest beside its PNG — `images/<stem>.json`, new
@@ -6550,6 +6747,283 @@ mod tests {
         let p = last_prompt(&seen);
         assert!(p.contains("a red coat"), "{p}");
         assert!(!p.contains("standing naturally"), "{p}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// The reader's change fills only what the call left out: a `together`,
+    /// and each named person's `doing` and `wearing`; never someone the call
+    /// does not name, and never the setting.
+    #[test]
+    fn a_read_fills_only_what_the_call_left_out() {
+        let mut change = crate::scene::SceneChange {
+            together: None,
+            people: vec![
+                crate::scene::PersonChange {
+                    who: crate::scene::Who::Library("maya".into()),
+                    at: None,
+                    wearing: None,
+                    doing: Some("waving".into()),
+                    expression: None,
+                    remove: false,
+                },
+                crate::scene::PersonChange {
+                    who: crate::scene::Who::Library("john".into()),
+                    at: None,
+                    wearing: None,
+                    doing: None,
+                    expression: None,
+                    remove: false,
+                },
+            ],
+            ..Default::default()
+        };
+        let read = json!({
+            "together": "Maya and John dance",
+            "setting": "a ballroom",
+            "people": [
+                {"who": "Maya", "doing": "spinning", "wearing": "a red dress"},
+                {"who": "John", "doing": "leading the dance"},
+                {"who": "Wren", "doing": "watching"}
+            ]
+        });
+        let merged = merge_read(&mut change, read.as_object().unwrap());
+        assert_eq!(change.together.as_deref(), Some("Maya and John dance"));
+        assert_eq!(
+            change.people[0].doing.as_deref(),
+            Some("waving"),
+            "hers is kept"
+        );
+        assert_eq!(change.people[0].wearing.as_deref(), Some("a red dress"));
+        assert_eq!(change.people[1].doing.as_deref(), Some("leading the dance"));
+        assert_eq!(change.people.len(), 2, "nobody added");
+        assert!(change.setting.is_none(), "the setting stays the call's");
+        assert_eq!(merged, ["together", "doing×1", "wearing×1"]);
+        // Bounded as the call's own: a long act is clipped, a long part left.
+        let long = format!("{}.", "Maya laughs ".repeat(40));
+        let mut change = crate::scene::SceneChange {
+            people: vec![crate::scene::PersonChange {
+                who: crate::scene::Who::Library("maya".into()),
+                at: None,
+                wearing: None,
+                doing: None,
+                expression: None,
+                remove: false,
+            }],
+            ..Default::default()
+        };
+        let read = json!({"together": long, "people": [{"who": "Maya", "doing": long}]});
+        merge_read(&mut change, read.as_object().unwrap());
+        assert!(
+            change.together.as_ref().unwrap().chars().count() <= crate::imagelib::MAX_CAST_FIELD
+        );
+        assert!(change.people[0].doing.is_none(), "too long to merge");
+    }
+
+    /// A reader that answers as told, standing in for the persona host's.
+    #[derive(Debug)]
+    struct FakeReader(std::result::Result<serde_json::Value, String>);
+
+    #[async_trait]
+    impl crate::persona::edit::SceneReader for FakeReader {
+        async fn read(
+            &self,
+            _record: Option<&crate::scene::Scene>,
+        ) -> std::result::Result<crate::persona::edit::Extracted, String> {
+            self.0.clone().map(|v| crate::persona::edit::Extracted {
+                scene: v.as_object().cloned().unwrap_or_default(),
+                retouch: None,
+                left_out: None,
+            })
+        }
+    }
+
+    /// A persona's bare call is drawn with what the reader found it left
+    /// out, stamped with the conversation's own origin (an untrusted turn's
+    /// merged words land untrusted), and said in the manifest; a reader that
+    /// fails leaves the call as sent.
+    #[tokio::test]
+    async fn a_bare_call_is_filled_from_the_turns_words() {
+        let (url, seen) = distinct(4).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.taint = Some(crate::agent::Taint {
+            private: false,
+            untrusted: true,
+        });
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
+            "together": "Maya hands John a bunch of tulips"
+        })))));
+        let call = json!({"scene": {"setting": "a park",
+            "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}});
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(last_prompt(&seen).contains("bunch of tulips"));
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        let together = landed.together.unwrap();
+        assert_eq!(together.value, "Maya hands John a bunch of tulips");
+        assert_eq!(together.origin, crate::scene::Origin::Untrusted);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "merged: together"
+        );
+        // A reader that fails leaves the call as sent.
+        cx.scene_reader = Some(Arc::new(FakeReader(Err("no answer".into()))));
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!last_prompt(&seen).contains("tulips"));
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "fell back: no answer"
+        );
+        // A library character whose entry did not load, named only in the
+        // reader's words, is never drawn as a stranger: the merge is dropped.
+        let wren = lib.join("characters/wren");
+        std::fs::create_dir_all(&wren).unwrap();
+        std::fs::write(wren.join("entry.toml"), "not = [toml").unwrap();
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
+            "together": "Maya and John dance with Wren"
+        })))));
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a park",
+                    "people": [{"who": "maya", "wearing": "a coat"}, {"who": "john", "wearing": "a suit"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!last_prompt(&seen).contains("Wren"));
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "fell back: the reader named a library entry that could not be read"
+        );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A merge that read an untrusted record lands untrusted, even in a clean
+    /// turn: the reader may restate what it read, and a scene's origin is
+    /// what arms the next turn's note (review of #610).
+    #[tokio::test]
+    async fn a_merge_from_an_untrusted_record_lands_untrusted() {
+        let (url, _seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        // A picture whose record is clean but for its `together`, which the
+        // next call clears by posing someone: without the union, nothing
+        // untrusted would be left in the scene that lands.
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        let bytes = picture(8, [120, 90, 60]);
+        std::fs::write(dir.join("images/base.png"), &bytes).unwrap();
+        let clean_field = |v: &str| {
+            Some(crate::scene::Field {
+                value: v.to_string(),
+                origin: crate::scene::Origin::Clean,
+            })
+        };
+        let person = |key: &str, wearing: &str| crate::scene::Person {
+            who: crate::scene::Who::Library(key.into()),
+            at: None,
+            wearing: wearing.into(),
+            doing: String::new(),
+            expression: String::new(),
+            origin: crate::scene::Origin::Clean,
+        };
+        let base = crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Words {
+                    text: "a park".into(),
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            light: clean_field("a flat grey overcast"),
+            together: Some(crate::scene::Field {
+                value: "Maya hands John a cup".into(),
+                origin: crate::scene::Origin::Untrusted,
+            }),
+            people: vec![person("maya", "a coat"), person("john", "a suit")],
+            people_known: true,
+            picture: Some(crate::scene::hash(&bytes)),
+            chat: Some("chat-a".into()),
+            ..Default::default()
+        };
+        cx.scene.as_ref().unwrap().land(&base).unwrap();
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({
+            "people": [{"who": "Maya", "doing": "tying a shoelace"}]
+        })))));
+        let out = t
+            .call(
+                json!({"picture": "images/base.png", "scene": {"people": [{"who": "maya"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(manifest_of(&dir, &out.content)["reader"], "merged: doing×1");
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        assert!(landed.together.is_none(), "the pose change cleared it");
+        assert_eq!(landed.origin(), crate::scene::Origin::Untrusted);
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// Each picture's prompt is saved for the owner where the host stamps a
+    /// log (owner-only, outside the jail), and nowhere when it does not.
+    #[tokio::test]
+    async fn a_pictures_prompt_is_saved_only_where_the_host_asks() {
+        use std::os::unix::fs::PermissionsExt;
+        let (url, _seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let log = store.join("sessions/chat-a.prompts.log");
+        cx.prompt_log = Some(log.clone());
+        let call = json!({"scene": {"setting": "a quiet harbour",
+            "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}});
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let text = std::fs::read_to_string(&log).unwrap();
+        let line: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert!(line["prompt"].as_str().unwrap().contains("a quiet harbour"));
+        assert_eq!(line["image"], picture_of(&out.content));
+        // The chat's own words, apart, for the privacy guard.
+        let words: Vec<&str> = line["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(words.contains(&"a quiet harbour"), "{words:?}");
+        assert!(words.contains(&"waving"), "{words:?}");
+        assert!(!words.iter().any(|w| w.contains("<image")), "{words:?}");
+        // No reader stamped on a scene call: said, never a silent null.
+        assert_eq!(line["reader"], "not read: no reader here");
+        assert_eq!(
+            std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Not stamped: nothing saved.
+        cx.prompt_log = None;
+        std::fs::remove_file(&log).unwrap();
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!log.exists());
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }

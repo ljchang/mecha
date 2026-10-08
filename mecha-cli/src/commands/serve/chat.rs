@@ -2699,6 +2699,13 @@ fn begin_turn(
             Some(room) => mecha_core::scene::room_slot(&room.root, &room.key),
             None => mecha_core::scene::assistant_slot(&chat.sessions_dir, ws.session.id()),
         }),
+        // Each picture's prompt beside the transcript, for the owner ("save
+        // them for now", 2026-10-08); never an incognito chat's, which keeps
+        // nothing past its room.
+        prompt_log: ws.session.room().is_none().then(|| {
+            chat.sessions_dir
+                .join(format!("{}.prompts.log", ws.session.id()))
+        }),
         // And what it proposes is staged locked (the owner's ruling,
         // 2026-10-01: incognito proposals will mostly be locked profiles).
         stage_locked: ws.session.room().is_some(),
