@@ -719,12 +719,19 @@ The routes, in the result's own words and the manifest's `route`:
     where pictures come from. A bare "cannot open" was retried eleven times
     in one live run (2026-10-08). A path the jail refuses is still refused.
   - a `style` the library does not hold ("hyperreal render", or a
-    description longer than any name) is left out, and the result says to
-    give a look in words in `scene.setting`; asked alone it is refused the
-    same way. No refusal names a library entry the call did not: the roster
-    is the owner's (`image_library` declares it private, and a locked entry
-    is never named without an unlock token, #385), and the footing below is
-    that a result carries only what the call named.
+    description longer than any name) is left out, naming the approved,
+    unlocked styles and saying a look with no name goes in words in
+    `scene.setting`; asked alone it is refused the same way. Its words are
+    first spelled as a name would be (case, spaces and underscores to
+    hyphens), so "Digital painting" is `digital-painting`. Style names are
+    not private (the owner's ruling, 2026-10-08), and the tool description
+    ends with them, read when the form is built so a chat's cached tool list
+    never changes mid-chat. A character is never named back: the roster is
+    the owner's, and a locked entry is never named (#385).
+  - a made-up `picture` is left out only beside a scene that describes a
+    picture of its own (people or a setting); beside a style, light or
+    camera alone it is refused, since drawn from nothing it was a stranger
+    in an empty room.
     A style waiting on the owner, or one whose entry did not load, is still
     refused by name (`imagelib::missing`): a finding, not over-fill. No
     library refusal names a tool: the one replaced pointed at

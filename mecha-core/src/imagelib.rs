@@ -912,6 +912,21 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
     }
 }
 
+/// The approved, unlocked styles, by name, as one sentence for a model, or
+/// `None` when there are none. Style names are not private (the owner's
+/// ruling, 2026-10-08); a locked style is the owner's way to hide one, so it
+/// is left out, without a count. Characters are never listed: their names
+/// are the owner's.
+pub(crate) fn styles_to_name(lib: &Library) -> Option<String> {
+    let names: Vec<String> = lib
+        .all()
+        .iter()
+        .filter(|e| e.kind == Kind::Style && e.status == Status::Approved && !e.locked)
+        .map(|e| format!("`{}`", e.name))
+        .collect();
+    (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
+}
+
 /// Whether `name` is simply not in the library as `kind`: no entry in any
 /// state, and none that failed to load. A candidate waiting on the owner or
 /// an entry that did not load is a finding, said by [`missing`], never an

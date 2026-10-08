@@ -162,11 +162,16 @@ pub fn parse(
             }
             change.light = text(sc.get("light"), "scene.light", field)?;
             change.camera = text(sc.get("camera"), "scene.camera", field)?;
-            // A style longer than a library name cannot be one: read at the
-            // field cap so the tool leaves it out and says so, as it does any
-            // style the library does not hold, rather than a shape refusal
+            // A style longer than a library name cannot be one: clipped to
+            // the field cap, never a shape refusal, so the tool leaves it out
+            // and says so as it does any style the library does not hold
             // (review of #603).
-            change.style = text(sc.get("style"), "scene.style", field)?;
+            change.style = match sc.get("style") {
+                Some(Value::String(t)) if t.chars().count() > field => {
+                    Some(t.trim().chars().take(field).collect())
+                }
+                other => text(other, "scene.style", field)?,
+            };
             // Clipped at a sentence rather than refused (G1b: 3 of 65).
             change.together = match sc.get("together") {
                 Some(Value::String(t)) if t.chars().count() > field => {
