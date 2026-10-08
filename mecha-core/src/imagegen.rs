@@ -1608,6 +1608,19 @@ const CANVAS_CAMERA_MOVES: &str = " <image1> is the canvas: keep its room and fu
 /// sixth face rather than drop one.
 const EDIT_REFERENCE_BUDGET: usize = 1 + crate::picture::MAX_FACES;
 
+/// `words` spelled as a library name could be: trimmed, lowercased, and each
+/// run of spaces or underscores a single hyphen. Names allow only lowercase
+/// letters, digits and hyphens, so this can only find the name meant.
+fn library_spelling(words: &str) -> String {
+    words
+        .trim()
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
 /// A library name as the edit prompt says it, each word capitalised: "maya" →
 /// "Maya", "mara quinn" → "Mara Quinn" — the name is what binds a face to a
 /// person in the prompt (review of #586).
@@ -1925,6 +1938,23 @@ pub struct ImageGenerate {
     /// cached crop of the character's portrait, else the detector on it.
     /// Stood in for by tests, which have no 88 MB of weights.
     faces: Arc<dyn crate::face::FaceAnchors>,
+    /// [`DESCRIPTION`] with the library's style names after it, read once
+    /// when this form is built and never per request, so the tool list a
+    /// chat caches stays byte-stable; a new style shows from the next chat.
+    description: String,
+}
+
+/// The description a form is built with: [`DESCRIPTION`], then the styles
+/// to name at the very end, so a new style moves no earlier byte.
+fn described(library_dir: Option<&std::path::Path>) -> String {
+    let styles = library_dir
+        .map(|d| crate::imagelib::Library::load(d).0)
+        .as_ref()
+        .and_then(crate::imagelib::styles_to_name);
+    match styles {
+        Some(styles) => format!("{DESCRIPTION} {styles}."),
+        None => DESCRIPTION.to_string(),
+    }
 }
 
 impl ImageGenerate {
@@ -1941,11 +1971,13 @@ impl ImageGenerate {
 
     /// Refuses a configuration whose server is not on this machine.
     pub fn new(cfg: ImageConfig) -> Result<Self> {
+        let library_dir = crate::imagelib::Library::default_dir().ok();
         Ok(ImageGenerate {
             backend: Arc::new(ComfyUi::for_config(&cfg)?),
             cfg,
             generation: Arc::new(AtomicU64::new(0)),
-            library_dir: crate::imagelib::Library::default_dir().ok(),
+            description: described(library_dir.as_deref()),
+            library_dir,
             self_as: None,
             seeds: false,
             reference_pixels: MAX_REFERENCE_PIXELS,
@@ -1956,6 +1988,7 @@ impl ImageGenerate {
     /// Resolve `cast` and `style` against this library instead of the one in
     /// the mecha home.
     pub fn with_library_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.description = described(Some(&dir));
         self.library_dir = Some(dir);
         self
     }
@@ -1991,6 +2024,8 @@ impl ImageGenerate {
             seeds: false,
             reference_pixels: self.reference_pixels,
             faces: Arc::clone(&self.faces),
+            // Read afresh: a persona chat's form is built when the chat is.
+            description: described(self.library_dir.as_deref()),
         }
     }
 
@@ -2041,7 +2076,7 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      {\"photo\": <its path>}, not the room described in words; a photo attached earlier in \
      the chat is still a setting you can name by its path. Nobody is drawn twice, and at most \
      five people with faces fit one picture. The library supplies how its characters look \
-     (image_library lists who exists), so do not describe their faces. The image model renders \
+     (their portraits), so do not describe their faces. The image model renders \
      text well: put the exact words in `scene.text`. The first line of a result is the new \
      picture's file path: name it in `picture` to change that picture, and leave the path out \
      of replies, since the owner is shown the picture. In a chat the result can come at once as \
@@ -2219,7 +2254,7 @@ impl Tool for ImageGenerate {
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        &self.description
     }
 
     fn input_schema(&self) -> Value {
@@ -2245,7 +2280,7 @@ impl Tool for ImageGenerate {
                         "setting": {"description": SETTING_DESC},
                         "light": {"type": "string", "description": "Light, mood, time of day, colour tone."},
                         "camera": {"type": "string", "description": "Shot size, angle, framing."},
-                        "style": {"type": "string", "description": "A library style's name."},
+                        "style": {"type": "string", "description": "A library style's name; a look the library has no name for goes in words in `setting`."},
                         "people": {"type": "array", "items": person, "maxItems": crate::scene::MAX_PEOPLE, "description": PEOPLE_DESC},
                         "together": {"type": "string", "description": "What the people do with each other, once, by name."},
                         "text": {
@@ -2322,11 +2357,19 @@ impl Tool for ImageGenerate {
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             });
             if missing {
-                if !call.has_scene() {
+                // Only a scene that describes a picture of its own (people or
+                // a setting) draws without it: a style, light or camera alone
+                // is a change to the picture named, and drawn from nothing it
+                // was a stranger in an empty room (mecha-a3, review of #603).
+                let describes = !call.change.people.is_empty()
+                    || call.change.setting.is_some()
+                    || call.setting_photo.is_some();
+                if !describes {
                     return Ok(refused(format!(
                         "There is no picture `{p}` in this chat. Name a picture as a result \
                          gave it (images/…) or as the owner attached it (inbox/…), or leave \
-                         `picture` out and describe a new picture in `scene`."
+                         `picture` out and describe a new picture in `scene`: its setting and \
+                         people."
                     )));
                 }
                 call.picture = None;
@@ -2344,6 +2387,62 @@ impl Tool for ImageGenerate {
                          scene was drawn as a new picture."
                     )
                 });
+            }
+        }
+        // A `style` the library does not hold: the field takes a library
+        // style's name, and a model fills it with words ("hyperreal
+        // render"). Left out and said, naming the unlocked styles, so the
+        // picture still draws; refused only when nothing else is asked. A
+        // refusal pointing at image_library, which a persona chat does not
+        // have, was retried ten times in one run (2026-10-08). A style
+        // waiting on the owner, or one whose entry did not load, is still
+        // refused by name: those are findings, not over-fill (review of #603).
+        if let Some(name) = call.change.style.clone() {
+            // Spelled as a library name: a name is lowercase letters, digits
+            // and hyphens, so "Digital painting" can only mean
+            // `digital-painting` (mecha-a3, 2026-10-08: the live chat wrote
+            // the words eight times beside a library that now holds the name).
+            let key = library_spelling(&name);
+            let kind = crate::imagelib::Kind::Style;
+            let held = lib
+                .get(kind, &key)
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
+            if !held && !crate::imagelib::absent(&lib, kind, &key) {
+                return Ok(refused(crate::imagelib::missing(&lib, kind, &key)));
+            }
+            if held {
+                call.change.style = Some(key.clone());
+            }
+            if !held {
+                call.change.style = None;
+                // Said back at most a name's length: the field is read at its
+                // own cap, and a result is no place to echo a paragraph.
+                let name = if name.chars().count() > crate::imagelib::MAX_NAME {
+                    let cut: String = name.chars().take(crate::imagelib::MAX_NAME).collect();
+                    format!("{}…", cut.trim_end())
+                } else {
+                    name
+                };
+                // The styles there are may be named back (not private, the
+                // owner's ruling of 2026-10-08; locked ones left out), never a
+                // character. A look with no name goes in words in the setting.
+                let named = crate::imagelib::styles_to_name(&lib);
+                let styles = named.as_ref().map(|s| format!(" {s}.")).unwrap_or_default();
+                if !call.has_scene() && call.retouch.is_none() {
+                    let ask = if named.is_some() {
+                        "Name one of those, or leave"
+                    } else {
+                        "Leave"
+                    };
+                    return Ok(refused(format!(
+                        "There is no approved style `{name}`.{styles} {ask} `style` out and \
+                         say the look in words in `scene.setting`."
+                    )));
+                }
+                call.notes.push(format!(
+                    "There is no approved style `{name}`, so it was left out.{styles} To ask \
+                     for a look, name a style or say it in words in `scene.setting`."
+                ));
             }
         }
         // A library name that is not drawable is never drawn as a stranger
@@ -2377,7 +2476,7 @@ impl Tool for ImageGenerate {
         {
             return Ok(refused(format!(
                 "{}'s library entry could not be read, so it cannot be drawn; the owner can \
-                 check it with `mecha library`.",
+                 check it with `mecha imagelib list`.",
                 capitalized(&name)
             )));
         }
@@ -2412,7 +2511,7 @@ impl Tool for ImageGenerate {
         {
             return Ok(refused(format!(
                 "{}'s library entry could not be read, so it cannot be drawn; the owner can \
-                 check it with `mecha library`.",
+                 check it with `mecha imagelib list`.",
                 capitalized(&name)
             )));
         }
@@ -2792,10 +2891,14 @@ impl Tool for ImageGenerate {
                             });
                         }
                         None => {
-                            return Ok(refused(format!(
-                                "No approved style named `{name}`. Call image_library to see \
-                                 what exists."
-                            )))
+                            // Defence only: the call's style was proved
+                            // approved after parse, so this answers what the
+                            // library would, never naming a tool.
+                            return Ok(refused(crate::imagelib::missing(
+                                &lib,
+                                crate::imagelib::Kind::Style,
+                                &name,
+                            )));
                         }
                     }
                 }
@@ -6496,6 +6599,267 @@ mod tests {
         assert!(last_prompt(&seen).contains("a fisherman, wearing oilskins, mending a net"));
         assert_eq!(uploads(&seen), 5, "five portraits, none for the fisherman");
         for d in [dir, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// The description names the approved, unlocked styles at its very end,
+    /// read when the form is built, and never a character (the owner's
+    /// ruling, 2026-10-08: style names are not private, character names are).
+    #[test]
+    fn the_description_ends_with_the_styles_to_name() {
+        let lib = library_with(&["maya"]);
+        for (name, locked) in [("ink-wash", false), ("secret-look", true)] {
+            crate::imagelib::create(
+                &lib,
+                crate::imagelib::NewEntry {
+                    kind: crate::imagelib::Kind::Style,
+                    name: name.into(),
+                    text: "a look".into(),
+                    portrait: None,
+                    source_seed: None,
+                    origin: crate::imagelib::Origin::Owner,
+                    locked,
+                },
+            )
+            .unwrap();
+        }
+        let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
+        let d = t.description().to_string();
+        assert!(d.starts_with(DESCRIPTION), "earlier bytes never move");
+        assert!(d.ends_with(" Styles you can name: `ink-wash`."), "{d}");
+        assert!(!d.contains("secret-look") && !d.contains("`maya`"), "{d}");
+        // The persona form reads the library when it is built.
+        let persona = Arc::new(t).for_persona().unwrap();
+        assert!(persona.description().ends_with("`ink-wash`."));
+        // No library, no list.
+        let bare = tool("http://127.0.0.1:1");
+        assert_eq!(bare.description(), DESCRIPTION);
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A `style` the library does not hold is left out and said, with the
+    /// unlocked styles there are, and the picture still draws, a new one or
+    /// one drawn over the chat's record; asked alone it is refused naming
+    /// them. A persona chat retried "call image_library" ten times
+    /// (2026-10-08).
+    #[tokio::test]
+    async fn an_unknown_style_is_left_out_and_the_picture_draws() {
+        let (url, seen) = distinct(8).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "ink-wash".into(),
+                text: "soft grey ink wash on rice paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        // A locked style is the owner's way to hide one: never named.
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "secret-look".into(),
+                text: "a look the owner keeps out of sight".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: true,
+            },
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [200, 150, 120])));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::clone(&faces) as Arc<dyn crate::face::FaceAnchors>);
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let posts = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a park bench", "style": "hyperreal render",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "sitting"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        // The note names only what was asked, and the way on in words: never
+        // the library's other styles (the roster is the owner's).
+        assert!(
+            first
+                .content
+                .contains("There is no approved style `hyperreal render`")
+                && first.content.contains("Styles you can name: `ink-wash`.")
+                && first.content.contains("`scene.setting`")
+                && !first.content.contains("secret-look"),
+            "{}",
+            first.content
+        );
+        assert_eq!(posts(), 1);
+        // Words for a library style's name are that style: case, spaces and
+        // underscores are spelling, not a different style.
+        for words in ["Ink Wash", "ink_wash", " INK  wash "] {
+            let out = t
+                .call(
+                    json!({"scene": {"setting": "a quiet harbour", "style": words,
+                           "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert!(!out.content.contains("There is no"), "{}", out.content);
+            assert!(
+                last_prompt(&seen).contains("soft grey ink wash on rice paper"),
+                "{words}: the style's own words reach the prompt"
+            );
+        }
+        let posts_before = posts();
+        // Over the chat's record, where the persona's calls went.
+        let again = t
+            .call(
+                json!({"scene": {"style": "oil on linen", "light": "a grey drizzle",
+                       "people": [{"who": "maya"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!again.is_error, "{}", again.content);
+        assert!(
+            again
+                .content
+                .contains("There is no approved style `oil on linen`"),
+            "{}",
+            again.content
+        );
+        assert_eq!(posts(), posts_before + 1);
+        let alone = t
+            .call(
+                json!({"picture": picture_of(&again.content),
+                       "scene": {"style": "oil on linen"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(alone.is_error, "{}", alone.content);
+        assert!(
+            alone.content.contains("Name one of those")
+                && alone.content.contains("`ink-wash`")
+                && !alone.content.contains("secret-look"),
+            "{}",
+            alone.content
+        );
+        assert!(
+            !alone.content.contains("image_library"),
+            "{}",
+            alone.content
+        );
+        assert_eq!(posts(), posts_before + 1, "a refused call draws nothing");
+        // A made-up picture beside a scene that describes no picture of its
+        // own (a style alone) is refused, never drawn from nothing: it drew a
+        // stranger in an empty room (mecha-a3, review of #603).
+        let restyle = t
+            .call(
+                json!({"picture": "images/made_up_name.png", "scene": {"style": "Ink Wash"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            restyle.is_error && restyle.content.contains("There is no picture"),
+            "{}",
+            restyle.content
+        );
+        assert_eq!(posts(), posts_before + 1, "nothing drawn from nothing");
+
+        // A style waiting on the owner, or one whose entry did not load, is a
+        // finding: refused by name, never dropped (review of #603).
+        let mut proposed = crate::imagelib::NewEntry {
+            kind: crate::imagelib::Kind::Style,
+            name: "chalk-pastel".into(),
+            text: "soft chalk pastel on toned paper".into(),
+            portrait: None,
+            source_seed: None,
+            origin: crate::imagelib::Origin::ModelUntrusted,
+            locked: false,
+        };
+        crate::imagelib::create(&lib, proposed.clone()).unwrap();
+        proposed.name = "charcoal".into();
+        crate::imagelib::create(&lib, proposed).unwrap();
+        std::fs::write(lib.join("styles/charcoal/entry.toml"), "not = [valid").unwrap();
+        for (style, says) in [
+            ("chalk-pastel", "waiting for the owner's approval"),
+            ("charcoal", "could not be read"),
+        ] {
+            let out = t
+                .call(
+                    json!({"scene": {"setting": "a quiet harbour", "style": style,
+                           "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(
+                out.is_error && out.content.contains(says),
+                "{}",
+                out.content
+            );
+        }
+        assert_eq!(posts(), posts_before + 1);
+
+        // A description longer than any library name is left out the same
+        // way, never a shape refusal.
+        let long = "a slow dreamy wash of muted teal and amber with heavy grain and soft edges";
+        assert!(long.chars().count() > crate::imagelib::MAX_NAME);
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a quiet harbour", "style": long,
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "waving"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("There is no approved style"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.content.contains(long),
+            "the echo is clipped: {}",
+            out.content
+        );
+        assert_eq!(posts(), posts_before + 2);
+
+        // With no library at all, nothing is offered to choose from.
+        let bare = tool(&url)
+            .call(
+                json!({"picture": picture_of(&again.content), "scene": {"style": "oil on linen"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(bare.is_error, "{}", bare.content);
+        assert!(
+            bare.content
+                .contains("There is no approved style `oil on linen`. Leave `style` out"),
+            "{}",
+            bare.content
+        );
+        for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
     }

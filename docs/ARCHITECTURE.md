@@ -718,6 +718,25 @@ The routes, in the result's own words and the manifest's `route`:
     beside a scene, which then draws as new; on its own it is refused saying
     where pictures come from. A bare "cannot open" was retried eleven times
     in one live run (2026-10-08). A path the jail refuses is still refused.
+  - a `style` the library does not hold ("hyperreal render", or a
+    description longer than any name) is left out, naming the approved,
+    unlocked styles and saying a look with no name goes in words in
+    `scene.setting`; asked alone it is refused the same way. Its words are
+    first spelled as a name would be (case, spaces and underscores to
+    hyphens), so "Digital painting" is `digital-painting`. Style names are
+    not private (the owner's ruling, 2026-10-08), and the tool description
+    ends with them, read when the form is built so a chat's cached tool list
+    never changes mid-chat. A character is never named back: the roster is
+    the owner's, and a locked entry is never named (#385).
+  - a made-up `picture` is left out only beside a scene that describes a
+    picture of its own (people or a setting); beside a style, light or
+    camera alone it is refused, since drawn from nothing it was a stranger
+    in an empty room.
+    A style waiting on the owner, or one whose entry did not load, is still
+    refused by name (`imagelib::missing`): a finding, not over-fill. No
+    library refusal names a tool: the one replaced pointed at
+    `image_library`, which a persona chat does not have, and one live run
+    retried it until its turns ran out (2026-10-08).
 
 The pictures read go through the jail, as before. They are the picture, the
 setting photo and the mask, each:

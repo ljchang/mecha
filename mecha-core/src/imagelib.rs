@@ -903,11 +903,41 @@ pub(crate) fn missing(lib: &Library, kind: Kind, name: &str) -> String {
             "The {} `{name}` is waiting for the owner's approval and cannot be used yet.",
             kind.label()
         ),
-        _ => format!(
-            "No approved {} named `{name}`. Call image_library to see what exists.",
-            kind.label()
-        ),
+        // Only what the call named, never what else the library holds:
+        // the roster is the owner's (`image_library` declares it private,
+        // and a locked entry is never named where there is no unlock token,
+        // #385), and never a tool to call, which a persona chat does not
+        // have (2026-10-08; review of #603).
+        _ => format!("No approved {} named `{name}`.", kind.label()),
     }
+}
+
+/// The approved, unlocked styles, by name, as one sentence for a model, or
+/// `None` when there are none. Style names are not private (the owner's
+/// ruling, 2026-10-08); a locked style is the owner's way to hide one, so it
+/// is left out, without a count. Characters are never listed: their names
+/// are the owner's.
+pub(crate) fn styles_to_name(lib: &Library) -> Option<String> {
+    let names: Vec<String> = lib
+        .all()
+        .iter()
+        .filter(|e| e.kind == Kind::Style && e.status == Status::Approved && !e.locked)
+        .map(|e| format!("`{}`", e.name))
+        .collect();
+    (!names.is_empty()).then(|| format!("Styles you can name: {}", names.join(", ")))
+}
+
+/// Whether `name` is simply not in the library as `kind`: no entry in any
+/// state, and none that failed to load. A candidate waiting on the owner or
+/// an entry that did not load is a finding, said by [`missing`], never an
+/// absence (review of #603).
+pub(crate) fn absent(lib: &Library, kind: Kind, name: &str) -> bool {
+    let entry_dir = lib.dir.join(kind.dir()).join(name);
+    lib.get(kind, name).is_none()
+        && !lib
+            .errors
+            .iter()
+            .any(|e| e.path.parent() == Some(entry_dir.as_path()))
 }
 
 /// Empty, or only the refusal's own placeholder copied back — no answer.
@@ -1226,6 +1256,28 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+    /// A name the library does not hold is answered with that name alone:
+    /// never the roster, a locked entry or a tool to call (2026-10-08: a
+    /// persona chat has no image_library and retried the refusal naming it).
+    #[test]
+    fn a_missing_entry_names_only_what_was_asked() {
+        let dir = scratch();
+        create(dir.path(), style("noir")).unwrap();
+        let mut hidden = style("hidden-look");
+        hidden.locked = true;
+        create(dir.path(), hidden).unwrap();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        assert_eq!(
+            missing(&lib, Kind::Style, "pastel"),
+            "No approved style named `pastel`."
+        );
+        assert_eq!(
+            missing(&lib, Kind::Character, "ivo"),
+            "No approved character named `ivo`."
+        );
+    }
+
     #[test]
     fn a_failed_install_leaves_no_temp_file_behind() {
         let dir = scratch();
