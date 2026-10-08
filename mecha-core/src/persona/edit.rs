@@ -136,6 +136,7 @@ fn photo_setting(
         scene.remove("setting");
         return Ok(true);
     } else if said.contains(PHOTO_SETTING) {
+        scene.remove("setting");
         return Err(
             "this picture is placed on the owner's photo, and words in its setting \
                     would replace the photo: say the change without restating the photo, or \
@@ -290,13 +291,13 @@ pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extra
 pub struct Looks<'a> {
     /// The styles offered to the reader: approved and unlocked.
     pub styles: &'a [String],
-    /// Every approved style, locked ones too: what a look may match, as
-    /// `image_generate` draws a locked style when it is named. Never offered.
-    pub held: &'a [String],
     pub record: Option<&'a crate::scene::Scene>,
-    /// The library itself, when there is one: a look naming a style that
-    /// waits on the owner or did not load is that finding, said by name as
-    /// `image_generate` says it, never words in the setting (review of #605).
+    /// The library itself, when there is one: what a look is matched
+    /// against, as `image_generate` checks a style (any approved one, locked
+    /// ones too, since generation draws a locked style when it is named; the
+    /// lock only hides it from being offered). A look naming a style that
+    /// waits on the owner or did not load is that finding, said by name,
+    /// never words in the setting (review of #605).
     pub library: Option<&'a crate::imagelib::Library>,
 }
 
@@ -342,7 +343,11 @@ fn look_into(
         return Ok(false);
     }
     for key in &keys {
-        if looks.styles.contains(key) || looks.held.contains(key) {
+        let approved = looks.library.is_some_and(|lib| {
+            lib.get(crate::imagelib::Kind::Style, key)
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
+        });
+        if looks.styles.contains(key) || approved {
             scene.insert("style".into(), key.clone().into());
             return Ok(true);
         }
@@ -468,20 +473,31 @@ pub fn read_extraction_for(
     }
     // The stand-in said back alone was understood: the photo stays, and it
     // counts as nothing asked, like a no-op look (review of #605).
-    let restated_photo = photo_setting(&mut scene, looks.record)?;
+    // A look or a setting that cannot be drawn is left out beside the rest
+    // of the change and said, refused only when nothing else was asked, as
+    // `image_generate` rules (review of #605: "a smile, and watercolour"
+    // over a photo drew nothing at all).
+    let mut cannot: Vec<String> = Vec::new();
+    let restated_photo = match photo_setting(&mut scene, looks.record) {
+        Ok(dropped) => dropped,
+        Err(why) => {
+            cannot.push(why);
+            false
+        }
+    };
     let mut no_op_look = false;
     // `style` too: the record shows that key, and a reader without the
     // schema answers in it (review of #605).
     match obj.get("look").or_else(|| obj.get("style")) {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
-        Some(serde_json::Value::String(t)) => {
-            if !look_into(t, looks, &mut scene)? {
-                // A look that changes nothing (the picture's own style, or
-                // "style" alone) was said, and understood: another try.
-                no_op_look = true;
-            }
-        }
+        Some(serde_json::Value::String(t)) => match look_into(t, looks, &mut scene) {
+            Ok(true) => {}
+            // A look that changes nothing (the picture's own style, or
+            // "style" alone) was said, and understood: another try.
+            Ok(false) => no_op_look = true,
+            Err(why) => cannot.push(why),
+        },
         Some(_) => return Err("`look` was not text".into()),
     }
     let retouch = match obj.get("retouch") {
@@ -494,6 +510,10 @@ pub fn read_extraction_for(
     // (mecha-a3's G1).
     // Keys present but empty or null are nothing asked, as a schema-held
     // model writes "nothing changed" (review of #598): another try.
+    // Nothing else to draw: what could not be drawn is the answer.
+    if scene.is_empty() && retouch.is_none() && !cannot.is_empty() {
+        return Err(cannot.join("; "));
+    }
     let said_something = obj
         .iter()
         .filter(|(k, _)| !(no_op_look && (*k == "look" || *k == "style")))
@@ -517,6 +537,11 @@ pub fn read_extraction_for(
         (retouch, None)
     } else {
         (None, retouch)
+    };
+    let left_out = match (left_out, cannot.is_empty()) {
+        (l, true) => l,
+        (None, false) => Some(cannot.join("; ")),
+        (Some(l), false) => Some(format!("{l}; {}", cannot.join("; "))),
     };
     Ok(Extracted {
         scene,
@@ -770,6 +795,20 @@ mod tests {
         let why = read_extraction_for(r#"{"look": "pencil sketch"}"#, &known, None, &on_photo)
             .unwrap_err();
         assert!(why.contains("name one of the library's styles"), "{why}");
+        // Beside another change it is left out and said; the change draws.
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "Maya", "expression": "a smile"}], "look": "pencil sketch"}"#,
+            &known,
+            None,
+            &on_photo,
+        )
+        .unwrap();
+        assert_eq!(e.scene["people"][0]["expression"], "a smile");
+        assert!(e.scene.get("setting").is_none());
+        assert!(e
+            .left_out
+            .as_deref()
+            .is_some_and(|l| l.contains("would replace the photo")));
         // A held style over the photo is fine: the photo stays.
         let e = read_extraction_for(r#"{"look": "ink wash"}"#, &known, None, &on_photo).unwrap();
         assert_eq!(e.scene["style"], "ink-wash");
@@ -794,8 +833,22 @@ mod tests {
             "a quiet harbour, in the look of pixel art"
         );
         // The picture's own style said back is no change; a locked style
-        // (held, never offered) is still that style.
-        let locked = vec!["secret-wash".to_string()];
+        // (approved in the library, never offered) is still that style.
+        let dir = std::env::temp_dir().join(format!("mecha-edit-{}", uuid::Uuid::new_v4()));
+        crate::imagelib::create(
+            &dir,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "secret-wash".into(),
+                text: "a look the owner keeps out of sight".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: true,
+            },
+        )
+        .unwrap();
+        let lib = crate::imagelib::Library::load(&dir).0;
         let mine = crate::scene::Scene {
             style: Some(crate::scene::Field {
                 value: "secret-wash".to_string(),
@@ -805,9 +858,8 @@ mod tests {
         };
         let held = Looks {
             styles: &styles,
-            held: &locked,
             record: Some(&mine),
-            library: None,
+            library: Some(&lib),
         };
         let e = read_extraction_for(
             r#"{"style": "secret wash", "light": "dusk"}"#,
@@ -819,9 +871,8 @@ mod tests {
         assert!(e.scene.get("style").is_none() && e.scene.get("setting").is_none());
         let elsewhere = Looks {
             styles: &styles,
-            held: &locked,
             record: Some(&harbour),
-            library: None,
+            library: Some(&lib),
         };
         let e =
             read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
@@ -836,6 +887,7 @@ mod tests {
         // The picture's own style said alone is understood: another try.
         let e = read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &held).unwrap();
         assert!(e.scene.is_empty() && e.retouch.is_none(), "{:?}", e.scene);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// The photo stand-in said alone is the record restated and left out;

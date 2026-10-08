@@ -378,18 +378,8 @@ async fn draw_panel_edit(
                 .as_ref()
                 .filter(|r| r.people.len() == 1)
                 .map(|r| mecha_core::picture::shown(&r.people[0].who));
-            let held: Vec<String> = lib
-                .all()
-                .iter()
-                .filter(|e| {
-                    e.kind == mecha_core::imagelib::Kind::Style
-                        && e.status == mecha_core::imagelib::Status::Approved
-                })
-                .map(|e| e.name.clone())
-                .collect();
             let looks = edit::Looks {
                 styles: &styles,
-                held: &held,
                 record: record.as_ref(),
                 library: Some(&lib),
             };
