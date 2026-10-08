@@ -353,38 +353,44 @@ impl JobQueue {
         let (key, call_id, tool, run) = (key.to_string(), w.call_id, w.tool, w.run);
         tokio::spawn(async move {
             let output = fut.await;
-            queue.finished(&key, &call_id, &tool);
+            // Pending until it lands, from the moment it ends.
+            queue
+                .arrived
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(key.clone())
+                .or_default()
+                .push((call_id.clone(), tool.clone()));
+            // Delivered before the next one starts, its slot still held
+            // meanwhile so a submit in between queues: a next job that ends
+            // at once (an unreachable server) would otherwise be delivered
+            // ahead of this one, and results land out of order (review of
+            // #606).
             (queue.deliver)(Delivered {
-                key,
-                call_id,
+                key: key.clone(),
+                call_id: call_id.clone(),
                 tool,
                 output,
                 terms,
                 run,
             });
+            queue.finished(&key, &call_id);
             queue.changed.notify_waiters();
         });
         true
     }
 
-    /// `call_id`'s job ended: its slot frees, it stays pending until it
-    /// lands, and the next one waiting for `key` starts — in order, one at
+    /// `call_id`'s job ended and was delivered: its slot frees, and the next
+    /// one waiting for `key` starts — in order, one at
     /// a time. A waiting job whose future cannot be taken is delivered as
     /// not started rather than left in the line.
-    fn finished(self: &Arc<Self>, key: &str, call_id: &str, tool: &str) {
+    fn finished(self: &Arc<Self>, key: &str, call_id: &str) {
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         if running.get(key).is_some_and(|r| r.call_id == call_id) {
             running.remove(key);
         }
         let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
         let mut unstartable = Vec::new();
-        // Pending until it lands, though the slot is free.
-        self.arrived
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(key.to_string())
-            .or_default()
-            .push((call_id.to_string(), tool.to_string()));
         while !running.contains_key(key) {
             let Some(next) = waiting.get_mut(key).and_then(|l| l.pop_front()) else {
                 break;
@@ -805,6 +811,38 @@ mod tests {
             .collect();
         assert_eq!(order, ["c1", "c2", "c3", "c4"]);
         assert_eq!(queue.waiting("chat"), 0);
+    }
+
+    /// Results are delivered in the order the jobs were sent, even when the
+    /// next one ends the moment it starts (review of #606).
+    #[tokio::test]
+    async fn a_next_job_that_ends_at_once_is_delivered_after_the_one_before() {
+        let (queue, got) = collecting();
+        let go = Arc::new(tokio::sync::Notify::new());
+        queue
+            .submit(
+                "chat",
+                0,
+                "c1",
+                "draw",
+                gated(Arc::clone(&go), CancellationToken::new()),
+            )
+            .unwrap();
+        let instant = DeferredJob::new(
+            async { ToolOutput::err("the server is unreachable") },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "c2", "draw", instant).unwrap();
+        go.notify_one();
+        delivered(&got, 2).await;
+        let order: Vec<String> = got
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|d| d.call_id.clone())
+            .collect();
+        assert_eq!(order, ["c1", "c2"]);
     }
 
     /// Stop ends the running job and answers every waiting one as never
