@@ -2342,6 +2342,48 @@ impl Tool for ImageGenerate {
                 });
             }
         }
+        // A `style` the library holds no approved entry for: the field takes
+        // a library style's name, and a model fills it with words
+        // ("hyperreal render"). Left out and said, with the names there are,
+        // so the picture still draws; refused only when nothing else is
+        // asked. A refusal pointing at image_library, which a persona chat
+        // does not have, was retried ten times in one run (2026-10-08).
+        if let Some(name) = call.change.style.clone() {
+            let key = name.trim().to_lowercase();
+            let held = lib
+                .get(crate::imagelib::Kind::Style, &key)
+                .is_some_and(|e| e.status == crate::imagelib::Status::Approved);
+            if !held {
+                let styles: Vec<String> = lib
+                    .all()
+                    .iter()
+                    .filter(|e| {
+                        e.kind == crate::imagelib::Kind::Style
+                            && e.status == crate::imagelib::Status::Approved
+                    })
+                    .map(|e| format!("`{}`", e.name))
+                    .collect();
+                let there = if styles.is_empty() {
+                    "The image library has no styles".to_string()
+                } else {
+                    format!("The image library's styles are {}", styles.join(", "))
+                };
+                call.change.style = None;
+                if call.change == crate::scene::SceneChange::default()
+                    && call.setting_photo.is_none()
+                    && call.retouch.is_none()
+                {
+                    return Ok(refused(format!(
+                        "There is no style `{name}`. {there}: name one of those, or leave \
+                         `style` out."
+                    )));
+                }
+                call.notes.push(format!(
+                    "There is no style `{name}`, so it was left out and the picture keeps its \
+                     own look. {there}."
+                ));
+            }
+        }
         // A library name that is not drawable is never drawn as a stranger
         // by that name: a candidate waits on the owner, and an entry that
         // did not load is not read as absent.
@@ -6492,6 +6534,98 @@ mod tests {
         assert!(last_prompt(&seen).contains("a fisherman, wearing oilskins, mending a net"));
         assert_eq!(uploads(&seen), 5, "five portraits, none for the fisherman");
         for d in [dir, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// A `style` the library does not hold is left out and said, with the
+    /// styles there are, and the picture still draws, a new one or one drawn
+    /// over the chat's record; asked alone it is refused naming them. A
+    /// persona chat retried "call image_library" ten times (2026-10-08).
+    #[tokio::test]
+    async fn an_unknown_style_is_left_out_and_the_picture_draws() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "ink-wash".into(),
+                text: "soft grey ink wash on rice paper".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [200, 150, 120])));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::clone(&faces) as Arc<dyn crate::face::FaceAnchors>);
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let posts = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a park bench", "style": "hyperreal render",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "sitting"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        assert!(
+            first
+                .content
+                .contains("There is no style `hyperreal render`")
+                && first.content.contains("`ink-wash`"),
+            "{}",
+            first.content
+        );
+        assert_eq!(posts(), 1);
+        // Over the chat's record, where the persona's calls went.
+        let again = t
+            .call(
+                json!({"scene": {"style": "oil on linen", "light": "a grey drizzle",
+                       "people": [{"who": "maya"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!again.is_error, "{}", again.content);
+        assert!(
+            again.content.contains("There is no style `oil on linen`"),
+            "{}",
+            again.content
+        );
+        assert_eq!(posts(), 2);
+        let alone = t
+            .call(
+                json!({"picture": picture_of(&again.content),
+                       "scene": {"style": "oil on linen"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(alone.is_error, "{}", alone.content);
+        assert!(
+            alone.content.contains("name one of those") && alone.content.contains("`ink-wash`"),
+            "{}",
+            alone.content
+        );
+        assert!(
+            !alone.content.contains("image_library"),
+            "{}",
+            alone.content
+        );
+        assert_eq!(posts(), 2, "a refused call draws nothing");
+        for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
     }

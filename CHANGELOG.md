@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A picture asked for in a style the library doesn't have still draws.**
+  A model that wrote a look like "hyperreal render" or "oil on linen"
+  where only a library style's name fits was refused every time, and in a
+  persona chat it retried until the run gave up with nothing drawn. The
+  style is now left out, the reply names the styles the library has, and
+  the picture draws.
+
 - **A retouch keeps who is in the picture.** Edits got faster on 2026-10-08
   by sending smaller reference pictures, but a retouch has no face crop to
   carry who is in the picture, and at the smaller size faces drifted. A
