@@ -771,7 +771,7 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 | `steps` | integer | `40` | Denoising steps; 40 is the model's reference setting. |
 | `timeout_secs` | integer | `600` | A generation running longer is abandoned on the server. |
 | `min_available_mb` | integer | `20480` | Refuse to start below this much available memory when the image server holds no model (just started, or its stats can't be read). A server that has already loaded the model is asked for this figure less the ~8 GB a load costs (12 GB at the default). `0` skips the check. |
-| `unload_after_secs` | integer | `600` | Ask the server to unload its models after this long idle. `0` keeps them loaded. |
+| `unload_after_secs` | integer | `900` | Ask the server to unload its models after this long idle. `0` keeps them loaded. |
 | `server_temp_dir` | path | unset | The directory the server writes temp files into — for ComfyUI, the `--temp-directory` path with `temp` appended. When set, each job's uploaded references and preview are deleted there after the job. Unset, they stay until the server restarts, and incognito chats cannot generate images. |
 
 `image_generate` declares no capabilities at all: what comes back is a file name
