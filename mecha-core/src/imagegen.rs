@@ -2297,10 +2297,38 @@ impl Tool for ImageGenerate {
                 .is_some_and(|e| e.status == crate::imagelib::Status::Approved)
         };
         let me = self.self_names(&lib);
-        let call = match crate::picture::parse(&input, &approved, &me, self.seeds) {
+        let mut call = match crate::picture::parse(&input, &approved, &me, self.seeds) {
             Ok(c) => c,
             Err(why) => return Ok(refused(why)),
         };
+        // A `picture` no file in this chat answers to: a name the model made
+        // up. Beside a scene it is left out and said, and the scene is drawn
+        // as a new picture; on its own it is refused saying where pictures
+        // come from. A bare "cannot open" was retried eleven times in one run
+        // on 2026-10-08. Only a path inside the jail that does not exist:
+        // anything the jail refuses is still refused as before.
+        if let Some(p) = call.picture.clone() {
+            let missing = ctx
+                .resolve(&p)
+                .is_ok_and(|path| std::fs::symlink_metadata(path).is_err());
+            if missing {
+                let has_scene = call.change != crate::scene::SceneChange::default()
+                    || call.setting_photo.is_some();
+                if !has_scene {
+                    return Ok(refused(format!(
+                        "There is no picture `{p}` in this chat. Name a picture as a result \
+                         gave it (images/…) or as the owner attached it (inbox/…), or leave \
+                         `picture` out and describe a new picture in `scene`."
+                    )));
+                }
+                call.picture = None;
+                call.mask = None;
+                call.notes.push(format!(
+                    "There is no picture `{p}` in this chat, so it was left out and the scene \
+                     was drawn as a new picture."
+                ));
+            }
+        }
         // A library name that is not drawable is never drawn as a stranger
         // by that name: a candidate waits on the owner, and an entry that
         // did not load is not read as absent.
@@ -6645,5 +6673,58 @@ mod tests {
         for d in [dir, lib] {
             std::fs::remove_dir_all(d).ok();
         }
+    }
+
+    /// A `picture` the model made up, beside a scene, is left out and said,
+    /// and the scene draws as new; alone it is refused saying where pictures
+    /// come from (a live run retried a bare "cannot open" eleven times,
+    /// 2026-10-08). A path the jail refuses is still refused.
+    #[tokio::test]
+    async fn a_made_up_picture_is_left_out_beside_a_scene() {
+        let (url, seen) = distinct(1).await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/made_up_name.jpg",
+                       "scene": {"setting": "a sunny porch", "people": [
+                           {"who": "a woman in a green raincoat", "wearing": "a green raincoat", "doing": "waving"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("A new"), "{}", out.content);
+        assert!(
+            out.content
+                .contains("There is no picture `images/made_up_name.jpg` in this chat"),
+            "{}",
+            out.content
+        );
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        let alone = tool(&url)
+            .call(
+                json!({"picture": "images/made_up_name.jpg", "retouch": "a red hat"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            alone.is_error && alone.content.contains("leave `picture` out"),
+            "{}",
+            alone.content
+        );
+        let outside = tool(&url)
+            .call(
+                json!({"picture": "/etc/passwd", "scene": {"setting": "a porch"}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(outside.is_error, "{}", outside.content);
+        std::fs::remove_dir_all(dir).ok();
     }
 }
