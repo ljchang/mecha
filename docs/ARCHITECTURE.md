@@ -1025,7 +1025,12 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   right 12 of 15, duplicates 1 of 12 (mecha-a3, 2026-10-08). It feeds the
   prompt only, so the record keeps the call as the persona sent it (a
   history showing her calls split taught her to drop the act, 31 of 39). A
-  split that fails or takes past `ROLE_SPLIT_TIMEOUT` draws the call as sent.
+  split that fails, takes past `ROLE_SPLIT_TIMEOUT`, or yields parts the
+  compiler will not take draws the call as sent: a split never turns a
+  drawable call into a refusal. The split's places win over the call's
+  (the persona's are copies), except a chosen `background`. It runs on the
+  new-picture and words-restage path only; a restage onto a setting photo
+  is an edit and is not split.
 - **One reference per person, each appearing exactly once, `wearing` and
   `doing` required, except that `doing` is left empty when the scene's
   `together` says what its people do** (a "standing naturally" beside a kneel
