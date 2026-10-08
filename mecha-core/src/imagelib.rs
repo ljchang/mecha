@@ -1178,10 +1178,6 @@ fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// Only a name with no trace moves: a known character stays, a
-    /// candidate and an entry that did not load stay and keep their own
-    /// refusals, and an unknown name becomes an extra with what it wore and
-    /// did (review of #434: the load-error branch is the load-bearing one).
     use super::*;
 
     /// A real 2×2 PNG, so the header decodes.

@@ -1982,8 +1982,6 @@ impl ImageGenerate {
     }
 }
 
-impl ImageGenerate {}
-
 /// What the model is told the tool does (`IMAGE-DESIGN.md` §5.1). A named
 /// constant, so the acceptance gates read the same words the model does.
 pub const DESCRIPTION: &str = "Draw a picture with the local image model, or change one, and save \
@@ -2052,6 +2050,16 @@ impl ImageGenerate {
             character,
             names: vec![who.name.clone(), who.display.clone()],
         }
+    }
+}
+
+/// Every string in a JSON value, for a scan over all of a call's words.
+fn collect_strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+    match v {
+        Value::String(t) => out.push(t),
+        Value::Array(items) => items.iter().for_each(|i| collect_strings(i, out)),
+        Value::Object(map) => map.values().for_each(|i| collect_strings(i, out)),
+        _ => {}
     }
 }
 
@@ -2253,13 +2261,25 @@ impl Tool for ImageGenerate {
                     capitalized(&key)
                 )));
             }
-            if crate::imagelib::broken_named_in(&lib, &key).contains(&key) {
-                return Ok(refused(format!(
-                    "{}'s library entry could not be read, so it cannot be drawn; the owner \
-                     can check it with `mecha library`.",
-                    capitalized(&key)
-                )));
-            }
+        }
+        // A character whose entry did not load is invisible to the planner's
+        // name check (`named_in` sees only approved entries), so every word of
+        // the call is read for one here: "Maya at a diner" with a corrupt
+        // `maya` would otherwise reach the GPU and draw a stranger (review of
+        // #383; restored on review of #597, pass 4).
+        let mut prose: Vec<&str> = Vec::new();
+        collect_strings(&input["scene"], &mut prose);
+        collect_strings(&input["retouch"], &mut prose);
+        if let Some(name) = prose
+            .iter()
+            .flat_map(|t| crate::imagelib::broken_named_in(&lib, t))
+            .next()
+        {
+            return Ok(refused(format!(
+                "{}'s library entry could not be read, so it cannot be drawn; the owner can \
+                 check it with `mecha library`.",
+                capitalized(&name)
+            )));
         }
         // Before reading anything: references are a cost on the pool this
         // guards.
@@ -2555,7 +2575,19 @@ impl Tool for ImageGenerate {
                         .collect::<Vec<_>>()
                 })
                 .await
-                .unwrap_or_else(|_| vec![None; entries.len()]);
+                // A detector that panicked costs the crops, and is said like
+                // any other reason a face could not be had (`face.rs`: "said,
+                // never silently drawn without"; review of #597, pass 3).
+                .unwrap_or_else(|_| {
+                    entries
+                        .iter()
+                        .map(|e| {
+                            e.as_ref().filter(|_| !masked).map(|_| {
+                                crate::face::Anchor::Unavailable("the face detector failed".into())
+                            })
+                        })
+                        .collect()
+                });
                 let mut said = String::new();
                 let mut crops = 0usize;
                 for ((p, entry), anchor) in described.iter().zip(&entries).zip(anchors) {
@@ -2565,18 +2597,30 @@ impl Tool for ImageGenerate {
                         .map(|e| e.text.trim().trim_end_matches('.').to_string())
                         .unwrap_or_default();
                     said.push_str(&edit_person(&name, &text, p));
-                    if let Some(crate::face::Anchor::Crop(bytes)) = anchor {
-                        req.references.push(Reference {
-                            path: format!("{FACE_REFERENCE}{}", p.who.key()),
-                            bytes,
-                            ext: "png",
-                        });
-                        crops += 1;
-                        let k = req.references.len();
-                        said.push_str(&format!(
-                            " Take only {name}'s facial identity from <image{k}>, nothing else."
-                        ));
-                        crops_said.push(name.clone());
+                    match anchor {
+                        Some(crate::face::Anchor::Crop(bytes)) => {
+                            req.references.push(Reference {
+                                path: format!("{FACE_REFERENCE}{}", p.who.key()),
+                                bytes,
+                                ext: "png",
+                            });
+                            crops += 1;
+                            let k = req.references.len();
+                            said.push_str(&format!(
+                                " Take only {name}'s facial identity from <image{k}>, nothing \
+                                 else."
+                            ));
+                            crops_said.push(name.clone());
+                        }
+                        Some(crate::face::Anchor::NoFace) => dropped.push(format!(
+                            "No face was found in {name}'s library portrait, so {name} was \
+                             drawn from the description alone."
+                        )),
+                        Some(crate::face::Anchor::Unavailable(why)) => dropped.push(format!(
+                            "{name}'s face could not be taken from the library ({why}), so \
+                             {name} was drawn from the description alone."
+                        )),
+                        None => {}
                     }
                     if let Some(e) = entry {
                         used.push(crate::imagelib::Used {
@@ -2676,6 +2720,9 @@ impl Tool for ImageGenerate {
                 req.references.len()
             )));
         }
+        // Someone named but not in the picture is never drawn: the image
+        // model reads "the viewer" (the owner's ruling, 2026-10-08).
+        req.prompt = crate::picture::as_viewer(&req.prompt, &plan.offstage);
         if req.prompt.chars().count() > crate::imagelib::MAX_COMPILED_PROMPT {
             return Ok(refused(format!(
                 "The picture's description came to over {} characters; say less in the scene.",
@@ -5206,7 +5253,7 @@ mod tests {
 
     /// A face detector that panics costs the crops and nothing else: the
     /// person is still drawn and kept in the manifest's `cast` (review of
-    /// #586).
+    /// #586), and the result says why there was no crop (review of #597).
     #[tokio::test]
     async fn a_panicking_detector_keeps_the_people_on_record() {
         struct Panics;
@@ -5239,6 +5286,14 @@ mod tests {
         let m = manifest_of(&dir, &out.content);
         assert_eq!(m["cast"][0]["name"], "maya", "{m}");
         assert_eq!(m["crops"], json!([]), "{m}");
+        // And the reason is said, never a silent draw without the face.
+        assert!(
+            out.content.contains(
+                "Maya's face could not be taken from the library (the face detector failed)"
+            ),
+            "{}",
+            out.content
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
@@ -5788,30 +5843,39 @@ mod tests {
         .await
     }
 
-    /// A library character named in a new picture's prose but not in it
-    /// would be drawn from words, as a stranger: refused before the GPU
-    /// (IMAGE-DESIGN.md §4). On a picture with no record the check is not
-    /// made: its people are unknown, and an edit keeps a face from the canvas.
+    /// Someone is drawn only when listed in `people` (the owner's ruling,
+    /// 2026-10-08): a library name in the words for someone not in the
+    /// picture reaches the image model as "the viewer", no portrait of them
+    /// is sent, and the result says so. The persona addressing the owner by
+    /// a name the library also holds was every G1b refusal.
     #[tokio::test]
-    async fn a_library_name_in_prose_must_be_in_the_picture() {
+    async fn a_library_name_in_prose_for_someone_not_drawn_is_the_viewer() {
+        let (url, seen) = distinct(1).await;
         let lib = library_with(&["maya", "john"]);
-        let t = tool("http://127.0.0.1:1").with_library_dir(lib.clone());
         let dir = tempdir();
-        let out = t
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
             .call(
-                json!({"scene": {"setting": "a park bench where John sits",
+                json!({"scene": {"setting": "a park bench",
+                       "together": "Maya waves at John off to the side",
                        "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
                 &ctx(&dir),
             )
             .await
             .unwrap();
-        assert!(out.is_error, "{}", out.content);
+        assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content
-                .contains("John is named in `setting` but is not in the picture"),
+                .contains("John named in the words but not in the picture"),
             "{}",
             out.content
         );
+        let prompt = last_prompt(&seen);
+        assert!(
+            prompt.contains("the viewer") && !prompt.contains("John"),
+            "{prompt}"
+        );
+        assert_eq!(uploads(&seen), 1, "only Maya's portrait");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
@@ -6339,5 +6403,34 @@ mod tests {
         );
         assert_eq!(uploads(&seen), 1, "the picture, and no mask");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A character whose library entry did not load, named anywhere in the
+    /// call's words, is refused before the GPU: the planner's name check
+    /// cannot see a broken entry, and the words alone would draw a stranger
+    /// (review of #383; review of #597, pass 4).
+    #[tokio::test]
+    async fn a_broken_entry_named_in_prose_is_refused_before_the_gpu() {
+        let lib = library_with(&["maya", "john"]);
+        std::fs::write(lib.join("characters/john/entry.toml"), "not = [toml").unwrap();
+        let dir = tempdir();
+        let out = tool("http://127.0.0.1:1")
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"scene": {"setting": "a kitchen", "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "handing a cup to John"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("John's library entry could not be read"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 }

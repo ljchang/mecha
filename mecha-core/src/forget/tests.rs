@@ -909,3 +909,52 @@ fn a_relocated_document_cache_is_the_one_named() {
         report.residue
     );
 }
+
+/// An assistant chat's picture records go with it: its copy beside the
+/// transcript and each index entry it last advanced, at the layout the web
+/// chat stamps (`scene::assistant_slot`), while another chat's stay (review
+/// of #597).
+#[test]
+fn an_assistant_chats_scene_records_go_with_it() {
+    use crate::scene::{assistant_slot, hash, Scene};
+    let home = scratch("scene");
+    let roots = Roots::under(&home.0);
+    session(&roots, GONE, &home.0.join("work/web/chat-gone"), CANARY);
+    session(&roots, KEPT, &home.0.join("work/web/chat-kept"), "hello");
+    let picture = |b: &[u8], chat: &str| Scene {
+        picture: Some(hash(b)),
+        chat: Some(chat.into()),
+        ..Scene::default()
+    };
+    assistant_slot(&roots.sessions, KEPT)
+        .land(&picture(b"kept", KEPT))
+        .unwrap();
+    assistant_slot(&roots.sessions, GONE)
+        .land(&picture(b"gone", GONE))
+        .unwrap();
+    let copy = roots.sessions.join(format!("{GONE}.scene.json"));
+    let index = home.0.join("scene/index");
+    assert!(copy.exists() && index.join(format!("{}.json", hash(b"gone"))).exists());
+
+    let report = forget(
+        &roots,
+        GONE,
+        &Graph::answering(vec![Ok(GraphOutcome::Absent)]),
+    )
+    .unwrap();
+
+    assert!(report.complete, "{:?}", report.errors);
+    // Its copy, its index entry and the latest it wrote.
+    assert!(
+        report.removed.contains(&("scene".to_string(), 3)),
+        "{:?}",
+        report.removed
+    );
+    assert!(!copy.exists());
+    assert!(!index.join(format!("{}.json", hash(b"gone"))).exists());
+    assert!(
+        index.join(format!("{}.json", hash(b"kept"))).exists(),
+        "another chat's stays"
+    );
+    assert!(roots.sessions.join(format!("{KEPT}.scene.json")).exists());
+}
