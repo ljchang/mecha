@@ -394,7 +394,7 @@ fn looks_like_a_picture_path(t: &str) -> bool {
 
 /// `t` cut to at most `cap` characters, at the last sentence end inside it,
 /// else at the last word.
-fn clip_at_sentence(t: &str, cap: usize) -> String {
+pub(crate) fn clip_at_sentence(t: &str, cap: usize) -> String {
     let head: String = t.chars().take(cap).collect();
     let cut = head
         .rfind(['.', '!', '?'])
