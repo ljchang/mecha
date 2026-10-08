@@ -954,7 +954,10 @@ pub(crate) fn blank(s: &str) -> bool {
 /// once — with a total only when `extras` are counted into it (E11), since a
 /// total with no extras erased a person the scene described (E12); every
 /// person carries their stored description beside the pointer (E1) and what
-/// they are wearing and doing (E8: a reference supplies its own otherwise).
+/// they are wearing and doing (E8: a reference supplies its own otherwise),
+/// except that `doing` is empty when the scene says what its people do
+/// together: a pose beside that drew a person twice (`picture::plan`, which
+/// fills a plain pose whenever the scene does not).
 pub fn compile(
     lib: &Library,
     scene: &str,
@@ -1024,7 +1027,7 @@ pub fn compile(
         // A placeholder copied from a refusal's example is no answer. An
         // empty `doing` is a scene that says what its people do together
         // (`picture::plan` fills one otherwise).
-        if blank(wearing) || (blank(doing) && !doing.is_empty()) {
+        if blank(wearing) || (!doing.is_empty() && blank(doing)) {
             return Err(format!(
                 "`{name}` needs `wearing` and `doing`: a reference supplies its own outfit and \
                  pose when the scene does not say."

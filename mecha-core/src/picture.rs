@@ -617,9 +617,6 @@ pub fn plan(
                 crate::scene::MAX_PEOPLE
             ));
         };
-        if p.doing.trim().is_empty() && !together {
-            p.doing = "standing naturally".into();
-        }
         if p.wearing.trim().is_empty() {
             match (worn(key), &p.who) {
                 (Some((w, from)), _) => {
@@ -649,6 +646,18 @@ pub fn plan(
                     p.wearing = "clothes that suit the scene".into();
                 }
             }
+        }
+    }
+    // A pose left out is a plain one, decided over the scene as it lands and
+    // not only for newcomers, since the record outlives the call: a later
+    // call that clears `together` (posing or adding anyone does) leaves the
+    // rest with no pose, and the prompt would say nothing of what they do
+    // (review of #608). One case is left: a `together` sent after people
+    // were drawn with a filled pose keeps that pose beside it, since nothing
+    // on the record tells a filled pose from one the owner wrote.
+    if !together {
+        for p in next.people.iter_mut().filter(|p| p.doing.trim().is_empty()) {
+            p.doing = "standing naturally".into();
         }
     }
     // A library name in prose is someone in the picture, or a stranger drawn
@@ -1463,6 +1472,22 @@ mod tests {
             "{:?}",
             p.next.people
         );
+        // A later call that poses one of them clears the `together`, and the
+        // other is given a plain pose again rather than none at all.
+        let posed = planned(
+            &call(
+                json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya", "doing": "waving"}]}}),
+            ),
+            Some(&p.next),
+        );
+        assert!(posed.next.together.is_none());
+        let john = posed
+            .next
+            .people
+            .iter()
+            .find(|q| q.who.key() == "john")
+            .unwrap();
+        assert_eq!(john.doing, "standing naturally");
         // A described newcomer without clothes is dressed for the scene.
         let p = planned(
             &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "a waiter"}]}})),
