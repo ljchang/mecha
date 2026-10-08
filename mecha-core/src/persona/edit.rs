@@ -114,7 +114,8 @@ in the frame; `remove` to take \
 someone out; someone new with their `who`, `wearing` and `doing`; `together` for what the people \
 in the picture do with each other, as one line naming them; `camera`, `light`, `setting` when \
 those change; `style` when the owner asks for a different look, as one of the names in \
-`styles`, never words for it; `retouch` for a small change to something that is not a person. \
+`styles`, never words for it; a look none of `styles` names goes in `setting`, as the record's \
+setting again with the look added; `retouch` for a small change to something that is not a person. \
 Leave out \
 everything that stays the same. If the words only ask for another try, answer {}. Answer with \
 JSON only.";
@@ -527,9 +528,13 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
         assert_eq!(body["styles"], serde_json::json!(["ink-wash", "noir"]));
         let known = |_: &str| true;
-        let e = read_extraction(r#"{"style": "noir"}"#, &known).unwrap();
+        // The look said as a retouch beside it is left out, never drawn as
+        // the near-copy retouch it was.
+        let e = read_extraction(r#"{"style": "noir", "retouch": "noir style"}"#, &known).unwrap();
         assert_eq!(e.call("p")["scene"]["style"], "noir");
-        assert_eq!(e.retouch, None);
+        assert!(e.call("p").get("retouch").is_none());
+        assert_eq!(e.left_out.as_deref(), Some("noir style"));
+        assert!(EXTRACTION_SYSTEM.contains("a look none of `styles` names goes in `setting`"));
         let mut scene = crate::scene::Scene::default();
         scene.style = Some(crate::scene::Field {
             value: "ink-wash".to_string(),
