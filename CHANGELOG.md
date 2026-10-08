@@ -9,37 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Pictures can be changed by what changes in the scene.** `image_generate`
-  takes a `scene` change (who is in it, what they wear and do, the camera,
-  the place). A new pose, camera or place redraws the people in the scene's
-  place instead of editing the last picture again, so a low angle actually
-  moves the camera and a face doesn't drift down a chain of edits. New clothes
-  or someone added still edit the picture.
-- **A persona remembers what her last picture showed.** Each picture a
-  persona chat draws records its scene: where it is, who is in it, and what
-  they wear and do. A picture brought into another chat is recognised by its
-  content and keeps its people. Forgetting a chat's memories removes the
-  scene records that chat wrote; what another chat later drew from its
-  pictures stays with that chat. Each turn she's told what her last picture
-  showed, so a remembered day's outfit or setting no longer slips into the
-  present.
-- **An edit now carries the faces of the people in it.**
-  - **Who:** `image_generate` takes `cast` beside `reference_images`. Each
-    named library character comes in as a head crop of their portrait with
-    their description, so a chain of edits no longer drifts into somebody
-    else. In a persona chat the persona is included when the picture records
-    her or the edit names her. A picture mecha made remembers its people, so
-    the next edit needs no `cast`.
-  - **The name check:** a library character named in an edit but not in
-    `cast` is now refused, as it already was for new pictures.
-  - **The limit:** an edit takes at most three pictures in all, the faces
-    included.
-  - **What was replaced:** the face anchor, which only fired on chains that
-    traced back to a library scene (`IMAGE-SCENE-DESIGN.md`).
-  - **Clothing:** the clothes and pose a person is declared with now go in
-    even when no face reference can be sent. A person named only in an
-    edit's words, whom the picture doesn't record, is asked for in `cast`
-    with what they wear and do, instead of being drawn in invented clothes.
+- **Pictures are described as a scene, and the tool writes the prompt**
+  (`IMAGE-DESIGN.md`). `image_generate` takes a `scene`:
+  - `setting`, which is everything but the people and the words, as text or
+    a room photo;
+  - `light`, `camera`, `style`, `together` (what the people do with each
+    other) and `text` (words to render exactly);
+  - `people`, each with `who` (a library name, `self`, or a description),
+    `where`, `wearing`, `doing` and `expression`.
+
+  To change a picture, name it in `picture` and send only what changes:
+  - **A new pose, the camera, the setting, the light or a removal** redraws
+    everyone on the scene's setting, so the camera actually moves and faces
+    don't drift down a chain of edits.
+  - **New clothes, an expression, someone added or the words** edit the
+    picture, with a head crop of each person it changes.
+  - **Restating what is already true** changes nothing, and a call that
+    changes nothing draws the scene again at a new seed.
+  - **One small change to the picture itself** goes in `retouch`, with a
+    painted `mask` if there is one.
+
+  Up to five people with faces fit one picture. `prompt`, `cast`, `extras`,
+  `edit`, `negative_prompt` and `reference_images` are gone, and a chat's
+  schema has no `seed` (`mecha run` and evals keep it).
+- **Every picture remembers its scene.** Each picture drawn in a persona
+  chat, in the assistant's web chat, or in an incognito chat records where
+  it is, who is in it, and what they wear and do. The incognito record stays
+  in its room. A picture brought into another chat is recognised by its
+  content and keeps its scene. Deleting an assistant chat, or forgetting a
+  persona chat's memories, removes the records it wrote. Each persona turn
+  is told what its last picture showed, so a remembered day's outfit or
+  setting no longer slips into the present.
+- **An edit carries the faces of the people it changes.** Each library
+  character an edit places or changes comes in as a head crop of their
+  portrait, beside their description, so a chain of edits no longer drifts
+  into somebody else. A library name written anywhere but `who`, for someone
+  not in the picture, is refused rather than drawn as a stranger, and so is
+  a name still waiting for approval.
 
 ### Security
 
@@ -59,15 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **A persona's edits keep its face.** In a persona chat, an edit of a
-  picture of the persona's own character now sends a tight crop of the
-  character's portrait beside it, so a chain of edits no longer drifts into
-  somebody else. An edit that says where the camera goes (`edit.camera`)
-  leaves the crop off. The face is found by a detector that runs inside
-  mecha: install it once with `mecha imagelib install-face-detector`
-  (89 MB). Without it, edits draw as before and their manifests say why.
-  An edit says what the face does (`edit.face`) when the change is about it,
-  and a camera change by where the camera is.
+- **The face detector behind edits.** Head crops come from a detector that
+  runs inside mecha: install it once with `mecha imagelib
+  install-face-detector` (89 MB). Without it, edits draw as before, with
+  each person's description and clothes, and the manifest names whose crop
+  went.
 
 - **`mecha features enable` installs the embeddings and OCR servers.** On a
   Linux machine without them, enabling a feature that uses one fetches its
@@ -464,15 +466,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this too.
 
 - **A persona draws itself (PERSONA-DESIGN §8.6).** In a persona chat,
-  `image_generate` knows who "self" is: a prompt that names the persona — by
-  its linked character, its folder name or the name it is shown by — gets
-  that character cast, and `"name": "self"` in `cast` means it too. It used
-  to be refused for naming a library character without `cast`, and the local
-  model resent the same call: 82 of 87 calls in the first live chat. When the
-  prompt opens with the persona, `doing` and `wearing` come from its first
-  clauses; otherwise they point at the scene. Only the persona's own
-  character is added, another library name is still refused, and `self` on
-  a persona with no character is an expected failure.
+  `"who": "self"`, or the persona's own name, is its linked library
+  character. On a persona with no character, `self` is an expected failure
+  that says to describe the persona instead. It used to be refused for
+  naming a library character without `cast`, and the local model resent the
+  same call: 82 of 87 calls in the first live chat.
 
 - **"No picture was made in this reply."** The persona page says it under a
   turn whose `image_generate` calls all failed, read off the tool rows, so a
