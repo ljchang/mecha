@@ -907,6 +907,8 @@ advances it.
 - `image` and `tool_use_id`, for orphan repair;
 - `seed` and `cast[].name`, for save-to-library;
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
+- `roles`: whether the people's parts were split (`applied`, or `fell back:`
+  and why), since the split is prompt-only and its fallback silent;
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Retired with the old inputs:** `route_scene`, `EditAsk`, `cast_self`,
@@ -1012,6 +1014,25 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   description beside the pointer 0.78 (E1). So `compile` sends each cast
   member's portrait as a reference and pastes the description verbatim
   beside it — never the description alone, never a paraphrase.
+- **A scene whose people act together is drawn from each person's own
+  part** (`roles`). A persona puts the whole act in `together` and poses
+  nobody; read as one sentence, the image model draws a lineup in list order
+  with the act between neighbours (roles right 0 of 30) and, on six real
+  calls, a person twice in 6 of 12. Where the host hands the tool a
+  splitter (`ToolCtx::role_split`; a persona chat does, on its own model), a
+  quarantined one-shot gives each person a `doing` and a `where` whenever
+  two or more people share a `together`, posed or not (a named `together`
+  left beside the people's own poses drew a person twice, 2 of 3), keeps any
+  pose the call gave, and leaves in `together` only what no part says: roles
+  right 12 of 15, duplicates 1 of 12 (mecha-a3, 2026-10-08). It feeds the
+  prompt only, so the record keeps the call as the persona sent it (a
+  history showing her calls split taught her to drop the act, 31 of 39). A
+  split that fails, takes past `ROLE_SPLIT_TIMEOUT`, or yields parts the
+  compiler will not take draws the call as sent: a split never turns a
+  drawable call into a refusal. The split's places win over the call's
+  (the persona's are copies), except a chosen `background`. It runs on the
+  new-picture and words-restage path only; a restage onto a setting photo
+  is an edit and is not split.
 - **One reference per person, each appearing exactly once, `wearing` and
   `doing` required, except that `doing` is left empty when the scene's
   `together` says what its people do** (a "standing naturally" beside a kneel
