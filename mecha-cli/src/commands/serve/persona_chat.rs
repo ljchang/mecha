@@ -3258,6 +3258,10 @@ impl PersonaChats {
                     Some(&mecha_core::learning::RulesCarried::none()),
                 );
                 recorded.permission_mode = mecha_core::config::PermissionMode::ReadOnly;
+                // Every persona turn sends its earlier picture calls as the
+                // scenes they drew (`prior_scenes`), so a replay built without
+                // this host can say what it ran without.
+                recorded.request_view = Some(mecha_core::prior_scenes::NAME.into());
                 ps.session
                     .append(&Record::Config(recorded))
                     .map_err(|e| Refusal::Failed(format!("recording: {e:#}")))?;
@@ -3619,6 +3623,15 @@ impl PersonaChats {
         // its transcript, and the persona's latest and index in its folder,
         // all outside the jail. Stamped here, never by a model.
         tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));
+        // The persona copies its own earlier picture calls, and bare ones
+        // taught it to drop the owner's ask (mecha-a3: 3 of 25 carried it);
+        // each earlier call goes out as the full scene it drew, from that
+        // picture's clean record (`prior_scenes`). The stored chat is
+        // untouched.
+        cx.request_view = Some(Arc::new(mecha_core::prior_scenes::PriorScenes::new(
+            ps.workspace.clone(),
+            scene_slot(&self.store, &name, &ps.session.meta.id),
+        )));
         cx.tools = Arc::new(tools);
         if cx.budget.max_turns.is_none() {
             cx.budget.max_turns = Some(40);

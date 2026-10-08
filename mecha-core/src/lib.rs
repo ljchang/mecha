@@ -115,6 +115,7 @@ pub mod persona;
 pub mod picture;
 pub mod policy;
 pub mod pressure;
+pub mod prior_scenes;
 pub mod provider;
 pub mod quarantine;
 pub mod questions;
