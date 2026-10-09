@@ -650,6 +650,18 @@ pub struct Capture {
     pub log: Arc<Mutex<Vec<Exchange>>>,
 }
 
+impl Capture {
+    /// `req` as this sends it: the overlay's edits and `max_tokens`.
+    fn prepare(&self, req: &CompletionRequest) -> CompletionRequest {
+        let mut req = req.clone();
+        self.overlay.apply(&mut req);
+        if let Some(m) = self.max_tokens {
+            req.max_tokens = m;
+        }
+        req
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for Capture {
     fn id(&self) -> &str {
@@ -667,6 +679,12 @@ impl Provider for Capture {
     fn supports_effort(&self) -> bool {
         self.inner.supports_effort()
     }
+    /// The body as this sends it: the overlay and `max_tokens` applied, as
+    /// `complete` applies them (`provider/mod.rs`: every wrapper forwards
+    /// every method).
+    fn wire_body(&self, req: &CompletionRequest, stream: bool) -> Option<Value> {
+        self.inner.wire_body(&self.prepare(req), stream)
+    }
 
     async fn complete(
         &self,
@@ -680,6 +698,9 @@ impl Provider for Capture {
         }
         let mut req = req.clone();
         let matched = self.overlay.apply(&mut req);
+        if let Some(m) = self.max_tokens {
+            req.max_tokens = m;
+        }
         if let Some((r, _)) = self
             .overlay
             .replace
@@ -693,9 +714,6 @@ impl Provider for Capture {
                 r.find,
                 r.target
             );
-        }
-        if let Some(m) = self.max_tokens {
-            req.max_tokens = m;
         }
         let started = std::time::Instant::now();
         let response = self.inner.complete(&req, sink).await;
@@ -1160,6 +1178,11 @@ mod tests {
         assert_eq!(s.tool_calls.len(), 1);
         assert!(!s.tool_calls[0].parsed);
         assert_eq!(s.tool_calls[0].argument_bytes, "{\"prompt\": \"cut".len());
+
+        assert!(
+            c.wire_body(&request(), true).is_none(),
+            "forwarded: the inner provider builds none"
+        );
 
         let dead = Capture {
             inner: Box::new(Fixed),
