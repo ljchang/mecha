@@ -44,6 +44,9 @@ pub struct OwnerTurn {
     pub spoken: bool,
     /// A panel turn: its fact was added during the run (`Record::Extend`).
     pub panel: bool,
+    /// Its first request overflowed and the run compacted it, so the
+    /// request answered is not the one recorded here; listed, not replayed.
+    pub compacted: bool,
 }
 
 /// What a turn's run started from.
@@ -70,8 +73,8 @@ pub struct Branch {
 /// The calendar reference recorded for the run that a turn at `index` began:
 /// the first harness note after the turn and before the next one.
 fn calendar_after(lines: &[&str], index: usize) -> Option<String> {
-    for l in &lines[index + 1..] {
-        if opens_owner_turn(l) {
+    for (j, l) in lines.iter().enumerate().skip(index + 1) {
+        if holds_owner_words(l) && shape_at(lines, j).is_some() {
             return None;
         }
         if record_kind(l).as_deref() != Some("notes") {
@@ -126,36 +129,89 @@ fn record_kind(line: &str) -> Option<String> {
     v.get("record")?.as_str().map(str::to_string)
 }
 
-/// Whether record line `line` (one JSONL line) opens an owner turn: a user
-/// message with the owner's words, or a rewrite whose tail is one.
-fn opens_owner_turn(line: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return false;
+/// The message a record leaves at the tail: a message record's own, or a
+/// rewrite's last.
+fn tail_of(line: &str) -> Option<Message> {
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    let message = match v.get("record").and_then(Value::as_str)? {
+        "message" => v.clone(),
+        "rewrite" => v.get("messages")?.as_array()?.last()?.clone(),
+        _ => return None,
     };
-    let message = match v.get("record").and_then(Value::as_str) {
-        Some("message") => v.clone(),
-        Some("rewrite") => match v.get("messages").and_then(Value::as_array) {
-            Some(list) => match list.last() {
-                Some(last) => last.clone(),
-                None => return false,
-            },
-            None => return false,
-        },
-        _ => return false,
-    };
-    let Ok(m) = serde_json::from_value::<Message>(message) else {
-        return false;
-    };
-    // A rewrite is also how compaction and rollbacks are recorded; only one
-    // the owner's words end, and that a notes record or a message precedes
-    // as serve writes them, is a turn. Tool results ride in user messages
-    // too, and carry no owner words.
-    m.role == Role::User
-        && !m
-            .content
-            .iter()
-            .any(|b| matches!(b, Block::ToolResult { .. }))
-        && !crate::agent::owner_text(&m).trim().is_empty()
+    serde_json::from_value(message).ok()
+}
+
+/// Whether record line `line` leaves the owner's words at the tail: a user
+/// message with them, or a rewrite ending on one. Tool results ride in user
+/// messages too, and carry no owner words. Not every such record is a turn
+/// ([`shape_at`]).
+fn holds_owner_words(line: &str) -> bool {
+    tail_of(line).is_some_and(|m| {
+        m.role == Role::User
+            && !m
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+            && !crate::agent::owner_text(&m).trim().is_empty()
+    })
+}
+
+/// Whether record line `line` is the model's: an assistant message, or a
+/// rewrite ending on one, or the `GoalAnchor` that `Session::record_run`
+/// closes every run with (a run that failed records one too).
+fn a_run_answered(line: &str) -> bool {
+    record_kind(line).as_deref() == Some("goal_anchor")
+        || tail_of(line).is_some_and(|m| m.role == Role::Assistant)
+}
+
+/// What an owner-words record at `index` is to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A run started from it: a turn.
+    Turn,
+    /// A run started from it, and its first request overflowed: the run
+    /// compacted the turn and recorded the rewrite directly after it, so
+    /// the request that was answered is that rewrite's, with this turn's
+    /// notes. Listed, not replayed.
+    Compacted,
+}
+
+/// A record holding the owner's words is a turn only if a run followed it,
+/// because only then was a request sent from it. Two writers leave the
+/// owner's words with no run: a message the crisis layer paused before any
+/// model ran, and the paused message serve folds onto the tail as a run
+/// hands back. Neither carries the turn's notes, so replayed they would send
+/// a request serve never sent (review of #612, pass 3).
+fn shape_at(lines: &[&str], index: usize) -> Option<Shape> {
+    if !holds_owner_words(lines[index]) {
+        return None;
+    }
+    // The compaction rewrite of the turn above is part of that turn.
+    if index > 0
+        && record_kind(lines[index]).as_deref() == Some("rewrite")
+        && holds_owner_words(lines[index - 1])
+        && shape_at(lines, index - 1) == Some(Shape::Compacted)
+    {
+        return None;
+    }
+    let mut compacted = false;
+    for (j, l) in lines.iter().enumerate().skip(index + 1) {
+        if a_run_answered(l) {
+            return Some(if compacted {
+                Shape::Compacted
+            } else {
+                Shape::Turn
+            });
+        }
+        if holds_owner_words(l) {
+            if j == index + 1 && record_kind(l).as_deref() == Some("rewrite") {
+                compacted = true;
+                continue;
+            }
+            return None;
+        }
+    }
+    None
 }
 
 /// The notes recorded for the run whose owner turn is at `index` (0-based):
@@ -204,10 +260,10 @@ fn non_empty(text: &str) -> Vec<&str> {
 pub fn owner_turns(path: &Path, text: &str) -> Result<Vec<OwnerTurn>> {
     let lines = non_empty(text);
     let mut out = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if !opens_owner_turn(line) {
+    for i in 0..lines.len() {
+        let Some(shape) = shape_at(&lines, i) else {
             continue;
-        }
+        };
         let prefix = lines[..=i].join("\n");
         let messages = Session::parse(path, &prefix)?.convo.messages.len();
         let notes = notes_before(&lines, i);
@@ -218,6 +274,7 @@ pub fn owner_turns(path: &Path, text: &str) -> Result<Vec<OwnerTurn>> {
             spoken: notes.iter().any(|n| super::call::is_note(n)),
             notes: notes.len(),
             panel: is_panel_turn(&lines, i),
+            compacted: shape == Shape::Compacted,
         });
     }
     Ok(out)
@@ -235,14 +292,23 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
         );
     }
     let index = line - 1;
-    if !opens_owner_turn(lines[index]) {
-        bail!(
+    match shape_at(&lines, index) {
+        Some(Shape::Turn) => {}
+        Some(Shape::Compacted) => bail!(
+            "record line {line} is a turn whose first request overflowed and was compacted, \
+             so the request answered is not this line's; replay does not rebuild it"
+        ),
+        None if holds_owner_words(lines[index]) => bail!(
+            "record line {line} holds the owner's words, but no run followed it (a message \
+             the crisis layer paused, or a compaction), so no request was sent from it"
+        ),
+        None => bail!(
             "record line {line} of {} is a `{}` record, not an owner turn — \
              `mecha replay --persona {} --list` names the turns",
             path.display(),
             record_kind(lines[index]).unwrap_or_else(|| "unreadable".into()),
             path.display()
-        );
+        ),
     }
     if is_panel_turn(&lines, index) {
         bail!(
@@ -295,7 +361,7 @@ pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Resu
         .iter()
         .enumerate()
         .skip(line)
-        .find(|(_, l)| opens_owner_turn(l))
+        .find(|(j, _)| shape_at(&lines, *j) == Some(Shape::Turn))
         .map_or(lines.len(), |(i, _)| i);
     let run = Session::parse(path, &lines[..end].join("\n"))?;
     let start = branch.messages.len();
@@ -501,6 +567,14 @@ impl Overlay {
 
     pub fn is_empty(&self) -> bool {
         self.replace.is_empty()
+    }
+
+    /// Whether any edit changes tool text, so the surface sent is neither
+    /// today's nor the recorded one.
+    pub fn edits_tools(&self) -> bool {
+        self.replace
+            .iter()
+            .any(|r| matches!(r.target, Target::Tools | Target::Tool(_)))
     }
 
     /// Apply every edit to `req`, and how many places each matched.
@@ -1002,6 +1076,78 @@ mod tests {
         assert!(format!("{err:#}").contains("closing"), "{err:#}");
     }
 
+    /// Owner's words that no run followed are not turns: a message the
+    /// crisis layer paused, and the paused message folded onto the tail as a
+    /// run hands back. A turn whose first request was compacted is listed
+    /// and refused, and its compaction rewrite is not a second turn.
+    #[test]
+    fn only_owner_words_a_run_answered_are_turns() {
+        use crate::session::{Record, SessionMeta};
+        let meta: SessionMeta = serde_json::from_value(json!({
+            "id": "t3", "created_at": "2026-10-09T00:00:00Z", "provider": "local",
+            "model": "m", "workspace": "/tmp"
+        }))
+        .unwrap();
+        let reply = |t: &str| Record::Message(Message::assistant(vec![Block::text(t)]));
+        let anchor = || Record::GoalAnchor { goal: None };
+        let records = [
+            Record::Meta(meta),                                 // 1
+            Record::Message(Message::user("a paused message")), // 2: no run
+            Record::Notes {
+                notes: vec!["(a note)".into()],
+            }, // 3
+            Record::Rewrite {
+                // 4: turn
+                messages: vec![Message::user("a paused message\n\nan ask")],
+            },
+            reply("a reply"), // 5
+            anchor(),         // 6
+            Record::Rewrite {
+                // 7: crisis fold
+                messages: vec![
+                    Message::user("a paused message\n\nan ask"),
+                    Message::assistant(vec![Block::text("a reply")]),
+                    Message::user("words typed during the run"),
+                ],
+            },
+            Record::Notes {
+                notes: vec!["(a note)".into()],
+            }, // 8
+            Record::Message(Message::user("a long ask")), // 9: compacted
+            Record::Rewrite {
+                // 10: its rewrite
+                messages: vec![Message::user("a summary and the long ask")],
+            },
+            reply("an answer"), // 11
+            anchor(),           // 12
+        ];
+        let text = records
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = Path::new("t3.jsonl");
+        let turns = owner_turns(path, &text).unwrap();
+        assert_eq!(
+            turns
+                .iter()
+                .map(|t| (t.line, t.compacted))
+                .collect::<Vec<_>>(),
+            [(4, false), (9, true)]
+        );
+        assert_eq!(turns[0].notes, 1);
+        for (line, why) in [
+            (2, "no run followed"),
+            (7, "no run followed"),
+            (9, "compacted"),
+        ] {
+            let err = branch_at(path, &text, line).unwrap_err();
+            assert!(format!("{err:#}").contains(why), "line {line}: {err:#}");
+        }
+        let err = branch_at(path, &text, 10).unwrap_err();
+        assert!(format!("{err:#}").contains("no run followed"), "{err:#}");
+    }
+
     #[test]
     fn a_line_that_is_not_an_owner_turn_is_refused_by_kind() {
         let text = transcript();
@@ -1079,6 +1225,7 @@ mod tests {
             "the owner's words untouched"
         );
         assert_eq!(o.name.as_deref(), Some("C"));
+        assert!(o.edits_tools());
         assert!(
             Overlay::parse("[[replace]]\nin = \"history\"\nfind = \"a\"\nwith = \"b\"").is_err()
         );

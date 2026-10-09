@@ -349,6 +349,18 @@ fn recorded_tools_of(
     Ok((names, specs))
 }
 
+/// Refuse a replay that would send to another model than the turn ran on,
+/// unless the command line asked for one (`asked`: `-m` or `-p`).
+fn refuse_model_drift(recorded: Option<&str>, sending: &str, asked: bool) -> Result<()> {
+    match recorded {
+        Some(r) if r != sending && !asked => bail!(
+            "the turn ran on `{r}`, and this replay would send to `{sending}` — pass -m or -p \
+             to sample on another model deliberately"
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// An arm's overlay, read from `path`. One with no edits is the baseline
 /// under another name, so it is refused here, as an edit that matches
 /// nothing is refused per sample.
@@ -385,6 +397,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             );
             for t in &turns {
                 let kind = match (t.spoken, t.panel) {
+                    _ if t.compacted => "compacted",
                     (_, true) => "panel",
                     (true, _) => "spoken",
                     _ => "typed",
@@ -477,6 +490,17 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         &store,
     )?
     .0;
+    // The model the turn ran on, against the one this binding sends to: a
+    // replay on another preset is another arm, so it is asked for (`-m`,
+    // `-p`) rather than taken from whatever the config resolves today, as
+    // `mecha replay` defaults to the recorded model (review of #612, pass 3).
+    let recorded_model = branch.config.as_ref().map(|c| c.model.clone());
+    let model_matches = recorded_model.as_deref().map(|m| m == bound.model);
+    refuse_model_drift(
+        recorded_model.as_deref(),
+        &bound.model,
+        global.model.is_some() || global.provider.is_some(),
+    )?;
     let today = mecha_core::surface::fingerprint(&probe.registry().specs());
     let recorded_surface = branch.config.as_ref().and_then(|c| c.tools_hash.clone());
     let recorded_tools = match args.surface.as_str() {
@@ -526,6 +550,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "spoken": branch.spoken,
             "provider": bound.provider_name,
             "model": bound.model,
+            "recorded_model": recorded_model,
+            "model_matches_recorded": model_matches,
             "arm": overlay.name,
             "overlay_digest": overlay.digest,
             "max_tokens": args.max_tokens,
@@ -538,7 +564,12 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "surface": surface,
             "today_surface": today,
             "recorded_surface": recorded_surface,
-            "surface_matches_recorded": recorded_surface.as_deref().map(|r| r == surface),
+            // Of what was sent: an overlay that edits tool text sends
+            // another surface than either fingerprint names.
+            "surface_matches_recorded": recorded_surface
+                .as_deref()
+                .map(|r| r == surface && !overlay.edits_tools()),
+            "surface_edited_by_overlay": overlay.edits_tools(),
             "system_matches_recorded": system_matches,
             "calendar_matched": clock_at.is_some(),
             "call": branch.call,
@@ -986,6 +1017,18 @@ mod tests {
             .unwrap_err();
         assert!(format!("{err:#}").contains("no longer holds"), "{err:#}");
         assert!(recorded_tools_of(&branch(None), None).is_err());
+    }
+
+    #[test]
+    fn a_replay_on_another_model_is_asked_for() {
+        assert!(refuse_model_drift(Some("a"), "a", false).is_ok());
+        let err = refuse_model_drift(Some("a"), "b", false).unwrap_err();
+        assert!(format!("{err:#}").contains("ran on `a`"), "{err:#}");
+        assert!(refuse_model_drift(Some("a"), "b", true).is_ok(), "-m or -p");
+        assert!(
+            refuse_model_drift(None, "b", false).is_ok(),
+            "nothing recorded"
+        );
     }
 
     #[test]
