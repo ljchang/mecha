@@ -10,7 +10,7 @@ publication whose data moves while its code does not.
 [`LIVE-DASHBOARD-RESEARCH.md`](LIVE-DASHBOARD-RESEARCH.md); where this file and
 that one disagree, this one wins. It extends
 [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §5's planned
-`hud/` template, §5.2's Svelte rule, §14.3's publication/instrument split
+`dashboard/` template (built here as `hud/`, R15), §5.2's Svelte rule, §14.3's publication/instrument split
 — and does not restate it.
 
 ---
@@ -156,12 +156,13 @@ object can change how a chart looks and cannot make it fetch or navigate.
 
 **Expressions live in named places only** — a `filter` or `calculate`
 transform, a parameter's `expr`, a condition's `test`, and the event-stream
-filters inside a parameter's `select` (`on`, `clear`, `translate`, `zoom`) —
-**in v1 these take the string form only**: Vega-Lite's object form for an
-event stream legitimately carries a `source` key (`"view"`, `"window"`),
-which the style screen would refuse, and the string form says everything a
-dashboard's brushing needs — which are screened as style — each bounded in length, all evaluated by the same
-interpreter, whose language cannot fetch or navigate. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
+filters inside a parameter's `select` (`on`, `clear`, `translate`, `zoom`),
+which are screened as style. **In v1 those four take the string form only**:
+Vega-Lite's object form for an event stream legitimately carries a `source`
+key (`"view"`, `"window"`), which the style screen would refuse, and the
+string form says everything a dashboard's brushing needs. Every expression is
+bounded in length, and all are evaluated by the same interpreter, whose
+language cannot fetch or navigate. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
 property, and some take a bare expression under a key ending in `Expr`
 (`axis.labelExpr`); both pass the screens, so inside a style object an `expr`
 key and any key ending in `Expr` are refused. Data-dependent styling goes through an encoding's `condition`, and the
@@ -729,7 +730,7 @@ after the factory path is proven.
 | 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/hud/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha hud {list, validate, refresh, install}`; the timers; **a `doctor` finding** for a loader whose last refresh was refused or whose dataset is past twice its period — a shape refusal fails closed and would otherwise speak only on the dashboard page, which is a guard that fired and said nothing | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
-| 4 | Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
+| 4 | Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `hud_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `hud_preview` never reaches it |
