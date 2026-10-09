@@ -4576,11 +4576,6 @@ mod wire_tests {
         }
     }
 
-    /// A steer folded into the message carrying a turn's tool results comes
-    /// back marked, so the page does not read it as a new turn: the
-    /// persona page's "no picture was made" note is placed per turn, and an
-    /// unmarked steer split one (review of #444). The owner's own message
-    /// is not a steer.
     /// A Regenerate that landed is a version of its picture; one the tool
     /// refused is an error card and declares nothing (review of #616).
     #[test]
@@ -4611,6 +4606,11 @@ mod wire_tests {
         assert!(tool.get("version_of").is_none(), "{tool}");
     }
 
+    /// A steer folded into the message carrying a turn's tool results comes
+    /// back marked, so the page does not read it as a new turn: the
+    /// persona page's "no picture was made" note is placed per turn, and an
+    /// unmarked steer split one (review of #444). The owner's own message
+    /// is not a steer.
     #[test]
     fn a_steer_is_read_back_as_part_of_its_turn() {
         let msg = |role, content| Message {

@@ -891,7 +891,9 @@ pub fn plan(
                     camera_moves: false,
                 },
                 faces: Vec::new(),
-                instruction: "Draw this picture again, with the same people, clothes and room."
+                // "place", never "room": a redraw of a park read "room" as
+                // indoors, 2 of 2 (mecha-a3's Regenerate gate, 2026-10-09).
+                instruction: "Draw this picture again, with the same people, clothes and place."
                     .into(),
                 keep: String::new(),
                 ..out
@@ -1302,6 +1304,16 @@ mod tests {
         );
         assert_eq!(q.offstage, vec!["john".to_string()]);
         assert_eq!(q.next.people.len(), 1);
+    }
+
+    /// A picture with no record is redrawn from itself, and its words name
+    /// the place, never a "room" an outdoor picture would be moved into.
+    #[test]
+    fn a_picture_with_no_record_is_redrawn_in_its_own_place() {
+        let p = planned(&call(json!({"picture": "images/a.png"})), None);
+        assert_eq!(p.route, "redrawn");
+        assert!(p.instruction.contains("place"), "{}", p.instruction);
+        assert!(!p.instruction.contains("room"), "{}", p.instruction);
     }
 
     /// Review of #597, pass 7: a stray quote mark never switches the viewer
