@@ -872,7 +872,7 @@ question actually lives:
 | Template | Renderer | Where | Executes code? |
 |---|---|---|---|
 | `report` (markdown) | pulldown-cmark + MiniJinja | Rust, in process | no |
-| `dashboard` | MiniJinja + a data file | Rust, in process | no |
+| `dashboard` | ~~MiniJinja + a data file~~ — superseded: a Svelte renderer bundle over a spec and datasets, [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §4 | build-time Node, like §5.2's interactive bundles | no — the renderer is ours; the spec is data |
 | `booking` | MiniJinja + availability JSON | Rust, in process | no |
 | `request` (the form) | generated from the manifest | Rust, in process | no |
 | `notebook` | `marimo export html-wasm` | Python subprocess | **yes** |
