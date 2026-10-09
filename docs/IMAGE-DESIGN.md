@@ -196,7 +196,7 @@ This removes the panel loop at its source (§2.9), because the persona never mak
 
 ### 5.4 Regenerate (R8)
 
-The same scene, a new seed, the same render plan. It goes through `dispatch_one` and is recorded as a `HarnessPicture` with `how: redraw`. The card shows versions ‹ 1/2 ›, and the version showing is the one Edit and Regenerate build on. R8's ruling stands. R8-2's call reconstruction (#593) is not needed, because the scene is the record. #593 is closed unmerged.
+The same scene, a new seed, the same render plan. It goes through `dispatch_one` and is recorded as the panel's fact with the change `REDRAWN` (`persona::edit`); the card carries `version_of`, the picture it is a version of. The card shows versions ‹ 1/2 ›, and the version showing is the one Edit and Regenerate build on. R8's ruling stands. R8-2's call reconstruction (#593) is not needed, because the scene is the record. #593 is closed unmerged.
 
 ### 5.5 A run makes at most one picture
 
@@ -273,8 +273,8 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 
 1. **The scene schema and the planner, with the retired inputs deleted.** This covers the record per chat (§6), equal-is-unchanged, place as the setting only, seed reuse, and the refusals in scene terms. It is the big one.
 2. **One picture per run** (§5.5). **Built: #596, merged 2026-10-08.** It added `ToolChoice` to `CompletionRequest`, rendered by both providers (`"tool_choice": "none"` and `{"type": "none"}`). A provider added later must render it or refuse the request, never drop it: a dropped `tool_choice` costs the clean end (the structural rule still refuses a second picture), and a guard that silently stops working is the shape this repo refuses.
-3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3).
-4. **Regenerate** on the same record (§5.4).
+3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3). **Built: #598, merged 2026-10-08.** The record is the fact in the owner's turn (`persona::edit::fact`), not a type of its own.
+4. **Regenerate** on the same record (§5.4). **Built: #616, merged 2026-10-09** (the server half: `PanelEdit.redraw`, the fact's `REDRAWN`, the card's `version_of`); the page's versions are step 5.
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
 6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` and `minor` marks and the default portrait. Usage rules are not part of this build (§14). **Ruled 2026-10-07: get it working first, with no restrictions; step 6 is not held for §14.**
 
