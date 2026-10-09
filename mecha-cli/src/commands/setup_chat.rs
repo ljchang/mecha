@@ -254,7 +254,9 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             // goes through it meets a bare 404 later (found on review of
             // #618).
             println!(
-                "[providers.{name}] was left as it was, and the router now serves only {alias} —                  a run through `{name}` fails until `mecha setup --write --provider {name}`                  writes it."
+                "[providers.{name}] was left as it was, and the router now serves only {alias} — \
+                 a run through `{name}` fails until `mecha setup --write --provider {name}` \
+                 writes it."
             );
         }
         return Ok(());
