@@ -93,6 +93,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         .context("reading the global config — run `mecha config init` first")?;
     // `engine` is a reserved noun here, never a feature id (§10.3): it owns
     // the engine's flags and needs no provider answering first.
+    // `chat` is reserved the same way (ruling F11): a fresh machine's door to
+    // a local chat model — engine, router and model — never a feature id.
+    if args.feature.as_deref() == Some("chat") {
+        anyhow::ensure!(
+            !args.adopt && !args.upgrade && !args.rollback && !args.force && !args.json,
+            "`mecha setup chat` takes no flags — it asks"
+        );
+        return super::setup_chat::run(&cfg).await;
+    }
     if args.feature.as_deref() == Some("engine") {
         return super::setup_engine::run(
             &cfg,
@@ -729,6 +738,18 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
+    offer_settings(provider, props).map(|_| ())
+}
+
+/// Show what a server reports for an existing provider table, ask, and write
+/// it — `--write`'s step, shared with `mecha setup chat` when the model it
+/// installed replaces one the table already names. `true` when written: a
+/// caller that goes on to move `default_provider` must not point it at a
+/// table the owner declined to update (found on review of #618).
+pub(super) fn offer_settings(
+    provider: &str,
+    props: &mecha_core::provider::preflight::Props,
+) -> Result<bool> {
     let settings = onboarding::verified_settings(props);
     println!("Read back from the server, for [providers.{provider}]:\n");
     for (k, v) in &settings {
@@ -745,13 +766,58 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
         if !line.trim().eq_ignore_ascii_case("y") {
             println!("not written");
-            return Ok(());
+            return Ok(false);
         }
     } else {
         println!("\n(not a terminal, so nothing was written — copy the lines above)");
+        return Ok(false);
+    }
+    apply(provider, &settings).map(|()| true)
+}
+
+/// Offer to make `provider` the default when `current` is something else —
+/// `mecha setup chat` run against a config that already names its router but
+/// still answers from a hosted model. Installing the router and its weights
+/// and exiting 0 while every run still went to `current` is ruling F12's
+/// case, reached through the command that exists to avoid it (found on
+/// review of #568). Asked, never assumed: it changes what answers.
+pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
+    if provider == current {
         return Ok(());
     }
-    apply(provider, &settings)
+    println!(
+        "\nThe default provider is `{current}`, so runs do not use this model yet. To change \
+         that:\n\n    default_provider = {}",
+        onboarding::toml_string(provider)
+    );
+    if !std::io::stdin().is_terminal() {
+        println!("\n(not a terminal, so nothing was written — copy the line above)");
+        return Ok(());
+    }
+    print!("\nmake `{provider}` the default provider? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    if !line.trim().eq_ignore_ascii_case("y") {
+        println!("not written — runs still go to `{current}`");
+        return Ok(());
+    }
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    backup(&path)?;
+    set_default_provider(&path, provider)?;
+    // Checked, not claimed — the same read-back `write_local_provider` makes.
+    if let Err(e) = mecha_core::config::Config::load_global() {
+        let restored = std::fs::copy(path.with_extension("toml.bak"), &path).is_ok();
+        eprintln!(
+            "what was written to {} does not parse: {e:#}",
+            path.display()
+        );
+        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
+        crate::exit_with(1);
+    }
+    println!("`{provider}` is now the default provider");
+    Ok(())
 }
 
 /// Write down a local server that was found rather than configured.
@@ -766,7 +832,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
 /// It also moves `default_provider`, which is a bigger change than the three
 /// keys `--write` otherwise touches: it changes what answers. So it is
 /// printed in full and confirmed, and the previous file is kept.
-fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
+pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
     let settings = onboarding::verified_settings(&found.props);
     println!(
         "Found a server at {} and nothing in the config names it.\n",
@@ -887,11 +953,10 @@ fn append_table(path: &std::path::Path, provider: &str, table: &[String]) -> Res
 /// comments in this file are most of it.
 fn set_default_provider(path: &std::path::Path, provider: &str) -> Result<()> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
-    // Through `toml_string` like every other value this module writes.
-    // Latent rather than live — the only caller passes the literal "local" —
-    // but `ARCHITECTURE.md` claims *both* values on this path are escaped for
-    // TOML, and a claim that is true only because of who happens to call it
-    // is the thing that doc paragraph is itself about.
+    // Through `toml_string` like every other value this module writes —
+    // live, not latent: `offer_default` passes a provider name read from the
+    // config, and `ARCHITECTURE.md` claims *both* values on this path are
+    // escaped for TOML.
     let assignment = format!("default_provider = {}", onboarding::toml_string(provider));
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     match lines

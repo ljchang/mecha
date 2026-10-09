@@ -140,6 +140,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
         let read_nvidia = || *nvidia.get_or_init(mecha_core::engine::read_nvidia);
+        let mut router_passed = false;
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
@@ -154,6 +155,23 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 }
             }
             for s in install::offered(&p, chat_here) {
+                // The router is installed for a chat the config already
+                // sends to it, never beside a chat server it names elsewhere
+                // (found on review of #618): `mecha setup chat` is the door
+                // that moves the provider too.
+                if s.id == mecha_core::router_unit::ID
+                    && !mecha_core::router_unit::chat_is_the_routers(&cfg)
+                {
+                    if !router_passed {
+                        eprintln!(
+                            "mecha: the chat router is not offered here — the default provider \
+                             does not name it; `mecha setup chat` installs it and offers the \
+                             provider"
+                        );
+                        router_passed = true;
+                    }
+                    continue;
+                }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
@@ -212,7 +230,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
             for (id, label, ..) in &todo {
                 println!("Installing {label}…");
-                install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
+                install::install(id, &m, &cfg, &machine, &hub, &mut |s| println!("  {s}"))
                     .await
                     .with_context(|| {
                         format!(
@@ -398,12 +416,14 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
         &mecha_core::fetch::hub_dir()?,
         verify,
     )?;
-    let chat_here = mecha_core::install::chat_runs_here(&Config::load_global()?);
+    let cfg = Config::load_global()?;
+    let chat_here = mecha_core::install::chat_runs_here(&cfg);
     mecha_core::install::price(&mut p, chat_here, mecha_core::engine::read_nvidia);
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
-        print!("{}", render_plan(&p, chat_here));
+        let router_offered = mecha_core::router_unit::chat_is_the_routers(&cfg);
+        print!("{}", render_plan(&p, chat_here, router_offered));
     }
     Ok(())
 }
@@ -418,11 +438,21 @@ fn bytes_text(b: u64) -> String {
 
 /// `mecha features plan`: each sidecar and each pinned file, what this
 /// machine already has, and what an install would fetch.
-fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
+///
+/// `router_offered` is `enable`'s own test for the router: chat served here
+/// by another server is a reason the plan names, never a command that would
+/// then decline (found on review of #618).
+fn render_plan(p: &sidecar::Plan, chat_here: bool, router_offered: bool) -> String {
     use sidecar::{FileState, SidecarState};
     let mut out = format!("What `{}` runs beside mecha:\n", p.feature.id());
     for s in &p.sidecars {
-        let not_needed = mecha_core::install::not_needed(s.id, p.feature, chat_here);
+        let not_needed = match mecha_core::install::not_needed(s.id, p.feature, chat_here) {
+            None if s.id == mecha_core::router_unit::ID && chat_here && !router_offered => Some(
+                "not offered here — the default provider does not name mecha's router; \
+                 `mecha setup chat` installs it and offers the provider",
+            ),
+            other => other,
+        };
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
             SidecarState::Installed => "installed by mecha".to_string(),
@@ -457,6 +487,7 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
     for f in &p.files {
         let what = match (f.repo, f.path) {
             (Some(repo), path) => format!("{repo}/{path}"),
+            (None, "") if f.state == FileState::Brought => "your own model".to_string(),
             (None, "") if f.model.is_empty() => "no recommended model".to_string(),
             (None, "") => f.model.to_string(),
             (None, path) => path.to_string(),
@@ -475,6 +506,10 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             FileState::NoRow => "no model is recommended for this machine's tier".to_string(),
             FileState::KeeperUnknown { sidecar } => {
                 format!("kept by {sidecar}, which could not be checked — not priced")
+            }
+            FileState::Brought => {
+                "your own GGUF, served by mecha's router (`mecha setup chat` changes it)"
+                    .to_string()
             }
         };
         out.push_str(&format!(
@@ -846,6 +881,39 @@ mod tests {
 
     /// The plan in words: every state a person can meet, each with what to
     /// do — and never "nothing to install" beside a gap.
+    /// The plan offers the router only where `enable` would: beside a chat
+    /// server the config names on another local port it says why not, and
+    /// names `setup chat` (found on review of #618).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_plan_never_names_an_enable_that_declines_the_router() {
+        use mecha_core::sidecar::{Plan, PlannedSidecar, SidecarState};
+        let p = Plan {
+            feature: Feature::Messages,
+            sidecars: vec![PlannedSidecar {
+                id: "router",
+                label: "the chat router",
+                state: SidecarState::Missing { step: "7c" },
+                bytes: None,
+            }],
+            files: vec![],
+            download_bytes: 0,
+            nothing_to_do: false,
+        };
+        let elsewhere = render_plan(&p, true, false);
+        assert!(elsewhere.contains("not offered here"), "{elsewhere}");
+        assert!(elsewhere.contains("mecha setup chat"), "{elsewhere}");
+        assert!(
+            !elsewhere.contains("features enable messages` installs"),
+            "{elsewhere}"
+        );
+        let routers = render_plan(&p, true, true);
+        assert!(
+            routers.contains("`mecha features enable messages` installs it"),
+            "{routers}"
+        );
+    }
+
     #[test]
     fn the_plan_says_each_state_and_what_to_do() {
         use mecha_core::sidecar::{FileState, Plan, PlannedFile, PlannedSidecar, SidecarState};
@@ -861,9 +929,9 @@ mod tests {
                     bytes: None,
                 },
                 PlannedSidecar {
-                    id: "router",
-                    label: "the chat router",
-                    state: SidecarState::Missing { step: "7c-2" },
+                    id: "comfyui",
+                    label: "ComfyUI",
+                    state: SidecarState::Missing { step: "7e" },
                     bytes: None,
                 },
                 PlannedSidecar {
@@ -890,6 +958,22 @@ mod tests {
                     path: "a.gguf",
                     state: FileState::Mismatch,
                 },
+                // An unread keeper still names the tier's row; a brought
+                // model is the owner's (review of #618).
+                PlannedFile {
+                    slot: "image",
+                    model: "the-row-model",
+                    repo: None,
+                    path: "",
+                    state: FileState::KeeperUnknown { sidecar: "ComfyUI" },
+                },
+                PlannedFile {
+                    slot: "chat",
+                    model: "",
+                    repo: None,
+                    path: "",
+                    state: FileState::Brought,
+                },
                 PlannedFile {
                     slot: "ocr",
                     model: "m",
@@ -901,13 +985,16 @@ mod tests {
             download_bytes: 2 << 30,
             nothing_to_do: false,
         };
-        let text = render_plan(&p, true);
+        let text = render_plan(&p, true, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7c-2",
+            "not here — its installer arrives in step 7e",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",
+            "the-row-model",
+            "kept by ComfyUI, which could not be checked — not priced",
+            "your own model",
             "1 could not be checked",
             "1 model file(s) at their path do not match their pins",
             "To download: 2.0 GiB.",
