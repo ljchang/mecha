@@ -41,7 +41,7 @@ Not to be re-asked.
 ## 1. The shape
 
 ```
- ~/.mecha/dashboards/<id>/
+ ~/.mecha/dashboards/boards/<id>/
    dashboard.json ── the spec (model-written, validated)        ┐
    loaders/<name>.toml ── a source, a query, a schema, a cron   │ reviewed together
                                                                 ┘
@@ -70,7 +70,9 @@ moves; the spec and the renderer are what was reviewed.
 Dashboards live in `~/.mecha/dashboards/`, beside triggers and skills and for
 their reason: a loader is a cron slot that reads private data, and **a cloned
 repository must not be able to bring one into a trusted session**. Never in
-layered config, never in a project's `mecha.toml`.
+layered config, never in a project's `mecha.toml`. Installed dashboards sit one
+level down, in `boards/<id>/`, so an id can never collide with the store's
+fixed entries (`sources.toml`, `themes/`, `host.sqlite`).
 
 ---
 
@@ -145,6 +147,14 @@ schema that drifts, so they are **screened** instead — any key naming a link,
 URL, source or loader is refused at any depth. And every string in the whole
 spec, chart or not, is refused if it is an address. Between the two, a style
 object can change how a chart looks and cannot make it fetch or navigate.
+
+**Expressions live in named places only** — a `filter` or `calculate`
+transform, a parameter's `expr`, a condition's `test` — each bounded in
+length. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
+property, which passes both screens; so an `expr` key inside a style object is
+refused. Data-dependent styling goes through an encoding's `condition`, and the
+rest comes from the theme. Without this, R1's "no model-authored script" would
+erode through the one region no allowlist walks.
 (Proposed in #621, `mecha-core/src/dashboard/vegalite.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as §5.1's form evaluator.
 
@@ -196,7 +206,7 @@ decided here rather than discovered at step 7.
 | Order | Kind | How it runs |
 |---|---|---|
 | v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only |
-| v1 | `mecha` | mecha's own stores through the commands that already read them (`--json`), e.g. the run corpus |
+| v1 | `mecha` | one of a **closed set of read-only readouts, enumerated in code** (`learning-report`, `sessions health`, …) — never an argv. The mecha CLI also releases outbox drafts and accepts harness candidates, so a free-form command run unattended would be a model-drafted cron slot with side effects; a readout name that is not in the enum is a parse error, and adding one is a code change a review sees |
 | v2 | `duckdb` — and through it Postgres, MySQL, CSV, Parquet, JSON, S3 | a pinned DuckDB binary as a confined subprocess (§3.4) |
 | v2 | `sheets` (R10) | mecha-docs' `sheets_read` with a fixed `file_id` and range; the first row is the header; the table lands in DuckDB and the query runs over it |
 | later | `mcp` (any fixed read-only tool call), Firestore, PocketBase | the same adapter shape as `sheets` |
@@ -220,7 +230,7 @@ is third-party text). That matters in §5.3; it is never a reason to refuse.
 ### 3.2 The loader file
 
 ```toml
-# ~/.mecha/dashboards/<id>/loaders/visits_by_day.toml
+# ~/.mecha/dashboards/boards/<id>/loaders/visits_by_day.toml
 source = "lab"
 schedule = "*/15 * * * *"         # cron.rs, five fields
 timezone = "America/New_York"     # IANA, never an offset
@@ -421,7 +431,7 @@ batch runs, when nothing yet knows which sources a spec will name:
   covering every remote read.
 
 **Installing is the owner's act.** `mecha dashboard install <dir>` copies a
-draft into `~/.mecha/dashboards/<id>/` and enables its loaders; in the web UI it
+draft into `~/.mecha/dashboards/boards/<id>/` and enables its loaders; in the web UI it
 is one accept on the proposals pane, as a fourth store beside the three it
 already reviews. A model-drafted loader is a
 model-proposed cron slot, and no lane promotes itself — the same reason
@@ -431,8 +441,13 @@ triggers are not model-installable.
 scheduled refresh sends its query to that source's host, and the query was
 drafted by a model — so the install surface shows each remote loader's query
 and source in full, the way the outbox shows a publish, and the owner reads it
-before it ever runs. A local loader needs no more than install: the data never
-leaves the machine and the only reader is the owner.
+before it ever runs. A `sqlite` loader needs no more than install — a read-only
+open of a file, whose data never leaves the machine — and a `mecha` loader's
+readout is a closed enum (§3.1), so neither has an effect to review.
+
+The proposals pane is laid out for three stores ("short enough to sit
+three-across on a phone"); a fourth means revisiting that layout, not only
+adding a store.
 
 ---
 
@@ -444,8 +459,12 @@ A `dashboard` template in `mecha-factory-publish`, class `interactive`:
 the vendored renderer bundle, the spec, the theme rendered to CSS, and each
 dataset's **current** snapshot so the first paint needs no fetch. The vendor
 gate already fails on any external reference; **add a second check — a bundle
-whose script contains `new Function` or `eval(` fails the publish** — rather
-than trusting any library's documentation about itself.
+whose script contains any spelling of runtime code construction fails the
+publish**: `new Function`, a bare `Function(`, `eval(`, and `.constructor(` —
+rather than trusting any library's documentation about itself. A pattern that
+misses the commonest spelling reports clean on a property that does not hold,
+which is worse than not checking, because step 0's go/no-go on Vega rides on
+it.
 
 **There is no carve-out in this gate, for any library.** A vendored Vega is
 likely to contain `new Function` from its expression *codegen* even when every
@@ -518,6 +537,7 @@ serve`'s `frame-ancestors 'none'`.
 | Private data | loaders | only owner-registered sources; read-only opens; the model names a source, never a credential |
 | Untrusted content | a source classed untrusted; unknown counts as untrusted | `.from_outside()` on preview results; flagged at review |
 | A way out | a remote loader's query (rung 1) | the model never runs one: preview shows the last scheduled refresh (§5.3); install shows the query and the owner reads it first |
+| Effects | a `mecha` loader (rung 1) | a closed enum of read-only readouts in code, never an argv (§3.1) |
 | A way out | the dataset push (rung 3) | the loader released once (R4); digest-pinned refresh; shape checked at home and on the box; no model in the refresh path |
 | Code execution | the renderer | ours; no `{@html}`; Vega's interpreter; eval check at publish; the spec has no destinations |
 | The box lost | the factory | holds snapshots and public keys only — no database credential, no route home (R3) |
