@@ -379,8 +379,9 @@ pub struct RunContext {
 
 /// A closing request's last note, and what the owner sees in place of a
 /// reply to it that was empty or only a tool call written out as text
-/// (IMAGE-DESIGN.md §5.5). The lines come from the work that closes the run:
-/// the loop names none of its own.
+/// (IMAGE-DESIGN.md §5.5). The lines come from the work that closes the run,
+/// and one from the loop's own guard: [`UNREADABLE`], when its calls keep
+/// coming back unreadable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Closing {
     pub line: &'static str,
@@ -3577,11 +3578,13 @@ impl Agent {
                         } else {
                             None
                         };
-                    let unreadable = response
-                        .message
-                        .tool_uses()
-                        .iter()
-                        .all(|(_, _, input)| input.get("__malformed_arguments").is_some());
+                    // A turn with no calls at all is not an unreadable one
+                    // (`all` over nothing is true; review of #611, pass 5).
+                    let calls = response.message.tool_uses();
+                    let unreadable = !calls.is_empty()
+                        && calls
+                            .iter()
+                            .all(|(_, _, input)| input.get("__malformed_arguments").is_some());
                     unreadable_turns = if unreadable { unreadable_turns + 1 } else { 0 };
                     if closing.is_none() && unreadable_turns >= UNREADABLE_TURNS {
                         closing = Some(UNREADABLE);

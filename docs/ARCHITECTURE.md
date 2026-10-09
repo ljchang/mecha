@@ -10103,6 +10103,16 @@ The things that decide the design:
   let through later still counts when it then fails. An invented tool name
   (`unknown`, not `denied`) does count: seven turns of one is a stuck
   model.
+- **Calls that never parse close the run after three turns**
+  (`agent::UNREADABLE_TURNS`). A call cut off at `max_tokens` is not run
+  (`unreadable_call`), and its arguments are clipped before the turn joins
+  the transcript (`clip_cut_off_calls`), because a persona's live loop was a
+  rare sample, about 1 in 20 at its cap, that its own 33 KB loop then primed
+  on every retry (2026-10-08: five tries, 90 s each). Three turns in a row
+  whose every call was unreadable close through the ordinary closing path
+  (`UNREADABLE`): the run answers the owner in words and ends `EndTurn`,
+  never `StopCause::Loop`. In the corpus it shows as `malformed_tool_args`
+  of three or more.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including
