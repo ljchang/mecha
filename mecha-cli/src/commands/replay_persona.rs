@@ -262,6 +262,35 @@ fn refuse_load(
     }
 }
 
+/// [`refuse_load`] against the router as it answers now. A server that is
+/// not a router has nothing to evict. One that did not answer whether it is
+/// one, or did not list its models, is unknown, and unknown refuses: this
+/// process names its provider and never follows, so its first request
+/// really can load a model over the owner's.
+async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()> {
+    use mecha_core::provider::router::{is_router, models};
+    let Some(base) = router else {
+        return Ok(());
+    };
+    if allow {
+        return Ok(());
+    }
+    match is_router(base).await {
+        Some(false) => Ok(()),
+        Some(true) => match models(base).await {
+            Some(list) => refuse_load(base, &list, model, allow),
+            None => bail!(
+                "the router at {base} did not list its models, so whether this replay \
+                 would evict the owner's model is unknown — pass --allow-load to sample anyway"
+            ),
+        },
+        None => bail!(
+            "the model server at {base} did not answer /props, so whether this replay \
+             would evict the owner's model is unknown — pass --allow-load to sample anyway"
+        ),
+    }
+}
+
 /// An arm's overlay, read from `path`. One with no edits is the baseline
 /// under another name, so it is refused here, as an edit that matches
 /// nothing is refused per sample.
@@ -343,11 +372,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     let follower = Follower::start(opts, Box::new(|_| {})).await?;
     let router = follower.router_base();
     let bound = follower.current();
-    if let Some(base) = &router {
-        if let Some(models) = mecha_core::provider::router::models(base).await {
-            refuse_load(base, &models, &bound.model, args.allow_load)?;
-        }
-    }
+    // Checked here so a run that would evict the owner's model stops before
+    // it writes anything, and again before every sample (`Sampler::sample`).
+    guard_load(router.as_deref(), &bound.model, args.allow_load).await?;
     let tz = bound.config.agent.timezone();
     let recorded_clock = branch.config.as_ref().and_then(|c| c.clock);
     let from = recorded_clock.unwrap_or_else(chrono::Utc::now) - chrono::Duration::days(2);
@@ -437,6 +464,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         overlay,
         max_tokens: args.max_tokens,
         clock: mecha_core::clock::for_replay(clock_at.or(recorded_clock)),
+        pinned_model: bound.model.clone(),
+        allow_load: args.allow_load,
         surface,
         work,
     };
@@ -487,6 +516,10 @@ pub struct Sampler {
     overlay: Arc<Overlay>,
     max_tokens: Option<u32>,
     clock: Arc<dyn mecha_core::clock::Clock>,
+    /// The model the replay sends to, and whether it may load it over
+    /// what the router holds (`guard_load`).
+    pinned_model: String,
+    allow_load: bool,
     /// Today's tool surface, which the stand-ins must reproduce.
     surface: String,
     work: PathBuf,
@@ -499,6 +532,9 @@ impl Sampler {
     /// is in the sample; `Err` is a harness that could not run it.
     pub async fn sample(&self, i: usize, seed: u64) -> Result<Sample> {
         wait_for_owner(self.router.as_deref()).await?;
+        // Again per sample: a long run can outlast a `mecha model use`, and
+        // this process does not follow the switch.
+        guard_load(self.router.as_deref(), &self.pinned_model, self.allow_load).await?;
         let (held, bound) = self
             .follower
             .enter("persona replay", |s| {
@@ -663,6 +699,20 @@ mod tests {
         );
         assert!(!ok(&[], false), "an empty list");
         assert!(ok(&[model("b", "loaded")], true), "--allow-load");
+    }
+
+    /// A server that does not answer is not "no router": the guard refuses,
+    /// unless told to sample anyway (review of #612, pass 2).
+    #[tokio::test]
+    async fn a_router_that_does_not_answer_refuses_a_sample() {
+        let silent = Some("http://127.0.0.1:9");
+        let err = guard_load(silent, "a", false).await.unwrap_err();
+        assert!(format!("{err:#}").contains("did not answer"), "{err:#}");
+        assert!(guard_load(silent, "a", true).await.is_ok(), "--allow-load");
+        assert!(
+            guard_load(None, "a", false).await.is_ok(),
+            "no local router"
+        );
     }
 
     #[test]
