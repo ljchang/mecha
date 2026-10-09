@@ -630,7 +630,17 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "parsed_limit": (args.attempts > 1).then_some(args.parsed_limit),
             "readers_stamped": render && !args.no_readers,
             "image_seed_base": render.then_some(args.image_seed_base),
-            "tools_run": if render { vec![IMAGE_TOOL] } else { Vec::new() },
+            // The real picture tool runs on two paths, for different ends:
+            // to draw, or (`--attempts`) only to refuse an unparsed call,
+            // before any request to the image server (review of #615).
+            "tools_run": if render || args.attempts > 1 { vec![IMAGE_TOOL] } else { Vec::new() },
+            "image_tool_runs": if render {
+                Some("to draw")
+            } else if args.attempts > 1 {
+                Some("only on unparsed calls, which it refuses")
+            } else {
+                None
+            },
         }
     });
     writeln!(file, "{header}")?;
