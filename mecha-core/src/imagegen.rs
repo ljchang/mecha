@@ -2243,6 +2243,11 @@ fn merge_read(
     read: &serde_json::Map<String, Value>,
 ) -> Vec<String> {
     let mut merged = Vec::new();
+    // A pose is read only for a call that gave none and leaves no `together`
+    // (mecha-a3, 2026-10-09): asked for a part per person on a one-way act,
+    // the reader mirrored the verb onto the receiver 6 of 10 times, where the
+    // splitter, given the `together`, inverted 0 of 36.
+    let gave_a_pose = change.people.iter().any(|p| p.doing.is_some());
     if change.together.is_none() {
         if let Some(t) = read
             .get("together")
@@ -2283,7 +2288,7 @@ fn merge_read(
                 .filter(|t| t.chars().count() <= crate::imagelib::MAX_CAST_FIELD)
                 .map(str::to_string)
         };
-        if p.doing.is_none() {
+        if p.doing.is_none() && !gave_a_pose && change.together.is_none() {
             if let Some(d) = text("doing") {
                 p.doing = Some(d);
                 doings += 1;
@@ -6796,10 +6801,31 @@ mod tests {
             "hers is kept"
         );
         assert_eq!(change.people[0].wearing.as_deref(), Some("a red dress"));
-        assert_eq!(change.people[1].doing.as_deref(), Some("leading the dance"));
+        // A call that gave a pose, or a scene with a `together`, takes no
+        // pose from the reader: the splitter assigns the parts, and the
+        // reader mirrored one-way acts (mecha-a3, 2026-10-09).
+        assert_eq!(change.people[1].doing, None);
         assert_eq!(change.people.len(), 2, "nobody added");
         assert!(change.setting.is_none(), "the setting stays the call's");
-        assert_eq!(merged, ["together", "doing×1", "wearing×1"]);
+        assert_eq!(merged, ["together", "wearing×1"]);
+        // With neither, the reader's poses are taken.
+        let bare = |who: &str| crate::scene::PersonChange {
+            who: crate::scene::Who::Library(who.into()),
+            at: None,
+            wearing: None,
+            doing: None,
+            expression: None,
+            remove: false,
+        };
+        let mut change = crate::scene::SceneChange {
+            people: vec![bare("maya"), bare("john")],
+            ..Default::default()
+        };
+        let read = json!({"people": [{"who": "Maya", "doing": "spinning"},
+            {"who": "John", "doing": "clapping"}]});
+        let merged = merge_read(&mut change, read.as_object().unwrap());
+        assert_eq!(change.people[1].doing.as_deref(), Some("clapping"));
+        assert_eq!(merged, ["doing×2"]);
         // Bounded as the call's own: a long act is clipped, a long part left.
         let long = format!("{}.", "Maya laughs ".repeat(40));
         let mut change = crate::scene::SceneChange {
