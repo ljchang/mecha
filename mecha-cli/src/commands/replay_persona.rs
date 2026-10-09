@@ -76,6 +76,52 @@ pub struct SampleArgs {
     /// this one in its place.
     #[arg(long, requires = "persona")]
     pub allow_load: bool,
+
+    /// Branch inside the turn's run, after the batch holding its Nth tool
+    /// call (1-based) and the results that answered it.
+    #[arg(long, value_name = "N", requires = "persona")]
+    pub at_call: Option<usize>,
+
+    /// Send the request only: no picture call runs. By default a sample's
+    /// picture call runs the real `image_generate` against the chat's scene
+    /// staged as of the turn, in a scratch store of its own.
+    #[arg(long, requires = "persona")]
+    pub no_render: bool,
+
+    /// Render without the turn's scene reader and role splitter (an arm
+    /// that measures the call drawn as sent).
+    #[arg(long, requires = "persona")]
+    pub no_readers: bool,
+
+    /// Which tool text the request carries: `today` (this build's, the
+    /// default: the binary is the arm) or `recorded` (the surface the turn
+    /// was sent, from the surface store by its `tools_hash`), so a wording
+    /// experiment on an older chat starts from what the model saw. Recorded
+    /// is call-only: a tool that runs is today's and says so in its own words.
+    #[arg(
+        long,
+        value_name = "today|recorded",
+        default_value = "today",
+        requires = "persona"
+    )]
+    pub surface: String,
+
+    /// Requests a sample may send (call-only). A picture call whose
+    /// arguments did not parse is answered by the real tool's own refusal,
+    /// as it was on the turn; a parsed one ends the sample. Each sample then
+    /// reports the first request whose call parsed within --parsed-limit.
+    #[arg(long, default_value_t = 1, requires = "persona")]
+    pub attempts: usize,
+
+    /// The most argument bytes a call may carry and count as parsed.
+    #[arg(long, default_value_t = 2048, requires = "persona")]
+    pub parsed_limit: usize,
+
+    /// Sample i's pictures draw their fresh seeds from a stream seeded
+    /// image-seed-base + i, so two arms run with the same base render each
+    /// sample at the same seeds.
+    #[arg(long, default_value_t = 1, requires = "persona")]
+    pub image_seed_base: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -91,6 +137,7 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
         path
     } else {
         let mut found = Vec::new();
+        let mut exact = None;
         for persona in std::fs::read_dir(store)
             .with_context(|| format!("reading {}", store.display()))?
             .flatten()
@@ -102,17 +149,18 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if let Some(id) = name.strip_suffix(".jsonl") {
+                    // An exact id wins over every prefix match, wherever
+                    // the walk finds it (review of #612, pass 5).
                     if id == arg {
-                        found = vec![e.path()];
-                        break;
-                    }
-                    if id.starts_with(arg) {
+                        exact = Some(e.path());
+                    } else if id.starts_with(arg) {
                         found.push(e.path());
                     }
                 }
             }
         }
         match found.len() {
+            _ if exact.is_some() => exact.unwrap_or_default(),
             1 => found.remove(0),
             0 => bail!("no persona chat `{arg}` in {}", store.display()),
             n => bail!("`{arg}` names {n} persona chats; give more of the id"),
@@ -297,6 +345,29 @@ async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()
     }
 }
 
+/// The tool surface `branch`'s turn was sent: its recorded names, and the
+/// specs the surface store holds under its `tools_hash`. Refused when the
+/// recording names no surface or the store no longer holds it, rather than
+/// standing today's text in for it.
+fn recorded_tools_of(
+    branch: &Branch,
+    hash: Option<&str>,
+) -> Result<(Vec<String>, Vec<mecha_core::message::ToolSpec>)> {
+    let names = branch
+        .config
+        .as_ref()
+        .map(|c| c.tools.clone())
+        .context("the turn has no recorded run config, so no recorded surface")?;
+    let hash = hash.context("the turn's run config names no tool surface (`tools_hash`)")?;
+    let specs = mecha_core::surface::SurfaceStore::open_default()
+        .and_then(|s| s.load(hash))
+        .with_context(|| format!("the surface store no longer holds surface {hash}"))?;
+    if mecha_core::surface::fingerprint(&specs) != hash {
+        bail!("surface {hash} in the store does not hash to its name");
+    }
+    Ok((names, specs))
+}
+
 /// Refuse a replay that would send to another model than the turn ran on,
 /// unless the command line asked for one (`asked`: `-m` or `-p`).
 fn refuse_model_drift(recorded: Option<&str>, sending: &str, asked: bool) -> Result<()> {
@@ -371,7 +442,10 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     if args.samples == 0 {
         bail!("--samples must be at least 1");
     }
-    let branch: Branch = pr::branch_at(&path, &text, line)?;
+    let branch: Branch = match args.at_call {
+        Some(call) => pr::branch_at_call(&path, &text, line, call)?,
+        None => pr::branch_at(&path, &text, line)?,
+    };
     let overlay = Arc::new(load_overlay(args.overlay.as_deref())?);
 
     let pin: Pin = serde_json::from_slice(
@@ -401,14 +475,21 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         .calendar
         .as_deref()
         .and_then(|c| pr::clock_for(c, from, tz));
+    // What the replay's clock reads, said as it is: the matched day, the
+    // recorded run's clock, or, with neither, today (review of #612, pass 5).
+    let sent_clock = clock_at.or(recorded_clock);
+    let fallback = match recorded_clock {
+        Some(_) => "the recorded run's clock",
+        None => "today's date (no run clock was recorded either)",
+    };
     match (&branch.calendar, clock_at) {
         (None, _) => eprintln!(
             "note: no calendar reference was recorded for the turn's run; the replay sends \
-             the recorded run's clock"
+             {fallback}"
         ),
         (Some(_), None) => eprintln!(
             "note: the turn's calendar reference renders on no day near the recorded clock; \
-             the replay sends the recorded run's clock instead"
+             the replay sends {fallback}"
         ),
         _ => {}
     }
@@ -452,12 +533,61 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         &store,
     )?
     .0;
-    let surface = mecha_core::surface::fingerprint(&probe.registry().specs());
+    let today = mecha_core::surface::fingerprint(&probe.registry().specs());
     let recorded_surface = branch.config.as_ref().and_then(|c| c.tools_hash.clone());
+    let recorded_tools = match args.surface.as_str() {
+        "today" => None,
+        "recorded" => Some(recorded_tools_of(&branch, recorded_surface.as_deref())?),
+        other => bail!("--surface is today or recorded, not `{other}`"),
+    };
+    // What the requests will carry, by fingerprint: the stand-ins are
+    // checked against it before every sample.
+    let surface = recorded_tools
+        .as_ref()
+        .map(|(_, specs)| mecha_core::surface::fingerprint(specs))
+        .unwrap_or_else(|| today.clone());
+    if recorded_tools.is_none()
+        && !overlay.is_empty()
+        && recorded_surface.as_deref().is_some_and(|r| r != today)
+    {
+        eprintln!(
+            "note: this turn was sent another tool surface ({}) than this build's ({today}); \
+             the overlay edits today's text — `--surface recorded` starts from what the \
+             model saw",
+            recorded_surface.as_deref().unwrap_or_default()
+        );
+    }
     let system_matches = branch
         .config
         .as_ref()
         .map(|c| c.system_prompt.as_deref() == probe.system());
+    // A picture call renders unless asked not to, where the persona can
+    // draw at all.
+    let render = !args.no_render && probe.registry().get(IMAGE_TOOL).is_some();
+    if !args.no_render && !render {
+        eprintln!("note: this persona has no `{IMAGE_TOOL}`, so nothing is drawn");
+    }
+    if args.attempts == 0 {
+        bail!("--attempts must be at least 1");
+    }
+    if render && args.attempts > 1 {
+        bail!(
+            "--attempts is call-only: a parsed picture call ends the sample rather than \
+             drawing — add --no-render"
+        );
+    }
+    if args.attempts > 1 && recorded_tools.is_some() {
+        bail!(
+            "--surface recorded and --attempts both describe the picture tool: an attempt's \
+             unparsed call is answered by today's tool, in today's words — use one or the other"
+        );
+    }
+    if render && recorded_tools.is_some() {
+        bail!(
+            "--surface recorded is call-only: a picture call that runs is today's tool, \
+             described in today's words — add --no-render"
+        );
+    }
     let exe = std::env::current_exe()?;
     let header = serde_json::json!({
         "header": {
@@ -480,7 +610,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "binary": exe.display().to_string(),
             "binary_sha256": mecha_core::document::sha256_hex(&std::fs::read(&exe)?),
             "version": env!("CARGO_PKG_VERSION"),
+            "surface_mode": args.surface,
             "surface": surface,
+            "today_surface": today,
             "recorded_surface": recorded_surface,
             // Of what was sent: an overlay that edits tool text sends
             // another surface than either fingerprint names.
@@ -490,8 +622,25 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "surface_edited_by_overlay": overlay.edits_tools(),
             "system_matches_recorded": system_matches,
             "calendar_matched": clock_at.is_some(),
-            "readers_stamped": false,
-            "tools_run": false,
+            // `null`: the system clock, today's date.
+            "clock": sent_clock,
+            "call": branch.call,
+            "render": render,
+            "attempts": args.attempts,
+            "parsed_limit": (args.attempts > 1).then_some(args.parsed_limit),
+            "readers_stamped": render && !args.no_readers,
+            "image_seed_base": render.then_some(args.image_seed_base),
+            // The real picture tool runs on two paths, for different ends:
+            // to draw, or (`--attempts`) only to refuse an unparsed call,
+            // before any request to the image server (review of #615).
+            "tools_run": if render || args.attempts > 1 { vec![IMAGE_TOOL] } else { Vec::new() },
+            "image_tool_runs": if render {
+                Some("to draw")
+            } else if args.attempts > 1 {
+                Some("only on unparsed calls, which it refuses")
+            } else {
+                None
+            },
         }
     });
     writeln!(file, "{header}")?;
@@ -506,15 +655,30 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         branch,
         overlay,
         max_tokens: args.max_tokens,
-        clock: mecha_core::clock::for_replay(clock_at.or(recorded_clock)),
+        clock: mecha_core::clock::for_replay(sent_clock),
+        recorded_tools,
+        attempts: args.attempts,
+        parsed_limit: args.parsed_limit,
         pinned_model: bound.model.clone(),
         allow_load: args.allow_load,
         surface,
         work,
+        chat: id.clone(),
+        run_start: clock_at
+            .and_then(|t| pr::start_of_day(t, tz))
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        render,
+        readers: !args.no_readers,
     };
     let mut samples = Vec::with_capacity(args.samples);
     for i in 0..args.samples {
-        let sample = sampler.sample(i, args.seed_base + i as u64).await?;
+        let sample = sampler
+            .sample(
+                i,
+                args.seed_base + i as u64,
+                args.image_seed_base + i as u64,
+            )
+            .await?;
         writeln!(file, "{}", serde_json::to_string(&sample)?)?;
         eprintln!(
             "sample {}/{}: {} call(s), {}",
@@ -559,6 +723,12 @@ pub struct Sampler {
     overlay: Arc<Overlay>,
     max_tokens: Option<u32>,
     clock: Arc<dyn mecha_core::clock::Clock>,
+    /// The recorded surface's tool names and specs, for `--surface
+    /// recorded`: the stand-ins are described by them.
+    recorded_tools: Option<(Vec<String>, Vec<mecha_core::message::ToolSpec>)>,
+    /// Requests a sample may send, and the parsed-call size that ends it.
+    attempts: usize,
+    parsed_limit: usize,
     /// The model the replay sends to, and whether it may load it over
     /// what the router holds (`guard_load`).
     pinned_model: String,
@@ -566,6 +736,88 @@ pub struct Sampler {
     /// Today's tool surface, which the stand-ins must reproduce.
     surface: String,
     work: PathBuf,
+    /// The chat's id, which its scene is staged by.
+    chat: String,
+    /// A bound the turn's run began after: the start of the day its
+    /// calendar reference names, in the run's zone. The approximate stage
+    /// takes the persona's latest written at or before it, so it can be up
+    /// to a day early, never late: a later bound (noon) staged a scene drawn
+    /// after a morning turn (review of #615). `None` falls back to the last
+    /// recorded config's clock.
+    run_start: Option<String>,
+    /// Run the picture call against a scene staged per sample.
+    render: bool,
+    /// Stamp the scene reader and role splitter when rendering.
+    readers: bool,
+}
+
+/// The one tool a sample runs, when it renders.
+const IMAGE_TOOL: &str = "image_generate";
+
+/// The picture tool for an `--attempts` sample: a call whose arguments did
+/// not parse is answered by the real tool, which refuses it before any
+/// drawing (there is no `scene` or `picture` to draw), as it was answered on
+/// the turn; a parsed call ends the sample unrun.
+struct AnswerUnparsed {
+    inner: Arc<dyn mecha_core::tool::Tool>,
+    cancel: CancellationToken,
+}
+
+#[async_trait::async_trait]
+impl mecha_core::tool::Tool for AnswerUnparsed {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        self.inner.input_schema()
+    }
+    fn read_only(&self) -> bool {
+        self.inner.read_only()
+    }
+    fn capabilities(&self) -> mecha_core::tool::Capabilities {
+        self.inner.capabilities()
+    }
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        ctx: &mecha_core::tool::ToolCtx,
+    ) -> Result<mecha_core::tool::ToolOutput> {
+        if is_unparsed(&input) {
+            return self.inner.call(input, ctx).await;
+        }
+        self.cancel.cancel();
+        Ok(mecha_core::tool::ToolOutput::err(
+            "replay: a parsed call ends the sample; it was not run",
+        ))
+    }
+}
+
+/// Whether a call's input is the provider's wrapper for arguments that did
+/// not parse, and nothing else.
+fn is_unparsed(input: &serde_json::Value) -> bool {
+    input
+        .as_object()
+        .is_some_and(|o| o.len() == 1 && o.contains_key("__malformed_arguments"))
+}
+
+/// Every file under `dir`, relative.
+fn files_under(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(rel) = p.strip_prefix(dir) {
+                out.insert(rel.to_path_buf());
+            }
+        }
+    }
+    out
 }
 
 impl Sampler {
@@ -573,7 +825,7 @@ impl Sampler {
     /// persona's agent and the turn's context as serve does, send one
     /// request, and report what came back. An error the sample itself hit
     /// is in the sample; `Err` is a harness that could not run it.
-    pub async fn sample(&self, i: usize, seed: u64) -> Result<Sample> {
+    pub async fn sample(&self, i: usize, seed: u64, image_seed: u64) -> Result<Sample> {
         wait_for_owner(self.router.as_deref()).await?;
         // Again per sample: a long run can outlast a `mecha model use`, and
         // this process does not follow the switch.
@@ -586,65 +838,129 @@ impl Sampler {
             .await?;
         let cancel = CancellationToken::new();
         let log = Arc::new(Mutex::new(Vec::new()));
+        let branch = &self.branch;
+        // The chat's scene as of the turn, staged fresh for this sample: a
+        // store shared across samples carries one sample's picture into the
+        // next one's scene.
+        let staged = if self.render {
+            let scratch = self.work.join(format!("sample-{i:03}"));
+            Some(mecha_core::scene::stage::stage_at(
+                &self.store,
+                &self.persona,
+                &self.chat,
+                branch.line - 1,
+                self.run_start.as_deref(),
+                &scratch,
+            )?)
+        } else {
+            None
+        };
         let capture = Capture {
             inner: crate::setup::persona_provider_seeded(&bound, PersonaUse::Converse, seed)?,
             overlay: Arc::clone(&self.overlay),
             max_tokens: self.max_tokens,
-            requests: 1,
+            requests: self.attempts,
+            // A render must run its call, and an attempt's unparsed call must
+            // be answered: the sample ends when the run asks past its
+            // requests (`SampleEnded`), not as the response comes back.
+            cancel_after_last: staged.is_none() && self.attempts == 1,
             cancel: cancel.clone(),
             log: Arc::clone(&log),
         };
         let (agent, _) =
             crate::setup::persona_agent(&bound, &self.pinned, Box::new(capture), &self.store)?;
         let mut agent = agent.with_clock(Arc::clone(&self.clock));
-        // The same tools, described by their own words, that never run: the
-        // first call cancels the run (`OnDivergence::Stop` with nothing
-        // recorded), so a sample is one request and draws nothing.
-        let names: Vec<String> = agent
-            .registry()
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
-        let standins = replay_registry(
+        // The same tools, described by their own words, that never run: a
+        // call to one cancels the run (`OnDivergence::Stop` with nothing
+        // recorded). Rendering, the picture tool is the real one.
+        let real = (staged.is_some() || self.attempts > 1)
+            .then(|| agent.registry().get(IMAGE_TOOL).cloned())
+            .flatten();
+        let (names, specs, fallback) = match &self.recorded_tools {
+            // The recording's names and words; a tool this build no longer
+            // has is described from its spec and never runs.
+            Some((names, specs)) => (
+                names.clone(),
+                specs.as_slice(),
+                Some(crate::setup::surface_only_registry()),
+            ),
+            None => (
+                agent
+                    .registry()
+                    .iter()
+                    .map(|t| t.name().to_string())
+                    .filter(|n| real.is_none() || n != IMAGE_TOOL)
+                    .collect(),
+                &[][..],
+                None,
+            ),
+        };
+        let mut tools = replay_registry(
             &names,
             agent.registry(),
-            None,
-            &[],
+            fallback.as_ref(),
+            specs,
             Vec::new(),
             OnDivergence::Stop,
             cancel.clone(),
         )?;
-        if mecha_core::surface::fingerprint(&standins.specs()) != self.surface {
-            bail!("the stand-in tools do not describe themselves as the real ones do");
+        if let Some(real) = real {
+            if staged.is_some() {
+                tools.insert(real);
+            } else {
+                tools.insert(Arc::new(AnswerUnparsed {
+                    inner: real,
+                    cancel: cancel.clone(),
+                }));
+            }
         }
-        *agent.registry_mut() = standins;
-        let branch = &self.branch;
-        let cx = mecha_core::persona::turn::context(
-            &agent,
-            mecha_core::persona::turn::Turn {
-                workspace: self.work.clone(),
-                scene: None,
-                prompt_log: None,
-                owner: &branch.owner,
-                history: &branch.messages,
-                panel: false,
-                spoken: branch.spoken,
-                notes: branch.notes.clone(),
-                persona: self.persona.clone(),
-                character: self.pinned.settings.character.clone(),
-                library: mecha_core::imagelib::Library::default_dir().unwrap_or_default(),
-                model: bound.model.clone(),
-                readers: mecha_core::persona::turn::Readers::Off,
-            },
-        )
-        .with_cancel(cancel);
+        if mecha_core::surface::fingerprint(&tools.specs()) != self.surface {
+            bail!("the replay's tools do not describe themselves as the real ones do");
+        }
+        *agent.registry_mut() = tools;
+        let judge = || crate::setup::persona_provider(&bound, PersonaUse::Judge);
+        let mut turn = mecha_core::persona::turn::Turn {
+            workspace: self.work.clone(),
+            scene: None,
+            prompt_log: None,
+            image_seeds: None,
+            owner: &branch.owner,
+            history: &branch.messages,
+            panel: false,
+            spoken: branch.spoken,
+            notes: branch.notes.clone(),
+            persona: self.persona.clone(),
+            character: self.pinned.settings.character.clone(),
+            library: mecha_core::imagelib::Library::default_dir().unwrap_or_default(),
+            model: bound.model.clone(),
+            readers: mecha_core::persona::turn::Readers::Off,
+        };
+        // Stamped into the scratch store only (`scene::stage` refuses one
+        // that overlaps the real store or workspace), never the chat's own.
+        if let Some(st) = &staged {
+            turn.workspace = st.workspace.clone();
+            turn.scene = Some(st.slot.clone());
+            turn.prompt_log = Some(st.prompt_log.clone());
+            turn.image_seeds = Some(Arc::new(mecha_core::sample::SeedStream::new(image_seed)));
+            if self.readers {
+                turn.readers = mecha_core::persona::turn::Readers::From(&judge);
+            }
+        }
+        let before = staged
+            .as_ref()
+            .map(|st| files_under(&st.workspace))
+            .unwrap_or_default();
+        let cx = mecha_core::persona::turn::context(&agent, turn).with_cancel(cancel);
         let mut convo =
             mecha_core::agent::Conversation::resumed(branch.messages.clone(), branch.taint);
         let ran = agent.run_in(&cx, &mut convo, None).await;
         drop(held);
-        let error = ran.err().map(|e| format!("{e:#}"));
+        let error = ran
+            .err()
+            .filter(|e| !pr::ended(e))
+            .map(|e| format!("{e:#}"));
         let log = log.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let sample = Sample::of(
+        let mut sample = Sample::of(
             i,
             Some(seed),
             branch.line,
@@ -653,6 +969,43 @@ impl Sampler {
             &log,
             error,
         );
+        sample.call = branch.call;
+        if self.attempts > 1 {
+            // Every exchange, even one: a sample that parsed on its first
+            // request is a 1 in the histogram, not missing from it.
+            sample.exchanges = log.iter().map(pr::ExchangeFacts::of).collect();
+            sample.attempts_to_parsed = sample.first_parsed_within(self.parsed_limit);
+        }
+        if let Some(st) = &staged {
+            let after = &convo.messages[branch.messages.len().min(convo.messages.len())..];
+            let new: Vec<PathBuf> = files_under(&st.workspace)
+                .difference(&before)
+                .cloned()
+                .collect();
+            let abs = |p: &PathBuf| st.workspace.join(p).display().to_string();
+            sample.render = Some(pr::RenderFacts {
+                scratch: st.store.parent().unwrap_or(&st.store).display().to_string(),
+                as_of: format!("{:?}", st.as_of),
+                missing: st.missing.clone(),
+                readers: self.readers,
+                image_seed,
+                results: pr::results_of(after, IMAGE_TOOL),
+                pictures: new
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|x| x == "png"))
+                    .map(abs)
+                    .collect(),
+                manifests: new
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                    .filter_map(|p| std::fs::read(st.workspace.join(p)).ok())
+                    .filter_map(|b| serde_json::from_slice(&b).ok())
+                    .collect(),
+                prompt_log: std::fs::read_to_string(&st.prompt_log)
+                    .map(|t| t.lines().map(str::to_string).collect())
+                    .unwrap_or_default(),
+            });
+        }
         if log.is_empty() {
             bail!(
                 "sample {i} sent no request: {}",
@@ -661,6 +1014,37 @@ impl Sampler {
         }
         Ok(sample)
     }
+}
+
+/// How many samples first parsed a call within the limit on each request;
+/// how many parsed one only over it (`"too_big"`: a parsed call ends the
+/// sample, so it cannot try again); and how many never parsed one
+/// (`"none"`). `null` when no sample was allowed more than one.
+fn attempts_histogram(samples: &[Sample]) -> Option<BTreeMap<String, usize>> {
+    let tried: Vec<&Sample> = samples
+        .iter()
+        .filter(|s| s.error.is_none() && !s.exchanges.is_empty())
+        .collect();
+    if tried.is_empty() {
+        return None;
+    }
+    let mut h = BTreeMap::new();
+    for s in tried {
+        // A parsed call ends the sample whatever its size, so one over the
+        // limit is its own outcome, never "none" (which is: no call parsed).
+        let too_big = s
+            .exchanges
+            .iter()
+            .flat_map(|e| &e.tool_calls)
+            .any(|c| c.parsed);
+        let key = match s.attempts_to_parsed {
+            Some(n) => n.to_string(),
+            None if too_big => "too_big".to_string(),
+            None => "none".to_string(),
+        };
+        *h.entry(key).or_default() += 1;
+    }
+    Some(h)
 }
 
 /// What a set of samples did, as counts: no words.
@@ -694,6 +1078,16 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
             *digests.entry(d.clone()).or_default() += 1;
         }
     }
+    let rendered = samples
+        .iter()
+        .filter(|s| s.render.as_ref().is_some_and(|r| !r.pictures.is_empty()))
+        .count();
+    let render_errors = samples
+        .iter()
+        .filter_map(|s| s.render.as_ref())
+        .flat_map(|r| &r.results)
+        .filter(|r| r.is_error)
+        .count();
     let output: Vec<u64> = samples
         .iter()
         .filter(|s| s.stop_reason.is_some())
@@ -709,6 +1103,9 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
         "output_tokens_mean": (!output.is_empty())
             .then(|| output.iter().sum::<u64>() as f64 / output.len() as f64),
         "distinct_histories": digests.len(),
+        "attempts_to_parsed": attempts_histogram(samples),
+        "rendered": rendered,
+        "render_errors": render_errors,
     })
 }
 
@@ -757,6 +1154,141 @@ mod tests {
             guard_load(None, "a", false).await.is_ok(),
             "no local router"
         );
+    }
+
+    /// `--surface recorded` reads the turn's own tool text back from the
+    /// surface store, and refuses rather than stand today's in for one the
+    /// store no longer holds.
+    #[test]
+    fn the_recorded_surface_is_the_turns_own_or_nothing() {
+        let _home = crate::testenv::HomeGuard::new("replay-surface");
+        let specs = vec![mecha_core::message::ToolSpec {
+            name: "widget".into(),
+            description: "An old description.".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let hash = mecha_core::surface::SurfaceStore::open_default()
+            .unwrap()
+            .record(&specs)
+            .unwrap();
+        let branch = |hash: Option<&str>| Branch {
+            line: 1,
+            messages: Vec::new(),
+            taint: Default::default(),
+            notes: Vec::new(),
+            owner: String::new(),
+            spoken: false,
+            config: Some(mecha_core::session::RunConfig {
+                tools: vec!["widget".into()],
+                tools_hash: hash.map(str::to_string),
+                ..Default::default()
+            }),
+            calendar: None,
+            call: None,
+        };
+        let (names, got) = recorded_tools_of(&branch(Some(&hash)), Some(&hash)).unwrap();
+        assert_eq!(names, ["widget"]);
+        assert_eq!(got[0].description, "An old description.");
+        let err = recorded_tools_of(&branch(Some("0000000000000000")), Some("0000000000000000"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("no longer holds"), "{err:#}");
+        assert!(recorded_tools_of(&branch(None), None).is_err());
+    }
+
+    struct Counting(Arc<Mutex<usize>>);
+
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for Counting {
+        fn name(&self) -> &str {
+            "image_generate"
+        }
+        fn description(&self) -> &str {
+            "a picture"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &mecha_core::tool::ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            *self.0.lock().unwrap() += 1;
+            Ok(mecha_core::tool::ToolOutput::err("Nothing was drawn."))
+        }
+    }
+
+    /// An attempt's unparsed call reaches the real tool's refusal; a parsed
+    /// one never runs, and ends the sample.
+    #[tokio::test]
+    async fn only_an_unparsed_call_reaches_the_picture_tool() {
+        use mecha_core::tool::Tool;
+        let calls = Arc::new(Mutex::new(0));
+        let cancel = CancellationToken::new();
+        let tool = AnswerUnparsed {
+            inner: Arc::new(Counting(Arc::clone(&calls))),
+            cancel: cancel.clone(),
+        };
+        let ctx = mecha_core::tool::ToolCtx::default();
+        let out = tool
+            .call(
+                serde_json::json!({"__malformed_arguments": "{\"scene\": "}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.content, "Nothing was drawn.");
+        assert!(!cancel.is_cancelled());
+        let out = tool
+            .call(serde_json::json!({"scene": {"setting": "a room"}}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("not run"),
+            "{}",
+            out.content
+        );
+        assert!(cancel.is_cancelled());
+        assert_eq!(*calls.lock().unwrap(), 1, "the parsed call never ran");
+        assert!(!is_unparsed(
+            &serde_json::json!({"__malformed_arguments": "x", "scene": {}})
+        ));
+    }
+
+    #[test]
+    fn attempts_count_the_first_request_with_a_small_parsed_call() {
+        let call = |bytes: usize, parsed: bool| pr::CallFacts {
+            name: "image_generate".into(),
+            argument_bytes: bytes,
+            parsed,
+            arguments: serde_json::json!({}),
+        };
+        let exchange = |calls: Vec<pr::CallFacts>| pr::ExchangeFacts {
+            tool_calls: calls,
+            ..Default::default()
+        };
+        let sample = |ex: Vec<pr::ExchangeFacts>| {
+            let mut s = Sample::of(0, None, 1, "m", &Overlay::default(), &[], None);
+            s.exchanges = ex;
+            s.attempts_to_parsed = s.first_parsed_within(2048);
+            s
+        };
+        let first = sample(vec![exchange(vec![call(400, true)])]);
+        let second = sample(vec![
+            exchange(vec![call(30_000, false)]),
+            exchange(vec![call(500, true)]),
+        ]);
+        let too_big = sample(vec![exchange(vec![call(9_000, true)])]);
+        let words = sample(vec![exchange(Vec::new())]);
+        assert_eq!(first.attempts_to_parsed, Some(1));
+        assert_eq!(second.attempts_to_parsed, Some(2));
+        assert_eq!(too_big.attempts_to_parsed, None);
+        let h = attempts_histogram(&[first, second, too_big, words]).unwrap();
+        assert_eq!(h["1"], 1);
+        assert_eq!(h["2"], 1);
+        assert_eq!(h["too_big"], 1, "parsed but over the limit is not unparsed");
+        assert_eq!(h["none"], 1);
+        assert!(attempts_histogram(&[]).is_none());
     }
 
     #[test]

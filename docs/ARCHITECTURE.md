@@ -5913,6 +5913,40 @@ non-blocking flock, so a hand edit never contends with a fire.
   pinned one: a recorded 42 sent a replay looking for the live sample at
   seed 42 (2026-10-09). The output file holds model text, so it is 0600 in
   `~/.mecha/research/replay/`; standard output carries counts.
+- **A replay sample renders against the chat's scene as of the turn, staged
+  fresh per sample** (`scene::stage::stage_at`, then `Sampler::sample`). The
+  scene comes back exactly from the chat's last landed picture before the
+  turn, or approximately from the persona's latest by write time. The stage
+  copies into a scratch folder that it proves lies outside the store and
+  workspace, and only that folder is ever stamped (both stamping source
+  scans name `replay_persona.rs` for this). A store shared across samples
+  carried one sample's clothes into the next (2026-10-08). The picture tool
+  is the real one, with the reader and splitter stamped through
+  `persona::turn::context` (`--no-readers` takes them off); every other tool
+  stays a stand-in. A rendering sample is not cancelled when its response
+  arrives, since the cancel would stop its own render. It ends when the run
+  asks again (`SampleEnded`). Fresh picture seeds come from a harness
+  stream, `ToolCtx::image_seeds`, seeded `--image-seed-base` + i, so two
+  arms render sample i at the same seeds. `--at-call N` branches inside the
+  run, after the batch holding its Nth call. It refuses a call whose picture
+  was deferred, because the next request was the closing one. A response
+  that calls the picture tool beside another tool loses its render: the
+  other tool's stand-in cancels the run, and the cancel reaches the inline
+  job. `stage_at` counts non-blank record lines, as `--at` does.
+- **`--surface recorded` sends the tool text the turn was sent**, from the
+  surface store by its `tools_hash`. A wording experiment on an older chat
+  then starts from what the model saw, not today's text. The stand-ins are
+  checked equal to that fingerprint, and a surface the store no longer holds
+  is refused. It is call-only: a tool that runs is today's.
+- **An arm can edit the history it sends, never the transcript**: `[[set]]
+  in = "history:tool_result:N" | "history:tool_input:N"` sets the Nth
+  recorded call's result or input whole in every request of the sample, and
+  fails like any edit when the request holds no Nth call. `--attempts N`
+  lets a call-only sample ask up to N times. The picture tool's real refusal
+  answers a call whose arguments did not parse, as it did on the turn (no
+  `scene` means no drawing), and a parsed call ends the sample unrun.
+  `attempts_to_parsed` is the first request whose call parsed within
+  `--parsed-limit` bytes.
 
 ### Archive and forget
 
