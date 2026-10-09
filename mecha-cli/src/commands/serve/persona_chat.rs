@@ -11615,8 +11615,9 @@ mod tests {
         // came from the panel.
         let src = std::fs::read_to_string(root.join("../mecha-core/src/persona/turn.rs")).unwrap();
         let code = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        // The stamp itself: `Readers::Off` clears the field above it.
         let stamp = code
-            .find("tools.scene_reader =")
+            .find("tools.scene_reader = match")
             .expect("the reader is stamped");
         let gate = code[..stamp]
             .rfind("if !turn.panel {")
