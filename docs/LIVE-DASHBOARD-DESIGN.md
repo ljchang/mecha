@@ -127,7 +127,7 @@ data could come from or go to:
 | `data.url`, `data.values` | refused | a fetch the spec chooses; inline values bypass the loader's reviewed schema |
 | `href` channel, `image` mark, `url` fields | refused | a navigation or fetch to a data-derived address |
 | `usermeta`, `config` | refused | config comes from the theme, not the spec |
-| `transform` (`filter`, `calculate`, `aggregate`, `fold`, `window`, `bin`, `timeUnit`) | allowed | expressions run in Vega's interpreter (§4.2), bounded length |
+| `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
 | `params` with `select` (`point`, `interval`) | allowed | this is where in-chart reactivity comes from — brushing, cross-filtering |
 | `params` with `bind` to input elements | refused | inputs belong to the dashboard's `filters`, rendered by us |
 | `layer`, `concat`, `facet`, `repeat` | allowed | composition, no new surface |
@@ -294,7 +294,7 @@ the binary, fetched like the llama.cpp engine (`fetch.rs`, sha256-pinned).
   vendors into each publish (rung 3).
 
 The renderer is ours, so it obeys the house rules a model would not: no
-`{@html}` anywhere, `text` panels through a markdown renderer with raw HTML off, CSS extracted to a file (§5.2 of the public-surface design), and a
+`{@html}` anywhere, `text` panels through a markdown renderer with raw HTML off **and no links at all** — a link's text renders as text and its destination is dropped, so a scheme the server screen missed (an entity-encoded colon decoded by the renderer, say) has nowhere to land; this is the second layer behind `is_address`, not a replacement for it, CSS extracted to a file (§5.2 of the public-surface design), and a
 rate over nothing is `null` and renders as a dash — `LearningCharts.svelte`'s
 rule, kept.
 
