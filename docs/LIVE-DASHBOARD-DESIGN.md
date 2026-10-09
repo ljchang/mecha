@@ -132,7 +132,7 @@ data could come from or go to:
 | `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
 | `params` with `select` (`point`, `interval`) | allowed | this is where in-chart reactivity comes from — brushing, cross-filtering |
 | `params` with a `name` and a `value` (a variable) | allowed | the slot the renderer sets from a dashboard filter, so a chart can read the filter's state; the host writes the value, never the reader |
-| `params` with `bind` | refused — input elements, and in v1 `bind: "scales"` too | inputs belong to the dashboard's `filters`, rendered by us; scale-bound pan and zoom is left out of v1 for simplicity, while an interval selection's `translate`/`zoom` events (§2.2's expression note) stay |
+| `params` with `bind` | refused — input elements, and in v1 `bind: "scales"` too | inputs belong to the dashboard's `filters`, rendered by us; scale-bound pan and zoom is left out of v1 for simplicity, while an interval selection's `translate`/`zoom` events (the expression note above) stay |
 | `layer`, `concat`, `facet`, `repeat` | allowed | composition, no new surface |
 
 **Validation is an allowlist walk in Rust**, not a JSON Schema check: Vega-Lite's
@@ -310,7 +310,10 @@ fetched — the freshness every surface shows comes from it.
 ### 3.4 Confinement
 
 v1 SQLite loaders open the file read-only in process; there is nothing to
-confine beyond the open flags. The DuckDB runner (v2) is a subprocess through
+confine beyond the open flags and the authorizer (§3.1). A v1 `mecha` loader
+also runs **in process**: each readout in the closed enum calls the core
+function behind its CLI command directly, so no `mecha` binary is exec'd and
+no argv exists to confine. The DuckDB runner (v2) is a subprocess through
 `sandbox.rs` with the source file bound read-only and **no network unless the
 source kind needs it** (Postgres does). DuckDB downloads extensions at runtime
 by default; the runner disables autoload and ships the pinned extensions with
@@ -783,6 +786,10 @@ scratch space, not the repository.
   with its own origin (§5.2).
 - A push channel (SSE, WebSocket). Polling is ruled (R5); the cost of adding
   SSE later is one endpoint and a renderer option.
+- Dashboards over data the box already holds — instrument submissions, poll
+  tallies — which research Part 8 noted need no push at all. Not in v1: every
+  v1 dataset comes from home through a reviewed loader, so there is one data
+  path to secure; a box-side source is a later, separately argued addition.
 - Viewer writes — annotations, inputs saved to the box. That is an instrument
   (§14.3) with a lease and a handler.
 - Queries parameterised by the viewer, on any surface. Filters work over the

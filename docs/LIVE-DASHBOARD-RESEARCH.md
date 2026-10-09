@@ -5,10 +5,12 @@
 > the status of every recommendation here. Most were adopted as rulings —
 > among them polling (LD4 → R5), the database at home or in the cloud with
 > the factory holding snapshots (Part 8 → R3), the loader reviewed once (LD6 →
-> R4) and the chart grammar (Q4 → R2). **One was reversed**: the static eval
+> R4) and the chart grammar (Q4 → R2). **One was narrowed**: the static eval
 > gate (LD8, and Part 5's "fail the publish if the bundle contains `new
-> Function`"). A grep matches every chart library on code that never runs, so
-> the gate is a functional browser probe under the real CSP (design §6.1). LD8 and Part 5 are struck in place, because a cheap-looking
+> Function`"). A scan still gates *our* code; over *vendored* libraries it
+> matches every chart library on code that never runs, so there it is a
+> report, libraries are pinned by digest, and the runtime render under the
+> real CSP decides (design §6.1). LD8 and Part 5 are struck in place, because a cheap-looking
 > hardening is the one a reader acts on; for everything else the body is the
 > research as it stood, and the design's §0 is the status.
 
@@ -233,9 +235,10 @@ Whether `vega-embed` passes those options through needs checking at build
 [NF]. Observable Plot and ECharts are believed eval-free [I, unverified].
 ~~Either way the cheap enforcement is the one the vendor gate already uses:
 fail the publish if the bundle contains `new Function` or `eval(`.~~
-*Reversed by design §6.1: a static scan matched 7 times in Vega (four real
-sites) and 5 in ECharts (one real) on code that never ran; the gate is a functional browser probe under
-the real CSP, and the scan is a report.*
+*Narrowed by design §6.1: over vendored libraries a static scan matched 7
+times in Vega (four real sites) and 5 in ECharts (one real) on code that never
+ran, so there the scan is a report and the runtime render under the real CSP
+decides; over our own code the scan remains a gate.*
 
 ## Part 6 — What mecha and the factory already have
 
@@ -389,7 +392,7 @@ and eval check. It is a tier, not the default.
   read at home.
 - ~~**LD8. Extend the publish gate**: fail on `new Function` / `eval(` in a
   bundle's scripts, beside the existing external-reference check.~~
-  *Reversed — design §6.1.*
+  *Narrowed — a gate on our code only; design §6.1.*
 - **LD9. A preview in the outbox**, framed from a separate sandbox origin —
   `mecha serve`'s `frame-ancestors 'none'` stays as is for its own pages.
 
