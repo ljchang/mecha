@@ -476,7 +476,11 @@ fn clip_cut_off_calls(message: &mut Message, hit_limit: bool) {
         else {
             continue;
         };
-        if !(ends_mid_value(&raw) || (hit_limit && Some(at) == last_call)) {
+        // Which route fired is kept: only the limit earns the limit's
+        // sentence, and a call that merely dropped its closing brace is not
+        // told to write less (review of #611, pass 2).
+        let limit = hit_limit && Some(at) == last_call;
+        if !(limit || ends_mid_value(&raw)) {
             continue;
         }
         let chars = raw.chars().count();
@@ -487,6 +491,7 @@ fn clip_cut_off_calls(message: &mut Message, hit_limit: bool) {
             note.insert("field".into(), serde_json::json!(field));
         }
         note.insert("repeats".into(), serde_json::json!(repeats_itself(&raw)));
+        note.insert("limit".into(), serde_json::json!(limit));
         *input = serde_json::json!({
             "__malformed_arguments": if chars > CUT_OFF_KEPT_CHARS { format!("{head}…") } else { head },
             "__cut_off": note,
@@ -502,8 +507,10 @@ fn ends_mid_value(raw: &str) -> bool {
 }
 
 /// The last `"name":` opened in a JSON text: the field a cut-off call was
-/// still writing. Only a plain lowercase name counts, so a quoted word inside
-/// a value is not taken for a key.
+/// still writing. A plain lowercase name after `{` or `,` counts. An escaped
+/// quote is a value's, and passed over. Any other quote before a colon
+/// leaves the field unknown rather than falling back to an earlier key, which
+/// had closed (review of #611, pass 2).
 fn last_field_opened(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut found = None;
@@ -512,6 +519,9 @@ fn last_field_opened(raw: &str) -> Option<String> {
         let Some(close) = before.strip_suffix('"') else {
             continue;
         };
+        if close.ends_with('\\') {
+            continue;
+        }
         // By char, never `rfind(..) + 1`: a multi-byte char before the
         // quote would put the slice inside it (review of #611).
         let name_start = close
@@ -520,9 +530,10 @@ fn last_field_opened(raw: &str) -> Option<String> {
             .find(|(_, c)| !(c.is_ascii_lowercase() || *c == '_'))
             .map_or(0, |(i, c)| i + c.len_utf8());
         let name = &close[name_start..];
-        if !name.is_empty() && name_start > 0 && bytes[name_start - 1] == b'"' {
-            found = Some(name.to_string());
-        }
+        let opened = name_start > 0
+            && bytes[name_start - 1] == b'"'
+            && close[..name_start - 1].trim_end().ends_with(['{', ',']);
+        found = (!name.is_empty() && opened).then(|| name.to_string());
     }
     found
 }
@@ -548,17 +559,28 @@ fn unreadable_call(input: &Value) -> String {
             .to_string();
     };
     let chars = cut.get("chars").and_then(Value::as_u64).unwrap_or(0);
-    let field = match cut.get("field").and_then(Value::as_str) {
-        Some(f) if cut.get("repeats").and_then(Value::as_bool) == Some(true) => {
-            format!(" `{f}` was still being written, and it repeats itself.")
-        }
-        Some(f) => format!(" `{f}` was still being written."),
-        None => String::new(),
+    let limit = cut.get("limit").and_then(Value::as_bool) == Some(true);
+    let repeats = cut.get("repeats").and_then(Value::as_bool) == Some(true);
+    let how = if limit {
+        format!(
+            "was cut off at the output limit after {chars} characters, so its arguments never \
+             closed"
+        )
+    } else {
+        format!("ended after {chars} characters, before its arguments closed")
     };
-    format!(
-        "Not run: this call was cut off at the output limit after {chars} characters, so \
-         its arguments never closed.{field} Send it again short: each field a sentence or two."
-    )
+    let open = match (cut.get("field").and_then(Value::as_str), repeats) {
+        (Some(f), true) => format!(" `{f}` was still being written, and it repeats itself."),
+        (Some(f), false) => format!(" `{f}` was still being written."),
+        (None, true) => " The last field repeats itself.".to_string(),
+        (None, false) => String::new(),
+    };
+    let then = if limit || repeats {
+        "Send it again short: each field a sentence or two."
+    } else {
+        "Send the call again with complete arguments."
+    };
+    format!("Not run: this call {how}.{open} {then}")
 }
 
 /// Every `<tool_call>` block taken out of a reply, and a trailing unclosed
@@ -6226,11 +6248,29 @@ mod tests {
     async fn a_call_ending_mid_value_is_cut_off_whatever_the_stop_says() {
         let raw = format!("{{\"value\": \"{}", "the gate creaks open. ".repeat(40));
         let (kept, content, _) = after_unparsed(&raw, StopReason::ToolUse).await;
-        assert!(
-            content.starts_with("Not run: this call was cut off"),
-            "{content}"
+        let chars = raw.chars().count();
+        assert_eq!(
+            content,
+            format!(
+                "Not run: this call ended after {chars} characters, before its arguments \
+                 closed. `value` was still being written, and it repeats itself. Send it \
+                 again short: each field a sentence or two."
+            )
         );
         assert!(kept.get("__cut_off").is_some(), "{kept}");
+    }
+
+    /// A short call that dropped its closing brace, with no limit near, is
+    /// told neither that the limit cut it nor to write less (review of #611,
+    /// pass 2).
+    #[tokio::test]
+    async fn a_short_unclosed_call_is_not_told_it_hit_the_limit() {
+        let (_, content, _) = after_unparsed("{\"value\": \"x.txt\"", StopReason::ToolUse).await;
+        assert_eq!(
+            content,
+            "Not run: this call ended after 17 characters, before its arguments closed. \
+             `value` was still being written. Send the call again with complete arguments."
+        );
     }
 
     /// Of two unreadable calls in a reply that hit the limit, only the last
@@ -6274,12 +6314,20 @@ mod tests {
         // A multi-byte char before a quote is walked by char, not sliced into.
         assert_eq!(last_field_opened("{\"café\": \"x"), None);
         assert_eq!(
-            last_field_opened("{\"doing\": \"she says “stay\": the kettle").as_deref(),
-            Some("doing")
+            last_field_opened("{\"doing\": \"she says “stay\": the kettle"),
+            None
+        );
+        assert_eq!(last_field_opened("{\"doing\": \"wait…\": then"), None);
+        // A key the scan cannot spell leaves the field unknown; it never
+        // falls back to one that had closed.
+        assert_eq!(
+            last_field_opened("{\"scene\": \"a room\", \"styleName\": \"she turns, she tu"),
+            None
         );
         assert_eq!(
-            last_field_opened("{\"doing\": \"wait…\": then").as_deref(),
-            Some("doing")
+            unreadable_call(&json!({"__cut_off": {"chars": 900, "repeats": true, "limit": false}})),
+            "Not run: this call ended after 900 characters, before its arguments closed. The \
+             last field repeats itself. Send it again short: each field a sentence or two."
         );
     }
 
