@@ -5904,6 +5904,23 @@ non-blocking flock, so a hand edit never contends with a fire.
   pinned one: a recorded 42 sent a replay looking for the live sample at
   seed 42 (2026-10-09). The output file holds model text, so it is 0600 in
   `~/.mecha/research/replay/`; standard output carries counts.
+- **A replay sample renders against the chat's scene as of the turn, staged
+  fresh per sample** (`scene::stage::stage_at`, then `Sampler::sample`). The
+  scene comes back exactly from the chat's last landed picture before the
+  turn, or approximately from the persona's latest by write time. The stage
+  copies into a scratch folder that it proves lies outside the store and
+  workspace, and only that folder is ever stamped (both stamping source
+  scans name `replay_persona.rs` for this). A store shared across samples
+  carried one sample's clothes into the next (2026-10-08). The picture tool
+  is the real one, with the reader and splitter stamped through
+  `persona::turn::context` (`--no-readers` takes them off); every other tool
+  stays a stand-in. A rendering sample is not cancelled when its response
+  arrives, since the cancel would stop its own render. It ends when the run
+  asks again (`SampleEnded`). Fresh picture seeds come from a harness
+  stream, `ToolCtx::image_seeds`, seeded `--image-seed-base` + i, so two
+  arms render sample i at the same seeds. `--at-call N` branches inside the
+  run, after the batch holding its Nth call. It refuses a call whose picture
+  was deferred, because the next request was the closing one.
 
 ### Archive and forget
 
