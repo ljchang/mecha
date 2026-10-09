@@ -861,7 +861,7 @@ families, because there are two directions.
 templates/
   report/        outbound, class=static|interactive   prose + computed figures
   notebook/      outbound, class=compute              a whole marimo notebook
-  dashboard/     outbound, class=interactive          charts, no network, no eval
+  dashboard/     outbound, class=interactive          charts, no network, no eval  (built as `hud/` — LIVE-DASHBOARD-DESIGN R15)
   booking/       inbound + outbound                   availability page + claim
   request/       inbound                              the generic typed form
 ```
