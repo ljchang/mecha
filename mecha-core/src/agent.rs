@@ -454,8 +454,18 @@ const CUT_OFF_KEPT_CHARS: usize = 400;
 /// `__cut_off` note of what was there: how long it ran, the field it was
 /// still writing, and whether that field repeats itself. `dispatch` reads the
 /// note to refuse the call by what happened, never to run it.
-fn clip_cut_off_calls(message: &mut Message) {
-    for block in &mut message.content {
+///
+/// Cut off is read per call, and from the text before the label: arguments
+/// that end mid-value were cut off whatever the provider called the stop,
+/// since llama-server reports `stop` beside calls (the override below), and
+/// of two unreadable calls in a reply that hit the limit, only the last was
+/// still being written (review of #611).
+fn clip_cut_off_calls(message: &mut Message, hit_limit: bool) {
+    let last_call = message
+        .content
+        .iter()
+        .rposition(|b| matches!(b, Block::ToolUse { .. }));
+    for (at, block) in message.content.iter_mut().enumerate() {
         let Block::ToolUse { input, .. } = block else {
             continue;
         };
@@ -466,6 +476,9 @@ fn clip_cut_off_calls(message: &mut Message) {
         else {
             continue;
         };
+        if !(ends_mid_value(&raw) || (hit_limit && Some(at) == last_call)) {
+            continue;
+        }
         let chars = raw.chars().count();
         let head: String = raw.chars().take(CUT_OFF_KEPT_CHARS).collect();
         let mut note = serde_json::Map::new();
@@ -481,6 +494,13 @@ fn clip_cut_off_calls(message: &mut Message) {
     }
 }
 
+/// Arguments that stop before their JSON does: serde's end-of-input error,
+/// which a value that merely is wrong never raises.
+fn ends_mid_value(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .is_err_and(|e| e.classify() == serde_json::error::Category::Eof)
+}
+
 /// The last `"name":` opened in a JSON text: the field a cut-off call was
 /// still writing. Only a plain lowercase name counts, so a quoted word inside
 /// a value is not taken for a key.
@@ -492,9 +512,13 @@ fn last_field_opened(raw: &str) -> Option<String> {
         let Some(close) = before.strip_suffix('"') else {
             continue;
         };
+        // By char, never `rfind(..) + 1`: a multi-byte char before the
+        // quote would put the slice inside it (review of #611).
         let name_start = close
-            .rfind(|c: char| !(c.is_ascii_lowercase() || c == '_'))
-            .map_or(0, |i| i + 1);
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_ascii_lowercase() || *c == '_'))
+            .map_or(0, |(i, c)| i + c.len_utf8());
         let name = &close[name_start..];
         if !name.is_empty() && name_start > 0 && bytes[name_start - 1] == b'"' {
             found = Some(name.to_string());
@@ -507,12 +531,12 @@ fn last_field_opened(raw: &str) -> Option<String> {
 /// not one writing at length. A 120-character window, tried every 40.
 fn repeats_itself(raw: &str) -> bool {
     const WINDOW: usize = 120;
-    let starts: Vec<usize> = raw.char_indices().map(|(i, _)| i).collect();
-    (0..starts.len()).step_by(40).any(|i| {
-        let Some(&to) = starts.get(i + WINDOW) else {
+    raw.char_indices().step_by(40).any(|(from, _)| {
+        let Some((len, _)) = raw[from..].char_indices().nth(WINDOW) else {
             return false;
         };
-        raw[to..].contains(&raw[starts[i]..to])
+        let to = from + len;
+        raw[to..].contains(&raw[from..to])
     })
 }
 
@@ -3255,8 +3279,9 @@ impl Agent {
                 empty_turns = 0;
             }
 
-            if response.stop_reason == StopReason::MaxTokens && response.malformed_tool_args > 0 {
-                clip_cut_off_calls(&mut response.message);
+            if response.malformed_tool_args > 0 {
+                let hit_limit = response.stop_reason == StopReason::MaxTokens;
+                clip_cut_off_calls(&mut response.message, hit_limit);
             }
             messages.push(response.message.clone());
             let said = response.message.text();
@@ -6193,6 +6218,46 @@ mod tests {
         assert_eq!(kept, json!({"__malformed_arguments": raw}));
     }
 
+    /// The text decides before the label: arguments that end mid-value were
+    /// cut off even when the provider reports the turn as an ordinary tool
+    /// turn, as llama-server does (review of #611). Fails on a clip gated on
+    /// `MaxTokens` alone.
+    #[tokio::test]
+    async fn a_call_ending_mid_value_is_cut_off_whatever_the_stop_says() {
+        let raw = format!("{{\"value\": \"{}", "the gate creaks open. ".repeat(40));
+        let (kept, content, _) = after_unparsed(&raw, StopReason::ToolUse).await;
+        assert!(
+            content.starts_with("Not run: this call was cut off"),
+            "{content}"
+        );
+        assert!(kept.get("__cut_off").is_some(), "{kept}");
+    }
+
+    /// Of two unreadable calls in a reply that hit the limit, only the last
+    /// was still being written; the other is told it was invalid, not that
+    /// the limit cut it.
+    #[test]
+    fn only_the_last_call_of_a_capped_reply_was_cut_off() {
+        let call = |id: &str, raw: &str| Block::ToolUse {
+            id: id.into(),
+            name: "echo".into(),
+            input: json!({"__malformed_arguments": raw}),
+        };
+        let mut message = Message::assistant(vec![
+            call("a", "{\"value\": \"one\" \"two\"}"),
+            call("b", "{\"value\": \"x\"} trailing"),
+        ]);
+        clip_cut_off_calls(&mut message, true);
+        let inputs: Vec<Value> = message
+            .tool_uses()
+            .into_iter()
+            .map(|(_, _, input)| input.clone())
+            .collect();
+        assert!(inputs[0].get("__cut_off").is_none(), "{:?}", inputs[0]);
+        assert!(inputs[1].get("__cut_off").is_some(), "{:?}", inputs[1]);
+        assert!(unreadable_call(&inputs[0]).contains("not valid JSON"));
+    }
+
     #[test]
     fn the_field_still_open_is_the_last_name_written() {
         assert_eq!(
@@ -6206,6 +6271,16 @@ mod tests {
             Some("doing")
         );
         assert_eq!(last_field_opened("no keys here"), None);
+        // A multi-byte char before a quote is walked by char, not sliced into.
+        assert_eq!(last_field_opened("{\"café\": \"x"), None);
+        assert_eq!(
+            last_field_opened("{\"doing\": \"she says “stay\": the kettle").as_deref(),
+            Some("doing")
+        );
+        assert_eq!(
+            last_field_opened("{\"doing\": \"wait…\": then").as_deref(),
+            Some("doing")
+        );
     }
 
     #[test]
