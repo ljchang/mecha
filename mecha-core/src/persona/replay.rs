@@ -530,6 +530,8 @@ struct SetFile {
     to: Option<String>,
     #[serde(default)]
     to_json: Option<String>,
+    #[serde(default)]
+    is_error: Option<bool>,
 }
 
 /// A recorded call in the history a request carries, by its place among
@@ -548,6 +550,10 @@ pub enum HistoryTarget {
 pub struct Set {
     pub target: HistoryTarget,
     pub to: Value,
+    /// A result's error flag, set with its text (`is_error = …`); `None`
+    /// keeps the recorded flag. Anthropic puts the flag on the wire, so a
+    /// "what if it had worked" arm says so here.
+    pub is_error: Option<bool>,
 }
 
 impl Set {
@@ -568,18 +574,23 @@ impl Set {
             .ok()
             .filter(|n| *n > 0)
             .with_context(|| format!("`{}`: calls count from 1", f.target))?;
-        Ok(match (kind, f.to, f.to_json) {
-            ("tool_result", Some(to), None) => Set {
+        Ok(match (kind, f.to, f.to_json, f.is_error) {
+            ("tool_result", Some(to), None, is_error) => Set {
                 target: HistoryTarget::ToolResult(n),
                 to: Value::String(to),
+                is_error,
             },
-            ("tool_input", None, Some(json)) => Set {
+            ("tool_input", None, Some(json), None) => Set {
                 target: HistoryTarget::ToolInput(n),
                 to: serde_json::from_str(&json)
                     .with_context(|| format!("`{}`: `to_json` is not JSON", f.target))?,
+                is_error: None,
             },
             ("tool_result", ..) => bail!("`{}` takes `to` (the result's text)", f.target),
-            ("tool_input", ..) => bail!("`{}` takes `to_json` (the input as JSON)", f.target),
+            ("tool_input", ..) => bail!(
+                "`{}` takes `to_json` (the input as JSON), and no `is_error`",
+                f.target
+            ),
             _ => bail!(
                 "`{}`: history:tool_result:<n> or history:tool_input:<n>",
                 f.target
@@ -622,11 +633,14 @@ impl Set {
                     Block::ToolResult {
                         tool_use_id,
                         content,
-                        ..
+                        is_error,
                     },
                     HistoryTarget::ToolResult(_),
                 ) if *tool_use_id == id => {
                     *content = self.to.as_str().unwrap_or_default().to_string();
+                    if let Some(flag) = self.is_error {
+                        *is_error = flag;
+                    }
                     set += 1;
                 }
                 _ => {}
@@ -1472,6 +1486,26 @@ mod tests {
         assert_eq!(o.apply(&mut req), [1, 1]);
         assert!(matches!(&req.messages[2].content[0],
             Block::ToolResult { content, .. } if content == "a truthful answer"));
+        assert!(
+            matches!(
+                &req.messages[2].content[0],
+                Block::ToolResult { is_error: true, .. }
+            ),
+            "with no `is_error`, the recorded flag is kept"
+        );
+        let mut ok = req.clone();
+        Overlay::parse(
+            "[[set]]\nin = \"history:tool_result:1\"\nto = \"it worked\"\nis_error = false",
+        )
+        .unwrap()
+        .apply(&mut ok);
+        assert!(matches!(
+            &ok.messages[2].content[0],
+            Block::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
         assert!(matches!(&req.messages[1].content[0],
             Block::ToolUse { input, .. } if input["__cut_off"]["chars"] == 9));
         assert_ne!(req.messages, before);
@@ -1486,6 +1520,7 @@ mod tests {
             "[[set]]\nin = \"history:tool_result:1\"\nto_json = \"{}\"",
             "[[set]]\nin = \"history:tool_input:0\"\nto_json = \"{}\"",
             "[[set]]\nin = \"history:thinking:1\"\nto = \"x\"",
+            "[[set]]\nin = \"history:tool_input:1\"\nto_json = \"{}\"\nis_error = true",
         ] {
             assert!(Overlay::parse(bad).is_err(), "{bad}");
         }

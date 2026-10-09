@@ -48,8 +48,9 @@ pub enum AsOf {
     /// The chat's own last landed picture before the turn: exact.
     ChatPicture { picture: String },
     /// No picture of the chat's own yet, so the persona's latest: the index
-    /// entry last written at or before `at`, the turn's run start.
-    /// Approximate: write times, not a record.
+    /// entry last written at or before `at`, the caller's estimate of the
+    /// turn's run start, else the last recorded config's clock (which may
+    /// precede the turn by days). Approximate: write times, not a record.
     PersonaLatest { at: String, picture: String },
     /// No picture of its own and none in the persona's index by then: the
     /// chat started with no scene.
@@ -69,6 +70,7 @@ pub fn stage_at(
     persona: &str,
     chat: &str,
     line: usize,
+    run_start: Option<&str>,
     scratch: &Path,
 ) -> Result<Staged> {
     if !is_chat_id(chat) || !is_chat_id(persona) {
@@ -105,14 +107,20 @@ pub fn stage_at(
         .and_then(|r| r["workspace"].as_str())
         .map(PathBuf::from)
         .context("the transcript names no workspace")?;
-    // The run the turn starts: its config record carries the clock.
-    let at = before
-        .iter()
-        .rev()
-        .find(|r| r["record"] == "config")
-        .and_then(|r| r["clock"].as_str())
-        .or_else(|| before.iter().find_map(|r| r["created_at"].as_str()))
-        .map(str::to_string);
+    // When the turn's run began, for the approximate path: the caller's
+    // estimate when it has one, since a persona chat records a config only
+    // when its model binding changes, so the last config can be days before
+    // the turn (review of #615); else that last config's clock; else when
+    // the chat was made.
+    let at = run_start.map(str::to_string).or_else(|| {
+        before
+            .iter()
+            .rev()
+            .find(|r| r["record"] == "config")
+            .and_then(|r| r["clock"].as_str())
+            .or_else(|| before.iter().find_map(|r| r["created_at"].as_str()))
+            .map(str::to_string)
+    });
 
     // The chat's last picture before the turn decides its scene, so it is
     // read, and its index entry found, before anything is written.
@@ -482,7 +490,7 @@ mod tests {
         let before = w.snapshot();
 
         let scratch = w.root.join("scratch");
-        let staged = stage_at(&w.store, "wren", CHAT, 5, &scratch).unwrap();
+        let staged = stage_at(&w.store, "wren", CHAT, 5, None, &scratch).unwrap();
 
         assert_eq!(
             staged.as_of,
@@ -551,7 +559,7 @@ mod tests {
         )
         .unwrap();
 
-        let staged = stage_at(&w.store, "wren", CHAT, 8, &w.root.join("scratch")).unwrap();
+        let staged = stage_at(&w.store, "wren", CHAT, 8, None, &w.root.join("scratch")).unwrap();
         assert_eq!(
             staged.as_of,
             AsOf::ChatPicture {
@@ -562,7 +570,7 @@ mod tests {
         assert_eq!(staged.missing, ["images/0-0.png (its scene record)"]);
         assert_ne!(earlier, last);
         // A tool-result batch is not an owner message.
-        let err = stage_at(&w.store, "wren", CHAT, 5, &w.root.join("scratch2")).unwrap_err();
+        let err = stage_at(&w.store, "wren", CHAT, 5, None, &w.root.join("scratch2")).unwrap_err();
         assert!(
             format!("{err:#}").contains("not an owner message"),
             "{err:#}"
@@ -594,7 +602,7 @@ mod tests {
             owner("again"),
         ]);
         w.transcript(&lines);
-        let staged = stage_at(&w.store, "wren", CHAT, 4, &w.root.join("scratch")).unwrap();
+        let staged = stage_at(&w.store, "wren", CHAT, 4, None, &w.root.join("scratch")).unwrap();
         assert_eq!(staged.missing, vec!["uploads/room.jpg".to_string()]);
         assert!(!staged.workspace.join("uploads").join("room.jpg").exists());
     }
@@ -628,7 +636,7 @@ mod tests {
         let mut lines = header(&w, "2026-01-01T09:00:00Z");
         lines.push(owner("hello"));
         w.transcript(&lines);
-        let staged = stage_at(&w.store, "wren", CHAT, 2, &w.root.join("scratch")).unwrap();
+        let staged = stage_at(&w.store, "wren", CHAT, 2, None, &w.root.join("scratch")).unwrap();
         assert_eq!(
             staged.as_of,
             AsOf::PersonaLatest {
@@ -638,6 +646,24 @@ mod tests {
         );
         assert_eq!(staged.slot.current().and_then(|s| s.picture), Some(old));
         assert!(!staged.slot.chat_copy.exists());
+        // A turn whose run began after the newer entry, in a chat whose only
+        // config is older: the caller's estimate of the run start governs.
+        let staged = stage_at(
+            &w.store,
+            "wren",
+            CHAT,
+            2,
+            Some("2026-01-01T11:00:00Z"),
+            &w.root.join("scratch-later"),
+        )
+        .unwrap();
+        assert_eq!(
+            staged.as_of,
+            AsOf::PersonaLatest {
+                at: "2026-01-01T11:00:00Z".into(),
+                picture: new
+            }
+        );
     }
 
     /// The refusals: a last picture gone from the workspace, a line that is
@@ -654,7 +680,7 @@ mod tests {
         ]);
         w.transcript(&lines);
         let err = |line: usize, scratch: &Path| {
-            stage_at(&w.store, "wren", CHAT, line, scratch)
+            stage_at(&w.store, "wren", CHAT, line, None, scratch)
                 .unwrap_err()
                 .to_string()
         };
@@ -670,6 +696,6 @@ mod tests {
         std::fs::create_dir_all(&full).unwrap();
         std::fs::write(full.join("x"), b"x").unwrap();
         assert!(err(2, &full).contains("not empty"));
-        assert!(stage_at(&w.store, "../wren", CHAT, 4, &w.root.join("s3")).is_err());
+        assert!(stage_at(&w.store, "../wren", CHAT, 4, None, &w.root.join("s3")).is_err());
     }
 }

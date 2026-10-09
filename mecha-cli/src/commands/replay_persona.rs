@@ -567,6 +567,12 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
              drawing — add --no-render"
         );
     }
+    if args.attempts > 1 && recorded_tools.is_some() {
+        bail!(
+            "--surface recorded and --attempts both describe the picture tool: an attempt's \
+             unparsed call is answered by today's tool, in today's words — use one or the other"
+        );
+    }
     if render && recorded_tools.is_some() {
         bail!(
             "--surface recorded is call-only: a picture call that runs is today's tool, \
@@ -637,6 +643,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         surface,
         work,
         chat: id.clone(),
+        run_start: clock_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         render,
         readers: !args.no_readers,
     };
@@ -708,6 +715,10 @@ pub struct Sampler {
     work: PathBuf,
     /// The chat's id, which its scene is staged by.
     chat: String,
+    /// When the turn's run began, as best known: the day its calendar
+    /// reference names (noon in the run's zone), for staging the persona's
+    /// latest as of then. `None` falls back to the last recorded config.
+    run_start: Option<String>,
     /// Run the picture call against a scene staged per sample.
     render: bool,
     /// Stamp the scene reader and role splitter when rendering.
@@ -812,6 +823,7 @@ impl Sampler {
                 &self.persona,
                 &self.chat,
                 branch.line - 1,
+                self.run_start.as_deref(),
                 &scratch,
             )?)
         } else {
