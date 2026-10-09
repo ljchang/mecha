@@ -65,6 +65,9 @@ pub struct Branch {
     /// The calendar reference the turn's run was sent, as recorded after
     /// it (`Session::record_run`): what [`clock_for`] matches a clock to.
     pub calendar: Option<String>,
+    /// A branch inside the turn's run, after the batch holding its `n`th
+    /// tool call (1-based): [`branch_at_call`].
+    pub call: Option<usize>,
 }
 
 /// The calendar reference recorded for the run that a turn at `index` began:
@@ -89,6 +92,37 @@ fn calendar_after(lines: &[&str], index: usize) -> Option<String> {
         }
     }
     None
+}
+
+/// The start of `at`'s day in `tz` (or the local zone): a bound a run on
+/// that day began after. `None` on a day whose midnight does not exist.
+pub fn start_of_day(
+    at: chrono::DateTime<chrono::Utc>,
+    tz: Option<chrono_tz::Tz>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::TimeZone;
+    match tz {
+        Some(tz) => {
+            let day = at.with_timezone(&tz).date_naive().and_hms_opt(0, 0, 0)?;
+            Some(
+                tz.from_local_datetime(&day)
+                    .earliest()?
+                    .with_timezone(&chrono::Utc),
+            )
+        }
+        None => {
+            let day = at
+                .with_timezone(&chrono::Local)
+                .date_naive()
+                .and_hms_opt(0, 0, 0)?;
+            Some(
+                chrono::Local
+                    .from_local_datetime(&day)
+                    .earliest()?
+                    .with_timezone(&chrono::Utc),
+            )
+        }
+    }
 }
 
 /// A clock for the replay whose calendar reference reads as the recorded
@@ -327,6 +361,7 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
     taint.arm_for_content(&messages);
     taint.arm_for_notes(&notes);
     Ok(Branch {
+        call: None,
         calendar: calendar_after(&lines, index),
         line,
         spoken: notes.iter().any(|n| super::call::is_note(n)),
@@ -336,6 +371,168 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
         notes,
         owner,
     })
+}
+
+/// The turn on record line `line`, branched inside its run: after the batch
+/// holding the run's `call`th tool call (1-based) and the results that
+/// answered it, as recorded. The run's notes are the turn's, as they were
+/// for every request of it.
+///
+/// Refused where the run's next request was not an ordinary one: a picture
+/// the call deferred made the next request the closing one, which replay
+/// does not rebuild; and a run that rewrote its history (a compaction) has
+/// no recorded place for the call among the messages the turn began with.
+pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Result<Branch> {
+    if call == 0 {
+        bail!("calls count from 1");
+    }
+    let mut branch = branch_at(path, text, line)?;
+    let lines = non_empty(text);
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(line)
+        .find(|(j, _)| shape_at(&lines, *j) == Some(Shape::Turn))
+        .map_or(lines.len(), |(i, _)| i);
+    let run = Session::parse(path, &lines[..end].join("\n"))?;
+    let start = branch.messages.len();
+    let messages = run.convo.messages;
+    if messages.len() < start || messages[..start] != branch.messages[..] {
+        bail!(
+            "the run at line {line} rewrote its history, so call {call} has no place \
+             among the messages the turn began with"
+        );
+    }
+    let mut seen = 0;
+    let mut target = None;
+    'find: for m in &messages[start..] {
+        for b in &m.content {
+            if let Block::ToolUse { id, .. } = b {
+                seen += 1;
+                if seen == call {
+                    target = Some(id.clone());
+                    break 'find;
+                }
+            }
+        }
+    }
+    let Some(target) = target else {
+        bail!("the run at line {line} made {seen} tool call(s), not {call}");
+    };
+    let answered = messages[start..]
+        .iter()
+        .position(|m| {
+            m.content.iter().any(
+                |b| matches!(b, Block::ToolResult { tool_use_id, .. } if *tool_use_id == target),
+            )
+        })
+        .map(|i| start + i)
+        .with_context(|| format!("call {call} has no recorded result"))?;
+    // Read from the raw records, not the parsed messages: once the job
+    // delivers, the host appends a `late_result` and `Session::parse` folds
+    // it over the "being made" answer, so the parsed result reads finished
+    // (review of #615). A late result for any call this batch answered, in
+    // any record after the turn (it can land past the next one), or a
+    // "being made" answer still standing, is a deferral.
+    let batch: std::collections::BTreeSet<&str> = messages[answered]
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            Block::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let landed_late = lines[index_of(line)..].iter().any(|l| {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            return false;
+        };
+        v["record"] == "late_result"
+            && v["tool_use_id"]
+                .as_str()
+                .is_some_and(|id| batch.contains(id))
+    });
+    let deferred = landed_late
+        || messages[answered].content.iter().any(|b| {
+            matches!(b, Block::ToolResult { content, .. }
+                if content.starts_with(crate::imagegen::BEING_MADE))
+        });
+    if deferred {
+        bail!(
+            "call {call}'s picture was deferred, so the run's next request was its closing \
+             one, which replay does not rebuild"
+        );
+    }
+    branch.messages = messages[..=answered].to_vec();
+    let mut taint = run.convo.taint;
+    taint.arm_for_content(&branch.messages);
+    taint.arm_for_notes(&branch.notes);
+    branch.taint = taint;
+    branch.call = Some(call);
+    Ok(branch)
+}
+
+/// The 0-based index of 1-based record line `line`.
+fn index_of(line: usize) -> usize {
+    line.saturating_sub(1)
+}
+
+/// What a sample's picture call made, read back from its scratch store:
+/// the stage it ran against, the call's results, and the files it wrote.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RenderFacts {
+    /// The scratch folder the sample was staged into, kept for the judges.
+    pub scratch: String,
+    /// What the staged scene was recovered from (`scene::stage::AsOf`).
+    pub as_of: String,
+    /// What the stage could not bring.
+    pub missing: Vec<String>,
+    /// Whether the scene reader and the role splitter were stamped.
+    pub readers: bool,
+    /// The seed of the stream the picture's fresh seeds were drawn from.
+    pub image_seed: u64,
+    /// Each picture call's result as the model was handed it.
+    pub results: Vec<CallResult>,
+    /// Pictures and manifests the sample wrote, as absolute paths.
+    pub pictures: Vec<String>,
+    pub manifests: Vec<Value>,
+    /// The prompt log's lines: what the image model was given.
+    pub prompt_log: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CallResult {
+    pub name: String,
+    pub is_error: bool,
+    pub content: String,
+}
+
+/// The results in `after` (the messages a sample's run added) of calls to
+/// `name`.
+pub fn results_of(after: &[Message], name: &str) -> Vec<CallResult> {
+    let ids: std::collections::BTreeSet<&str> = after
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolUse { id, name: n, .. } if n == name => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    after
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } if ids.contains(tool_use_id.as_str()) => Some(CallResult {
+                name: name.to_string(),
+                is_error: *is_error,
+                content: content.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Where an overlay edit applies.
@@ -366,6 +563,7 @@ impl Target {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReplaceFile {
     #[serde(rename = "in")]
     target: String,
@@ -380,6 +578,137 @@ struct OverlayFile {
     name: Option<String>,
     #[serde(default)]
     replace: Vec<ReplaceFile>,
+    #[serde(default)]
+    set: Vec<SetFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetFile {
+    #[serde(rename = "in")]
+    target: String,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    to_json: Option<String>,
+    #[serde(default)]
+    is_error: Option<bool>,
+}
+
+/// A recorded call in the history a request carries, by its place among
+/// every call in it (1-based).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryTarget {
+    /// The result the call was answered with: the text set whole.
+    ToolResult(usize),
+    /// The call's input: the JSON set whole.
+    ToolInput(usize),
+}
+
+/// One history edit: a recorded call's result or input, set whole in the
+/// request sent. The transcript is never touched.
+#[derive(Debug, Clone)]
+pub struct Set {
+    pub target: HistoryTarget,
+    pub to: Value,
+    /// A result's error flag, set with its text (`is_error = …`); `None`
+    /// keeps the recorded flag. Anthropic puts the flag on the wire, so a
+    /// "what if it had worked" arm says so here.
+    pub is_error: Option<bool>,
+}
+
+impl Set {
+    fn parse(f: SetFile) -> Result<Self> {
+        let (kind, n) = f
+            .target
+            .strip_prefix("history:")
+            .and_then(|t| t.rsplit_once(':'))
+            .with_context(|| {
+                format!(
+                    "a `[[set]]` `in` is history:tool_result:<n> or history:tool_input:<n>, \
+                     not `{}`",
+                    f.target
+                )
+            })?;
+        let n: usize = n
+            .parse()
+            .ok()
+            .filter(|n| *n > 0)
+            .with_context(|| format!("`{}`: calls count from 1", f.target))?;
+        Ok(match (kind, f.to, f.to_json, f.is_error) {
+            ("tool_result", Some(to), None, is_error) => Set {
+                target: HistoryTarget::ToolResult(n),
+                to: Value::String(to),
+                is_error,
+            },
+            ("tool_input", None, Some(json), None) => Set {
+                target: HistoryTarget::ToolInput(n),
+                to: serde_json::from_str(&json)
+                    .with_context(|| format!("`{}`: `to_json` is not JSON", f.target))?,
+                is_error: None,
+            },
+            ("tool_result", ..) => bail!("`{}` takes `to` (the result's text)", f.target),
+            ("tool_input", ..) => bail!(
+                "`{}` takes `to_json` (the input as JSON), and no `is_error`",
+                f.target
+            ),
+            _ => bail!(
+                "`{}`: history:tool_result:<n> or history:tool_input:<n>",
+                f.target
+            ),
+        })
+    }
+
+    fn label(&self) -> String {
+        match self.target {
+            HistoryTarget::ToolResult(n) => format!("history:tool_result:{n}"),
+            HistoryTarget::ToolInput(n) => format!("history:tool_input:{n}"),
+        }
+    }
+
+    /// Set the target in `req`'s messages; how many places it set (0 or 1).
+    fn apply(&self, req: &mut CompletionRequest) -> usize {
+        let n = match self.target {
+            HistoryTarget::ToolResult(n) | HistoryTarget::ToolInput(n) => n,
+        };
+        let id = req
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .nth(n - 1);
+        let Some(id) = id else {
+            return 0;
+        };
+        let mut set = 0;
+        for b in req.messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
+            match (b, &self.target) {
+                (Block::ToolUse { id: i, input, .. }, HistoryTarget::ToolInput(_)) if *i == id => {
+                    *input = self.to.clone();
+                    set += 1;
+                }
+                (
+                    Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    },
+                    HistoryTarget::ToolResult(_),
+                ) if *tool_use_id == id => {
+                    *content = self.to.as_str().unwrap_or_default().to_string();
+                    if let Some(flag) = self.is_error {
+                        *is_error = flag;
+                    }
+                    set += 1;
+                }
+                _ => {}
+            }
+        }
+        set
+    }
 }
 
 /// One text edit.
@@ -403,6 +732,8 @@ pub struct Replace {
 pub struct Overlay {
     pub name: Option<String>,
     pub replace: Vec<Replace>,
+    /// History edits (`[[set]]`), applied after the text edits.
+    pub set: Vec<Set>,
     /// sha256 of the file as read, so a sample names the arm it ran.
     pub digest: Option<String>,
 }
@@ -424,12 +755,17 @@ impl Overlay {
         Ok(Overlay {
             name: file.name,
             replace,
+            set: file
+                .set
+                .into_iter()
+                .map(Set::parse)
+                .collect::<Result<_>>()?,
             digest: Some(crate::document::sha256_hex(text.as_bytes())),
         })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.replace.is_empty()
+        self.replace.is_empty() && self.set.is_empty()
     }
 
     /// Whether any edit changes tool text, so the surface sent is neither
@@ -442,7 +778,19 @@ impl Overlay {
 
     /// Apply every edit to `req`, and how many places each matched.
     pub fn apply(&self, req: &mut CompletionRequest) -> Vec<usize> {
-        self.replace.iter().map(|r| r.apply(req)).collect()
+        let mut matched: Vec<usize> = self.replace.iter().map(|r| r.apply(req)).collect();
+        matched.extend(self.set.iter().map(|s| s.apply(req)));
+        matched
+    }
+
+    /// Each edit's name, in [`apply`](Self::apply)'s order: what an edit
+    /// that matched nothing is called when the sample fails.
+    pub fn labels(&self) -> Vec<String> {
+        self.replace
+            .iter()
+            .map(|r| format!("`{}` in {:?}", r.find, r.target))
+            .chain(self.set.iter().map(Set::label))
+            .collect()
     }
 }
 
@@ -545,6 +893,28 @@ pub struct Exchange {
     pub wall_secs: f64,
 }
 
+/// A sample asked for a request past those it was allowed: how a sample
+/// that rendered ends, and not a failure.
+#[derive(Debug, Clone, Copy)]
+pub struct SampleEnded(pub usize);
+
+impl std::fmt::Display for SampleEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "replay: this sample has sent the {} request(s) it was allowed",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for SampleEnded {}
+
+/// Whether `e` is a sample ending where it was meant to.
+pub fn ended(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<SampleEnded>())
+}
+
 /// A provider that applies an arm's overlay, records each exchange, and
 /// ends the run once it has sent `requests` of them: it cancels the run's
 /// token as the last allowed response comes back, so the loop stops at its
@@ -555,6 +925,12 @@ pub struct Capture {
     /// Sent as each request's `max_tokens` when set.
     pub max_tokens: Option<u32>,
     pub requests: usize,
+    /// Cancel as the last allowed response comes back, so its calls are
+    /// never run (a call-only sample). Off for a sample that renders: its
+    /// picture call runs, and the run ends when it asks again, with
+    /// [`SampleEnded`]. A cancel before the call would stop the render it
+    /// is there to make.
+    pub cancel_after_last: bool,
     pub cancel: CancellationToken,
     pub log: Arc<Mutex<Vec<Exchange>>>,
 }
@@ -603,29 +979,22 @@ impl Provider for Capture {
         let sent = self.log.lock().unwrap_or_else(|e| e.into_inner()).len();
         if sent >= self.requests {
             self.cancel.cancel();
-            bail!(
-                "replay: this sample has sent the {} request(s) it was allowed",
-                self.requests
-            );
+            return Err(SampleEnded(self.requests).into());
         }
         let mut req = req.clone();
         let matched = self.overlay.apply(&mut req);
         if let Some(m) = self.max_tokens {
             req.max_tokens = m;
         }
-        if let Some((r, _)) = self
+        if let Some((label, _)) = self
             .overlay
-            .replace
-            .iter()
+            .labels()
+            .into_iter()
             .zip(&matched)
             .find(|(_, n)| **n == 0)
         {
             self.cancel.cancel();
-            bail!(
-                "overlay: `{}` matched nothing in {:?}; the arm would measure the baseline",
-                r.find,
-                r.target
-            );
+            bail!("overlay: {label} matched nothing; the arm would measure the baseline");
         }
         let started = std::time::Instant::now();
         let response = self.inner.complete(&req, sink).await;
@@ -647,7 +1016,7 @@ impl Provider for Capture {
         };
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         log.push(exchange);
-        if log.len() >= self.requests {
+        if self.cancel_after_last && log.len() >= self.requests {
             self.cancel.cancel();
         }
         response
@@ -688,10 +1057,71 @@ pub struct Sample {
     pub wall_secs: f64,
     pub requests: usize,
     pub error: Option<String>,
+    /// A branch inside the run: after this call (`--at-call`).
+    pub call: Option<usize>,
+    /// What the sample's picture call made, when it rendered.
+    pub render: Option<RenderFacts>,
+    /// Every request's facts, when it sent more than one (`--attempts`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exchanges: Vec<ExchangeFacts>,
+    /// The first request with a parsed call within `--parsed-limit` bytes,
+    /// when the sample was allowed more than one.
+    pub attempts_to_parsed: Option<usize>,
+}
+
+/// One request of a sample, as facts: the first is the sample's own fields;
+/// a sample that may try again (`--attempts`) carries every one.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ExchangeFacts {
+    pub stop_reason: Option<crate::message::StopReason>,
+    pub content: String,
+    pub reasoning_chars: usize,
+    pub tool_calls: Vec<CallFacts>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub wall_secs: f64,
+    pub error: Option<String>,
+}
+
+impl ExchangeFacts {
+    pub fn of(e: &Exchange) -> Self {
+        let mut f = ExchangeFacts {
+            wall_secs: e.wall_secs,
+            ..Default::default()
+        };
+        match &e.response {
+            Err(err) => f.error = Some(err.clone()),
+            Ok(r) => {
+                f.stop_reason = Some(r.stop_reason);
+                f.input_tokens = r.usage.total_input();
+                f.output_tokens = r.usage.output_tokens;
+                for b in &r.message.content {
+                    match b {
+                        Block::Text { text } => f.content.push_str(text),
+                        Block::Thinking { text, .. } => f.reasoning_chars += text.chars().count(),
+                        Block::ToolUse { name, input, .. } => {
+                            let raw = input.get("__malformed_arguments").and_then(Value::as_str);
+                            f.tool_calls.push(CallFacts {
+                                name: name.clone(),
+                                argument_bytes: raw
+                                    .map(str::len)
+                                    .unwrap_or_else(|| input.to_string().len()),
+                                parsed: raw.is_none(),
+                                arguments: input.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        f
+    }
 }
 
 impl Sample {
-    /// The facts of the first exchange in `log`, or the error that stopped it.
+    /// The facts of the first exchange in `log`, or the error that stopped
+    /// it, and every exchange's when there was more than one.
     pub fn of(
         sample: usize,
         seed: Option<u64>,
@@ -721,6 +1151,10 @@ impl Sample {
             wall_secs: 0.0,
             requests: log.len(),
             error,
+            call: None,
+            render: None,
+            exchanges: Vec::new(),
+            attempts_to_parsed: None,
         };
         let Some(first) = log.first() else {
             return s;
@@ -732,36 +1166,35 @@ impl Sample {
             .as_ref()
             .map(|w| crate::document::sha256_hex(w.to_string().as_bytes()));
         s.wire = first.wire.clone();
-        s.wall_secs = first.wall_secs;
-        match &first.response {
-            Err(e) => {
-                s.error.get_or_insert_with(|| e.clone());
-            }
-            Ok(r) => {
-                s.stop_reason = Some(r.stop_reason);
-                s.input_tokens = r.usage.total_input();
-                s.output_tokens = r.usage.output_tokens;
-                for b in &r.message.content {
-                    match b {
-                        Block::Text { text } => s.content.push_str(text),
-                        Block::Thinking { text, .. } => s.reasoning_chars += text.chars().count(),
-                        Block::ToolUse { name, input, .. } => {
-                            let raw = input.get("__malformed_arguments").and_then(Value::as_str);
-                            s.tool_calls.push(CallFacts {
-                                name: name.clone(),
-                                argument_bytes: raw
-                                    .map(str::len)
-                                    .unwrap_or_else(|| input.to_string().len()),
-                                parsed: raw.is_none(),
-                                arguments: input.clone(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-            }
+        let f = ExchangeFacts::of(first);
+        if let Some(e) = &f.error {
+            s.error.get_or_insert_with(|| e.clone());
+        }
+        s.stop_reason = f.stop_reason;
+        s.content = f.content;
+        s.reasoning_chars = f.reasoning_chars;
+        s.tool_calls = f.tool_calls;
+        s.input_tokens = f.input_tokens;
+        s.output_tokens = f.output_tokens;
+        s.wall_secs = f.wall_secs;
+        if log.len() > 1 {
+            s.exchanges = log.iter().map(ExchangeFacts::of).collect();
         }
         s
+    }
+
+    /// The first request (1-based) that made a parsed call of at most
+    /// `limit` argument bytes, over every exchange this sample sent.
+    pub fn first_parsed_within(&self, limit: usize) -> Option<usize> {
+        let fits =
+            |calls: &[CallFacts]| calls.iter().any(|c| c.parsed && c.argument_bytes <= limit);
+        if self.exchanges.is_empty() {
+            return fits(&self.tool_calls).then_some(1);
+        }
+        self.exchanges
+            .iter()
+            .position(|e| fits(&e.tool_calls))
+            .map(|i| i + 1)
     }
 }
 
@@ -838,6 +1271,100 @@ mod tests {
         let at = clock_for(&note, from, Some(tz)).expect("a day renders it");
         assert_eq!(crate::date_context::render(at, Some(tz)), note);
         assert_eq!(clock_for("not a calendar", from, Some(tz)), None);
+        // The stage's bound is that day's start, never later than a morning
+        // run on it.
+        let start = start_of_day(at, Some(tz)).unwrap();
+        assert!(start <= at);
+        assert_eq!(
+            start.with_timezone(&tz).format("%F %T").to_string(),
+            format!("{} 00:00:00", at.with_timezone(&tz).date_naive())
+        );
+    }
+
+    /// A run with two calls, then the next owner turn.
+    fn run_with_calls(second: &str) -> String {
+        use crate::session::{Record, SessionMeta};
+        let meta: SessionMeta = serde_json::from_value(json!({
+            "id": "t2", "created_at": "2026-10-09T00:00:00Z", "provider": "local",
+            "model": "m", "workspace": "/tmp"
+        }))
+        .unwrap();
+        let call = |id: &str| {
+            Record::Message(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "widget".into(),
+                input: json!({"n": 1}),
+            }]))
+        };
+        let result = |id: &str, content: &str| {
+            Record::Message(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: content.into(),
+                is_error: false,
+            }]))
+        };
+        [
+            Record::Meta(meta),
+            Record::Notes {
+                notes: vec!["(From the harness: a note.)".into()],
+            },
+            Record::Message(Message::user("an ask")),
+            call("c1"),
+            result("c1", "first result"),
+            call("c2"),
+            result("c2", second),
+            Record::Message(Message::assistant(vec![Block::text("a reply")])),
+            Record::Message(Message::user("the next ask")),
+        ]
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+
+    #[test]
+    fn a_branch_at_a_call_stops_after_its_result_with_the_turns_notes() {
+        let text = run_with_calls("second result");
+        let path = Path::new("t2.jsonl");
+        let b = branch_at_call(path, &text, 3, 1).unwrap();
+        assert_eq!(b.messages.len(), 3, "the ask, the call, its result");
+        assert!(matches!(
+            &b.messages[2].content[0],
+            Block::ToolResult { tool_use_id, .. } if tool_use_id == "c1"
+        ));
+        assert_eq!(b.notes, ["(From the harness: a note.)"]);
+        assert_eq!(b.call, Some(1));
+        assert_eq!(branch_at_call(path, &text, 3, 2).unwrap().messages.len(), 5);
+        let err = branch_at_call(path, &text, 3, 3).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("made 2 tool call(s)"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_branch_after_a_deferred_picture_is_refused() {
+        let text = run_with_calls(&format!("{}images/x.png", crate::imagegen::BEING_MADE));
+        let err = branch_at_call(Path::new("t2.jsonl"), &text, 3, 2).unwrap_err();
+        assert!(format!("{err:#}").contains("closing"), "{err:#}");
+        // As the host leaves it once the job delivers: a late result, after
+        // the next owner turn, which `Session::parse` folds over the "being
+        // made" answer. Still a deferral.
+        let landed = format!(
+            "{text}\n{}",
+            serde_json::to_string(&crate::session::Record::LateResult {
+                index: 4,
+                tool_use_id: "c2".into(),
+                content: "image: images/x.png\nA new picture.".into(),
+                is_error: false,
+                external: false,
+            })
+            .unwrap()
+        );
+        let err = branch_at_call(Path::new("t2.jsonl"), &landed, 3, 2).unwrap_err();
+        assert!(format!("{err:#}").contains("closing"), "{err:#}");
+        // And call 1, which landed inline, is still a branch point.
+        assert!(branch_at_call(Path::new("t2.jsonl"), &landed, 3, 1).is_ok());
     }
 
     /// Owner's words that no run followed are not turns: a message the
@@ -993,6 +1520,11 @@ mod tests {
         assert!(
             Overlay::parse("[[replace]]\nin = \"history\"\nfind = \"a\"\nwith = \"b\"").is_err()
         );
+        let typo = "[[replace]]\nin = \"system\"\nfind = \"a\"\nwith = \"b\"\nscope = \"x\"";
+        assert!(
+            Overlay::parse(typo).is_err(),
+            "a mistyped key is refused, not dropped"
+        );
     }
 
     /// What a sample records as sent is what the provider builds, through
@@ -1012,6 +1544,120 @@ mod tests {
         assert_eq!(body["seed"], 7);
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 100);
+    }
+
+    #[test]
+    fn a_history_edit_sets_one_recorded_call_in_the_request_only() {
+        let mut req = request();
+        req.messages = vec![
+            Message::user("an ask"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "c1".into(),
+                name: "widget".into(),
+                input: json!({"__malformed_arguments": "{\"a\": \"aaaa"}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "the recorded answer".into(),
+                is_error: true,
+            }]),
+        ];
+        let o = Overlay::parse(
+            r#"
+            name = "D2"
+            [[set]]
+            in = "history:tool_result:1"
+            to = "a truthful answer"
+            [[set]]
+            in = "history:tool_input:1"
+            to_json = '{"__cut_off": {"chars": 9}}'
+            "#,
+        )
+        .unwrap();
+        let before = req.messages.clone();
+        assert_eq!(o.apply(&mut req), [1, 1]);
+        assert!(matches!(&req.messages[2].content[0],
+            Block::ToolResult { content, .. } if content == "a truthful answer"));
+        assert!(
+            matches!(
+                &req.messages[2].content[0],
+                Block::ToolResult { is_error: true, .. }
+            ),
+            "with no `is_error`, the recorded flag is kept"
+        );
+        let mut ok = req.clone();
+        Overlay::parse(
+            "[[set]]\nin = \"history:tool_result:1\"\nto = \"it worked\"\nis_error = false",
+        )
+        .unwrap()
+        .apply(&mut ok);
+        assert!(matches!(
+            &ok.messages[2].content[0],
+            Block::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+        assert!(matches!(&req.messages[1].content[0],
+            Block::ToolUse { input, .. } if input["__cut_off"]["chars"] == 9));
+        assert_ne!(req.messages, before);
+        assert!(!o.edits_tools());
+
+        // A call the history does not hold matches nothing.
+        let missing =
+            Overlay::parse("[[set]]\nin = \"history:tool_result:2\"\nto = \"x\"").unwrap();
+        assert_eq!(missing.apply(&mut req), [0]);
+        assert_eq!(missing.labels(), ["history:tool_result:2"]);
+        for bad in [
+            "[[set]]\nin = \"history:tool_result:1\"\nto_json = \"{}\"",
+            "[[set]]\nin = \"history:tool_input:0\"\nto_json = \"{}\"",
+            "[[set]]\nin = \"history:thinking:1\"\nto = \"x\"",
+            "[[set]]\nin = \"history:tool_input:1\"\nto_json = \"{}\"\nis_error = true",
+        ] {
+            assert!(Overlay::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_sample_that_ended_is_told_from_one_that_failed() {
+        let ended_here: anyhow::Error = SampleEnded(1).into();
+        assert!(ended(&ended_here));
+        assert!(ended(&ended_here.context("the run stopped")));
+        assert!(!ended(&anyhow::anyhow!("a 500")));
+    }
+
+    #[test]
+    fn results_are_read_for_the_named_tool_only() {
+        let after = vec![
+            Message::assistant(vec![
+                Block::ToolUse {
+                    id: "a".into(),
+                    name: "widget".into(),
+                    input: json!({}),
+                },
+                Block::ToolUse {
+                    id: "b".into(),
+                    name: "other".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "a".into(),
+                    content: "made".into(),
+                    is_error: false,
+                },
+                Block::ToolResult {
+                    tool_use_id: "b".into(),
+                    content: "elsewhere".into(),
+                    is_error: true,
+                },
+            ]),
+        ];
+        let r = results_of(&after, "widget");
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].content.as_str(), r[0].is_error), ("made", false));
+        assert!(results_of(&after, "absent").is_empty());
     }
 
     struct Fixed;
@@ -1062,6 +1708,7 @@ mod tests {
             overlay: Arc::new(Overlay::default()),
             max_tokens: Some(3000),
             requests: 1,
+            cancel_after_last: true,
             cancel: cancel.clone(),
             log: Arc::clone(&log),
         };
@@ -1102,6 +1749,7 @@ mod tests {
             ),
             max_tokens: None,
             requests: 1,
+            cancel_after_last: true,
             cancel: CancellationToken::new(),
             log: Arc::new(Mutex::new(Vec::new())),
         };

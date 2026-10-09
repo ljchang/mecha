@@ -3623,6 +3623,8 @@ impl PersonaChats {
                         .join("sessions")
                         .join(format!("{}.prompts.log", ps.session.meta.id)),
                 ),
+                // A served picture's seeds are random, as every chat's.
+                image_seeds: None,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -11696,9 +11698,17 @@ mod tests {
                 }
             }
         }
+        // `scene::stage` names a prompt log for a replay, only under a scratch
+        // folder it proves lies outside the store (`refuse_overlap`), and
+        // `mecha replay --persona` stamps the one it staged, never a chat's.
         assert_eq!(
             stamps.into_iter().collect::<Vec<_>>(),
-            ["chat.rs", "persona_chat.rs"],
+            [
+                "chat.rs",
+                "persona_chat.rs",
+                "replay_persona.rs",
+                "stage.rs"
+            ],
             "a prompt log is stamped elsewhere"
         );
         assert!(gated, "the assistant chat stamps a log only without a room");
@@ -11766,9 +11776,17 @@ mod tests {
                 }
             }
         }
+        // `mecha replay --persona` stamps the slot `scene::stage` built
+        // through `scene::persona_slot`, only under a scratch folder it
+        // proves lies outside the store (`refuse_overlap`), never a chat's.
         assert_eq!(
             stamps.into_iter().collect::<Vec<_>>(),
-            ["chat.rs", "persona_chat.rs", "scene.rs"],
+            [
+                "chat.rs",
+                "persona_chat.rs",
+                "replay_persona.rs",
+                "scene.rs"
+            ],
             "a scene slot is stamped elsewhere"
         );
         assert!(room_slot, "an incognito chat's slot is its room's");
