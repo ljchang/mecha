@@ -540,6 +540,71 @@ pub(crate) fn rank(at: Option<Where>) -> u8 {
     }
 }
 
+/// A new picture that lists nobody in `people` but names library
+/// characters in its words draws them, from the library (owner,
+/// 2026-10-09): a chat asked for two of them at a café, listed neither, and
+/// two strangers were drawn under "the viewer". Where `people` lists anyone,
+/// a name left out of it stays the viewer (owner, 2026-10-08).
+///
+/// Adds them to `change.people` when it is empty, at most [`MAX_FACES`] (the
+/// rest stay the viewer, never a refusal to remove someone nobody listed),
+/// and returns the note the result says. Called by `image_generate` before
+/// the scene reader, so what the owner said they wear reaches them (review
+/// of #613), and by [`plan`] for any caller that did not.
+pub fn draw_named(
+    change: &mut SceneChange,
+    retouch: Option<&str>,
+    approved: &dyn Fn(&str) -> bool,
+    named_in: &dyn Fn(&str) -> Vec<String>,
+) -> Option<String> {
+    if !change.people.is_empty() {
+        return None;
+    }
+    let setting = match &change.setting {
+        Some(Setting::Words { text }) => Some(text.as_str()),
+        _ => None,
+    };
+    let words = [
+        change.together.as_deref(),
+        setting,
+        change.light.as_deref(),
+        change.camera.as_deref(),
+        retouch,
+    ];
+    let mut from_words: Vec<String> = Vec::new();
+    for text in words.into_iter().flatten() {
+        for name in named_in(text) {
+            if approved(&name) && !from_words.contains(&name) {
+                from_words.push(name);
+            }
+        }
+    }
+    from_words.truncate(MAX_FACES);
+    if from_words.is_empty() {
+        return None;
+    }
+    change.people = from_words
+        .iter()
+        .map(|name| PersonChange {
+            who: Who::Library(name.clone()),
+            at: None,
+            wearing: None,
+            doing: None,
+            expression: None,
+            remove: false,
+        })
+        .collect();
+    let named: Vec<String> = from_words
+        .iter()
+        .map(|k| crate::imagegen::capitalized(k))
+        .collect();
+    Some(format!(
+        "{} named in the words with nobody in `scene.people`, so drawn from the library. \
+         List people in `scene.people` to say what each wears and does.",
+        named.join(", ")
+    ))
+}
+
 /// Plan a call against its picture's record (§5.2).
 ///
 /// `base` is the record of `call.picture` (`None`: a new picture, or a
@@ -556,6 +621,7 @@ pub fn plan(
     worn: &dyn Fn(&str) -> Option<(String, crate::scene::Origin)>,
 ) -> Result<Plan, String> {
     let mut change = call.change.clone();
+    let mut notes_ahead: Vec<String> = Vec::new();
     if let (Some(path), Some(hash)) = (&call.setting_photo, setting_photo_hash) {
         change.setting = Some(Setting::Photo {
             path: path.clone(),
@@ -563,46 +629,10 @@ pub fn plan(
         });
     }
     let new_picture = call.picture.is_none();
-    // A new picture that lists nobody in `people` but names library
-    // characters in its words draws them, from the library (owner,
-    // 2026-10-09): a chat asked for two of them at a café, listed neither,
-    // and two strangers were drawn under "the viewer". Where `people` lists
-    // anyone, a name left out of it stays the viewer (owner, 2026-10-08).
-    let mut from_words: Vec<String> = Vec::new();
     if new_picture && change.people.is_empty() {
-        let setting = match &change.setting {
-            Some(Setting::Words { text }) => Some(text.as_str()),
-            _ => None,
-        };
-        let words = [
-            change.together.as_deref(),
-            setting,
-            change.light.as_deref(),
-            change.camera.as_deref(),
-            call.retouch.as_deref(),
-        ];
-        for text in words.into_iter().flatten() {
-            for name in named_in(text) {
-                if approved(&name) && !from_words.contains(&name) {
-                    from_words.push(name);
-                }
-            }
+        if let Some(note) = draw_named(&mut change, call.retouch.as_deref(), approved, named_in) {
+            notes_ahead.push(note);
         }
-        // Bounded by what one picture can draw: the overflow stays offstage
-        // ("the viewer"), never a refusal to `remove` someone the call never
-        // listed (review of #613).
-        from_words.truncate(MAX_FACES);
-        change.people = from_words
-            .iter()
-            .map(|name| PersonChange {
-                who: Who::Library(name.clone()),
-                at: None,
-                wearing: None,
-                doing: None,
-                expression: None,
-                remove: false,
-            })
-            .collect();
     }
     // Someone to take out whom the record does not hold: on a picture whose
     // people are known, there is nobody to take out, and that is said; on
@@ -626,17 +656,7 @@ pub fn plan(
     // A new picture defines its scene; it knows who it drew.
     let (mut next, delta) = Scene::apply(base, &change, by, new_picture);
     let mut notes: Vec<String> = call.notes.clone();
-    if !from_words.is_empty() {
-        let named: Vec<String> = from_words
-            .iter()
-            .map(|k| crate::imagegen::capitalized(k))
-            .collect();
-        notes.push(format!(
-            "{} named in the words with nobody in `scene.people`, so drawn from the library. \
-             List people in `scene.people` to say what each wears and does.",
-            named.join(", ")
-        ));
-    }
+    notes.extend(notes_ahead);
     // A painted area keeps everything outside it, so it cannot carry a
     // scene change: the change is drawn, and the mask left out and said.
     let mask = call
