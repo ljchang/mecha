@@ -26,6 +26,9 @@ use crate::cron::Schedule;
 pub const MAX_ROWS: u32 = 100_000;
 const MAX_COLUMNS: usize = 64;
 const MAX_QUERY: usize = 16 * 1024;
+/// A whole loader file, checked before it is read: the query plus its
+/// columns fit with room to spare.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 /// A dataset's size as published: the row cap bounds the count, this bounds
 /// the bytes, since a string column has no length of its own.
 pub const MAX_DATASET_BYTES: usize = 8 * 1024 * 1024;
