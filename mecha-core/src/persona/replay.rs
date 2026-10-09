@@ -455,6 +455,9 @@ pub fn request_digest(req: &CompletionRequest) -> String {
 #[derive(Debug, Clone)]
 pub struct Exchange {
     pub digest: String,
+    /// The body the provider built for the request, as sent
+    /// (`Provider::wire_body`): stream flag, sampler fields and all.
+    pub wire: Option<Value>,
     /// The history's fingerprint alone: equal across arms that change only
     /// the system text or the tools.
     pub messages_digest: String,
@@ -536,6 +539,7 @@ impl Provider for Capture {
         );
         let exchange = Exchange {
             digest: request_digest(&req),
+            wire: self.inner.wire_body(&req, sink.is_some()),
             messages_digest,
             response: response
                 .as_ref()
@@ -574,6 +578,9 @@ pub struct Sample {
     pub model: String,
     pub request_digest: Option<String>,
     pub messages_digest: Option<String>,
+    /// The body sent, and its sha256: equal across samples but for `seed`.
+    pub wire_digest: Option<String>,
+    pub wire: Option<Value>,
     pub stop_reason: Option<crate::message::StopReason>,
     pub content: String,
     pub reasoning_chars: usize,
@@ -605,6 +612,8 @@ impl Sample {
             model: model.to_string(),
             request_digest: None,
             messages_digest: None,
+            wire_digest: None,
+            wire: None,
             stop_reason: None,
             content: String::new(),
             reasoning_chars: 0,
@@ -620,6 +629,11 @@ impl Sample {
         };
         s.request_digest = Some(first.digest.clone());
         s.messages_digest = Some(first.messages_digest.clone());
+        s.wire_digest = first
+            .wire
+            .as_ref()
+            .map(|w| crate::document::sha256_hex(w.to_string().as_bytes()));
+        s.wire = first.wire.clone();
         s.wall_secs = first.wall_secs;
         match &first.response {
             Err(e) => {
@@ -808,6 +822,25 @@ mod tests {
         assert!(
             Overlay::parse("[[replace]]\nin = \"history\"\nfind = \"a\"\nwith = \"b\"").is_err()
         );
+    }
+
+    /// What a sample records as sent is what the provider builds, through
+    /// the wrapper `provider::build` puts around it: the seed a sample is
+    /// given and the stream flag a cancellable run sets are both in it.
+    #[test]
+    fn the_recorded_body_is_the_one_the_provider_sends() {
+        let cfg = crate::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:9/v1".into()),
+            model: Some("m".into()),
+            seed: Some(7),
+            ..Default::default()
+        };
+        let p = crate::provider::build(&cfg).unwrap();
+        let body = p.wire_body(&request(), true).expect("a body");
+        assert_eq!(body["seed"], 7);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 100);
     }
 
     struct Fixed;

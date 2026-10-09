@@ -3232,6 +3232,8 @@ impl PersonaChats {
                     Some(&mecha_core::learning::RulesCarried::none()),
                 );
                 recorded.permission_mode = mecha_core::config::PermissionMode::ReadOnly;
+                // The sampler the conversation is sent with, not the config's.
+                recorded.seed = crate::setup::persona_converse_seed(bound);
                 ps.session
                     .append(&Record::Config(recorded))
                     .map_err(|e| Refusal::Failed(format!("recording: {e:#}")))?;
@@ -5612,6 +5614,52 @@ mod tests {
                 other => panic!("no Done event: {other:?}"),
             }
         }
+    }
+
+    /// A persona chat records the seed its turns were sent, which is none
+    /// even when the provider pins one (`setup::persona_provider`): a chat
+    /// that recorded the config's seed 42 sent a replay looking for the live
+    /// sample at seed 42 (2026-10-09).
+    #[tokio::test]
+    async fn a_persona_chat_records_that_its_turns_go_unseeded() {
+        let w = world_tuned(Mode::Answer, |cfg| {
+            cfg.providers.insert(
+                "local".into(),
+                mecha_core::config::ProviderConfig {
+                    kind: "local".into(),
+                    base_url: Some("http://127.0.0.1:9/v1".into()),
+                    model: Some("test".into()),
+                    seed: Some(42),
+                    ..Default::default()
+                },
+            );
+        });
+        let bound = w.chat.follower.current();
+        assert_eq!(
+            bound.config.providers[&bound.provider_name].seed,
+            Some(42),
+            "the provider pins a seed, or this proves nothing"
+        );
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello there.").await;
+        let dir = Store::load(&w.store()).sessions_dir("mara");
+        let path = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .unwrap();
+        let recorded: serde_json::Value = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains("\"record\":\"config\""))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .unwrap();
+        assert!(recorded["seed"].is_null(), "{}", recorded["seed"]);
     }
 
     /// A persona chat says which model each stretch ran on: a `config` on its

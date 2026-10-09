@@ -5897,7 +5897,12 @@ non-blocking flock, so a hand edit never contends with a fire.
   than measuring the baseline twice. Before each sample the sampler waits
   out the owner: a hold another process took on the router, or speech-engine
   RTF lines in the last three minutes, which show a call between turns where
-  a hold does not. The output file holds model text, so it is 0600 in
+  a hold does not. Each sample records the body the provider built
+  (`Provider::wire_body`), sampler fields and stream flag included. A persona
+  chat's `RunConfig` records `seed: None`, the seed its turns are actually
+  sent with (`setup::persona_converse_seed`), rather than the provider's
+  pinned one: a recorded 42 sent a replay looking for the live sample at
+  seed 42 (2026-10-09). The output file holds model text, so it is 0600 in
   `~/.mecha/research/replay/`; standard output carries counts.
 
 ### Archive and forget
