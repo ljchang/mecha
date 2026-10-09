@@ -55,7 +55,7 @@ something shipped.
 | [`GRAPH-UX-RESEARCH.md`](GRAPH-UX-RESEARCH.md) | What user interfaces work for a personal knowledge graph, and which features are worth exposing |
 | [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
 | [`IMAGE-COMPILER-RESEARCH.md`](IMAGE-COMPILER-RESEARCH.md) | How a library of characters and scenes compiles a narrative into consistent generations, and what local runs measured |
-| [`IMAGE-REGION-EDIT-RESEARCH.md`](IMAGE-REGION-EDIT-RESEARCH.md) | Whether Qwen-Image 2.1 can be told where to edit (a painted area, a box, a mask), which way keeps the rest of the picture, and what the Edit modal needs |
+| [`IMAGE-REGION-EDIT-RESEARCH.md`](IMAGE-REGION-EDIT-RESEARCH.md) | Whether Qwen-Image 2.1 can be told where to edit (a painted area, a box, a mask), which way keeps the rest of the picture, and what the Edit modal needs; §7, several coloured regions each with its own instruction |
 | [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
 | [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live — files, a mecha-owned database, or the graph — and when that changes |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
