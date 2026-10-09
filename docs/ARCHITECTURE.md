@@ -5872,6 +5872,44 @@ non-blocking flock, so a hand edit never contends with a fire.
   within a week; whether changed arguments are a different action is left to
   the reviewer, never asserted as equivalence. `Extra` and `Missing` are the
   replay outrunning or falling short of the recording.
+- **A persona turn's run is built by one function, which serve and replay
+  both call** (`persona::turn::context`). A Python rebuild of the persona
+  request drifted twice in one day (2026-10-08), each time changing a
+  measured answer: insertion-ordered history keys gave 14/23 against the
+  shipped serde order's 1/25, and a staged record lost its photo's hash. So
+  serve's persona chat and `mecha replay --persona` take the stamps, notes,
+  budgets and `end_after_deferral` from that function, and its reader
+  stamping is pinned by `only_the_kept_chats_stamp_a_prompt_log`. The run's
+  plumbing stays with the caller: cancel, steering queue, job sink, and a
+  panel turn's `close_with`.
+- **`mecha replay --persona <chat> --at <line>` samples a turn's next
+  request; it does not re-drive the chat** (`persona::replay`). The branch is
+  `Session::parse` over the transcript up to the owner turn's record line,
+  with that turn's own `Notes` record (the line just before it). A record
+  holding the owner's words is a turn only if a run followed it (an
+  assistant reply, or the run's closing `GoalAnchor`, before the next owner
+  record). A message the crisis layer paused, and the one serve folds onto
+  the tail as a run hands back, sent no request and carry no notes. The
+  model must be the one the turn ran on unless `-m`/`-p` asks for another.
+  Its clock is
+  set to a day whose calendar reference renders as the one recorded after
+  the run (`clock_for`). Each sample is seeded (`--seed-base` + i), unlike a
+  served turn: N samples at one pinned seed are one sample N times. The tools
+  are today's, described by their own words through `replay_registry`
+  stand-ins, and the fingerprint is checked equal before sending. The first
+  call stops the run, so a sample is one request. An arm is a branch build
+  (the header names the binary's sha256) or an `--overlay` of text edits to
+  the built request. An edit that matches nothing fails the sample rather
+  than measuring the baseline twice. Before each sample the sampler waits
+  out the owner: a hold another process took on the router, or speech-engine
+  RTF lines in the last three minutes, which show a call between turns where
+  a hold does not. Each sample records the body the provider built
+  (`Provider::wire_body`), sampler fields and stream flag included. A persona
+  chat's `RunConfig` records `seed: None`, the seed its turns are actually
+  sent with (`setup::persona_converse_seed`), rather than the provider's
+  pinned one: a recorded 42 sent a replay looking for the live sample at
+  seed 42 (2026-10-09). The output file holds model text, so it is 0600 in
+  `~/.mecha/research/replay/`; standard output carries counts.
 
 ### Archive and forget
 
@@ -10103,6 +10141,16 @@ The things that decide the design:
   let through later still counts when it then fails. An invented tool name
   (`unknown`, not `denied`) does count: seven turns of one is a stuck
   model.
+- **Calls that never parse close the run after three turns**
+  (`agent::UNREADABLE_TURNS`). A call cut off at `max_tokens` is not run
+  (`unreadable_call`), and its arguments are clipped before the turn joins
+  the transcript (`clip_cut_off_calls`), because a persona's live loop was a
+  rare sample, about 1 in 20 at its cap, that its own 33 KB loop then primed
+  on every retry (2026-10-08: five tries, 90 s each). Three turns in a row
+  whose every call was unreadable close through the ordinary closing path
+  (`UNREADABLE`): the run answers the owner in words and ends `EndTurn`,
+  never `StopCause::Loop`. In the corpus it shows as `malformed_tool_args`
+  of three or more.
 - **The record is searchable after the summary.** `tool/recall.rs` registers
   `recall` on the session-recording front-ends (chat, the TUI, resumed runs):
   it searches the union of everything the transcript ever recorded — including

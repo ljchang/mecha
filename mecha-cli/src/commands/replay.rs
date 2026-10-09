@@ -28,7 +28,16 @@ use tokio_util::sync::CancellationToken;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Session id, unique prefix, or a path to a transcript file.
-    pub session: String,
+    #[arg(required_unless_present = "persona", conflicts_with = "persona")]
+    pub session: Option<String>,
+
+    /// A persona chat to sample from one of its turns instead: its id, or
+    /// a path to its transcript (`mecha replay --persona <id> --list`).
+    #[arg(long, value_name = "SESSION")]
+    pub persona: Option<String>,
+
+    #[command(flatten)]
+    pub sample: super::replay_persona::SampleArgs,
 
     /// What to do when the replay departs from the recording.
     ///
@@ -45,6 +54,10 @@ pub struct Args {
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    if let Some(persona) = &args.persona {
+        return super::replay_persona::execute(global, persona, &args.sample, args.json).await;
+    }
+    let session = args.session.clone().unwrap_or_default();
     let mode = match args.on_divergence.as_str() {
         "stop" => OnDivergence::Stop,
         "error" => OnDivergence::Error,
@@ -53,7 +66,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
 
     // --- load the recording ---
-    let path = resolve_session(&args.session)?;
+    let path = resolve_session(&session)?;
     let (meta, convo) = Session::load(&path)?;
     let configs = Session::run_configs(&path)?;
     anyhow::ensure!(!configs.iter().any(|c| c.appraisal_evidence.is_some()),

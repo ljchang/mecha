@@ -306,6 +306,21 @@ return an error result that quotes the raw text and says "arguments were not
 valid JSON" — a targeted hint for one retry. Low priority only because
 `--jinja` grammar keeps the count near zero on this server.
 
+**Built 2026-10-09, after the premise failed.** Grammar shapes a call; it
+does not close one. On 2026-10-08 a persona's `image_generate` looped
+inside one string field until `max_tokens`, five tries in one turn at
+32–36 KB each, and every try was answered by the image tool's "nothing to
+draw". `Agent::dispatch` now refuses an unparsed call without running the tool
+(`unreadable_call`). When the reply stopped at the output limit, the model
+is told it was cut off, how far it ran, and which field was still being
+written and whether that field repeats. `clip_cut_off_calls` keeps only the call's head
+in the transcript, so the loop does not prime the retry. Nor is a
+schema's `maxLength` a bound here: on the :8080 router
+(qwen3.6-35b-a3b-uncensored), it was not enforced on tool-call arguments
+(3/3: a 406-char string against `maxLength` 20; `tool_choice` auto,
+thinking off; measured the same night). Other models and templates,
+thinking on, and a forced `tool_choice` are unmeasured.
+
 ### Explorations
 
 The three items below were each refused by a research document this project
