@@ -132,11 +132,20 @@ data could come from or go to:
 | `params` with `bind` to input elements | refused | inputs belong to the dashboard's `filters`, rendered by us |
 | `layer`, `concat`, `facet`, `repeat` | allowed | composition, no new surface |
 
-**Validation is a whitelist walk in Rust**, not a JSON Schema check: Vega-Lite's
+**Validation is an allowlist walk in Rust**, not a JSON Schema check: Vega-Lite's
 published schema is enormous and permissive, and the question here is not "is
-this valid Vega-Lite" but "does this use only what we allow". Unknown keys are
-refused, so a Vega-Lite release adding a destination-bearing field cannot slip
-through. The renderer re-checks on load — the server check is the control, the
+this valid Vega-Lite" but "does this use only what we allow". The allowlist
+covers the *structure* — a view's keys, the data reference, mark types,
+encoding channels, a field definition's keys, transform operations, a
+parameter's keys — and unknown keys there are refused, so a Vega-Lite release
+adding a destination-bearing field to any of them cannot slip through. The
+*style* objects beneath (`axis`, `legend`, `scale`, a mark's properties) run to
+hundreds of presentational keys; allowlisting them would be a copy of the
+schema that drifts, so they are **screened** instead — any key naming a link,
+URL, source or loader is refused at any depth. And every string in the whole
+spec, chart or not, is refused if it is an address. Between the two, a style
+object can change how a chart looks and cannot make it fetch or navigate.
+(Built in #621, `mecha-core/src/dashboard/vegalite.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as §5.1's form evaluator.
 
 Every refusal names the field and the rule, because the reader of the error is
