@@ -212,8 +212,9 @@ async fn wait_for_owner(router: Option<&str>) -> Result<()> {
 
 fn private_file(path: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    if let Some(dir) = path.parent() {
-        mecha_core::create_private_dir(dir)?;
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        mecha_core::create_private_dir(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
     }
     std::fs::OpenOptions::new()
         .create_new(true)
@@ -319,7 +320,11 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     }
 
     let out = match &args.out {
-        Some(p) => p.clone(),
+        // Absolute, so a bare file name's folder is the working directory
+        // rather than an empty path no folder can be made at.
+        Some(p) => {
+            std::path::absolute(p).with_context(|| format!("resolving --out {}", p.display()))?
+        }
         None => mecha_core::work::mecha_home()?
             .join("research/replay")
             .join(&persona)
@@ -572,4 +577,25 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
             .then(|| output.iter().sum::<u64>() as f64 / output.len() as f64),
         "distinct_histories": digests.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bare file name lands in the working directory, and a failure names
+    /// the path (found by mecha-a3: `--out c1.jsonl` failed every sample
+    /// with an error that named nothing).
+    #[test]
+    fn an_output_file_named_bare_is_created_where_it_is_named() {
+        let dir = std::env::temp_dir().join(format!("mecha-rp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bare = std::path::absolute(dir.join("c1.jsonl")).unwrap();
+        private_file(&bare).unwrap();
+        assert!(bare.is_file());
+        let err = private_file(&bare).unwrap_err();
+        assert!(format!("{err:#}").contains("c1.jsonl"), "{err:#}");
+        assert!(private_file(Path::new("")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
