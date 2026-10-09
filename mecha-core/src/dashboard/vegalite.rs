@@ -169,12 +169,19 @@ pub(super) fn check(v: &Value, datasets: &[String], at: &str, out: &mut Vec<Refu
     }
 }
 
+/// Only view positions count — the view itself, `spec`, and the composition
+/// arrays — so a `data` key inside a style object cannot satisfy the check.
 fn binds_data(v: &Value) -> bool {
-    match v {
-        Value::Object(map) => map.contains_key("data") || map.values().any(binds_data),
-        Value::Array(items) => items.iter().any(binds_data),
-        _ => false,
-    }
+    let Some(map) = v.as_object() else {
+        return false;
+    };
+    map.contains_key("data")
+        || map.get("spec").is_some_and(binds_data)
+        || ["layer", "hconcat", "vconcat", "concat"].iter().any(|k| {
+            map.get(*k)
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(binds_data))
+        })
 }
 
 fn view(v: &Value, datasets: &[String], at: &str, out: &mut Vec<Refusal>) {
