@@ -341,6 +341,14 @@ The renderer is ours, so it obeys the house rules a model would not:
   the renderer decodes, say) has nowhere to land. This is the second layer
   behind the spec's own refusal of link syntax and character references
   (§2.2; proposed in #621, `spec.rs`), not a replacement for it.
+- **`vega-embed` runs with `actions: false`, always.** Its default actions
+  menu is a destination the renderer would otherwise ship: *Open in Vega
+  Editor* `window.open`s `vega.github.io/editor` and `postMessage`s it the
+  spec — and §4.2 puts the dataset rows inside that spec. Neither CSP class
+  governs `window.open` or a cross-window `postMessage`, so the only control
+  is not drawing the menu. The export items go with it; a download is a
+  separate, deliberate feature if it is ever wanted. The step-5 probe checks
+  the rendered page has no actions menu.
 - **CSS extracted to a file** (§5.2 of the public-surface design), so the
   strictest `style-src` holds — **and no inline `style=` attribute either.**
   The `interactive` class blocks those too, and this repo's own Svelte writes
@@ -386,8 +394,9 @@ build-time CSS extraction cannot reach. Under the tailnet that passes
 silently; under `interactive` the styles are blocked and charts render
 unthemed. Step 0 measured it: the one violation in all 22 renders was
 `style-src-elem` from `vega-embed` injecting a `<style>` — **even with
-`defaultStyle: false`**. It is cosmetic (the actions menu), so the renderer
-ships that CSS itself in the extracted file, and the violation is the one
+`defaultStyle: false`**. With the actions menu off (§4.1) what that style
+serves is not drawn; it is cosmetic either way, so the renderer ships any CSS
+it needs itself in the extracted file, and the violation is the one
 §6.1's gate names and accounts for. Our own tooltip handler (§4.1) has no
 style of its own to inject.
 
@@ -540,7 +549,8 @@ loader, at their command** — no model in it, the owner watching — so a wrong
 first scheduled refresh after review. Declining is allowed; the first refresh
 then fails closed the same way, shown as stale with its reason. A `sqlite`
 loader needs no more than install — a read-only
-open of a file, whose data never leaves the machine — and a `mecha` loader's
+open of a file, whose data never leaves the machine at rung 1 (publishing it
+at rung 3 is reviewed as §6.3 says) — and a `mecha` loader's
 readout is a closed enum (§3.1), so neither has an effect to review.
 
 The proposals pane is laid out for three stores ("short enough to sit
@@ -584,7 +594,8 @@ causes, or none. Not a zero count: §7.1 of the public-surface design measured
 one violation on a working bundle (a library's `Function("")` feature probe
 taking its slower path) and wrote down that "a violation appeared" and "the
 page is broken" are not the same thing. A violation that changes the render —
-a blocked runtime `<style>`, a chart that needed the code it tried to build —
+a blocked runtime `<style>` the chart's appearance depends on, a chart that
+needed the code it tried to build —
 fails the gate; a probe that falls back cleanly is recorded and passes.
 
 **The gate, as step 0 measured it, has three parts:**
@@ -664,7 +675,11 @@ as an empty dataset.
 The outbox web view renders no preview for a publish today. The dashboard
 publish needs one, so this arc builds it: the rendered bundle in a sandboxed
 frame served from a **separate preview origin**, never by relaxing `mecha
-serve`'s `frame-ancestors 'none'`.
+serve`'s `frame-ancestors 'none'`. The directive that *does* change is on the
+framing side: serve's CSP is `default-src 'self'` with no `frame-src`, which
+refuses a cross-origin iframe, so the outbox page gains `frame-src` naming
+exactly the preview origin — the directive `PUBLIC-SURFACE-DESIGN.md` §7
+already names for this shape — and nothing broader.
 
 ---
 
