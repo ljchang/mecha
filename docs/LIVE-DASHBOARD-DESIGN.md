@@ -126,7 +126,7 @@ data could come from or go to:
 | Vega-Lite feature | v1 | Why |
 |---|---|---|
 | `data: {name}` | **only form allowed** | binds to a dataset the dashboard declared |
-| `data.url`, `data.values` | refused | a fetch the spec chooses; inline values bypass the loader's reviewed schema |
+| `data.url`, `data.values` | refused | a fetch the spec chooses; inline values bypass the loader's reviewed schema. (Mind the name: the *dashboard* spec's top-level `datasets` is a list of declared names and is required (§2.1); a *chart's* `datasets` is Vega-Lite's inline data map and is refused — the renderer alone fills that map, §4.2.) |
 | `href` channel, `image` mark, `url` fields | refused | a navigation or fetch to a data-derived address |
 | `usermeta`, `config` | refused | config comes from the theme, not the spec |
 | `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
@@ -564,12 +564,17 @@ fails the gate; a probe that falls back cleanly is recorded and passes.
    with one (a GeoJSON fallback); `vega-lite`, `vega-embed` and
    `vega-interpreter` had none. A grep gate would refuse every chart library on
    code that never runs.
-3. **The runtime render decides**: under the real `interactive` CSP, **any
-   `script-src` violation fails the publish**, with no exception — a library
-   that constructs code at runtime is a library this page cannot use, and the
-   answer is a build without the codegen or §4.2's own SVG components, never a
-   looser policy. Other violations must be accounted for, as above; step 0's
-   one (`vega-embed`'s injected `<style>`) is named in §4.2.
+3. **The runtime render decides**, under the real `interactive` CSP, by the
+   one rule stated above: the charts render correctly, and every violation is
+   accounted for. For `script-src` that means: a violation that changes what a
+   chart shows fails the publish — a library that needs code it cannot build
+   is a library this page cannot use, and the answer is a build without the
+   codegen or §4.2's own SVG components, never a looser policy; a feature
+   probe that is blocked and falls back cleanly (§7.1's `Function("")`) is
+   named at review and passes, because nothing is lost. Step 0 measured
+   **zero** `script-src` violations for Vega with `ast: true`, so today's
+   bundle needs no such name. Its one violation (`vega-embed`'s injected
+   `<style>`) is named in §4.2.
 
 A new library digest is a change a review sees, which is what keeps (2) from
 being an exemption that grows.
@@ -654,7 +659,7 @@ after the factory path is proven.
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push — the first *standing* egress grant, one review authorising every future refresh | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
-| 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot |
+| 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
@@ -662,10 +667,9 @@ after the factory path is proven.
 Steps 1–4 are the tailnet prototype and need nothing from the factory
 repository. **Rung 2 (publish with data frozen in) is skipped**: R12 moves
 straight to the factory's live channel, and a frozen publish is step 5 with
-the dataset channel left out, so it needs no step of its own. **Step 1 runs ahead of step 0 on purpose**: the spec's types,
-panels, loaders and shape check are grammar-neutral, and only the Vega-Lite
-walker assumes R2 — so if step 0 reverses R2, the walker is what is lost, not
-the step. Step 5 is deliberately next, not last: the factory is where this
+the dataset channel left out, so it needs no step of its own. Step 1 was built while step 0 ran: the spec's types, panels,
+loaders and shape check are grammar-neutral, and only the Vega-Lite walker
+assumed R2 — which step 0 then confirmed. Step 5 is deliberately next, not last: the factory is where this
 design's untested assumptions live — the grant under a polling page (§6.4),
 the CSP probe against a real Vega build, the box-side shape check — and
 finding one wrong after steps 6–8 would mean redoing them.
