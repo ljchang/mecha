@@ -131,7 +131,7 @@ data could come from or go to:
 | `usermeta`, `config` | refused | config comes from the theme, not the spec |
 | `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
 | `params` with `select` (`point`, `interval`) | allowed | this is where in-chart reactivity comes from — brushing, cross-filtering |
-| `params` with a `name` and a `value` (a variable) | allowed | the slot the renderer sets from a dashboard filter, so a chart can read the filter's state; the host writes the value, never the reader |
+| `params` with a `name` and a `value` (a variable) | allowed | a constant or a computed value inside one chart; dashboard filters do **not** arrive this way — the host applies them to rows (§2.3), so no chart depends on referencing one |
 | `params` with `bind` | refused — input elements, and in v1 `bind: "scales"` too | inputs belong to the dashboard's `filters`, rendered by us; scale-bound pan and zoom is left out of v1 for simplicity, while an interval selection's `translate`/`zoom` events (the expression note above) stay |
 | `layer`, `concat`, `facet`, `repeat` | allowed | composition, no new surface |
 
@@ -146,7 +146,10 @@ adding a destination-bearing field to any of them cannot slip through. The
 hundreds of presentational keys; allowlisting them would be a copy of the
 schema that drifts, so they are **screened** instead — any key naming a link,
 URL, source or loader is refused at any depth. And every string in the whole
-spec, chart or not, is refused if it is an address. Between the two, a style
+spec, chart or not, is refused if it is an address — the one exception being
+Vega-Lite's own `$schema` marker at a chart's top level, which vega-embed reads
+to pick a parser and never fetches, and which must have the marker's exact
+shape (proposed in #621). Between the two, a style
 object can change how a chart looks and cannot make it fetch or navigate.
 
 **Expressions live in named places only** — a `filter` or `calculate`
@@ -186,10 +189,14 @@ Two kinds, both in v1:
 - **Data reactivity** — a dataset changes, the panels bound to it redraw.
   Polling (R5, §4.3).
 - **View reactivity** — the reader filters, brushes, or hovers, and linked
-  panels follow. The spec's `filters` render as our own controls bound to a
-  Svelte store; each chart receives the store as Vega signals, and each table
-  and KPI derives its rows from it. Vega-Lite `select` params give in-chart
-  brushing. Nothing round-trips to a server.
+  panels follow. **A dashboard filter is applied by the host, to rows**: the
+  spec's `filters` render as our own controls bound to a Svelte store, and the
+  renderer narrows each bound dataset's rows before handing them to a chart,
+  table or KPI. A chart therefore needs no reference to the filter to obey it
+  — the alternative, a Vega signal the spec must read, would no-op silently
+  whenever the model left the reference out. Vega-Lite `select` params give
+  in-chart brushing on top of the filtered rows. Nothing round-trips to a
+  server.
 
 ---
 
@@ -359,7 +366,11 @@ The renderer is ours, so it obeys the house rules a model would not:
   bar's width, a colour from the theme) are set through the CSSOM —
   `element.style.setProperty`, CSS custom properties — which the CSP does not
   govern [I, believed; step 3 confirms], never as a `style=` in markup or a
-  `setAttribute("style", …)`. Gate: the renderer's source is scanned for both
+  `setAttribute("style", …)`. A value that comes from a **dataset** reaches
+  the CSSOM only as a number the renderer coerced (a bar's length, a
+  percentage) — never a dataset string, since a property like
+  `background-image` would take `url(...)`; colours always come from the
+  theme. Gate: the renderer's source is scanned for both
   spellings, and the step-5 browser probe loads **the renderer**, not only
   the vendored libraries step 0 measured.
 - **A rate over nothing is `null` and renders as a dash** —

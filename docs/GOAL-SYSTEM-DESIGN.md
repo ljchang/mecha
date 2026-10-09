@@ -311,7 +311,7 @@ verified-by-hand-once: four slots at `n_ctx = 262144` each, matching
 watching.
 
 **On GB10 the GPU and system memory are one pool, so `nvidia-smi` cannot
-report the GPU's memory totals.** `memory.used`, `memory.total` and
+report the GPU's memory totals or its power limit.** `memory.used`, `memory.total` and
 `power.limit` all return `[N/A]` — though per-process GPU memory does read
 (`--query-compute-apps=pid,used_memory`, measured 2026-10-09; see
 `LIVE-DASHBOARD-DESIGN.md` §11.2); `power.draw` and `temperature.gpu` read fine. The memory
