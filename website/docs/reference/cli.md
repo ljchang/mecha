@@ -1573,7 +1573,7 @@ local provider that names a server on another machine, or on another port here,
 is left as it is.
 
 A router you installed yourself, or one that could not be checked, is left
-alone: nothing is installed over it. Reinstalling waits for no run: if a run is
+alone: nothing is installed over it. A reinstall never cuts off a run: if one is
 using the router, or a model switch is pending, it declines before downloading
 anything, and it holds the router's switch while it restarts, so a run that
 starts meanwhile waits rather than failing. It takes no flags and runs only at a terminal, because it asks. On
