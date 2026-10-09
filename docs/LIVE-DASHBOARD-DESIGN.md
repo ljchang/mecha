@@ -678,7 +678,7 @@ frame served from a **separate preview origin**, never by relaxing `mecha
 serve`'s `frame-ancestors 'none'`. The directive that *does* change is on the
 framing side: serve's CSP is `default-src 'self'` with no `frame-src`, which
 refuses a cross-origin iframe, so the outbox page gains `frame-src` naming
-exactly the preview origin — the directive `PUBLIC-SURFACE-DESIGN.md` §7
+exactly the preview origin — the directive `PUBLIC-SURFACE-DESIGN.md` §7.7
 already names for this shape — and nothing broader.
 
 ---
