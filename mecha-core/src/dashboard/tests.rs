@@ -408,6 +408,47 @@ fn a_text_panel_refuses_link_syntax_including_a_relative_link() {
 }
 
 #[test]
+fn every_prose_field_refuses_links_and_html_not_only_text_panels() {
+    for (at, s) in [
+        ("/title", "<img src=x onerror=go()>"),
+        ("/panels/0/title", "<a href=\"/outbox/approve/abc\">ok</a>"),
+        ("/panels/1/title", "[approve](/outbox/approve/abc)"),
+        ("/filters/0/label", "<b>Site</b>"),
+    ] {
+        refused_at(&with(example(), at, json!(s)), at);
+    }
+    // An expression's comparison is not a tag.
+    let v = with(
+        example(),
+        "/panels/1/vegalite/transform/0/filter",
+        json!("datum.visits<datum.site"),
+    );
+    assert!(parse(&v).is_ok(), "{:?}", parse(&v).unwrap_err());
+}
+
+#[test]
+fn an_object_under_field_or_test_is_screened() {
+    let at = "/panels/1/vegalite/encoding/color/condition";
+    let v = with(
+        example(),
+        at,
+        json!({ "test": { "fetchUrl": "x" }, "value": "red" }),
+    );
+    refused_at(&v, &format!("{at}/test/fetchUrl"));
+    let at = "/panels/1/vegalite/encoding/x/field";
+    let v = with(example(), at, json!({ "srcHref": "x" }));
+    refused_at(&v, &format!("{at}/srcHref"));
+}
+
+#[test]
+fn a_parameter_needs_a_name() {
+    let at = "/panels/1/vegalite/params/0";
+    let v = with(example(), at, json!({ "select": "point" }));
+    let r = refused_at(&v, at);
+    assert!(r.rule.contains("name"), "{}", r.rule);
+}
+
+#[test]
 fn a_key_ending_in_expr_is_refused_in_a_style_object() {
     let at = "/panels/1/vegalite/encoding/x/axis/labelExpr";
     let r = refused_at(&with(example(), at, json!("datum.value")), at);

@@ -223,6 +223,7 @@ impl Spec {
                 format!("a title is 1–{MAX_TITLE} characters"),
             ));
         }
+        check_prose("/title", &self.title, out);
         if !is_theme_name(&self.theme) {
             out.push(Refusal::new(
                 "/theme",
@@ -271,6 +272,7 @@ impl Spec {
                     format!("filter id {:?} is used twice", filter.id),
                 ));
             }
+            check_prose(&pointer(&at, "label"), &filter.label, out);
             if filter.label.trim().is_empty() {
                 out.push(Refusal::new(
                     pointer(&at, "label"),
@@ -359,20 +361,7 @@ impl Spec {
                             "a text panel needs text",
                         ));
                     }
-                    if has_markdown_link(markdown) {
-                        out.push(Refusal::new(
-                            pointer(&at, "markdown"),
-                            "a dashboard's text has no links — inline, autolink or reference — \
-                             and a relative link is still a destination; write the words only",
-                        ));
-                    }
-                    if has_html_tag(markdown) {
-                        out.push(Refusal::new(
-                            pointer(&at, "markdown"),
-                            "a dashboard's text has no HTML — a tag can carry a relative link or \
-                             a handler past every other check; write markdown prose only",
-                        ));
-                    }
+                    check_prose(&pointer(&at, "markdown"), markdown, out);
                 }
             }
         }
@@ -384,6 +373,29 @@ fn check_title(at: &str, title: &str, out: &mut Vec<Refusal>) {
         out.push(Refusal::new(
             pointer(at, "title"),
             format!("a panel title is 1–{MAX_TITLE} characters"),
+        ));
+    }
+    check_prose(&pointer(at, "title"), title, out);
+}
+
+/// The link and HTML screens, for every field a person reads as prose — the
+/// dashboard's title, each panel's, each filter's label, and a text panel's
+/// markdown. Not for every string: a Vega expression's `datum.a<datum.b` is
+/// a comparison, not a tag. The renderer draws these as text nodes anyway;
+/// the spec holds the property itself rather than lend it to a renderer.
+fn check_prose(at: &str, text: &str, out: &mut Vec<Refusal>) {
+    if has_markdown_link(text) {
+        out.push(Refusal::new(
+            at,
+            "a dashboard's text has no links — inline, autolink or reference — \
+             and a relative link is still a destination; write the words only",
+        ));
+    }
+    if has_html_tag(text) {
+        out.push(Refusal::new(
+            at,
+            "a dashboard's text has no HTML — a tag can carry a relative link or \
+             a handler past every other check; write prose only",
         ));
     }
 }
@@ -533,6 +545,10 @@ pub(crate) fn is_address(s: &str) -> bool {
     if has_email_shape(lower) {
         return true;
     }
+    // The schemes that make a string *by itself* a navigation or an inline
+    // document. `ws:`, `ftp:`, `tel:` and their kind only ever act through a
+    // link or a destination-named key, and both are refused as syntax, so
+    // the list stops here on purpose — it is a first layer, not the only one.
     [
         // The URL parser supplies the slashes a special scheme leaves out, so
         // `http:host` is `http://host/`.
