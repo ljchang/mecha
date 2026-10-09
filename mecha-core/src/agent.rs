@@ -379,8 +379,9 @@ pub struct RunContext {
 
 /// A closing request's last note, and what the owner sees in place of a
 /// reply to it that was empty or only a tool call written out as text
-/// (IMAGE-DESIGN.md §5.5). The lines come from the work that closes the run:
-/// the loop names none of its own.
+/// (IMAGE-DESIGN.md §5.5). The lines come from the work that closes the run,
+/// and one from the loop's own guard: [`UNREADABLE`], when its calls keep
+/// coming back unreadable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Closing {
     pub line: &'static str,
@@ -410,6 +411,25 @@ pub const PICTURE_ON_ITS_WAY: &str = "(From the harness: the picture this turn a
 /// close the run too, or it loops as the queue's refusals did).
 pub const PICTURE_STILL_BEING_MADE: &str = "(From the harness: a picture is still being made from an earlier turn and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
 
+/// A run whose calls have come back unreadable turn after turn: each is up
+/// to `max_tokens` of loop, about 90 s on the local model, so after
+/// [`UNREADABLE_TURNS`] the run answers in words (mecha-a3, 2026-10-09: the
+/// live loop was a rare sample, then primed; this bounds what one costs).
+pub const UNREADABLE: Closing = Closing {
+    line: CALLS_UNREADABLE,
+    reply: CALLS_UNREADABLE_REPLY,
+};
+
+/// Consecutive turns whose every call was unreadable before the run closes.
+const UNREADABLE_TURNS: u32 = 3;
+
+/// The closing line after [`UNREADABLE_TURNS`] unreadable turns.
+pub const CALLS_UNREADABLE: &str = "(From the harness: the last calls could not be read, so none of them was run. No tool is needed now; tell the owner in a sentence or two what you were trying to do, and that it did not go through.)";
+
+/// What the owner sees in place of an empty reply to [`CALLS_UNREADABLE`].
+pub const CALLS_UNREADABLE_REPLY: &str =
+    "That didn't go through: my calls kept coming out unreadable. Ask again and I'll try once more.";
+
 /// What the owner sees in place of a closing reply that was empty, or was
 /// only a tool call written out as text. Never the call markup itself.
 pub const PICTURE_ON_ITS_WAY_REPLY: &str = "The picture is on its way.";
@@ -438,6 +458,210 @@ pub(crate) struct RunPictures {
     /// Set this turn: a tool refused busy earlier in this run was called
     /// again — the retry loop, not a slow picture.
     busy_again: bool,
+}
+
+/// How much of a cut-off call's arguments the transcript keeps.
+const CUT_OFF_KEPT_CHARS: usize = 400;
+
+/// Calls whose arguments never closed because the reply hit the output
+/// limit, shortened in place before the turn joins the transcript.
+///
+/// A model looping inside one string field writes until `max_tokens`, and the
+/// provider hands back the unparsed text (`__malformed_arguments`). Kept
+/// whole, the loop is in the next request's context — 8192 tokens a try, each
+/// try primed by the last — and on 2026-10-08 five tries ran 32–36 KB apiece
+/// before a 554-byte call drew. So the transcript keeps the head and a
+/// `__cut_off` note of what was there: how long it ran, the field it was
+/// still writing, and whether that field repeats itself. `dispatch` reads the
+/// note to refuse the call by what happened, never to run it.
+///
+/// Cut off is read per call, and from the text before the label: arguments
+/// that end mid-value were cut off whatever the provider called the stop,
+/// since llama-server reports `stop` beside calls (the override below), and
+/// of two unreadable calls in a reply that hit the limit, only the last was
+/// still being written (review of #611).
+///
+/// The clip happens before the turn is in history, so it is the turn: the
+/// session records it, and a replay of the session replays the clip.
+fn clip_cut_off_calls(message: &mut Message, hit_limit: bool) {
+    let last_call = message
+        .content
+        .iter()
+        .rposition(|b| matches!(b, Block::ToolUse { .. }));
+    for (at, block) in message.content.iter_mut().enumerate() {
+        let Block::ToolUse { input, .. } = block else {
+            continue;
+        };
+        let Some(raw) = input
+            .get("__malformed_arguments")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        // Which route fired is kept: only the limit earns the limit's
+        // sentence, and a call that merely dropped its closing brace is not
+        // told to write less (review of #611, pass 2).
+        let limit = hit_limit && Some(at) == last_call;
+        if !(limit || ends_mid_value(&raw)) {
+            continue;
+        }
+        let chars = raw.chars().count();
+        let head: String = raw.chars().take(CUT_OFF_KEPT_CHARS).collect();
+        let mut note = serde_json::Map::new();
+        note.insert("chars".into(), serde_json::json!(chars));
+        if let Some(field) = last_field_opened(&raw) {
+            note.insert("field".into(), serde_json::json!(field));
+        }
+        note.insert("repeats".into(), serde_json::json!(repeats_itself(&raw)));
+        note.insert("limit".into(), serde_json::json!(limit));
+        *input = serde_json::json!({
+            "__malformed_arguments": if chars > CUT_OFF_KEPT_CHARS { format!("{head}…") } else { head },
+            "__cut_off": note,
+        });
+    }
+}
+
+/// Arguments that stop before their JSON does: serde's end-of-input error,
+/// which a value that merely is wrong never raises.
+fn ends_mid_value(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .is_err_and(|e| e.classify() == serde_json::error::Category::Eof)
+}
+
+/// The field a cut-off call was still writing: the innermost object's key
+/// whose value the text ends inside. Read by a small lexer, so escapes,
+/// nesting and keys of any spelling are followed. The text ending inside a
+/// key, after a value closed, or between fields, names none: falling back to an earlier key, which
+/// had closed, would point the retry at the wrong field (review of #611,
+/// passes 2 and 3).
+fn last_field_opened(raw: &str) -> Option<String> {
+    enum Open {
+        Object {
+            key: Option<String>,
+            want_key: bool,
+            done: bool,
+        },
+        Array,
+    }
+    let mut stack: Vec<Open> = Vec::new();
+    let (mut in_string, mut escaped, mut is_key) = (false, false, false);
+    let mut key = String::new();
+    for c in raw.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+                continue;
+            } else if c == '"' {
+                in_string = false;
+                if let Some(Open::Object {
+                    key: k,
+                    want_key,
+                    done,
+                }) = stack.last_mut()
+                {
+                    if is_key {
+                        *k = Some(std::mem::take(&mut key));
+                        *want_key = false;
+                        *done = false;
+                    } else {
+                        *done = true;
+                    }
+                }
+                continue;
+            }
+            if is_key {
+                key.push(c);
+            }
+            continue;
+        }
+        match c {
+            '{' => stack.push(Open::Object {
+                key: None,
+                want_key: true,
+                done: false,
+            }),
+            '[' => stack.push(Open::Array),
+            '}' | ']' => {
+                stack.pop();
+                // The value that just closed was its parent's.
+                if let Some(Open::Object { done, .. }) = stack.last_mut() {
+                    *done = true;
+                }
+            }
+            ',' => {
+                if let Some(Open::Object { want_key, .. }) = stack.last_mut() {
+                    *want_key = true;
+                }
+            }
+            '"' => {
+                in_string = true;
+                key.clear();
+                is_key = matches!(stack.last(), Some(Open::Object { want_key: true, .. }));
+            }
+            _ => {}
+        }
+    }
+    if in_string && is_key {
+        return None;
+    }
+    stack.iter().rev().find_map(|open| match open {
+        Open::Array => None,
+        Open::Object {
+            key,
+            want_key,
+            done,
+        } => Some((!*want_key && !*done).then(|| key.clone()).flatten()),
+    })?
+}
+
+/// Whether some stretch of the text recurs later in it: a model in a loop,
+/// not one writing at length. A 120-character window, tried every 40.
+fn repeats_itself(raw: &str) -> bool {
+    const WINDOW: usize = 120;
+    raw.char_indices().step_by(40).any(|(from, _)| {
+        let Some((len, _)) = raw[from..].char_indices().nth(WINDOW) else {
+            return false;
+        };
+        let to = from + len;
+        raw[to..].contains(&raw[from..to])
+    })
+}
+
+/// What a call that could not be read is told, in place of running it.
+fn unreadable_call(input: &Value) -> String {
+    let Some(cut) = input.get("__cut_off") else {
+        return "Not run: the arguments were not valid JSON. Send the call again with \
+                complete arguments."
+            .to_string();
+    };
+    let chars = cut.get("chars").and_then(Value::as_u64).unwrap_or(0);
+    let limit = cut.get("limit").and_then(Value::as_bool) == Some(true);
+    let repeats = cut.get("repeats").and_then(Value::as_bool) == Some(true);
+    let how = if limit {
+        format!(
+            "was cut off at the output limit after {chars} characters, so its arguments never \
+             closed"
+        )
+    } else {
+        format!("ended after {chars} characters, before its arguments closed")
+    };
+    let open = match (cut.get("field").and_then(Value::as_str), repeats) {
+        (Some(f), true) => format!(" `{f}` was still being written, and it repeats itself."),
+        (Some(f), false) => format!(" `{f}` was still being written."),
+        (None, true) => " The last field repeats itself.".to_string(),
+        (None, false) => String::new(),
+    };
+    // Tool-neutral: the same words reach a picture and a file, and "write
+    // less" would truncate a file (review of #611, pass 3).
+    let then = if limit || repeats {
+        "Send a shorter call, and build anything longer up over several calls."
+    } else {
+        "Send the call again with complete arguments."
+    };
+    format!("Not run: this call {how}.{open} {then}")
 }
 
 /// Every `<tool_call>` block taken out of a reply, and a trailing unclosed
@@ -2415,6 +2639,8 @@ impl Agent {
         // alternate-forever worry is already answered by `max_turns`: every
         // retry spends a turn against the same ceiling as real work.
         let mut empty_turns = 0u32;
+        // Consecutive tool turns whose every call was unreadable (`UNREADABLE`).
+        let mut unreadable_turns = 0u32;
         // One picture per run (IMAGE-DESIGN.md §5.5): what this run has
         // queued, and whether its next request is the closing one.
         let mut pictures = RunPictures::default();
@@ -3158,6 +3384,10 @@ impl Agent {
                 empty_turns = 0;
             }
 
+            if response.malformed_tool_args > 0 {
+                let hit_limit = response.stop_reason == StopReason::MaxTokens;
+                clip_cut_off_calls(&mut response.message, hit_limit);
+            }
             messages.push(response.message.clone());
             let said = response.message.text();
             if !said.trim().is_empty() {
@@ -3348,6 +3578,17 @@ impl Agent {
                         } else {
                             None
                         };
+                    // A turn with no calls at all is not an unreadable one
+                    // (`all` over nothing is true; review of #611, pass 5).
+                    let calls = response.message.tool_uses();
+                    let unreadable = !calls.is_empty()
+                        && calls
+                            .iter()
+                            .all(|(_, _, input)| input.get("__malformed_arguments").is_some());
+                    unreadable_turns = if unreadable { unreadable_turns + 1 } else { 0 };
+                    if closing.is_none() && unreadable_turns >= UNREADABLE_TURNS {
+                        closing = Some(UNREADABLE);
+                    }
                     pictures.repeated = false;
                     pictures.started_now = false;
                     pictures.busy = false;
@@ -4550,7 +4791,8 @@ impl Agent {
         // Every gate in this loop that settles a call this turn *without*
         // adding it to `approved` — the approver's `Deny`/`Blocked`, the
         // planning-phase gate, the trifecta interlock, a withheld or unknown
-        // tool name, and a staging failure — folded into `Work::denied`
+        // tool name, arguments that did not parse, and a staging failure —
+        // folded into `Work::denied`
         // below beside `in_flight`. The name undersells it slightly (an
         // unknown tool is the model's own mistake, not a refusal), but the
         // shape is one and the same: the call is already settled, so a
@@ -4768,6 +5010,39 @@ impl Agent {
                 denied_this_turn += 1;
                 continue;
             };
+
+            // Arguments that never parsed are not a call: running the tool on
+            // `__malformed_arguments` gets an answer about a field the model
+            // never sent ("Nothing to draw"), which says nothing of what went
+            // wrong — and a call cut off at the output limit was retried that
+            // way four times. Said here, by what happened (`unreadable_call`).
+            if input.get("__malformed_arguments").is_some() {
+                let content = unreadable_call(input);
+                emit(
+                    events,
+                    AgentEvent::ToolResult {
+                        id: id.clone(),
+                        name: name.clone(),
+                        is_error: true,
+                        content: content.clone(),
+                    },
+                );
+                results[i] = Some(Block::ToolResult {
+                    tool_use_id: id.clone(),
+                    content,
+                    is_error: true,
+                });
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: false,
+                    unknown: false,
+                    staged: false,
+                });
+                denied_this_turn += 1;
+                continue;
+            }
 
             let caps = tool.capabilities();
 
@@ -5972,6 +6247,259 @@ mod tests {
         )
         .unwrap();
         (agent, provider)
+    }
+
+    /// A call the provider could not parse, as `openai.rs` hands it over.
+    fn unparsed(raw: &str, stop: StopReason) -> CompletionResponse {
+        let mut turn = assistant(
+            vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "echo".into(),
+                input: json!({"__malformed_arguments": raw}),
+            }],
+            stop,
+        );
+        turn.malformed_tool_args = 1;
+        turn
+    }
+
+    /// The second request: what the model was told, and the call as the
+    /// transcript kept it.
+    async fn after_unparsed(raw: &str, stop: StopReason) -> (Value, String, bool) {
+        let (agent, provider) = agent_with(
+            vec![
+                unparsed(raw, stop),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("say it")]);
+        agent.run(&mut convo, None).await.unwrap();
+        let sent = provider.seen.lock().unwrap()[1].messages.clone();
+        let [.., call, results] = sent.as_slice() else {
+            panic!("expected the call and its result; got {sent:?}")
+        };
+        let Some((_, _, kept)) = call.tool_uses().into_iter().next() else {
+            panic!("expected the call; got {call:?}")
+        };
+        let [Block::ToolResult {
+            content, is_error, ..
+        }] = results.content.as_slice()
+        else {
+            panic!("expected one result; got {results:?}")
+        };
+        (kept.clone(), content.clone(), *is_error)
+    }
+
+    /// A call cut off at the output limit is not run: the model is told it
+    /// was cut off, how far it ran, and which field was looping, and the
+    /// transcript keeps only the head of the loop, so the next try is not
+    /// primed by 8192 tokens of it. Fails on the old loop, which ran `echo`
+    /// on `__malformed_arguments` (an empty answer, not an error) and sent
+    /// the whole loop back.
+    #[tokio::test]
+    async fn a_call_cut_off_at_the_output_limit_is_not_run_and_says_why() {
+        let raw = format!(
+            "{{\"note\": \"a\", \"value\": \"{}",
+            "the kettle sings on the stove. ".repeat(200)
+        );
+        let chars = raw.chars().count();
+        let (kept, content, is_error) = after_unparsed(&raw, StopReason::MaxTokens).await;
+        assert!(is_error);
+        assert_eq!(
+            content,
+            format!(
+                "Not run: this call was cut off at the output limit after {chars} characters, \
+                 so its arguments never closed. `value` was still being written, and it \
+                 repeats itself. Send a shorter call, and build anything longer up over several calls."
+            )
+        );
+        let head = kept["__malformed_arguments"].as_str().unwrap();
+        assert_eq!(head.chars().count(), CUT_OFF_KEPT_CHARS + 1, "{head}");
+        assert!(raw.starts_with(head.trim_end_matches('…')));
+        assert_eq!(kept["__cut_off"]["chars"], json!(chars));
+    }
+
+    /// Arguments that merely failed to parse are not run either, and are
+    /// said to be invalid rather than cut off; with no limit reached, the
+    /// transcript keeps them as written.
+    #[tokio::test]
+    async fn a_call_that_did_not_parse_is_not_run() {
+        let raw = "{\"value\": \"one\" \"two\"}";
+        let (kept, content, is_error) = after_unparsed(raw, StopReason::ToolUse).await;
+        assert!(is_error);
+        assert!(
+            content.starts_with("Not run: the arguments were not valid JSON"),
+            "{content}"
+        );
+        assert_eq!(kept, json!({"__malformed_arguments": raw}));
+    }
+
+    /// The text decides before the label: arguments that end mid-value were
+    /// cut off even when the provider reports the turn as an ordinary tool
+    /// turn, as llama-server does (review of #611). Fails on a clip gated on
+    /// `MaxTokens` alone.
+    #[tokio::test]
+    async fn a_call_ending_mid_value_is_cut_off_whatever_the_stop_says() {
+        let raw = format!("{{\"value\": \"{}", "the gate creaks open. ".repeat(40));
+        let (kept, content, _) = after_unparsed(&raw, StopReason::ToolUse).await;
+        let chars = raw.chars().count();
+        assert_eq!(
+            content,
+            format!(
+                "Not run: this call ended after {chars} characters, before its arguments \
+                 closed. `value` was still being written, and it repeats itself. Send a shorter call, and build anything longer up over several calls."
+            )
+        );
+        assert!(kept.get("__cut_off").is_some(), "{kept}");
+    }
+
+    /// A short call that dropped its closing brace, with no limit near, is
+    /// told neither that the limit cut it nor to write less (review of #611,
+    /// pass 2).
+    #[tokio::test]
+    async fn a_short_unclosed_call_is_not_told_it_hit_the_limit() {
+        let (_, content, _) = after_unparsed("{\"value\": \"x.txt\"", StopReason::ToolUse).await;
+        assert_eq!(
+            content,
+            "Not run: this call ended after 17 characters, before its arguments closed. Send \
+             the call again with complete arguments."
+        );
+    }
+
+    /// Of two unreadable calls in a reply that hit the limit, only the last
+    /// was still being written; the other is told it was invalid, not that
+    /// the limit cut it.
+    #[test]
+    fn only_the_last_call_of_a_capped_reply_was_cut_off() {
+        let call = |id: &str, raw: &str| Block::ToolUse {
+            id: id.into(),
+            name: "echo".into(),
+            input: json!({"__malformed_arguments": raw}),
+        };
+        let mut message = Message::assistant(vec![
+            call("a", "{\"value\": \"one\" \"two\"}"),
+            call("b", "{\"value\": \"x\"} trailing"),
+        ]);
+        clip_cut_off_calls(&mut message, true);
+        let inputs: Vec<Value> = message
+            .tool_uses()
+            .into_iter()
+            .map(|(_, _, input)| input.clone())
+            .collect();
+        assert!(inputs[0].get("__cut_off").is_none(), "{:?}", inputs[0]);
+        assert!(inputs[1].get("__cut_off").is_some(), "{:?}", inputs[1]);
+        assert!(unreadable_call(&inputs[0]).contains("not valid JSON"));
+    }
+
+    /// A parsed call beside a cut-off one in a capped reply is left as the
+    /// model wrote it (review of #611, pass 4).
+    #[test]
+    fn a_parsed_call_beside_a_cut_off_one_is_left_alone() {
+        let mut message = Message::assistant(vec![
+            Block::ToolUse {
+                id: "a".into(),
+                name: "echo".into(),
+                input: json!({"value": "hi"}),
+            },
+            Block::ToolUse {
+                id: "b".into(),
+                name: "echo".into(),
+                input: json!({"__malformed_arguments": "{\"value\": \"x"}),
+            },
+        ]);
+        clip_cut_off_calls(&mut message, true);
+        let inputs: Vec<Value> = message
+            .tool_uses()
+            .into_iter()
+            .map(|(_, _, input)| input.clone())
+            .collect();
+        assert_eq!(inputs[0], json!({"value": "hi"}));
+        assert!(inputs[1].get("__cut_off").is_some(), "{:?}", inputs[1]);
+    }
+
+    /// Three turns in a row whose every call was unreadable close the run:
+    /// the next request answers in words, with the harness's line last.
+    /// Fails on a loop with no cap, which spends a fourth turn on a call.
+    #[tokio::test]
+    async fn turns_of_unreadable_calls_close_the_run() {
+        let loop_turn = || {
+            unparsed(
+                "{\"value\": \"a spool of thread unwinding",
+                StopReason::MaxTokens,
+            )
+        };
+        let (agent, provider) = agent_with(
+            vec![
+                loop_turn(),
+                loop_turn(),
+                loop_turn(),
+                assistant(
+                    vec![Block::text("The sketch never arrived.")],
+                    StopReason::EndTurn,
+                ),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("say it")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_ne!(seen[2].tool_choice, crate::message::ToolChoice::None);
+        assert_eq!(seen[3].tool_choice, crate::message::ToolChoice::None);
+        assert!(tail_text(&seen[3]).ends_with(CALLS_UNREADABLE));
+        assert_eq!(outcome.text, "The sketch never arrived.");
+    }
+
+    #[test]
+    fn the_field_still_open_is_the_last_name_written() {
+        assert_eq!(
+            last_field_opened("{\"scene\": {\"setting\": \"a room\", \"together\": \"they wa")
+                .as_deref(),
+            Some("together")
+        );
+        // A quoted word inside a value is not a key.
+        assert_eq!(
+            last_field_opened("{\"doing\": \"she says \\\"wait\\\": and").as_deref(),
+            Some("doing")
+        );
+        assert_eq!(last_field_opened("no keys here"), None);
+        // A multi-byte char before a quote is walked by char, not sliced into.
+        assert_eq!(
+            last_field_opened("{\"doing\": \"she says “stay”, and").as_deref(),
+            Some("doing")
+        );
+        // A key of any spelling, nesting, and arrays are followed.
+        assert_eq!(last_field_opened("{\"café\": \"x").as_deref(), Some("café"));
+        assert_eq!(
+            last_field_opened("{\"people\": [{\"who\": \"maya\"}, {\"doing\": \"runs").as_deref(),
+            Some("doing")
+        );
+        // Cut inside the next key, or between fields: no field was open.
+        assert_eq!(last_field_opened("{\"scene\": \"a room\", \"toge"), None);
+        assert_eq!(last_field_opened("{\"scene\": \"a room\", "), None);
+        // A value that closed names no field, before its comma too (review
+        // of #611, pass 4).
+        assert_eq!(last_field_opened("{\"scene\": \"a room\""), None);
+        assert_eq!(last_field_opened("{\"a\": {\"b\": \"c\"}"), None);
+        assert_eq!(
+            last_field_opened("{\"scene\": \"a room\", \"styleName\": \"she turns, she tu")
+                .as_deref(),
+            Some("styleName")
+        );
+        assert_eq!(
+            unreadable_call(&json!({"__cut_off": {"chars": 900, "repeats": true, "limit": false}})),
+            "Not run: this call ended after 900 characters, before its arguments closed. The \
+             last field repeats itself. Send a shorter call, and build anything longer up over several calls."
+        );
+    }
+
+    #[test]
+    fn a_loop_repeats_itself_and_long_prose_does_not() {
+        assert!(repeats_itself(&"a heron stands in the reeds. ".repeat(20)));
+        let prose: String = (0..400).map(|n| format!("{n} ")).collect();
+        assert!(!repeats_itself(&prose));
+        assert!(!repeats_itself("short"));
     }
 
     /// A tool that draws a picture — `image_generate`'s shape without the
