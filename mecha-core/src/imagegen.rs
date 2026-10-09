@@ -2654,6 +2654,19 @@ impl Tool for ImageGenerate {
         // The record the reader read, when it merged anything: its words may
         // come back restated, so its origin joins the call's (review of #610).
         let mut read_from: Option<crate::scene::Origin> = None;
+        // Named characters on a new picture that lists nobody are drawn
+        // (`picture::draw_named`), and added here, ahead of the reader, so
+        // the owner's words for them are merged too (review of #613).
+        if call.picture.is_none() {
+            if let Some(note) = crate::picture::draw_named(
+                &mut call.change,
+                call.retouch.as_deref(),
+                &approved,
+                &|t: &str| crate::imagelib::named_in(&lib, t),
+            ) {
+                call.notes.push(note);
+            }
+        }
         let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
             (Some(reader), false) => {
                 let record = base
@@ -6843,6 +6856,40 @@ mod tests {
     /// out, stamped with the conversation's own origin (an untrusted turn's
     /// merged words land untrusted), and said in the manifest; a reader that
     /// fails leaves the call as sent.
+    /// A new picture that lists nobody but names two characters draws them,
+    /// and draws them ahead of the reader, so the clothes the owner gave
+    /// them are merged rather than "clothes that suit the scene" (review of
+    /// #613). Fails where the reader ran only on a call that listed people.
+    #[tokio::test]
+    async fn named_characters_drawn_from_the_words_still_get_the_readers_clothes() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({"people": [
+            {"who": "Maya", "wearing": "a yellow raincoat"},
+            {"who": "John", "wearing": "a flannel shirt"}
+        ]})))));
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a café", "together": "Maya and John share a pot of tea"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("Maya, John named in the words"),
+            "{}",
+            out.content
+        );
+        assert_eq!(
+            manifest_of(&dir, &out.content)["reader"],
+            "merged: wearing×2"
+        );
+        assert!(last_prompt(&seen).contains("yellow raincoat"));
+    }
+
     #[tokio::test]
     async fn a_bare_call_is_filled_from_the_turns_words() {
         let (url, seen) = distinct(4).await;
