@@ -1041,7 +1041,16 @@ genuinely not known yet, and the output must say so rather than guess.
   binary, authorising an account or starting a server, which is a terminal's
   job on a machine the owner is proving they control — the same argument
   that binds the Slack owner by a nonce printed on this machine. Worth
-  revisiting for the ones that are pure config (`personas`).
+  revisiting for the ones that are pure config (`personas`). **Parked as a
+  future feature by the owner, 2026-10-09** — asked for toggles on Settings →
+  Features and a *Set up* button for a feature that is available but not
+  installed; ruled: finish step 7 first, then revisit. The sketch on the
+  table, not ruled: pure-config switches toggle from the page (through
+  `feature::write_switches`, the row marked pending until restart); *Set up*
+  only where an installer exists, run as a background job with progress and
+  the page's confirmation standing in for the terminal's yes; and account
+  sign-ins, an engine `--upgrade --to` (F10) and switching `web` itself off
+  stay at the terminal.
 - **Per-user permissions.** mecha has one owner. Open WebUI's third condition
   (the user's permission) has no counterpart here.
 - **Lifecycle stages** (`Experimental`, `Deprecated`, …). Codex and
