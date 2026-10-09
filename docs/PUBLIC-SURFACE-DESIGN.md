@@ -878,11 +878,14 @@ question actually lives:
 | `notebook` | `marimo export html-wasm` | Python subprocess | **yes** |
 | `report` with live cells | `marimo-book build` | Python subprocess | **yes** |
 
-Four of six render in Rust with nothing to execute. **The sandbox is required
-exactly where the renderer runs code we did not write** — the marimo rows,
-because both `marimo export` and `MarimoIslandGenerator.build()` execute the
-notebook to capture its outputs. That is the real boundary, and it happens to
-fall on a language line rather than being caused by one.
+Three of six render in Rust with nothing to execute, and the dashboard runs a
+build-time toolchain (Node, Vite) whose output is vendored and gated. **The
+sandbox is required where the renderer executes the *content*** — the marimo
+rows, because both `marimo export` and `MarimoIslandGenerator.build()` execute
+the notebook to capture its outputs. A build tool compiling our own renderer
+is foreign code too, but it runs at build time over code we wrote, and its
+output passes the vendor gate like any bundle; the boundary is *what* runs,
+not which language runs it.
 
 The corollary worth holding onto: **a report, a dashboard, a booking page and
 a form need no Python at all.** If marimo were never wired up, everything
