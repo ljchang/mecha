@@ -410,6 +410,25 @@ pub const PICTURE_ON_ITS_WAY: &str = "(From the harness: the picture this turn a
 /// close the run too, or it loops as the queue's refusals did).
 pub const PICTURE_STILL_BEING_MADE: &str = "(From the harness: a picture is still being made from an earlier turn and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
 
+/// A run whose calls have come back unreadable turn after turn: each is up
+/// to `max_tokens` of loop, about 90 s on the local model, so after
+/// [`UNREADABLE_TURNS`] the run answers in words (mecha-a3, 2026-10-09: the
+/// live loop was a rare sample, then primed; this bounds what one costs).
+pub const UNREADABLE: Closing = Closing {
+    line: CALLS_UNREADABLE,
+    reply: CALLS_UNREADABLE_REPLY,
+};
+
+/// Consecutive turns whose every call was unreadable before the run closes.
+const UNREADABLE_TURNS: u32 = 3;
+
+/// The closing line after [`UNREADABLE_TURNS`] unreadable turns.
+pub const CALLS_UNREADABLE: &str = "(From the harness: the last calls could not be read, so none of them was run. No tool is needed now; tell the owner in a sentence or two what you were trying to do, and that it did not go through.)";
+
+/// What the owner sees in place of an empty reply to [`CALLS_UNREADABLE`].
+pub const CALLS_UNREADABLE_REPLY: &str =
+    "That didn't go through: my calls kept coming out unreadable. Ask again and I'll try once more.";
+
 /// What the owner sees in place of a closing reply that was empty, or was
 /// only a tool call written out as text. Never the call markup itself.
 pub const PICTURE_ON_ITS_WAY_REPLY: &str = "The picture is on its way.";
@@ -512,12 +531,16 @@ fn ends_mid_value(raw: &str) -> bool {
 /// The field a cut-off call was still writing: the innermost object's key
 /// whose value the text ends inside. Read by a small lexer, so escapes,
 /// nesting and keys of any spelling are followed. The text ending inside a
-/// key, or between fields, names none: falling back to an earlier key, which
+/// key, after a value closed, or between fields, names none: falling back to an earlier key, which
 /// had closed, would point the retry at the wrong field (review of #611,
 /// passes 2 and 3).
 fn last_field_opened(raw: &str) -> Option<String> {
     enum Open {
-        Object { key: Option<String>, want_key: bool },
+        Object {
+            key: Option<String>,
+            want_key: bool,
+            done: bool,
+        },
         Array,
     }
     let mut stack: Vec<Open> = Vec::new();
@@ -532,10 +555,18 @@ fn last_field_opened(raw: &str) -> Option<String> {
                 continue;
             } else if c == '"' {
                 in_string = false;
-                if is_key {
-                    if let Some(Open::Object { key: k, want_key }) = stack.last_mut() {
+                if let Some(Open::Object {
+                    key: k,
+                    want_key,
+                    done,
+                }) = stack.last_mut()
+                {
+                    if is_key {
                         *k = Some(std::mem::take(&mut key));
                         *want_key = false;
+                        *done = false;
+                    } else {
+                        *done = true;
                     }
                 }
                 continue;
@@ -549,10 +580,15 @@ fn last_field_opened(raw: &str) -> Option<String> {
             '{' => stack.push(Open::Object {
                 key: None,
                 want_key: true,
+                done: false,
             }),
             '[' => stack.push(Open::Array),
             '}' | ']' => {
                 stack.pop();
+                // The value that just closed was its parent's.
+                if let Some(Open::Object { done, .. }) = stack.last_mut() {
+                    *done = true;
+                }
             }
             ',' => {
                 if let Some(Open::Object { want_key, .. }) = stack.last_mut() {
@@ -572,7 +608,11 @@ fn last_field_opened(raw: &str) -> Option<String> {
     }
     stack.iter().rev().find_map(|open| match open {
         Open::Array => None,
-        Open::Object { key, want_key } => Some((!*want_key).then(|| key.clone()).flatten()),
+        Open::Object {
+            key,
+            want_key,
+            done,
+        } => Some((!*want_key && !*done).then(|| key.clone()).flatten()),
     })?
 }
 
@@ -2598,6 +2638,8 @@ impl Agent {
         // alternate-forever worry is already answered by `max_turns`: every
         // retry spends a turn against the same ceiling as real work.
         let mut empty_turns = 0u32;
+        // Consecutive tool turns whose every call was unreadable (`UNREADABLE`).
+        let mut unreadable_turns = 0u32;
         // One picture per run (IMAGE-DESIGN.md §5.5): what this run has
         // queued, and whether its next request is the closing one.
         let mut pictures = RunPictures::default();
@@ -3535,6 +3577,15 @@ impl Agent {
                         } else {
                             None
                         };
+                    let unreadable = response
+                        .message
+                        .tool_uses()
+                        .iter()
+                        .all(|(_, _, input)| input.get("__malformed_arguments").is_some());
+                    unreadable_turns = if unreadable { unreadable_turns + 1 } else { 0 };
+                    if closing.is_none() && unreadable_turns >= UNREADABLE_TURNS {
+                        closing = Some(UNREADABLE);
+                    }
                     pictures.repeated = false;
                     pictures.started_now = false;
                     pictures.busy = false;
@@ -6308,8 +6359,8 @@ mod tests {
         let (_, content, _) = after_unparsed("{\"value\": \"x.txt\"", StopReason::ToolUse).await;
         assert_eq!(
             content,
-            "Not run: this call ended after 17 characters, before its arguments closed. \
-             `value` was still being written. Send the call again with complete arguments."
+            "Not run: this call ended after 17 characters, before its arguments closed. Send \
+             the call again with complete arguments."
         );
     }
 
@@ -6336,6 +6387,65 @@ mod tests {
         assert!(inputs[0].get("__cut_off").is_none(), "{:?}", inputs[0]);
         assert!(inputs[1].get("__cut_off").is_some(), "{:?}", inputs[1]);
         assert!(unreadable_call(&inputs[0]).contains("not valid JSON"));
+    }
+
+    /// A parsed call beside a cut-off one in a capped reply is left as the
+    /// model wrote it (review of #611, pass 4).
+    #[test]
+    fn a_parsed_call_beside_a_cut_off_one_is_left_alone() {
+        let mut message = Message::assistant(vec![
+            Block::ToolUse {
+                id: "a".into(),
+                name: "echo".into(),
+                input: json!({"value": "hi"}),
+            },
+            Block::ToolUse {
+                id: "b".into(),
+                name: "echo".into(),
+                input: json!({"__malformed_arguments": "{\"value\": \"x"}),
+            },
+        ]);
+        clip_cut_off_calls(&mut message, true);
+        let inputs: Vec<Value> = message
+            .tool_uses()
+            .into_iter()
+            .map(|(_, _, input)| input.clone())
+            .collect();
+        assert_eq!(inputs[0], json!({"value": "hi"}));
+        assert!(inputs[1].get("__cut_off").is_some(), "{:?}", inputs[1]);
+    }
+
+    /// Three turns in a row whose every call was unreadable close the run:
+    /// the next request answers in words, with the harness's line last.
+    /// Fails on a loop with no cap, which spends a fourth turn on a call.
+    #[tokio::test]
+    async fn turns_of_unreadable_calls_close_the_run() {
+        let loop_turn = || {
+            unparsed(
+                "{\"value\": \"a spool of thread unwinding",
+                StopReason::MaxTokens,
+            )
+        };
+        let (agent, provider) = agent_with(
+            vec![
+                loop_turn(),
+                loop_turn(),
+                loop_turn(),
+                assistant(
+                    vec![Block::text("The sketch never arrived.")],
+                    StopReason::EndTurn,
+                ),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("say it")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_ne!(seen[2].tool_choice, crate::message::ToolChoice::None);
+        assert_eq!(seen[3].tool_choice, crate::message::ToolChoice::None);
+        assert!(tail_text(&seen[3]).ends_with(CALLS_UNREADABLE));
+        assert_eq!(outcome.text, "The sketch never arrived.");
     }
 
     #[test]
@@ -6365,6 +6475,10 @@ mod tests {
         // Cut inside the next key, or between fields: no field was open.
         assert_eq!(last_field_opened("{\"scene\": \"a room\", \"toge"), None);
         assert_eq!(last_field_opened("{\"scene\": \"a room\", "), None);
+        // A value that closed names no field, before its comma too (review
+        // of #611, pass 4).
+        assert_eq!(last_field_opened("{\"scene\": \"a room\""), None);
+        assert_eq!(last_field_opened("{\"a\": {\"b\": \"c\"}"), None);
         assert_eq!(
             last_field_opened("{\"scene\": \"a room\", \"styleName\": \"she turns, she tu")
                 .as_deref(),
