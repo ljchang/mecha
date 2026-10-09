@@ -27,6 +27,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod stage;
+
 /// Where a field's value came from: a run with no untrusted input in it, or
 /// anything else. A closed enum written to a store, so an unknown value
 /// reads untrusted rather than failing the record.
