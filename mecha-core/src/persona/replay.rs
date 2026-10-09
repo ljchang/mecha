@@ -362,6 +362,8 @@ pub struct RenderFacts {
     pub missing: Vec<String>,
     /// Whether the scene reader and the role splitter were stamped.
     pub readers: bool,
+    /// The seed of the stream the picture's fresh seeds were drawn from.
+    pub image_seed: u64,
     /// Each picture call's result as the model was handed it.
     pub results: Vec<CallResult>,
     /// Pictures and manifests the sample wrote, as absolute paths.

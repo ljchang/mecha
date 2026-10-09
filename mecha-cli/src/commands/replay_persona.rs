@@ -92,6 +92,12 @@ pub struct SampleArgs {
     /// that measures the call drawn as sent).
     #[arg(long, requires = "persona")]
     pub no_readers: bool,
+
+    /// Sample i's pictures draw their fresh seeds from a stream seeded
+    /// image-seed-base + i, so two arms run with the same base render each
+    /// sample at the same seeds.
+    #[arg(long, default_value_t = 1, requires = "persona")]
+    pub image_seed_base: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -445,6 +451,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "call": branch.call,
             "render": render,
             "readers_stamped": render && !args.no_readers,
+            "image_seed_base": render.then_some(args.image_seed_base),
             "tools_run": if render { vec![IMAGE_TOOL] } else { Vec::new() },
         }
     });
@@ -469,7 +476,13 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     };
     let mut samples = Vec::with_capacity(args.samples);
     for i in 0..args.samples {
-        let sample = sampler.sample(i, args.seed_base + i as u64).await?;
+        let sample = sampler
+            .sample(
+                i,
+                args.seed_base + i as u64,
+                args.image_seed_base + i as u64,
+            )
+            .await?;
         writeln!(file, "{}", serde_json::to_string(&sample)?)?;
         eprintln!(
             "sample {}/{}: {} call(s), {}",
@@ -550,7 +563,7 @@ impl Sampler {
     /// persona's agent and the turn's context as serve does, send one
     /// request, and report what came back. An error the sample itself hit
     /// is in the sample; `Err` is a harness that could not run it.
-    pub async fn sample(&self, i: usize, seed: u64) -> Result<Sample> {
+    pub async fn sample(&self, i: usize, seed: u64, image_seed: u64) -> Result<Sample> {
         wait_for_owner(self.router.as_deref()).await?;
         let (held, bound) = self
             .follower
@@ -623,6 +636,7 @@ impl Sampler {
             workspace: self.work.clone(),
             scene: None,
             prompt_log: None,
+            image_seeds: None,
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,
@@ -640,6 +654,7 @@ impl Sampler {
             turn.workspace = st.workspace.clone();
             turn.scene = Some(st.slot.clone());
             turn.prompt_log = Some(st.prompt_log.clone());
+            turn.image_seeds = Some(Arc::new(mecha_core::sample::SeedStream::new(image_seed)));
             if self.readers {
                 turn.readers = mecha_core::persona::turn::Readers::From(&judge);
             }
@@ -680,6 +695,7 @@ impl Sampler {
                 as_of: format!("{:?}", st.as_of),
                 missing: st.missing.clone(),
                 readers: self.readers,
+                image_seed,
                 results: pr::results_of(after, IMAGE_TOOL),
                 pictures: new
                     .iter()

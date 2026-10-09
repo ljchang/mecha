@@ -3608,6 +3608,8 @@ impl PersonaChats {
                         .join("sessions")
                         .join(format!("{}.prompts.log", ps.session.meta.id)),
                 ),
+                // A served picture's seeds are random, as every chat's.
+                image_seeds: None,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
