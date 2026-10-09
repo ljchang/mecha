@@ -73,8 +73,8 @@ fn refused_at(v: &Value, at: &str) -> Refusal {
 #[test]
 fn the_designs_example_parses() {
     let spec = parse(&example()).unwrap();
-    assert_eq!(spec.panels.len(), 4);
-    assert_eq!(spec.theme, "default");
+    assert_eq!(spec.panels().len(), 4);
+    assert_eq!(spec.theme(), "default");
 }
 
 #[test]
@@ -286,6 +286,53 @@ fn an_address_is_refused_in_any_string_but_a_word_followed_by_a_colon_is_not() {
     ] {
         let v = with(example(), "/panels/0/title", json!(s));
         assert!(parse(&v).is_ok(), "{s:?} was refused");
+    }
+}
+
+#[test]
+fn a_scheme_followed_by_a_unicode_space_is_still_an_address() {
+    for s in [
+        "javascript:\u{a0}alert(1)",
+        "data:\u{2028}text/html,hi",
+        "javascript:\u{3000}x",
+    ] {
+        let at = "/panels/0/title";
+        let r = refused_at(&with(example(), at, json!(s)), at);
+        assert!(
+            r.rule.contains("names no destinations"),
+            "{s:?}: {}",
+            r.rule
+        );
+    }
+}
+
+#[test]
+fn a_bare_email_is_an_address_since_markdown_autolinks_it() {
+    for s in ["mail alerts@example.org now", "a.b+c@sub.example.co"] {
+        let at = "/panels/3/markdown";
+        let r = refused_at(&with(example(), at, json!(s)), at);
+        assert!(
+            r.rule.contains("names no destinations"),
+            "{s:?}: {}",
+            r.rule
+        );
+    }
+    for s in ["2 @ 3", "meet @ 5pm", "user@localhost"] {
+        let v = with(example(), "/panels/0/title", json!(s));
+        assert!(parse(&v).is_ok(), "{s:?} was refused");
+    }
+}
+
+#[test]
+fn a_dashboard_id_is_checked_before_it_is_joined() {
+    let s = Scratch::new("lab_week");
+    let boards = s.0.parent().unwrap();
+    for id in ["../escape", "a/b", "Lab", ""] {
+        let refusals = Installed::load(boards, id).unwrap().unwrap_err().0;
+        assert!(
+            refusals[0].rule.contains("dashboard id"),
+            "{id:?}: {refusals:?}"
+        );
     }
 }
 
@@ -529,8 +576,8 @@ fn loader() -> Loader {
 #[test]
 fn the_designs_loader_parses() {
     let l = loader();
-    assert_eq!(l.name, "visits_by_day");
-    assert_eq!(l.columns.len(), 3);
+    assert_eq!(l.name(), "visits_by_day");
+    assert_eq!(l.columns().len(), 3);
 }
 
 #[test]
@@ -717,6 +764,10 @@ impl Scratch {
     fn write(&self, rel: &str, text: &str) {
         std::fs::write(self.0.join(rel), text).unwrap();
     }
+    fn load(&self) -> anyhow::Result<Result<Installed, Refusals>> {
+        let id = self.0.file_name().unwrap().to_str().unwrap();
+        Installed::load(self.0.parent().unwrap(), id)
+    }
 }
 
 impl Drop for Scratch {
@@ -746,10 +797,10 @@ fn an_installed_dashboard_loads_when_spec_and_loaders_agree() {
     s.write("dashboard.json", &example().to_string());
     s.write("loaders/visits_by_day.toml", LOADER);
     s.write("loaders/instruments.toml", INSTRUMENTS);
-    let installed = Installed::load(&s.0).unwrap().unwrap();
-    assert_eq!(installed.id, "lab_week");
+    let installed = s.load().unwrap().unwrap();
+    assert_eq!(installed.id(), "lab_week");
     assert_eq!(
-        installed.loaders.keys().collect::<Vec<_>>(),
+        installed.loaders().keys().collect::<Vec<_>>(),
         ["instruments", "visits_by_day"]
     );
 }
@@ -761,7 +812,7 @@ fn an_unreadable_loader_is_a_refusal_beside_the_others() {
     s.write("loaders/instruments.toml", INSTRUMENTS);
     std::fs::write(s.0.join("loaders/visits_by_day.toml"), [0xff, 0xfe, 0x00]).unwrap();
     std::fs::create_dir(s.0.join("loaders/folder.toml")).unwrap();
-    let refusals = Installed::load(&s.0).unwrap().unwrap_err().0;
+    let refusals = s.load().unwrap().unwrap_err().0;
     assert!(
         refusals
             .iter()
@@ -797,7 +848,7 @@ fn an_unreadable_loaders_directory_is_a_refusal_beside_the_others() {
     let loaders = s.0.join("loaders");
     std::fs::set_permissions(&loaders, std::fs::Permissions::from_mode(0o000)).unwrap();
     let readable = std::fs::read_dir(&loaders).is_ok(); // root reads anything
-    let result = Installed::load(&s.0);
+    let result = s.load();
     std::fs::set_permissions(&loaders, std::fs::Permissions::from_mode(0o755)).unwrap();
     if readable {
         return;
@@ -814,7 +865,7 @@ fn an_unreadable_loaders_directory_is_a_refusal_beside_the_others() {
 fn loaders_without_a_spec_are_a_refusal_not_an_error() {
     let s = Scratch::new("half_done");
     s.write("loaders/instruments.toml", INSTRUMENTS);
-    let refusals = Installed::load(&s.0).unwrap().unwrap_err().0;
+    let refusals = s.load().unwrap().unwrap_err().0;
     assert!(
         refusals.iter().any(|r| r.at == "dashboard.json"),
         "{refusals:?}"
@@ -832,7 +883,7 @@ fn a_missing_loader_a_stray_loader_and_an_undeclared_column_are_all_reported() {
     s.write("dashboard.json", &spec.to_string());
     s.write("loaders/instruments.toml", INSTRUMENTS);
     s.write("loaders/payroll.toml", INSTRUMENTS);
-    let refusals = Installed::load(&s.0).unwrap().unwrap_err().0;
+    let refusals = s.load().unwrap().unwrap_err().0;
     let text = Refusals(refusals.clone()).to_string();
     assert!(
         text.contains("dataset \"visits_by_day\" has no loader"),

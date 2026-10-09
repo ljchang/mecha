@@ -427,6 +427,9 @@ fn transform(v: &Value, at: &str, out: &mut Vec<Refusal>) {
         ));
         return;
     }
+    // Two covering ops would need A in B's option list and B in A's; the only
+    // op name in any option list is `extent`, whose own list is just
+    // `param`, so at most one op ever covers and the fallback always refuses.
     // The operation is the one whose key set covers every key present. More
     // than one known op key is legal only where one op's options name another
     // (`density` takes an `extent`), and the covering rule settles which.

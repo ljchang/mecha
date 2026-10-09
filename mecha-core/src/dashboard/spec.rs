@@ -27,21 +27,22 @@ const MAX_MARKDOWN: usize = 8 * 1024;
 /// Any other string: a title, a field name, a Vega expression.
 const MAX_STRING: usize = 2_000;
 
-/// A checked spec. Not `Deserialize`, and it carries a private [`Checked`],
-/// so the only way to hold one is [`Spec::parse`] — no `from_value`, no
-/// struct literal. The property is in the type, and the compiler finds every
-/// construction site.
+/// A checked spec. Not `Deserialize`, it carries a private [`Checked`], and
+/// its fields are private behind read-only accessors — so the only way to
+/// hold one is [`Spec::parse`] (no `from_value`, no struct literal) and the
+/// only way to change one is to parse another. A renderer holding a `Spec`
+/// holds one that passed every screen, and still does.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Spec {
     #[serde(skip)]
     checked: Checked,
-    pub version: u32,
-    pub title: String,
+    version: u32,
+    title: String,
     /// A theme the owner wrote. The spec names one; it never carries a colour.
-    pub theme: String,
-    pub datasets: Vec<String>,
-    pub filters: Vec<Filter>,
-    pub panels: Vec<Panel>,
+    theme: String,
+    datasets: Vec<String>,
+    filters: Vec<Filter>,
+    panels: Vec<Panel>,
 }
 
 /// The wire shape `parse` reads before any check has run.
@@ -151,6 +152,25 @@ pub enum KpiOp {
 }
 
 impl Spec {
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn theme(&self) -> &str {
+        &self.theme
+    }
+    pub fn datasets(&self) -> &[String] {
+        &self.datasets
+    }
+    pub fn filters(&self) -> &[Filter] {
+        &self.filters
+    }
+    pub fn panels(&self) -> &[Panel] {
+        &self.panels
+    }
+
     /// Parse and check a `dashboard.json`. Every refusal found is returned,
     /// not just the first.
     pub fn parse(text: &str) -> Result<Spec, Refusals> {
@@ -510,6 +530,9 @@ pub(crate) fn is_address(s: &str) -> bool {
     {
         return true;
     }
+    if has_email_shape(lower) {
+        return true;
+    }
     [
         // The URL parser supplies the slashes a special scheme leaves out, so
         // `http:host` is `http://host/`.
@@ -532,9 +555,32 @@ pub(crate) fn is_address(s: &str) -> bool {
             let followed = lower[i + scheme.len()..]
                 .chars()
                 .next()
-                .is_some_and(|c| !c.is_whitespace());
+                // Only an ASCII space marks prose ("Raw data: counts"): it is
+                // what the URL parser trims. NBSP, U+2028 and U+3000 are
+                // whitespace to Rust and to a script, but the parser keeps
+                // them, so `javascript:\u{a0}alert(1)` still runs.
+                .is_some_and(|c| c != ' ');
             starts_word && followed
         })
+    })
+}
+
+/// `local@domain.tld` — GFM's extended autolink turns a bare email into a
+/// `mailto:` link with no link syntax at all, the same way it turns `www.`
+/// into one; both are addresses wherever they sit.
+fn has_email_shape(s: &str) -> bool {
+    let is_local = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-');
+    s.match_indices('@').any(|(i, _)| {
+        let local = s[..i].chars().next_back().is_some_and(is_local);
+        let domain = &s[i + 1..];
+        let host: String = domain
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+            .collect();
+        local
+            && host.rsplit_once('.').is_some_and(|(name, tld)| {
+                !name.is_empty() && tld.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            })
     })
 }
 
