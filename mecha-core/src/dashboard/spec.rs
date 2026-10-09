@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{is_identifier, pointer, vegalite, Refusal, Refusals};
+use super::{is_identifier, pointer, vegalite, Checked, Refusal, Refusals};
 
 /// The only spec version this build reads.
 pub const VERSION: u32 = 1;
@@ -27,11 +27,14 @@ const MAX_MARKDOWN: usize = 8 * 1024;
 /// Any other string: a title, a field name, a Vega expression.
 const MAX_STRING: usize = 2_000;
 
-/// A checked spec. Deliberately not `Deserialize`: the only way to get one is
-/// [`Spec::parse`], so no caller can reach for `serde_json::from_value` and
-/// hold a spec that skipped the screens — the property is in the type.
+/// A checked spec. Not `Deserialize`, and it carries a private [`Checked`],
+/// so the only way to hold one is [`Spec::parse`] — no `from_value`, no
+/// struct literal. The property is in the type, and the compiler finds every
+/// construction site.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Spec {
+    #[serde(skip)]
+    checked: Checked,
     pub version: u32,
     pub title: String,
     /// A theme the owner wrote. The spec names one; it never carries a colour.
@@ -58,6 +61,7 @@ struct Wire {
 impl From<Wire> for Spec {
     fn from(w: Wire) -> Self {
         Spec {
+            checked: Checked::new(),
             version: w.version,
             title: w.title,
             theme: w.theme,
@@ -393,43 +397,7 @@ fn is_theme_name(s: &str) -> bool {
 /// to pick a parser and never fetches.
 fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
     match v {
-        Value::String(s) => {
-            let limit = if is_text_panel_markdown(at) {
-                MAX_MARKDOWN
-            } else {
-                MAX_STRING
-            };
-            if s.chars().count() > limit {
-                out.push(Refusal::new(
-                    at,
-                    format!("strings here are at most {limit} characters"),
-                ));
-            }
-            if is_chart_schema_marker(at) && is_vegalite_schema(s) {
-                return;
-            }
-            if has_character_reference(s) {
-                out.push(Refusal::new(
-                    at,
-                    "write the character itself, not a character reference (&#…; or &name;) — \
-                     references can spell a scheme the address check cannot see",
-                ));
-            }
-            if s.to_ascii_lowercase().contains("url(") {
-                out.push(Refusal::new(
-                    at,
-                    "a spec names no destinations: `url(` is a CSS fetch, relative or not",
-                ));
-            }
-            if is_address(s) {
-                out.push(Refusal::new(
-                    at,
-                    "a spec names no destinations: this string is an address (a URL, a \
-                     protocol-relative path, or a data:/javascript: URI). Charts bind to a \
-                     dataset by name; links are not part of a dashboard",
-                ));
-            }
-        }
+        Value::String(s) => screen_string(s, at, out),
         Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
                 screen_strings(item, &format!("{at}/{i}"), out);
@@ -438,18 +406,51 @@ fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
         Value::Object(map) => {
             for (k, item) in map {
                 let here = pointer(at, k);
-                // Keys are strings too: a style object accepts arbitrary keys,
-                // so an address can sit in one as easily as in a value.
-                if is_address(k) {
-                    out.push(Refusal::new(
-                        &here,
-                        "a spec names no destinations: this key is an address",
-                    ));
-                }
+                // Keys are strings too, and a style object accepts arbitrary
+                // ones: every screen a value gets, a key gets.
+                screen_string(k, &here, out);
                 screen_strings(item, &here, out);
             }
         }
         _ => {}
+    }
+}
+
+fn screen_string(s: &str, at: &str, out: &mut Vec<Refusal>) {
+    let limit = if is_text_panel_markdown(at) {
+        MAX_MARKDOWN
+    } else {
+        MAX_STRING
+    };
+    if s.chars().count() > limit {
+        out.push(Refusal::new(
+            at,
+            format!("strings here are at most {limit} characters"),
+        ));
+    }
+    if is_chart_schema_marker(at) && is_vegalite_schema(s) {
+        return;
+    }
+    if has_character_reference(s) {
+        out.push(Refusal::new(
+            at,
+            "write the character itself, not a character reference (&#…; or &name;) — \
+             references can spell a scheme the address check cannot see",
+        ));
+    }
+    if s.to_ascii_lowercase().contains("url(") {
+        out.push(Refusal::new(
+            at,
+            "a spec names no destinations: `url(` is a CSS fetch, relative or not",
+        ));
+    }
+    if is_address(s) {
+        out.push(Refusal::new(
+            at,
+            "a spec names no destinations: this string is an address (a URL, a \
+             protocol-relative path, or a data:/javascript: URI). Charts bind to a \
+             dataset by name; links are not part of a dashboard",
+        ));
     }
 }
 

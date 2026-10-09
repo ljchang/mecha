@@ -25,6 +25,12 @@
 //! `expr` key, and any key ending in `Expr`, is refused. Styling that
 //! depends on data goes through an encoding's `condition`; the rest comes
 //! from the owner's theme.
+//!
+//! One place carries expressions without being named above, on purpose: a
+//! parameter's `select` takes Vega event streams (`on`, `clear`, `translate`,
+//! `zoom`), whose bracketed filters are expressions. They are screened as
+//! style — no destination key, no address — and evaluated by the same
+//! interpreter, whose language cannot fetch or navigate.
 
 use serde_json::{Map, Value};
 

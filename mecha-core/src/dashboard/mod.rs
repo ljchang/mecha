@@ -45,6 +45,26 @@ use anyhow::{Context, Result};
 pub use loader::{Column, ColumnType, Loader, ShapeRefusal};
 pub use spec::{Panel, Spec};
 
+/// Proof that a value came out of its checks. Its field is private to this
+/// module, so a `Spec` or `Loader` — each of which carries one — cannot be
+/// built by a struct literal anywhere else in the crate or outside it: the
+/// compiler, not a doc comment, is what says a renderer or a refresh holds a
+/// checked value.
+///
+/// ```compile_fail
+/// // Outside the dashboard module, a Checked cannot be made — and so neither
+/// // can the Spec or Loader that must carry one.
+/// let _ = mecha_core::dashboard::Checked(());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Checked(());
+
+impl Checked {
+    fn new() -> Self {
+        Checked(())
+    }
+}
+
 /// One thing a check refused: where, and which rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
@@ -173,9 +193,22 @@ impl Installed {
 
         let mut loaders = BTreeMap::new();
         let loader_dir = dir.join("loaders");
-        if loader_dir.is_dir() {
-            let mut paths: Vec<PathBuf> = std::fs::read_dir(&loader_dir)
-                .with_context(|| format!("reading {}", loader_dir.display()))?
+        let entries = if loader_dir.is_dir() {
+            match std::fs::read_dir(&loader_dir) {
+                Ok(entries) => Some(entries),
+                Err(e) => {
+                    refusals.push(Refusal::new(
+                        "loaders",
+                        format!("cannot be read: {}", e.kind()),
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(entries) = entries {
+            let mut paths: Vec<PathBuf> = entries
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.extension().is_some_and(|x| x == "toml") && p.is_file())
                 .collect();
