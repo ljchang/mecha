@@ -127,7 +127,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request again, `--samples` times with a different seed each, as the chat
   would send it today. `--overlay` tries a wording change. The samples go to
   a private file under `~/.mecha/research/replay/`. The command waits while
-  you are using the model or on a call. Pictures are not drawn yet.
+  you are using the model or on a call. A picture the turn asks for is
+  drawn, against the chat's scene as it was then, in a scratch copy that
+  never touches the chat (`--no-render` skips it). `--at-call` branches
+  partway through a turn.
 
 - **The face detector behind edits.** Head crops come from a detector that
   runs inside mecha: install it once with `mecha imagelib
