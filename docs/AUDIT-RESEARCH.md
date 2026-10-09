@@ -314,10 +314,12 @@ draw". `Agent::dispatch` now refuses an unparsed call without running the tool
 (`unreadable_call`). When the reply stopped at the output limit, the model
 is told it was cut off, how far it ran, and which field was still being
 written and whether that field repeats. `clip_cut_off_calls` keeps only the call's head
-in the transcript, so the loop does not prime the retry. The router does
-not enforce a schema's `maxLength` in tool-call arguments either (measured
-the same night), so a length cap in a schema is a hint the model reads,
-not a bound.
+in the transcript, so the loop does not prime the retry. Nor is a
+schema's `maxLength` a bound here: on the :8080 router
+(qwen3.6-35b-a3b-uncensored), it was not enforced on tool-call arguments
+(3/3: a 406-char string against `maxLength` 20; `tool_choice` auto,
+thinking off; measured the same night). Other models and templates,
+thinking on, and a forced `tool_choice` are unmeasured.
 
 ### Explorations
 
