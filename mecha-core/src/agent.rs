@@ -440,6 +440,103 @@ pub(crate) struct RunPictures {
     busy_again: bool,
 }
 
+/// How much of a cut-off call's arguments the transcript keeps.
+const CUT_OFF_KEPT_CHARS: usize = 400;
+
+/// Calls whose arguments never closed because the reply hit the output
+/// limit, shortened in place before the turn joins the transcript.
+///
+/// A model looping inside one string field writes until `max_tokens`, and the
+/// provider hands back the unparsed text (`__malformed_arguments`). Kept
+/// whole, the loop is in the next request's context — 8192 tokens a try, each
+/// try primed by the last — and on 2026-10-08 five tries ran 32–36 KB apiece
+/// before a 554-byte call drew. So the transcript keeps the head and a
+/// `__cut_off` note of what was there: how long it ran, the field it was
+/// still writing, and whether that field repeats itself. `dispatch` reads the
+/// note to refuse the call by what happened, never to run it.
+fn clip_cut_off_calls(message: &mut Message) {
+    for block in &mut message.content {
+        let Block::ToolUse { input, .. } = block else {
+            continue;
+        };
+        let Some(raw) = input
+            .get("__malformed_arguments")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let chars = raw.chars().count();
+        let head: String = raw.chars().take(CUT_OFF_KEPT_CHARS).collect();
+        let mut note = serde_json::Map::new();
+        note.insert("chars".into(), serde_json::json!(chars));
+        if let Some(field) = last_field_opened(&raw) {
+            note.insert("field".into(), serde_json::json!(field));
+        }
+        note.insert("repeats".into(), serde_json::json!(repeats_itself(&raw)));
+        *input = serde_json::json!({
+            "__malformed_arguments": if chars > CUT_OFF_KEPT_CHARS { format!("{head}…") } else { head },
+            "__cut_off": note,
+        });
+    }
+}
+
+/// The last `"name":` opened in a JSON text: the field a cut-off call was
+/// still writing. Only a plain lowercase name counts, so a quoted word inside
+/// a value is not taken for a key.
+fn last_field_opened(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut found = None;
+    for (colon, _) in raw.match_indices(':') {
+        let before = raw[..colon].trim_end();
+        let Some(close) = before.strip_suffix('"') else {
+            continue;
+        };
+        let name_start = close
+            .rfind(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let name = &close[name_start..];
+        if !name.is_empty() && name_start > 0 && bytes[name_start - 1] == b'"' {
+            found = Some(name.to_string());
+        }
+    }
+    found
+}
+
+/// Whether some stretch of the text recurs later in it: a model in a loop,
+/// not one writing at length. A 120-character window, tried every 40.
+fn repeats_itself(raw: &str) -> bool {
+    const WINDOW: usize = 120;
+    let starts: Vec<usize> = raw.char_indices().map(|(i, _)| i).collect();
+    (0..starts.len()).step_by(40).any(|i| {
+        let Some(&to) = starts.get(i + WINDOW) else {
+            return false;
+        };
+        raw[to..].contains(&raw[starts[i]..to])
+    })
+}
+
+/// What a call that could not be read is told, in place of running it.
+fn unreadable_call(input: &Value) -> String {
+    let Some(cut) = input.get("__cut_off") else {
+        return "Not run: the arguments were not valid JSON. Send the call again with \
+                complete arguments."
+            .to_string();
+    };
+    let chars = cut.get("chars").and_then(Value::as_u64).unwrap_or(0);
+    let field = match cut.get("field").and_then(Value::as_str) {
+        Some(f) if cut.get("repeats").and_then(Value::as_bool) == Some(true) => {
+            format!(" `{f}` was still being written, and it repeats itself.")
+        }
+        Some(f) => format!(" `{f}` was still being written."),
+        None => String::new(),
+    };
+    format!(
+        "Not run: this call was cut off at the output limit after {chars} characters, so \
+         its arguments never closed.{field} Send it again short: each field a sentence or two."
+    )
+}
+
 /// Every `<tool_call>` block taken out of a reply, and a trailing unclosed
 /// one cut to the end. A model asked to answer in words sometimes writes the
 /// call out as text (Qwen's `<tool_call><function=…>` markup, measured in
@@ -3158,6 +3255,9 @@ impl Agent {
                 empty_turns = 0;
             }
 
+            if response.stop_reason == StopReason::MaxTokens && response.malformed_tool_args > 0 {
+                clip_cut_off_calls(&mut response.message);
+            }
             messages.push(response.message.clone());
             let said = response.message.text();
             if !said.trim().is_empty() {
@@ -4769,6 +4869,39 @@ impl Agent {
                 continue;
             };
 
+            // Arguments that never parsed are not a call: running the tool on
+            // `__malformed_arguments` gets an answer about a field the model
+            // never sent ("Nothing to draw"), which says nothing of what went
+            // wrong — and a call cut off at the output limit was retried that
+            // way four times. Said here, by what happened (`unreadable_call`).
+            if input.get("__malformed_arguments").is_some() {
+                let content = unreadable_call(input);
+                emit(
+                    events,
+                    AgentEvent::ToolResult {
+                        id: id.clone(),
+                        name: name.clone(),
+                        is_error: true,
+                        content: content.clone(),
+                    },
+                );
+                results[i] = Some(Block::ToolResult {
+                    tool_use_id: id.clone(),
+                    content,
+                    is_error: true,
+                });
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: false,
+                    unknown: false,
+                    staged: false,
+                });
+                denied_this_turn += 1;
+                continue;
+            }
+
             let caps = tool.capabilities();
 
             // An outbox-routed call is never executed here — it is staged as a
@@ -5972,6 +6105,115 @@ mod tests {
         )
         .unwrap();
         (agent, provider)
+    }
+
+    /// A call the provider could not parse, as `openai.rs` hands it over.
+    fn unparsed(raw: &str, stop: StopReason) -> CompletionResponse {
+        let mut turn = assistant(
+            vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "echo".into(),
+                input: json!({"__malformed_arguments": raw}),
+            }],
+            stop,
+        );
+        turn.malformed_tool_args = 1;
+        turn
+    }
+
+    /// The second request: what the model was told, and the call as the
+    /// transcript kept it.
+    async fn after_unparsed(raw: &str, stop: StopReason) -> (Value, String, bool) {
+        let (agent, provider) = agent_with(
+            vec![
+                unparsed(raw, stop),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::from(vec![Message::user("say it")]);
+        agent.run(&mut convo, None).await.unwrap();
+        let sent = provider.seen.lock().unwrap()[1].messages.clone();
+        let [.., call, results] = sent.as_slice() else {
+            panic!("expected the call and its result; got {sent:?}")
+        };
+        let Some((_, _, kept)) = call.tool_uses().into_iter().next() else {
+            panic!("expected the call; got {call:?}")
+        };
+        let [Block::ToolResult {
+            content, is_error, ..
+        }] = results.content.as_slice()
+        else {
+            panic!("expected one result; got {results:?}")
+        };
+        (kept.clone(), content.clone(), *is_error)
+    }
+
+    /// A call cut off at the output limit is not run: the model is told it
+    /// was cut off, how far it ran, and which field was looping, and the
+    /// transcript keeps only the head of the loop, so the next try is not
+    /// primed by 8192 tokens of it. Fails on the old loop, which ran `echo`
+    /// on `__malformed_arguments` (an empty answer, not an error) and sent
+    /// the whole loop back.
+    #[tokio::test]
+    async fn a_call_cut_off_at_the_output_limit_is_not_run_and_says_why() {
+        let raw = format!(
+            "{{\"note\": \"a\", \"value\": \"{}",
+            "the kettle sings on the stove. ".repeat(200)
+        );
+        let chars = raw.chars().count();
+        let (kept, content, is_error) = after_unparsed(&raw, StopReason::MaxTokens).await;
+        assert!(is_error);
+        assert_eq!(
+            content,
+            format!(
+                "Not run: this call was cut off at the output limit after {chars} characters, \
+                 so its arguments never closed. `value` was still being written, and it \
+                 repeats itself. Send it again short: each field a sentence or two."
+            )
+        );
+        let head = kept["__malformed_arguments"].as_str().unwrap();
+        assert_eq!(head.chars().count(), CUT_OFF_KEPT_CHARS + 1, "{head}");
+        assert!(raw.starts_with(head.trim_end_matches('…')));
+        assert_eq!(kept["__cut_off"]["chars"], json!(chars));
+    }
+
+    /// Arguments that merely failed to parse are not run either, and are
+    /// said to be invalid rather than cut off; with no limit reached, the
+    /// transcript keeps them as written.
+    #[tokio::test]
+    async fn a_call_that_did_not_parse_is_not_run() {
+        let raw = "{\"value\": \"one\" \"two\"}";
+        let (kept, content, is_error) = after_unparsed(raw, StopReason::ToolUse).await;
+        assert!(is_error);
+        assert!(
+            content.starts_with("Not run: the arguments were not valid JSON"),
+            "{content}"
+        );
+        assert_eq!(kept, json!({"__malformed_arguments": raw}));
+    }
+
+    #[test]
+    fn the_field_still_open_is_the_last_name_written() {
+        assert_eq!(
+            last_field_opened("{\"scene\": {\"setting\": \"a room\", \"together\": \"they wa")
+                .as_deref(),
+            Some("together")
+        );
+        // A quoted word inside a value is not a key.
+        assert_eq!(
+            last_field_opened("{\"doing\": \"she says \\\"wait\\\": and").as_deref(),
+            Some("doing")
+        );
+        assert_eq!(last_field_opened("no keys here"), None);
+    }
+
+    #[test]
+    fn a_loop_repeats_itself_and_long_prose_does_not() {
+        assert!(repeats_itself(&"a heron stands in the reeds. ".repeat(20)));
+        let prose: String = (0..400).map(|n| format!("{n} ")).collect();
+        assert!(!repeats_itself(&prose));
+        assert!(!repeats_itself("short"));
     }
 
     /// A tool that draws a picture — `image_generate`'s shape without the
