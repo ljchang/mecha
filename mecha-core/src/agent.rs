@@ -460,6 +460,9 @@ const CUT_OFF_KEPT_CHARS: usize = 400;
 /// since llama-server reports `stop` beside calls (the override below), and
 /// of two unreadable calls in a reply that hit the limit, only the last was
 /// still being written (review of #611).
+///
+/// The clip happens before the turn is in history, so it is the turn: the
+/// session records it, and a replay of the session replays the clip.
 fn clip_cut_off_calls(message: &mut Message, hit_limit: bool) {
     let last_call = message
         .content
@@ -506,36 +509,71 @@ fn ends_mid_value(raw: &str) -> bool {
         .is_err_and(|e| e.classify() == serde_json::error::Category::Eof)
 }
 
-/// The last `"name":` opened in a JSON text: the field a cut-off call was
-/// still writing. A plain lowercase name after `{` or `,` counts. An escaped
-/// quote is a value's, and passed over. Any other quote before a colon
-/// leaves the field unknown rather than falling back to an earlier key, which
-/// had closed (review of #611, pass 2).
+/// The field a cut-off call was still writing: the innermost object's key
+/// whose value the text ends inside. Read by a small lexer, so escapes,
+/// nesting and keys of any spelling are followed. The text ending inside a
+/// key, or between fields, names none: falling back to an earlier key, which
+/// had closed, would point the retry at the wrong field (review of #611,
+/// passes 2 and 3).
 fn last_field_opened(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    let mut found = None;
-    for (colon, _) in raw.match_indices(':') {
-        let before = raw[..colon].trim_end();
-        let Some(close) = before.strip_suffix('"') else {
-            continue;
-        };
-        if close.ends_with('\\') {
+    enum Open {
+        Object { key: Option<String>, want_key: bool },
+        Array,
+    }
+    let mut stack: Vec<Open> = Vec::new();
+    let (mut in_string, mut escaped, mut is_key) = (false, false, false);
+    let mut key = String::new();
+    for c in raw.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+                continue;
+            } else if c == '"' {
+                in_string = false;
+                if is_key {
+                    if let Some(Open::Object { key: k, want_key }) = stack.last_mut() {
+                        *k = Some(std::mem::take(&mut key));
+                        *want_key = false;
+                    }
+                }
+                continue;
+            }
+            if is_key {
+                key.push(c);
+            }
             continue;
         }
-        // By char, never `rfind(..) + 1`: a multi-byte char before the
-        // quote would put the slice inside it (review of #611).
-        let name_start = close
-            .char_indices()
-            .rev()
-            .find(|(_, c)| !(c.is_ascii_lowercase() || *c == '_'))
-            .map_or(0, |(i, c)| i + c.len_utf8());
-        let name = &close[name_start..];
-        let opened = name_start > 0
-            && bytes[name_start - 1] == b'"'
-            && close[..name_start - 1].trim_end().ends_with(['{', ',']);
-        found = (!name.is_empty() && opened).then(|| name.to_string());
+        match c {
+            '{' => stack.push(Open::Object {
+                key: None,
+                want_key: true,
+            }),
+            '[' => stack.push(Open::Array),
+            '}' | ']' => {
+                stack.pop();
+            }
+            ',' => {
+                if let Some(Open::Object { want_key, .. }) = stack.last_mut() {
+                    *want_key = true;
+                }
+            }
+            '"' => {
+                in_string = true;
+                key.clear();
+                is_key = matches!(stack.last(), Some(Open::Object { want_key: true, .. }));
+            }
+            _ => {}
+        }
     }
-    found
+    if in_string && is_key {
+        return None;
+    }
+    stack.iter().rev().find_map(|open| match open {
+        Open::Array => None,
+        Open::Object { key, want_key } => Some((!*want_key).then(|| key.clone()).flatten()),
+    })?
 }
 
 /// Whether some stretch of the text recurs later in it: a model in a loop,
@@ -575,8 +613,10 @@ fn unreadable_call(input: &Value) -> String {
         (None, true) => " The last field repeats itself.".to_string(),
         (None, false) => String::new(),
     };
+    // Tool-neutral: the same words reach a picture and a file, and "write
+    // less" would truncate a file (review of #611, pass 3).
     let then = if limit || repeats {
-        "Send it again short: each field a sentence or two."
+        "Send a shorter call, and build anything longer up over several calls."
     } else {
         "Send the call again with complete arguments."
     };
@@ -4697,7 +4737,8 @@ impl Agent {
         // Every gate in this loop that settles a call this turn *without*
         // adding it to `approved` — the approver's `Deny`/`Blocked`, the
         // planning-phase gate, the trifecta interlock, a withheld or unknown
-        // tool name, and a staging failure — folded into `Work::denied`
+        // tool name, arguments that did not parse, and a staging failure —
+        // folded into `Work::denied`
         // below beside `in_flight`. The name undersells it slightly (an
         // unknown tool is the model's own mistake, not a refusal), but the
         // shape is one and the same: the call is already settled, so a
@@ -6216,7 +6257,7 @@ mod tests {
             format!(
                 "Not run: this call was cut off at the output limit after {chars} characters, \
                  so its arguments never closed. `value` was still being written, and it \
-                 repeats itself. Send it again short: each field a sentence or two."
+                 repeats itself. Send a shorter call, and build anything longer up over several calls."
             )
         );
         let head = kept["__malformed_arguments"].as_str().unwrap();
@@ -6253,8 +6294,7 @@ mod tests {
             content,
             format!(
                 "Not run: this call ended after {chars} characters, before its arguments \
-                 closed. `value` was still being written, and it repeats itself. Send it \
-                 again short: each field a sentence or two."
+                 closed. `value` was still being written, and it repeats itself. Send a shorter call, and build anything longer up over several calls."
             )
         );
         assert!(kept.get("__cut_off").is_some(), "{kept}");
@@ -6312,22 +6352,28 @@ mod tests {
         );
         assert_eq!(last_field_opened("no keys here"), None);
         // A multi-byte char before a quote is walked by char, not sliced into.
-        assert_eq!(last_field_opened("{\"café\": \"x"), None);
         assert_eq!(
-            last_field_opened("{\"doing\": \"she says “stay\": the kettle"),
-            None
+            last_field_opened("{\"doing\": \"she says “stay”, and").as_deref(),
+            Some("doing")
         );
-        assert_eq!(last_field_opened("{\"doing\": \"wait…\": then"), None);
-        // A key the scan cannot spell leaves the field unknown; it never
-        // falls back to one that had closed.
+        // A key of any spelling, nesting, and arrays are followed.
+        assert_eq!(last_field_opened("{\"café\": \"x").as_deref(), Some("café"));
         assert_eq!(
-            last_field_opened("{\"scene\": \"a room\", \"styleName\": \"she turns, she tu"),
-            None
+            last_field_opened("{\"people\": [{\"who\": \"maya\"}, {\"doing\": \"runs").as_deref(),
+            Some("doing")
+        );
+        // Cut inside the next key, or between fields: no field was open.
+        assert_eq!(last_field_opened("{\"scene\": \"a room\", \"toge"), None);
+        assert_eq!(last_field_opened("{\"scene\": \"a room\", "), None);
+        assert_eq!(
+            last_field_opened("{\"scene\": \"a room\", \"styleName\": \"she turns, she tu")
+                .as_deref(),
+            Some("styleName")
         );
         assert_eq!(
             unreadable_call(&json!({"__cut_off": {"chars": 900, "repeats": true, "limit": false}})),
             "Not run: this call ended after 900 characters, before its arguments closed. The \
-             last field repeats itself. Send it again short: each field a sentence or two."
+             last field repeats itself. Send a shorter call, and build anything longer up over several calls."
         );
     }
 
