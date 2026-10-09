@@ -1955,6 +1955,16 @@ pub fn persona_provider(
     build_for(provider_cfg, for_use)
 }
 
+/// The seed a persona's conversation is sent: `None` whatever the provider
+/// pins ([`persona_provider`]). What a persona chat's `RunConfig` records,
+/// so a replay reads the sampler the turn ran under, not the config's: a
+/// chat recorded `seed: 42` while its turns went unseeded, and a replay at
+/// seed 42 was taken for the live sample (2026-10-09).
+pub fn persona_converse_seed(bound: &crate::follow::Bound) -> Option<u64> {
+    let (_, cfg) = bound.config.provider(Some(&bound.provider_name)).ok()?;
+    persona_provider_config(cfg, PersonaUse::Converse).seed
+}
+
 /// [`persona_provider`] with the seed a replay sample names: the one
 /// deliberate difference from a served turn, which goes unseeded. N samples
 /// at one pinned seed would be one sample N times.

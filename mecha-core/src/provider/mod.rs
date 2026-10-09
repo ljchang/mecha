@@ -108,6 +108,15 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// The JSON body [`complete`](Self::complete) would send for `req`,
+    /// `stream` as a `sink` would set it: what a replay records to say
+    /// exactly what was sent, sampler fields and all. `None` for a provider
+    /// that builds no body; a wrapper answers for the provider it sends
+    /// through.
+    fn wire_body(&self, _req: &CompletionRequest, _stream: bool) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Run one turn. With `sink`, stream and emit deltas as they arrive; the
     /// accumulated response is still returned.
     async fn complete(
@@ -181,6 +190,9 @@ impl Provider for Halting {
     }
     fn supports_effort(&self) -> bool {
         self.inner.supports_effort()
+    }
+    fn wire_body(&self, req: &CompletionRequest, stream: bool) -> Option<serde_json::Value> {
+        self.inner.wire_body(req, stream)
     }
     async fn complete(
         &self,
@@ -538,6 +550,12 @@ impl Provider for Failover {
     /// transcript to say why.
     fn vision(&self) -> bool {
         self.primary.vision()
+    }
+
+    /// The primary's body: a fallback answers only when the primary could
+    /// not, and then under its own model name.
+    fn wire_body(&self, req: &CompletionRequest, stream: bool) -> Option<serde_json::Value> {
+        self.primary.wire_body(req, stream)
     }
 
     async fn complete(
