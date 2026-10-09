@@ -140,6 +140,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
         let read_nvidia = || *nvidia.get_or_init(mecha_core::engine::read_nvidia);
+        let mut router_passed = false;
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
@@ -154,6 +155,23 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 }
             }
             for s in install::offered(&p, chat_here) {
+                // The router is installed for a chat the config already
+                // sends to it, never beside a chat server it names elsewhere
+                // (found on review of #618): `mecha setup chat` is the door
+                // that moves the provider too.
+                if s.id == mecha_core::router_unit::ID
+                    && !mecha_core::router_unit::chat_is_the_routers(&cfg)
+                {
+                    if !router_passed {
+                        eprintln!(
+                            "mecha: the chat router is not installed — the default provider \
+                             does not name it; `mecha setup chat` installs it and offers the \
+                             provider"
+                        );
+                        router_passed = true;
+                    }
+                    continue;
+                }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
@@ -458,11 +476,6 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         let what = match (f.repo, f.path) {
             (Some(repo), path) => format!("{repo}/{path}"),
             (None, "") if f.state == FileState::Brought => "your own model".to_string(),
-            // Unknown is never "none": a keeper that could not be read
-            // says so on the next line, and this one must not deny a row.
-            (None, "") if matches!(f.state, FileState::KeeperUnknown { .. }) => {
-                "the model it serves".to_string()
-            }
             (None, "") if f.model.is_empty() => "no recommended model".to_string(),
             (None, "") => f.model.to_string(),
             (None, path) => path.to_string(),
@@ -900,6 +913,22 @@ mod tests {
                     path: "a.gguf",
                     state: FileState::Mismatch,
                 },
+                // An unread keeper still names the tier's row; a brought
+                // model is the owner's (review of #618).
+                PlannedFile {
+                    slot: "image",
+                    model: "the-row-model",
+                    repo: None,
+                    path: "",
+                    state: FileState::KeeperUnknown { sidecar: "ComfyUI" },
+                },
+                PlannedFile {
+                    slot: "chat",
+                    model: "",
+                    repo: None,
+                    path: "",
+                    state: FileState::Brought,
+                },
                 PlannedFile {
                     slot: "ocr",
                     model: "m",
@@ -918,6 +947,9 @@ mod tests {
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",
+            "the-row-model",
+            "kept by ComfyUI, which could not be checked — not priced",
+            "your own model",
             "1 could not be checked",
             "1 model file(s) at their path do not match their pins",
             "To download: 2.0 GiB.",

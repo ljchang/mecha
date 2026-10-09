@@ -59,13 +59,27 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         false,
     )?;
     if let Some(r) = plan.sidecars.iter().find(|s| s.id == router_unit::ID) {
-        if let mecha_core::sidecar::SidecarState::Provided { by } = &r.state {
-            println!(
-                "This machine already serves a chat model through a router installed by hand \
-                 ({by}) — nothing is installed over it. `mecha model list` shows what it serves; \
-                 `mecha setup` checks the config agrees with it."
-            );
-            return Ok(());
+        match &r.state {
+            mecha_core::sidecar::SidecarState::Provided { by } => {
+                println!(
+                    "This machine already serves a chat model through a router installed by \
+                     hand ({by}) — nothing is installed over it. `mecha model list` shows what \
+                     it serves; `mecha setup` checks the config agrees with it."
+                );
+                return Ok(());
+            }
+            // Nothing is installed over an unknown, as `features enable`
+            // says: whose the router is cannot be told, and finding out at
+            // `write_owned` comes after the model's download (found on
+            // review of #618).
+            mecha_core::sidecar::SidecarState::Unknown { why } => {
+                println!(
+                    "The chat router here could not be checked ({why}), so nothing is installed \
+                     over it."
+                );
+                return Ok(());
+            }
+            _ => {}
         }
     }
 
@@ -217,7 +231,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     if let Some((name, _)) = cfg
         .providers
         .iter()
-        .find(|(_, p)| names_this_router(p, naming.port))
+        .find(|(_, p)| router_unit::names_this_router(p, naming.port))
     {
         println!();
         // The default moves only onto a table that now names what the
@@ -241,44 +255,9 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     super::setup::write_local_provider(&found)
 }
 
-/// Whether a provider table names the router on `port` here.
-fn names_this_router(p: &mecha_core::config::ProviderConfig, port: u16) -> bool {
-    let port = format!(":{port}");
-    p.kind == "local"
-        && p.base_url
-            .as_deref()
-            .is_some_and(|u| mecha_core::provider::router::is_loopback(u) && u.contains(&port))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A `local` table with no `base_url` is answered by api.openai.com, so
-    /// it is never "this router" — rewriting it and offering it as default
-    /// would point a local install at a hosted model (found on review of
-    /// #618).
-    #[test]
-    fn only_a_loopback_table_on_the_port_names_this_router() {
-        let table = |base: Option<&str>| mecha_core::config::ProviderConfig {
-            kind: "local".into(),
-            base_url: base.map(str::to_string),
-            ..Default::default()
-        };
-        assert!(names_this_router(
-            &table(Some("http://127.0.0.1:8080/v1")),
-            8080
-        ));
-        assert!(!names_this_router(&table(None), 8080));
-        assert!(!names_this_router(
-            &table(Some("http://127.0.0.1:9090/v1")),
-            8080
-        ));
-        assert!(!names_this_router(
-            &table(Some("http://box.lan:8080/v1")),
-            8080
-        ));
-    }
 
     /// `chat` is a noun in `setup`'s feature position, as `engine` is, so no
     /// feature may ever be called that.
