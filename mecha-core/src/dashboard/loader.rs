@@ -21,6 +21,9 @@ use crate::cron::Schedule;
 pub const MAX_ROWS: u32 = 100_000;
 const MAX_COLUMNS: usize = 64;
 const MAX_QUERY: usize = 16 * 1024;
+/// A dataset's size as published: the row cap bounds the count, this bounds
+/// the bytes, since a string column has no length of its own.
+pub const MAX_DATASET_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -201,6 +204,7 @@ impl Loader {
             return Err(ShapeRefusal::TooManyRows { max: self.max_rows });
         }
         let mut shaped = Vec::with_capacity(rows.len());
+        let mut bytes = 0usize;
         for (r, row) in rows.into_iter().enumerate() {
             if row.len() != self.columns.len() {
                 return Err(ShapeRefusal::RowWidth {
@@ -212,7 +216,15 @@ impl Loader {
             let mut out = Vec::with_capacity(row.len());
             for (value, col) in row.into_iter().zip(&self.columns) {
                 match coerce(value, col.kind) {
-                    Some(v) => out.push(v),
+                    Some(v) => {
+                        bytes += approx_len(&v);
+                        if bytes > MAX_DATASET_BYTES {
+                            return Err(ShapeRefusal::TooLarge {
+                                max_bytes: MAX_DATASET_BYTES,
+                            });
+                        }
+                        out.push(v)
+                    }
                     None => {
                         return Err(ShapeRefusal::Value {
                             row: r,
@@ -239,6 +251,9 @@ pub enum ShapeRefusal {
     TooManyRows {
         max: u32,
     },
+    TooLarge {
+        max_bytes: usize,
+    },
     RowWidth {
         row: usize,
         expected: usize,
@@ -263,6 +278,10 @@ impl std::fmt::Display for ShapeRefusal {
             ShapeRefusal::TooManyRows { max } => {
                 write!(f, "the query returned more than max_rows ({max}) rows")
             }
+            ShapeRefusal::TooLarge { max_bytes } => write!(
+                f,
+                "the dataset is larger than {max_bytes} bytes; aggregate in the query"
+            ),
             ShapeRefusal::RowWidth { row, expected, got } => {
                 write!(
                     f,
@@ -283,6 +302,16 @@ impl std::fmt::Display for ShapeRefusal {
 }
 
 impl std::error::Error for ShapeRefusal {}
+
+/// Roughly what a value costs serialized — exact for strings, near enough for
+/// the rest, and never an allocation.
+fn approx_len(v: &Value) -> usize {
+    match v {
+        Value::String(s) => s.len() + 2,
+        Value::Null | Value::Bool(_) => 5,
+        _ => 20,
+    }
+}
 
 fn coerce(value: Value, kind: ColumnType) -> Option<Value> {
     if value.is_null() {

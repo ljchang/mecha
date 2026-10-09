@@ -130,14 +130,26 @@ impl Installed {
         }
 
         let spec_path = dir.join("dashboard.json");
-        let text = std::fs::read_to_string(&spec_path)
-            .with_context(|| format!("reading {}", spec_path.display()))?;
-        let spec = match Spec::parse(&text) {
-            Ok(spec) => Some(spec),
-            Err(r) => {
-                refusals.extend(prefixed("dashboard.json", r.0));
+        // A directory with loaders and no spec is a half-written dashboard —
+        // a refusal beside the others, not I/O to give up on.
+        let spec = match std::fs::read_to_string(&spec_path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                refusals.push(Refusal::new(
+                    "dashboard.json",
+                    "a dashboard needs a dashboard.json beside its loaders/",
+                ));
                 None
             }
+            Err(e) => {
+                return Err(e).with_context(|| format!("reading {}", spec_path.display()));
+            }
+            Ok(text) => match Spec::parse(&text) {
+                Ok(spec) => Some(spec),
+                Err(r) => {
+                    refusals.extend(prefixed("dashboard.json", r.0));
+                    None
+                }
+            },
         };
 
         let mut loaders = BTreeMap::new();
@@ -178,9 +190,14 @@ impl Installed {
 }
 
 fn prefixed(file: &str, refusals: Vec<Refusal>) -> impl Iterator<Item = Refusal> + '_ {
-    refusals
-        .into_iter()
-        .map(move |r| Refusal::new(format!("{file}#{}", r.at), r.rule))
+    refusals.into_iter().map(move |r| {
+        let at = if r.at.is_empty() {
+            file.to_string()
+        } else {
+            format!("{file}#{}", r.at)
+        };
+        Refusal::new(at, r.rule)
+    })
 }
 
 /// What only the spec and its loaders together can answer: every declared
