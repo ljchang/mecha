@@ -804,6 +804,10 @@ pub struct ToolCtx {
     /// every jail, read by no tool; stamped by a kept chat's host, never an
     /// incognito one. `None` saves nothing, which is how it is turned off.
     pub prompt_log: Option<std::path::PathBuf>,
+    /// Where `image_generate` draws a picture's fresh seeds, in order, when
+    /// set: a replay stamps one so its arms render at paired seeds. `None`
+    /// draws at random, as every chat does. Never the model's.
+    pub image_seeds: Option<std::sync::Arc<crate::sample::SeedStream>>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -993,6 +997,7 @@ impl Default for ToolCtx {
             role_split: None,
             scene_reader: None,
             prompt_log: None,
+            image_seeds: None,
         }
     }
 }
