@@ -93,6 +93,19 @@ pub struct SampleArgs {
     #[arg(long, requires = "persona")]
     pub no_readers: bool,
 
+    /// Which tool text the request carries: `today` (this build's, the
+    /// default: the binary is the arm) or `recorded` (the surface the turn
+    /// was sent, from the surface store by its `tools_hash`), so a wording
+    /// experiment on an older chat starts from what the model saw. Recorded
+    /// is call-only: a tool that runs is today's and says so in its own words.
+    #[arg(
+        long,
+        value_name = "today|recorded",
+        default_value = "today",
+        requires = "persona"
+    )]
+    pub surface: String,
+
     /// Sample i's pictures draw their fresh seeds from a stream seeded
     /// image-seed-base + i, so two arms run with the same base render each
     /// sample at the same seeds.
@@ -313,6 +326,29 @@ async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()
     }
 }
 
+/// The tool surface `branch`'s turn was sent: its recorded names, and the
+/// specs the surface store holds under its `tools_hash`. Refused when the
+/// recording names no surface or the store no longer holds it, rather than
+/// standing today's text in for it.
+fn recorded_tools_of(
+    branch: &Branch,
+    hash: Option<&str>,
+) -> Result<(Vec<String>, Vec<mecha_core::message::ToolSpec>)> {
+    let names = branch
+        .config
+        .as_ref()
+        .map(|c| c.tools.clone())
+        .context("the turn has no recorded run config, so no recorded surface")?;
+    let hash = hash.context("the turn's run config names no tool surface (`tools_hash`)")?;
+    let specs = mecha_core::surface::SurfaceStore::open_default()
+        .and_then(|s| s.load(hash))
+        .with_context(|| format!("the surface store no longer holds surface {hash}"))?;
+    if mecha_core::surface::fingerprint(&specs) != hash {
+        bail!("surface {hash} in the store does not hash to its name");
+    }
+    Ok((names, specs))
+}
+
 /// An arm's overlay, read from `path`. One with no edits is the baseline
 /// under another name, so it is refused here, as an edit that matches
 /// nothing is refused per sample.
@@ -441,8 +477,30 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         &store,
     )?
     .0;
-    let surface = mecha_core::surface::fingerprint(&probe.registry().specs());
+    let today = mecha_core::surface::fingerprint(&probe.registry().specs());
     let recorded_surface = branch.config.as_ref().and_then(|c| c.tools_hash.clone());
+    let recorded_tools = match args.surface.as_str() {
+        "today" => None,
+        "recorded" => Some(recorded_tools_of(&branch, recorded_surface.as_deref())?),
+        other => bail!("--surface is today or recorded, not `{other}`"),
+    };
+    // What the requests will carry, by fingerprint: the stand-ins are
+    // checked against it before every sample.
+    let surface = recorded_tools
+        .as_ref()
+        .map(|(_, specs)| mecha_core::surface::fingerprint(specs))
+        .unwrap_or_else(|| today.clone());
+    if recorded_tools.is_none()
+        && !overlay.is_empty()
+        && recorded_surface.as_deref().is_some_and(|r| r != today)
+    {
+        eprintln!(
+            "note: this turn was sent another tool surface ({}) than this build's ({today}); \
+             the overlay edits today's text — `--surface recorded` starts from what the \
+             model saw",
+            recorded_surface.as_deref().unwrap_or_default()
+        );
+    }
     let system_matches = branch
         .config
         .as_ref()
@@ -450,6 +508,12 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     // A picture call renders unless asked not to, where the persona can
     // draw at all.
     let render = !args.no_render && probe.registry().get(IMAGE_TOOL).is_some();
+    if render && recorded_tools.is_some() {
+        bail!(
+            "--surface recorded is call-only: a picture call that runs is today's tool, \
+             described in today's words — add --no-render"
+        );
+    }
     let exe = std::env::current_exe()?;
     let header = serde_json::json!({
         "header": {
@@ -470,7 +534,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "binary": exe.display().to_string(),
             "binary_sha256": mecha_core::document::sha256_hex(&std::fs::read(&exe)?),
             "version": env!("CARGO_PKG_VERSION"),
+            "surface_mode": args.surface,
             "surface": surface,
+            "today_surface": today,
             "recorded_surface": recorded_surface,
             "surface_matches_recorded": recorded_surface.as_deref().map(|r| r == surface),
             "system_matches_recorded": system_matches,
@@ -495,6 +561,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         overlay,
         max_tokens: args.max_tokens,
         clock: mecha_core::clock::for_replay(clock_at.or(recorded_clock)),
+        recorded_tools,
         pinned_model: bound.model.clone(),
         allow_load: args.allow_load,
         surface,
@@ -556,6 +623,9 @@ pub struct Sampler {
     overlay: Arc<Overlay>,
     max_tokens: Option<u32>,
     clock: Arc<dyn mecha_core::clock::Clock>,
+    /// The recorded surface's tool names and specs, for `--surface
+    /// recorded`: the stand-ins are described by them.
+    recorded_tools: Option<(Vec<String>, Vec<mecha_core::message::ToolSpec>)>,
     /// The model the replay sends to, and whether it may load it over
     /// what the router holds (`guard_load`).
     pinned_model: String,
@@ -645,17 +715,30 @@ impl Sampler {
         let real = staged
             .as_ref()
             .and_then(|_| agent.registry().get(IMAGE_TOOL).cloned());
-        let names: Vec<String> = agent
-            .registry()
-            .iter()
-            .map(|t| t.name().to_string())
-            .filter(|n| real.is_none() || n != IMAGE_TOOL)
-            .collect();
+        let (names, specs, fallback) = match &self.recorded_tools {
+            // The recording's names and words; a tool this build no longer
+            // has is described from its spec and never runs.
+            Some((names, specs)) => (
+                names.clone(),
+                specs.as_slice(),
+                Some(crate::setup::surface_only_registry()),
+            ),
+            None => (
+                agent
+                    .registry()
+                    .iter()
+                    .map(|t| t.name().to_string())
+                    .filter(|n| real.is_none() || n != IMAGE_TOOL)
+                    .collect(),
+                &[][..],
+                None,
+            ),
+        };
         let mut tools = replay_registry(
             &names,
             agent.registry(),
-            None,
-            &[],
+            fallback.as_ref(),
+            specs,
             Vec::new(),
             OnDivergence::Stop,
             cancel.clone(),
@@ -864,6 +947,45 @@ mod tests {
             guard_load(None, "a", false).await.is_ok(),
             "no local router"
         );
+    }
+
+    /// `--surface recorded` reads the turn's own tool text back from the
+    /// surface store, and refuses rather than stand today's in for one the
+    /// store no longer holds.
+    #[test]
+    fn the_recorded_surface_is_the_turns_own_or_nothing() {
+        let _home = crate::testenv::HomeGuard::new("replay-surface");
+        let specs = vec![mecha_core::message::ToolSpec {
+            name: "widget".into(),
+            description: "An old description.".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let hash = mecha_core::surface::SurfaceStore::open_default()
+            .unwrap()
+            .record(&specs)
+            .unwrap();
+        let branch = |hash: Option<&str>| Branch {
+            line: 1,
+            messages: Vec::new(),
+            taint: Default::default(),
+            notes: Vec::new(),
+            owner: String::new(),
+            spoken: false,
+            config: Some(mecha_core::session::RunConfig {
+                tools: vec!["widget".into()],
+                tools_hash: hash.map(str::to_string),
+                ..Default::default()
+            }),
+            calendar: None,
+            call: None,
+        };
+        let (names, got) = recorded_tools_of(&branch(Some(&hash)), Some(&hash)).unwrap();
+        assert_eq!(names, ["widget"]);
+        assert_eq!(got[0].description, "An old description.");
+        let err = recorded_tools_of(&branch(Some("0000000000000000")), Some("0000000000000000"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("no longer holds"), "{err:#}");
+        assert!(recorded_tools_of(&branch(None), None).is_err());
     }
 
     #[test]
