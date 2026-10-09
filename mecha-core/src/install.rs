@@ -474,18 +474,24 @@ pub async fn install(
         // The router with what its presets already serve — a GGUF the owner
         // brought through `mecha setup chat` is kept, never replaced by the
         // recommended row — else the row recommended for this machine.
-        "router" => crate::router_unit::install(
-            m,
-            cfg,
-            &crate::router_unit::installed_choice(&m.mecha_home)?
-                .unwrap_or(crate::router_unit::Choice::Recommended),
-            &crate::router_unit::Naming::shipped(),
-            machine,
-            hub,
-            say,
-        )
-        .await
-        .map(|_| ()),
+        "router" => {
+            let naming = crate::router_unit::Naming::shipped();
+            let alias = crate::router_unit::install(
+                m,
+                cfg,
+                &crate::router_unit::installed_choice(&m.mecha_home)?
+                    .unwrap_or(crate::router_unit::Choice::Recommended),
+                &naming,
+                machine,
+                hub,
+                &mut *say,
+            )
+            .await?;
+            if let Some(lag) = crate::router_unit::provider_lags(cfg, &naming, &alias) {
+                say(&lag);
+            }
+            Ok(())
+        }
         "embed-server" | "ocr-server" => {
             let which = if id == "embed-server" {
                 crate::llama_units::Which::Embeddings

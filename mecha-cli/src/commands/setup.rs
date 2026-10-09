@@ -953,11 +953,10 @@ fn append_table(path: &std::path::Path, provider: &str, table: &[String]) -> Res
 /// comments in this file are most of it.
 fn set_default_provider(path: &std::path::Path, provider: &str) -> Result<()> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
-    // Through `toml_string` like every other value this module writes.
-    // Latent rather than live — the only caller passes the literal "local" —
-    // but `ARCHITECTURE.md` claims *both* values on this path are escaped for
-    // TOML, and a claim that is true only because of who happens to call it
-    // is the thing that doc paragraph is itself about.
+    // Through `toml_string` like every other value this module writes —
+    // live, not latent: `offer_default` passes a provider name read from the
+    // config, and `ARCHITECTURE.md` claims *both* values on this path are
+    // escaped for TOML.
     let assignment = format!("default_provider = {}", onboarding::toml_string(provider));
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     match lines
