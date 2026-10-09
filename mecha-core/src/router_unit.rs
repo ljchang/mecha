@@ -373,9 +373,21 @@ pub async fn install(
     let engine = Engine::resolve(m)?;
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let bin = bin_dir(home);
+    // The restart below stops whatever the router has resident, so it is a
+    // switch like `mecha model use` and the engine gate's: declined before
+    // the first byte when a run holds the router, and the switch taken
+    // across the restart and the load so a run starting meanwhile waits
+    // rather than meeting a dead port (found on review of #618). Taken after
+    // the download, not before: hours of fetching must not hold every run.
+    let holds = crate::hold::Holds::new(crate::hold::dir_under(home));
+    let base = naming.base();
+    crate::engine_gate::preflight(&holds, &base).context("nothing was installed")?;
     Manifest::begin(home, ID)?;
 
     let preset = preset_for(choice, machine, hub, &mut *say).await?;
+    let _switching =
+        crate::engine_gate::take_switch(&holds, &base, "the chat router", &preset.alias)
+            .context("the model is downloaded; the router was not restarted")?;
     let presets = presets_path(home);
     write_owned(home, ID, &presets, &presets_text(&preset), 0o644)?;
     let r = |t: &str| render(t, naming, &bin, &presets);
@@ -742,6 +754,50 @@ mod tests {
             assert!(installed_by_mecha(&m.mecha_home).unwrap());
         }
         drop(held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A router mid-switch is not restarted under it: the install declines
+    /// before anything is recorded, as `mecha model use` and the engine gate
+    /// do (found on review of #618).
+    #[tokio::test]
+    async fn a_router_mid_switch_is_not_installed_over() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            stem: "mecha-test-switch".into(),
+            port: free.local_addr().unwrap().port(),
+        };
+        drop(free);
+        let root = std::env::temp_dir().join(format!("mecha-7c2-s-{}", uuid::Uuid::new_v4()));
+        let mut m = Machinery::real().unwrap();
+        m.mecha_home = root.join(".mecha");
+        let holds = crate::hold::Holds::new(crate::hold::dir_under(&m.mecha_home));
+        let _other = holds
+            .begin_switch(&naming.base(), Some("a"), "b")
+            .unwrap()
+            .unwrap();
+        let machine = crate::recommend::Machine::read().unwrap();
+        let r = install(
+            &m,
+            &Choice::Own {
+                model: "/nowhere.gguf".into(),
+                mmproj: None,
+            },
+            &naming,
+            &machine,
+            &root,
+            &mut |_| {},
+        )
+        .await;
+        // The engine is resolved first; with none here the refusal is that.
+        if cfg!(target_os = "linux") && Engine::resolve(&m).is_ok() {
+            let err = format!("{:#}", r.unwrap_err());
+            assert!(err.contains("already waiting"), "{err}");
+            assert!(
+                !installed_by_mecha(&m.mecha_home).unwrap(),
+                "nothing recorded"
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

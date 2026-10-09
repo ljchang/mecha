@@ -1565,11 +1565,18 @@ step as `mecha setup --write`, so the model name, context window and vision are
 read off the server, never typed. When one already names this router — `setup
 chat` run again to change the model — it shows what the router now reports for
 that table and asks before writing, as `mecha setup --write` does, since the
-model name is what the router routes by. A local provider that names a server on
-another machine is left as it is.
+model name is what the router routes by. If that table is not your
+`default_provider`, it then offers to make it the default — once the table names
+what the router serves, whether it already did or you just let it be rewritten —
+so a local model is never installed while every run still goes elsewhere. A
+local provider that names a server on another machine, or on another port here,
+is left as it is.
 
-A router you installed yourself is detected and left alone: nothing is installed
-over it. It takes no flags and runs only at a terminal, because it asks. On
+A router you installed yourself, or one that could not be checked, is left
+alone: nothing is installed over it. Reinstalling waits for no run: if a run is
+using the router, or a model switch is pending, it declines before downloading
+anything, and it holds the router's switch while it restarts, so a run that
+starts meanwhile waits rather than failing. It takes no flags and runs only at a terminal, because it asks. On
 Linux only, as the other servers' installs are.
 
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
