@@ -76,6 +76,22 @@ pub struct SampleArgs {
     /// this one in its place.
     #[arg(long, requires = "persona")]
     pub allow_load: bool,
+
+    /// Branch inside the turn's run, after the batch holding its Nth tool
+    /// call (1-based) and the results that answered it.
+    #[arg(long, value_name = "N", requires = "persona")]
+    pub at_call: Option<usize>,
+
+    /// Send the request only: no picture call runs. By default a sample's
+    /// picture call runs the real `image_generate` against the chat's scene
+    /// staged as of the turn, in a scratch store of its own.
+    #[arg(long, requires = "persona")]
+    pub no_render: bool,
+
+    /// Render without the turn's scene reader and role splitter (an arm
+    /// that measures the call drawn as sent).
+    #[arg(long, requires = "persona")]
+    pub no_readers: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -266,7 +282,10 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     if args.samples == 0 {
         bail!("--samples must be at least 1");
     }
-    let branch: Branch = pr::branch_at(&path, &text, line)?;
+    let branch: Branch = match args.at_call {
+        Some(call) => pr::branch_at_call(&path, &text, line, call)?,
+        None => pr::branch_at(&path, &text, line)?,
+    };
     let overlay = match &args.overlay {
         Some(f) => Overlay::parse(
             &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
@@ -352,6 +371,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         .config
         .as_ref()
         .map(|c| c.system_prompt.as_deref() == probe.system());
+    // A picture call renders unless asked not to, where the persona can
+    // draw at all.
+    let render = !args.no_render && probe.registry().get(IMAGE_TOOL).is_some();
     let exe = std::env::current_exe()?;
     let header = serde_json::json!({
         "header": {
@@ -377,8 +399,10 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "surface_matches_recorded": recorded_surface.as_deref().map(|r| r == surface),
             "system_matches_recorded": system_matches,
             "calendar_matched": clock_at.is_some(),
-            "readers_stamped": false,
-            "tools_run": false,
+            "call": branch.call,
+            "render": render,
+            "readers_stamped": render && !args.no_readers,
+            "tools_run": if render { vec![IMAGE_TOOL] } else { Vec::new() },
         }
     });
     writeln!(file, "{header}")?;
@@ -396,6 +420,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         clock: mecha_core::clock::for_replay(clock_at.or(recorded_clock)),
         surface,
         work,
+        chat: id.clone(),
+        render,
+        readers: !args.no_readers,
     };
     let mut samples = Vec::with_capacity(args.samples);
     for i in 0..args.samples {
@@ -445,6 +472,32 @@ pub struct Sampler {
     /// Today's tool surface, which the stand-ins must reproduce.
     surface: String,
     work: PathBuf,
+    /// The chat's id, which its scene is staged by.
+    chat: String,
+    /// Run the picture call against a scene staged per sample.
+    render: bool,
+    /// Stamp the scene reader and role splitter when rendering.
+    readers: bool,
+}
+
+/// The one tool a sample runs, when it renders.
+const IMAGE_TOOL: &str = "image_generate";
+
+/// Every file under `dir`, relative.
+fn files_under(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(rel) = p.strip_prefix(dir) {
+                out.insert(rel.to_path_buf());
+            }
+        }
+    }
+    out
 }
 
 impl Sampler {
@@ -462,26 +515,49 @@ impl Sampler {
             .await?;
         let cancel = CancellationToken::new();
         let log = Arc::new(Mutex::new(Vec::new()));
+        let branch = &self.branch;
+        // The chat's scene as of the turn, staged fresh for this sample: a
+        // store shared across samples carries one sample's picture into the
+        // next one's scene.
+        let staged = if self.render {
+            let scratch = self.work.join(format!("sample-{i:03}"));
+            Some(mecha_core::scene::stage::stage_at(
+                &self.store,
+                &self.persona,
+                &self.chat,
+                branch.line - 1,
+                &scratch,
+            )?)
+        } else {
+            None
+        };
         let capture = Capture {
             inner: crate::setup::persona_provider_seeded(&bound, PersonaUse::Converse, seed)?,
             overlay: Arc::clone(&self.overlay),
             max_tokens: self.max_tokens,
             requests: 1,
+            // A render must run its call: the sample ends when the run asks
+            // again (`SampleEnded`), not as the response comes back.
+            cancel_after_last: staged.is_none(),
             cancel: cancel.clone(),
             log: Arc::clone(&log),
         };
         let (agent, _) =
             crate::setup::persona_agent(&bound, &self.pinned, Box::new(capture), &self.store)?;
         let mut agent = agent.with_clock(Arc::clone(&self.clock));
-        // The same tools, described by their own words, that never run: the
-        // first call cancels the run (`OnDivergence::Stop` with nothing
-        // recorded), so a sample is one request and draws nothing.
+        // The same tools, described by their own words, that never run: a
+        // call to one cancels the run (`OnDivergence::Stop` with nothing
+        // recorded). Rendering, the picture tool is the real one.
+        let real = staged
+            .as_ref()
+            .and_then(|_| agent.registry().get(IMAGE_TOOL).cloned());
         let names: Vec<String> = agent
             .registry()
             .iter()
             .map(|t| t.name().to_string())
+            .filter(|n| real.is_none() || n != IMAGE_TOOL)
             .collect();
-        let standins = replay_registry(
+        let mut tools = replay_registry(
             &names,
             agent.registry(),
             None,
@@ -490,37 +566,54 @@ impl Sampler {
             OnDivergence::Stop,
             cancel.clone(),
         )?;
-        if mecha_core::surface::fingerprint(&standins.specs()) != self.surface {
-            bail!("the stand-in tools do not describe themselves as the real ones do");
+        if let Some(real) = real {
+            tools.insert(real);
         }
-        *agent.registry_mut() = standins;
-        let branch = &self.branch;
-        let cx = mecha_core::persona::turn::context(
-            &agent,
-            mecha_core::persona::turn::Turn {
-                workspace: self.work.clone(),
-                scene: None,
-                prompt_log: None,
-                owner: &branch.owner,
-                history: &branch.messages,
-                panel: false,
-                spoken: branch.spoken,
-                notes: branch.notes.clone(),
-                persona: self.persona.clone(),
-                character: self.pinned.settings.character.clone(),
-                library: mecha_core::imagelib::Library::default_dir().unwrap_or_default(),
-                model: bound.model.clone(),
-                readers: mecha_core::persona::turn::Readers::Off,
-            },
-        )
-        .with_cancel(cancel);
+        if mecha_core::surface::fingerprint(&tools.specs()) != self.surface {
+            bail!("the replay's tools do not describe themselves as the real ones do");
+        }
+        *agent.registry_mut() = tools;
+        let judge = || crate::setup::persona_provider(&bound, PersonaUse::Judge);
+        let mut turn = mecha_core::persona::turn::Turn {
+            workspace: self.work.clone(),
+            scene: None,
+            prompt_log: None,
+            owner: &branch.owner,
+            history: &branch.messages,
+            panel: false,
+            spoken: branch.spoken,
+            notes: branch.notes.clone(),
+            persona: self.persona.clone(),
+            character: self.pinned.settings.character.clone(),
+            library: mecha_core::imagelib::Library::default_dir().unwrap_or_default(),
+            model: bound.model.clone(),
+            readers: mecha_core::persona::turn::Readers::Off,
+        };
+        // Stamped into the scratch store only (`scene::stage` refuses one
+        // that overlaps the real store or workspace), never the chat's own.
+        if let Some(st) = &staged {
+            turn.workspace = st.workspace.clone();
+            turn.scene = Some(st.slot.clone());
+            turn.prompt_log = Some(st.prompt_log.clone());
+            if self.readers {
+                turn.readers = mecha_core::persona::turn::Readers::From(&judge);
+            }
+        }
+        let before = staged
+            .as_ref()
+            .map(|st| files_under(&st.workspace))
+            .unwrap_or_default();
+        let cx = mecha_core::persona::turn::context(&agent, turn).with_cancel(cancel);
         let mut convo =
             mecha_core::agent::Conversation::resumed(branch.messages.clone(), branch.taint);
         let ran = agent.run_in(&cx, &mut convo, None).await;
         drop(held);
-        let error = ran.err().map(|e| format!("{e:#}"));
+        let error = ran
+            .err()
+            .filter(|e| !pr::ended(e))
+            .map(|e| format!("{e:#}"));
         let log = log.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let sample = Sample::of(
+        let mut sample = Sample::of(
             i,
             Some(seed),
             branch.line,
@@ -529,6 +622,36 @@ impl Sampler {
             &log,
             error,
         );
+        sample.call = branch.call;
+        if let Some(st) = &staged {
+            let after = &convo.messages[branch.messages.len().min(convo.messages.len())..];
+            let new: Vec<PathBuf> = files_under(&st.workspace)
+                .difference(&before)
+                .cloned()
+                .collect();
+            let abs = |p: &PathBuf| st.workspace.join(p).display().to_string();
+            sample.render = Some(pr::RenderFacts {
+                scratch: st.store.parent().unwrap_or(&st.store).display().to_string(),
+                as_of: format!("{:?}", st.as_of),
+                missing: st.missing.clone(),
+                readers: self.readers,
+                results: pr::results_of(after, IMAGE_TOOL),
+                pictures: new
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|x| x == "png"))
+                    .map(abs)
+                    .collect(),
+                manifests: new
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                    .filter_map(|p| std::fs::read(st.workspace.join(p)).ok())
+                    .filter_map(|b| serde_json::from_slice(&b).ok())
+                    .collect(),
+                prompt_log: std::fs::read_to_string(&st.prompt_log)
+                    .map(|t| t.lines().map(str::to_string).collect())
+                    .unwrap_or_default(),
+            });
+        }
         if log.is_empty() {
             bail!(
                 "sample {i} sent no request: {}",
@@ -565,6 +688,16 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
             *digests.entry(d.clone()).or_default() += 1;
         }
     }
+    let rendered = samples
+        .iter()
+        .filter(|s| s.render.as_ref().is_some_and(|r| !r.pictures.is_empty()))
+        .count();
+    let render_errors = samples
+        .iter()
+        .filter_map(|s| s.render.as_ref())
+        .flat_map(|r| &r.results)
+        .filter(|r| r.is_error)
+        .count();
     let output: Vec<u64> = samples.iter().map(|s| s.output_tokens).collect();
     serde_json::json!({
         "samples": samples.len(),
@@ -576,6 +709,8 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
         "output_tokens_mean": (!output.is_empty())
             .then(|| output.iter().sum::<u64>() as f64 / output.len() as f64),
         "distinct_histories": digests.len(),
+        "rendered": rendered,
+        "render_errors": render_errors,
     })
 }
 
