@@ -194,12 +194,16 @@ pub fn installed_choice(mecha_home: &Path) -> Result<Option<Choice>> {
     }
 }
 
-/// Whether mecha's record names a router install — finished or not.
+/// Whether mecha's record names a router install that wrote something —
+/// finished or not, the only router of mecha's that can be what answers on
+/// the port. An entry `Manifest::begin` wrote and then abandoned (a download
+/// that died) wrote nothing, so a server on the port is someone else's (found
+/// on review of #618).
 pub fn installed_by_mecha(mecha_home: &Path) -> Result<bool> {
     Ok(Manifest::read(mecha_home)?
         .entries
         .iter()
-        .any(|e| e.sidecar == ID))
+        .any(|e| e.sidecar == ID && !e.wrote.is_empty()))
 }
 
 /// Whether a provider table names the router on `port` here: `local`, with
@@ -745,12 +749,27 @@ mod tests {
         if cfg!(target_os = "linux") {
             let err = format!("{:#}", r.unwrap_err());
             assert!(err.contains("already answers"), "{err}");
-            assert!(
-                !installed_by_mecha(&m.mecha_home).unwrap(),
-                "nothing recorded"
-            );
-            // Mecha's own router may answer: the refusal is for someone else's.
+            assert!(!recorded(&m.mecha_home), "nothing recorded");
+            // An install abandoned before it wrote anything is not mecha's
+            // router answering: the port is still refused (review of #618).
             Manifest::begin(&m.mecha_home, ID).unwrap();
+            assert!(!installed_by_mecha(&m.mecha_home).unwrap());
+            let again = install(
+                &m,
+                &Choice::Own {
+                    model: "/nowhere.gguf".into(),
+                    mmproj: None,
+                },
+                &naming,
+                &machine,
+                &root,
+                &mut |_| {},
+            )
+            .await;
+            let err = format!("{:#}", again.unwrap_err());
+            assert!(err.contains("already answers"), "{err}");
+            // Mecha's own router may answer: the refusal is for someone else's.
+            Manifest::record(&m.mecha_home, ID, &presets_path(&m.mecha_home)).unwrap();
             assert!(installed_by_mecha(&m.mecha_home).unwrap());
         }
         drop(held);
@@ -793,12 +812,19 @@ mod tests {
         if cfg!(target_os = "linux") && Engine::resolve(&m).is_ok() {
             let err = format!("{:#}", r.unwrap_err());
             assert!(err.contains("already waiting"), "{err}");
-            assert!(
-                !installed_by_mecha(&m.mecha_home).unwrap(),
-                "nothing recorded"
-            );
+            assert!(!recorded(&m.mecha_home), "nothing recorded");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Whether the record names the router at all — even an entry that
+    /// wrote nothing, which `installed_by_mecha` does not count.
+    fn recorded(home: &Path) -> bool {
+        Manifest::read(home)
+            .unwrap()
+            .entries
+            .iter()
+            .any(|e| e.sidecar == ID)
     }
 
     /// The presets file says what the router serves: the pinned row by its
