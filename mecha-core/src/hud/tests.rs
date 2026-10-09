@@ -522,6 +522,33 @@ fn a_transform_refuses_an_option_its_operation_does_not_take() {
 }
 
 #[test]
+fn the_schema_marker_must_have_its_exact_shape() {
+    let at = "/panels/1/vegalite/$schema";
+    for bad in [
+        "https://vega.github.io/schema/vega-lite/xjurl(y).json",
+        "https://vega.github.io/schema/vega-lite/v6/../../x.json",
+        "https://vega.github.io/schema/vega-lite/.json",
+    ] {
+        refused_at(&with(example(), at, json!(bad)), at);
+    }
+    for good in [
+        "https://vega.github.io/schema/vega-lite/v6.json",
+        "https://vega.github.io/schema/vega-lite/v5.20.1.json",
+    ] {
+        let v = with(example(), at, json!(good));
+        assert!(parse(&v).is_ok(), "{good}: {:?}", parse(&v).unwrap_err());
+    }
+}
+
+#[test]
+fn an_object_under_a_scalar_field_key_is_screened() {
+    let at = "/panels/1/vegalite/encoding/x/type";
+    let v = with(example(), at, json!({ "href": "x", "labelExpr": "y" }));
+    refused_at(&v, &format!("{at}/href"));
+    refused_at(&v, &format!("{at}/labelExpr"));
+}
+
+#[test]
 fn only_the_vegalite_schema_marker_may_be_a_url() {
     let at = "/panels/1/vegalite/$schema";
     let v = with(example(), at, json!("https://example.org/schema.json"));
@@ -791,7 +818,7 @@ struct Scratch(std::path::PathBuf);
 impl Scratch {
     fn new(id: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "mecha-dashboard-test-{}-{}",
+            "mecha-hud-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -835,7 +862,7 @@ type = "float"
 #[test]
 fn an_installed_dashboard_loads_when_spec_and_loaders_agree() {
     let s = Scratch::new("lab_week");
-    s.write("dashboard.json", &example().to_string());
+    s.write("hud.json", &example().to_string());
     s.write("loaders/visits_by_day.toml", LOADER);
     s.write("loaders/instruments.toml", INSTRUMENTS);
     let installed = s.load().unwrap().unwrap();
@@ -849,7 +876,7 @@ fn an_installed_dashboard_loads_when_spec_and_loaders_agree() {
 #[test]
 fn an_unreadable_loader_is_a_refusal_beside_the_others() {
     let s = Scratch::new("lab_week");
-    s.write("dashboard.json", &example().to_string());
+    s.write("hud.json", &example().to_string());
     s.write("loaders/instruments.toml", INSTRUMENTS);
     std::fs::write(s.0.join("loaders/visits_by_day.toml"), [0xff, 0xfe, 0x00]).unwrap();
     std::fs::create_dir(s.0.join("loaders/folder.toml")).unwrap();
@@ -883,7 +910,7 @@ fn an_unreadable_loaders_directory_is_a_refusal_beside_the_others() {
     use std::os::unix::fs::PermissionsExt;
     let s = Scratch::new("lab_week");
     s.write(
-        "dashboard.json",
+        "hud.json",
         &with(example(), "/theme", json!("Bad Theme")).to_string(),
     );
     let loaders = s.0.join("loaders");
@@ -897,7 +924,7 @@ fn an_unreadable_loaders_directory_is_a_refusal_beside_the_others() {
     let refusals = result.unwrap().unwrap_err().0;
     assert!(refusals.iter().any(|r| r.at == "loaders"), "{refusals:?}");
     assert!(
-        refusals.iter().any(|r| r.at == "dashboard.json#/theme"),
+        refusals.iter().any(|r| r.at == "hud.json#/theme"),
         "the spec's own refusal survives: {refusals:?}"
     );
 }
@@ -907,10 +934,7 @@ fn loaders_without_a_spec_are_a_refusal_not_an_error() {
     let s = Scratch::new("half_done");
     s.write("loaders/instruments.toml", INSTRUMENTS);
     let refusals = s.load().unwrap().unwrap_err().0;
-    assert!(
-        refusals.iter().any(|r| r.at == "dashboard.json"),
-        "{refusals:?}"
-    );
+    assert!(refusals.iter().any(|r| r.at == "hud.json"), "{refusals:?}");
     assert!(
         refusals.iter().all(|r| !r.at.ends_with('#')),
         "a file-level refusal carries no empty pointer: {refusals:?}"
@@ -921,7 +945,7 @@ fn loaders_without_a_spec_are_a_refusal_not_an_error() {
 fn a_missing_loader_a_stray_loader_and_an_undeclared_column_are_all_reported() {
     let s = Scratch::new("lab_week");
     let spec = with(example(), "/panels/2/columns/1", json!("cost"));
-    s.write("dashboard.json", &spec.to_string());
+    s.write("hud.json", &spec.to_string());
     s.write("loaders/instruments.toml", INSTRUMENTS);
     s.write("loaders/payroll.toml", INSTRUMENTS);
     let refusals = s.load().unwrap().unwrap_err().0;
@@ -937,7 +961,7 @@ fn a_missing_loader_a_stray_loader_and_an_undeclared_column_are_all_reported() {
     assert!(
         refusals
             .iter()
-            .any(|r| r.at == "dashboard.json#/panels/2/columns/1"),
+            .any(|r| r.at == "hud.json#/panels/2/columns/1"),
         "{text}"
     );
 }

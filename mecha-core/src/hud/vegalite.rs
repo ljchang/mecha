@@ -385,7 +385,10 @@ fn field_def(v: &Value, at: &str, out: &mut Vec<Refusal>) {
             // `field` ({"repeat": …}) and `test` (a predicate object) can hold
             // objects, so they are screened like style; the rest are scalars.
             "field" | "test" => style(val, &here, out),
-            "type" | "param" | "empty" | "bandPosition" | "columns" => {}
+            // Scalars in valid Vega-Lite, but screened all the same: `style`
+            // is a no-op on a scalar, and an object here would otherwise be
+            // the one nested value no screen reads.
+            "type" | "param" | "empty" | "bandPosition" | "columns" => style(val, &here, out),
             k if FIELD_DEF_STYLE.contains(&k) => style(val, &here, out),
             k => out.push(Refusal::new(
                 here,
@@ -560,4 +563,27 @@ fn style_entry(key: &str, val: &Value, at: &str, out: &mut Vec<Refusal>) {
         return;
     }
     style(val, &here, out);
+}
+
+#[cfg(test)]
+mod transform_table {
+    use super::TRANSFORMS;
+
+    /// The covering rule in `transform` assumes no two operations can both
+    /// cover one object. In release builds the `debug_assert` there is gone,
+    /// so pin the table itself: no op may list another op as an option while
+    /// that op lists it back.
+    #[test]
+    fn no_two_transform_ops_cover_each_other() {
+        for (a, a_opts) in TRANSFORMS {
+            for (b, b_opts) in TRANSFORMS {
+                if a != b {
+                    assert!(
+                        !(a_opts.contains(b) && b_opts.contains(a)),
+                        "`{a}` and `{b}` each list the other as an option"
+                    );
+                }
+            }
+        }
+    }
 }
