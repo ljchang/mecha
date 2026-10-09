@@ -738,16 +738,18 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
-    offer_settings(provider, props)
+    offer_settings(provider, props).map(|_| ())
 }
 
 /// Show what a server reports for an existing provider table, ask, and write
 /// it — `--write`'s step, shared with `mecha setup chat` when the model it
-/// installed replaces one the table already names.
+/// installed replaces one the table already names. `true` when written: a
+/// caller that goes on to move `default_provider` must not point it at a
+/// table the owner declined to update (found on review of #618).
 pub(super) fn offer_settings(
     provider: &str,
     props: &mecha_core::provider::preflight::Props,
-) -> Result<()> {
+) -> Result<bool> {
     let settings = onboarding::verified_settings(props);
     println!("Read back from the server, for [providers.{provider}]:\n");
     for (k, v) in &settings {
@@ -764,13 +766,13 @@ pub(super) fn offer_settings(
         std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
         if !line.trim().eq_ignore_ascii_case("y") {
             println!("not written");
-            return Ok(());
+            return Ok(false);
         }
     } else {
         println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(());
+        return Ok(false);
     }
-    apply(provider, &settings)
+    apply(provider, &settings).map(|()| true)
 }
 
 /// Offer to make `provider` the default when `current` is something else —

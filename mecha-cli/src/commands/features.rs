@@ -458,6 +458,11 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         let what = match (f.repo, f.path) {
             (Some(repo), path) => format!("{repo}/{path}"),
             (None, "") if f.state == FileState::Brought => "your own model".to_string(),
+            // Unknown is never "none": a keeper that could not be read
+            // says so on the next line, and this one must not deny a row.
+            (None, "") if matches!(f.state, FileState::KeeperUnknown { .. }) => {
+                "the model it serves".to_string()
+            }
             (None, "") if f.model.is_empty() => "no recommended model".to_string(),
             (None, "") => f.model.to_string(),
             (None, path) => path.to_string(),
