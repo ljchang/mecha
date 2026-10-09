@@ -5872,6 +5872,33 @@ non-blocking flock, so a hand edit never contends with a fire.
   within a week; whether changed arguments are a different action is left to
   the reviewer, never asserted as equivalence. `Extra` and `Missing` are the
   replay outrunning or falling short of the recording.
+- **A persona turn's run is built by one function, which serve and replay
+  both call** (`persona::turn::context`). A Python rebuild of the persona
+  request drifted twice in one day (2026-10-08), each time changing a
+  measured answer: insertion-ordered history keys gave 14/23 against the
+  shipped serde order's 1/25, and a staged record lost its photo's hash. So
+  serve's persona chat and `mecha replay --persona` take the stamps, notes,
+  budgets and `end_after_deferral` from that function, and its reader
+  stamping is pinned by `only_the_kept_chats_stamp_a_prompt_log`. The run's
+  plumbing stays with the caller: cancel, steering queue, job sink, and a
+  panel turn's `close_with`.
+- **`mecha replay --persona <chat> --at <line>` samples a turn's next
+  request; it does not re-drive the chat** (`persona::replay`). The branch is
+  `Session::parse` over the transcript up to the owner turn's record line,
+  with that turn's own `Notes` record (the line just before it). Its clock is
+  set to a day whose calendar reference renders as the one recorded after
+  the run (`clock_for`). Each sample is seeded (`--seed-base` + i), unlike a
+  served turn: N samples at one pinned seed are one sample N times. The tools
+  are today's, described by their own words through `replay_registry`
+  stand-ins, and the fingerprint is checked equal before sending. The first
+  call stops the run, so a sample is one request. An arm is a branch build
+  (the header names the binary's sha256) or an `--overlay` of text edits to
+  the built request. An edit that matches nothing fails the sample rather
+  than measuring the baseline twice. Before each sample the sampler waits
+  out the owner: a hold another process took on the router, or speech-engine
+  RTF lines in the last three minutes, which show a call between turns where
+  a hold does not. The output file holds model text, so it is 0600 in
+  `~/.mecha/research/replay/`; standard output carries counts.
 
 ### Archive and forget
 

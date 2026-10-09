@@ -1955,6 +1955,22 @@ pub fn persona_provider(
     build_for(provider_cfg, for_use)
 }
 
+/// [`persona_provider`] with the seed a replay sample names: the one
+/// deliberate difference from a served turn, which goes unseeded. N samples
+/// at one pinned seed would be one sample N times.
+pub fn persona_provider_seeded(
+    bound: &crate::follow::Bound,
+    for_use: PersonaUse,
+    seed: u64,
+) -> Result<Box<dyn mecha_core::provider::Provider>> {
+    let (_, provider_cfg) = bound.config.provider(Some(&bound.provider_name))?;
+    mecha_core::provider::build(provider_cfg)?;
+    mecha_core::provider::build(&mecha_core::config::ProviderConfig {
+        seed: Some(seed),
+        ..persona_provider_config(provider_cfg, for_use)
+    })
+}
+
 /// Build `cfg` for `for_use`, after building it **as configured** — one
 /// verdict on the config for every use. A provider can refuse the config
 /// itself (Anthropic refuses any `seed`), and stripping the seed for the
