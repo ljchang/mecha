@@ -936,6 +936,25 @@ pub fn verified_settings(props: &crate::provider::preflight::Props) -> Vec<(&'st
     out
 }
 
+/// Whether a provider table already holds every value `settings` would
+/// write — so a re-run that changed nothing is not mistaken for a declined
+/// rewrite (found on review of #618). A key the table leaves unset is not
+/// agreement: written, it would change what the file says.
+pub fn table_agrees(
+    p: &crate::config::ProviderConfig,
+    settings: &[(&'static str, String)],
+) -> bool {
+    settings.iter().all(|(k, v)| {
+        let have = match *k {
+            "model" => p.model.as_deref().map(toml_string),
+            "context_window" => p.context_window.map(|n| n.to_string()),
+            "vision" => p.vision.map(|b| b.to_string()),
+            _ => None,
+        };
+        have.as_deref() == Some(v.as_str())
+    })
+}
+
 /// A TOML string literal, escaped the way **TOML** escapes.
 ///
 /// **Not `format!("{s:?}")`, which is Rust escaping.** `str`'s `Debug`
@@ -2315,6 +2334,31 @@ mod tests {
             got.iter().any(|(k, v)| *k == "model" && v.contains("qwen")),
             "{got:?}"
         );
+    }
+
+    /// A table holding exactly what the server reports agrees; one value
+    /// off, or one key unset, does not (review of #618).
+    #[test]
+    fn a_table_agrees_only_when_every_value_is_already_written() {
+        let got = verified_settings(&props(65536, 4, true));
+        let model = got.iter().find(|(k, _)| *k == "model").unwrap().1.clone();
+        let model: String = toml::from_str::<toml::Value>(&format!("m = {model}")).unwrap()["m"]
+            .as_str()
+            .unwrap()
+            .into();
+        let mut p = crate::config::ProviderConfig {
+            kind: "local".into(),
+            model: Some(model),
+            context_window: Some(65536),
+            vision: Some(true),
+            ..Default::default()
+        };
+        assert!(table_agrees(&p, &got));
+        p.context_window = Some(32768);
+        assert!(!table_agrees(&p, &got));
+        p.context_window = Some(65536);
+        p.vision = None;
+        assert!(!table_agrees(&p, &got), "unset is not agreement");
     }
 
     /// An absent directory is a confident zero; an unreadable one is not.

@@ -228,15 +228,25 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     // and nor is one with no `base_url`, which `Openai::new` sends to
     // api.openai.com (found on review of #618; `router::follows_here` is
     // strict for the same reason).
-    if let Some((name, _)) = cfg
+    if let Some((name, table)) = cfg
         .providers
         .iter()
         .find(|(_, p)| router_unit::names_this_router(p, naming.port))
     {
         println!();
-        // The default moves only onto a table that now names what the
-        // router serves: declined, its `model` is a preset that is gone.
-        if super::setup::offer_settings(name, &props)? {
+        // The default moves only onto a table that names what the router
+        // serves: already agreeing, or rewritten now. Declined, its `model`
+        // is a preset that is gone. Agreement is checked first, so a re-run
+        // that changed nothing is not asked an identical rewrite whose "n"
+        // would also skip the default (found on review of #618).
+        let settings = mecha_core::onboarding::verified_settings(&props);
+        let current = if mecha_core::onboarding::table_agrees(table, &settings) {
+            println!("[providers.{name}] already names what the router serves.");
+            true
+        } else {
+            super::setup::offer_settings(name, &props)?
+        };
+        if current {
             super::setup::offer_default(name, &cfg.default_provider)?;
         }
         return Ok(());
