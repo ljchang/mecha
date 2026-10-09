@@ -78,6 +78,27 @@ pub fn fact_result(text: &str) -> Option<&str> {
         .flatten()
 }
 
+/// The change a Regenerate draws: the picture's scene as it is, at a new
+/// seed, with no model turn (IMAGE-DESIGN.md §5.4).
+pub const REDRAWN: &str = "drawn again as it is, at a new seed";
+
+/// Regenerate's call: the picture alone. The planner reads a call that
+/// changes nothing as the scene drawn again at a new seed (`redrawn`).
+pub fn redraw_call(picture: &str) -> serde_json::Value {
+    serde_json::json!({ "picture": picture })
+}
+
+/// The picture a Regenerate's fact drew again, so the page shows the new one
+/// as a version on that picture's card (§5.4). `None` for any other fact.
+pub fn fact_redraw_of(text: &str) -> Option<&str> {
+    let first = text.lines().next().filter(|l| is_fact(l))?;
+    let (picture, change) = first
+        .split_once("The picture: ")?
+        .1
+        .split_once(". The change: ")?;
+    (change.trim_end_matches(".)") == REDRAWN).then_some(picture)
+}
+
 /// The closing line of the persona's reply after a panel edit: the run's
 /// first request is already a closing one (`RunContext::close_with`).
 pub const DONE: &str = "(From the harness: the picture change the owner asked for from the \
@@ -779,6 +800,21 @@ pub fn masked_call(picture: &str, mask: &str, words: &str) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Regenerate's fact names the picture it drew again; an edit's, none.
+    #[test]
+    fn a_regenerate_fact_names_the_picture_it_drew_again() {
+        let redraw = fact("images/a.png", REDRAWN, "image: images/b.png\nA picture.");
+        assert!(is_fact(&redraw));
+        assert_eq!(fact_redraw_of(&redraw), Some("images/a.png"));
+        assert_eq!(
+            redraw_call("images/a.png"),
+            serde_json::json!({"picture": "images/a.png"})
+        );
+        let changed = fact("images/a.png", "make the sky pink", "image: images/c.png");
+        assert_eq!(fact_redraw_of(&changed), None);
+        assert_eq!(fact_redraw_of("plain words"), None);
+    }
 
     #[test]
     fn the_fact_is_the_harness_speaking_never_the_owner() {
