@@ -690,8 +690,8 @@ enum Category { ChatModel, Embeddings, Ocr, Voice, ImageGen, Mecha, Other }
 - **Measured from cgroup counters, not by inspecting processes**: systemd's
   per-unit `MemoryCurrent`, `CPUUsageNSec` and `TasksCurrent` already exist
   for every unit (read here, 2026-10-09). GPU memory per process comes from
-  `nvidia-smi --query-compute-apps=pid,used_gpu_memory` (the field name as
-  measured in §11.2); the pid is used in memory to find its
+  `nvidia-smi --query-compute-apps=pid,used_memory` (as run in §11.2); the
+  pid is used in memory to find its
   cgroup, then dropped — it is never written.
 - **Storage by role, not by path**: the owner labels mounts in the same
   closed-set way (`system`, `models`, `data`); unlabelled mounts sum into
@@ -711,7 +711,7 @@ Every minute, one row per category plus one system row:
 | CPU % per category, load average | cgroup `CPUUsageNSec` deltas; `/proc/loadavg` | |
 | Tasks per category, total | cgroup `TasksCurrent`; `/proc` count | a count, never a list |
 | GPU utilisation, temperature, power draw | `nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw` | `power.limit` is `[N/A]` on the GB10 (`GOAL-SYSTEM-DESIGN.md` §4.2) |
-| GPU memory per category | `nvidia-smi --query-compute-apps=pid,used_memory` → cgroup → category | read on this machine 2026-10-09: `used_gpu_memory` **does** report per process (one process at 6081 MiB) even though `memory.used` is `[N/A]` |
+| GPU memory per category | `nvidia-smi --query-compute-apps=pid,used_memory` → cgroup → category | read on this machine 2026-10-09: the query field `used_memory` is accepted and its CSV column prints as `used_gpu_memory [MiB]`; it **does** report per process (one process at 6081 MiB) even though `memory.used` is `[N/A]` |
 | Storage used / total per role | `statvfs` | |
 
 **The GB10 has no separate GPU memory**: `nvidia-smi` reports
