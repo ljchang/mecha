@@ -1491,6 +1491,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_sample_that_ended_is_told_from_one_that_failed() {
+        let ended_here: anyhow::Error = SampleEnded(1).into();
+        assert!(ended(&ended_here));
+        assert!(ended(&ended_here.context("the run stopped")));
+        assert!(!ended(&anyhow::anyhow!("a 500")));
+    }
+
+    #[test]
+    fn results_are_read_for_the_named_tool_only() {
+        let after = vec![
+            Message::assistant(vec![
+                Block::ToolUse {
+                    id: "a".into(),
+                    name: "widget".into(),
+                    input: json!({}),
+                },
+                Block::ToolUse {
+                    id: "b".into(),
+                    name: "other".into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "a".into(),
+                    content: "made".into(),
+                    is_error: false,
+                },
+                Block::ToolResult {
+                    tool_use_id: "b".into(),
+                    content: "elsewhere".into(),
+                    is_error: true,
+                },
+            ]),
+        ];
+        let r = results_of(&after, "widget");
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].content.as_str(), r[0].is_error), ("made", false));
+        assert!(results_of(&after, "absent").is_empty());
+    }
+
     struct Fixed;
     #[async_trait::async_trait]
     impl Provider for Fixed {

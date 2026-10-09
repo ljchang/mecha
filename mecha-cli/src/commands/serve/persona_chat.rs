@@ -11625,8 +11625,9 @@ mod tests {
         // came from the panel.
         let src = std::fs::read_to_string(root.join("../mecha-core/src/persona/turn.rs")).unwrap();
         let code = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        // The stamp itself: `Readers::Off` clears the field above it.
         let stamp = code
-            .find("tools.scene_reader =")
+            .find("tools.scene_reader = match")
             .expect("the reader is stamped");
         let gate = code[..stamp]
             .rfind("if !turn.panel {")
@@ -11681,17 +11682,16 @@ mod tests {
                 }
             }
         }
-        // `scene::stage` builds a replay's slot, only under a scratch folder
-        // it proves lies outside the store (`refuse_overlap`), and `mecha
-        // replay --persona` stamps the slot it staged, never a chat's.
+        // `mecha replay --persona` stamps the slot `scene::stage` built
+        // through `scene::persona_slot`, only under a scratch folder it
+        // proves lies outside the store (`refuse_overlap`), never a chat's.
         assert_eq!(
             stamps.into_iter().collect::<Vec<_>>(),
             [
                 "chat.rs",
                 "persona_chat.rs",
                 "replay_persona.rs",
-                "scene.rs",
-                "stage.rs"
+                "scene.rs"
             ],
             "a scene slot is stamped elsewhere"
         );

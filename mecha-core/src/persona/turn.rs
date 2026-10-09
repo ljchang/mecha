@@ -7,7 +7,7 @@
 //! in insertion order where serve's serde sorts keys (14/23 against the
 //! shipped 1/25), and a staged record lost its photo's hash. A replay that
 //! calls this function cannot drift that way, because serve calls it too
-//! (`mecha replay persona`, `docs/ARCHITECTURE.md` §Session records and
+//! (`mecha replay --persona`, `docs/ARCHITECTURE.md` §Session records and
 //! replay).
 //!
 //! What stays with the caller is the run's plumbing: the cancel handle, the
@@ -105,6 +105,13 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     // ("save them for now", 2026-10-08).
     tools.prompt_log = turn.prompt_log;
     tools.image_seeds = turn.image_seeds;
+    // `for_session` clones the agent's context, so each arm is set: `Off`
+    // clears what the base might carry rather than inheriting it, since a
+    // replay's header reports it as a fact (review of #612, pass 4).
+    if let Readers::Off = turn.readers {
+        tools.role_split = None;
+        tools.scene_reader = None;
+    }
     if let Readers::From(provider) = turn.readers {
         // Each person's part of a scene's `together`, read on the persona's
         // own model, untouched as the edit panel's reader is (`roles`): the

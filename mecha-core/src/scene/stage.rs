@@ -78,8 +78,12 @@ pub fn stage_at(
     let transcript = real.join("sessions").join(format!("{chat}.jsonl"));
     let text = std::fs::read_to_string(&transcript)
         .with_context(|| format!("reading {}", transcript.display()))?;
+    // Non-blank lines, as `Session::read` counts records (a torn write can
+    // leave a blank one) and as `--at` names them: two conventions meeting
+    // here staged a turn's scene from an earlier one (review of #615).
     let records: Vec<Value> = text
         .lines()
+        .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).unwrap_or(Value::Null))
         .collect();
     let Some(turn) = records.get(line) else {
@@ -88,7 +92,10 @@ pub fn stage_at(
             records.len()
         );
     };
-    if !(turn["record"] == "message" && turn["role"] == "user") {
+    let results = turn["content"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+    if !(turn["record"] == "message" && turn["role"] == "user") || results {
         bail!("line {line} is not an owner message");
     }
     let before = &records[..line];
@@ -139,14 +146,7 @@ pub fn stage_at(
     let out_store = scratch.join("personas");
     let out_persona = out_store.join(persona);
     let out_work = scratch.join("work");
-    let slot = SceneSlot {
-        chat_copy: out_persona
-            .join("sessions")
-            .join(format!("{chat}.scene.json")),
-        store: out_persona.join("scene"),
-        chat: chat.to_string(),
-        from_latest: true,
-    };
+    let slot = super::persona_slot(&out_store, persona, chat);
     std::fs::create_dir_all(slot.store.join("index"))?;
     std::fs::create_dir_all(out_persona.join("sessions"))?;
     std::fs::create_dir_all(&out_work)?;
@@ -161,6 +161,10 @@ pub fn stage_at(
                 let entry = real_index.join(format!("{h}.json"));
                 if entry.exists() {
                     std::fs::copy(&entry, slot.store.join("index").join(format!("{h}.json")))?;
+                } else {
+                    // Staged without its record, a call that names it draws
+                    // with none of its people or clothes: said, not dropped.
+                    missing.push(format!("{path} (its scene record)"));
                 }
             }
             None => missing.push(path.clone()),
@@ -217,6 +221,15 @@ pub fn stage_at(
 /// are never read for it, and a compaction's rewrite repeats what was
 /// already delivered.
 fn landed_before(records: &[Value]) -> Vec<String> {
+    // `image: ` also opens `image_view`'s answer: only a picture call's
+    // results name a picture that landed (review of #615).
+    let drawn: std::collections::BTreeSet<&str> = records
+        .iter()
+        .filter(|r| r["record"] == "message" && r["role"] == "assistant")
+        .flat_map(|r| r["content"].as_array().into_iter().flatten())
+        .filter(|b| b["type"] == "tool_use" && b["name"] == "image_generate")
+        .filter_map(|b| b["id"].as_str())
+        .collect();
     let mut texts: Vec<&str> = Vec::new();
     for r in records {
         match r["record"].as_str() {
@@ -229,7 +242,11 @@ fn landed_before(records: &[Value]) -> Vec<String> {
             }
             Some("message") if r["role"] == "user" => {
                 for b in r["content"].as_array().into_iter().flatten() {
-                    if b["type"] == "tool_result" {
+                    if b["type"] == "tool_result"
+                        && b["tool_use_id"]
+                            .as_str()
+                            .is_some_and(|id| drawn.contains(id))
+                    {
                         texts.extend(b["content"].as_str());
                     }
                 }
@@ -488,6 +505,67 @@ mod tests {
             w.snapshot(),
             before,
             "the real store and workspace were written"
+        );
+    }
+
+    /// Review of #615: a blank line (a torn write) before the turn does not
+    /// shift which record is the turn; `image_view`'s `image: ` answer is not
+    /// a landed picture; and a landed picture whose scene record is gone is
+    /// said to be missing rather than staged without it.
+    #[test]
+    fn the_turn_and_its_pictures_are_read_as_the_transcript_counts_them() {
+        let w = World::new("count");
+        let earlier = w.picture("0-0.png", b"an earlier picture, its record gone");
+        let last = w.picture("1-1.png", b"the last picture");
+        w.picture("viewed.png", b"a file the persona looked at");
+        w.index(&last, &scene(CHAT, &last));
+        let mut lines = header(&w, "2026-01-01T09:00:00Z");
+        lines.extend([
+            owner("draw us"),
+            json!({"record": "late_result", "index": 3, "tool_use_id": "t0",
+                   "content": "image: images/0-0.png\nA new picture."}),
+            json!({"record": "message", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "image_generate", "input": {}}]}),
+            json!({"record": "message", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": "image: images/1-1.png\nA new picture."}]}),
+            json!({"record": "message", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "image_view", "input": {}}]}),
+            json!({"record": "message", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t2",
+                 "content": "image: images/viewed.png"}]}),
+            owner("now in the rain"),
+        ]);
+        let mut text: String = lines[..lines.len() - 1]
+            .iter()
+            .map(|l| format!("{l}\n"))
+            .collect();
+        text.push('\n');
+        text.push_str(&format!("{}\n", lines[lines.len() - 1]));
+        std::fs::write(
+            w.store
+                .join("wren")
+                .join("sessions")
+                .join(format!("{CHAT}.jsonl")),
+            text,
+        )
+        .unwrap();
+
+        let staged = stage_at(&w.store, "wren", CHAT, 8, &w.root.join("scratch")).unwrap();
+        assert_eq!(
+            staged.as_of,
+            AsOf::ChatPicture {
+                picture: last.clone()
+            }
+        );
+        assert!(!staged.workspace.join("images").join("viewed.png").exists());
+        assert_eq!(staged.missing, ["images/0-0.png (its scene record)"]);
+        assert_ne!(earlier, last);
+        // A tool-result batch is not an owner message.
+        let err = stage_at(&w.store, "wren", CHAT, 5, &w.root.join("scratch2")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not an owner message"),
+            "{err:#}"
         );
     }
 
