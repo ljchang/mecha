@@ -98,25 +98,48 @@ const FIELD_DEF_STYLE: &[&str] = &[
     "band",
 ];
 
-const TRANSFORMS: &[&str] = &[
-    "filter",
-    "calculate",
-    "aggregate",
-    "joinaggregate",
-    "fold",
-    "window",
-    "bin",
-    "timeUnit",
-    "stack",
-    "flatten",
-    "pivot",
-    "density",
-    "regression",
-    "loess",
-    "quantile",
-    "impute",
-    "extent",
-    "sample",
+/// Each transform operation and the keys its object may carry beside the
+/// operation's own. Vega-Lite tells its transforms apart by which key is
+/// present, so an unknown sibling key is not inert — it may be a future
+/// operation — and is refused rather than screened.
+const TRANSFORMS: &[(&str, &[&str])] = &[
+    ("filter", &[]),
+    ("calculate", &["as"]),
+    ("aggregate", &["groupby"]),
+    ("joinaggregate", &["groupby"]),
+    ("fold", &["as"]),
+    ("window", &["frame", "ignorePeers", "groupby", "sort"]),
+    ("bin", &["field", "as"]),
+    ("timeUnit", &["field", "as"]),
+    ("stack", &["groupby", "offset", "sort", "as"]),
+    ("flatten", &["as"]),
+    ("pivot", &["value", "groupby", "limit", "op"]),
+    (
+        "density",
+        &[
+            "groupby",
+            "cumulative",
+            "counts",
+            "bandwidth",
+            "extent",
+            "minsteps",
+            "maxsteps",
+            "steps",
+            "as",
+        ],
+    ),
+    (
+        "regression",
+        &["on", "groupby", "method", "order", "extent", "params", "as"],
+    ),
+    ("loess", &["on", "groupby", "bandwidth", "as"]),
+    ("quantile", &["groupby", "probs", "step", "as"]),
+    (
+        "impute",
+        &["key", "keyvals", "frame", "method", "value", "groupby"],
+    ),
+    ("extent", &["param"]),
+    ("sample", &[]),
 ];
 
 const PARAM_KEYS: &[&str] = &["name", "select", "value", "expr", "views"];
@@ -361,19 +384,51 @@ fn transform(v: &Value, at: &str, out: &mut Vec<Refusal>) {
         ));
         return;
     }
-    if !map.keys().any(|k| TRANSFORMS.contains(&k.as_str())) {
-        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
-        out.push(Refusal::new(
-            at,
-            format!(
-                "no transform the subset allows here (found {}; allowed: {})",
-                keys.join(", "),
-                TRANSFORMS.join(", ")
-            ),
-        ));
-        return;
+    // The operation is the one whose key set covers every key present. More
+    // than one known op key is legal only where one op's options name another
+    // (`density` takes an `extent`), and the covering rule settles which.
+    let covering: Vec<&(&str, &[&str])> = TRANSFORMS
+        .iter()
+        .filter(|(op, rest)| {
+            map.contains_key(*op) && map.keys().all(|k| k == op || rest.contains(&k.as_str()))
+        })
+        .collect();
+    match covering.as_slice() {
+        // Every key is known to be allowed; their values are style.
+        [_] => {
+            for (key, val) in map {
+                style(val, &pointer(at, key), out);
+            }
+        }
+        _ => {
+            let ops: Vec<&str> = TRANSFORMS.iter().map(|(op, _)| *op).collect();
+            let present: Vec<&str> = map.keys().map(String::as_str).collect();
+            match TRANSFORMS.iter().find(|(op, _)| map.contains_key(*op)) {
+                Some((op, rest)) => {
+                    for key in map
+                        .keys()
+                        .filter(|k| *k != op && !rest.contains(&k.as_str()))
+                    {
+                        out.push(Refusal::new(
+                            pointer(at, key),
+                            format!(
+                                "{key:?} is not an option of the `{op}` transform (allowed: {})",
+                                rest.join(", ")
+                            ),
+                        ));
+                    }
+                }
+                None => out.push(Refusal::new(
+                    at,
+                    format!(
+                        "no transform the subset allows here (found {}; allowed: {})",
+                        present.join(", "),
+                        ops.join(", ")
+                    ),
+                )),
+            }
+        }
     }
-    style(v, at, out);
 }
 
 fn param(v: &Value, at: &str, out: &mut Vec<Refusal>) {

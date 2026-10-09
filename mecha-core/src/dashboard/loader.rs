@@ -308,10 +308,12 @@ fn coerce(value: Value, kind: ColumnType) -> Option<Value> {
             },
             _ => None,
         },
-        ColumnType::Date => value
-            .as_str()
-            .filter(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok())
-            .map(|_| value.clone()),
+        ColumnType::Date => {
+            let ok = value
+                .as_str()
+                .is_some_and(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok());
+            ok.then_some(value)
+        }
         ColumnType::Timestamp => value.as_str().and_then(timestamp).map(Value::String),
     }
 }

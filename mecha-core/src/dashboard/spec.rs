@@ -20,6 +20,7 @@ pub const MAX_BYTES: usize = 256 * 1024;
 const MAX_PANELS: usize = 48;
 const MAX_DATASETS: usize = 16;
 const MAX_TABLE_COLUMNS: usize = 24;
+const MAX_FILTERS: usize = 16;
 const MAX_TITLE: usize = 120;
 /// Markdown in a text panel.
 const MAX_MARKDOWN: usize = 8 * 1024;
@@ -200,6 +201,12 @@ impl Spec {
         }
         let declared = |name: &str| self.datasets.iter().any(|d| d == name);
 
+        if self.filters.len() > MAX_FILTERS {
+            out.push(Refusal::new(
+                "/filters",
+                format!("at most {MAX_FILTERS} filters"),
+            ));
+        }
         for (i, filter) in self.filters.iter().enumerate() {
             let at = format!("/filters/{i}");
             if !is_identifier(&filter.id) {
@@ -326,8 +333,11 @@ fn is_theme_name(s: &str) -> bool {
 fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
     match v {
         Value::String(s) => {
-            let markdown = at.ends_with("/markdown");
-            let limit = if markdown { MAX_MARKDOWN } else { MAX_STRING };
+            let limit = if is_text_panel_markdown(at) {
+                MAX_MARKDOWN
+            } else {
+                MAX_STRING
+            };
             if s.chars().count() > limit {
                 out.push(Refusal::new(
                     at,
@@ -353,11 +363,30 @@ fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
         }
         Value::Object(map) => {
             for (k, item) in map {
-                screen_strings(item, &pointer(at, k), out);
+                let here = pointer(at, k);
+                // Keys are strings too: a style object accepts arbitrary keys,
+                // so an address can sit in one as easily as in a value.
+                if is_address(k) {
+                    out.push(Refusal::new(
+                        &here,
+                        "a spec names no destinations: this key is an address",
+                    ));
+                }
+                screen_strings(item, &here, out);
             }
         }
         _ => {}
     }
+}
+
+/// `/panels/<n>/markdown` exactly — the one field with the larger budget.
+fn is_text_panel_markdown(at: &str) -> bool {
+    let mut parts = at.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(""), Some("panels"), Some(n), Some("markdown"), None)
+            if n.chars().all(|c| c.is_ascii_digit())
+    )
 }
 
 fn is_vegalite_schema(s: &str) -> bool {
@@ -371,8 +400,16 @@ fn is_vegalite_schema(s: &str) -> bool {
 /// a character that is not part of a word — and only when something follows
 /// it directly: `data:image/png` and `(javascript:x` are addresses, "Raw
 /// data: counts" and "Profile: x" are titles.
+///
+/// Two spellings that re-form a scheme by the time a browser reads it are
+/// undone first: control characters are dropped (the URL parser removes tab
+/// and newline before parsing, so `java\tscript:` is `javascript:`), and a
+/// colon written as a character reference (`&#58;`, `&#x3a;`, `&colon;`) is
+/// decoded, since CommonMark decodes references in link destinations. The
+/// renderer's own link handling is the second layer (design §4.1).
 pub(crate) fn is_address(s: &str) -> bool {
-    let lower = s.trim().to_ascii_lowercase();
+    let lower = normalise(s);
+    let lower = lower.as_str();
     if lower.contains("://") || lower.starts_with("//") || lower.starts_with("www.") {
         return true;
     }
@@ -398,4 +435,52 @@ pub(crate) fn is_address(s: &str) -> bool {
             starts_word && followed
         })
     })
+}
+
+/// Lowercase, controls dropped, colon references decoded.
+fn normalise(s: &str) -> String {
+    let stripped: String = s
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let mut out = String::with_capacity(stripped.len());
+    let mut rest = stripped.as_str();
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        match colon_reference(rest) {
+            Some(len) => {
+                out.push(':');
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The length of a character reference for `:` at the start of `s`, if one
+/// is there: `&colon;`, `&#58;` or `&#x3a;`, with any leading zeros, and the
+/// `;` optional where HTML allows it to be.
+fn colon_reference(s: &str) -> Option<usize> {
+    if s.starts_with("&colon;") {
+        return Some("&colon;".len());
+    }
+    let body = s.strip_prefix("&#")?;
+    let (digits, radix, prefix) = match body.strip_prefix('x') {
+        Some(hex) => (hex, 16, 3),
+        None => (body, 10, 2),
+    };
+    let n = digits.chars().take_while(|c| c.is_digit(radix)).count();
+    if n == 0 || u32::from_str_radix(&digits[..n], radix).ok()? != 58 {
+        return None;
+    }
+    let semicolon = usize::from(digits[n..].starts_with(';'));
+    Some(prefix + n + semicolon)
 }
