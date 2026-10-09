@@ -303,10 +303,18 @@ the binary, fetched like the llama.cpp engine (`fetch.rs`, sha256-pinned).
   `dashboard.js` + `dashboard.css`, which the factory's `dashboard` template
   vendors into each publish (rung 3).
 
-The renderer is ours, so it obeys the house rules a model would not: no
-`{@html}` anywhere, `text` panels through a markdown renderer with raw HTML off **and no links at all** — a link's text renders as text and its destination is dropped, so a scheme the server screen missed (an entity-encoded colon decoded by the renderer, say) has nowhere to land; this is the second layer behind `is_address`, not a replacement for it, CSS extracted to a file (§5.2 of the public-surface design), and a
-rate over nothing is `null` and renders as a dash — `LearningCharts.svelte`'s
-rule, kept.
+The renderer is ours, so it obeys the house rules a model would not:
+
+- **No `{@html}`** anywhere.
+- **Text panels render no links.** Markdown goes through a renderer with raw
+  HTML off and links off — a link's text renders as text and its destination
+  is dropped — so a scheme the server screen missed (an entity-encoded colon
+  the renderer decodes, say) has nowhere to land. This is the second layer
+  behind `is_address` (proposed in #621, `spec.rs`), not a replacement for it.
+- **CSS extracted to a file** (§5.2 of the public-surface design), so the
+  strictest `style-src` holds.
+- **A rate over nothing is `null` and renders as a dash** —
+  `LearningCharts.svelte`'s rule, kept.
 
 ### 4.2 Charts
 
@@ -455,30 +463,38 @@ adding a store.
 
 ### 6.1 The bundle
 
-A `dashboard` template in `mecha-factory-publish`, class `interactive`:
-the vendored renderer bundle, the spec, the theme rendered to CSS, and each
-dataset's **current** snapshot so the first paint needs no fetch. The vendor
-gate already fails on any external reference; **add a second check — a bundle
-whose script contains any spelling of runtime code construction fails the
-publish**: `new Function`, a bare `Function(`, `eval(`, and `.constructor(` —
-rather than trusting any library's documentation about itself. A pattern that
-misses the commonest spelling reports clean on a property that does not hold,
-which is worse than not checking, because step 0's go/no-go on Vega rides on
-it.
+A `dashboard` template in `mecha-factory-publish`, class `interactive`: the
+vendored renderer bundle, the spec, and the theme rendered to CSS. **No dataset
+is inside a version.** A version is content-addressed, immutable and
+addressable forever (`PUBLIC-SURFACE-DESIGN.md` §6); a snapshot baked into one
+would make a data change a republish, or a push would mutate a version that was
+promised never to change, and every version would keep its own snapshot for
+good — three readings, each breaking a rule stated here. So datasets live
+beside the versioned tree, under the bundle id (§6.2), outside the digest, and
+the page fetches them on load. First paint is the renderer's empty state for
+the moment that fetch takes.
 
-**There is no carve-out in this gate, for any library.** A vendored Vega is
-likely to contain `new Function` from its expression *codegen* even when every
-view uses the interpreter — the code path ships whether or not it is called. If
-the real bundle trips the gate, the answer is a build without the codegen, or
-§4.2's swap to our own SVG components — never "no eval except in Vega", which
-is a gate that has started degrading. Step 0 builds and greps the real bundle,
-so this is known before step 3, not at step 5.
+**The control on code in the bundle is the CSP, enforced by the browser.** The
+box serves `interactive` bundles without `'unsafe-eval'`, so any runtime code
+construction — `new Function`, a bare `Function(`, `eval(`, `.constructor(` —
+throws when it runs, whatever library carries it. The publish gate is
+therefore **a browser load of the real bundle under the real `interactive`
+policy, with zero CSP violations** (`factory-publish serve --class
+interactive`, then a headless load) — the instrument §7.1 of the public-surface
+design already used. It catches what any static check misses, a runtime
+`appendChild(style)` included.
 
-A grep cannot see a runtime `appendChild(style)`, so the gate is necessary and
-not sufficient. The instrument for the rest is the one §7.1 of the
-public-surface design already used: **serve the real bundle under the real
-`interactive` policy in a browser and count CSP violations** (`factory-publish
-serve --class interactive`, then a headless load). Zero is step 5's bar.
+**A static scan is a report, not a gate.** Step 0 measured why (interim,
+2026-10-09): a grep over that family matches 8 times in a minified Vega and 5
+in ECharts — five of Vega's are real `Function`-constructor sites in its
+expression codegen, the rest false positives (a method named `eval`, a
+typed-array `.constructor(`) — and under `ast: true` with the real CSP none of
+the real sites fired. A grep gate would refuse every chart library on code that
+never runs; a gate with a per-library exemption is a gate that has started
+degrading. So the scan's counts are shown at review beside the bundle, and the
+browser probe decides. There is still no carve-out: a bundle that *does*
+construct code at runtime fails the probe, and the answer is a build without
+the codegen or §4.2's own SVG components — never a looser policy.
 
 ### 6.2 The dataset channel
 
@@ -488,7 +504,7 @@ The generalisation of `put_slots`:
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest |
 | Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push |
-| Read | under the bundle's own path, `./data/{name}.json`, so the page's relative fetch passes through the **same grant** as the page; `ETag` |
+| Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10.2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
 
@@ -553,7 +569,7 @@ after the factory path is proven.
 
 | Step | What | Where | Done when |
 |---|---|---|---|
-| 0 | **Measure the grammar.** ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). Runs beside steps 1–2; it needs nothing from them | a scratch harness, results in this doc | a number per grammar; R2 confirmed or reversed |
+| 0 | **Measure the grammar, and the bundle.** ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
 | 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
@@ -565,7 +581,10 @@ after the factory path is proven.
 | 9 | User docs | `website/docs/features/` | — |
 
 Steps 1–4 are the tailnet prototype and need nothing from the factory
-repository. Step 5 is deliberately next, not last: the factory is where this
+repository. **Step 1 runs ahead of step 0 on purpose**: the spec's types,
+panels, loaders and shape check are grammar-neutral, and only the Vega-Lite
+walker assumes R2 — so if step 0 reverses R2, the walker is what is lost, not
+the step. Step 5 is deliberately next, not last: the factory is where this
 design's untested assumptions live — the grant under a polling page (§6.4),
 the eval check against a real Vega build, the box-side shape check — and
 finding one wrong after steps 6–8 would mean redoing them.
@@ -597,7 +616,9 @@ finding one wrong after steps 6–8 would mean redoing them.
    private or invited only.
 2. **Grant lifetime against polling** (§6.4) — whether the factory's private
    grant gains a refresh path for a long-open page, or the page simply asks for
-   sign-in. A factory-side decision; it does not block rungs 1–2.
+   sign-in — and the grant's scope, which must cover `/b/{id}/data/` as well
+   as the version the page loaded from (§6.2). A factory-side decision; it does
+   not block rung 1.
 
 ---
 
