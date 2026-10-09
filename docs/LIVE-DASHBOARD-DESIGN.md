@@ -686,7 +686,7 @@ after the factory path is proven.
 |---|---|---|---|
 | 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
 | 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
-| 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
+| 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers; **a `doctor` finding** for a loader whose last refresh was refused or whose dataset is past twice its period — a shape refusal fails closed and would otherwise speak only on the dashboard page, which is a guard that fired and said nothing | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
@@ -729,6 +729,13 @@ Latency is inflated — another session's image job shared the GPU throughout �
 but the order of magnitude is the planning fact: authoring a five-chart
 dashboard is minutes of model time, which is why the visual loop (§5.3)
 previews and does not regenerate.
+
+**Which parts of this carry to another model.** The measured model is a
+3B-active mixture of experts, not the 27B dense `qwen3.8-27b` the research
+framed; the numbers — 15/22, 89 s — are that model's and would move with a
+swap. The reason for the ruling would not: ECharts' failure is a missing
+feature of its grammar, and Vega-Lite's commonest failure is caught by the
+walker whatever model makes it. R2 rests on the structural half.
 
 **ECharts' failure is structural**: its option grammar has no aggregation, so
 the model invented an `aggregate` transform or reached for ecStat, and renders
@@ -778,6 +785,12 @@ scratch space, not the repository.
    sign-in — and the grant's scope, which must cover `/b/{id}/data/` as well
    as the version the page loaded from (§6.2). A factory-side decision; it does
    not block rung 1.
+3. **The name.** `mecha serve` already calls its whole web surface "the
+   dashboard" (in its CLI help and the serve module), so `#dashboards/<id>`
+   beside it makes "the dashboard" ambiguous in every later sentence. Cheap to
+   settle before step 4 names routes and files; the owner's call — keep it and
+   rename the web surface, or call these something else (boards, panels,
+   views).
 
 ---
 
