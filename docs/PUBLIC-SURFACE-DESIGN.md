@@ -872,14 +872,15 @@ question actually lives:
 | Template | Renderer | Where | Executes code? |
 |---|---|---|---|
 | `report` (markdown) | pulldown-cmark + MiniJinja | Rust, in process | no |
-| `dashboard` | ~~MiniJinja + a data file~~ — superseded: a Svelte renderer bundle over a spec and datasets, [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §4 | build-time Node, like §5.2's interactive bundles | no — the renderer is ours; the spec is data |
+| `dashboard` | ~~MiniJinja + a data file~~ — superseded: a Svelte renderer bundle over a spec and datasets, [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §4 | Rust, in process — it assembles a renderer bundle Node built once, ahead of time, with the spec and theme | no — the renderer is ours and pre-built; the spec is data |
 | `booking` | MiniJinja + availability JSON | Rust, in process | no |
 | `request` (the form) | generated from the manifest | Rust, in process | no |
 | `notebook` | `marimo export html-wasm` | Python subprocess | **yes** |
 | `report` with live cells | `marimo-book build` | Python subprocess | **yes** |
 
-Three of six render in Rust with nothing to execute, and the dashboard runs a
-build-time toolchain (Node, Vite) whose output is vendored and gated. **The
+Four of six render in Rust with nothing to execute. The dashboard's renderer is
+built once, ahead of time, by a toolchain (Node, Vite) whose output is vendored
+and gated; publishing a dashboard only assembles that bundle with a spec. **The
 sandbox is required where the renderer executes the *content*** — the marimo
 rows, because both `marimo export` and `MarimoIslandGenerator.build()` execute
 the notebook to capture its outputs. A build tool compiling our own renderer

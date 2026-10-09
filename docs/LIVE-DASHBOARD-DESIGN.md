@@ -223,7 +223,7 @@ decided here rather than discovered at step 7.
 
 | Order | Kind | How it runs |
 |---|---|---|
-| v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only — and **confined to its one file**: a read-only open bounds writes, not reach, and `ATTACH DATABASE '<any path>'` is a read-only statement that would let a model-drafted query read any SQLite file on the host, a path from tool input that never met `ToolCtx::resolve`. So the connection sets `SQLITE_LIMIT_ATTACHED` to 0, installs an authorizer refusing `ATTACH`, `DETACH`, `PRAGMA` and extension loading, and runs exactly one prepared statement per loader (never `execute_batch`, whose tail would run a second). The limit and the authorizer are **deliberately redundant** — remove neither as dead. Both APIs sit behind rusqlite cargo features this workspace does not enable (`limits`, `hooks`; read in rusqlite 0.37's `lib.rs`), so step 2 adds them to the dependency; a missing method is not a reason to fall back to checking the query's text |
+| v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only — and **confined to its one file**: a read-only open bounds writes, not reach, and `ATTACH DATABASE '<any path>'` is a read-only statement that would let a model-drafted query read any SQLite file on the host, a path from tool input that never met `ToolCtx::resolve`. `VACUUM INTO '<path>'` is the same hazard in the write direction: measured on SQLite 3.45.1 (2026-10-09), it **writes a file at the query's chosen path through a `mode=ro` connection**. It runs internally as an `ATTACH`, so the controls below refuse it (both the limit and the authorizer did, and no file was written) — named here so nobody relies on that by accident. So the connection sets `SQLITE_LIMIT_ATTACHED` to 0 and installs an **allowlist** authorizer — `SELECT`, `READ` and `FUNCTION` only, everything else denied, which needs no knowledge of how a given statement is implemented — rather than a list of refusals (`ATTACH`, `DETACH`, `PRAGMA`, extension loading are all outside it), and runs exactly one prepared statement per loader (never `execute_batch`, whose tail would run a second). The limit and the authorizer are **deliberately redundant** — remove neither as dead. Both APIs sit behind rusqlite cargo features this workspace does not enable (`limits`, `hooks`; read in rusqlite 0.37's `lib.rs`), so step 2 adds them to the dependency; a missing method is not a reason to fall back to checking the query's text |
 | v1 | `mecha` | one of a **closed set of read-only readouts, enumerated in code** (`learning-report`, `sessions health`, …) — never an argv. The mecha CLI also releases outbox drafts and accepts harness candidates, so a free-form command run unattended would be a model-drafted cron slot with side effects; a readout name that is not in the enum is a parse error, and adding one is a code change a review sees. A readout is often an object, not a table, so each enum variant carries its own fixed projection to rows, in code beside it |
 | v2 | `duckdb` — and through it Postgres, MySQL, CSV, Parquet, JSON, S3 | a pinned DuckDB binary as a confined subprocess (§3.4) |
 | v2 | `sheets` (R10) | mecha-docs' `sheets_read` with a fixed `file_id` and range; the first row is the header; the table lands in DuckDB and the query runs over it |
@@ -586,11 +586,12 @@ fails the gate; a probe that falls back cleanly is recorded and passes.
    glue we write may contain none of the family — `new Function`, a bare
    `Function(`, `eval(`, `.constructor(`.
 2. **Vendored libraries are pinned by sha256**, not scanned: a static scan of
-   them is a report. Step 0 found `vega.min.js` with four real
+   them is a report. Step 0's scan matched `vega.min.js` 7 times — four real
    `Function`-constructor sites (d3-dsv's row parser, and the expression,
-   field-accessor and comparator codegens) plus two false positives (a method
-   named `eval`, typed-array `new x.constructor(n)`), and `echarts.min.js`
-   with one (a GeoJSON fallback); `vega-lite`, `vega-embed` and
+   field-accessor and comparator codegens; the one `new Function` is also
+   counted as a bare `Function(`) plus a method named `eval` and a
+   typed-array `new x.constructor(n)` — and `echarts.min.js` 5 times, one
+   real (a GeoJSON fallback) and three `.constructor(` false positives; `vega-lite`, `vega-embed` and
    `vega-interpreter` had none. A grep gate would refuse every chart library on
    code that never runs.
 3. **The runtime render decides**, under the real `interactive` CSP, by the
