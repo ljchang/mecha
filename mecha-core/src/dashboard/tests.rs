@@ -206,6 +206,14 @@ fn a_chart_that_binds_no_dataset_is_refused_but_a_layer_child_may_inherit() {
     let r = refused_at(&v, p);
     assert!(r.rule.contains("binds no dataset"), "{}", r.rule);
 
+    // A `data` key inside a style object is not a binding.
+    let styled = with(
+        v.clone(),
+        &format!("{p}/title"),
+        json!({ "data": "x", "text": "t" }),
+    );
+    refused_at(&styled, p);
+
     let layered = with(
         example(),
         p,
@@ -256,6 +264,8 @@ fn an_address_is_refused_in_any_string_but_a_word_followed_by_a_colon_is_not() {
         ),
         ("/panels/0/title", "www.example.org"),
         ("/panels/1/title", "//example.org/x"),
+        ("/panels/1/title", "/\\example.org/x"),
+        ("/panels/1/title", "\\\\example.org/x"),
         ("/panels/3/markdown", "[x](//example.org/x)"),
         ("/panels/3/markdown", "[x](http:example.org)"),
         ("/panels/0/title", "see www.example.org"),
@@ -442,6 +452,18 @@ fn every_refusal_is_reported_not_just_the_first() {
     let at: Vec<&str> = refusals.iter().map(|r| r.at.as_str()).collect();
     for want in ["/panels/1/vegalite/data/url", "/theme"] {
         assert!(at.contains(&want), "missing {want} in {at:?}");
+    }
+}
+
+#[test]
+fn column_names_are_identifiers_even_before_loaders_are_known() {
+    for (at, name) in [
+        ("/filters/0/field", "Site Name"),
+        ("/panels/0/value/field", "visits; drop"),
+        ("/panels/2/columns/0", "x".repeat(300).as_str()),
+    ] {
+        let r = refused_at(&with(example(), at, json!(name)), at);
+        assert!(r.rule.contains("column name"), "{at}: {}", r.rule);
     }
 }
 

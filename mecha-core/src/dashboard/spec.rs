@@ -27,18 +27,45 @@ const MAX_MARKDOWN: usize = 8 * 1024;
 /// Any other string: a title, a field name, a Vega expression.
 const MAX_STRING: usize = 2_000;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A checked spec. Deliberately not `Deserialize`: the only way to get one is
+/// [`Spec::parse`], so no caller can reach for `serde_json::from_value` and
+/// hold a spec that skipped the screens — the property is in the type.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Spec {
     pub version: u32,
     pub title: String,
     /// A theme the owner wrote. The spec names one; it never carries a colour.
-    #[serde(default = "default_theme")]
     pub theme: String,
     pub datasets: Vec<String>,
-    #[serde(default)]
     pub filters: Vec<Filter>,
     pub panels: Vec<Panel>,
+}
+
+/// The wire shape `parse` reads before any check has run.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Wire {
+    version: u32,
+    title: String,
+    #[serde(default = "default_theme")]
+    theme: String,
+    datasets: Vec<String>,
+    #[serde(default)]
+    filters: Vec<Filter>,
+    panels: Vec<Panel>,
+}
+
+impl From<Wire> for Spec {
+    fn from(w: Wire) -> Self {
+        Spec {
+            version: w.version,
+            title: w.title,
+            theme: w.theme,
+            datasets: w.datasets,
+            filters: w.filters,
+            panels: w.panels,
+        }
+    }
 }
 
 fn default_theme() -> String {
@@ -137,8 +164,8 @@ impl Spec {
 
         let mut out = Vec::new();
         screen_strings(&raw, "", &mut out);
-        let spec = match serde_json::from_value::<Spec>(raw) {
-            Ok(spec) => Some(spec),
+        let spec = match serde_json::from_value::<Wire>(raw) {
+            Ok(wire) => Some(Spec::from(wire)),
             Err(e) => {
                 out.push(Refusal::new(
                     "",
@@ -226,6 +253,9 @@ impl Spec {
                     "a filter needs a label",
                 ));
             }
+            if !is_identifier(&filter.field) {
+                out.push(not_a_column(pointer(&at, "field")));
+            }
             if !declared(&filter.dataset) {
                 out.push(undeclared(pointer(&at, "dataset"), &filter.dataset));
             }
@@ -264,6 +294,9 @@ impl Spec {
                             pointer(&at, "value"),
                             "every op but `count` needs a `field`",
                         )),
+                        (_, Some(field)) if !is_identifier(field) => {
+                            out.push(not_a_column(format!("{at}/value/field")))
+                        }
                         (_, Some(_)) => {}
                     }
                 }
@@ -288,6 +321,11 @@ impl Spec {
                             pointer(&at, "columns"),
                             format!("a table shows 1–{MAX_TABLE_COLUMNS} columns"),
                         ));
+                    }
+                    for (j, col) in columns.iter().enumerate() {
+                        if !is_identifier(col) {
+                            out.push(not_a_column(format!("{at}/columns/{j}")));
+                        }
                     }
                 }
                 Panel::Text { markdown, .. } => {
@@ -324,6 +362,15 @@ fn check_title(at: &str, title: &str, out: &mut Vec<Refusal>) {
             format!("a panel title is 1–{MAX_TITLE} characters"),
         ));
     }
+}
+
+/// A column name is checked alone as well as against its loader, so a spec
+/// parsed before its loaders are known still names only plausible columns.
+fn not_a_column(at: String) -> Refusal {
+    Refusal::new(
+        at,
+        "a column name matches [a-z][a-z0-9_]*, as a loader declares it",
+    )
 }
 
 fn undeclared(at: String, name: &str) -> Refusal {
@@ -450,7 +497,16 @@ pub(crate) fn is_address(s: &str) -> bool {
     let lower = lower.as_str();
     // Anywhere, not only at the start: `[x](//host/p)` is a protocol-relative
     // link one character in. Nothing a spec legitimately says contains `//`.
-    if lower.contains("//") || lower.contains("www.") {
+    // Backslashes too: for a special scheme the URL parser reads `\` as `/`,
+    // so `/\host/p` and `\\host/p` are `//host/p`. Two adjacent characters
+    // rather than folding every `\`, which would turn a regex's `\\d` into a
+    // false refusal.
+    if lower.contains("www.")
+        || lower
+            .as_bytes()
+            .windows(2)
+            .any(|w| w.iter().all(|c| matches!(c, b'/' | b'\\')))
+    {
         return true;
     }
     [
