@@ -564,8 +564,12 @@ impl Command {
             | Command::Diagnose(_)
             | Command::Gossip(_)
             | Command::Corroborate(_)
-            | Command::Vet(_)
-            | Command::Replay(_) => true,
+            | Command::Vet(_) => true,
+            // A persona replay holds per sample (`Follower::enter`), and
+            // before each it waits out every other process's hold: held for
+            // its whole life, two of them would each wait on the other's
+            // hold forever.
+            Command::Replay(a) => a.persona.is_none(),
             // **Per subcommand where only some run a model** (review of D13):
             // held per command, `tasks stop` — the documented way to stop a
             // detached `tasks work` — waited behind a switch that was waiting
@@ -1067,6 +1071,18 @@ mod tests {
         assert!(cmd(&["mecha", "rules", "propose-retirements"]).runs_a_model());
         assert!(!cmd(&["mecha", "eval", "cases.toml"]).may_follow());
         assert!(cmd(&["mecha", "run", "hello"]).may_follow());
+    }
+
+    /// A recorded-session replay holds the router for its life; a persona
+    /// replay holds per sample and waits out other holds before each, so a
+    /// process-wide hold would make two of them wait on each other forever.
+    #[test]
+    fn a_persona_replay_holds_per_sample_not_for_its_life() {
+        let cmd = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        assert!(cmd(&["mecha", "replay", "some-session"]).is_one_run());
+        let persona = cmd(&["mecha", "replay", "--persona", "a-chat", "--at", "4"]);
+        assert!(persona.runs_a_model());
+        assert!(!persona.is_one_run());
     }
 
     /// `--force` overrides a measurement, and a rollback measures nothing:

@@ -191,6 +191,10 @@ impl Provider for OpenAiCompatible {
         self.vision
     }
 
+    fn wire_body(&self, req: &CompletionRequest, stream: bool) -> Option<Value> {
+        Some(self.body(req, stream))
+    }
+
     async fn complete(
         &self,
         req: &CompletionRequest,
