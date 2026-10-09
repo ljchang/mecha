@@ -16,6 +16,13 @@
 //! a loader is refused, and every string in the whole spec has already been
 //! screened for addresses by `spec::screen_strings`. Between the two, a style
 //! object can change how a chart looks and cannot make it fetch or navigate.
+//!
+//! **Expressions live in named places only**: a `filter` or `calculate`
+//! transform, a parameter's `expr`, a condition's `test`. Vega-Lite also lets
+//! almost any presentational property be `{"expr": ...}`, which passes both
+//! screens — so an `expr` key inside a style object is refused. Styling that
+//! depends on data goes through an encoding's `condition`; the rest comes
+//! from the owner's theme.
 
 use serde_json::{Map, Value};
 
@@ -486,6 +493,15 @@ fn style_object(map: &Map<String, Value>, at: &str, out: &mut Vec<Refusal>) {
 
 fn style_entry(key: &str, val: &Value, at: &str, out: &mut Vec<Refusal>) {
     let here = pointer(at, key);
+    if key == "expr" {
+        out.push(Refusal::new(
+            here,
+            "expressions are allowed only in a filter or calculate transform, a parameter's \
+             `expr` and a condition's `test`; style that depends on data goes through an \
+             encoding's `condition`",
+        ));
+        return;
+    }
     let lower = key.to_ascii_lowercase();
     if let Some(fragment) = DESTINATION_KEYS.iter().find(|f| lower.contains(*f)) {
         out.push(Refusal::new(

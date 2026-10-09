@@ -95,9 +95,17 @@ pub(crate) fn pointer(at: &str, segment: &str) -> String {
     format!("{at}/{}", segment.replace('~', "~0").replace('/', "~1"))
 }
 
-/// `~/.mecha/dashboards/`.
+/// `~/.mecha/dashboards/` — the store's fixed entries live here
+/// (`sources.toml`, `themes/`, the host sampler's database).
 pub fn dir() -> Result<PathBuf> {
     Ok(crate::work::mecha_home()?.join("dashboards"))
+}
+
+/// `~/.mecha/dashboards/boards/` — installed dashboards, one directory each.
+/// A level of their own, so a dashboard named `themes` cannot land on the
+/// theme store.
+pub fn boards_dir() -> Result<PathBuf> {
+    Ok(dir()?.join("boards"))
 }
 
 /// A dashboard as installed: its spec and the loader behind each dataset,
