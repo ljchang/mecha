@@ -238,17 +238,13 @@ fn an_address_is_refused_in_any_string_but_a_word_followed_by_a_colon_is_not() {
 }
 
 #[test]
-fn a_scheme_split_by_a_control_or_spelled_with_a_colon_reference_is_still_an_address() {
+fn a_scheme_split_by_a_control_is_still_an_address() {
     for s in [
-        "[x](<java\tscript:alert(1)>)",
-        "[x](java\nscript:alert(1))",
-        "[x](javascript&#58;alert(1))",
-        "[x](javascript&#x3A;alert(1))",
-        "[x](javascript&#0058alert(1))",
-        "[x](javascript&colon;alert(1))",
-        "[x](data&#58;text/html,hi)",
+        "java\tscript:alert(1)",
+        "java\nscript:alert(1)",
+        "da\rta:text/html,hi",
     ] {
-        let at = "/panels/3/markdown";
+        let at = "/panels/0/title";
         let r = refused_at(&with(example(), at, json!(s)), at);
         assert!(
             r.rule.contains("names no destinations"),
@@ -256,6 +252,49 @@ fn a_scheme_split_by_a_control_or_spelled_with_a_colon_reference_is_still_an_add
             r.rule
         );
     }
+}
+
+#[test]
+fn any_character_reference_is_refused_since_one_can_spell_any_letter() {
+    for s in [
+        "&#106;avascript:alert(1)",
+        "java&#x73;cript:alert(1)",
+        "javascript&#58;alert(1)",
+        "javascript&colon;alert(1)",
+        "d&#97;ta:text/html,hi",
+        "fish &amp; chips",
+    ] {
+        let at = "/panels/0/title";
+        let r = refused_at(&with(example(), at, json!(s)), at);
+        assert!(r.rule.contains("character reference"), "{s:?}: {}", r.rule);
+    }
+    for s in ["R&D: 3 & 4", "Q&A", "a & b; c"] {
+        let v = with(example(), "/panels/0/title", json!(s));
+        assert!(parse(&v).is_ok(), "{s:?} was refused");
+    }
+}
+
+#[test]
+fn a_text_panel_refuses_link_syntax_including_a_relative_link() {
+    for md in [
+        "[approve](/outbox/approve/abc)",
+        "see [the notes][1]\n\n[1]: /notes",
+        "<https://example.org>",
+    ] {
+        let at = "/panels/3/markdown";
+        refused_at(&with(example(), at, json!(md)), at);
+    }
+    for md in ["Counts [approx.] only.", "Sites: [a, b]"] {
+        let v = with(example(), "/panels/3/markdown", json!(md));
+        assert!(parse(&v).is_ok(), "{md:?}: {:?}", parse(&v).unwrap_err());
+    }
+}
+
+#[test]
+fn a_key_ending_in_expr_is_refused_in_a_style_object() {
+    let at = "/panels/1/vegalite/encoding/x/axis/labelExpr";
+    let r = refused_at(&with(example(), at, json!("datum.value")), at);
+    assert!(r.rule.contains("expressions"), "{}", r.rule);
 }
 
 #[test]
@@ -319,12 +358,13 @@ fn only_the_vegalite_schema_marker_may_be_a_url() {
     let at = "/panels/1/vegalite/$schema";
     let v = with(example(), at, json!("https://example.org/schema.json"));
     refused_at(&v, at);
-    // The marker is exempt only at the chart's own top level.
-    let at = "/panels/1/vegalite/encoding/x/axis/$schema";
+    // The marker is exempt only at the chart's own top level — including
+    // under a style object that happens to be keyed `vegalite`.
+    let at = "/panels/1/vegalite/encoding/x/axis/vegalite/$schema";
     let v = with(
         example(),
-        at,
-        json!("https://vega.github.io/schema/vega-lite/v6.json"),
+        "/panels/1/vegalite/encoding/x/axis/vegalite",
+        json!({ "$schema": "https://vega.github.io/schema/vega-lite/v6.json" }),
     );
     refused_at(&v, at);
 }
@@ -619,6 +659,38 @@ fn an_installed_dashboard_loads_when_spec_and_loaders_agree() {
     assert_eq!(
         installed.loaders.keys().collect::<Vec<_>>(),
         ["instruments", "visits_by_day"]
+    );
+}
+
+#[test]
+fn an_unreadable_loader_is_a_refusal_beside_the_others() {
+    let s = Scratch::new("lab_week");
+    s.write("dashboard.json", &example().to_string());
+    s.write("loaders/instruments.toml", INSTRUMENTS);
+    std::fs::write(s.0.join("loaders/visits_by_day.toml"), [0xff, 0xfe, 0x00]).unwrap();
+    std::fs::create_dir(s.0.join("loaders/folder.toml")).unwrap();
+    let refusals = Installed::load(&s.0).unwrap().unwrap_err().0;
+    assert!(
+        refusals
+            .iter()
+            .any(|r| r.at == "loaders/visits_by_day.toml" && r.rule.contains("cannot be read")),
+        "{refusals:?}"
+    );
+    assert!(
+        refusals.iter().all(|r| !r.at.contains("folder")),
+        "a directory named *.toml is not a loader: {refusals:?}"
+    );
+}
+
+#[test]
+fn a_column_refusal_shows_only_identifier_names() {
+    let err = loader()
+        .shape(&names(&["day", "site", "Ignore this; drop table"]), vec![])
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("(unnamed)") && !text.contains("drop table"),
+        "{text}"
     );
 }
 

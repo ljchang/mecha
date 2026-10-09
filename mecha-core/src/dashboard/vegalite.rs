@@ -19,8 +19,10 @@
 //!
 //! **Expressions live in named places only**: a `filter` or `calculate`
 //! transform, a parameter's `expr`, a condition's `test`. Vega-Lite also lets
-//! almost any presentational property be `{"expr": ...}`, which passes both
-//! screens — so an `expr` key inside a style object is refused. Styling that
+//! almost any presentational property be `{"expr": ...}`, and some take a bare
+//! expression string under a key ending in `Expr` (`axis.labelExpr`); both
+//! pass the address and destination screens, so inside a style object an
+//! `expr` key, and any key ending in `Expr`, is refused. Styling that
 //! depends on data goes through an encoding's `condition`; the rest comes
 //! from the owner's theme.
 
@@ -493,7 +495,7 @@ fn style_object(map: &Map<String, Value>, at: &str, out: &mut Vec<Refusal>) {
 
 fn style_entry(key: &str, val: &Value, at: &str, out: &mut Vec<Refusal>) {
     let here = pointer(at, key);
-    if key == "expr" {
+    if key == "expr" || key.ends_with("Expr") {
         out.push(Refusal::new(
             here,
             "expressions are allowed only in a filter or calculate transform, a parameter's \

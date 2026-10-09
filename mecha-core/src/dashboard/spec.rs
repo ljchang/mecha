@@ -297,6 +297,13 @@ impl Spec {
                             "a text panel needs text",
                         ));
                     }
+                    if has_markdown_link(markdown) {
+                        out.push(Refusal::new(
+                            pointer(&at, "markdown"),
+                            "a dashboard's text has no links — inline, autolink or reference — \
+                             and a relative link is still a destination; write the words only",
+                        ));
+                    }
                 }
             }
         }
@@ -344,8 +351,15 @@ fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
                     format!("strings here are at most {limit} characters"),
                 ));
             }
-            if at.ends_with("/vegalite/$schema") && is_vegalite_schema(s) {
+            if is_chart_schema_marker(at) && is_vegalite_schema(s) {
                 return;
+            }
+            if has_character_reference(s) {
+                out.push(Refusal::new(
+                    at,
+                    "write the character itself, not a character reference (&#…; or &name;) — \
+                     references can spell a scheme the address check cannot see",
+                ));
             }
             if is_address(s) {
                 out.push(Refusal::new(
@@ -379,6 +393,16 @@ fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
     }
 }
 
+/// `/panels/<n>/vegalite/$schema` exactly — the one place the marker is exempt.
+fn is_chart_schema_marker(at: &str) -> bool {
+    let mut parts = at.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(""), Some("panels"), Some(n), Some("vegalite"), Some("$schema"), None)
+            if n.chars().all(|c| c.is_ascii_digit())
+    )
+}
+
 /// `/panels/<n>/markdown` exactly — the one field with the larger budget.
 fn is_text_panel_markdown(at: &str) -> bool {
     let mut parts = at.split('/');
@@ -401,12 +425,13 @@ fn is_vegalite_schema(s: &str) -> bool {
 /// it directly: `data:image/png` and `(javascript:x` are addresses, "Raw
 /// data: counts" and "Profile: x" are titles.
 ///
-/// Two spellings that re-form a scheme by the time a browser reads it are
-/// undone first: control characters are dropped (the URL parser removes tab
-/// and newline before parsing, so `java\tscript:` is `javascript:`), and a
-/// colon written as a character reference (`&#58;`, `&#x3a;`, `&colon;`) is
-/// decoded, since CommonMark decodes references in link destinations. The
-/// renderer's own link handling is the second layer (design §4.1).
+/// Control characters are dropped first: the URL parser removes tab and
+/// newline before parsing, so `java\tscript:` is `javascript:`. Character
+/// references are not decoded here — a spec may not contain one at all
+/// ([`has_character_reference`]). A *relative* destination (`/outbox/x`) is
+/// not an address by this test; it can only become a destination as a link,
+/// and links are refused as syntax ([`has_markdown_link`]) and dropped by the
+/// renderer (design §4.1).
 pub(crate) fn is_address(s: &str) -> bool {
     let lower = normalise(s);
     let lower = lower.as_str();
@@ -443,50 +468,50 @@ pub(crate) fn is_address(s: &str) -> bool {
     })
 }
 
-/// Lowercase, controls dropped, colon references decoded.
+/// Lowercase, controls dropped.
 fn normalise(s: &str) -> String {
-    let stripped: String = s
-        .trim()
+    s.trim()
         .chars()
         .filter(|c| !c.is_control())
         .map(|c| c.to_ascii_lowercase())
-        .collect();
-    let mut out = String::with_capacity(stripped.len());
-    let mut rest = stripped.as_str();
-    while let Some(i) = rest.find('&') {
-        out.push_str(&rest[..i]);
-        rest = &rest[i..];
-        match colon_reference(rest) {
-            Some(len) => {
-                out.push(':');
-                rest = &rest[len..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+        .collect()
 }
 
-/// The length of a character reference for `:` at the start of `s`, if one
-/// is there: `&colon;`, `&#58;` or `&#x3a;`, with any leading zeros, and the
-/// `;` optional where HTML allows it to be.
-fn colon_reference(s: &str) -> Option<usize> {
-    if s.starts_with("&colon;") {
-        return Some("&colon;".len());
-    }
-    let body = s.strip_prefix("&#")?;
-    let (digits, radix, prefix) = match body.strip_prefix('x') {
-        Some(hex) => (hex, 16, 3),
-        None => (body, 10, 2),
-    };
-    let n = digits.chars().take_while(|c| c.is_digit(radix)).count();
-    if n == 0 || u32::from_str_radix(&digits[..n], radix).ok()? != 58 {
-        return None;
-    }
-    let semicolon = usize::from(digits[n..].starts_with(';'));
-    Some(prefix + n + semicolon)
+/// A character reference — `&#106;`, `&#x6a;`, `&amp;`. CommonMark decodes
+/// them in a link destination, so any letter of a scheme can hide behind one;
+/// rather than decode them and hope the decoding matches the renderer's, a
+/// spec may not contain one at all. JSON carries every character directly.
+fn has_character_reference(s: &str) -> bool {
+    s.match_indices('&').any(|(i, _)| {
+        let rest = &s[i + 1..];
+        let body = rest
+            .strip_prefix('#')
+            .map(|r| r.strip_prefix(['x', 'X']).unwrap_or(r));
+        match body {
+            Some(digits) => digits.chars().next().is_some_and(|c| c.is_ascii_hexdigit()),
+            None => {
+                let name: usize = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .count();
+                name > 0 && rest[name..].starts_with(';')
+            }
+        }
+    })
+}
+
+/// Markdown link syntax: an inline `[text](dest)`, an angle autolink, or a
+/// reference definition `[label]: dest`. A dashboard's text renders no links
+/// (design §4.1), so a spec that writes one is refused rather than silently
+/// stripped — and this also covers a *relative* destination, which no scheme
+/// test can see.
+fn has_markdown_link(s: &str) -> bool {
+    s.contains("](")
+        || s.contains("<http")
+        || s.lines().any(|line| {
+            let t = line.trim_start();
+            t.starts_with('[')
+                && t.find("]:")
+                    .is_some_and(|i| !t[1..i].is_empty() && !t[1..i].contains(']'))
+        })
 }
