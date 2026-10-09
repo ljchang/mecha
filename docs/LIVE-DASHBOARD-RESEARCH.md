@@ -1,10 +1,14 @@
 # Live dashboards — research
 
 > **Decided.** The owner ruled on this document the same day; the decisions
-> are [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §0. Two
+> are [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §0. Three
 > recommendations below were overtaken there: polling is the default with no
-> push channel planned (LD4), and the database stays at home or in the cloud
-> with the factory holding snapshots only (Part 8, ruled R3).
+> push channel planned (LD4); the database stays at home or in the cloud
+> with the factory holding snapshots only (Part 8, ruled R3); and **the static
+> eval gate (LD8, and Part 5's "fail the publish if the bundle contains `new
+> Function`") was reversed** — a grep matches every chart library on code that
+> never runs, so the gate is a functional browser probe under the real CSP
+> (design §6.1). Each is marked where it stands.
 
 **2026-10-09.** One question: *how should mecha author a page that is attached
 to data — a dashboard that stays current as the data changes — and publish it
@@ -224,9 +228,11 @@ the `vega-interpreter` plug-in (`ast: true`, `expr: vega.expressionInterpreter`)
 to run under such a policy, about 10% slower [D, vega.github.io/vega/usage/interpreter].
 Whether `vega-embed` passes those options through needs checking at build
 [NF]. Observable Plot and ECharts are believed eval-free [I, unverified].
-Either way the cheap enforcement is the one the vendor gate already uses:
-**fail the publish if the bundle contains `new Function` or `eval(`**, rather
-than trusting a library's documentation.
+~~Either way the cheap enforcement is the one the vendor gate already uses:
+fail the publish if the bundle contains `new Function` or `eval(`.~~
+*Reversed by design §6.1: a static scan matched 8 times in Vega and 5 in
+ECharts on code that never ran; the gate is a functional browser probe under
+the real CSP, and the scan is a report.*
 
 ## Part 6 — What mecha and the factory already have
 
@@ -360,9 +366,9 @@ and eval check. It is a tier, not the default.
   replace with a `generated_at` and a generation number, a per-tenant byte cap
   (already owed, §14.9.3); the page reads
   `GET /b/{id}/data/{name}.json` on its own origin (`connect-src 'self'`
-  already allows it), with an ETag. *(The design moved this under the
-  bundle's own path, `./data/{name}.json`, so it passes the page's grant —
-  design §6.2.)*
+  already allows it), with an ETag. *(The design keeps this path and pins it
+  absolutely: the page loads from `/b/{id}/v/{n}/`, where a relative
+  `./data/` would resolve inside the immutable version — design §6.2.)*
 - **LD4. Freshness by polling first, SSE second.** A dashboard refreshed every
   few minutes needs a conditional GET and nothing else. SSE (one stream per
   page, carrying invalidations, never the data) earns its place only for
@@ -378,8 +384,9 @@ and eval check. It is a tier, not the default.
   publish. This is the load-bearing decision and is the owner's to make (Q1).
 - **LD7. No database credential on the box, ever.** Cloud and home sources are
   read at home.
-- **LD8. Extend the publish gate**: fail on `new Function` / `eval(` in a
-  bundle's scripts, beside the existing external-reference check.
+- ~~**LD8. Extend the publish gate**: fail on `new Function` / `eval(` in a
+  bundle's scripts, beside the existing external-reference check.~~
+  *Reversed — design §6.1.*
 - **LD9. A preview in the outbox**, framed from a separate sandbox origin —
   `mecha serve`'s `frame-ancestors 'none'` stays as is for its own pages.
 

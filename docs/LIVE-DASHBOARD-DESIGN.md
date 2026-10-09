@@ -53,7 +53,7 @@ Not to be re-asked.
         │                 └─ #dashboards/<id> ─ Svelte renderer polls it
         │
         └─ rung 3 ─▶ factory  PUT /v1/bundles/<id>/datasets/<name>      (push)
-                          └─ bundle page ─ the same renderer polls ./data/<name>.json
+                          └─ bundle page ─ the same renderer polls /b/<id>/data/<name>.json
 ```
 
 Three objects, and the line between them is the whole design:
@@ -164,7 +164,8 @@ and JSON carries every character directly. And a text panel may not contain
 link syntax at all — inline, autolink or reference definition — which is also
 what keeps a *relative* destination (`/outbox/approve/…`, on the origin that
 holds that button) from becoming one, since no scheme test can see it.
-(Proposed in #621, `mecha-core/src/dashboard/vegalite.rs`.) The renderer re-checks on load — the server check is the control, the
+(Proposed in #621: the walker in `mecha-core/src/dashboard/vegalite.rs`, the
+string and link-syntax rules in `spec.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as §5.1's form evaluator.
 
 Every refusal names the field and the rule, because the reader of the error is
@@ -214,7 +215,7 @@ decided here rather than discovered at step 7.
 
 | Order | Kind | How it runs |
 |---|---|---|
-| v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only |
+| v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only — and **confined to its one file**: a read-only open bounds writes, not reach, and `ATTACH DATABASE '<any path>'` is a read-only statement that would let a model-drafted query read any SQLite file on the host, a path from tool input that never met `ToolCtx::resolve`. So the connection sets `SQLITE_LIMIT_ATTACHED` to 0, installs an authorizer refusing `ATTACH`, `DETACH`, `PRAGMA` and extension loading, and runs exactly one prepared statement per loader (never `execute_batch`, whose tail would run a second) |
 | v1 | `mecha` | one of a **closed set of read-only readouts, enumerated in code** (`learning-report`, `sessions health`, …) — never an argv. The mecha CLI also releases outbox drafts and accepts harness candidates, so a free-form command run unattended would be a model-drafted cron slot with side effects; a readout name that is not in the enum is a parse error, and adding one is a code change a review sees |
 | v2 | `duckdb` — and through it Postgres, MySQL, CSV, Parquet, JSON, S3 | a pinned DuckDB binary as a confined subprocess (§3.4) |
 | v2 | `sheets` (R10) | mecha-docs' `sheets_read` with a fixed `file_id` and range; the first row is the header; the table lands in DuckDB and the query runs over it |
@@ -232,9 +233,15 @@ once, which is the owner's act this design wants anyway. A sheet other people
 edit carries their text: it defaults to `class = "untrusted"` unless the owner
 says otherwise.
 
-**`class` is fail-closed.** A source with no class, or `class = "untrusted"`,
-marks its datasets as carrying third-party values (a table of mail subjects
-is third-party text). That matters in §5.3; it is never a reason to refuse.
+**The source's kind decides `external`; `class` only tightens it.** Any
+source that reaches a network — Postgres, Sheets, anything remote — yields
+datasets that are `.from_outside()` whatever its `class` says, because that is
+what `external` means everywhere else in the tree, and a line in owner-written
+TOML cannot earn back what crossing a network costs (the same reason `Blind`
+is earned in code, never granted in TOML). For a local source, `class` decides,
+fail-closed: no class, or `class = "untrusted"`, marks its datasets as carrying
+third-party values (a table of mail subjects is third-party text). Either way
+it matters in §5.3 and is never a reason to refuse.
 
 ### 3.2 The loader file
 
@@ -418,7 +425,8 @@ The model drafts in its workspace — `dashboard.json`, `loaders/*.toml` — wit
 the ordinary file tools, and checks its work with one new tool:
 
 - **`dashboard_preview`** — validates the spec and loaders (§2.2, §3.2), runs
-  each loader once against its registered source, renders the dashboard
+  each **local** loader once against its registered source (a remote source
+  shows its last scheduled dataset — see Egress below), renders the dashboard
   headless, and returns the **screenshot** plus each dataset's row count and
   shape. Errors are named field by field. This is the visual loop: write,
   preview, look, fix.
@@ -488,11 +496,16 @@ the moment that fetch takes.
 box serves `interactive` bundles without `'unsafe-eval'`, so any runtime code
 construction — `new Function`, a bare `Function(`, `eval(`, `.constructor(` —
 throws when it runs, whatever library carries it. The publish gate is
-therefore **a browser load of the real bundle under the real `interactive`
-policy, with zero CSP violations** (`factory-publish serve --class
-interactive`, then a headless load) — the instrument §7.1 of the public-surface
-design already used. It catches what any static check misses, a runtime
-`appendChild(style)` included.
+therefore **functional, under the real policy**: a browser load of the real
+bundle under the real `interactive` CSP (`factory-publish serve --class
+interactive`, then a headless load) in which **the charts render correctly and
+every violation observed is accounted for** — named, with the degradation it
+causes, or none. Not a zero count: §7.1 of the public-surface design measured
+one violation on a working bundle (a library's `Function("")` feature probe
+taking its slower path) and wrote down that "a violation appeared" and "the
+page is broken" are not the same thing. A violation that changes the render —
+a blocked runtime `<style>`, a chart that needed the code it tried to build —
+fails the gate; a probe that falls back cleanly is recorded and passes.
 
 **A static scan is a report, not a gate.** Step 0 measured why (interim,
 2026-10-09): a grep over that family matches 8 times in a minified Vega and 5
@@ -513,7 +526,7 @@ The generalisation of `put_slots`:
 | | |
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest |
-| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push |
+| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: a new publish (§6.3) starts the channel over, and the owner can reset it explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
 | Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10.2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
@@ -561,11 +574,11 @@ serve`'s `frame-ancestors 'none'`.
 | Leg | Where it enters | What holds it |
 |---|---|---|
 | Private data | loaders | only owner-registered sources; read-only opens; the model names a source, never a credential |
-| Untrusted content | a source classed untrusted; unknown counts as untrusted | `.from_outside()` on preview results; flagged at review |
+| Untrusted content | any remote source, always; a local source classed untrusted or unclassed | `.from_outside()` on preview results — decided by kind, tightened by class (§3.1); flagged at review |
 | A way out | a remote loader's query (rung 1) | the model never runs one: preview shows the last scheduled refresh (§5.3); install shows the query and the owner reads it first |
 | Effects | a `mecha` loader (rung 1) | a closed enum of read-only readouts in code, never an argv (§3.1) |
 | A way out | the dataset push (rung 3) | the loader released once (R4); digest-pinned refresh; shape checked at home and on the box; no model in the refresh path |
-| Code execution | the renderer | ours; no `{@html}`; Vega's interpreter; eval check at publish; the spec has no destinations |
+| Code execution | the renderer | ours; no `{@html}`; Vega's interpreter; the CSP without `'unsafe-eval'`, and a functional browser probe at publish (§6.1); the spec has no destinations |
 | The box lost | the factory | holds snapshots and public keys only — no database credential, no route home (R3) |
 
 ---
@@ -584,7 +597,7 @@ after the factory path is proven.
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards` | `serve/` | **rung 1: the host dashboard live on the tailnet** |
-| 5 | `dashboard` template, eval check, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** — and zero CSP violations with the real bundle under the real `interactive` policy (§6.1) |
+| 5 | `dashboard` template, the functional CSP probe, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
@@ -596,7 +609,7 @@ panels, loaders and shape check are grammar-neutral, and only the Vega-Lite
 walker assumes R2 — so if step 0 reverses R2, the walker is what is lost, not
 the step. Step 5 is deliberately next, not last: the factory is where this
 design's untested assumptions live — the grant under a polling page (§6.4),
-the eval check against a real Vega build, the box-side shape check — and
+the CSP probe against a real Vega build, the box-side shape check — and
 finding one wrong after steps 6–8 would mean redoing them.
 
 ## 9. Deliberately not in scope
@@ -680,8 +693,8 @@ Every minute, one row per category plus one system row:
 | Memory per category | cgroup `MemoryCurrent` | summed over the category's units |
 | CPU % per category, load average | cgroup `CPUUsageNSec` deltas; `/proc/loadavg` | |
 | Tasks per category, total | cgroup `TasksCurrent`; `/proc` count | a count, never a list |
-| GPU utilisation, temperature, power | `nvidia-smi --query-gpu` | |
-| GPU memory per category | `nvidia-smi --query-compute-apps` → cgroup → category | |
+| GPU utilisation, temperature, power draw | `nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw` | `power.limit` is `[N/A]` on the GB10 (`GOAL-SYSTEM-DESIGN.md` §4.2) |
+| GPU memory per category | `nvidia-smi --query-compute-apps=pid,used_memory` → cgroup → category | read on this machine 2026-10-09: `used_gpu_memory` **does** report per process (one process at 6081 MiB) even though `memory.used` is `[N/A]` |
 | Storage used / total per role | `statvfs` | |
 
 **The GB10 has no separate GPU memory**: `nvidia-smi` reports
