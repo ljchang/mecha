@@ -214,7 +214,13 @@ async fn wait_for_owner(router: Option<&str>) -> Result<()> {
 
 fn private_file(path: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+    // Narrowed to 0700 only when this call makes it: a folder the owner
+    // named (`--out ~/c1.jsonl`) is not the harness's to narrow. The file
+    // itself is 0600 either way (review of #612, pass 4).
+    if let Some(dir) = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty() && !d.is_dir())
+    {
         mecha_core::create_private_dir(dir)
             .with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -395,13 +401,30 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         .calendar
         .as_deref()
         .and_then(|c| pr::clock_for(c, from, tz));
-    if clock_at.is_none() {
-        eprintln!(
-            "note: the turn's calendar reference could not be matched to a day; \
+    match (&branch.calendar, clock_at) {
+        (None, _) => eprintln!(
+            "note: no calendar reference was recorded for the turn's run; the replay sends \
+             the recorded run's clock"
+        ),
+        (Some(_), None) => eprintln!(
+            "note: the turn's calendar reference renders on no day near the recorded clock; \
              the replay sends the recorded run's clock instead"
-        );
+        ),
+        _ => {}
     }
 
+    // The model the turn ran on, against the one this binding sends to: a
+    // replay on another preset is another arm, so it is asked for (`-m`,
+    // `-p`) rather than taken from whatever the config resolves today, as
+    // `mecha replay` defaults to the recorded model (review of #612, pass 3).
+    // Before the output file exists, so a refusal leaves none behind.
+    let recorded_model = branch.config.as_ref().map(|c| c.model.clone());
+    let model_matches = recorded_model.as_deref().map(|m| m == bound.model);
+    refuse_model_drift(
+        recorded_model.as_deref(),
+        &bound.model,
+        global.model.is_some() || global.provider.is_some(),
+    )?;
     let out = match &args.out {
         // Absolute, so a bare file name's folder is the working directory
         // rather than an empty path no folder can be made at.
@@ -429,17 +452,6 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         &store,
     )?
     .0;
-    // The model the turn ran on, against the one this binding sends to: a
-    // replay on another preset is another arm, so it is asked for (`-m`,
-    // `-p`) rather than taken from whatever the config resolves today, as
-    // `mecha replay` defaults to the recorded model (review of #612, pass 3).
-    let recorded_model = branch.config.as_ref().map(|c| c.model.clone());
-    let model_matches = recorded_model.as_deref().map(|m| m == bound.model);
-    refuse_model_drift(
-        recorded_model.as_deref(),
-        &bound.model,
-        global.model.is_some() || global.provider.is_some(),
-    )?;
     let surface = mecha_core::surface::fingerprint(&probe.registry().specs());
     let recorded_surface = branch.config.as_ref().and_then(|c| c.tools_hash.clone());
     let system_matches = branch
@@ -658,10 +670,11 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
     let mut digests: BTreeMap<String, usize> = BTreeMap::new();
     let (mut no_call, mut unparsed, mut errors) = (0, 0, 0);
     for s in samples {
-        // An errored sample observed nothing: it made no call because it got
-        // no answer, and its tokens are unknown rather than zero. Counted as
-        // an error and in no other bucket.
-        if s.error.is_some() {
+        // A sample with no response observed nothing: it made no call because
+        // it got no answer, and its tokens are unknown rather than zero.
+        // Counted as an error and in no other bucket. One whose response came
+        // back and whose run failed afterwards is counted for what it did.
+        if s.stop_reason.is_none() {
             errors += 1;
             continue;
         }
@@ -683,7 +696,7 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
     }
     let output: Vec<u64> = samples
         .iter()
-        .filter(|s| s.error.is_none())
+        .filter(|s| s.stop_reason.is_some())
         .map(|s| s.output_tokens)
         .collect();
     serde_json::json!({
@@ -805,6 +818,13 @@ mod tests {
             "the errored sample is not a choice not to call"
         );
         assert_eq!(s["output_tokens_mean"], 200.0);
+        // A response that came back, from a run that failed after it, is
+        // counted for what it did.
+        let mut late = blank(None, 50, 1);
+        late.error = Some("the run failed after the answer".into());
+        let s2 = summarise(&[late]);
+        assert_eq!(s2["errors"], 0);
+        assert_eq!(s2["calls_by_tool"]["widget"], 1);
         let all_failed = summarise(&[blank(Some("a 500"), 0, 0)]);
         assert!(
             all_failed["output_tokens_mean"].is_null(),
@@ -825,6 +845,14 @@ mod tests {
         let err = private_file(&bare).unwrap_err();
         assert!(format!("{err:#}").contains("c1.jsonl"), "{err:#}");
         assert!(private_file(Path::new("")).is_err());
+        // A folder the owner named keeps its mode; one this makes is 0700.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_file(&dir.join("c2.jsonl")).unwrap();
+        assert_eq!(mode(&dir), 0o755, "an existing folder is not narrowed");
+        private_file(&dir.join("made").join("c3.jsonl")).unwrap();
+        assert_eq!(mode(&dir.join("made")), 0o700);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
