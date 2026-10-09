@@ -18,7 +18,7 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{is_identifier, Refusal, Refusals};
+use super::{is_identifier, Checked, Refusal, Refusals};
 use crate::cron::Schedule;
 
 /// Rows one dataset may hold. A dashboard draws pictures, not tables of
@@ -30,9 +30,14 @@ const MAX_QUERY: usize = 16 * 1024;
 /// the bytes, since a string column has no length of its own.
 pub const MAX_DATASET_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A checked loader. Like [`super::Spec`], not `Deserialize` and carrying a
+/// private [`Checked`]: the only way to hold one is [`Loader::parse`], so
+/// nothing can call [`Loader::digest`] on a loader whose `name` was never set
+/// and whose checks never ran.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Loader {
+    #[serde(skip)]
+    checked: Checked,
     /// The file's stem, which is the dataset's name. Never read from the file:
     /// a name that can disagree with its filename is a bug with no upside.
     #[serde(skip)]
@@ -84,16 +89,39 @@ impl ColumnType {
     }
 }
 
+/// The wire shape of `loaders/<name>.toml`, before any check.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Wire {
+    source: String,
+    schedule: Schedule,
+    #[serde(default)]
+    timezone: Option<String>,
+    max_rows: u32,
+    query: String,
+    #[serde(rename = "column")]
+    columns: Vec<Column>,
+}
+
 impl Loader {
     /// Parse and check one `loaders/<name>.toml`.
     pub fn parse(name: &str, text: &str) -> Result<Loader, Refusals> {
-        let mut loader: Loader = toml::from_str(text).map_err(|e| {
+        let wire: Wire = toml::from_str(text).map_err(|e| {
             Refusals(vec![Refusal::new(
                 "",
                 format!("does not match a loader's shape: {e}"),
             )])
         })?;
-        loader.name = name.to_string();
+        let loader = Loader {
+            checked: Checked::new(),
+            name: name.to_string(),
+            source: wire.source,
+            schedule: wire.schedule,
+            timezone: wire.timezone,
+            max_rows: wire.max_rows,
+            query: wire.query,
+            columns: wire.columns,
+        };
         let mut out = Vec::new();
         loader.check(&mut out);
         if out.is_empty() {

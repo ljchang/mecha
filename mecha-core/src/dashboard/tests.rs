@@ -368,6 +368,16 @@ fn a_key_ending_in_expr_is_refused_in_a_style_object() {
 }
 
 #[test]
+fn a_key_gets_every_screen_a_value_gets() {
+    let base = "/panels/1/vegalite/encoding/x/axis";
+    for key in ["d&#97;ta", "fill url(x)", "x".repeat(2_100).as_str()] {
+        let v = with(example(), base, json!({ key: 1 }));
+        let at = pointer(base, key);
+        refused_at(&v, &at);
+    }
+}
+
+#[test]
 fn an_address_used_as_a_key_is_refused() {
     let at = "/panels/1/vegalite/encoding/x/axis/https:~1~1example.org~1x";
     let v = with(
@@ -773,6 +783,30 @@ fn a_column_refusal_shows_only_identifier_names() {
     assert!(
         text.contains("(unnamed)") && !text.contains("drop table"),
         "{text}"
+    );
+}
+
+#[test]
+fn an_unreadable_loaders_directory_is_a_refusal_beside_the_others() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new("lab_week");
+    s.write(
+        "dashboard.json",
+        &with(example(), "/theme", json!("Bad Theme")).to_string(),
+    );
+    let loaders = s.0.join("loaders");
+    std::fs::set_permissions(&loaders, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&loaders).is_ok(); // root reads anything
+    let result = Installed::load(&s.0);
+    std::fs::set_permissions(&loaders, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        return;
+    }
+    let refusals = result.unwrap().unwrap_err().0;
+    assert!(refusals.iter().any(|r| r.at == "loaders"), "{refusals:?}");
+    assert!(
+        refusals.iter().any(|r| r.at == "dashboard.json#/theme"),
+        "the spec's own refusal survives: {refusals:?}"
     );
 }
 
