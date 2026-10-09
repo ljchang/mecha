@@ -448,8 +448,8 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool, router_offered: bool) -> Stri
     for s in &p.sidecars {
         let not_needed = match mecha_core::install::not_needed(s.id, p.feature, chat_here) {
             None if s.id == mecha_core::router_unit::ID && chat_here && !router_offered => Some(
-                "not offered here — the default provider names another chat server on this \
-                 machine; `mecha setup chat` installs mecha's router and offers the provider",
+                "not offered here — the default provider does not name mecha's router; \
+                 `mecha setup chat` installs it and offers the provider",
             ),
             other => other,
         };
