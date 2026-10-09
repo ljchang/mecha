@@ -270,6 +270,133 @@ Set, or narrowed, by the results:
 Not set by any measurement:
 - Whether annotations on several regions run as one edit or one per region.
 
+## 7. Several regions, each with its own instruction (2026-10-09)
+
+The owner's question (2026-10-09): today's modal paints one white region with
+one instruction. Can the owner draw several regions in different colours,
+each carrying its own instruction, and what should that interface look like?
+§6 left open "whether annotations on several regions run as one edit or one
+per region". This section answers what the sources say and proposes how to
+measure the rest. **Nothing here has been run yet.**
+
+### 7.1 What the model supports
+
+- **Qwen-Image 2.1 does this in one pass, and says so** [official, README and
+  HF card].
+  - The README says local edits can be specified "via circles, painted
+    annotations, or separate masks".
+  - Its "Local Editing" figure is captioned "Circle-guided multi-region
+    editing: remove watch, change hair color, replace clothing".
+  - The input photo carries thin freehand outlines in red, blue and green,
+    drawn on the photo itself. The output has all three edits and no
+    outlines.
+  - Its prompt is quoted, by a third-party guide rather than by Qwen, as
+    "Remove the metal watch in the blue circle, change the hair in the red
+    circle to black, and replace the area in the green circle with gray
+    short-sleeved linen pajamas".
+- **Regions are named by colour.** Qwen's Pro guide does the same ("Replace
+  the object inside the red circle … Remove the red circle") and asks for "a
+  color that appears nowhere else in the frame" [official, Pro API guide].
+  - Coordinates in the prompt do not work: one user reported they "could not
+    edit the region" [reported, Qwen-Image #289].
+  - Every source asks the model to remove the marks.
+  - No limit on the number of regions is published. The demo uses three, and
+    Krita's region system recommends five or fewer [reported].
+- **Marks are hints, not walls** (§1 holds). No source compares marks
+  against true inpainting. Every source agrees that only a composite
+  guarantees the rest of the picture. The same agreement is what chose C in
+  §6.
+- **Marks the output is never built from.** A community node for
+  Edit-2509/2511 (`comfyui_qwen_edit_pixel_perfect`, read from its source)
+  does the following:
+  - It tints the mask red only on the small copy the vision encoder sees.
+  - It VAE-encodes the reference from the clean original.
+  - It tells the model the red region is the only area to change, then
+    composites byte-exactly.
+  - So the mark cannot bleed into the result. Whether 2.1's encoder
+    (`TextEncodeQwenImage21`: prompt plus a list of images, no mask input,
+    §1) can be given a marked copy as one image and the clean original as
+    another, and still edit the clean one, is untested.
+
+### 7.2 How other tools put it in front of a person
+
+| Tool | Pattern |
+|---|---|
+| Gemini (Nano Banana), Photoshop web | circles, arrows and written words on an annotation layer; prompt "follow the red prompts in the image, remove them after" |
+| ChatGPT images | one brush selection, one chat instruction; "edits may extend beyond the area you selected" |
+| Krita AI | a layer per region, each with its own prompt, plus a root prompt for the whole scene added to each |
+
+Krita's split is the useful one here: per-region notes plus one note for the
+whole picture.
+
+### 7.3 Three ways to run several regions
+
+| | How | Outside every region | Inside each region | Cost |
+|---|---|---|---|---|
+| **M1. One pass, marks on the canvas** | the picture with each region's outline drawn on it in its colour; the union of the regions as C's latent noise mask; the prompt from the legend, "In the red outline: …; in the blue outline: …; remove the outlines" | identical (the composite) | an outline the model leaves inside a region survives the composite, which keeps everything under the mask | one render |
+| **M2. One pass, marks on a second image** | the clean picture as `<image1>` and canvas, a copy with the outlines as `<image2>`; the same union mask and legend, "…the coloured outlines in the second image mark…" | identical | no mark on the canvas, so none can survive; whether 2.1 follows a mark it sees only in a second image is the question | one render, one more reference |
+| **M3. One pass per region** | C as built (#429), once per region with that region's mask and words, each composited onto the last | identical | exact per region; a later pass sees the earlier result | n renders; each extra round adds grain (one guide measured 1.7 → 4.3 noise over six rounds) |
+
+M3 needs no new graph and is the fallback that cannot confuse two regions.
+M1 is the officially demonstrated form. M2 is M1 with the one failure M1
+cannot rule out designed away.
+
+### 7.4 The interface
+
+- **Regions, not one mask.** A row of colour chips above the picture, at
+  most four. Tapping a chip makes it the active region. Brush and box paint
+  in that colour, and the eraser erases only the active region.
+  - Painted regions show as **thin outlines** on the canvas, with a dim fill
+    while drawing. The official demo uses outlines, and a fill hides what the
+    model must see.
+  - Each region gets a number badge where it was first drawn, so a phone user
+    can tell regions apart without relying on colour alone.
+- **A note per region, and one for the whole picture.** Under the picture,
+  one line per region: its chip, its number, and a text field ("make this
+  blue"). An optional "whole picture" line carries anything that is not a
+  region (Krita's root prompt).
+  - Send is enabled when every painted region has a note.
+  - A region with no note is the thing §6 left open. Proposed: it may not be
+    sent empty. The owner is asked, never guessed for.
+- **Colours chosen against the picture.** The palette is four saturated
+  hues. At load the page picks the ones least present in the picture: Qwen
+  asks for colours "that appear nowhere else in the frame". The model never
+  sees a colour name the owner chose, only the harness's.
+- **What the page sends.** It sends one colour-indexed mask PNG at the
+  picture's size (each region's pixels in its palette colour, transparent
+  elsewhere), uploaded into the jail like today's mask. The panel's turn
+  then carries `regions: [{colour, words}]` beside it.
+  - The server derives everything from that one file: the union mask for C,
+    each region's own mask (M3), and the outline image (M1 and M2).
+  - The legend is built in the harness from the typed `regions`, in fixed
+    words, so the model never writes coordinates and the prompt is typed
+    values as before.
+  - One region in one colour is today's edit exactly.
+- **Not changed:** the composite, the mask never attached as an image (§5),
+  and the panel's harness draw (`dispatch_one`; IMAGE-DESIGN.md §5.3).
+  §6's "a mask the page registers, not a path the model passes" applies
+  unchanged, and more so with several regions.
+
+### 7.5 The measurement owed
+
+On this box, a3's way: paired seeds, n ≥ 4 per arm, judged by eye with the
+outside difference computed.
+
+- **Cases:** two regions with different, non-overlapping jobs (recolour a
+  shirt, remove a cup); three regions, including one on a face (hair colour);
+  and two adjacent regions (a jacket and the shirt under it) to catch
+  swapped instructions.
+- **Arms:** M1, M2, M3, and a control of one region with the instructions
+  joined in words ("make the shirt blue and remove the cup").
+- **Per region:** whether the change landed; whether a region did another's
+  job; whether a mark survived (M1); identity on the face case; and
+  seconds.
+
+**Decision rule:** take M2 if it lands as often as M1 with no marks left;
+else M1 if marks survive in under 5%; else M3, whose cost is known.
+Until it is measured, a build can ship M3 behind the same interface, since
+the interface does not depend on which arm wins.
+
 ## Sources
 
 - [QwenLM/Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1): "specify
@@ -284,3 +411,24 @@ Not set by any measurement:
 - [Qwen-Image-Edit](https://qwenlm.github.io/blog/qwen-image-edit/): boxes
   drawn on the picture.
 - [Qwen Image Edit Inpaint](https://stable-diffusion-art.com/qwen-image-edit-inpaint/).
+- [Qwen-Image-2.1 on Hugging Face](https://huggingface.co/Qwen/Qwen-Image-2.1):
+  "specify local edits via circles, painted annotations, or separate masks";
+  the "Circle-guided multi-region editing" figure.
+- [Qwen-Image 2.1 prompt guide (third party)](https://themindstudio.cc/mindcraft/docs/tutorial/prompt-guide-qwen-image-2-1?lang=en):
+  the multi-region demo's prompt, quoted.
+- [Qwen-Image 2.1 Pro, editing images](https://runware.ai/docs/models/alibaba-qwen-image-2-1-pro/guides/editing-images):
+  colour naming, "a color that appears nowhere else in the frame", and grain
+  over repeated rounds.
+- [Qwen-Image issue #289](https://github.com/QwenLM/Qwen-Image/issues/289):
+  box coordinates in the prompt did not edit the region.
+- [comfyui_qwen_edit_pixel_perfect](https://github.com/oron1208/comfyui_qwen_edit_pixel_perfect):
+  the mask tinted only for the vision encoder, the reference from the clean
+  original, a byte-exact composite.
+- [Pixel-perfect Qwen-Image-Edit with ReferenceLatent](https://lilting.ch/en/articles/qwen-image-edit-pixel-perfect-referencelatent):
+  output shift and drift outside the edit, fixed by compositing.
+- [Photoshop web: Nano Banana generative edits](https://www.adobe.com/learn/photoshop/web/nano-banana-generative-edits):
+  annotation-layer prompting.
+- [Krita AI Diffusion: regions](https://docs.interstice.cloud/regions/):
+  a prompt per region plus a root prompt.
+- [ChatGPT images: editing](https://help.openai.com/en/articles/9055440-editing-your-images-with-chatgpt-images):
+  one selection; "edits may extend beyond the area you selected".
