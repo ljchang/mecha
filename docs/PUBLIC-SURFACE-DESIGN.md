@@ -2028,6 +2028,10 @@ the thing **collects**, and those are independent:
 | **Publication** | a report, a blog page, a WASM notebook | immutable versions, a moving alias |
 | **Instrument** | an intake form, a booking page | a schema, an inbox, a lease, a handler |
 
+A third kind sits between them — the **live publication**, immutable code over
+datasets that move, such as a dashboard — and is designed in
+[`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) (research Part 7).
+
 Everything in §§1–13 is about publications, and publications are finished when
 they are published: no inbox, no lease, nothing to attach, and a notebook is a
 publication however much code it runs. **Only an instrument needs any of what
