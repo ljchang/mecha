@@ -195,6 +195,48 @@ fn unknown_keys_channels_and_marks_are_refused() {
 }
 
 #[test]
+fn a_chart_that_binds_no_dataset_is_refused_but_a_layer_child_may_inherit() {
+    let p = "/panels/1/vegalite";
+    let mut v = example();
+    v.pointer_mut(p)
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("data");
+    let r = refused_at(&v, p);
+    assert!(r.rule.contains("binds no dataset"), "{}", r.rule);
+
+    let layered = with(
+        example(),
+        p,
+        json!({
+            "data": { "name": "visits_by_day" },
+            "layer": [
+                { "mark": "bar", "encoding": { "x": { "field": "day", "type": "temporal" } } },
+                { "mark": "rule", "encoding": { "y": { "field": "visits", "type": "quantitative" } } }
+            ]
+        }),
+    );
+    assert!(
+        parse(&layered).is_ok(),
+        "{:?}",
+        parse(&layered).unwrap_err()
+    );
+}
+
+#[test]
+fn a_nested_schema_marker_is_refused_with_its_own_rule() {
+    let at = "/panels/1/vegalite/layer";
+    let v = with(
+        example(),
+        at,
+        json!([{ "$schema": "https://vega.github.io/schema/vega-lite/v6.json", "mark": "bar" }]),
+    );
+    let r = refused_at(&v, "/panels/1/vegalite/layer/0/$schema");
+    assert!(r.rule.contains("top level"), "{}", r.rule);
+}
+
+#[test]
 fn a_chart_may_bind_only_a_declared_dataset() {
     let at = "/panels/1/vegalite/data/name";
     let r = refused_at(&with(example(), at, json!("payroll")), at);
@@ -284,7 +326,25 @@ fn a_text_panel_refuses_link_syntax_including_a_relative_link() {
         let at = "/panels/3/markdown";
         refused_at(&with(example(), at, json!(md)), at);
     }
-    for md in ["Counts [approx.] only.", "Sites: [a, b]"] {
+    for md in [
+        "<a href=\"/outbox/approve/abc\">approve</a>",
+        "<img src=\"/x.png\">",
+        "<img src=x onerror=\"go()\">",
+        "<iframe src=\"/settings\"></iframe>",
+        "<!-- note -->",
+    ] {
+        let at = "/panels/3/markdown";
+        let r = refused_at(&with(example(), at, json!(md)), at);
+        assert!(r.rule.contains("no HTML"), "{md:?}: {}", r.rule);
+    }
+    let at = "/panels/1/vegalite/mark/background";
+    refused_at(&with(example(), at, json!("url(/outbox/x)")), at);
+    for md in [
+        "Counts [approx.] only.",
+        "Sites: [a, b]",
+        "Latency < 5 ms",
+        "a <3 b",
+    ] {
         let v = with(example(), "/panels/3/markdown", json!(md));
         assert!(parse(&v).is_ok(), "{md:?}: {:?}", parse(&v).unwrap_err());
     }

@@ -304,6 +304,13 @@ impl Spec {
                              and a relative link is still a destination; write the words only",
                         ));
                     }
+                    if has_html_tag(markdown) {
+                        out.push(Refusal::new(
+                            pointer(&at, "markdown"),
+                            "a dashboard's text has no HTML — a tag can carry a relative link or \
+                             a handler past every other check; write markdown prose only",
+                        ));
+                    }
                 }
             }
         }
@@ -359,6 +366,12 @@ fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
                     at,
                     "write the character itself, not a character reference (&#…; or &name;) — \
                      references can spell a scheme the address check cannot see",
+                ));
+            }
+            if s.to_ascii_lowercase().contains("url(") {
+                out.push(Refusal::new(
+                    at,
+                    "a spec names no destinations: `url(` is a CSS fetch, relative or not",
                 ));
             }
             if is_address(s) {
@@ -497,6 +510,20 @@ fn has_character_reference(s: &str) -> bool {
                 name > 0 && rest[name..].starts_with(';')
             }
         }
+    })
+}
+
+/// The start of an HTML tag, comment or declaration as CommonMark reads one:
+/// `<` followed by a letter, `/`, `!` or `?`. Raw HTML is the fourth way to
+/// write a link, and the one no link-syntax test sees — `<a href="/x">`,
+/// `<img src=x onerror=…>` — so a text panel may not contain any. A `<`
+/// before a space or a digit ("a < b", "<5 ms") is prose and stays.
+fn has_html_tag(s: &str) -> bool {
+    s.match_indices('<').any(|(i, _)| {
+        s[i + 1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'))
     })
 }
 
