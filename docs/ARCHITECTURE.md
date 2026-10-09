@@ -5885,7 +5885,13 @@ non-blocking flock, so a hand edit never contends with a fire.
 - **`mecha replay --persona <chat> --at <line>` samples a turn's next
   request; it does not re-drive the chat** (`persona::replay`). The branch is
   `Session::parse` over the transcript up to the owner turn's record line,
-  with that turn's own `Notes` record (the line just before it). Its clock is
+  with that turn's own `Notes` record (the line just before it). A record
+  holding the owner's words is a turn only if a run followed it (an
+  assistant reply, or the run's closing `GoalAnchor`, before the next owner
+  record). A message the crisis layer paused, and the one serve folds onto
+  the tail as a run hands back, sent no request and carry no notes. The
+  model must be the one the turn ran on unless `-m`/`-p` asks for another.
+  Its clock is
   set to a day whose calendar reference renders as the one recorded after
   the run (`clock_for`). Each sample is seeded (`--seed-base` + i), unlike a
   served turn: N samples at one pinned seed are one sample N times. The tools
