@@ -139,7 +139,9 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
 /// Whether a call is live now. The speech engine logs a real-time
 /// factor per sentence it speaks, and a hold shows only a turn in flight,
 /// not a call between turns. Not installed is no call; installed and
-/// unreadable is a refusal, since unknown is not clear.
+/// unreadable is a refusal, since unknown is not clear. A `systemctl` that
+/// cannot be run at all reads as not installed: on a machine without a user
+/// systemd there is no speech engine unit to be on a call through.
 fn voice_live() -> Result<bool> {
     const UNIT: &str = "mecha-breeze-tts.service";
     let installed = std::process::Command::new("systemctl")
@@ -224,6 +226,61 @@ fn private_file(path: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("creating {}", path.display()))
 }
 
+/// Refuse a sample that would load `model` over what the router holds,
+/// unless `allow`. `resident` is a claim about statuses, so it is gated on
+/// `readable` as every reader of it is: a list this build cannot read, or
+/// more than one model resident, is not "nothing loaded", and read that way
+/// the refusal would never fire while the sample evicted the owner's pick.
+fn refuse_load(
+    base: &str,
+    models: &[mecha_core::provider::router::RouterModel],
+    model: &str,
+    allow: bool,
+) -> Result<()> {
+    use mecha_core::provider::router::{readable, resident};
+    if allow {
+        return Ok(());
+    }
+    if !readable(models) {
+        bail!(
+            "the router at {base} answered /models with a list this cannot read (empty, or a \
+             status it does not know), so whether this replay would evict the owner's model \
+             is unknown — pass --allow-load to sample anyway"
+        );
+    }
+    let loaded = models.iter().filter(|m| m.is_resident()).count();
+    match resident(models) {
+        Some(r) if r != model => bail!(
+            "the router holds `{r}`, and this replay would load `{model}` in its place — \
+             switch first (`mecha model use`), or pass --allow-load"
+        ),
+        None if loaded > 1 => bail!(
+            "the router at {base} has {loaded} models resident, so which one this replay \
+             would swap out is a guess — switch first (`mecha model use`), or pass --allow-load"
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// An arm's overlay, read from `path`. One with no edits is the baseline
+/// under another name, so it is refused here, as an edit that matches
+/// nothing is refused per sample.
+fn load_overlay(path: Option<&Path>) -> Result<Overlay> {
+    let Some(f) = path else {
+        return Ok(Overlay::default());
+    };
+    let overlay = Overlay::parse(
+        &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+    )?;
+    if overlay.is_empty() {
+        bail!(
+            "{} has no `[[replace]]` edits, so the arm would measure the baseline",
+            f.display()
+        );
+    }
+    Ok(overlay)
+}
+
 pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bool) -> Result<()> {
     let store = mecha_core::persona::Store::default_dir()?;
     let (path, persona, id) = resolve(&store, arg)?;
@@ -267,13 +324,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         bail!("--samples must be at least 1");
     }
     let branch: Branch = pr::branch_at(&path, &text, line)?;
-    let overlay = match &args.overlay {
-        Some(f) => Overlay::parse(
-            &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
-        )?,
-        None => Overlay::default(),
-    };
-    let overlay = Arc::new(overlay);
+    let overlay = Arc::new(load_overlay(args.overlay.as_deref())?);
 
     let pin: Pin = serde_json::from_slice(
         &std::fs::read(path.with_file_name(format!("{id}.persona.json")))
@@ -294,15 +345,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     let bound = follower.current();
     if let Some(base) = &router {
         if let Some(models) = mecha_core::provider::router::models(base).await {
-            let resident = mecha_core::provider::router::resident(&models);
-            if resident.is_some_and(|r| r != bound.model) && !args.allow_load {
-                bail!(
-                    "the router holds `{}`, and this replay would load `{}` in its place — \
-                     switch first (`mecha model use`), or pass --allow-load",
-                    resident.unwrap_or_default(),
-                    bound.model
-                );
-            }
+            refuse_load(base, &models, &bound.model, args.allow_load)?;
         }
     }
     let tz = bound.config.agent.timezone();
@@ -415,6 +458,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         samples.push(sample);
     }
 
+    // Removed when nothing was staged into it; a render's pictures stay.
+    let _ = std::fs::remove_dir(&sampler.work);
     let summary = summarise(&samples);
     if json {
         println!(
@@ -546,8 +591,12 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
     let mut digests: BTreeMap<String, usize> = BTreeMap::new();
     let (mut no_call, mut unparsed, mut errors) = (0, 0, 0);
     for s in samples {
+        // An errored sample observed nothing: it made no call because it got
+        // no answer, and its tokens are unknown rather than zero. Counted as
+        // an error and in no other bucket.
         if s.error.is_some() {
             errors += 1;
+            continue;
         }
         if let Some(r) = s.stop_reason {
             *stops.entry(format!("{r:?}")).or_default() += 1;
@@ -565,7 +614,11 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
             *digests.entry(d.clone()).or_default() += 1;
         }
     }
-    let output: Vec<u64> = samples.iter().map(|s| s.output_tokens).collect();
+    let output: Vec<u64> = samples
+        .iter()
+        .filter(|s| s.error.is_none())
+        .map(|s| s.output_tokens)
+        .collect();
     serde_json::json!({
         "samples": samples.len(),
         "errors": errors,
@@ -582,6 +635,89 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn model(id: &str, status: &str) -> mecha_core::provider::router::RouterModel {
+        serde_json::from_value(serde_json::json!({"id": id, "status": {"value": status}})).unwrap()
+    }
+
+    #[test]
+    fn a_sample_never_loads_over_a_model_it_cannot_rule_out() {
+        let base = "http://127.0.0.1:8080";
+        let ok = |m: &[_], allow| refuse_load(base, m, "a", allow).is_ok();
+        assert!(ok(&[model("a", "loaded"), model("b", "unloaded")], false));
+        assert!(
+            ok(&[model("a", "unloaded"), model("b", "unloaded")], false),
+            "nothing loaded"
+        );
+        assert!(
+            !ok(&[model("b", "loaded"), model("a", "unloaded")], false),
+            "another loaded"
+        );
+        assert!(
+            !ok(&[model("a", "loaded"), model("b", "loaded")], false),
+            "two resident"
+        );
+        assert!(
+            !ok(&[model("a", "warming")], false),
+            "a status this build does not know"
+        );
+        assert!(!ok(&[], false), "an empty list");
+        assert!(ok(&[model("b", "loaded")], true), "--allow-load");
+    }
+
+    #[test]
+    fn an_overlay_with_no_edits_is_refused() {
+        let dir = std::env::temp_dir().join(format!("mecha-rp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("arm.toml");
+        std::fs::write(&f, "name = \"C\"\n# [[replace]]\n").unwrap();
+        let err = load_overlay(Some(&f)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no `[[replace]]` edits"),
+            "{err:#}"
+        );
+        assert!(
+            load_overlay(None).unwrap().is_empty(),
+            "no overlay is the baseline"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_errored_sample_counts_as_an_error_and_nothing_else() {
+        let blank = |error: Option<&str>, tokens: u64, calls: usize| Sample {
+            output_tokens: tokens,
+            error: error.map(str::to_string),
+            stop_reason: error
+                .is_none()
+                .then_some(mecha_core::message::StopReason::EndTurn),
+            tool_calls: (0..calls)
+                .map(|_| pr::CallFacts {
+                    name: "widget".into(),
+                    argument_bytes: 2,
+                    parsed: true,
+                    arguments: serde_json::json!({}),
+                })
+                .collect(),
+            ..Sample::of(0, None, 1, "m", &Overlay::default(), &[], None)
+        };
+        let s = summarise(&[
+            blank(None, 100, 1),
+            blank(None, 300, 0),
+            blank(Some("a 500"), 0, 0),
+        ]);
+        assert_eq!(s["errors"], 1);
+        assert_eq!(
+            s["no_call"], 1,
+            "the errored sample is not a choice not to call"
+        );
+        assert_eq!(s["output_tokens_mean"], 200.0);
+        let all_failed = summarise(&[blank(Some("a 500"), 0, 0)]);
+        assert!(
+            all_failed["output_tokens_mean"].is_null(),
+            "a mean over nothing is none"
+        );
+    }
 
     /// A bare file name lands in the working directory, and a failure names
     /// the path (found by mecha-a3: `--out c1.jsonl` failed every sample
