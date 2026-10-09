@@ -122,6 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha replay --persona` samples a persona chat's turn.** It branches at
+  one of the chat's turns (`--list` shows them) and sends that turn's first
+  request again, `--samples` times with a different seed each, as the chat
+  would send it today. `--overlay` tries a wording change. The samples go to
+  a private file under `~/.mecha/research/replay/`. The command waits while
+  you are using the model or on a call. Pictures are not drawn yet.
+
 - **The face detector behind edits.** Head crops come from a detector that
   runs inside mecha: install it once with `mecha imagelib
   install-face-detector` (89 MB). Without it, edits draw as before, with

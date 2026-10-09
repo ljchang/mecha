@@ -28,6 +28,7 @@ pub mod questions;
 pub mod reflect;
 pub mod reflections;
 pub mod replay;
+pub mod replay_persona;
 pub mod review;
 pub mod rules;
 pub mod run;

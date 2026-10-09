@@ -785,6 +785,23 @@ pub fn assistant_slot(sessions: &Path, chat: &str) -> SceneSlot {
     }
 }
 
+/// A persona's chat (IMAGE-DESIGN.md §6): its own copy beside its
+/// transcript, and the persona's latest and index in its folder, all
+/// outside the jail. `store` is the personas root (`~/.mecha/personas`), or a
+/// replay's scratch copy of it. One place, so the tool's slot and the run's
+/// scene note read the same files.
+pub fn persona_slot(store: &Path, persona: &str, chat: &str) -> SceneSlot {
+    let persona_dir = store.join(persona);
+    SceneSlot {
+        chat_copy: persona_dir
+            .join("sessions")
+            .join(format!("{chat}.scene.json")),
+        store: persona_dir.join("scene"),
+        chat: chat.to_string(),
+        from_latest: true,
+    }
+}
+
 /// An incognito chat's (R9): all of it in the room, beside the jail and
 /// never in it, so it goes when the room does and nothing reaches the mecha
 /// home.
