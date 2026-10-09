@@ -157,6 +157,10 @@ fn opens_owner_turn(line: &str) -> bool {
 
 /// The notes recorded for the run whose owner turn is at `index` (0-based):
 /// serve writes them on the line just before the turn, after any `Config`.
+///
+/// Stepping back over `Config` records can never reach the previous run's
+/// notes, because `Session::record_run` closes every run with a `GoalAnchor`
+/// after its harness notes, and the walk stops at any other record.
 fn notes_before(lines: &[&str], index: usize) -> Vec<String> {
     let mut i = index;
     while i > 0 {
@@ -231,7 +235,7 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
     if !opens_owner_turn(lines[index]) {
         bail!(
             "record line {line} of {} is a `{}` record, not an owner turn — \
-             `mecha replay persona {} --list` names the turns",
+             `mecha replay --persona {} --list` names the turns",
             path.display(),
             record_kind(lines[index]).unwrap_or_else(|| "unreadable".into()),
             path.display()
@@ -435,8 +439,10 @@ impl Replace {
     }
 }
 
-/// A fingerprint of what a request sends: two requests with the same one
-/// sent the same system text, tools, messages and limits.
+/// A fingerprint of a request's content: two requests with the same one
+/// sent the same system text, tools, messages and limits. Not the sampler:
+/// effort, thinking and cache flags are left out, and only the wire body's
+/// digest (`Sample::wire_digest`) says two requests were sent the same.
 pub fn request_digest(req: &CompletionRequest) -> String {
     let v = serde_json::json!({
         "model": req.model,
