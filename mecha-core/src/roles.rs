@@ -142,7 +142,11 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
             return Err(format!("{who} was given two parts"));
         }
         let doing = p["doing"].as_str().map(str::trim).unwrap_or_default();
-        let doing = if crate::imagelib::blank(doing) {
+        // A part that is only a name says nothing anyone does: read as no
+        // part, so an answer of only names fails and the call is drawn as
+        // sent (mecha-a3, 2026-10-09: {"doing": "Maya"}, {"doing": "John"}
+        // was applied with no act in the prompt).
+        let doing = if crate::imagelib::blank(doing) || names_only(doing, people) {
             String::new()
         } else {
             doing.trim_end_matches('.').to_string()
@@ -256,6 +260,20 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         .unwrap_or_default()
         .to_string();
     Ok(Split { roles, together })
+}
+
+/// Whether `part` names people and says nothing else: "Wren", "Maya and
+/// John".
+fn names_only(part: &str, people: &[String]) -> bool {
+    let mut rest = format!(" {} ", part.to_lowercase());
+    let mut names: Vec<String> = people.iter().map(|n| n.to_lowercase()).collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    for n in &names {
+        rest = rest.replace(n.as_str(), " ");
+    }
+    rest.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .all(|w| w == "and")
 }
 
 /// The rest of `part` when it opens with `name` as a word, its subject:
@@ -476,6 +494,22 @@ mod tests {
         .unwrap();
         assert_eq!(longest.roles[1].doing, "taking off her coat");
         assert_eq!(longest.roles[2].doing, "together with the others");
+        // A part that is only a name is no part: both only names fails,
+        // and one only a name is made neutral.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "Maya"},
+                {"who": "John", "where": "right", "doing": "John."}], "together": ""}"#,
+            &names(),
+        )
+        .is_err());
+        let one = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "lifting John"},
+                {"who": "John", "where": "right", "doing": "Maya and John"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(one.roles[1].doing, "together with the other person");
+        assert!(!names_only("Maya laughing", &["Maya".into()]));
         // A pair filed under each other swaps whole: neither part is lost.
         let crossed = read_split(
             r#"{"people": [{"who": "Maya", "where": "left", "doing": "John handing her the keys"},
