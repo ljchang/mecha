@@ -454,8 +454,12 @@ batch runs, when nothing yet knows which sources a spec will name:
 - `untrusted_input`: **always**. The capability says what the tool *can*
   return, and any source may be classed untrusted, even a v1 SQLite file.
   Whether a given result actually carries third-party values is
-  `.from_outside()` on that result, set when a source it read is classed
-  `untrusted` or unclassed — the same split as every network tool.
+  `.from_outside()` on that result, set when a source it read **reaches a
+  network — whatever its `class`** — or is a local source classed `untrusted`
+  or unclassed (§3.1: kind decides, class only tightens). This flag is the
+  whole control, not a refinement: the conversation's untrusted taint arms
+  only on `untrusted_input && external`, so a remote row returned without it
+  would reach the privileged conversation clean.
 - Egress: **`None`, and it stays `None`** — because the tool never runs a
   query against a remote source. It runs local loaders (`sqlite`, `mecha`)
   itself; for a remote one (Postgres, Sheets, anything over a network) it
@@ -506,6 +510,14 @@ good — three readings, each breaking a rule stated here. So datasets live
 beside the versioned tree, under the bundle id (§6.2), outside the digest, and
 the page fetches them on load. First paint is the renderer's empty state for
 the moment that fetch takes.
+
+The cost of taking datasets out of versions, named rather than discovered: an
+older version, still addressable at `/b/{id}/v/{n}/`, reads the *current*
+dataset — so after a shape-changing republish (§6.3), an old version's panels
+bound to a changed column fail in place (§4.3's per-panel error) rather than
+showing stale numbers. That is accepted: the alias moves to the new version,
+an old version is a record of a layout rather than of numbers, and the failure
+is visible, never silent.
 
 **The control on code in the bundle is the CSP, enforced by the browser.** The
 box serves `interactive` bundles without `'unsafe-eval'`, so any runtime code
