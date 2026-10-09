@@ -219,8 +219,8 @@ decided here rather than discovered at step 7.
 
 | Order | Kind | How it runs |
 |---|---|---|
-| v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only — and **confined to its one file**: a read-only open bounds writes, not reach, and `ATTACH DATABASE '<any path>'` is a read-only statement that would let a model-drafted query read any SQLite file on the host, a path from tool input that never met `ToolCtx::resolve`. So the connection sets `SQLITE_LIMIT_ATTACHED` to 0, installs an authorizer refusing `ATTACH`, `DETACH`, `PRAGMA` and extension loading, and runs exactly one prepared statement per loader (never `execute_batch`, whose tail would run a second) |
-| v1 | `mecha` | one of a **closed set of read-only readouts, enumerated in code** (`learning-report`, `sessions health`, …) — never an argv. The mecha CLI also releases outbox drafts and accepts harness candidates, so a free-form command run unattended would be a model-drafted cron slot with side effects; a readout name that is not in the enum is a parse error, and adding one is a code change a review sees |
+| v1 | `sqlite` | in process, `rusqlite` (already a mecha-core dependency), opened read-only — and **confined to its one file**: a read-only open bounds writes, not reach, and `ATTACH DATABASE '<any path>'` is a read-only statement that would let a model-drafted query read any SQLite file on the host, a path from tool input that never met `ToolCtx::resolve`. So the connection sets `SQLITE_LIMIT_ATTACHED` to 0, installs an authorizer refusing `ATTACH`, `DETACH`, `PRAGMA` and extension loading, and runs exactly one prepared statement per loader (never `execute_batch`, whose tail would run a second). The limit and the authorizer are **deliberately redundant** — remove neither as dead. Both APIs sit behind rusqlite cargo features this workspace does not enable (`limits`, `hooks`; read in rusqlite 0.37's `lib.rs`), so step 2 adds them to the dependency; a missing method is not a reason to fall back to checking the query's text |
+| v1 | `mecha` | one of a **closed set of read-only readouts, enumerated in code** (`learning-report`, `sessions health`, …) — never an argv. The mecha CLI also releases outbox drafts and accepts harness candidates, so a free-form command run unattended would be a model-drafted cron slot with side effects; a readout name that is not in the enum is a parse error, and adding one is a code change a review sees. A readout is often an object, not a table, so each enum variant carries its own fixed projection to rows, in code beside it |
 | v2 | `duckdb` — and through it Postgres, MySQL, CSV, Parquet, JSON, S3 | a pinned DuckDB binary as a confined subprocess (§3.4) |
 | v2 | `sheets` (R10) | mecha-docs' `sheets_read` with a fixed `file_id` and range; the first row is the header; the table lands in DuckDB and the query runs over it |
 | later | `mcp` (any fixed read-only tool call), Firestore, PocketBase | the same adapter shape as `sheets` |
@@ -336,6 +336,13 @@ The renderer is ours, so it obeys the house rules a model would not:
   strictest `style-src` holds.
 - **A rate over nothing is `null` and renders as a dash** —
   `LearningCharts.svelte`'s rule, kept.
+- **Dataset values reach the DOM only as text.** A dataset may be
+  third-party text (§3.1), so every place a value is drawn — table cells,
+  KPI figures, chart labels, tooltips — sets text, never HTML. Axis and legend
+  labels are SVG text nodes already; the one HTML path in the chart chain is
+  `vega-tooltip`'s default handler, which assigns an HTML string. Whether it
+  escapes is **unverified**, so tooltips use our own handler that writes text
+  nodes, and the question does not need answering.
 
 ### 4.2 Charts
 
@@ -367,7 +374,9 @@ possible.
 ### 4.3 Polling and freshness
 
 - Each dataset is fetched with `If-None-Match`; a `304` costs nothing.
-- The interval comes from the loader's schedule, floored at 30 s, and
+- The interval comes from the loader's schedule (five-field cron, so a
+  minute at the shortest; the 30 s floor guards a future sub-minute schedule
+  kind and binds nothing today), and
   **polling stops while the tab is hidden** — a phone left open on a dashboard
   must not poll all night.
 - **Freshness is shown from `generated_at`, never the viewer's clock.** A
@@ -409,8 +418,10 @@ The page is `#dashboards/<id>` in the existing hash router, with a list at
 `PUBLIC-SURFACE-RESEARCH.md` names the hazard: agent-authored markup on the
 origin that holds the outbox's approve button. **It does not arise at rung 1
 because nothing agent-authored executes.** The renderer is ours; the spec is
-data validated against a subset with no destinations; text is escaped; Vega
-runs under the interpreter with no `Function`. The existing CSP
+data validated against a subset with no destinations; text panels are escaped
+and carry no links or HTML; **dataset values**, which may be third-party,
+reach the DOM only as text, tooltips included (§4.1); Vega runs under the
+interpreter with no `Function`. The existing CSP
 (`security_headers`: `script-src 'self'`, `connect-src 'self'`) needs no
 change.
 
@@ -530,6 +541,7 @@ The generalisation of `put_slots`:
 | | |
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest |
+| Names | `{name}` is a dataset name, `[a-z][a-z0-9_]{0,63}`, and the box refuses anything else before it touches a path — the same rule the spec and loaders already enforce at home (#621), restated here because this is the table a factory-side implementer reads |
 | Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: a new publish (§6.3) starts the channel over, and the owner can reset it explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
 | Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10.2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
@@ -600,7 +612,7 @@ after the factory path is proven.
 | 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
-| 4 | Serve routes and `#dashboards` | `serve/` | **rung 1: the host dashboard live on the tailnet** |
+| 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `dashboard` template, the functional CSP probe, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
@@ -678,7 +690,8 @@ enum Category { ChatModel, Embeddings, Ocr, Voice, ImageGen, Mecha, Other }
 - **Measured from cgroup counters, not by inspecting processes**: systemd's
   per-unit `MemoryCurrent`, `CPUUsageNSec` and `TasksCurrent` already exist
   for every unit (read here, 2026-10-09). GPU memory per process comes from
-  `nvidia-smi --query-compute-apps`; the pid is used in memory to find its
+  `nvidia-smi --query-compute-apps=pid,used_gpu_memory` (the field name as
+  measured in §11.2); the pid is used in memory to find its
   cgroup, then dropped — it is never written.
 - **Storage by role, not by path**: the owner labels mounts in the same
   closed-set way (`system`, `models`, `data`); unlabelled mounts sum into

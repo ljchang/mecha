@@ -8,7 +8,9 @@
 > eval gate (LD8, and Part 5's "fail the publish if the bundle contains `new
 > Function`") was reversed** — a grep matches every chart library on code that
 > never runs, so the gate is a functional browser probe under the real CSP
-> (design §6.1). Each is marked where it stands.
+> (design §6.1). LD8 and Part 5 are struck in place, because a cheap-looking
+> hardening is the one a reader acts on; for everything else the body is the
+> research as it stood, and the design's §0 is the status.
 
 **2026-10-09.** One question: *how should mecha author a page that is attached
 to data — a dashboard that stays current as the data changes — and publish it
