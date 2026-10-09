@@ -423,7 +423,12 @@ possible.
 `~/.mecha/dashboards/themes/<name>.toml`: a palette (named categorical,
 sequential and diverging ramps), a type scale, spacing — rendered both as CSS
 custom properties and as a Vega `config`, with light and dark. Owner-written.
-The model picks a theme name; it never writes a colour.
+The model picks a theme name; it never writes a colour. The name is
+model-supplied and becomes a path, so it is checked before the join —
+`[a-z0-9-]`, at most 40 characters, no separator and no dot (proposed in #621)
+— and a name with no file under `themes/` is a refusal at preview and at
+install, never a silent fall back to `default`: a dashboard drawn in a theme
+nobody wrote is a mistake to name, not to paper over.
 
 ---
 
@@ -472,9 +477,11 @@ separate origin.** Not before, and not "with care" on this one.
 
 The model drafts in its workspace — `dashboard.json`, `loaders/*.toml` — with
 the ordinary file tools, and checks its work with one new tool. The draft
-directory `dashboard_preview` is given is a model-supplied path, the only one
-in this design, so it goes through `ToolCtx::resolve` like every other: a
-preview reads a draft inside the workspace jail or reads nothing.
+directory `dashboard_preview` is given is a model-supplied path, so it goes
+through `ToolCtx::resolve` like every other: a preview reads a draft inside the
+workspace jail or reads nothing. Model-supplied *names* that become paths —
+the theme (§4.4), a dataset's name — are proved safe before the join instead:
+each is checked against a character set with no separator and no dot.
 
 - **`dashboard_preview`** — validates the spec and loaders (§2.2, §3.2), runs
   each **local** loader once against its registered source (a remote source
@@ -618,7 +625,7 @@ The generalisation of `put_slots`:
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest + **`release`** — the publish version the push was made under, which is what makes "scoped to a release" implementable |
 | Names | `{name}` is a dataset name, `[a-z][a-z0-9_]{0,63}`, and the box refuses anything else before it touches a path — the same rule the spec and loaders enforce at home (proposed in #621), restated here because this is the table a factory-side implementer reads |
-| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. **The publish seeds the channel**: releasing a dashboard (or republishing it) pushes each dataset's current snapshot under the new release as generation 1, so the page never opens on the empty state waiting for the next cron tick; "starts over" means a new (bundle, `release`) key with its own counter, and the previous release's stored bytes are dropped. The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
+| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. **The publish seeds the channel**: releasing a dashboard (or republishing it) pushes each dataset's current snapshot under the new release as generation 1, so the page never opens on the empty state waiting for the next cron tick; "starts over" means a new (bundle, `release`) key with its own counter, and the previous release's stored bytes are dropped. (The two counters never disagree: home numbers each dataset's pushes monotonically, and the seed is generation 1 under a fresh release, below anything home sends next.) The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
 | Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10, item 2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
