@@ -295,6 +295,12 @@ async fn draw_panel_edit(
         (edit::redraw_call(&edit.picture), edit::REDRAWN.to_string())
     } else {
         match &edit.mask {
+            // A painted area with nothing said for it is not drawn: an empty
+            // retouch would redraw the whole picture while the card said the
+            // painted area changed (review of #616).
+            Some(_) if edit.words.trim().is_empty() => {
+                return fail("nothing was said for the painted area".into())
+            }
             Some(mask) => (
                 edit::masked_call(&edit.picture, mask, &edit.words),
                 format!("retouch inside the painted area: {}", edit.words),
@@ -6117,6 +6123,27 @@ mod tests {
                 serde_json::json!({"picture": "images/a.png", "retouch": "a red umbrella",
                 "mask": "inbox/mask-a.png"})
             ]
+        );
+        // A painted area with no words is said, not drawn as a whole redraw.
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: Some("inbox/mask-a.png".into()),
+            words: String::new(),
+            redraw: false,
+        };
+        turn_as(
+            &w,
+            &key,
+            "Edit images/a.png with mask inbox/mask-a.png",
+            Some(edit),
+        )
+        .await;
+        assert_eq!(w.drawn.lock().unwrap().len(), 1, "nothing more drawn");
+        let reply = w.seen.lock().unwrap().last().unwrap().clone();
+        let owner = reply.messages.last().unwrap().text();
+        assert!(
+            owner.contains("nothing was said for the painted area"),
+            "{owner}"
         );
     }
 
