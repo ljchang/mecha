@@ -248,6 +248,14 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         };
         if current {
             super::setup::offer_default(name, &cfg.default_provider)?;
+        } else {
+            // Declined: the table names what the router served before, and
+            // the router now serves only `alias` — said here, or a run that
+            // goes through it meets a bare 404 later (found on review of
+            // #618).
+            println!(
+                "[providers.{name}] was left as it was, and the router now serves only {alias} —                  a run through `{name}` fails until `mecha setup --write --provider {name}`                  writes it."
+            );
         }
         return Ok(());
     }
