@@ -62,6 +62,9 @@ pub struct Branch {
     /// The calendar reference the turn's run was sent, as recorded after
     /// it (`Session::record_run`): what [`clock_for`] matches a clock to.
     pub calendar: Option<String>,
+    /// A branch inside the turn's run, after the batch holding its `n`th
+    /// tool call (1-based): [`branch_at_call`].
+    pub call: Option<usize>,
 }
 
 /// The calendar reference recorded for the run that a turn at `index` began:
@@ -257,6 +260,7 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
     taint.arm_for_content(&messages);
     taint.arm_for_notes(&notes);
     Ok(Branch {
+        call: None,
         calendar: calendar_after(&lines, index),
         line,
         spoken: notes.iter().any(|n| super::call::is_note(n)),
@@ -266,6 +270,137 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
         notes,
         owner,
     })
+}
+
+/// The turn on record line `line`, branched inside its run: after the batch
+/// holding the run's `call`th tool call (1-based) and the results that
+/// answered it, as recorded. The run's notes are the turn's, as they were
+/// for every request of it.
+///
+/// Refused where the run's next request was not an ordinary one: a picture
+/// the call deferred made the next request the closing one, which replay
+/// does not rebuild; and a run that rewrote its history (a compaction) has
+/// no recorded place for the call among the messages the turn began with.
+pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Result<Branch> {
+    if call == 0 {
+        bail!("calls count from 1");
+    }
+    let mut branch = branch_at(path, text, line)?;
+    let lines = non_empty(text);
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(line)
+        .find(|(_, l)| opens_owner_turn(l))
+        .map_or(lines.len(), |(i, _)| i);
+    let run = Session::parse(path, &lines[..end].join("\n"))?;
+    let start = branch.messages.len();
+    let messages = run.convo.messages;
+    if messages.len() < start || messages[..start] != branch.messages[..] {
+        bail!(
+            "the run at line {line} rewrote its history, so call {call} has no place \
+             among the messages the turn began with"
+        );
+    }
+    let mut seen = 0;
+    let mut target = None;
+    'find: for m in &messages[start..] {
+        for b in &m.content {
+            if let Block::ToolUse { id, .. } = b {
+                seen += 1;
+                if seen == call {
+                    target = Some(id.clone());
+                    break 'find;
+                }
+            }
+        }
+    }
+    let Some(target) = target else {
+        bail!("the run at line {line} made {seen} tool call(s), not {call}");
+    };
+    let answered = messages[start..]
+        .iter()
+        .position(|m| {
+            m.content.iter().any(
+                |b| matches!(b, Block::ToolResult { tool_use_id, .. } if *tool_use_id == target),
+            )
+        })
+        .map(|i| start + i)
+        .with_context(|| format!("call {call} has no recorded result"))?;
+    let deferred = messages[answered].content.iter().any(|b| {
+        matches!(b, Block::ToolResult { content, .. }
+            if content.starts_with(crate::imagegen::BEING_MADE))
+    });
+    if deferred {
+        bail!(
+            "call {call}'s picture was deferred, so the run's next request was its closing \
+             one, which replay does not rebuild"
+        );
+    }
+    branch.messages = messages[..=answered].to_vec();
+    let mut taint = run.convo.taint;
+    taint.arm_for_content(&branch.messages);
+    taint.arm_for_notes(&branch.notes);
+    branch.taint = taint;
+    branch.call = Some(call);
+    Ok(branch)
+}
+
+/// What a sample's picture call made, read back from its scratch store:
+/// the stage it ran against, the call's results, and the files it wrote.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RenderFacts {
+    /// The scratch folder the sample was staged into, kept for the judges.
+    pub scratch: String,
+    /// What the staged scene was recovered from (`scene::stage::AsOf`).
+    pub as_of: String,
+    /// What the stage could not bring.
+    pub missing: Vec<String>,
+    /// Whether the scene reader and the role splitter were stamped.
+    pub readers: bool,
+    /// Each picture call's result as the model was handed it.
+    pub results: Vec<CallResult>,
+    /// Pictures and manifests the sample wrote, as absolute paths.
+    pub pictures: Vec<String>,
+    pub manifests: Vec<Value>,
+    /// The prompt log's lines: what the image model was given.
+    pub prompt_log: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CallResult {
+    pub name: String,
+    pub is_error: bool,
+    pub content: String,
+}
+
+/// The results in `after` (the messages a sample's run added) of calls to
+/// `name`.
+pub fn results_of(after: &[Message], name: &str) -> Vec<CallResult> {
+    let ids: std::collections::BTreeSet<&str> = after
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolUse { id, name: n, .. } if n == name => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    after
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } if ids.contains(tool_use_id.as_str()) => Some(CallResult {
+                name: name.to_string(),
+                is_error: *is_error,
+                content: content.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Where an overlay edit applies.
@@ -465,6 +600,28 @@ pub struct Exchange {
     pub wall_secs: f64,
 }
 
+/// A sample asked for a request past those it was allowed: how a sample
+/// that rendered ends, and not a failure.
+#[derive(Debug, Clone, Copy)]
+pub struct SampleEnded(pub usize);
+
+impl std::fmt::Display for SampleEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "replay: this sample has sent the {} request(s) it was allowed",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for SampleEnded {}
+
+/// Whether `e` is a sample ending where it was meant to.
+pub fn ended(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<SampleEnded>())
+}
+
 /// A provider that applies an arm's overlay, records each exchange, and
 /// ends the run once it has sent `requests` of them: it cancels the run's
 /// token as the last allowed response comes back, so the loop stops at its
@@ -475,6 +632,12 @@ pub struct Capture {
     /// Sent as each request's `max_tokens` when set.
     pub max_tokens: Option<u32>,
     pub requests: usize,
+    /// Cancel as the last allowed response comes back, so its calls are
+    /// never run (a call-only sample). Off for a sample that renders: its
+    /// picture call runs, and the run ends when it asks again, with
+    /// [`SampleEnded`]. A cancel before the call would stop the render it
+    /// is there to make.
+    pub cancel_after_last: bool,
     pub cancel: CancellationToken,
     pub log: Arc<Mutex<Vec<Exchange>>>,
 }
@@ -505,10 +668,7 @@ impl Provider for Capture {
         let sent = self.log.lock().unwrap_or_else(|e| e.into_inner()).len();
         if sent >= self.requests {
             self.cancel.cancel();
-            bail!(
-                "replay: this sample has sent the {} request(s) it was allowed",
-                self.requests
-            );
+            return Err(SampleEnded(self.requests).into());
         }
         let mut req = req.clone();
         let matched = self.overlay.apply(&mut req);
@@ -549,7 +709,7 @@ impl Provider for Capture {
         };
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         log.push(exchange);
-        if log.len() >= self.requests {
+        if self.cancel_after_last && log.len() >= self.requests {
             self.cancel.cancel();
         }
         response
@@ -590,6 +750,10 @@ pub struct Sample {
     pub wall_secs: f64,
     pub requests: usize,
     pub error: Option<String>,
+    /// A branch inside the run: after this call (`--at-call`).
+    pub call: Option<usize>,
+    /// What the sample's picture call made, when it rendered.
+    pub render: Option<RenderFacts>,
 }
 
 impl Sample {
@@ -623,6 +787,8 @@ impl Sample {
             wall_secs: 0.0,
             requests: log.len(),
             error,
+            call: None,
+            render: None,
         };
         let Some(first) = log.first() else {
             return s;
@@ -740,6 +906,74 @@ mod tests {
         let at = clock_for(&note, from, Some(tz)).expect("a day renders it");
         assert_eq!(crate::date_context::render(at, Some(tz)), note);
         assert_eq!(clock_for("not a calendar", from, Some(tz)), None);
+    }
+
+    /// A run with two calls, then the next owner turn.
+    fn run_with_calls(second: &str) -> String {
+        use crate::session::{Record, SessionMeta};
+        let meta: SessionMeta = serde_json::from_value(json!({
+            "id": "t2", "created_at": "2026-10-09T00:00:00Z", "provider": "local",
+            "model": "m", "workspace": "/tmp"
+        }))
+        .unwrap();
+        let call = |id: &str| {
+            Record::Message(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "widget".into(),
+                input: json!({"n": 1}),
+            }]))
+        };
+        let result = |id: &str, content: &str| {
+            Record::Message(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: content.into(),
+                is_error: false,
+            }]))
+        };
+        [
+            Record::Meta(meta),
+            Record::Notes {
+                notes: vec!["(From the harness: a note.)".into()],
+            },
+            Record::Message(Message::user("an ask")),
+            call("c1"),
+            result("c1", "first result"),
+            call("c2"),
+            result("c2", second),
+            Record::Message(Message::assistant(vec![Block::text("a reply")])),
+            Record::Message(Message::user("the next ask")),
+        ]
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+
+    #[test]
+    fn a_branch_at_a_call_stops_after_its_result_with_the_turns_notes() {
+        let text = run_with_calls("second result");
+        let path = Path::new("t2.jsonl");
+        let b = branch_at_call(path, &text, 3, 1).unwrap();
+        assert_eq!(b.messages.len(), 3, "the ask, the call, its result");
+        assert!(matches!(
+            &b.messages[2].content[0],
+            Block::ToolResult { tool_use_id, .. } if tool_use_id == "c1"
+        ));
+        assert_eq!(b.notes, ["(From the harness: a note.)"]);
+        assert_eq!(b.call, Some(1));
+        assert_eq!(branch_at_call(path, &text, 3, 2).unwrap().messages.len(), 5);
+        let err = branch_at_call(path, &text, 3, 3).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("made 2 tool call(s)"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_branch_after_a_deferred_picture_is_refused() {
+        let text = run_with_calls(&format!("{}images/x.png", crate::imagegen::BEING_MADE));
+        let err = branch_at_call(Path::new("t2.jsonl"), &text, 3, 2).unwrap_err();
+        assert!(format!("{err:#}").contains("closing"), "{err:#}");
     }
 
     #[test]
@@ -891,6 +1125,7 @@ mod tests {
             overlay: Arc::new(Overlay::default()),
             max_tokens: Some(3000),
             requests: 1,
+            cancel_after_last: true,
             cancel: cancel.clone(),
             log: Arc::clone(&log),
         };
@@ -926,6 +1161,7 @@ mod tests {
             ),
             max_tokens: None,
             requests: 1,
+            cancel_after_last: true,
             cancel: CancellationToken::new(),
             log: Arc::new(Mutex::new(Vec::new())),
         };
