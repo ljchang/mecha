@@ -55,6 +55,9 @@ pub struct Turn<'a> {
     pub scene: Option<crate::scene::SceneSlot>,
     /// Where each picture's prompt is appended, read by no tool.
     pub prompt_log: Option<PathBuf>,
+    /// Where a picture's fresh seeds come from: `None` (random) on a served
+    /// turn; a replay's stream, so its arms render at paired seeds.
+    pub image_seeds: Option<Arc<crate::sample::SeedStream>>,
     /// The owner's words this turn, as typed — not the goal folded ahead of
     /// a first turn.
     pub owner: &'a str,
@@ -101,6 +104,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     // Each picture's prompt, saved beside the transcript for the owner
     // ("save them for now", 2026-10-08).
     tools.prompt_log = turn.prompt_log;
+    tools.image_seeds = turn.image_seeds;
     if let Readers::From(provider) = turn.readers {
         // Each person's part of a scene's `together`, read on the persona's
         // own model, untouched as the edit panel's reader is (`roles`): the
