@@ -121,6 +121,28 @@ fn a_style_key_naming_a_url_is_refused_at_any_depth() {
 }
 
 #[test]
+fn an_expression_in_a_style_object_is_refused_but_named_places_keep_theirs() {
+    let at = "/panels/1/vegalite/encoding/x/axis/titleColor";
+    let v = with(example(), at, json!({ "expr": "datum.site" }));
+    let r = refused_at(&v, &format!("{at}/expr"));
+    assert!(r.rule.contains("condition"), "{}", r.rule);
+
+    let at = "/panels/1/vegalite/mark/opacity";
+    refused_at(
+        &with(example(), at, json!({ "expr": "0.5" })),
+        &format!("{at}/expr"),
+    );
+
+    // The named places: a filter transform (the example has one) and a param.
+    let v = with(
+        example(),
+        "/panels/1/vegalite/params/0",
+        json!({ "name": "k", "expr": "2 * 3" }),
+    );
+    assert!(parse(&v).is_ok(), "{:?}", parse(&v).unwrap_err());
+}
+
+#[test]
 fn bind_formattype_and_lookup_are_refused() {
     let p = "/panels/1/vegalite";
     let v = with(
