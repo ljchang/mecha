@@ -1,10 +1,11 @@
 # Live dashboards — research
 
 > **Decided.** The owner ruled on this document the same day; the decisions
-> are [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §0. Three
-> recommendations below were overtaken there: polling is the default with no
-> push channel planned (LD4); the database stays at home or in the cloud
-> with the factory holding snapshots only (Part 8, ruled R3); and **the static
+> are [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §0. Two
+> recommendations below were *adopted* as rulings — polling as the default with
+> no push channel planned (LD4, ruled R5), and the database at home or in the
+> cloud with the factory holding snapshots only (Part 8, ruled R3) — and one
+> was **reversed**: the static
 > eval gate (LD8, and Part 5's "fail the publish if the bundle contains `new
 > Function`") was reversed** — a grep matches every chart library on code that
 > never runs, so the gate is a functional browser probe under the real CSP
