@@ -423,11 +423,14 @@ pub async fn install(
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     crate::engine_gate::systemctl("enable", &[&format!("{stem}.service")])?;
-    crate::engine_gate::systemctl("restart", &[&format!("{stem}.service")])?;
+    // Said before the restart, which blocks until the model has loaded
+    // (`ExecStartPost=mecha-wait-healthy`): after it, the wait it describes
+    // would pass in silence (found on review of #568).
     say(&format!(
         "loading {} on the router at :{} — up to fifteen minutes for a large model",
         preset.alias, naming.port
     ));
+    crate::engine_gate::systemctl("restart", &[&format!("{stem}.service")])?;
     check(naming, &preset.alias).await?;
     linger_note(say);
     Manifest::finish(home, ID)?;
@@ -526,6 +529,12 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let bin = bin_dir(home);
     gone(&bin.join("mecha-router"), &[ID])?;
     gone(&presets_path(home), &[ID])?;
+    // The launcher makes `no-cache` beside the presets on every start: the
+    // tree goes with the record, as the drop-in directory does above.
+    let _ = std::fs::remove_dir(presets_path(home).with_file_name("no-cache"));
+    if let Some(dir) = presets_path(home).parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
     let wait = bin.join("mecha-wait-healthy");
     let others = Manifest::read(home)?
         .entries
@@ -790,6 +799,21 @@ mod tests {
         let root = std::env::temp_dir().join(format!("mecha-7c2-s-{}", uuid::Uuid::new_v4()));
         let mut m = Machinery::real().unwrap();
         m.mecha_home = root.join(".mecha");
+        // An engine of its own, so the refusal is measured on every machine —
+        // CI has no llama-server, and `install` resolves one first (review of
+        // #618). The run stops at the switch, long before it is executed.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/llama-server"), b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                root.join("bin/llama-server"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        m.path = vec![root.join("bin")];
         let holds = crate::hold::Holds::new(crate::hold::dir_under(&m.mecha_home));
         let _other = holds
             .begin_switch(&naming.base(), Some("a"), "b")
@@ -808,8 +832,11 @@ mod tests {
             &mut |_| {},
         )
         .await;
-        // The engine is resolved first; with none here the refusal is that.
-        if cfg!(target_os = "linux") && Engine::resolve(&m).is_ok() {
+        if cfg!(target_os = "linux") {
+            assert!(
+                Engine::resolve(&m).is_ok(),
+                "the test's own engine resolves"
+            );
             let err = format!("{:#}", r.unwrap_err());
             assert!(err.contains("already waiting"), "{err}");
             assert!(!recorded(&m.mecha_home), "nothing recorded");

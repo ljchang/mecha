@@ -164,7 +164,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 {
                     if !router_passed {
                         eprintln!(
-                            "mecha: the chat router is not installed — the default provider \
+                            "mecha: the chat router is not offered here — the default provider \
                              does not name it; `mecha setup chat` installs it and offers the \
                              provider"
                         );
