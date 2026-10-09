@@ -360,7 +360,9 @@ and eval check. It is a tier, not the default.
   replace with a `generated_at` and a generation number, a per-tenant byte cap
   (already owed, §14.9.3); the page reads
   `GET /b/{id}/data/{name}.json` on its own origin (`connect-src 'self'`
-  already allows it), with an ETag.
+  already allows it), with an ETag. *(The design moved this under the
+  bundle's own path, `./data/{name}.json`, so it passes the page's grant —
+  design §6.2.)*
 - **LD4. Freshness by polling first, SSE second.** A dashboard refreshed every
   few minutes needs a conditional GET and nothing else. SSE (one stream per
   page, carrying invalidations, never the data) earns its place only for
