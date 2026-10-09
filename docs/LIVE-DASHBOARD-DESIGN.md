@@ -131,6 +131,7 @@ data could come from or go to:
 | `usermeta`, `config` | refused | config comes from the theme, not the spec |
 | `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
 | `params` with `select` (`point`, `interval`) | allowed | this is where in-chart reactivity comes from — brushing, cross-filtering |
+| `params` with a `name` and a `value` (a variable) | allowed | the slot the renderer sets from a dashboard filter, so a chart can read the filter's state; the host writes the value, never the reader |
 | `params` with `bind` to input elements | refused | inputs belong to the dashboard's `filters`, rendered by us |
 | `layer`, `concat`, `facet`, `repeat` | allowed | composition, no new surface |
 
@@ -163,7 +164,8 @@ erode through the one region no allowlist walks.
 spec string may contain a character reference (`&#106;`, `&amp;`) — CommonMark
 decodes them in a link destination, so one can spell any letter of a scheme,
 and JSON carries every character directly. And a text panel may not contain
-link syntax at all — inline, autolink or reference definition — which is also
+link syntax at all — inline, image (`![alt](dest)`), autolink or reference
+definition — which is also
 what keeps a *relative* destination (`/outbox/approve/…`, on the origin that
 holds that button) from becoming one, since no scheme test can see it. Raw
 HTML is the fourth way to write a link, and the one that carries a relative
@@ -436,7 +438,12 @@ On `mecha serve`, under the existing owner check:
 | `GET /api/dashboards/{id}/data/{name}` | the dataset, with an `ETag` |
 
 The page is `#dashboards/<id>` in the existing hash router, with a list at
-`#dashboards`. Read-only; writes stay in the CLI.
+`#dashboards`. Read-only; writes stay in the CLI. **`{id}` and `{name}` are
+checked as identifiers in the handler, before either touches a path** — `{id}`
+through `Installed::load(boards, id)`, which refuses a non-identifier before
+the join (#621), and `{name}` against the loaded spec's declared datasets, so
+a URL segment never reaches the filesystem on the strength of a check that was
+made about a *file*.
 
 ### 5.2 Why the control surface's origin is acceptable here
 
@@ -469,7 +476,11 @@ the ordinary file tools, and checks its work with one new tool:
   shows its last scheduled dataset — see Egress below), renders the dashboard
   headless, and returns the **screenshot** plus each dataset's row count and
   shape. Errors are named field by field. This is the visual loop: write,
-  preview, look, fix.
+  preview, look, fix. The screenshot travels as `ToolOutput::image`, the
+  existing vehicle `image_view` uses, and inherits its cost: a transcript
+  resends every image for the rest of the conversation, so five previews are
+  five resident screenshots. Preview is the loop's end, not its middle —
+  §8.1's 89 s per chart is the other reason.
 
 Capabilities, declared honestly — and statically, because
 `Tool::capabilities(&self)` takes no input and the loop reads it *before* the
@@ -595,7 +606,7 @@ The generalisation of `put_slots`:
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest + **`release`** — the publish version the push was made under, which is what makes "scoped to a release" implementable |
 | Names | `{name}` is a dataset name, `[a-z][a-z0-9_]{0,63}`, and the box refuses anything else before it touches a path — the same rule the spec and loaders enforce at home (proposed in #621), restated here because this is the table a factory-side implementer reads |
-| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
+| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. **The publish seeds the channel**: releasing a dashboard (or republishing it) pushes each dataset's current snapshot under the new release as generation 1, so the page never opens on the empty state waiting for the next cron tick; "starts over" means a new (bundle, `release`) key with its own counter, and the previous release's stored bytes are dropped. The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
 | Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10.2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
@@ -668,7 +679,7 @@ after the factory path is proven.
 | 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
-| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
+| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
 
