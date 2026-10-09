@@ -1072,6 +1072,11 @@ pub enum Entry {
         /// says only `graph__kg_search` is a claim the reader cannot check.
         #[serde(skip_serializing_if = "Option::is_none")]
         preview: Option<String>,
+        /// The picture this card's picture is a version of: a Regenerate
+        /// drew it again as it is, and the page shows it on that picture's
+        /// card (IMAGE-DESIGN.md §5.4). `None` for every other card.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version_of: Option<String>,
     },
 }
 
@@ -1150,6 +1155,8 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 draft: None,
                                 args: None,
                                 preview: Some(result_preview(result)),
+                                version_of: mecha_core::persona::edit::fact_redraw_of(t)
+                                    .map(str::to_string),
                             });
                         }
                         // The owner's bubble carries the owner's words. A
@@ -1190,6 +1197,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 draft,
                                 args,
                                 preview: Some(result_preview(content)),
+                                version_of: None,
                             });
                         }
                         Block::Image { .. } if results => {}
@@ -4686,6 +4694,7 @@ mod wire_tests {
                     draft: None,
                     args: Some("{}".into()),
                     preview: Some("3 results".into()),
+                    version_of: None,
                 },
             ]
         );
@@ -5091,6 +5100,7 @@ mod wire_tests {
                 draft: None,
                 args: None,
                 preview: Some("…".into()),
+                version_of: None,
             }]
         );
     }
