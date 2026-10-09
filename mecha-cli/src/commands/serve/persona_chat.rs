@@ -261,22 +261,6 @@ struct PinRecord {
     goal: Option<String>,
 }
 
-/// A chat's scene slot (IMAGE-DESIGN.md §6): its own copy beside
-/// its transcript, and the persona's latest and index in its folder, all
-/// outside the jail. One place, so the tool's slot and the run's scene note
-/// read the same files.
-fn scene_slot(store: &Path, persona: &str, chat: &str) -> mecha_core::scene::SceneSlot {
-    let persona_dir = store.join(persona);
-    mecha_core::scene::SceneSlot {
-        chat_copy: persona_dir
-            .join("sessions")
-            .join(format!("{chat}.scene.json")),
-        store: persona_dir.join("scene"),
-        chat: chat.to_string(),
-        from_latest: true,
-    }
-}
-
 /// Whom the panel's extraction may name: the library's approved
 /// characters, and the persona by its character and its own name.
 struct PanelNames {
@@ -417,16 +401,6 @@ const MAX_GOAL: usize = 2000;
 /// 2026-10-03: "start with call turns first"). A typed turn keeps the
 /// server's `--reasoning-budget` (4096).
 ///
-/// A persona's thinking is its reply being drafted: a short block plans,
-/// and a long one re-drafts the same lines until the server's budget runs
-/// out — up to 23 copies of one sentence, 40–50 s of silence on a call.
-/// Replayed on nine of a chat's turns, judged blind by the same model with
-/// the order swapped: a 512-token cap lost to the full budget 10–20 and
-/// ended replies mid-sentence three times as often (it stops the draft
-/// half-written); a 1024-token cap beat the full budget 24–10, with the
-/// slowest reply 12.5 s against 41.3 s.
-const SPOKEN_THINK_BUDGET: u32 = 1024;
-
 /// Why a door refused, as the route will say it.
 #[derive(Debug)]
 pub enum Refusal {
@@ -3258,6 +3232,8 @@ impl PersonaChats {
                     Some(&mecha_core::learning::RulesCarried::none()),
                 );
                 recorded.permission_mode = mecha_core::config::PermissionMode::ReadOnly;
+                // The sampler the conversation is sent with, not the config's.
+                recorded.seed = crate::setup::persona_converse_seed(bound);
                 ps.session
                     .append(&Record::Config(recorded))
                     .map_err(|e| Refusal::Failed(format!("recording: {e:#}")))?;
@@ -3383,7 +3359,7 @@ impl PersonaChats {
         // own copy, so what she wears and where she is come from her last
         // picture rather than a recalled day. Its own note, arming taint by
         // the stem its origin picks (`scene::stem_of`).
-        let scene_note = scene_slot(&self.store, &name, &ps.session.meta.id)
+        let scene_note = mecha_core::scene::persona_slot(&self.store, &name, &ps.session.meta.id)
             .current()
             .and_then(|scene| {
                 mecha_core::scene::note(&scene, ps.pinned.settings.character.as_deref())
@@ -3611,86 +3587,47 @@ impl PersonaChats {
             h.on_cancel(move || c.cancel(mecha_core::agent::CancelReason::Stopped));
         }
 
-        // The persona agent's own context, jailed to this chat's workspace.
-        // No brief, homeostat, outbox or hooks: each is the owner's.
-        let mut cx = (**agent.context()).clone();
-        let mut tools = agent.ctx().for_session(ps.workspace.clone());
-        // This chat's scene (IMAGE-DESIGN.md §6): its own copy beside
-        // its transcript, and the persona's latest and index in its folder,
-        // all outside the jail. Stamped here, never by a model.
-        tools.scene = Some(scene_slot(&self.store, &name, &ps.session.meta.id));
-        // Each picture's prompt, saved beside the transcript for the owner
-        // ("save them for now", 2026-10-08), read by no tool.
-        tools.prompt_log = Some(
-            self.store
-                .join(&name)
-                .join("sessions")
-                .join(format!("{}.prompts.log", ps.session.meta.id)),
+        // The persona agent's own context, jailed to this chat's workspace:
+        // built by `persona::turn::context`, which a replay calls too, so the
+        // run a replay measures is the one this sends.
+        let judge = || (self.provider)(&bound, PersonaUse::Judge);
+        let mut cx = mecha_core::persona::turn::context(
+            &agent,
+            mecha_core::persona::turn::Turn {
+                workspace: ps.workspace.clone(),
+                scene: Some(mecha_core::scene::persona_slot(
+                    &self.store,
+                    &name,
+                    &ps.session.meta.id,
+                )),
+                // Each picture's prompt, saved beside the transcript for the
+                // owner ("save them for now", 2026-10-08), read by no tool.
+                prompt_log: Some(
+                    self.store
+                        .join(&name)
+                        .join("sessions")
+                        .join(format!("{}.prompts.log", ps.session.meta.id)),
+                ),
+                owner: &text,
+                history: &before,
+                panel: panel.is_some(),
+                spoken: spoken_turn,
+                notes,
+                persona: names.persona.clone(),
+                character: names.character.clone(),
+                library: names.library.clone(),
+                model: bound.model.clone(),
+                readers: mecha_core::persona::turn::Readers::From(&judge),
+            },
         );
-        // Each person's part of a scene's `together`, read on the persona's
-        // own model, untouched as the edit panel's reader is (`roles`): the
-        // persona puts the whole act in one sentence, and drawn as one it
-        // duplicated a person in 6 of 12 real calls. A model that cannot be
-        // had leaves the tool drawing the call as sent.
-        tools.role_split = match (self.provider)(&bound, PersonaUse::Judge) {
-            Ok(p) => Some(
-                Arc::new(mecha_core::roles::ModelSplit::new(p, bound.model.clone()))
-                    as Arc<dyn mecha_core::roles::RoleSplit>,
-            ),
-            Err(e) => {
-                tracing::warn!("persona chat: no role splitter this turn: {e:#}");
-                None
-            }
-        };
-        // This turn's ask, read for what the persona's picture call leaves
-        // out (`SceneReader`): the owner's words and the persona's latest
-        // reply, on its own model. Not on a panel turn, whose change the
-        // panel's own reader already drew from these words.
-        if panel.is_none() {
-            let reply = before
-                .iter()
-                .rev()
-                .find(|m| {
-                    m.role == mecha_core::message::Role::Assistant && !m.text().trim().is_empty()
-                })
-                .map(|m| m.text());
-            tools.scene_reader = match (self.provider)(&bound, PersonaUse::Judge) {
-                Ok(provider) => Some(Arc::new(mecha_core::persona::edit::ModelReader {
-                    provider,
-                    model: bound.model.clone(),
-                    owner: text.clone(),
-                    reply,
-                    persona: names.persona.clone(),
-                    character: names.character.clone(),
-                    library: names.library.clone(),
-                })
-                    as Arc<dyn mecha_core::persona::edit::SceneReader>),
-                Err(e) => {
-                    tracing::warn!("persona chat: no scene reader this turn: {e:#}");
-                    None
-                }
-            };
-        }
-        cx.tools = Arc::new(tools);
-        if cx.budget.max_turns.is_none() {
-            cx.budget.max_turns = Some(40);
-        }
         let judge_cancel = cancel.clone();
         cx = cx.with_cancel_handle(cancel);
         cx.queued_input = Some(queue);
-        cx.notes = notes.into();
         // A picture outlives the turn that asked for it (§5.4): the run hands
         // it to this chat's slot in the queue and answers at once.
         self.start_delivery();
         let turn = self.jobs.number();
         cx.jobs = Some(self.jobs.queue.sink(key, turn));
-        // A persona's run ends as soon as its picture is queued: nothing after
-        // the picture is the persona's job (IMAGE-DESIGN.md §5.5).
-        cx.end_after_deferral = true;
-        // Someone is waiting in silence on a spoken turn (SPOKEN_THINK_BUDGET).
-        if spoken_turn {
-            cx = cx.with_think_budget(SPOKEN_THINK_BUDGET);
-        }
 
         let session = Arc::clone(&ps.session);
         let unconsumed = Arc::clone(&queued_ids);
@@ -5679,6 +5616,52 @@ mod tests {
         }
     }
 
+    /// A persona chat records the seed its turns were sent, which is none
+    /// even when the provider pins one (`setup::persona_provider`): a chat
+    /// that recorded the config's seed 42 sent a replay looking for the live
+    /// sample at seed 42 (2026-10-09).
+    #[tokio::test]
+    async fn a_persona_chat_records_that_its_turns_go_unseeded() {
+        let w = world_tuned(Mode::Answer, |cfg| {
+            cfg.providers.insert(
+                "local".into(),
+                mecha_core::config::ProviderConfig {
+                    kind: "local".into(),
+                    base_url: Some("http://127.0.0.1:9/v1".into()),
+                    model: Some("test".into()),
+                    seed: Some(42),
+                    ..Default::default()
+                },
+            );
+        });
+        let bound = w.chat.follower.current();
+        assert_eq!(
+            bound.config.providers[&bound.provider_name].seed,
+            Some(42),
+            "the provider pins a seed, or this proves nothing"
+        );
+        let opened = w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap();
+        let key = opened["key"].as_str().unwrap().to_string();
+        turn(&w, &key, "Hello there.").await;
+        let dir = Store::load(&w.store()).sessions_dir("mara");
+        let path = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .unwrap();
+        let recorded: serde_json::Value = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains("\"record\":\"config\""))
+            .map(|l| serde_json::from_str(l).unwrap())
+            .unwrap();
+        assert!(recorded["seed"].is_null(), "{}", recorded["seed"]);
+    }
+
     /// A persona chat says which model each stretch ran on: a `config` on its
     /// first turn in this process, none while the binding holds, and another
     /// when the router moves it — so the memory writer reads the model the
@@ -5960,7 +5943,7 @@ mod tests {
             chat: Some(id.clone()),
             ..Scene::default()
         };
-        let slot = scene_slot(&w.store(), "mara", &id);
+        let slot = mecha_core::scene::persona_slot(&w.store(), "mara", &id);
         slot.land(&scene).unwrap();
         // A later picture, clean, is the chat's scene now: its note arms
         // nothing, so only the edited picture's own record can.
@@ -6456,7 +6439,7 @@ mod tests {
             .unwrap();
         let key = opened["key"].as_str().unwrap().to_string();
         let id = opened["session"].as_str().unwrap().to_string();
-        let slot = scene_slot(&w.store(), "mara", &id);
+        let slot = mecha_core::scene::persona_slot(&w.store(), "mara", &id);
         let change = SceneChange {
             setting: Some(Setting::Words {
                 text: "a harbour at low tide".into(),
@@ -10143,7 +10126,11 @@ mod tests {
             .collect();
         assert_eq!(
             budgets,
-            vec![None, Some(SPOKEN_THINK_BUDGET), None],
+            vec![
+                None,
+                Some(mecha_core::persona::turn::SPOKEN_THINK_BUDGET),
+                None
+            ],
             "typed, spoken, typed"
         );
     }
@@ -11623,18 +11610,27 @@ mod tests {
         assert!(gated, "the assistant chat stamps a log only without a room");
         // And the scene reader only off a panel turn, whose own reader has
         // drawn the change: a second read could turn a clothes edit into a
-        // pose (review of #610).
-        let src = std::fs::read_to_string(root.join("src/commands/serve/persona_chat.rs")).unwrap();
+        // pose (review of #610). Stamped by the builder serve and replay
+        // share (`persona::turn::context`), and serve tells it which turns
+        // came from the panel.
+        let src = std::fs::read_to_string(root.join("../mecha-core/src/persona/turn.rs")).unwrap();
         let code = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        // The stamp itself: `Readers::Off` clears the field above it.
         let stamp = code
-            .find("tools.scene_reader =")
+            .find("tools.scene_reader = match")
             .expect("the reader is stamped");
         let gate = code[..stamp]
-            .rfind("if panel.is_none() {")
+            .rfind("if !turn.panel {")
             .expect("behind the panel gate");
         assert!(
             !code[gate..stamp].contains("\n        }\n"),
             "the stamp sits inside the panel gate"
+        );
+        let serve =
+            std::fs::read_to_string(root.join("src/commands/serve/persona_chat.rs")).unwrap();
+        assert!(
+            serve.contains("panel: panel.is_some(),"),
+            "serve names a panel turn to the builder"
         );
     }
 
