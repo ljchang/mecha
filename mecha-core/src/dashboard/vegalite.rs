@@ -382,7 +382,10 @@ fn field_def(v: &Value, at: &str, out: &mut Vec<Refusal>) {
                 }
                 other => field_def(other, &here, out),
             },
-            "field" | "type" | "param" | "test" | "empty" | "bandPosition" | "columns" => {}
+            // `field` ({"repeat": …}) and `test` (a predicate object) can hold
+            // objects, so they are screened like style; the rest are scalars.
+            "field" | "test" => style(val, &here, out),
+            "type" | "param" | "empty" | "bandPosition" | "columns" => {}
             k if FIELD_DEF_STYLE.contains(&k) => style(val, &here, out),
             k => out.push(Refusal::new(
                 here,
@@ -439,6 +442,10 @@ fn transform(v: &Value, at: &str, out: &mut Vec<Refusal>) {
             map.contains_key(*op) && map.keys().all(|k| k == op || rest.contains(&k.as_str()))
         })
         .collect();
+    debug_assert!(
+        covering.len() <= 1,
+        "two transform ops cover one object; the fallback arm would accept it unscreened"
+    );
     match covering.as_slice() {
         // Every key is known to be allowed; their values are style.
         [_] => {
@@ -482,6 +489,9 @@ fn param(v: &Value, at: &str, out: &mut Vec<Refusal>) {
         out.push(Refusal::new(at, "a parameter is an object"));
         return;
     };
+    if !map.get("name").is_some_and(Value::is_string) {
+        out.push(Refusal::new(at, "a parameter needs a `name`"));
+    }
     for (key, val) in map {
         let here = pointer(at, key);
         match key.as_str() {
