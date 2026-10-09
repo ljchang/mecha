@@ -151,10 +151,19 @@ object can change how a chart looks and cannot make it fetch or navigate.
 **Expressions live in named places only** — a `filter` or `calculate`
 transform, a parameter's `expr`, a condition's `test` — each bounded in
 length. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
-property, which passes both screens; so an `expr` key inside a style object is
-refused. Data-dependent styling goes through an encoding's `condition`, and the
+property, and some take a bare expression under a key ending in `Expr`
+(`axis.labelExpr`); both pass the screens, so inside a style object an `expr`
+key and any key ending in `Expr` are refused. Data-dependent styling goes through an encoding's `condition`, and the
 rest comes from the theme. Without this, R1's "no model-authored script" would
 erode through the one region no allowlist walks.
+
+**Two spellings are refused as syntax rather than chased one at a time.** No
+spec string may contain a character reference (`&#106;`, `&amp;`) — CommonMark
+decodes them in a link destination, so one can spell any letter of a scheme,
+and JSON carries every character directly. And a text panel may not contain
+link syntax at all — inline, autolink or reference definition — which is also
+what keeps a *relative* destination (`/outbox/approve/…`, on the origin that
+holds that button) from becoming one, since no scheme test can see it.
 (Proposed in #621, `mecha-core/src/dashboard/vegalite.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as §5.1's form evaluator.
 
@@ -310,7 +319,8 @@ The renderer is ours, so it obeys the house rules a model would not:
   HTML off and links off — a link's text renders as text and its destination
   is dropped — so a scheme the server screen missed (an entity-encoded colon
   the renderer decodes, say) has nowhere to land. This is the second layer
-  behind `is_address` (proposed in #621, `spec.rs`), not a replacement for it.
+  behind the spec's own refusal of link syntax and character references
+  (§2.2; proposed in #621, `spec.rs`), not a replacement for it.
 - **CSS extracted to a file** (§5.2 of the public-surface design), so the
   strictest `style-src` holds.
 - **A rate over nothing is `null` and renders as a dash** —
