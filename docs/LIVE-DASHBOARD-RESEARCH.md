@@ -204,9 +204,9 @@ family (asked of `GET /models` on 2026-10-09, not asserted).
   That arena is largely a **React + Tailwind** benchmark [D, Willison; I].
 - **Svelte 5.** SvelteBench (nine small runes-era components, pass@1): local
   qwen3.6:27b q4 **93.3%**, qwen3.6:35b-a3b 88.9%, gpt-oss:20b 24.4% [D]. Runes
-  are not a blocker for this model family *on components* (a prior generation to
-  `qwen3.8-27b`. Step 0 measured the model the router had loaded,
-  `qwen3.6-35b-a3b-uncensored`, without swapping — design §8.1). Svelte ships an
+  are not a blocker for this model family *on components* (these are
+  qwen3.6 figures, a prior generation to `qwen3.8-27b`; step 0 later measured
+  the model the router had loaded, `qwen3.6-35b-a3b-uncensored` — design §8.1). Svelte ships an
   official MCP server with docs and static analysis [D].
 - **Frameworks vs HTML.** DesignBench: models perform "substantially lower …
   in framework-based development compared to vanilla HTML/CSS" [D]. Web-Bench
