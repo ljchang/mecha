@@ -10,7 +10,7 @@ publication whose data moves while its code does not.
 [`LIVE-DASHBOARD-RESEARCH.md`](LIVE-DASHBOARD-RESEARCH.md); where this file and
 that one disagree, this one wins. It extends
 [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) — §5's planned
-`dashboard/` template, §5.2's Svelte rule, §14.3's publication/instrument split
+`hud/` template, §5.2's Svelte rule, §14.3's publication/instrument split
 — and does not restate it.
 
 ---
@@ -35,22 +35,24 @@ Not to be re-asked.
 | R11 | **Serving the web UI from the factory is deferred** — not designed here, not to be re-pitched as part of this arc. |
 | R12 | **The tailnet is a prototype, not a destination.** Move to the factory as soon as rung 1 works, because the factory's constraints — CSP classes, grants, the vendor gate, pushes — are different and must be met early (§8). |
 | R13 | **The first dashboard is the host's load** — RAM, storage, GPU, processes — **with no detail about any process beyond a generic category** such as voice, imagegen or OCR (§11). |
+| R14 | **The host dashboard may be made public — later.** For now it is private, with invites (R6); publishing it is an owner act at a time of the owner's choosing, and when it happens its factory datasets are coarsened as §11.4 says. (Ruled 2026-10-09.) |
+| R15 | **The name is `hud`.** `mecha serve` already calls its whole web surface "the dashboard", so every identifier this feature owns is `hud`: the CLI (`mecha hud …`), the route (`#hud/<id>`, `/api/hud`), the store (`~/.mecha/hud/`), the module (`mecha_core::hud`), the tool (`hud_preview`), the spec file (`hud.json`) and the factory template (`hud/`). "Dashboard" stays the plain-English noun in prose. (Ruled 2026-10-09.) |
 
 ---
 
 ## 1. The shape
 
 ```
- ~/.mecha/dashboards/boards/<id>/
-   dashboard.json ── the spec (model-written, validated)        ┐
+ ~/.mecha/hud/boards/<id>/
+   hud.json ── the spec (model-written, validated)        ┐
    loaders/<name>.toml ── a source, a query, a schema, a cron   │ reviewed together
                                                                 ┘
-        │ mecha dashboard refresh --due  (timer; no model)
+        │ mecha hud refresh --due  (timer; no model)
         ▼
    data/<name>.json ── latest dataset + generated_at + digest
         │
-        ├─ rung 1 ─▶ mecha serve  GET /api/dashboards/<id>/data/<name>  (tailnet)
-        │                 └─ #dashboards/<id> ─ Svelte renderer polls it
+        ├─ rung 1 ─▶ mecha serve  GET /api/hud/<id>/data/<name>  (tailnet)
+        │                 └─ #hud/<id> ─ Svelte renderer polls it
         │
         └─ rung 3 ─▶ factory  PUT /v1/bundles/<id>/datasets/<name>      (push)
                           └─ bundle page ─ the same renderer polls /b/<id>/data/<name>.json
@@ -67,7 +69,7 @@ Three objects, and the line between them is the whole design:
 A **dataset** is a loader's output: one table, latest only. Datasets are what
 moves; the spec and the renderer are what was reviewed.
 
-Dashboards live in `~/.mecha/dashboards/`, beside triggers and skills and for
+Dashboards live in `~/.mecha/hud/`, beside triggers and skills and for
 their reason: a loader is a cron slot that reads private data, and **a cloned
 repository must not be able to bring one into a trusted session**. Never in
 layered config, never in a project's `mecha.toml`. Installed dashboards sit one
@@ -80,7 +82,7 @@ fixed entries (`sources.toml`, `themes/`, `host.sqlite`).
 
 ### 2.1 Format
 
-`dashboard.json`, JSON because its chart leaves are Vega-Lite and a second
+`hud.json`, JSON because its chart leaves are Vega-Lite and a second
 syntax around them buys nothing. Illustrative, not final:
 
 ```json
@@ -132,7 +134,7 @@ data could come from or go to:
 | `transform`: `filter`, `calculate`, `aggregate`, `joinaggregate`, `fold`, `window`, `bin`, `timeUnit`, `stack`, `flatten`, `pivot`, `density`, `regression`, `loess`, `quantile`, `impute`, `extent`, `sample` | allowed, **each with its own option keys** — an unknown sibling beside a known operation is refused, because Vega-Lite tells transforms apart by which key is present | pure data transforms, no destination; expressions run in Vega's interpreter (§4.2), bounded length |
 | `params` with `select` (`point`, `interval`) | allowed | this is where in-chart reactivity comes from — brushing, cross-filtering |
 | `params` with a `name` and a `value` (a variable) | allowed | a constant or a computed value inside one chart; dashboard filters do **not** arrive this way — the host applies them to rows (§2.3), so no chart depends on referencing one |
-| `params` with `bind` | refused — input elements, and in v1 `bind: "scales"` too | inputs belong to the dashboard's `filters`, rendered by us; scale-bound pan and zoom is left out of v1 for simplicity, while an interval selection's `translate`/`zoom` events (the expression note above) stay |
+| `params` with `bind` | refused — input elements, and in v1 `bind: "scales"` too | inputs belong to the dashboard's `filters`, rendered by us; scale-bound pan and zoom is left out of v1 for simplicity, while an interval selection's `translate`/`zoom` events (the expression note below) stay |
 | `layer`, `concat`, `facet`, `repeat` | allowed | composition, no new surface |
 
 **Validation is an allowlist walk in Rust**, not a JSON Schema check: Vega-Lite's
@@ -154,8 +156,11 @@ object can change how a chart looks and cannot make it fetch or navigate.
 
 **Expressions live in named places only** — a `filter` or `calculate`
 transform, a parameter's `expr`, a condition's `test`, and the event-stream
-filters inside a parameter's `select` (`on`, `clear`, `translate`, `zoom`),
-which are screened as style — each bounded in length, all evaluated by the same
+filters inside a parameter's `select` (`on`, `clear`, `translate`, `zoom`) —
+**in v1 these take the string form only**: Vega-Lite's object form for an
+event stream legitimately carries a `source` key (`"view"`, `"window"`),
+which the style screen would refuse, and the string form says everything a
+dashboard's brushing needs — which are screened as style — each bounded in length, all evaluated by the same
 interpreter, whose language cannot fetch or navigate. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
 property, and some take a bare expression under a key ending in `Expr`
 (`axis.labelExpr`); both pass the screens, so inside a style object an `expr`
@@ -175,7 +180,7 @@ HTML is the fourth way to write a link, and the one that carries a relative
 destination or a handler past the others (`<a href="/x">`, `<img onerror=…>`),
 so a text panel may not contain an HTML tag start at all; and no spec string
 may contain CSS `url(`, a fetch whether relative or not.
-(Proposed in #621: the walker in `mecha-core/src/dashboard/vegalite.rs`, the
+(Proposed in #621: the walker in `mecha-core/src/hud/vegalite.rs`, the
 string and link-syntax rules in `spec.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as the form evaluator in `PUBLIC-SURFACE-DESIGN.md` §5.1.
 
@@ -207,7 +212,7 @@ Two kinds, both in v1:
 A loader names a **source** the owner registered, never a connection string:
 
 ```toml
-# ~/.mecha/dashboards/sources.toml — owner-written; the model can only name these
+# ~/.mecha/hud/sources.toml — owner-written; the model can only name these
 [source.lab]
 kind = "sqlite"
 path = "~/data/lab.sqlite"     # illustrative
@@ -248,7 +253,7 @@ once, which is the owner's act this design wants anyway. A sheet other people
 edit carries their text; as a remote source it is external regardless (below).
 
 **One axis, named for what it answers.** Every source here is private data —
-that is why `dashboard_preview` declares `private_data` always — so the field
+that is why `hud_preview` declares `private_data` always — so the field
 is not "private or untrusted", which would put two axes in one enum and let a
 source that is both (a table of mail subjects) pick one. It is `content`: who
 wrote the values, `owner` or `third-party`.
@@ -266,7 +271,7 @@ is never a reason to refuse.
 ### 3.2 The loader file
 
 ```toml
-# ~/.mecha/dashboards/boards/<id>/loaders/visits_by_day.toml
+# ~/.mecha/hud/boards/<id>/loaders/visits_by_day.toml
 source = "lab"
 schedule = "*/15 * * * *"         # cron.rs, five fields
 timezone = "America/New_York"     # IANA, never an offset
@@ -293,7 +298,7 @@ approves (§5). A query is a string; the reviewer reads it.
 
 ### 3.3 Refresh
 
-`mecha dashboard refresh --due` runs every loader whose cron slot has passed,
+`mecha hud refresh --due` runs every loader whose cron slot has passed,
 on a user systemd timer — the `mecha-slots.timer` precedent, which already
 pushes booking availability every two minutes with no model in it. Due-ness is
 computed backwards from a ledger, as for triggers, so a machine asleep for a
@@ -332,14 +337,14 @@ the binary, fetched like the llama.cpp engine (`fetch.rs`, sha256-pinned).
 
 ### 4.1 One source, two builds
 
-`web/src/lib/dashboard/` — Svelte 5 components (`Dashboard`, `Kpi`, `Chart`,
+`web/src/lib/hud/` — Svelte 5 components (`Dashboard`, `Kpi`, `Chart`,
 `Table`, `Text`, `Filters`) used twice:
 
-- **inside the web app** at `#dashboards/<id>` (rung 1), behind a dynamic
+- **inside the web app** at `#hud/<id>` (rung 1), behind a dynamic
   import on that route — Vega is hundreds of KB, and the rest of a phone-first
   app should not carry it;
 - **as a standalone bundle** — a second Vite entry building a self-contained
-  `dashboard.js` + `dashboard.css`, which the factory's `dashboard` template
+  `hud.js` + `hud.css`, which the factory's `hud` template
   vendors into each publish (rung 3).
 
 The renderer is ours, so it obeys the house rules a model would not:
@@ -443,7 +448,7 @@ possible.
 
 ### 4.4 Theme
 
-`~/.mecha/dashboards/themes/<name>.toml`: a palette (named categorical,
+`~/.mecha/hud/themes/<name>.toml`: a palette (named categorical,
 sequential and diverging ramps), a type scale, spacing — rendered both as CSS
 custom properties and as a Vega `config`, with light and dark. Owner-written.
 The model picks a theme name; it never writes a colour. The name is
@@ -463,12 +468,12 @@ On `mecha serve`, under the existing owner check:
 
 | Route | Returns |
 |---|---|
-| `GET /api/dashboards` | id, title, datasets with their `generated_at` and stale state |
-| `GET /api/dashboards/{id}` | the validated spec and the theme |
-| `GET /api/dashboards/{id}/data/{name}` | the dataset, with an `ETag` |
+| `GET /api/hud` | id, title, datasets with their `generated_at` and stale state |
+| `GET /api/hud/{id}` | the validated spec and the theme |
+| `GET /api/hud/{id}/data/{name}` | the dataset, with an `ETag` |
 
-The page is `#dashboards/<id>` in the existing hash router, with a list at
-`#dashboards`. Read-only; writes stay in the CLI. **`{id}` and `{name}` are
+The page is `#hud/<id>` in the existing hash router, with a list at
+`#hud`. Read-only; writes stay in the CLI. **`{id}` and `{name}` are
 checked as identifiers in the handler, before either touches a path** — `{id}`
 through `Installed::load(boards, id)`, which refuses a non-identifier before
 the join (#621), and `{name}` against the loaded spec's declared datasets, so
@@ -498,15 +503,15 @@ separate origin.** Not before, and not "with care" on this one.
 
 ### 5.3 Authoring, and what the model sees
 
-The model drafts in its workspace — `dashboard.json`, `loaders/*.toml` — with
+The model drafts in its workspace — `hud.json`, `loaders/*.toml` — with
 the ordinary file tools, and checks its work with one new tool. The draft
-directory `dashboard_preview` is given is a model-supplied path, so it goes
+directory `hud_preview` is given is a model-supplied path, so it goes
 through `ToolCtx::resolve` like every other: a preview reads a draft inside the
 workspace jail or reads nothing. Model-supplied *names* that become paths —
 the theme (§4.4), a dataset's name — are proved safe before the join instead:
 each is checked against a character set with no separator and no dot.
 
-- **`dashboard_preview`** — validates the spec and loaders (§2.2, §3.2), runs
+- **`hud_preview`** — validates the spec and loaders (§2.2, §3.2), runs
   each **local** loader once against its registered source (a remote source
   shows its last scheduled dataset — see Egress below), renders the dashboard
   headless, and returns the **screenshot** plus each dataset's row count and
@@ -546,8 +551,8 @@ batch runs, when nothing yet knows which sources a spec will name:
   does not arise, and "no model in the refresh path" (§9) is the one rule
   covering every remote read.
 
-**Installing is the owner's act.** `mecha dashboard install <dir>` copies a
-draft into `~/.mecha/dashboards/boards/<id>/` and enables its loaders; in the web UI it
+**Installing is the owner's act.** `mecha hud install <dir>` copies a
+draft into `~/.mecha/hud/boards/<id>/` and enables its loaders; in the web UI it
 is one accept on the proposals pane, as a fourth store beside the three it
 already reviews. A model-drafted loader is a
 model-proposed cron slot, and no lane promotes itself — the same reason
@@ -577,7 +582,7 @@ adding a store.
 
 ### 6.1 The bundle
 
-A `dashboard` template in `mecha-factory-publish`, class `interactive`: the
+A `hud` template in `mecha-factory-publish`, class `interactive`: the
 vendored renderer bundle, the spec, and the theme rendered to CSS. **No dataset
 is inside a version.** A version is content-addressed, immutable and
 addressable forever (`PUBLIC-SURFACE-DESIGN.md` §6); a snapshot baked into one
@@ -650,7 +655,7 @@ The generalisation of `put_slots`:
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest + **`release`** — the publish version the push was made under, which is what makes "scoped to a release" implementable |
 | Names | `{name}` is a dataset name, `[a-z][a-z0-9_]{0,63}`, and the box refuses anything else before it touches a path — the same rule the spec and loaders enforce at home (proposed in #621), restated here because this is the table a factory-side implementer reads |
-| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. **The publish seeds the channel**: releasing a dashboard (or republishing it) pushes each dataset's current snapshot under the new release as generation 1, so the page never opens on the empty state waiting for the next cron tick; "starts over" means a new (bundle, `release`) key with its own counter, and the previous release's stored bytes are dropped. (The two counters never disagree: home numbers each dataset's pushes monotonically, and the seed is generation 1 under a fresh release, below anything home sends next.) The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
+| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. **The publish seeds the channel**: releasing a dashboard (or republishing it) pushes each dataset's current snapshot under the new release as generation 1, so the page never opens on the empty state waiting for the next cron tick; "starts over" means a new (bundle, `release`) key with its own counter, and the previous release's stored bytes are dropped. (The two counters never disagree: home numbers each dataset's pushes monotonically, and the seed is generation 1 under a fresh release, below anything home sends next. The box's generation is therefore **channel-local** — it orders pushes within one release and does not name a home snapshot; the digest and `generated_at` do.) The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
 | Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10, item 2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
@@ -721,14 +726,14 @@ after the factory path is proven.
 | Step | What | Where | Done when |
 |---|---|---|---|
 | 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
-| 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
-| 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers; **a `doctor` finding** for a loader whose last refresh was refused or whose dataset is past twice its period — a shape refusal fails closed and would otherwise speak only on the dashboard page, which is a guard that fired and said nothing | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
-| 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
-| 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
-| 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
-| 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
-| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
-| 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
+| 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/hud/` | unit tests refuse each forbidden field by name — proposed in #621 |
+| 2 | The host sampler (§11) and the SQLite loader; `mecha hud {list, validate, refresh, install}`; the timers; **a `doctor` finding** for a loader whose last refresh was refused or whose dataset is past twice its period — a shape refusal fails closed and would otherwise speak only on the dashboard page, which is a guard that fired and said nothing | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
+| 3 | The renderer, both builds (web app and standalone) | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
+| 4 | Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
+| 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
+| 6 | `hud_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
+| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `hud_preview` never reaches it |
+| 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `hud_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
 
 Steps 1–4 are the tailnet prototype and need nothing from the factory
@@ -818,19 +823,14 @@ scratch space, not the repository.
 
 ## 10. Open
 
-1. **Whether the host dashboard may ever be public** (§11.4). Recommended:
-   private or invited only.
+1. ~~**Whether the host dashboard may ever be public** (§11.4).~~ **Ruled
+   (R14):** it may, later; private for now.
 2. **Grant lifetime against polling** (§6.4) — whether the factory's private
    grant gains a refresh path for a long-open page, or the page simply asks for
    sign-in — and the grant's scope, which must cover `/b/{id}/data/` as well
    as the version the page loaded from (§6.2). A factory-side decision; it does
    not block rung 1.
-3. **The name.** `mecha serve` already calls its whole web surface "the
-   dashboard" (in its CLI help and the serve module), so `#dashboards/<id>`
-   beside it makes "the dashboard" ambiguous in every later sentence. Cheap to
-   settle before step 4 names routes and files; the owner's call — keep it and
-   rename the web surface, or call these something else (boards, panels,
-   views).
+3. ~~**The name.**~~ **Ruled (R15): `hud`.**
 
 ---
 
@@ -905,7 +905,7 @@ dashboard must not draw an empty GPU-memory gauge as if the GPU had none. A
 
 ### 11.3 Storage and retention
 
-`~/.mecha/dashboards/host.sqlite`: one-minute rows kept seven days, a
+`~/.mecha/hud/host.sqlite`: one-minute rows kept seven days, a
 fifteen-minute rollup kept ninety. The sampler runs on its own user timer and
 writes nothing else. The dashboard's loaders are ordinary SQLite loaders over
 it.
@@ -923,6 +923,8 @@ row there is drawn as "unknown", never as a neighbour's name.
 A category's activity over time is still a record of **when** that kind of
 work happened — a voice series is, in effect, a log of when calls took place.
 On the tailnet that is the owner reading their own machine. Published, it is
-not process detail, but it is a pattern of life. Recommended: this dashboard
-is private or invited-only on the factory, never public, and its factory
-datasets are coarsened to fifteen-minute buckets. The owner's call (§10, item 1).
+not process detail, but it is a pattern of life. **Ruled (R14):** private,
+with invites, for now; it may be made public later, at the owner's choosing.
+Whenever it is published — invited or public — its factory datasets are
+coarsened to fifteen-minute buckets, so the pattern is no finer than it needs
+to be.
