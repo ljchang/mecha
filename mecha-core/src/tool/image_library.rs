@@ -80,8 +80,8 @@ impl Tool for ImageLibrary {
 
     fn description(&self) -> &str {
         "List the owner's recurring characters and styles for image_generate — each with its name \
-         and description. Name characters in image_generate's cast and a style in its style; the \
-         library supplies how they look. Optionally filter by kind or search by a word."
+         and description. Put a character's name as a `who` in image_generate's `scene.people` and \
+         a style's in `scene.style`; the library supplies how they look. Optionally filter by kind or search by a word."
     }
 
     fn input_schema(&self) -> Value {
@@ -133,11 +133,14 @@ impl Tool for ImageLibrary {
         }
         // Said in the result, where the model reads it at the moment it
         // decides: the first real run copied these descriptions into the
-        // prompt and left `cast` out, and drew two strangers.
-        let how = "To draw a character, put its name in image_generate's `cast` with what they \
-                   are wearing and doing; their look comes from their portrait. Do not copy \
-                   these descriptions into the prompt. Anyone else in the scene — a waiter, a \
-                   stranger — goes in `extras`. Put a style's name in `style`.";
+        // prompt and left `cast` out, and drew two strangers. Said in the
+        // scene's terms since the redesign: a result naming retired fields
+        // led a chat to list nobody in `people` (2026-10-09).
+        let how = "To draw a character, put its name as `who` in image_generate's \
+                   `scene.people`, with what they are wearing and doing; their look comes from \
+                   their portrait. Do not copy these descriptions into the scene. Anyone else \
+                   in it — a waiter, a stranger — is a person too, described in their own \
+                   `who`. Put a style's name in `scene.style`.";
         // A broken entry is said, never silently absent.
         let broken = if errors.is_empty() {
             String::new()
@@ -398,7 +401,8 @@ mod tests {
             "{}",
             list.content
         );
-        assert!(list.content.contains("`cast`"), "{}", list.content);
+        assert!(list.content.contains("`scene.people`"), "{}", list.content);
+        assert!(!list.content.contains("`cast`") && !list.content.contains("`extras`"));
         assert!(
             !list.external,
             "the owner's own text is not third-party content"
