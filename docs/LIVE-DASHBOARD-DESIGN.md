@@ -340,7 +340,15 @@ The renderer is ours, so it obeys the house rules a model would not:
   behind the spec's own refusal of link syntax and character references
   (§2.2; proposed in #621, `spec.rs`), not a replacement for it.
 - **CSS extracted to a file** (§5.2 of the public-surface design), so the
-  strictest `style-src` holds.
+  strictest `style-src` holds — **and no inline `style=` attribute either.**
+  The `interactive` class blocks those too, and this repo's own Svelte writes
+  them; a blocked attribute degrades a layout silently. Dynamic values (a
+  bar's width, a colour from the theme) are set through the CSSOM —
+  `element.style.setProperty`, CSS custom properties — which the CSP does not
+  govern [I, believed; step 3 confirms], never as a `style=` in markup or a
+  `setAttribute("style", …)`. Gate: the renderer's source is scanned for both
+  spellings, and the step-5 browser probe loads **the renderer**, not only
+  the vendored libraries step 0 measured.
 - **A rate over nothing is `null` and renders as a dash** —
   `LearningCharts.svelte`'s rule, kept.
 - **Dataset values reach the DOM only as text.** A dataset may be
@@ -585,9 +593,9 @@ The generalisation of `put_slots`:
 
 | | |
 |---|---|
-| Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest |
-| Names | `{name}` is a dataset name, `[a-z][a-z0-9_]{0,63}`, and the box refuses anything else before it touches a path — the same rule the spec and loaders already enforce at home (#621), restated here because this is the table a factory-side implementer reads |
-| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: a new publish (§6.3) starts the channel over, and the owner can reset it explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
+| Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest + **`release`** — the publish version the push was made under, which is what makes "scoped to a release" implementable |
+| Names | `{name}` is a dataset name, `[a-z][a-z0-9_]{0,63}`, and the box refuses anything else before it touches a path — the same rule the spec and loaders enforce at home (proposed in #621), restated here because this is the table a factory-side implementer reads |
+| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push. **Generations are scoped to a release**: the box keys the channel by (bundle, `release`), a new publish (§6.3) starts it over, and a push naming a release that is no longer current is refused as **stale** — its own refusal, so home drops it rather than retrying; that is the retried push that arrives across a layout-only republish. The owner can also reset the channel explicitly (`factory-publish dataset reset <id>`) — the recovery for a home that lost its ledger, which would otherwise be refused forever while the page silently stopped moving |
 | Read | `/b/{id}/data/{name}.json` — under the bundle **id**, beside the versioned tree (`/b/{id}/v/{n}/`), never inside a version and never in its digest (§6.1). The template writes that base into the page, since a version's relative `./data/` would point inside it. The grant that admits the page must admit this path too (§10.2); `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
@@ -658,7 +666,7 @@ after the factory path is proven.
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
-| 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push — the first *standing* egress grant, one review authorising every future refresh | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
+| 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
@@ -767,8 +775,18 @@ a store, so no query, loader or publish downstream can leak one. The same
 shape as `situation.rs`: a record built from closed sets only.
 
 ```rust
-enum Category { ChatModel, Embeddings, Ocr, Voice, ImageGen, Mecha, Other }
+#[repr(u8)]
+enum Category {
+    Other = 0, ChatModel = 1, Embeddings = 2, Ocr = 3, Voice = 4, ImageGen = 5, Mecha = 6,
+}
 ```
+
+**The discriminants are a wire format.** Ninety days of rollups store a
+category as its number (the row has no `String` field, by design), so
+reordering the variants would silently relabel history. Each variant carries
+an explicit number that is never reused or reassigned, a new category takes
+the next free number, and a stored number this build does not know reads back
+as `None` — the repo's rule for a closed enum written to an append-only store.
 
 - **The mapping lives in code**: mecha's own systemd units — the router and
   the on-demand servers `llama_units.rs` ships, the voice services, the image
