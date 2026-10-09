@@ -1155,7 +1155,11 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 draft: None,
                                 args: None,
                                 preview: Some(result_preview(result)),
+                                // Only a picture that landed is a version: a refused
+                                // Regenerate is an error card with nothing to show
+                                // or build on (review of #616).
                                 version_of: mecha_core::persona::edit::fact_redraw_of(t)
+                                    .filter(|_| result.starts_with("image: "))
                                     .map(str::to_string),
                             });
                         }
@@ -4577,6 +4581,36 @@ mod wire_tests {
     /// persona page's "no picture was made" note is placed per turn, and an
     /// unmarked steer split one (review of #444). The owner's own message
     /// is not a steer.
+    /// A Regenerate that landed is a version of its picture; one the tool
+    /// refused is an error card and declares nothing (review of #616).
+    #[test]
+    fn only_a_regenerate_that_landed_is_a_version() {
+        use mecha_core::persona::edit::{fact, REDRAWN};
+        let card = |result: &str| {
+            let messages = vec![Message::user(fact("images/a.png", REDRAWN, result))];
+            serde_json::to_value(transcript_entries(&messages)).unwrap()
+        };
+        let landed = card("image: images/b.png\nA picture.");
+        let tool = landed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool")
+            .unwrap()
+            .clone();
+        assert_eq!(tool["version_of"], "images/a.png");
+        let refused = card("Nothing was drawn. The picture is not in this chat.");
+        let tool = refused
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool")
+            .unwrap()
+            .clone();
+        assert_eq!(tool["is_error"], true);
+        assert!(tool.get("version_of").is_none(), "{tool}");
+    }
+
     #[test]
     fn a_steer_is_read_back_as_part_of_its_turn() {
         let msg = |role, content| Message {
