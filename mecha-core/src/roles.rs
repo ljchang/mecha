@@ -104,9 +104,11 @@ pub struct Split {
 ///
 /// - **A part filed under the wrong person.** One that opens with another
 ///   asked person's name is that person's act ("Maya taking off his coat"
-///   in John's line). It moves to them if their own part is empty.
+///   in John's line). It moves to them if their own part is empty, and is
+///   dropped from the line it was filed under either way: it was never
+///   that person's act, and keeping it is the inversion being repaired.
 /// - **A person given no part, or left out.** They get a neutral one, with
-///   the others, at a free place. On a one-way act the receiver's part is
+///   the others, at a free place: an end of the group, else the background. On a one-way act the receiver's part is
 ///   the one the splitter leaves empty (5 of 12 measured).
 ///
 /// Nobody given a part at all is still a failure. A pose the
@@ -150,7 +152,7 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         }
         // A place given that is not one is a failed split; none is filled.
         let at = match p["where"].as_str().map(str::trim).filter(|w| !w.is_empty()) {
-            Some(w) => Some(Where::parse(w).ok_or_else(|| format!("{who} was given no place"))?),
+            Some(w) => Some(Where::parse(w).ok_or_else(|| format!("{who}'s place was not one"))?),
             None => None,
         };
         parts.push((who.clone(), doing, at));
@@ -168,7 +170,10 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
     };
     // A part that opens with another person's name is theirs.
     for i in 0..parts.len() {
-        if given(&parts[i].0).is_some() {
+        // A part opening with the person's own name is theirs, whatever
+        // other name it also begins with ("Maya Chen smiling" beside a
+        // Maya; review of #614).
+        if given(&parts[i].0).is_some() || opens_with_name(&parts[i].1, &parts[i].0).is_some() {
             continue;
         }
         let Some((j, rest)) = parts.iter().enumerate().find_map(|(j, (other, _, _))| {
@@ -179,7 +184,7 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         }) else {
             continue;
         };
-        if parts[j].1.is_empty() && given(&parts[j].0).is_none() && !rest.is_empty() {
+        if parts[j].1.is_empty() && given(&parts[j].0).is_none() && !crate::imagelib::blank(&rest) {
             parts[j].1 = rest;
         }
         parts[i].1 = String::new();
@@ -191,7 +196,10 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         return Err("nobody was given a part".into());
     }
     let taken: Vec<Where> = parts.iter().filter_map(|(_, _, at)| *at).collect();
-    let mut free = [Where::Left, Where::Right, Where::Centre, Where::Background]
+    // The ends first, then the background: the person given a place here
+    // is the one with no part, and the measured rule is that they stand at
+    // an end, never between the others (4 of 4; review of #614).
+    let mut free = [Where::Left, Where::Right, Where::Background, Where::Centre]
         .into_iter()
         .filter(|w| !taken.contains(w));
     let mut roles: Vec<Role> = Vec::new();
@@ -358,6 +366,52 @@ mod tests {
         .unwrap();
         assert_eq!(kept.roles[0].doing, "reading");
         assert_eq!(kept.roles[1].doing, "with Maya");
+        // A third person left out stands at an end, never between the two.
+        let mut three = names();
+        three.push(Asked {
+            who: "Wren".into(),
+            doing: None,
+        });
+        let ends = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "handing John a cup"},
+                {"who": "John", "where": "right", "doing": "taking the cup"}], "together": ""}"#,
+            &three,
+        )
+        .unwrap();
+        assert_eq!(ends.roles[2].at, Where::Background);
+        // A named person with no place gets a free one.
+        let placeless = read_split(
+            r#"{"people": [{"who": "Maya", "doing": "waving"},
+                {"who": "John", "where": "left", "doing": "waving back"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(placeless.roles[0].at, Where::Right);
+        // A moved part must be a part, by the parse loop's own test.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": "Maya …"}], "together": ""}"#,
+            &names(),
+        )
+        .is_err());
+        // A part opening with the person's own name is theirs.
+        let both = vec![
+            Asked {
+                who: "Maya".into(),
+                doing: None,
+            },
+            Asked {
+                who: "Maya Chen".into(),
+                doing: None,
+            },
+        ];
+        let own = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "laughing"},
+                {"who": "Maya Chen", "where": "right", "doing": "Maya Chen smiling"}], "together": ""}"#,
+            &both,
+        )
+        .unwrap();
+        assert_eq!(own.roles[1].doing, "Maya Chen smiling");
     }
 
     #[test]
