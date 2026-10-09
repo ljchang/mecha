@@ -30,10 +30,11 @@ const MAX_QUERY: usize = 16 * 1024;
 /// the bytes, since a string column has no length of its own.
 pub const MAX_DATASET_BYTES: usize = 8 * 1024 * 1024;
 
-/// A checked loader. Like [`super::Spec`], not `Deserialize` and carrying a
-/// private [`Checked`]: the only way to hold one is [`Loader::parse`], so
-/// nothing can call [`Loader::digest`] on a loader whose `name` was never set
-/// and whose checks never ran.
+/// A checked loader. Like [`super::Spec`]: not `Deserialize`, carrying a
+/// private [`Checked`], fields private behind read-only accessors. The only
+/// way to hold one is [`Loader::parse`], and nothing can change its query
+/// afterwards — so [`Loader::digest`] always names the loader that was
+/// checked, which is the one a human would release.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Loader {
     #[serde(skip)]
@@ -41,18 +42,18 @@ pub struct Loader {
     /// The file's stem, which is the dataset's name. Never read from the file:
     /// a name that can disagree with its filename is a bug with no upside.
     #[serde(skip)]
-    pub name: String,
+    name: String,
     /// A source the owner registered in `sources.toml`. Never a connection
     /// string — the model names a source, it never holds a credential.
-    pub source: String,
-    pub schedule: Schedule,
+    source: String,
+    schedule: Schedule,
     /// IANA zone for the schedule; `None` is UTC. Never an offset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<String>,
-    pub max_rows: u32,
-    pub query: String,
+    timezone: Option<String>,
+    max_rows: u32,
+    query: String,
     #[serde(rename = "column")]
-    pub columns: Vec<Column>,
+    columns: Vec<Column>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +105,29 @@ struct Wire {
 }
 
 impl Loader {
+    /// The dataset's name, from the file's stem.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+    pub fn schedule(&self) -> &Schedule {
+        &self.schedule
+    }
+    pub fn timezone(&self) -> Option<&str> {
+        self.timezone.as_deref()
+    }
+    pub fn max_rows(&self) -> u32 {
+        self.max_rows
+    }
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+    pub fn columns(&self) -> &[Column] {
+        &self.columns
+    }
+
     /// Parse and check one `loaders/<name>.toml`.
     pub fn parse(name: &str, text: &str) -> Result<Loader, Refusals> {
         let wire: Wire = toml::from_str(text).map_err(|e| {

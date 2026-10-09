@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 pub use loader::{Column, ColumnType, Loader, ShapeRefusal};
 pub use spec::{Panel, Spec};
@@ -136,33 +136,43 @@ pub fn boards_dir() -> Result<PathBuf> {
 }
 
 /// A dashboard as installed: its spec and the loader behind each dataset,
-/// checked against each other.
+/// checked against each other. Fields private, like the parts it holds: a
+/// loader added afterwards would be one the cross-check never saw.
 #[derive(Debug, Clone)]
 pub struct Installed {
-    pub id: String,
-    pub spec: Spec,
+    id: String,
+    spec: Spec,
     /// Keyed by dataset name, which is the loader's file stem.
-    pub loaders: BTreeMap<String, Loader>,
+    loaders: BTreeMap<String, Loader>,
 }
 
 impl Installed {
-    /// Read `<dir>/dashboard.json` and `<dir>/loaders/*.toml`, and check each
-    /// alone and all of them together. `Err` is for I/O the caller cannot
-    /// route around; a dashboard that is merely wrong is `Ok(Err(refusals))`,
-    /// so a caller can show every reason at once.
-    pub fn load(dir: &Path) -> Result<std::result::Result<Installed, Refusals>> {
-        let id = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .context("a dashboard directory needs a name")?
-            .to_string();
-        let mut refusals = Vec::new();
-        if !is_identifier(&id) {
-            refusals.push(Refusal::new(
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn spec(&self) -> &Spec {
+        &self.spec
+    }
+    pub fn loaders(&self) -> &BTreeMap<String, Loader> {
+        &self.loaders
+    }
+
+    /// Read `<boards>/<id>/dashboard.json` and `<id>/loaders/*.toml`, and
+    /// check each alone and all of them together. `id` is checked *before*
+    /// it is joined onto `boards` — a name that came from a request or a model
+    /// proves its containment here, at the join, or not at all. `Err` is for
+    /// I/O the caller cannot route around; a dashboard that is merely wrong is
+    /// `Ok(Err(refusals))`, so a caller can show every reason at once.
+    pub fn load(boards: &Path, id: &str) -> Result<std::result::Result<Installed, Refusals>> {
+        if !is_identifier(id) {
+            return Ok(Err(Refusals(vec![Refusal::new(
                 "",
-                format!("the dashboard's directory name must match [a-z][a-z0-9_]* (got {id:?})"),
-            ));
+                format!("a dashboard id matches [a-z][a-z0-9_]* (got {id:?})"),
+            )])));
         }
+        let id = id.to_string();
+        let dir = boards.join(&id);
+        let mut refusals = Vec::new();
 
         let spec_path = dir.join("dashboard.json");
         // A directory with loaders and no spec is a half-written dashboard —
@@ -269,7 +279,7 @@ fn prefixed(file: &str, refusals: Vec<Refusal>) -> impl Iterator<Item = Refusal>
 /// the model can see.
 fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> {
     let mut out = Vec::new();
-    for (i, name) in spec.datasets.iter().enumerate() {
+    for (i, name) in spec.datasets().iter().enumerate() {
         if !loaders.contains_key(name) {
             out.push(Refusal::new(
                 format!("dashboard.json#/datasets/{i}"),
@@ -278,7 +288,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
         }
     }
     for name in loaders.keys() {
-        if !spec.datasets.contains(name) {
+        if !spec.datasets().contains(name) {
             out.push(Refusal::new(
                 format!("loaders/{name}.toml"),
                 format!("loader {name:?} feeds no dataset: add it to the spec's `datasets` or remove it"),
@@ -289,7 +299,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
     let has_column = |dataset: &str, field: &str| {
         loaders
             .get(dataset)
-            .is_none_or(|l| l.columns.iter().any(|c| c.name == field))
+            .is_none_or(|l| l.columns().iter().any(|c| c.name == field))
     };
     let missing = |at: String, dataset: &str, field: &str| {
         Refusal::new(
@@ -297,7 +307,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
             format!("column {field:?} is not declared by the loader for dataset {dataset:?}"),
         )
     };
-    for (i, filter) in spec.filters.iter().enumerate() {
+    for (i, filter) in spec.filters().iter().enumerate() {
         if !has_column(&filter.dataset, &filter.field) {
             out.push(missing(
                 format!("dashboard.json#/filters/{i}/field"),
@@ -306,7 +316,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
             ));
         }
     }
-    for (i, panel) in spec.panels.iter().enumerate() {
+    for (i, panel) in spec.panels().iter().enumerate() {
         match panel {
             Panel::Kpi { dataset, value, .. } => {
                 if let Some(field) = &value.field {
