@@ -545,12 +545,27 @@ fn style_object(map: &Map<String, Value>, at: &str, out: &mut Vec<Refusal>) {
 
 fn style_entry(key: &str, val: &Value, at: &str, out: &mut Vec<Refusal>) {
     let here = pointer(at, key);
-    if key == "expr" || key.ends_with("Expr") {
+    // Vega-Lite spells an expression `expr` or `…Expr`; Vega spells it
+    // `signal`, and `encode` is how an axis or legend passes Vega through
+    // unchanged — so all four are refused at any depth, not only where the
+    // structure walk happens to look.
+    if key == "expr" || key.ends_with("Expr") || key == "signal" || key == "encode" {
         out.push(Refusal::new(
             here,
             "expressions are allowed only in a filter or calculate transform, a parameter's \
-             `expr` and a condition's `test`; style that depends on data goes through an \
+             `expr` and a condition's `test` — not as `expr`, `…Expr`, Vega's `signal`, or \
+             through an `encode` block; style that depends on data goes through an \
              encoding's `condition`",
+        ));
+        return;
+    }
+    // A custom formatter is a function the page would have to register; the
+    // field-definition arm refuses it, and so does every depth below it.
+    if key == "formatType" {
+        out.push(Refusal::new(
+            here,
+            "`formatType` names a custom formatter function, here as in a field \
+             definition; use `format` with a d3 format string instead",
         ));
         return;
     }

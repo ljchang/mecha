@@ -541,6 +541,28 @@ fn the_schema_marker_must_have_its_exact_shape() {
 }
 
 #[test]
+fn format_type_signal_and_encode_are_refused_at_any_depth() {
+    let axis = "/panels/1/vegalite/encoding/x/axis";
+    let r = refused_at(
+        &with(example(), &format!("{axis}/formatType"), json!("f")),
+        &format!("{axis}/formatType"),
+    );
+    assert!(r.rule.contains("formatter"), "{}", r.rule);
+    let v = with(
+        example(),
+        &format!("{axis}/encode"),
+        json!({ "labels": { "update": { "fill": { "signal": "datum.value" } } } }),
+    );
+    refused_at(&v, &format!("{axis}/encode"));
+    let at = "/panels/1/vegalite/mark/fill";
+    let r = refused_at(
+        &with(example(), at, json!({ "signal": "x" })),
+        &format!("{at}/signal"),
+    );
+    assert!(r.rule.contains("signal"), "{}", r.rule);
+}
+
+#[test]
 fn an_object_under_a_scalar_field_key_is_screened() {
     let at = "/panels/1/vegalite/encoding/x/type";
     let v = with(example(), at, json!({ "href": "x", "labelExpr": "y" }));
@@ -926,6 +948,30 @@ fn an_unreadable_loaders_directory_is_a_refusal_beside_the_others() {
     assert!(
         refusals.iter().any(|r| r.at == "hud.json#/theme"),
         "the spec's own refusal survives: {refusals:?}"
+    );
+}
+
+#[test]
+fn an_oversized_spec_is_refused_before_it_is_read() {
+    let s = Scratch::new("lab_week");
+    s.write("hud.json", &" ".repeat(spec::MAX_BYTES + 1));
+    s.write(
+        "loaders/instruments.toml",
+        &"#".repeat(loader::MAX_FILE_BYTES as usize + 1),
+    );
+    let refusals = s.load().unwrap().unwrap_err().0;
+    let text = Refusals(refusals.clone()).to_string();
+    assert!(
+        refusals
+            .iter()
+            .any(|r| r.at == "hud.json" && r.rule.contains("limit")),
+        "{text}"
+    );
+    assert!(
+        refusals
+            .iter()
+            .any(|r| r.at == "loaders/instruments.toml" && r.rule.contains("limit")),
+        "{text}"
     );
 }
 

@@ -536,8 +536,9 @@ pub(crate) fn is_address(s: &str) -> bool {
     // link one character in. Nothing a spec legitimately says contains `//`.
     // Backslashes too: for a special scheme the URL parser reads `\` as `/`,
     // so `/\host/p` and `\\host/p` are `//host/p`. Two adjacent characters
-    // rather than folding every `\`, which would turn a regex's `\\d` into a
-    // false refusal.
+    // rather than folding every `\` into `/`, which would turn a single `\`
+    // in a regex (`\d`, written `"\\d"` in JSON) into `/d` beside some other
+    // slash and refuse an ordinary expression.
     if lower.contains("www.")
         || lower
             .as_bytes()

@@ -177,7 +177,7 @@ impl Installed {
         let spec_path = dir.join("hud.json");
         // A directory with loaders and no spec is a half-written dashboard —
         // a refusal beside the others, not I/O to give up on.
-        let spec = match std::fs::read_to_string(&spec_path) {
+        let spec = match read_bounded(&spec_path, spec::MAX_BYTES as u64) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 refusals.push(Refusal::new(
                     "hud.json",
@@ -186,10 +186,7 @@ impl Installed {
                 None
             }
             Err(e) => {
-                refusals.push(Refusal::new(
-                    "hud.json",
-                    format!("cannot be read: {}", e.kind()),
-                ));
+                refusals.push(Refusal::new("hud.json", format!("cannot be read: {e}")));
                 None
             }
             Ok(text) => match Spec::parse(&text) {
@@ -207,10 +204,7 @@ impl Installed {
             match std::fs::read_dir(&loader_dir) {
                 Ok(entries) => Some(entries),
                 Err(e) => {
-                    refusals.push(Refusal::new(
-                        "loaders",
-                        format!("cannot be read: {}", e.kind()),
-                    ));
+                    refusals.push(Refusal::new("loaders", format!("cannot be read: {e}")));
                     None
                 }
             }
@@ -232,10 +226,10 @@ impl Installed {
                 let file = format!("loaders/{name}.toml");
                 // One unreadable loader is a refusal beside the others, the
                 // same choice as a missing spec — not I/O that discards them.
-                let text = match std::fs::read_to_string(&path) {
+                let text = match read_bounded(&path, loader::MAX_FILE_BYTES) {
                     Ok(text) => text,
                     Err(e) => {
-                        refusals.push(Refusal::new(&file, format!("cannot be read: {}", e.kind())));
+                        refusals.push(Refusal::new(&file, format!("cannot be read: {e}")));
                         continue;
                     }
                 };
@@ -256,6 +250,20 @@ impl Installed {
             _ => Ok(Err(Refusals(refusals))),
         }
     }
+}
+
+/// Read a file only if it is no larger than `max`: a size over the bound is
+/// refused from the metadata, before a byte is read — a parse-time bound is
+/// no bound at all if the whole file is already in memory.
+fn read_bounded(path: &Path, max: u64) -> std::io::Result<String> {
+    let len = std::fs::metadata(path)?.len();
+    if len > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            format!("{len} bytes, over the {max}-byte limit"),
+        ));
+    }
+    std::fs::read_to_string(path)
 }
 
 fn prefixed(file: &str, refusals: Vec<Refusal>) -> impl Iterator<Item = Refusal> + '_ {
