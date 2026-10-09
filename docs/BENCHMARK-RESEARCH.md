@@ -549,9 +549,10 @@ now with agentic sections (web search, memory, format sensitivity). Cheap and
 fast.
 
 It measures the **model**, not the harness — mecha would contribute nothing but
-a wrapper. Its one use here is diagnostic: this project already knows
-`llama-server --jinja` grammar-constrains tool calls and that malformed-argument
-counts are consequently zero. BFCL's format-sensitivity section is the public
+a wrapper. Its one use here is diagnostic: `llama-server --jinja`
+grammar-constrains tool calls, which keeps malformed arguments rare but not
+zero: a call cut off at `max_tokens` never closes, about 1 in 20 at a
+persona's live cap (`AUDIT-RESEARCH.md` §3.10, 2026-10-09). BFCL's format-sensitivity section is the public
 version of that finding, and a quick run would confirm the local stack is not
 leaving accuracy on the table in argument construction before blaming the
 harness for a low Terminal-Bench score.

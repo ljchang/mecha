@@ -240,6 +240,10 @@ impl Provider for Anthropic {
         self.vision
     }
 
+    fn wire_body(&self, req: &CompletionRequest, stream: bool) -> Option<Value> {
+        self.body(req, stream).ok()
+    }
+
     async fn complete(
         &self,
         req: &CompletionRequest,
