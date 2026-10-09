@@ -97,8 +97,23 @@ pub struct Split {
 }
 
 /// The splitter's answer, read strictly: a part for each person asked about
-/// and for nobody else, each once, with a pose and a place. Anything less is
-/// a failure, and the caller draws the scene as the call said it. A pose the
+/// and for nobody else, each once, with a pose and a place. Anything else is
+/// a failure, and the caller draws the scene as the call said it, except two
+/// faults that are repaired in place, since that fallback sends the named
+/// `together` whole, the duplicate shape (mecha-a3, 2026-10-09):
+///
+/// - **A part filed under the wrong person.** One that opens with another
+///   asked person's name is that person's act ("Maya taking off his coat"
+///   in John's line). It moves to them if their own part is empty, and is
+///   dropped from the line it was filed under either way: it was never
+///   that person's act, and keeping it is the inversion being repaired.
+/// - **A person given no part, or left out.** They get a neutral part that
+///   names nobody, at a free place: an end of the group, else the
+///   background, never between the others.
+/// - **A person with no place.** They get a free place the same way. On a one-way act the receiver's part is
+///   the one the splitter leaves empty (5 of 12 measured).
+///
+/// Nobody given a part at all is still a failure. A pose the
 /// call already gave is kept as given, whatever the answer says: the model is
 /// not trusted to copy it (mecha-a3: it did, 3 of 3, but that is the
 /// model's habit, not a guarantee).
@@ -114,7 +129,8 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
     let v: serde_json::Value = serde_json::from_str(&text[start..=end])
         .map_err(|e| format!("the answer did not read as JSON: {e}"))?;
     let list = v["people"].as_array().ok_or("`people` was not a list")?;
-    let mut roles: Vec<Role> = Vec::new();
+    // The answer's parts by asked name, before any repair.
+    let mut parts: Vec<(String, String, Option<Where>)> = Vec::new();
     for p in list {
         let said = p["who"].as_str().map(str::trim).unwrap_or_default();
         // Fixed words, never the answer's own: a reason reaches the
@@ -122,34 +138,117 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         let Some(who) = people.iter().find(|n| n.eq_ignore_ascii_case(said)) else {
             return Err("the answer named someone not asked about".into());
         };
-        if roles.iter().any(|r| &r.who == who) {
+        if parts.iter().any(|(w, _, _)| w == who) {
             return Err(format!("{who} was given two parts"));
         }
         let doing = p["doing"].as_str().map(str::trim).unwrap_or_default();
-        if crate::imagelib::blank(doing) {
-            return Err(format!("{who} was given no part"));
-        }
+        let doing = if crate::imagelib::blank(doing) {
+            String::new()
+        } else {
+            doing.trim_end_matches('.').to_string()
+        };
         // Bounded as every `doing` that reaches the compiler is; a longer
         // part is a failed split, which draws the call as sent.
         if doing.chars().count() > crate::imagelib::MAX_CAST_FIELD {
             return Err(format!("{who}'s part was too long"));
         }
-        let at = p["where"]
-            .as_str()
-            .and_then(Where::parse)
-            .ok_or_else(|| format!("{who} was given no place"))?;
-        let given = asked
+        // A place given that is not one is a failed split; none is filled.
+        let at = match p["where"].as_str().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(w) => Some(Where::parse(w).ok_or_else(|| format!("{who}'s place was not one"))?),
+            None => None,
+        };
+        parts.push((who.clone(), doing, at));
+    }
+    for who in people {
+        if !parts.iter().any(|(w, _, _)| w == who) {
+            parts.push((who.clone(), String::new(), None));
+        }
+    }
+    let given = |who: &str| {
+        asked
             .iter()
-            .find(|a| &a.who == who)
-            .and_then(|a| a.doing.clone());
+            .find(|a| a.who == who)
+            .and_then(|a| a.doing.clone())
+    };
+    // A part that opens with another person's name is theirs. Every move is
+    // read from the answer as given, then applied: a pair filed under each
+    // other (the inversion this repairs) swaps whole, where moving one at a
+    // time lost the second person's part (review of #614, pass 3).
+    let mut moves: Vec<(usize, usize, String)> = Vec::new();
+    for i in 0..parts.len() {
+        // A part opening with the person's own name is theirs, whatever
+        // other name it also begins with ("Maya Chen smiling" beside a
+        // Maya; review of #614).
+        if given(&parts[i].0).is_some() || opens_with_name(&parts[i].1, &parts[i].0).is_some() {
+            continue;
+        }
+        // The longest name the part opens with, so "Maya Chen …" goes to
+        // Maya Chen, never to a Maya beside her.
+        if let Some((j, rest)) = parts
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .filter_map(|(j, (other, _, _))| {
+                opens_with_name(&parts[i].1, other).map(|rest| (j, other.len(), rest))
+            })
+            .max_by_key(|(_, len, _)| *len)
+            .map(|(j, _, rest)| (j, rest))
+        {
+            moves.push((i, j, rest));
+        }
+    }
+    let vacated: Vec<usize> = moves.iter().map(|(i, _, _)| *i).collect();
+    let before: Vec<String> = parts.iter().map(|(_, doing, _)| doing.clone()).collect();
+    for &i in &vacated {
+        parts[i].1 = String::new();
+    }
+    for (_, j, rest) in moves {
+        // To a person whose own line was empty, or was itself filed under
+        // someone else; never over a part that was theirs, never twice.
+        let free_line = before[j].is_empty() || vacated.contains(&j);
+        if free_line
+            && parts[j].1.is_empty()
+            && given(&parts[j].0).is_none()
+            && !crate::imagelib::blank(&rest)
+        {
+            parts[j].1 = rest;
+        }
+    }
+    // The answer's own parts decide it: a pose the call gave is not the
+    // splitter's, and a split with no part from the answer drops the
+    // `together` it was asked to divide (review of #614, pass 4).
+    if parts.iter().all(|(_, doing, _)| doing.is_empty()) {
+        return Err("nobody was given a part".into());
+    }
+    let taken: Vec<Where> = parts.iter().filter_map(|(_, _, at)| *at).collect();
+    // The ends first, then the background: the person given a place here
+    // is the one with no part, and the measured rule is that they stand at
+    // an end, never between the others (4 of 4; review of #614).
+    let mut free = [Where::Left, Where::Right, Where::Background]
+        .into_iter()
+        .filter(|w| !taken.contains(w));
+    let mut roles: Vec<Role> = Vec::new();
+    for (who, doing, at) in &parts {
+        let doing = match given(who) {
+            Some(g) => g,
+            // Named by nobody: a described person's part naming a library
+            // character is refused by the compiler, and a description is
+            // already as long as a part may be; the `together` carries the
+            // act (review of #614, pass 5).
+            None if doing.is_empty() => {
+                if people.len() == 2 {
+                    "together with the other person".to_string()
+                } else {
+                    "together with the others".to_string()
+                }
+            }
+            None => doing.clone(),
+        };
         roles.push(Role {
             who: who.clone(),
-            doing: given.unwrap_or_else(|| doing.trim_end_matches('.').to_string()),
-            at,
+            doing,
+            at: at.or_else(|| free.next()).unwrap_or(Where::Background),
         });
-    }
-    if let Some(missing) = people.iter().find(|n| !roles.iter().any(|r| &r.who == *n)) {
-        return Err(format!("{missing} was given no part"));
     }
     let together = v["together"]
         .as_str()
@@ -157,6 +256,15 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         .unwrap_or_default()
         .to_string();
     Ok(Split { roles, together })
+}
+
+/// The rest of `part` when it opens with `name` as a word, its subject:
+/// "Maya taking off his coat" opens with Maya.
+fn opens_with_name(part: &str, name: &str) -> Option<String> {
+    let head = part.get(..name.len())?;
+    let rest = &part[name.len()..];
+    (head.eq_ignore_ascii_case(name) && rest.starts_with(|c: char| c.is_whitespace() || c == ','))
+        .then(|| rest.trim_start_matches([',', ' ']).trim().to_string())
 }
 
 /// Who splits a scene's `together` into parts: a host with a model to ask
@@ -245,6 +353,140 @@ mod tests {
             .is_none());
     }
 
+    /// The two repaired faults (mecha-a3, 2026-10-09). A receiver left with
+    /// no part, or left out, gets a neutral one at a free place; a part
+    /// filed under the wrong person moves to the one it names. Both failed
+    /// the whole split before, which sent the named `together` whole.
+    #[test]
+    fn an_empty_or_misfiled_part_is_repaired_not_failed() {
+        let empty = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "lifting John off the ground"},
+                {"who": "John", "where": "right", "doing": ""}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(empty.roles[1].doing, "together with the other person");
+        assert_eq!(empty.roles[1].at, Where::Right);
+        let left_out = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "waving"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(left_out.roles[1].who, "John");
+        assert_eq!(left_out.roles[1].doing, "together with the other person");
+        assert_eq!(left_out.roles[1].at, Where::Right, "a free place");
+        let misfiled = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": "Maya taking off his coat"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(misfiled.roles[0].doing, "taking off his coat");
+        assert_eq!(misfiled.roles[1].doing, "together with the other person");
+        // A given pose is never moved or replaced.
+        let mut given = names();
+        given[0].doing = Some("reading".into());
+        let kept = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "standing up"},
+                {"who": "John", "where": "right", "doing": "taking off his coat"}], "together": ""}"#,
+            &given,
+        )
+        .unwrap();
+        assert_eq!(kept.roles[0].doing, "reading");
+        assert_eq!(kept.roles[1].doing, "taking off his coat");
+        // Its only part misfiled onto a person the call posed, the answer
+        // gave nobody a part, and the split fails over to the call as sent.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": "Maya taking off his coat"}], "together": ""}"#,
+            &given,
+        )
+        .is_err());
+        // A third person left out stands at an end, never between the two.
+        let mut three = names();
+        three.push(Asked {
+            who: "Wren".into(),
+            doing: None,
+        });
+        let ends = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "handing John a cup"},
+                {"who": "John", "where": "right", "doing": "taking the cup"}], "together": ""}"#,
+            &three,
+        )
+        .unwrap();
+        assert_eq!(ends.roles[2].at, Where::Background);
+        // A named person with no place gets a free one.
+        let placeless = read_split(
+            r#"{"people": [{"who": "Maya", "doing": "waving"},
+                {"who": "John", "where": "left", "doing": "waving back"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(placeless.roles[0].at, Where::Right);
+        // A moved part must be a part, by the parse loop's own test.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": "Maya …"}], "together": ""}"#,
+            &names(),
+        )
+        .is_err());
+        // A part opening with the person's own name is theirs.
+        let both = vec![
+            Asked {
+                who: "Maya".into(),
+                doing: None,
+            },
+            Asked {
+                who: "Maya Chen".into(),
+                doing: None,
+            },
+        ];
+        let own = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "laughing"},
+                {"who": "Maya Chen", "where": "right", "doing": "Maya Chen smiling"}], "together": ""}"#,
+            &both,
+        )
+        .unwrap();
+        assert_eq!(own.roles[1].doing, "Maya Chen smiling");
+        // An answer with no part fails even where the call posed someone,
+        // so the `together` is drawn whole rather than dropped.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": ""}], "together": ""}"#,
+            &given,
+        )
+        .is_err());
+        // A misfiled part goes to the longest name it opens with, and a
+        // neutral part names nobody, so a described person's never names a
+        // library character (review of #614, pass 5).
+        let mixed: Vec<Asked> = ["Maya", "Maya Chen", "a tall man in a grey coat"]
+            .iter()
+            .map(|n| Asked {
+                who: n.to_string(),
+                doing: None,
+            })
+            .collect();
+        let longest = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "laughing"},
+                {"who": "Maya Chen", "where": "right", "doing": ""},
+                {"who": "a tall man in a grey coat", "where": "background",
+                 "doing": "Maya Chen taking off her coat"}], "together": ""}"#,
+            &mixed,
+        )
+        .unwrap();
+        assert_eq!(longest.roles[1].doing, "taking off her coat");
+        assert_eq!(longest.roles[2].doing, "together with the others");
+        // A pair filed under each other swaps whole: neither part is lost.
+        let crossed = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "John handing her the keys"},
+                {"who": "John", "where": "right", "doing": "Maya taking the keys"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(crossed.roles[0].doing, "taking the keys");
+        assert_eq!(crossed.roles[1].doing, "handing her the keys");
+    }
+
     #[test]
     fn a_split_names_everyone_once_with_a_part_and_a_place() {
         let ok = read_split(
@@ -277,13 +519,11 @@ mod tests {
         .unwrap();
         assert_eq!(kept.roles[1].doing, "reading a newspaper");
         for bad in [
-            r#"{"people": [{"who": "Maya", "where": "left", "doing": "waving"}], "together": ""}"#,
             r#"{"people": [{"who": "Maya", "where": "left", "doing": "a"}, {"who": "Wren", "where": "right", "doing": "b"}], "together": ""}"#,
-            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""}, {"who": "John", "where": "right", "doing": "b"}], "together": ""}"#,
             r#"{"people": [{"who": "Maya", "where": "up", "doing": "a"}, {"who": "John", "where": "right", "doing": "b"}], "together": ""}"#,
             r#"{"people": [{"who": "Maya", "where": "left", "doing": "a"}, {"who": "maya", "where": "right", "doing": "b"}], "together": ""}"#,
             "no json",
-            r#"{"people": [{"who": "Maya", "where": "left", "doing": "…"}, {"who": "John", "where": "right", "doing": "b"}], "together": ""}"#,
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""}, {"who": "John", "where": "right", "doing": "…"}], "together": ""}"#,
         ] {
             assert!(read_split(bad, &names()).is_err(), "{bad}");
         }

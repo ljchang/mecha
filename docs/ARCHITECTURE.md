@@ -1036,7 +1036,12 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   owner's words and the persona's latest reply, with one sentence ranking
   the owner's words first, against the picture before the turn. Only a
   `together`, and each named person's `doing` and `wearing`, are merged,
-  and only where the call has none. 25 of 25 carried the ask, and an open
+  and only where the call has none. A `doing` is taken only where the call
+  posed nobody and no `together` remains after the merge: asked for a part
+  per person on a one-way act, the reader mirrored the verb onto the
+  receiver 6 of 10, where the splitter, given the `together`, inverted 0 of
+  36 (mecha-a3, 2026-10-09; asked staging 0/6 → 6/6 on two replayed
+  calls). 25 of 25 carried the ask, and an open
   "show me what you want" came back in the persona's own words, 10 of 10
   (mecha-a3, 2026-10-08). Merged words are stamped with the conversation's
   origin like the call's own, never clean for being the harness's pass, and
@@ -1054,7 +1059,14 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   two or more people share a `together`, posed or not (a named `together`
   left beside the people's own poses drew a person twice, 2 of 3), keeps any
   pose the call gave, and leaves in `together` only what no part says: roles
-  right 12 of 15, duplicates 1 of 12 (mecha-a3, 2026-10-08). It feeds the
+  right 12 of 15, duplicates 1 of 12 (mecha-a3, 2026-10-08). Three faults
+  in an answer are repaired in place rather than failing the split, since
+  the fallback sends the named `together` whole, the duplicate shape: a
+  person given no part or left out gets a neutral part naming nobody; a
+  part opening with another asked person's name moves to the longest such
+  name, the pair swapping whole when filed under each other; and a person
+  with no place gets a free one, an end of the group or the background,
+  never between the others. An answer that gives nobody a part still fails. It feeds the
   prompt only, so the record keeps the call as the persona sent it (a
   history showing her calls split taught her to drop the act, 31 of 39). A
   split that fails, takes past `ROLE_SPLIT_TIMEOUT`, or yields parts the
