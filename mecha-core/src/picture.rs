@@ -563,6 +563,42 @@ pub fn plan(
         });
     }
     let new_picture = call.picture.is_none();
+    // A new picture that lists nobody in `people` but names library
+    // characters in its words draws them, from the library (owner,
+    // 2026-10-09): a chat asked for two of them at a café, listed neither,
+    // and two strangers were drawn under "the viewer". Where `people` lists
+    // anyone, a name left out of it stays the viewer (owner, 2026-10-08).
+    let mut from_words: Vec<String> = Vec::new();
+    if new_picture && change.people.is_empty() {
+        let setting = match &change.setting {
+            Some(Setting::Words { text }) => Some(text.as_str()),
+            _ => None,
+        };
+        let words = [
+            change.together.as_deref(),
+            setting,
+            change.light.as_deref(),
+            change.camera.as_deref(),
+        ];
+        for text in words.into_iter().flatten() {
+            for name in named_in(text) {
+                if approved(&name) && !from_words.contains(&name) {
+                    from_words.push(name);
+                }
+            }
+        }
+        change.people = from_words
+            .iter()
+            .map(|name| PersonChange {
+                who: Who::Library(name.clone()),
+                at: None,
+                wearing: None,
+                doing: None,
+                expression: None,
+                remove: false,
+            })
+            .collect();
+    }
     // Someone to take out whom the record does not hold: on a picture whose
     // people are known, there is nobody to take out, and that is said; on
     // one whose people are not known yet, it is an edit of the picture
@@ -585,6 +621,17 @@ pub fn plan(
     // A new picture defines its scene; it knows who it drew.
     let (mut next, delta) = Scene::apply(base, &change, by, new_picture);
     let mut notes: Vec<String> = call.notes.clone();
+    if !from_words.is_empty() {
+        let named: Vec<String> = from_words
+            .iter()
+            .map(|k| crate::imagegen::capitalized(k))
+            .collect();
+        notes.push(format!(
+            "{} named in the words with nobody in `scene.people`, so drawn from the library. \
+             List people in `scene.people` to say what each wears and does.",
+            named.join(", ")
+        ));
+    }
     // A painted area keeps everything outside it, so it cannot carry a
     // scene change: the change is drawn, and the mask left out and said.
     let mask = call
@@ -1194,6 +1241,33 @@ mod tests {
             ),
             "Maya waves at the viewer. The words \"Happy Birthday John\" appear."
         );
+    }
+
+    /// A new picture naming library characters with nobody in `people`
+    /// draws them from the library, says so, and makes nobody the viewer
+    /// (owner, 2026-10-09). Fails on the old planner, which drew neither.
+    #[test]
+    fn named_characters_with_nobody_listed_are_drawn_from_the_library() {
+        let p = planned(
+            &call(json!({"scene": {"setting": "a café with tall windows",
+                "together": "Maya and John share a pot of tea"}})),
+            None,
+        );
+        let keys: Vec<String> = p.next.people.iter().map(|q| q.who.key()).collect();
+        assert_eq!(keys, ["maya", "john"]);
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        let said = p.said.as_deref().unwrap_or("");
+        assert!(said.contains("Maya, John named in the words"), "{said}");
+        // Listing anyone keeps the 10-08 rule: a name left out is the viewer.
+        let q = planned(
+            &call(
+                json!({"scene": {"setting": "a pier", "together": "Maya waves at John",
+                "people": [{"who": "maya", "wearing": "a coat", "doing": "standing"}]}}),
+            ),
+            None,
+        );
+        assert_eq!(q.offstage, vec!["john".to_string()]);
+        assert_eq!(q.next.people.len(), 1);
     }
 
     /// Review of #597, pass 7: a stray quote mark never switches the viewer
