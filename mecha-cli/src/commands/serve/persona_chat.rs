@@ -307,85 +307,88 @@ async fn draw_panel_edit(
             false,
         )
     };
-    let (call, change) = match &edit.mask {
-        Some(mask) => (
-            edit::masked_call(&edit.picture, mask, &edit.words),
-            format!("retouch inside the painted area: {}", edit.words),
-        ),
-        None => {
-            let (provider, model) = match extractor {
-                Ok(p) => p,
-                Err(why) => return fail(why.clone()),
-            };
-            // The picture's record, found by its bytes as the tool finds it.
-            let record = match (&cx.tools.scene, cx.tools.resolve(&edit.picture)) {
-                (Some(slot), Ok(path)) => tokio::fs::read(&path)
-                    .await
-                    .ok()
-                    .and_then(|bytes| slot.lookup(&bytes)),
-                _ => None,
-            };
-            // The extraction reads the record, so what it writes is no cleaner
-            // than the record: an untrusted one arms the conversation before
-            // the dispatch stamps the fields it sets (IMAGE-DESIGN.md §5.3
-            // step 2; review of #595: a re-wording would launder it).
-            if record
-                .as_ref()
-                .is_some_and(|r| r.origin() == mecha_core::scene::Origin::Untrusted)
-            {
-                conversation.taint.untrusted = true;
-            }
-            let persona = names
-                .character
-                .as_deref()
-                .map(|c| mecha_core::picture::shown(&mecha_core::scene::Who::Library(c.into())));
-            // Read once: the styles offered here, and who is known below.
-            let lib = mecha_core::imagelib::Library::load(&names.library).0;
-            let styles = mecha_core::imagelib::style_names(&lib);
-            let request = edit::extraction_request(
-                model,
-                record.as_ref(),
-                &edit.words,
-                persona.as_deref(),
-                &styles,
-                provider.structured_output(),
-            );
-            let response = match provider.complete(&request, None).await {
-                Ok(r) => r,
-                Err(e) => return fail(format!("the reader could not be reached ({e:#})")),
-            };
-            if response.stop_reason == mecha_core::message::StopReason::Refusal {
-                return fail("the reader refused".into());
-            }
-            let text = response.message.text();
-            if text.trim().is_empty() {
-                return fail("the reader's answer was empty".into());
-            }
-            let known = |who: &str| {
-                let key = who.trim().to_lowercase();
-                lib.get(mecha_core::imagelib::Kind::Character, &key)
-                    .is_some_and(|e| e.status == mecha_core::imagelib::Status::Approved)
-                    || names.character.as_deref() == Some(key.as_str())
-                    || names.persona.to_lowercase() == key
-                    || record.as_ref().is_some_and(|r| {
-                        r.people
-                            .iter()
-                            .any(|p| mecha_core::picture::shown(&p.who).to_lowercase() == key)
-                    })
-            };
-            // The record's one person, when it holds exactly one.
-            let sole = record
-                .as_ref()
-                .filter(|r| r.people.len() == 1)
-                .map(|r| mecha_core::picture::shown(&r.people[0].who));
-            let looks = edit::Looks {
-                styles: &styles,
-                record: record.as_ref(),
-                library: Some(&lib),
-            };
-            match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
-                Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
-                Err(why) => return fail(why),
+    let (call, change) = if edit.redraw {
+        (edit::redraw_call(&edit.picture), edit::REDRAWN.to_string())
+    } else {
+        match &edit.mask {
+            Some(mask) => (
+                edit::masked_call(&edit.picture, mask, &edit.words),
+                format!("retouch inside the painted area: {}", edit.words),
+            ),
+            None => {
+                let (provider, model) = match extractor {
+                    Ok(p) => p,
+                    Err(why) => return fail(why.clone()),
+                };
+                // The picture's record, found by its bytes as the tool finds it.
+                let record = match (&cx.tools.scene, cx.tools.resolve(&edit.picture)) {
+                    (Some(slot), Ok(path)) => tokio::fs::read(&path)
+                        .await
+                        .ok()
+                        .and_then(|bytes| slot.lookup(&bytes)),
+                    _ => None,
+                };
+                // The extraction reads the record, so what it writes is no cleaner
+                // than the record: an untrusted one arms the conversation before
+                // the dispatch stamps the fields it sets (IMAGE-DESIGN.md §5.3
+                // step 2; review of #595: a re-wording would launder it).
+                if record
+                    .as_ref()
+                    .is_some_and(|r| r.origin() == mecha_core::scene::Origin::Untrusted)
+                {
+                    conversation.taint.untrusted = true;
+                }
+                let persona = names.character.as_deref().map(|c| {
+                    mecha_core::picture::shown(&mecha_core::scene::Who::Library(c.into()))
+                });
+                // Read once: the styles offered here, and who is known below.
+                let lib = mecha_core::imagelib::Library::load(&names.library).0;
+                let styles = mecha_core::imagelib::style_names(&lib);
+                let request = edit::extraction_request(
+                    model,
+                    record.as_ref(),
+                    &edit.words,
+                    persona.as_deref(),
+                    &styles,
+                    provider.structured_output(),
+                );
+                let response = match provider.complete(&request, None).await {
+                    Ok(r) => r,
+                    Err(e) => return fail(format!("the reader could not be reached ({e:#})")),
+                };
+                if response.stop_reason == mecha_core::message::StopReason::Refusal {
+                    return fail("the reader refused".into());
+                }
+                let text = response.message.text();
+                if text.trim().is_empty() {
+                    return fail("the reader's answer was empty".into());
+                }
+                let known = |who: &str| {
+                    let key = who.trim().to_lowercase();
+                    lib.get(mecha_core::imagelib::Kind::Character, &key)
+                        .is_some_and(|e| e.status == mecha_core::imagelib::Status::Approved)
+                        || names.character.as_deref() == Some(key.as_str())
+                        || names.persona.to_lowercase() == key
+                        || record.as_ref().is_some_and(|r| {
+                            r.people
+                                .iter()
+                                .any(|p| mecha_core::picture::shown(&p.who).to_lowercase() == key)
+                        })
+                };
+                // The record's one person, when it holds exactly one.
+                let sole = record
+                    .as_ref()
+                    .filter(|r| r.people.len() == 1)
+                    .map(|r| mecha_core::picture::shown(&r.people[0].who));
+                let looks = edit::Looks {
+                    styles: &styles,
+                    record: record.as_ref(),
+                    library: Some(&lib),
+                };
+                match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
+                    Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
+                    Err(why) => return fail(why),
+                }
             }
         }
     };
@@ -4325,7 +4328,12 @@ pub struct PanelEdit {
     picture: String,
     #[serde(default)]
     mask: Option<String>,
+    #[serde(default)]
     words: String,
+    /// Regenerate (IMAGE-DESIGN.md §5.4): the picture drawn again as it is,
+    /// at a new seed. No words are read and nothing is extracted.
+    #[serde(default)]
+    redraw: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -5866,6 +5874,7 @@ mod tests {
             picture: "images/a.png".into(),
             mask: None,
             words: "make the sky pink".into(),
+            redraw: false,
         };
         turn_as(&w, &key, "Edit images/a.png: make the sky pink", Some(edit)).await;
 
@@ -5919,6 +5928,55 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("image: images/stub.png"));
+    }
+
+    /// Regenerate (IMAGE-DESIGN.md §5.4): the picture alone goes to the
+    /// tool, so the planner draws its scene again at a new seed; no words are
+    /// read and no extraction is asked; the persona replies in words; and
+    /// the card names the picture it is a version of. Fails before this
+    /// change, which had no `redraw` and sent the words to the extraction.
+    #[tokio::test]
+    async fn a_regenerate_draws_the_picture_again_with_no_extraction() {
+        let w = world_built(
+            Mode::Say("Ochre gulls wheel overhead.".into()),
+            |_| {},
+            true,
+        );
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        let asked_before = w.seen.lock().unwrap().len();
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: String::new(),
+            redraw: true,
+        };
+        turn_as(&w, &key, "Regenerate images/a.png", Some(edit)).await;
+        assert_eq!(
+            w.drawn.lock().unwrap().clone(),
+            vec![serde_json::json!({"picture": "images/a.png"})]
+        );
+        // One request after the draw (the reply); none for an extraction.
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), asked_before + 1, "no extraction was asked");
+        let reply = seen.last().unwrap();
+        assert_eq!(reply.tool_choice, mecha_core::message::ToolChoice::None);
+        let fact = reply.messages.last().unwrap().text();
+        assert!(fact.contains(mecha_core::persona::edit::REDRAWN), "{fact}");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let card = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|e| e["kind"] == "tool" && e["name"] == "image_generate")
+            .expect("a card")
+            .clone();
+        assert_eq!(card["version_of"], "images/a.png");
     }
 
     /// The extraction reads the picture's record, so an untrusted record
@@ -5981,6 +6039,7 @@ mod tests {
             picture: "images/a.png".into(),
             mask: None,
             words: "make it night".into(),
+            redraw: false,
         };
         turn_as(&w, &key, "Edit images/a.png: make it night", Some(edit)).await;
         assert_eq!(w.drawn_untrusted.lock().unwrap().clone(), vec![true]);
@@ -6011,6 +6070,7 @@ mod tests {
             picture: "images/a.png".into(),
             mask: None,
             words: "add Bob waving".into(),
+            redraw: false,
         };
         turn_as(&w, &key, "Edit images/a.png: add Bob waving", Some(edit)).await;
         assert!(w.drawn.lock().unwrap().is_empty(), "nothing drawn");
@@ -6026,6 +6086,7 @@ mod tests {
             picture: "images/a.png".into(),
             mask: Some("inbox/mask-a.png".into()),
             words: "a red umbrella".into(),
+            redraw: false,
         };
         turn_as(
             &w,
