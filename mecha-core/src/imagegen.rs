@@ -794,8 +794,6 @@ fn parse_vm_stat(text: &str) -> Option<u64> {
     Some(total * page / (1024 * 1024))
 }
 
-/// A seed nobody chose: process-random SipHash keys over the clock. Kept
-/// under 2³² so it reads back exactly anywhere, JavaScript included.
 /// A picture's fresh seed: the next from the stream a replay stamped
 /// (`ToolCtx::image_seeds`), else at random. In the range `fresh_seed` draws.
 fn draw_seed(ctx: &ToolCtx) -> u64 {
@@ -805,6 +803,8 @@ fn draw_seed(ctx: &ToolCtx) -> u64 {
     }
 }
 
+/// A seed nobody chose: process-random SipHash keys over the clock. Kept
+/// under 2³² so it reads back exactly anywhere, JavaScript included.
 fn fresh_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();

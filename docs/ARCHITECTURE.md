@@ -5926,7 +5926,10 @@ non-blocking flock, so a hand edit never contends with a fire.
   stream, `ToolCtx::image_seeds`, seeded `--image-seed-base` + i, so two
   arms render sample i at the same seeds. `--at-call N` branches inside the
   run, after the batch holding its Nth call. It refuses a call whose picture
-  was deferred, because the next request was the closing one.
+  was deferred, because the next request was the closing one. A response
+  that calls the picture tool beside another tool loses its render: the
+  other tool's stand-in cancels the run, and the cancel reaches the inline
+  job. `stage_at` counts non-blank record lines, as `--at` does.
 - **`--surface recorded` sends the tool text the turn was sent**, from the
   surface store by its `tools_hash`. A wording experiment on an older chat
   then starts from what the model saw, not today's text. The stand-ins are
