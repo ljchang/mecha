@@ -180,9 +180,18 @@ class = "private"            # private | untrusted — what its values may carry
 
 [source.archive]
 kind = "postgres"
-secret = "archive-readonly"      # a name in the secret store, never the value
+url_env = "ARCHIVE_PG_URL"   # the *name* of an environment variable, never the value
 class = "private"
 ```
+
+A credential is named the way mecha already names one — an environment
+variable, as `api_key_env` does for providers — and never written into a
+dashboard file. That collides on purpose with the sandbox's rule: a confined
+subprocess starts from a **cleared environment** with an allowlist, because
+`Command::envs()` inherits. So the DuckDB runner (§3.4) receives exactly the
+one variable its source names, re-exported under a fixed name the runner
+reads, and nothing else — a hole in the allowlist that is one variable wide,
+decided here rather than discovered at step 7.
 
 | Order | Kind | How it runs |
 |---|---|---|
@@ -292,7 +301,20 @@ rule, kept.
 Vega-Lite leaves render through `vega-embed` with the **`vega-interpreter`
 plug-in** (`ast: true`, `expr: expressionInterpreter`). Without it Vega compiles
 expressions with the `Function` constructor, which both CSPs here forbid. Pinned
-and vendored; never from a CDN.
+and vendored; never from a CDN. **Unverified:** that `vega-embed` passes `ast`
+and `expr` through to the view — Vega's own page documents the plug-in, not the
+embed wrapper; step 0 and the browser probe below settle it.
+
+**The two CSPs differ on `style-src`, and Vega's chain uses exactly that
+directive.** The tailnet allows `'unsafe-inline'` styles; the factory's
+`interactive` class is `style-src 'self'` only. `vega-embed` (its actions
+menu) and `vega-tooltip` inject `<style>` elements at runtime, which a
+build-time CSS extraction cannot reach. Under the tailnet that passes
+silently; under `interactive` the styles are blocked and charts render
+unthemed. The likely remedy is turning those injections off (`vega-embed`'s
+`defaultStyle: false`, our own tooltip styles in the extracted CSS) —
+**unverified**, and verified the only way that counts: the real bundle under
+the real policy (§6.1).
 
 **Owning the chart components is a later swap, not a v1 choice.** The spec is
 the durable part. If Vega's weight (hundreds of KB) or its tooltip surface
@@ -351,6 +373,11 @@ runs under the interpreter with no `Function`. The existing CSP
 (`security_headers`: `script-src 'self'`, `connect-src 'self'`) needs no
 change.
 
+Which is also why **rung 1 proves less about the factory than R12 wants**: the
+tailnet's policy is looser on `style-src` (§4.2), it has no short-lived grant
+under a polling page (§6.4), no vendor gate, and no box-side shape check. Each
+of those is first exercised at step 5, which is why step 5 comes next.
+
 That reasoning is conditional, and the condition is written down so nobody
 loses it: **the day a dashboard may carry model-written script, it moves to a
 separate origin.** Not before, and not "with care" on this one.
@@ -366,10 +393,21 @@ the ordinary file tools, and checks its work with one new tool:
   shape. Errors are named field by field. This is the visual loop: write,
   preview, look, fix.
 
-Capabilities, declared honestly: `dashboard_preview` returns `private_data`
-(it is a picture of private data), and `untrusted_input` — with `.from_outside()`
-on the result — when any source it read has `class = "untrusted"` or no class.
-Egress `None`.
+Capabilities, declared honestly — and statically, because
+`Tool::capabilities(&self)` takes no input and the loop reads it *before* the
+batch runs, when nothing yet knows which sources a spec will name:
+
+- `private_data`: always — it is a picture of private data.
+- `untrusted_input`: **always**. The capability says what the tool *can*
+  return, and any source may be classed untrusted, even a v1 SQLite file.
+  Whether a given result actually carries third-party values is
+  `.from_outside()` on that result, set when a source it read is classed
+  `untrusted` or unclassed — the same split as every network tool.
+- Egress: `None` while the only sources are local files and mecha's own
+  stores. **It becomes `Blind` at step 7**: a Postgres or Sheets loader sends a
+  model-authored query to a host the owner fixed in `sources.toml` and that
+  appears nowhere in the tool's schema, which is the definition of `Blind`.
+  Steps 7 and 8 carry that line.
 
 **Installing is the owner's act.** `mecha dashboard install <dir>` copies a
 draft into `~/.mecha/dashboards/<id>/` and enables its loaders; in the web UI it
@@ -393,6 +431,12 @@ dataset's **current** snapshot so the first paint needs no fetch. The vendor
 gate already fails on any external reference; **add a second check — a bundle
 whose script contains `new Function` or `eval(` fails the publish** — rather
 than trusting any library's documentation about itself.
+
+A grep cannot see a runtime `appendChild(style)`, so the gate is necessary and
+not sufficient. The instrument for the rest is the one §7.1 of the
+public-surface design already used: **serve the real bundle under the real
+`interactive` policy in a browser and count CSP violations** (`factory-publish
+serve --class interactive`, then a headless load). Zero is step 5's bar.
 
 ### 6.2 The dataset channel
 
@@ -466,14 +510,14 @@ after the factory path is proven.
 | Step | What | Where | Done when |
 |---|---|---|---|
 | 0 | **Measure the grammar.** ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). Runs beside steps 1–2; it needs nothing from them | a scratch harness, results in this doc | a number per grammar; R2 confirmed or reversed |
-| 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard.rs` | unit tests refuse each forbidden field by name |
+| 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — **#621** |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards` | `serve/` | **rung 1: the host dashboard live on the tailnet** |
-| 5 | `dashboard` template, eval check, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** |
+| 5 | `dashboard` template, eval check, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** — and zero CSP violations with the real bundle under the real `interactive` policy (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot |
-| 7 | DuckDB runner (Postgres, Parquet, CSV) | core, `fetch.rs`, `sandbox.rs` | a Postgres loader runs confined |
-| 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset |
+| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); `dashboard_preview` egress `None` → `Blind` (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable |
+| 8 | Sheets source over `sheets_read`; confirm `Blind` still covers it | core + mecha-docs | a picked sheet refreshes a dataset |
 | 9 | User docs | `website/docs/features/` | — |
 
 Steps 1–4 are the tailnet prototype and need nothing from the factory
