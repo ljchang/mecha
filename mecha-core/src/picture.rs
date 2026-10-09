@@ -579,6 +579,7 @@ pub fn plan(
             setting,
             change.light.as_deref(),
             change.camera.as_deref(),
+            call.retouch.as_deref(),
         ];
         for text in words.into_iter().flatten() {
             for name in named_in(text) {
@@ -587,6 +588,10 @@ pub fn plan(
                 }
             }
         }
+        // Bounded by what one picture can draw: the overflow stays offstage
+        // ("the viewer"), never a refusal to `remove` someone the call never
+        // listed (review of #613).
+        from_words.truncate(MAX_FACES);
         change.people = from_words
             .iter()
             .map(|name| PersonChange {
@@ -1258,6 +1263,15 @@ mod tests {
         assert!(p.offstage.is_empty(), "{:?}", p.offstage);
         let said = p.said.as_deref().unwrap_or("");
         assert!(said.contains("Maya, John named in the words"), "{said}");
+        // Past what one picture draws, the rest are the viewer, never a
+        // refusal to remove someone nobody listed.
+        let many = planned(
+            &call(json!({"scene": {"setting": "a long table",
+                "together": "Maya, John, Wren, Ivo, Tamsin and Pell share a pot of tea"}})),
+            None,
+        );
+        assert_eq!(many.next.people.len(), MAX_FACES);
+        assert_eq!(many.offstage, vec!["pell".to_string()]);
         // Listing anyone keeps the 10-08 rule: a name left out is the viewer.
         let q = planned(
             &call(
