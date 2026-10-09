@@ -6839,12 +6839,21 @@ mod tests {
             }],
             ..Default::default()
         };
-        let read = json!({"together": long, "people": [{"who": "Maya", "doing": long}]});
+        let read = json!({"together": long});
         merge_read(&mut change, read.as_object().unwrap());
         assert!(
             change.together.as_ref().unwrap().chars().count() <= crate::imagelib::MAX_CAST_FIELD
         );
+        // A part too long to merge is left, with no `together` in the way
+        // that would leave it anyway (review of #614, pass 2).
+        let mut change = crate::scene::SceneChange {
+            people: vec![bare("maya")],
+            ..Default::default()
+        };
+        let read = json!({"people": [{"who": "Maya", "doing": long, "wearing": long}]});
+        merge_read(&mut change, read.as_object().unwrap());
         assert!(change.people[0].doing.is_none(), "too long to merge");
+        assert!(change.people[0].wearing.is_none(), "too long to merge");
     }
 
     /// A reader that answers as told, standing in for the persona host's.
