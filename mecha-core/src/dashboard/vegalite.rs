@@ -158,6 +158,23 @@ const DESTINATION_KEYS: &[&str] = &["url", "href", "src", "link", "loader", "use
 
 pub(super) fn check(v: &Value, datasets: &[String], at: &str, out: &mut Vec<Refusal>) {
     view(v, datasets, at, out);
+    // A layer or concat child may inherit its parent's data, so no single view
+    // must name one — but a chart that binds nothing anywhere is an empty
+    // panel, which is a mistake to refuse rather than a picture to draw.
+    if v.is_object() && !binds_data(v) {
+        out.push(Refusal::new(
+            at,
+            "the chart binds no dataset: give it \"data\": {\"name\": <dataset>}",
+        ));
+    }
+}
+
+fn binds_data(v: &Value) -> bool {
+    match v {
+        Value::Object(map) => map.contains_key("data") || map.values().any(binds_data),
+        Value::Array(items) => items.iter().any(binds_data),
+        _ => false,
+    }
 }
 
 fn view(v: &Value, datasets: &[String], at: &str, out: &mut Vec<Refusal>) {
@@ -168,6 +185,10 @@ fn view(v: &Value, datasets: &[String], at: &str, out: &mut Vec<Refusal>) {
     for (key, val) in map {
         let here = pointer(at, key);
         match key.as_str() {
+            "$schema" if !at.ends_with("/vegalite") => out.push(Refusal::new(
+                here,
+                "`$schema` belongs only at the chart's top level",
+            )),
             "$schema" | "description" | "name" => {
                 if !val.is_string() {
                     out.push(Refusal::new(here, "expected a string"));

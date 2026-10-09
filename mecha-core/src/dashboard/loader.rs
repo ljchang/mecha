@@ -1,5 +1,10 @@
-//! A loader: a registered source, a read-only query, a declared shape, and a
-//! schedule — and the check every refresh's output must pass.
+//! A loader: a registered source, a query, a declared shape, and a schedule —
+//! and the check every refresh's output must pass.
+//!
+//! "Read-only" is not checked here, and cannot be by reading the query: it is
+//! enforced where the source is opened (step 2: a read-only open, no
+//! `ATTACH`, one prepared statement — design §3.1). A `DROP TABLE` parses
+//! as a loader and fails at the source.
 //!
 //! The declared columns are what review approves (design §3.2, §6.3). A
 //! refresh that returns anything else — another column, a value of another

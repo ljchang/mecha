@@ -155,12 +155,12 @@ impl Installed {
                 ));
                 None
             }
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                refusals.push(Refusal::new("dashboard.json", "the spec is not UTF-8 text"));
-                None
-            }
             Err(e) => {
-                return Err(e).with_context(|| format!("reading {}", spec_path.display()));
+                refusals.push(Refusal::new(
+                    "dashboard.json",
+                    format!("cannot be read: {}", e.kind()),
+                ));
+                None
             }
             Ok(text) => match Spec::parse(&text) {
                 Ok(spec) => Some(spec),
