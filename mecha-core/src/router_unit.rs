@@ -229,6 +229,28 @@ pub fn chat_is_the_routers(cfg: &crate::config::Config) -> bool {
         .is_some_and(|p| names_this_router(p, Naming::shipped().port))
 }
 
+/// The base URLs runs hold this router by. Holds and switches are keyed by
+/// the configured string (`hold::Holds::switch_path`), so a provider that
+/// names the router as `localhost` holds a different key from the
+/// `127.0.0.1` this install would synthesise: the switch is taken under
+/// every spelling a provider here uses, and under the installer's own, or a
+/// run through the other spelling is restarted under (found on review of
+/// #618).
+pub fn hold_bases(cfg: &crate::config::Config, naming: &Naming) -> Vec<String> {
+    let mut bases = vec![crate::provider::router::base(&naming.base())];
+    for p in cfg.providers.values() {
+        if names_this_router(p, naming.port) {
+            if let Some(u) = &p.base_url {
+                let b = crate::provider::router::base(u);
+                if !bases.contains(&b) {
+                    bases.push(b);
+                }
+            }
+        }
+    }
+    bases
+}
+
 /// Whether anything accepts a connection on this loopback port.
 pub fn port_answers(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
@@ -349,6 +371,7 @@ pub async fn preset_for(
 /// started, and the model asked to load. The alias it serves, when it does.
 pub async fn install(
     m: &Machinery,
+    cfg: &crate::config::Config,
     choice: &Choice,
     naming: &Naming,
     machine: &crate::recommend::Machine,
@@ -384,14 +407,20 @@ pub async fn install(
     // rather than meeting a dead port (found on review of #618). Taken after
     // the download, not before: hours of fetching must not hold every run.
     let holds = crate::hold::Holds::new(crate::hold::dir_under(home));
-    let base = naming.base();
-    crate::engine_gate::preflight(&holds, &base).context("nothing was installed")?;
+    let bases = hold_bases(cfg, naming);
+    for base in &bases {
+        crate::engine_gate::preflight(&holds, base).context("nothing was installed")?;
+    }
     Manifest::begin(home, ID)?;
 
     let preset = preset_for(choice, machine, hub, &mut *say).await?;
-    let _switching =
-        crate::engine_gate::take_switch(&holds, &base, "the chat router", &preset.alias)
-            .context("the model is downloaded; the router was not restarted")?;
+    // One switch per spelling, held together; a refusal on any withdraws
+    // the ones already taken as the collected `Vec` drops.
+    let _switching = bases
+        .iter()
+        .map(|base| crate::engine_gate::take_switch(&holds, base, "the chat router", &preset.alias))
+        .collect::<Result<Vec<_>>>()
+        .context("the model is downloaded; the router was not restarted")?;
     let presets = presets_path(home);
     write_owned(home, ID, &presets, &presets_text(&preset), 0o644)?;
     let r = |t: &str| render(t, naming, &bin, &presets);
@@ -745,6 +774,7 @@ mod tests {
         let machine = crate::recommend::Machine::read().unwrap();
         let r = install(
             &m,
+            &crate::config::Config::default(),
             &Choice::Own {
                 model: "/nowhere.gguf".into(),
                 mmproj: None,
@@ -765,6 +795,7 @@ mod tests {
             assert!(!installed_by_mecha(&m.mecha_home).unwrap());
             let again = install(
                 &m,
+                &crate::config::Config::default(),
                 &Choice::Own {
                     model: "/nowhere.gguf".into(),
                     mmproj: None,
@@ -822,6 +853,7 @@ mod tests {
         let machine = crate::recommend::Machine::read().unwrap();
         let r = install(
             &m,
+            &crate::config::Config::default(),
             &Choice::Own {
                 model: "/nowhere.gguf".into(),
                 mmproj: None,
@@ -852,6 +884,82 @@ mod tests {
             .entries
             .iter()
             .any(|e| e.sidecar == ID)
+    }
+
+    /// Runs hold the router by the spelling their provider uses: a switch
+    /// pending under `localhost` stops an install whose own key is
+    /// `127.0.0.1` (found on review of #618).
+    #[tokio::test]
+    async fn a_switch_under_the_config_s_spelling_is_seen() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            stem: "mecha-test-spelling".into(),
+            port: free.local_addr().unwrap().port(),
+        };
+        drop(free);
+        let localhost = format!("http://localhost:{}/v1", naming.port);
+        let cfg = crate::config::Config {
+            default_provider: "local".into(),
+            providers: [(
+                "local".to_string(),
+                crate::config::ProviderConfig {
+                    kind: "local".into(),
+                    base_url: Some(localhost.clone()),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            hold_bases(&cfg, &naming),
+            vec![naming.base(), format!("http://localhost:{}", naming.port)]
+        );
+        assert_eq!(
+            hold_bases(&crate::config::Config::default(), &naming),
+            vec![naming.base()]
+        );
+
+        let root = std::env::temp_dir().join(format!("mecha-7c2-l-{}", uuid::Uuid::new_v4()));
+        let mut m = Machinery::real().unwrap();
+        m.mecha_home = root.join(".mecha");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/llama-server"), b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                root.join("bin/llama-server"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        m.path = vec![root.join("bin")];
+        let holds = crate::hold::Holds::new(crate::hold::dir_under(&m.mecha_home));
+        let _other = holds
+            .begin_switch(&localhost, Some("a"), "b")
+            .unwrap()
+            .unwrap();
+        let machine = crate::recommend::Machine::read().unwrap();
+        let r = install(
+            &m,
+            &cfg,
+            &Choice::Own {
+                model: "/nowhere.gguf".into(),
+                mmproj: None,
+            },
+            &naming,
+            &machine,
+            &root,
+            &mut |_| {},
+        )
+        .await;
+        if cfg!(target_os = "linux") {
+            let err = format!("{:#}", r.unwrap_err());
+            assert!(err.contains("already waiting"), "{err}");
+            assert!(!recorded(&m.mecha_home), "nothing recorded");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The presets file says what the router serves: the pinned row by its
@@ -1076,6 +1184,7 @@ mod tests {
         let mut said = Vec::new();
         let r = install(
             &m,
+            &crate::config::Config::default(),
             &Choice::Own {
                 model,
                 mmproj: None,

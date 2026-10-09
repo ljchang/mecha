@@ -464,6 +464,7 @@ fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
 pub async fn install(
     id: &str,
     m: &Machinery,
+    cfg: &crate::config::Config,
     machine: &recommend::Machine,
     hub: &Path,
     say: Say<'_>,
@@ -475,6 +476,7 @@ pub async fn install(
         // recommended row — else the row recommended for this machine.
         "router" => crate::router_unit::install(
             m,
+            cfg,
             &crate::router_unit::installed_choice(&m.mecha_home)?
                 .unwrap_or(crate::router_unit::Choice::Recommended),
             &crate::router_unit::Naming::shipped(),

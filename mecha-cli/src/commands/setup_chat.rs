@@ -205,7 +205,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             .await
             .context("installing llama.cpp")?;
     }
-    let alias = router_unit::install(&m, &choice, &naming, &machine, &hub, &mut |s| {
+    let alias = router_unit::install(&m, cfg, &choice, &naming, &machine, &hub, &mut |s| {
         println!("  {s}")
     })
     .await
