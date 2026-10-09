@@ -94,6 +94,37 @@ fn calendar_after(lines: &[&str], index: usize) -> Option<String> {
     None
 }
 
+/// The start of `at`'s day in `tz` (or the local zone): a bound a run on
+/// that day began after. `None` on a day whose midnight does not exist.
+pub fn start_of_day(
+    at: chrono::DateTime<chrono::Utc>,
+    tz: Option<chrono_tz::Tz>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::TimeZone;
+    match tz {
+        Some(tz) => {
+            let day = at.with_timezone(&tz).date_naive().and_hms_opt(0, 0, 0)?;
+            Some(
+                tz.from_local_datetime(&day)
+                    .earliest()?
+                    .with_timezone(&chrono::Utc),
+            )
+        }
+        None => {
+            let day = at
+                .with_timezone(&chrono::Local)
+                .date_naive()
+                .and_hms_opt(0, 0, 0)?;
+            Some(
+                chrono::Local
+                    .from_local_datetime(&day)
+                    .earliest()?
+                    .with_timezone(&chrono::Utc),
+            )
+        }
+    }
+}
+
 /// A clock for the replay whose calendar reference reads as the recorded
 /// one: noon, in the run's zone, on the first day from `from` (up to 400
 /// days on) that renders `calendar` exactly. `None` when no day does — a
@@ -503,6 +534,7 @@ impl Target {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReplaceFile {
     #[serde(rename = "in")]
     target: String,
@@ -1210,6 +1242,14 @@ mod tests {
         let at = clock_for(&note, from, Some(tz)).expect("a day renders it");
         assert_eq!(crate::date_context::render(at, Some(tz)), note);
         assert_eq!(clock_for("not a calendar", from, Some(tz)), None);
+        // The stage's bound is that day's start, never later than a morning
+        // run on it.
+        let start = start_of_day(at, Some(tz)).unwrap();
+        assert!(start <= at);
+        assert_eq!(
+            start.with_timezone(&tz).format("%F %T").to_string(),
+            format!("{} 00:00:00", at.with_timezone(&tz).date_naive())
+        );
     }
 
     /// A run with two calls, then the next owner turn.
@@ -1432,6 +1472,11 @@ mod tests {
         assert!(o.edits_tools());
         assert!(
             Overlay::parse("[[replace]]\nin = \"history\"\nfind = \"a\"\nwith = \"b\"").is_err()
+        );
+        let typo = "[[replace]]\nin = \"system\"\nfind = \"a\"\nwith = \"b\"\nscope = \"x\"";
+        assert!(
+            Overlay::parse(typo).is_err(),
+            "a mistyped key is refused, not dropped"
         );
     }
 

@@ -137,6 +137,7 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
         path
     } else {
         let mut found = Vec::new();
+        let mut exact = None;
         for persona in std::fs::read_dir(store)
             .with_context(|| format!("reading {}", store.display()))?
             .flatten()
@@ -148,17 +149,18 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if let Some(id) = name.strip_suffix(".jsonl") {
+                    // An exact id wins over every prefix match, wherever
+                    // the walk finds it (review of #612, pass 5).
                     if id == arg {
-                        found = vec![e.path()];
-                        break;
-                    }
-                    if id.starts_with(arg) {
+                        exact = Some(e.path());
+                    } else if id.starts_with(arg) {
                         found.push(e.path());
                     }
                 }
             }
         }
         match found.len() {
+            _ if exact.is_some() => exact.unwrap_or_default(),
             1 => found.remove(0),
             0 => bail!("no persona chat `{arg}` in {}", store.display()),
             n => bail!("`{arg}` names {n} persona chats; give more of the id"),
@@ -473,14 +475,21 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         .calendar
         .as_deref()
         .and_then(|c| pr::clock_for(c, from, tz));
+    // What the replay's clock reads, said as it is: the matched day, the
+    // recorded run's clock, or, with neither, today (review of #612, pass 5).
+    let sent_clock = clock_at.or(recorded_clock);
+    let fallback = match recorded_clock {
+        Some(_) => "the recorded run's clock",
+        None => "today's date (no run clock was recorded either)",
+    };
     match (&branch.calendar, clock_at) {
         (None, _) => eprintln!(
             "note: no calendar reference was recorded for the turn's run; the replay sends \
-             the recorded run's clock"
+             {fallback}"
         ),
         (Some(_), None) => eprintln!(
             "note: the turn's calendar reference renders on no day near the recorded clock; \
-             the replay sends the recorded run's clock instead"
+             the replay sends {fallback}"
         ),
         _ => {}
     }
@@ -613,6 +622,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "surface_edited_by_overlay": overlay.edits_tools(),
             "system_matches_recorded": system_matches,
             "calendar_matched": clock_at.is_some(),
+            // `null`: the system clock, today's date.
+            "clock": sent_clock,
             "call": branch.call,
             "render": render,
             "attempts": args.attempts,
@@ -634,7 +645,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         branch,
         overlay,
         max_tokens: args.max_tokens,
-        clock: mecha_core::clock::for_replay(clock_at.or(recorded_clock)),
+        clock: mecha_core::clock::for_replay(sent_clock),
         recorded_tools,
         attempts: args.attempts,
         parsed_limit: args.parsed_limit,
@@ -643,7 +654,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         surface,
         work,
         chat: id.clone(),
-        run_start: clock_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        run_start: clock_at
+            .and_then(|t| pr::start_of_day(t, tz))
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         render,
         readers: !args.no_readers,
     };
@@ -715,9 +728,12 @@ pub struct Sampler {
     work: PathBuf,
     /// The chat's id, which its scene is staged by.
     chat: String,
-    /// When the turn's run began, as best known: the day its calendar
-    /// reference names (noon in the run's zone), for staging the persona's
-    /// latest as of then. `None` falls back to the last recorded config.
+    /// A bound the turn's run began after: the start of the day its
+    /// calendar reference names, in the run's zone. The approximate stage
+    /// takes the persona's latest written at or before it, so it can be up
+    /// to a day early, never late: a later bound (noon) staged a scene drawn
+    /// after a morning turn (review of #615). `None` falls back to the last
+    /// recorded config's clock.
     run_start: Option<String>,
     /// Run the picture call against a scene staged per sample.
     render: bool,
@@ -990,8 +1006,10 @@ impl Sampler {
     }
 }
 
-/// How many samples first parsed a call on each request, and how many never
-/// did (`"none"`); `null` when no sample was allowed more than one.
+/// How many samples first parsed a call within the limit on each request;
+/// how many parsed one only over it (`"too_big"`: a parsed call ends the
+/// sample, so it cannot try again); and how many never parsed one
+/// (`"none"`). `null` when no sample was allowed more than one.
 fn attempts_histogram(samples: &[Sample]) -> Option<BTreeMap<String, usize>> {
     let tried: Vec<&Sample> = samples
         .iter()
@@ -1002,9 +1020,18 @@ fn attempts_histogram(samples: &[Sample]) -> Option<BTreeMap<String, usize>> {
     }
     let mut h = BTreeMap::new();
     for s in tried {
-        let key = s
-            .attempts_to_parsed
-            .map_or_else(|| "none".to_string(), |n| n.to_string());
+        // A parsed call ends the sample whatever its size, so one over the
+        // limit is its own outcome, never "none" (which is: no call parsed).
+        let too_big = s
+            .exchanges
+            .iter()
+            .flat_map(|e| &e.tool_calls)
+            .any(|c| c.parsed);
+        let key = match s.attempts_to_parsed {
+            Some(n) => n.to_string(),
+            None if too_big => "too_big".to_string(),
+            None => "none".to_string(),
+        };
         *h.entry(key).or_default() += 1;
     }
     Some(h)
@@ -1249,7 +1276,8 @@ mod tests {
         let h = attempts_histogram(&[first, second, too_big, words]).unwrap();
         assert_eq!(h["1"], 1);
         assert_eq!(h["2"], 1);
-        assert_eq!(h["none"], 2);
+        assert_eq!(h["too_big"], 1, "parsed but over the limit is not unparsed");
+        assert_eq!(h["none"], 1);
         assert!(attempts_histogram(&[]).is_none());
     }
 

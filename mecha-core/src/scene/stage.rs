@@ -10,7 +10,9 @@
 //! scene as of that render. So the chat's last landed picture before the
 //! turn gives the scene exactly. A chat with no picture of its own yet read
 //! the persona's latest (R7), and that is recovered only approximately: the
-//! index entry last written at or before the turn's run began.
+//! index entry last written at or before a bound the turn's run began after
+//! (the start of its day, or the last recorded config's clock), so early by
+//! up to that much and never late.
 //!
 //! Everything is copied; nothing in the real store or workspace is written.
 //! The scratch folder must be new or empty and lie outside both.
@@ -48,9 +50,10 @@ pub enum AsOf {
     /// The chat's own last landed picture before the turn: exact.
     ChatPicture { picture: String },
     /// No picture of the chat's own yet, so the persona's latest: the index
-    /// entry last written at or before `at`, the caller's estimate of the
-    /// turn's run start, else the last recorded config's clock (which may
-    /// precede the turn by days). Approximate: write times, not a record.
+    /// entry last written at or before `at`, a bound the turn's run began
+    /// after (the caller's: the start of the turn's day), else the last
+    /// recorded config's clock, which may precede the turn by days. Either
+    /// way early, never late. Approximate: write times, not a record.
     PersonaLatest { at: String, picture: String },
     /// No picture of its own and none in the persona's index by then: the
     /// chat started with no scene.
