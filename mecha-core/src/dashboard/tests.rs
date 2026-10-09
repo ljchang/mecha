@@ -201,10 +201,92 @@ fn an_address_is_refused_in_any_string_but_a_word_followed_by_a_colon_is_not() {
         let r = refused_at(&with(example(), at, json!(s)), at);
         assert!(r.rule.contains("names no destinations"), "{at}: {}", r.rule);
     }
-    for s in ["Raw data: counts", "Profile: weekly", "Notes: blob: none"] {
+    for s in [
+        "Raw data: counts",
+        "Profile: weekly",
+        "Notes: blob: none",
+        "R&D: 3 & 4",
+    ] {
         let v = with(example(), "/panels/0/title", json!(s));
         assert!(parse(&v).is_ok(), "{s:?} was refused");
     }
+}
+
+#[test]
+fn a_scheme_split_by_a_control_or_spelled_with_a_colon_reference_is_still_an_address() {
+    for s in [
+        "[x](<java\tscript:alert(1)>)",
+        "[x](java\nscript:alert(1))",
+        "[x](javascript&#58;alert(1))",
+        "[x](javascript&#x3A;alert(1))",
+        "[x](javascript&#0058alert(1))",
+        "[x](javascript&colon;alert(1))",
+        "[x](data&#58;text/html,hi)",
+    ] {
+        let at = "/panels/3/markdown";
+        let r = refused_at(&with(example(), at, json!(s)), at);
+        assert!(
+            r.rule.contains("names no destinations"),
+            "{s:?}: {}",
+            r.rule
+        );
+    }
+}
+
+#[test]
+fn an_address_used_as_a_key_is_refused() {
+    let at = "/panels/1/vegalite/encoding/x/axis/https:~1~1example.org~1x";
+    let v = with(
+        example(),
+        "/panels/1/vegalite/encoding/x/axis",
+        json!({ "https://example.org/x": 1 }),
+    );
+    refused_at(&v, at);
+}
+
+#[test]
+fn only_a_text_panels_own_markdown_gets_the_larger_budget() {
+    let long = "a".repeat(4_000);
+    let v = with(example(), "/panels/3/markdown", json!(long));
+    assert!(parse(&v).is_ok());
+    let at = "/panels/1/vegalite/encoding/x/axis/markdown";
+    refused_at(&with(example(), at, json!(long)), at);
+}
+
+#[test]
+fn filters_are_capped_like_every_other_list() {
+    let filters: Vec<Value> = (0..17)
+        .map(|i| json!({ "id": format!("f{i}"), "label": "x", "dataset": "visits_by_day", "field": "site" }))
+        .collect();
+    refused_at(&with(example(), "/filters", json!(filters)), "/filters");
+}
+
+#[test]
+fn a_transform_refuses_an_option_its_operation_does_not_take() {
+    let p = "/panels/1/vegalite/transform/0";
+    let v = with(
+        example(),
+        p,
+        json!({ "filter": "datum.visits > 0", "totallyNew": { "fetchFrom": "x" } }),
+    );
+    let r = refused_at(&v, &format!("{p}/totallyNew"));
+    assert!(r.rule.contains("`filter` transform"), "{}", r.rule);
+
+    // Two operations in one object, neither covering the other: refused.
+    let v = with(
+        example(),
+        p,
+        json!({ "filter": "true", "calculate": "1", "as": "one" }),
+    );
+    assert!(parse(&v).is_err());
+
+    // An operation whose options name another (`density` takes `extent`) is fine.
+    let v = with(
+        example(),
+        p,
+        json!({ "density": "visits", "extent": [0, 10], "as": ["v", "d"] }),
+    );
+    assert!(parse(&v).is_ok(), "{:?}", parse(&v).unwrap_err());
 }
 
 #[test]
