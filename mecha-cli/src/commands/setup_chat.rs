@@ -210,18 +210,22 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     // routes by, so it is brought in line with what was just installed, the
     // same show-and-ask as `mecha setup --write` (found on review of #568).
     // Only a table that names this router: a local provider on another
-    // machine is someone else's server and is not rewritten from this one.
-    let port = format!(":{}", naming.port);
-    let this_router = |p: &mecha_core::config::ProviderConfig| {
-        p.kind == "local"
-            && p.base_url
-                .as_deref()
-                .is_none_or(|u| mecha_core::provider::router::is_loopback(u) && u.contains(&port))
-    };
-    if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| this_router(p)) {
+    // machine is someone else's server and is not rewritten from this one —
+    // and nor is one with no `base_url`, which `Openai::new` sends to
+    // api.openai.com (found on review of #618; `router::follows_here` is
+    // strict for the same reason).
+    if let Some((name, _)) = cfg
+        .providers
+        .iter()
+        .find(|(_, p)| names_this_router(p, naming.port))
+    {
         println!();
-        super::setup::offer_settings(name, &props)?;
-        return super::setup::offer_default(name, &cfg.default_provider);
+        // The default moves only onto a table that now names what the
+        // router serves: declined, its `model` is a preset that is gone.
+        if super::setup::offer_settings(name, &props)? {
+            super::setup::offer_default(name, &cfg.default_provider)?;
+        }
+        return Ok(());
     }
     if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| p.kind == "local") {
         println!(
@@ -237,9 +241,44 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     super::setup::write_local_provider(&found)
 }
 
+/// Whether a provider table names the router on `port` here.
+fn names_this_router(p: &mecha_core::config::ProviderConfig, port: u16) -> bool {
+    let port = format!(":{port}");
+    p.kind == "local"
+        && p.base_url
+            .as_deref()
+            .is_some_and(|u| mecha_core::provider::router::is_loopback(u) && u.contains(&port))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `local` table with no `base_url` is answered by api.openai.com, so
+    /// it is never "this router" — rewriting it and offering it as default
+    /// would point a local install at a hosted model (found on review of
+    /// #618).
+    #[test]
+    fn only_a_loopback_table_on_the_port_names_this_router() {
+        let table = |base: Option<&str>| mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: base.map(str::to_string),
+            ..Default::default()
+        };
+        assert!(names_this_router(
+            &table(Some("http://127.0.0.1:8080/v1")),
+            8080
+        ));
+        assert!(!names_this_router(&table(None), 8080));
+        assert!(!names_this_router(
+            &table(Some("http://127.0.0.1:9090/v1")),
+            8080
+        ));
+        assert!(!names_this_router(
+            &table(Some("http://box.lan:8080/v1")),
+            8080
+        ));
+    }
 
     /// `chat` is a noun in `setup`'s feature position, as `engine` is, so no
     /// feature may ever be called that.

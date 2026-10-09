@@ -675,9 +675,16 @@ pub fn plan(
                 }),
             };
             if let Some(state) = state {
+                // An unreadable presets file still has the tier's row named:
+                // left empty, the line would read "no recommended model"
+                // beside "could not be checked" (found on review of #618).
+                let model = match state {
+                    FileState::Brought => "",
+                    _ => recommend::row_for(slot, machine).map_or("", |(row, _)| row.model),
+                };
                 files.push(PlannedFile {
                     slot: slot.id,
-                    model: "",
+                    model,
                     repo: None,
                     path: "",
                     state,
@@ -1141,6 +1148,18 @@ mod tests {
             .files
             .iter()
             .any(|f| f.slot == "chat" && matches!(f.state, FileState::KeeperUnknown { .. })));
+        // …and still names the tier's row: an unknown is never "none"
+        // (found on review of #618).
+        let row = recommend::row_for(
+            recommend::SLOTS.iter().find(|s| s.id == "chat").unwrap(),
+            &GB10,
+        )
+        .unwrap()
+        .0;
+        assert!(unread
+            .files
+            .iter()
+            .any(|f| f.slot == "chat" && f.model == row.model && !f.model.is_empty()));
         let _ = std::fs::remove_dir_all(&root);
     }
 
