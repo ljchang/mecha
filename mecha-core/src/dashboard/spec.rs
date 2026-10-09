@@ -344,7 +344,7 @@ fn screen_strings(v: &Value, at: &str, out: &mut Vec<Refusal>) {
                     format!("strings here are at most {limit} characters"),
                 ));
             }
-            if at.ends_with("/$schema") && is_vegalite_schema(s) {
+            if at.ends_with("/vegalite/$schema") && is_vegalite_schema(s) {
                 return;
             }
             if is_address(s) {
@@ -410,10 +410,16 @@ fn is_vegalite_schema(s: &str) -> bool {
 pub(crate) fn is_address(s: &str) -> bool {
     let lower = normalise(s);
     let lower = lower.as_str();
-    if lower.contains("://") || lower.starts_with("//") || lower.starts_with("www.") {
+    // Anywhere, not only at the start: `[x](//host/p)` is a protocol-relative
+    // link one character in. Nothing a spec legitimately says contains `//`.
+    if lower.contains("//") || lower.contains("www.") {
         return true;
     }
     [
+        // The URL parser supplies the slashes a special scheme leaves out, so
+        // `http:host` is `http://host/`.
+        "http:",
+        "https:",
         "data:",
         "javascript:",
         "vbscript:",

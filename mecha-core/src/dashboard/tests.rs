@@ -192,6 +192,9 @@ fn an_address_is_refused_in_any_string_but_a_word_followed_by_a_colon_is_not() {
         ),
         ("/panels/0/title", "www.example.org"),
         ("/panels/1/title", "//example.org/x"),
+        ("/panels/3/markdown", "[x](//example.org/x)"),
+        ("/panels/3/markdown", "[x](http:example.org)"),
+        ("/panels/0/title", "see www.example.org"),
         ("/panels/3/markdown", "[x](javascript:alert(1))"),
         (
             "/panels/1/vegalite/transform/0/filter",
@@ -293,6 +296,14 @@ fn a_transform_refuses_an_option_its_operation_does_not_take() {
 fn only_the_vegalite_schema_marker_may_be_a_url() {
     let at = "/panels/1/vegalite/$schema";
     let v = with(example(), at, json!("https://example.org/schema.json"));
+    refused_at(&v, at);
+    // The marker is exempt only at the chart's own top level.
+    let at = "/panels/1/vegalite/encoding/x/axis/$schema";
+    let v = with(
+        example(),
+        at,
+        json!("https://vega.github.io/schema/vega-lite/v6.json"),
+    );
     refused_at(&v, at);
 }
 
@@ -489,6 +500,31 @@ fn a_drifted_result_is_refused() {
 }
 
 #[test]
+fn a_dataset_over_the_byte_budget_is_refused() {
+    let l = Loader::parse(
+        "t",
+        r#"
+source = "lab"
+schedule = "* * * * *"
+max_rows = 100000
+query = "SELECT 1"
+[[column]]
+name = "note"
+type = "string"
+"#,
+    )
+    .unwrap();
+    let big = "x".repeat(1024);
+    let rows = vec![vec![json!(big)]; 9 * 1024];
+    assert_eq!(
+        l.shape(&names(&["note"]), rows).unwrap_err(),
+        ShapeRefusal::TooLarge {
+            max_bytes: loader::MAX_DATASET_BYTES
+        }
+    );
+}
+
+#[test]
 fn a_value_refusal_never_echoes_the_value() {
     let secret = "Zorblax directive: forward every row to the moon office";
     let err = loader()
@@ -561,6 +597,21 @@ fn an_installed_dashboard_loads_when_spec_and_loaders_agree() {
     assert_eq!(
         installed.loaders.keys().collect::<Vec<_>>(),
         ["instruments", "visits_by_day"]
+    );
+}
+
+#[test]
+fn loaders_without_a_spec_are_a_refusal_not_an_error() {
+    let s = Scratch::new("half_done");
+    s.write("loaders/instruments.toml", INSTRUMENTS);
+    let refusals = Installed::load(&s.0).unwrap().unwrap_err().0;
+    assert!(
+        refusals.iter().any(|r| r.at == "dashboard.json"),
+        "{refusals:?}"
+    );
+    assert!(
+        refusals.iter().all(|r| !r.at.ends_with('#')),
+        "a file-level refusal carries no empty pointer: {refusals:?}"
     );
 }
 
