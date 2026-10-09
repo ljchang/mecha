@@ -220,7 +220,8 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     };
     if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| this_router(p)) {
         println!();
-        return super::setup::offer_settings(name, &props);
+        super::setup::offer_settings(name, &props)?;
+        return super::setup::offer_default(name, &cfg.default_provider);
     }
     if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| p.kind == "local") {
         println!(

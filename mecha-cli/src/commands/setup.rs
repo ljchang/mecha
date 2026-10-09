@@ -773,6 +773,51 @@ pub(super) fn offer_settings(
     apply(provider, &settings)
 }
 
+/// Offer to make `provider` the default when `current` is something else —
+/// `mecha setup chat` run against a config that already names its router but
+/// still answers from a hosted model. Installing the router and its weights
+/// and exiting 0 while every run still went to `current` is ruling F12's
+/// case, reached through the command that exists to avoid it (found on
+/// review of #568). Asked, never assumed: it changes what answers.
+pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
+    if provider == current {
+        return Ok(());
+    }
+    println!(
+        "\nThe default provider is `{current}`, so runs do not use this model yet. To change \
+         that:\n\n    default_provider = {}",
+        onboarding::toml_string(provider)
+    );
+    if !std::io::stdin().is_terminal() {
+        println!("\n(not a terminal, so nothing was written — copy the line above)");
+        return Ok(());
+    }
+    print!("\nmake `{provider}` the default provider? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    if !line.trim().eq_ignore_ascii_case("y") {
+        println!("not written — runs still go to `{current}`");
+        return Ok(());
+    }
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    backup(&path)?;
+    set_default_provider(&path, provider)?;
+    // Checked, not claimed — the same read-back `write_local_provider` makes.
+    if let Err(e) = mecha_core::config::Config::load_global() {
+        let restored = std::fs::copy(path.with_extension("toml.bak"), &path).is_ok();
+        eprintln!(
+            "what was written to {} does not parse: {e:#}",
+            path.display()
+        );
+        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
+        crate::exit_with(1);
+    }
+    println!("`{provider}` is now the default provider");
+    Ok(())
+}
+
 /// Write down a local server that was found rather than configured.
 ///
 /// **Every value comes off `/props`, and the secret-shaped one does not
