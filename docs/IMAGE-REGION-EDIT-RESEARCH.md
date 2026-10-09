@@ -397,6 +397,44 @@ else M1 if marks survive in under 5%; else M3, whose cost is known.
 Until it is measured, a build can ship M3 behind the same interface, since
 the interface does not depend on which arm wins.
 
+### 7.6 First results: distinct targets (2026-10-09)
+
+mecha-a3 ran the arms of §7.5 on the real C path: `prepare_mask`,
+`SetLatentNoiseMask` and `composite_masked`, with paired seeds and n = 4.
+The pictures were three made-up scenes:
+
+- (a) a shirt recoloured, a cup removed;
+- (b) hair, a sweater, and a plant removed;
+- (c) a jacket and the shirt under it, which are adjacent.
+
+The outline colours were the hues least present in each picture.
+
+| | Landed | Marks left | Face (ArcFace, b) | Seconds per edit |
+|---|---|---|---|---|
+| control (one region, words joined) | 12/12 | 0 | .90–.92 | ~44 |
+| M1 marks on the canvas | 12/12 | 1–40 px of cyan in b, not visible | .88–.90 (its outline ran round the face) | ~44–48 |
+| M2 marks on `<image2>` | 12/12 | 0 | .91–.93 | ~55–60 |
+| M3 a pass per region | 12/12 | 0 | .90–.92 | ~88 (2 regions), ~130 (3) |
+
+- **No region did another's job,** including on the adjacent pair (c).
+- **Outside the regions, nothing moved in any of the 48 edits** (mean
+  difference 0.000).
+- **By the rule in §7.5, M2 wins:** it lands as often as M1, leaves no marks,
+  and holds the face best, for about 12 s more than M1.
+
+**This set is a ceiling, though, not a test of regions.** The control landed
+everything too, because each instruction named a different kind of thing
+that words alone can find. What regions exist for is the **same-class**
+target, where only the region says which one:
+
+- two people's shirts in different colours (the persona picture's usual
+  ask);
+- one of two identical cups;
+- the left sleeve, not the right.
+
+That set was approved by the owner the same day and is running. The choice
+of arm waits on it.
+
 ## Sources
 
 - [QwenLM/Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1): "specify
