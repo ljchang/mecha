@@ -202,6 +202,29 @@ pub fn installed_by_mecha(mecha_home: &Path) -> Result<bool> {
         .any(|e| e.sidecar == ID))
 }
 
+/// Whether a provider table names the router on `port` here: `local`, with
+/// a loopback `base_url` on that port. A `local` table with no `base_url` is
+/// not — `Openai::new` sends it to api.openai.com (found on review of #618;
+/// `provider::router::follows_here` is strict for the same reason).
+pub fn names_this_router(p: &crate::config::ProviderConfig, port: u16) -> bool {
+    let port = format!(":{port}");
+    p.kind == "local"
+        && p.base_url
+            .as_deref()
+            .is_some_and(|u| crate::provider::router::is_loopback(u) && u.contains(&port))
+}
+
+/// Whether the default provider is mecha's router on its shipped port — the
+/// only chat a `features enable` may install a router for. A chat server
+/// already named on another loopback port is the owner's, and a router beside
+/// it would be a second resident chat model and its download, answering
+/// nothing the config names (found on review of #618).
+pub fn chat_is_the_routers(cfg: &crate::config::Config) -> bool {
+    cfg.providers
+        .get(&cfg.default_provider)
+        .is_some_and(|p| names_this_router(p, Naming::shipped().port))
+}
+
 /// Whether anything accepts a connection on this loopback port.
 pub fn port_answers(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
@@ -504,6 +527,44 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a loopback table on the router's port is this router: a `local`
+    /// table with no `base_url` is api.openai.com, and one on another port
+    /// is a chat server the owner runs — `features enable` installs no
+    /// router beside it (found on review of #618).
+    #[test]
+    fn only_a_loopback_table_on_the_port_names_this_router() {
+        let table = |base: Option<&str>| crate::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: base.map(str::to_string),
+            ..Default::default()
+        };
+        assert!(names_this_router(
+            &table(Some("http://127.0.0.1:8080/v1")),
+            8080
+        ));
+        assert!(!names_this_router(&table(None), 8080));
+        assert!(!names_this_router(
+            &table(Some("http://127.0.0.1:9090/v1")),
+            8080
+        ));
+        assert!(!names_this_router(
+            &table(Some("http://box.lan:8080/v1")),
+            8080
+        ));
+
+        let mut cfg = crate::config::Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers
+            .insert("local".into(), table(Some("http://127.0.0.1:9090/v1")));
+        assert!(crate::install::chat_runs_here(&cfg), "chat is here…");
+        assert!(!chat_is_the_routers(&cfg), "…but not the router's");
+        cfg.providers
+            .insert("local".into(), table(Some("http://127.0.0.1:8080/v1")));
+        assert!(chat_is_the_routers(&cfg));
+    }
 
     /// The pinned row's preset is the GB10's, at the tier's geometry; a
     /// brought model's is plain.
