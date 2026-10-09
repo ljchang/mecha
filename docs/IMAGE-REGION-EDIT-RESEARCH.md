@@ -267,8 +267,9 @@ Set, or narrowed, by the results:
 - Whether a region without a note falls back to the chat message as the
   instruction.
 
-Not set by any measurement:
-- Whether annotations on several regions run as one edit or one per region.
+Set later by §7.6–7.7 (2026-10-09):
+- Whether annotations on several regions run as one edit or one per region:
+  one edit, with each region's words in a colour legend (§7.7).
 
 ## 7. Several regions, each with its own instruction (2026-10-09)
 
@@ -277,7 +278,8 @@ one instruction. Can the owner draw several regions in different colours,
 each carrying its own instruction, and what should that interface look like?
 §6 left open "whether annotations on several regions run as one edit or one
 per region". This section answers what the sources say and proposes how to
-measure the rest. **Nothing here has been run yet.**
+measure the rest. **§7.1–7.5 were written before any run; §7.6 and §7.7
+report the results.**
 
 ### 7.1 What the model supports
 
@@ -296,12 +298,13 @@ measure the rest. **Nothing here has been run yet.**
     short-sleeved linen pajamas".
 - **Regions are named by colour.** Qwen's Pro guide does the same ("Replace
   the object inside the red circle … Remove the red circle") and asks for "a
-  color that appears nowhere else in the frame" [official, Pro API guide].
+  color that appears nowhere else in the frame" [reported, a third-party
+  host's guide to 2.1 Pro].
   - Coordinates in the prompt do not work: one user reported they "could not
     edit the region" [reported, Qwen-Image #289].
   - Every source asks the model to remove the marks.
   - No limit on the number of regions is published. The demo uses three, and
-    Krita's region system recommends five or fewer [reported].
+    Krita's region system recommends five or fewer [official, Krita's docs].
 - **Marks are hints, not walls** (§1 holds). No source compares marks
   against true inpainting. Every source agrees that only a composite
   guarantees the rest of the picture. The same agreement is what chose C in
@@ -333,9 +336,9 @@ whole picture.
 
 | | How | Outside every region | Inside each region | Cost |
 |---|---|---|---|---|
-| **M1. One pass, marks on the canvas** | the picture with each region's outline drawn on it in its colour; the union of the regions as C's latent noise mask; the prompt from the legend, "In the red outline: …; in the blue outline: …; remove the outlines" | identical (the composite) | an outline the model leaves inside a region survives the composite, which keeps everything under the mask | one render |
+| **M1. One pass, marks on the canvas** | the picture with each region's outline drawn on it in its colour as the canvas; the union of the regions as C's latent noise mask; the prompt from the legend, "In the red outline: …; in the blue outline: …; remove the outlines". The composite restores from the **clean** picture, not the marked canvas | identical, provided the composite restores from the clean picture (from the marked canvas it would restore every outline pixel outside the mask, by construction) | an outline the model leaves inside a region survives the composite, which keeps everything under the mask | one render |
 | **M2. One pass, marks on a second image** | the clean picture as `<image1>` and canvas, a copy with the outlines as `<image2>`; the same union mask and legend, "…the coloured outlines in the second image mark…" | identical | no mark on the canvas, so none can survive; whether 2.1 follows a mark it sees only in a second image is the question | one render, one more reference |
-| **M3. One pass per region** | C as built (#429), once per region with that region's mask and words, each composited onto the last | identical | exact per region; a later pass sees the earlier result | n renders; each extra round adds grain (one guide measured 1.7 → 4.3 noise over six rounds) |
+| **M3. One pass per region** | C as built (#429), once per region with that region's mask and words, each composited onto the last | identical | exact per region; a later pass sees the earlier result | n renders. Each pass resamples only under its own region and composites the rest byte-exactly, so quality loss can accumulate only where two regions' grown masks overlap (about 21 px past each painted edge; adjacent regions do overlap). The grain one guide measured over six whole-image rounds does not apply. |
 
 M3 needs no new graph and is the fallback that cannot confuse two regions.
 M1 is the officially demonstrated form. M2 is M1 with the one failure M1
@@ -358,16 +361,27 @@ cannot rule out designed away.
   - Send is enabled when every painted region has a note.
   - A region with no note is the thing §6 left open. Proposed: it may not be
     sent empty. The owner is asked, never guessed for.
-- **Colours chosen against the picture.** The palette is four saturated
-  hues. At load the page picks the ones least present in the picture: Qwen
-  asks for colours "that appear nowhere else in the frame". The model never
-  sees a colour name the owner chose, only the harness's.
-- **What the page sends.** It sends one colour-indexed mask PNG at the
-  picture's size (each region's pixels in its palette colour, transparent
-  elsewhere), uploaded into the jail like today's mask. The panel's turn
-  then carries `regions: [{colour, words}]` beside it.
+- **Colours chosen against the picture.** The palette is **eight**
+  saturated hues, and at load the page picks the four least present in the
+  picture, so there is always a choice: Qwen asks for colours "that appear
+  nowhere else in the frame". With four hues for four regions there would
+  be nothing to pick.
+- **What the page sends.** It sends one colour-indexed **region index** PNG
+  at the picture's size: each region's pixels in its palette colour, and
+  every unpainted pixel RGB black (not merely transparent, since
+  `to_luma8()` drops alpha). It is uploaded into the jail like today's mask.
+  The panel's turn then carries `regions: [{colour, words}]` beside it.
   - The server derives everything from that one file: the union mask for C,
     each region's own mask (M3), and the outline image (M1 and M2).
+  - **It is an index, not a mask.** It is binarised per colour (a pixel of
+    colour *k* is region *k*) before anything reaches `prepare_mask`, which
+    takes luma and thresholds it at 16 after a resize. Saturated hues have
+    very different luma (white 255, green ~182, red ~54, blue ~18), so a
+    blue stroke sent through as-is would need about fifteen times white's
+    coverage to register. A region could then be dropped silently, the
+    silently-degrading guard of §6. Likewise the graph's `ImageToMask`
+    reads the red channel only, so only the derived greyscale mask ever
+    reaches it.
   - The legend is built in the harness from the typed `regions`, in fixed
     words, so the model never writes coordinates and the prompt is typed
     values as before.
@@ -392,8 +406,12 @@ outside difference computed.
   job; whether a mark survived (M1); identity on the face case; and
   seconds.
 
-**Decision rule:** take M2 if it lands as often as M1 with no marks left;
-else M1 if marks survive in under 5%; else M3, whose cost is known.
+**Decision rule**, as n = 4 can read it: take M2 if it lands as often as M1
+with no visible mark left in any edit; else M1 if no visible mark is left in
+any of its edits; else M3, whose cost is known. (A rate such as "under 5%"
+needs at least 20 edits per arm before one failure reads under it, and
+three cases at n = 4 make 12.) Each graded image records the legend the
+harness built, so a swap is told apart from both regions doing both jobs.
 Until it is measured, a build can ship M3 behind the same interface, since
 the interface does not depend on which arm wins.
 
@@ -419,8 +437,11 @@ The outline colours were the hues least present in each picture.
 - **No region did another's job,** including on the adjacent pair (c).
 - **Outside the regions, nothing moved in any of the 48 edits** (mean
   difference 0.000).
-- **By the rule in §7.5, M2 wins:** it lands as often as M1, leaves no marks,
-  and holds the face best, for about 12 s more than M1.
+- **By the rule in §7.5, M2 wins:** it lands as often as M1 and leaves no
+  marks, for about 12 s more than M1. It holds the face at least as well as
+  the rest; M1 does not.
+- The outside figure is a sanity check of the composite, which guarantees
+  it, not a finding about the arms.
 
 **This set is a ceiling, though, not a test of regions.** The control landed
 everything too, because each instruction named a different kind of thing
@@ -434,6 +455,42 @@ target, where only the region says which one:
 
 That set was approved by the owner the same day and is running. The choice
 of arm waits on it.
+
+### 7.7 Same-class targets: what regions are for (2026-10-09)
+
+The set approved in §7.6, run the same way (n = 4, paired seeds). The masks
+came from SAM 3 text prompts, two instances each, taken left and right. The
+pictures were made-up scenes:
+
+- (p) a woman and a man in identical grey t-shirts: hers red, his green;
+- (q) two identical white cups: remove the left one;
+- (r) a man in a grey sweater: the left sleeve red.
+
+The control painted **every** candidate (both shirts, both cups, both
+sleeves) and used the words as the owner would type them ("make her top red
+and his shirt green", "remove the cup on the left"). Otherwise the mask
+alone would answer "which one", and the control would test nothing.
+
+| | p | q | r | Wrong target | Marks left | Seconds |
+|---|---|---|---|---|---|---|
+| control (one brush over all, words) | 3/4 (his stayed grey once) | 4/4 | 2/4 (both sleeves red twice) | **3/12** | none | ~64 |
+| M1 marks on the canvas | 4/4 | 4/4 | 4/4 | 0/12 | 0–12 px, not visible | ~65 |
+| M2 marks on `<image2>` | 4/4 | 4/4 | 4/4 | 0/12 | none | ~82–90 |
+| M3 a pass per region | 4/4 | 4/4 | 4/4 | 0/12 | none | ~64 per region (~128 for p) |
+
+- **Regions settle what words cannot.** With one painted area and words,
+  the wrong target changed 3 times in 12. With a region per target it never
+  did, in any arm.
+- **Faces held** on (p) for every arm.
+- The GPU was shared during this set, so every arm ran slower than in
+  §7.6. The gaps between arms hold.
+- **By the §7.5 rule M2 wins; M1 also passes.** Neither left a visible mark,
+  and M1 is about 20 s cheaper per edit. The choice between them is the
+  owner's.
+- **A side finding, not about the arms:** removing a cup left a faint
+  rectangular seam at the mask's edge, on the backsplash and the table, in
+  every arm. That is the composite's feathered edge on a smooth background,
+  a question for `prepare_mask`'s grow and feather, not for regions.
 
 ## Sources
 
