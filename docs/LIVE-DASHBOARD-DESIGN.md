@@ -402,8 +402,10 @@ possible.
 
 - Each dataset is fetched with `If-None-Match`; a `304` costs nothing.
 - The interval comes from the loader's schedule (five-field cron, so a
-  minute at the shortest; the 30 s floor guards a future sub-minute schedule
-  kind and binds nothing today), and
+  minute at the shortest), floored at **30 seconds** — no page polls faster
+  than that whatever its schedule says. The floor binds nothing today, since
+  cron cannot express less than a minute; it is there for a future
+  sub-minute schedule kind. And
   **polling stops while the tab is hidden** — a phone left open on a dashboard
   must not poll all night.
 - **Freshness is shown from `generated_at`, never the viewer's clock.** A
@@ -469,7 +471,10 @@ separate origin.** Not before, and not "with care" on this one.
 ### 5.3 Authoring, and what the model sees
 
 The model drafts in its workspace — `dashboard.json`, `loaders/*.toml` — with
-the ordinary file tools, and checks its work with one new tool:
+the ordinary file tools, and checks its work with one new tool. The draft
+directory `dashboard_preview` is given is a model-supplied path, the only one
+in this design, so it goes through `ToolCtx::resolve` like every other: a
+preview reads a draft inside the workspace jail or reads nothing.
 
 - **`dashboard_preview`** — validates the spec and loaders (§2.2, §3.2), runs
   each **local** loader once against its registered source (a remote source
@@ -522,7 +527,12 @@ triggers are not model-installable.
 scheduled refresh sends its query to that source's host, and the query was
 drafted by a model — so the install surface shows each remote loader's query
 and source in full, the way the outbox shows a publish, and the owner reads it
-before it ever runs. A `sqlite` loader needs no more than install — a read-only
+before it ever runs. Install also offers the owner **one run of each remote
+loader, at their command** — no model in it, the owner watching — so a wrong
+`[[column]]` surfaces as a shape refusal while the owner is looking, not at the
+first scheduled refresh after review. Declining is allowed; the first refresh
+then fails closed the same way, shown as stale with its reason. A `sqlite`
+loader needs no more than install — a read-only
 open of a file, whose data never leaves the machine — and a `mecha` loader's
 readout is a closed enum (§3.1), so neither has an effect to review.
 
@@ -673,7 +683,7 @@ after the factory path is proven.
 | Step | What | Where | Done when |
 |---|---|---|---|
 | 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
-| 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
+| 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
@@ -686,7 +696,7 @@ after the factory path is proven.
 Steps 1–4 are the tailnet prototype and need nothing from the factory
 repository. **Rung 2 (publish with data frozen in) is skipped**: R12 moves
 straight to the factory's live channel, and a frozen publish is step 5 with
-the dataset channel left out, so it needs no step of its own. Step 1 was built while step 0 ran: the spec's types, panels,
+the dataset channel left out, so it needs no step of its own. ✓ is done; ⧗ is built and in review (step 1, #621). Step 1 was built while step 0 ran: the spec's types, panels,
 loaders and shape check are grammar-neutral, and only the Vega-Lite walker
 assumed R2 — which step 0 then confirmed. Step 5 is deliberately next, not last: the factory is where this
 design's untested assumptions live — the grant under a polling page (§6.4),
@@ -844,6 +854,14 @@ dashboard must not draw an empty GPU-memory gauge as if the GPU had none. A
 fifteen-minute rollup kept ninety. The sampler runs on its own user timer and
 writes nothing else. The dashboard's loaders are ordinary SQLite loaders over
 it.
+
+**The labels live in the store, written from code.** A loader reads the rows
+by SQL, so a stored category never passes back through the enum — and a
+mapping from number to name written in a loader's query would be a
+model-drafted `CASE WHEN`, the silent relabel the fixed discriminants exist to
+prevent. So the sampler also maintains a `categories (id, label)` table,
+rewritten from the enum on every run; loaders join it, and a number with no
+row there is drawn as "unknown", never as a neighbour's name.
 
 ### 11.4 The one thing categories do not hide
 
