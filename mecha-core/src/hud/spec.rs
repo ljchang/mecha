@@ -1,4 +1,4 @@
-//! `dashboard.json`: the spec the model writes.
+//! `hud.json`: the spec the model writes.
 //!
 //! Parsing is two passes over one document. The first walks the raw JSON for
 //! what no type can express — a string anywhere that is an address, a string
@@ -171,7 +171,7 @@ impl Spec {
         &self.panels
     }
 
-    /// Parse and check a `dashboard.json`. Every refusal found is returned,
+    /// Parse and check a `hud.json`. Every refusal found is returned,
     /// not just the first.
     pub fn parse(text: &str) -> Result<Spec, Refusals> {
         if text.len() > MAX_BYTES {
@@ -506,8 +506,12 @@ fn is_text_panel_markdown(at: &str) -> bool {
     )
 }
 
+/// The marker's exact shape — `…/vega-lite/v<digits and dots>.json` — so the
+/// one string excused from every screen is no wider than the reason for it.
 fn is_vegalite_schema(s: &str) -> bool {
-    s.starts_with("https://vega.github.io/schema/vega-lite/") && s.ends_with(".json")
+    s.strip_prefix("https://vega.github.io/schema/vega-lite/v")
+        .and_then(|rest| rest.strip_suffix(".json"))
+        .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
 }
 
 /// Does this string name somewhere? Deliberately broad: a false refusal

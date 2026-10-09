@@ -54,7 +54,7 @@ pub use spec::{Panel, Spec};
 /// ```compile_fail
 /// // Outside the dashboard module, a Checked cannot be made — and so neither
 /// // can the Spec or Loader that must carry one.
-/// let _ = mecha_core::dashboard::Checked(());
+/// let _ = mecha_core::hud::Checked(());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Checked(());
@@ -122,13 +122,13 @@ pub(crate) fn pointer(at: &str, segment: &str) -> String {
     format!("{at}/{}", segment.replace('~', "~0").replace('/', "~1"))
 }
 
-/// `~/.mecha/dashboards/` — the store's fixed entries live here
+/// `~/.mecha/hud/` — the store's fixed entries live here
 /// (`sources.toml`, `themes/`, the host sampler's database).
 pub fn dir() -> Result<PathBuf> {
-    Ok(crate::work::mecha_home()?.join("dashboards"))
+    Ok(crate::work::mecha_home()?.join("hud"))
 }
 
-/// `~/.mecha/dashboards/boards/` — installed dashboards, one directory each.
+/// `~/.mecha/hud/boards/` — installed dashboards, one directory each.
 /// A level of their own, so a dashboard named `themes` cannot land on the
 /// theme store.
 pub fn boards_dir() -> Result<PathBuf> {
@@ -157,7 +157,7 @@ impl Installed {
         &self.loaders
     }
 
-    /// Read `<boards>/<id>/dashboard.json` and `<id>/loaders/*.toml`, and
+    /// Read `<boards>/<id>/hud.json` and `<id>/loaders/*.toml`, and
     /// check each alone and all of them together. `id` is checked *before*
     /// it is joined onto `boards` — a name that came from a request or a model
     /// proves its containment here, at the join, or not at all. `Err` is for
@@ -174,20 +174,20 @@ impl Installed {
         let dir = boards.join(&id);
         let mut refusals = Vec::new();
 
-        let spec_path = dir.join("dashboard.json");
+        let spec_path = dir.join("hud.json");
         // A directory with loaders and no spec is a half-written dashboard —
         // a refusal beside the others, not I/O to give up on.
         let spec = match std::fs::read_to_string(&spec_path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 refusals.push(Refusal::new(
-                    "dashboard.json",
-                    "a dashboard needs a dashboard.json beside its loaders/",
+                    "hud.json",
+                    "a dashboard needs a hud.json beside its loaders/",
                 ));
                 None
             }
             Err(e) => {
                 refusals.push(Refusal::new(
-                    "dashboard.json",
+                    "hud.json",
                     format!("cannot be read: {}", e.kind()),
                 ));
                 None
@@ -195,7 +195,7 @@ impl Installed {
             Ok(text) => match Spec::parse(&text) {
                 Ok(spec) => Some(spec),
                 Err(r) => {
-                    refusals.extend(prefixed("dashboard.json", r.0));
+                    refusals.extend(prefixed("hud.json", r.0));
                     None
                 }
             },
@@ -282,7 +282,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
     for (i, name) in spec.datasets().iter().enumerate() {
         if !loaders.contains_key(name) {
             out.push(Refusal::new(
-                format!("dashboard.json#/datasets/{i}"),
+                format!("hud.json#/datasets/{i}"),
                 format!("dataset {name:?} has no loader: expected loaders/{name}.toml"),
             ));
         }
@@ -310,7 +310,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
     for (i, filter) in spec.filters().iter().enumerate() {
         if !has_column(&filter.dataset, &filter.field) {
             out.push(missing(
-                format!("dashboard.json#/filters/{i}/field"),
+                format!("hud.json#/filters/{i}/field"),
                 &filter.dataset,
                 &filter.field,
             ));
@@ -322,7 +322,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
                 if let Some(field) = &value.field {
                     if !has_column(dataset, field) {
                         out.push(missing(
-                            format!("dashboard.json#/panels/{i}/value/field"),
+                            format!("hud.json#/panels/{i}/value/field"),
                             dataset,
                             field,
                         ));
@@ -335,7 +335,7 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
                 for (j, field) in columns.iter().enumerate() {
                     if !has_column(dataset, field) {
                         out.push(missing(
-                            format!("dashboard.json#/panels/{i}/columns/{j}"),
+                            format!("hud.json#/panels/{i}/columns/{j}"),
                             dataset,
                             field,
                         ));
