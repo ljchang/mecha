@@ -23,7 +23,7 @@ Not to be re-asked.
 | # | Ruling |
 |---|---|
 | R1 | **The model writes a spec; a hand-written Svelte renderer draws it.** No model-authored script in a dashboard. |
-| R2 | **Vega-Lite is the working chart grammar**, subject to the measurement in §8 step 0. Whether charts render through Vega or our own components is open beneath it (§4.2). |
+| R2 | **Vega-Lite is the chart grammar** — **confirmed by step 0** on 2026-10-09 (§8.1: 15 of 22 charts right and 5 partly, against ECharts' 0 and 2). Whether charts render through Vega or our own components is open beneath it (§4.2). |
 | R3 | **Source data lives at home or in a cloud database mecha reaches — never on the factory.** The factory holds **snapshots**: the latest dataset each published page shows. |
 | R4 | **A loader is reviewed once.** Refreshes then run the reviewed loader with no model and no further review. |
 | R5 | **Periodic polling**, the way drains and poll sweeps already run. No push channel in v1. |
@@ -149,8 +149,10 @@ spec, chart or not, is refused if it is an address. Between the two, a style
 object can change how a chart looks and cannot make it fetch or navigate.
 
 **Expressions live in named places only** — a `filter` or `calculate`
-transform, a parameter's `expr`, a condition's `test` — each bounded in
-length. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
+transform, a parameter's `expr`, a condition's `test`, and the event-stream
+filters inside a parameter's `select` (`on`, `clear`, `translate`, `zoom`),
+which are screened as style — each bounded in length, all evaluated by the same
+interpreter, whose language cannot fetch or navigate. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
 property, and some take a bare expression under a key ending in `Expr`
 (`axis.labelExpr`); both pass the screens, so inside a style object an `expr`
 key and any key ending in `Expr` are refused. Data-dependent styling goes through an encoding's `condition`, and the
@@ -200,12 +202,12 @@ A loader names a **source** the owner registered, never a connection string:
 [source.lab]
 kind = "sqlite"
 path = "~/data/lab.sqlite"     # illustrative
-class = "private"            # private | untrusted — what its values may carry
+content = "owner"            # owner | third-party — who wrote the values
 
 [source.archive]
 kind = "postgres"
 url_env = "ARCHIVE_PG_URL"   # the *name* of an environment variable, never the value
-class = "private"
+content = "owner"            # ignored for a remote kind: always external
 ```
 
 A credential is named the way mecha already names one — an environment
@@ -234,18 +236,23 @@ the `drive.file` scope, deliberately — it reads files it created or that the
 owner picked through its picker, and widening the scope is "a different
 project" by that module's own account. So registering a sheet is the picker,
 once, which is the owner's act this design wants anyway. A sheet other people
-edit carries their text: it defaults to `class = "untrusted"` unless the owner
-says otherwise.
+edit carries their text; as a remote source it is external regardless (below).
 
-**The source's kind decides `external`; `class` only tightens it.** Any
+**One axis, named for what it answers.** Every source here is private data —
+that is why `dashboard_preview` declares `private_data` always — so the field
+is not "private or untrusted", which would put two axes in one enum and let a
+source that is both (a table of mail subjects) pick one. It is `content`: who
+wrote the values, `owner` or `third-party`.
+
+**The source's kind decides `external`; `content` only tightens it.** Any
 source that reaches a network — Postgres, Sheets, anything remote — yields
-datasets that are `.from_outside()` whatever its `class` says, because that is
-what `external` means everywhere else in the tree, and a line in owner-written
-TOML cannot earn back what crossing a network costs (the same reason `Blind`
-is earned in code, never granted in TOML). For a local source, `class` decides,
-fail-closed: no class, or `class = "untrusted"`, marks its datasets as carrying
-third-party values (a table of mail subjects is third-party text). Either way
-it matters in §5.3 and is never a reason to refuse.
+datasets that are `.from_outside()` whatever its `content` says, because that
+is what `external` means everywhere else in the tree, and a line in
+owner-written TOML cannot earn back what crossing a network costs (the same
+reason `Blind` is earned in code, never granted in TOML). For a local source,
+`content` decides, fail-closed: unset, or `content = "third-party"`, marks its
+datasets as carrying text other people wrote. Either way it matters in §5.3 and
+is never a reason to refuse.
 
 ### 3.2 The loader file
 
@@ -349,9 +356,17 @@ The renderer is ours, so it obeys the house rules a model would not:
 Vega-Lite leaves render through `vega-embed` with the **`vega-interpreter`
 plug-in** (`ast: true`, `expr: expressionInterpreter`). Without it Vega compiles
 expressions with the `Function` constructor, which both CSPs here forbid. Pinned
-and vendored; never from a CDN. **Unverified:** that `vega-embed` passes `ast`
-and `expr` through to the view — Vega's own page documents the plug-in, not the
-embed wrapper; step 0 and the browser probe below settle it.
+and vendored; never from a CDN. **Settled by step 0:** `vega-embed` 7.3.0
+bundles the interpreter, and `ast: true` alone turns it on; across all 22
+renders under the factory's exact `interactive` CSP there were **zero**
+`script-src` violations, sort cases included, and the negative control —
+the same render without `ast` — hit `script-src eval` and threw.
+
+**Data goes in before compile, through the top-level `datasets` map.**
+Inserting rows with `view.data()` after `vegaEmbed` broke facet layout in step 0
+(tiny single panels); supplying them as `datasets` before compile drew both
+correctly. That map is **host-only**: the renderer fills it from the loaders'
+datasets, and a model-written `datasets` stays refused (§2.2).
 
 **The two CSPs differ on `style-src`, and Vega's chain uses exactly that
 directive.** The tailnet allows `'unsafe-inline'` styles; the factory's
@@ -359,15 +374,17 @@ directive.** The tailnet allows `'unsafe-inline'` styles; the factory's
 menu) and `vega-tooltip` inject `<style>` elements at runtime, which a
 build-time CSS extraction cannot reach. Under the tailnet that passes
 silently; under `interactive` the styles are blocked and charts render
-unthemed. The likely remedy is turning those injections off (`vega-embed`'s
-`defaultStyle: false`, our own tooltip styles in the extracted CSS) —
-**unverified**, and verified the only way that counts: the real bundle under
-the real policy (§6.1).
+unthemed. Step 0 measured it: the one violation in all 22 renders was
+`style-src-elem` from `vega-embed` injecting a `<style>` — **even with
+`defaultStyle: false`**. It is cosmetic (the actions menu), so the renderer
+ships that CSS itself in the extracted file, and the violation is the one
+§6.1's gate names and accounts for. Our own tooltip handler (§4.1) has no
+style of its own to inject.
 
 **Owning the chart components is a later swap, not a v1 choice.** The spec is
 the durable part. If Vega's weight (hundreds of KB) or its tooltip surface
 proves a problem, common shapes — bar, line, area, point — can be drawn by our
-own SVG components, the way `LearningCharts.svelte` already draws three, with
+own SVG components, the way `LearningCharts.svelte` already draws two, with
 no published spec changing. The subset in §2.2 is chosen so that swap stays
 possible.
 
@@ -452,11 +469,11 @@ batch runs, when nothing yet knows which sources a spec will name:
 
 - `private_data`: always — it is a picture of private data.
 - `untrusted_input`: **always**. The capability says what the tool *can*
-  return, and any source may be classed untrusted, even a v1 SQLite file.
+  return, and any source may carry third-party content, even a v1 SQLite file.
   Whether a given result actually carries third-party values is
   `.from_outside()` on that result, set when a source it read **reaches a
-  network — whatever its `class`** — or is a local source classed `untrusted`
-  or unclassed (§3.1: kind decides, class only tightens). This flag is the
+  network — whatever its `content`** — or is a local source whose `content` is
+  `third-party` or unset (§3.1: kind decides, `content` only tightens). This flag is the
   whole control, not a refinement: the conversation's untrusted taint arms
   only on `untrusted_input && external`, so a remote row returned without it
   would reach the privileged conversation clean.
@@ -534,17 +551,28 @@ page is broken" are not the same thing. A violation that changes the render —
 a blocked runtime `<style>`, a chart that needed the code it tried to build —
 fails the gate; a probe that falls back cleanly is recorded and passes.
 
-**A static scan is a report, not a gate.** Step 0 measured why (interim,
-2026-10-09): a grep over that family matches 8 times in a minified Vega and 5
-in ECharts — five of Vega's are real `Function`-constructor sites in its
-expression codegen, the rest false positives (a method named `eval`, a
-typed-array `.constructor(`) — and under `ast: true` with the real CSP none of
-the real sites fired. A grep gate would refuse every chart library on code that
-never runs; a gate with a per-library exemption is a gate that has started
-degrading. So the scan's counts are shown at review beside the bundle, and the
-browser probe decides. There is still no carve-out: a bundle that *does*
-construct code at runtime fails the probe, and the answer is a build without
-the codegen or §4.2's own SVG components — never a looser policy.
+**The gate, as step 0 measured it, has three parts:**
+
+1. **Our code is scanned, and the scan is a gate.** The renderer and the
+   glue we write may contain none of the family — `new Function`, a bare
+   `Function(`, `eval(`, `.constructor(`.
+2. **Vendored libraries are pinned by sha256**, not scanned: a static scan of
+   them is a report. Step 0 found `vega.min.js` with four real
+   `Function`-constructor sites (d3-dsv's row parser, and the expression,
+   field-accessor and comparator codegens) plus two false positives (a method
+   named `eval`, typed-array `new x.constructor(n)`), and `echarts.min.js`
+   with one (a GeoJSON fallback); `vega-lite`, `vega-embed` and
+   `vega-interpreter` had none. A grep gate would refuse every chart library on
+   code that never runs.
+3. **The runtime render decides**: under the real `interactive` CSP, **any
+   `script-src` violation fails the publish**, with no exception — a library
+   that constructs code at runtime is a library this page cannot use, and the
+   answer is a build without the codegen or §4.2's own SVG components, never a
+   looser policy. Other violations must be accounted for, as above; step 0's
+   one (`vega-embed`'s injected `<style>`) is named in §4.2.
+
+A new library digest is a change a review sees, which is what keeps (2) from
+being an exemption that grows.
 
 ### 6.2 The dataset channel
 
@@ -602,7 +630,7 @@ serve`'s `frame-ancestors 'none'`.
 | Leg | Where it enters | What holds it |
 |---|---|---|
 | Private data | loaders | only owner-registered sources; read-only opens; the model names a source, never a credential |
-| Untrusted content | any remote source, always; a local source classed untrusted or unclassed | `.from_outside()` on preview results — decided by kind, tightened by class (§3.1); flagged at review |
+| Untrusted content | any remote source, always; a local source whose `content` is third-party or unset | `.from_outside()` on preview results — decided by kind, tightened by `content` (§3.1); flagged at review |
 | A way out | a remote loader's query (rung 1) | the model never runs one: preview shows the last scheduled refresh (§5.3); install shows the query and the owner reads it first |
 | Effects | a `mecha` loader (rung 1) | a closed enum of read-only readouts in code, never an argv (§3.1) |
 | A way out | the dataset push (rung 3) | the loader released once (R4); digest-pinned refresh; shape checked at home and on the box; no model in the refresh path |
@@ -620,25 +648,70 @@ after the factory path is proven.
 
 | Step | What | Where | Done when |
 |---|---|---|---|
-| 0 | **Measure the grammar, and the bundle.** ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
+| 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
 | 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards`; the proposals pane's fourth store and its layout (§5.3) | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
-| 5 | `dashboard` template, the functional CSP probe, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
+| 5 | `dashboard` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push — the first *standing* egress grant, one review authorising every future refresh | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
 
 Steps 1–4 are the tailnet prototype and need nothing from the factory
-repository. **Step 1 runs ahead of step 0 on purpose**: the spec's types,
+repository. **Rung 2 (publish with data frozen in) is skipped**: R12 moves
+straight to the factory's live channel, and a frozen publish is step 5 with
+the dataset channel left out, so it needs no step of its own. **Step 1 runs ahead of step 0 on purpose**: the spec's types,
 panels, loaders and shape check are grammar-neutral, and only the Vega-Lite
 walker assumes R2 — so if step 0 reverses R2, the walker is what is lost, not
 the step. Step 5 is deliberately next, not last: the factory is where this
 design's untested assumptions live — the grant under a polling page (§6.4),
 the CSP probe against a real Vega build, the box-side shape check — and
 finding one wrong after steps 6–8 would mean redoing them.
+
+### 8.1 Step 0: what was measured (2026-10-09)
+
+Twenty-two dashboard chart requests over four small fictional datasets, sent
+once each in each grammar to the router's loaded model,
+`qwen3.6-35b-a3b-uncensored` — not `qwen3.8-27b`, which was not loaded and
+was not swapped in — one at a time, each gated on no live voice call (none
+was skipped). Rendered in headless Chromium under the factory's exact
+`interactive` CSP (`script-src 'self'`, `style-src 'self'`, no
+`unsafe-eval`), with vega 6.4.0, vega-lite 6.5.0, vega-embed 7.3.0,
+vega-interpreter 2.3.2 and echarts 6.1.0. "Shows what was asked" was judged by
+looking at each screenshot.
+
+| | Vega-Lite | ECharts |
+|---|---|---|
+| Parses as JSON, no fences or prose | 22/22 | 22/22 |
+| Renders under the CSP without throwing | 22/22 | 11/22 |
+| Every referenced field exists | 22/22 | 19/22 |
+| Shows what was asked (yes / partly / no) | **15 / 5 / 2** | **0 / 2 / 20** |
+| Median latency per chart | 89 s (2,346 tokens) | 156 s (4,285 tokens) |
+
+Latency is inflated — another session's image job shared the GPU throughout —
+but the order of magnitude is the planning fact: authoring a five-chart
+dashboard is minutes of model time, which is why the visual loop (§5.3)
+previews and does not regenerate.
+
+**ECharts' failure is structural**: its option grammar has no aggregation, so
+the model invented an `aggregate` transform or reached for ecStat, and renders
+that succeeded drew raw rows or nothing.
+
+**Vega-Lite's commonest failure is the walker's best argument.** Five of its
+seven imperfect charts used another grammar's syntax — Vega's
+`{"type": "aggregate", ...}` transforms, Vega-Lite v4's removed `selection`
+key — which Vega-Lite **ignores silently**, drawing an empty or unfiltered
+chart with no error. §2.2's refusal of unknown keys turns every one of those
+into a named refusal the model can fix. **The subset walker is the main
+correctness check, not only a security one**; it is what turns "renders wrong
+and says nothing" into "refused, here is why".
+
+The rest of step 0's findings are in place: §4.2 (the interpreter passthrough,
+data before compile, the injected `<style>`) and §6.1 (the gate's three
+parts). Raw outputs, screenshots and the harness were kept in the session's
+scratch space, not the repository.
 
 ## 9. Deliberately not in scope
 
