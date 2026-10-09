@@ -5932,6 +5932,15 @@ non-blocking flock, so a hand edit never contends with a fire.
   then starts from what the model saw, not today's text. The stand-ins are
   checked equal to that fingerprint, and a surface the store no longer holds
   is refused. It is call-only: a tool that runs is today's.
+- **An arm can edit the history it sends, never the transcript**: `[[set]]
+  in = "history:tool_result:N" | "history:tool_input:N"` sets the Nth
+  recorded call's result or input whole in every request of the sample, and
+  fails like any edit when the request holds no Nth call. `--attempts N`
+  lets a call-only sample ask up to N times. The picture tool's real refusal
+  answers a call whose arguments did not parse, as it did on the turn (no
+  `scene` means no drawing), and a parsed call ends the sample unrun.
+  `attempts_to_parsed` is the first request whose call parsed within
+  `--parsed-limit` bytes.
 
 ### Archive and forget
 
