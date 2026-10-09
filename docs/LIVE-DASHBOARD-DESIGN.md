@@ -145,7 +145,7 @@ schema that drifts, so they are **screened** instead — any key naming a link,
 URL, source or loader is refused at any depth. And every string in the whole
 spec, chart or not, is refused if it is an address. Between the two, a style
 object can change how a chart looks and cannot make it fetch or navigate.
-(Built in #621, `mecha-core/src/dashboard/vegalite.rs`.) The renderer re-checks on load — the server check is the control, the
+(Proposed in #621, `mecha-core/src/dashboard/vegalite.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as §5.1's form evaluator.
 
 Every refusal names the field and the rule, because the reader of the error is
@@ -286,7 +286,9 @@ the binary, fetched like the llama.cpp engine (`fetch.rs`, sha256-pinned).
 `web/src/lib/dashboard/` — Svelte 5 components (`Dashboard`, `Kpi`, `Chart`,
 `Table`, `Text`, `Filters`) used twice:
 
-- **inside the web app** at `#dashboards/<id>` (rung 1);
+- **inside the web app** at `#dashboards/<id>` (rung 1), behind a dynamic
+  import on that route — Vega is hundreds of KB, and the rest of a phone-first
+  app should not carry it;
 - **as a standalone bundle** — a second Vite entry building a self-contained
   `dashboard.js` + `dashboard.css`, which the factory's `dashboard` template
   vendors into each publish (rung 3).
@@ -403,11 +405,20 @@ batch runs, when nothing yet knows which sources a spec will name:
   Whether a given result actually carries third-party values is
   `.from_outside()` on that result, set when a source it read is classed
   `untrusted` or unclassed — the same split as every network tool.
-- Egress: `None` while the only sources are local files and mecha's own
-  stores. **It becomes `Blind` at step 7**: a Postgres or Sheets loader sends a
-  model-authored query to a host the owner fixed in `sources.toml` and that
-  appears nowhere in the tool's schema, which is the definition of `Blind`.
-  Steps 7 and 8 carry that line.
+- Egress: **`None`, and it stays `None`** — because the tool never runs a
+  query against a remote source. It runs local loaders (`sqlite`, `mecha`)
+  itself; for a remote one (Postgres, Sheets, anything over a network) it
+  shows the dataset the last *scheduled* refresh produced, or says there is
+  none yet.
+
+  The alternative was a class, and it is the wrong one. A remote preview would
+  send a model-authored query (an unbounded payload) to a host the model
+  selects by naming one of several registered sources — the `http_fetch`
+  shape, so `Chosen`, not `Blind`: a host in owner-written TOML is
+  indirection, not a schema with no destination. Declared `Chosen`, an armed
+  conversation could never preview a remote source; kept local, the question
+  does not arise, and "no model in the refresh path" (§9) is the one rule
+  covering every remote read.
 
 **Installing is the owner's act.** `mecha dashboard install <dir>` copies a
 draft into `~/.mecha/dashboards/<id>/` and enables its loaders; in the web UI it
@@ -416,8 +427,12 @@ already reviews. A model-drafted loader is a
 model-proposed cron slot, and no lane promotes itself — the same reason
 triggers are not model-installable.
 
-No review beyond that at rung 1: the data never leaves the machine, the only
-reader is the owner, and R4's review is about egress.
+**For a loader over a remote source, install is also the review.** A
+scheduled refresh sends its query to that source's host, and the query was
+drafted by a model — so the install surface shows each remote loader's query
+and source in full, the way the outbox shows a publish, and the owner reads it
+before it ever runs. A local loader needs no more than install: the data never
+leaves the machine and the only reader is the owner.
 
 ---
 
@@ -432,6 +447,14 @@ gate already fails on any external reference; **add a second check — a bundle
 whose script contains `new Function` or `eval(` fails the publish** — rather
 than trusting any library's documentation about itself.
 
+**There is no carve-out in this gate, for any library.** A vendored Vega is
+likely to contain `new Function` from its expression *codegen* even when every
+view uses the interpreter — the code path ships whether or not it is called. If
+the real bundle trips the gate, the answer is a build without the codegen, or
+§4.2's swap to our own SVG components — never "no eval except in Vega", which
+is a gate that has started degrading. Step 0 builds and greps the real bundle,
+so this is known before step 3, not at step 5.
+
 A grep cannot see a runtime `appendChild(style)`, so the gate is necessary and
 not sufficient. The instrument for the rest is the one §7.1 of the
 public-surface design already used: **serve the real bundle under the real
@@ -445,7 +468,7 @@ The generalisation of `put_slots`:
 | | |
 |---|---|
 | Push | `PUT /v1/bundles/{id}/datasets/{name}` with a new `Data` key scope; body = rows + `generated_at` + generation + loader digest |
-| Replace | wholesale; a generation not above the stored one is refused (ordering, and a replayed push is a no-op) |
+| Replace | wholesale, ordered by generation. An **equal** generation whose digest and payload match what is stored returns success and changes nothing — the retry after a timeout, by `PUBLIC-SURFACE-DESIGN.md` §4's idempotency rule. A **lower** generation, or an equal one with different bytes, is refused — the out-of-order or forked push |
 | Read | under the bundle's own path, `./data/{name}.json`, so the page's relative fetch passes through the **same grant** as the page; `ETag` |
 | Kept | **latest only** (R3); deleting the bundle deletes its datasets |
 | Capped | a per-tenant byte budget — owed anyway (`PUBLIC-SURFACE-DESIGN.md` §14.9.3) and now urgent, since a dataset is the one thing a held key rewrites forever |
@@ -494,6 +517,7 @@ serve`'s `frame-ancestors 'none'`.
 |---|---|---|
 | Private data | loaders | only owner-registered sources; read-only opens; the model names a source, never a credential |
 | Untrusted content | a source classed untrusted; unknown counts as untrusted | `.from_outside()` on preview results; flagged at review |
+| A way out | a remote loader's query (rung 1) | the model never runs one: preview shows the last scheduled refresh (§5.3); install shows the query and the owner reads it first |
 | A way out | the dataset push (rung 3) | the loader released once (R4); digest-pinned refresh; shape checked at home and on the box; no model in the refresh path |
 | Code execution | the renderer | ours; no `{@html}`; Vega's interpreter; eval check at publish; the spec has no destinations |
 | The box lost | the factory | holds snapshots and public keys only — no database credential, no route home (R3) |
@@ -510,14 +534,14 @@ after the factory path is proven.
 | Step | What | Where | Done when |
 |---|---|---|---|
 | 0 | **Measure the grammar.** ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). Runs beside steps 1–2; it needs nothing from them | a scratch harness, results in this doc | a number per grammar; R2 confirmed or reversed |
-| 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — **#621** |
+| 1 | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/dashboard/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 | The host sampler (§11) and the SQLite loader; `mecha dashboard {list, validate, refresh, install}`; the timers | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/dashboard/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#dashboards` | `serve/` | **rung 1: the host dashboard live on the tailnet** |
 | 5 | `dashboard` template, eval check, dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview | `mecha-factory-publish`, `mecha-factory`, `serve/` | **rung 3: the host dashboard, private, updating on the factory** — and zero CSP violations with the real bundle under the real `interactive` policy (§6.1) |
 | 6 | `dashboard_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot |
-| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); `dashboard_preview` egress `None` → `Blind` (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable |
-| 8 | Sheets source over `sheets_read`; confirm `Blind` still covers it | core + mecha-docs | a picked sheet refreshes a dataset |
+| 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs`, `config.rs` | a Postgres loader runs confined and sees exactly one inherited variable; `dashboard_preview` never reaches it |
+| 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `dashboard_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
 
 Steps 1–4 are the tailnet prototype and need nothing from the factory
