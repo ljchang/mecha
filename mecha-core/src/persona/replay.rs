@@ -428,10 +428,34 @@ pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Resu
         })
         .map(|i| start + i)
         .with_context(|| format!("call {call} has no recorded result"))?;
-    let deferred = messages[answered].content.iter().any(|b| {
-        matches!(b, Block::ToolResult { content, .. }
-            if content.starts_with(crate::imagegen::BEING_MADE))
+    // Read from the raw records, not the parsed messages: once the job
+    // delivers, the host appends a `late_result` and `Session::parse` folds
+    // it over the "being made" answer, so the parsed result reads finished
+    // (review of #615). A late result for any call this batch answered, in
+    // any record after the turn (it can land past the next one), or a
+    // "being made" answer still standing, is a deferral.
+    let batch: std::collections::BTreeSet<&str> = messages[answered]
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            Block::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let landed_late = lines[index_of(line)..].iter().any(|l| {
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            return false;
+        };
+        v["record"] == "late_result"
+            && v["tool_use_id"]
+                .as_str()
+                .is_some_and(|id| batch.contains(id))
     });
+    let deferred = landed_late
+        || messages[answered].content.iter().any(|b| {
+            matches!(b, Block::ToolResult { content, .. }
+                if content.starts_with(crate::imagegen::BEING_MADE))
+        });
     if deferred {
         bail!(
             "call {call}'s picture was deferred, so the run's next request was its closing \
@@ -445,6 +469,11 @@ pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Resu
     branch.taint = taint;
     branch.call = Some(call);
     Ok(branch)
+}
+
+/// The 0-based index of 1-based record line `line`.
+fn index_of(line: usize) -> usize {
+    line.saturating_sub(1)
 }
 
 /// What a sample's picture call made, read back from its scratch store:
@@ -1318,6 +1347,24 @@ mod tests {
         let text = run_with_calls(&format!("{}images/x.png", crate::imagegen::BEING_MADE));
         let err = branch_at_call(Path::new("t2.jsonl"), &text, 3, 2).unwrap_err();
         assert!(format!("{err:#}").contains("closing"), "{err:#}");
+        // As the host leaves it once the job delivers: a late result, after
+        // the next owner turn, which `Session::parse` folds over the "being
+        // made" answer. Still a deferral.
+        let landed = format!(
+            "{text}\n{}",
+            serde_json::to_string(&crate::session::Record::LateResult {
+                index: 4,
+                tool_use_id: "c2".into(),
+                content: "image: images/x.png\nA new picture.".into(),
+                is_error: false,
+                external: false,
+            })
+            .unwrap()
+        );
+        let err = branch_at_call(Path::new("t2.jsonl"), &landed, 3, 2).unwrap_err();
+        assert!(format!("{err:#}").contains("closing"), "{err:#}");
+        // And call 1, which landed inline, is still a branch point.
+        assert!(branch_at_call(Path::new("t2.jsonl"), &landed, 3, 1).is_ok());
     }
 
     /// Owner's words that no run followed are not turns: a message the
