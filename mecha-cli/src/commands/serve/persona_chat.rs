@@ -370,7 +370,19 @@ async fn draw_panel_edit(
                     library: Some(&lib),
                 };
                 match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
-                    Ok(extracted) => (extracted.call(&edit.picture), extracted.summary()),
+                    // A change the reader reads as none is the render a
+                    // Regenerate makes (IMAGE-DESIGN.md §5.2), so it is
+                    // spelled the same and its card is a version too
+                    // (review of #616, pass 3).
+                    Ok(extracted) => {
+                        let call = extracted.call(&edit.picture);
+                        let change = if call == edit::redraw_call(&edit.picture) {
+                            edit::REDRAWN.to_string()
+                        } else {
+                            extracted.summary()
+                        };
+                        (call, change)
+                    }
                     Err(why) => return fail(why),
                 }
             }
@@ -5290,6 +5302,9 @@ mod tests {
         Arc<StdMutex<usize>>,
         /// Whether the model can see — off unless a test turns it on.
         Arc<std::sync::atomic::AtomicBool>,
+        /// How many panel extractions were asked: answered in their own
+        /// branch, they never reach `.0`.
+        Arc<StdMutex<usize>>,
     );
 
     #[async_trait::async_trait]
@@ -5356,6 +5371,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|s| s.starts_with("You turn the owner's request to change a picture"))
             {
+                *self.5.lock().unwrap() += 1;
                 let asked: serde_json::Value =
                     serde_json::from_str(&req.messages[0].text()).unwrap();
                 let words = asked["owner"].as_str().unwrap_or_default();
@@ -5423,6 +5439,8 @@ mod tests {
         drawn: Arc<StdMutex<Vec<serde_json::Value>>>,
         /// Whether each of those calls ran with the conversation untrusted.
         drawn_untrusted: Arc<StdMutex<Vec<bool>>>,
+        /// How many panel extractions were asked (`Capture`'s `.5`).
+        extracted: Arc<StdMutex<usize>>,
     }
 
     impl Drop for World {
@@ -5544,6 +5562,8 @@ mod tests {
         let (for_judge, for_judged) = (Arc::clone(&judge), Arc::clone(&judged));
         let sees = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let for_sees = Arc::clone(&sees);
+        let extracted = Arc::new(StdMutex::new(0usize));
+        let for_extracted = Arc::clone(&extracted);
         let personas = PersonaChats::with(
             dir,
             root.join("work"),
@@ -5554,6 +5574,7 @@ mod tests {
                     Arc::clone(&for_judge),
                     Arc::clone(&for_judged),
                     Arc::clone(&for_sees),
+                    Arc::clone(&for_extracted),
                 ))
                     as Box<dyn mecha_core::provider::Provider>)
             }),
@@ -5580,6 +5601,7 @@ mod tests {
                 Arc::new(StdMutex::new(JudgeSays::Clear)),
                 Arc::new(StdMutex::new(0)),
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                Arc::new(StdMutex::new(0)),
             )),
             pool,
             config,
@@ -5597,6 +5619,7 @@ mod tests {
             judged,
             drawn,
             drawn_untrusted,
+            extracted,
         }
     }
 
@@ -5874,6 +5897,11 @@ mod tests {
             ],
             "the extraction's typed change, drawn by the harness"
         );
+        assert_eq!(
+            *w.extracted.lock().unwrap(),
+            1,
+            "the counter sees an extraction"
+        );
         let seen = w.seen.lock().unwrap().clone();
         let reply = seen.last().unwrap();
         assert_eq!(reply.tool_choice, mecha_core::message::ToolChoice::None);
@@ -5927,7 +5955,7 @@ mod tests {
         );
         let key = open_chat(&w).await;
         turn(&w, &key, "hello").await;
-        let asked_before = w.seen.lock().unwrap().len();
+        let extracted_before = *w.extracted.lock().unwrap();
         let edit = PanelEdit {
             picture: "images/a.png".into(),
             mask: None,
@@ -5939,9 +5967,14 @@ mod tests {
             w.drawn.lock().unwrap().clone(),
             vec![serde_json::json!({"picture": "images/a.png"})]
         );
-        // One request after the draw (the reply); none for an extraction.
+        // Counted where the stub answers it: an extraction never reaches
+        // `seen` (review of #616, pass 3).
+        assert_eq!(
+            *w.extracted.lock().unwrap(),
+            extracted_before,
+            "no extraction was asked"
+        );
         let seen = w.seen.lock().unwrap().clone();
-        assert_eq!(seen.len(), asked_before + 1, "no extraction was asked");
         let reply = seen.last().unwrap();
         assert_eq!(reply.tool_choice, mecha_core::message::ToolChoice::None);
         let fact = reply.messages.last().unwrap().text();
