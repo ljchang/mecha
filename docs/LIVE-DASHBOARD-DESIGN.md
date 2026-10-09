@@ -163,7 +163,11 @@ decodes them in a link destination, so one can spell any letter of a scheme,
 and JSON carries every character directly. And a text panel may not contain
 link syntax at all — inline, autolink or reference definition — which is also
 what keeps a *relative* destination (`/outbox/approve/…`, on the origin that
-holds that button) from becoming one, since no scheme test can see it.
+holds that button) from becoming one, since no scheme test can see it. Raw
+HTML is the fourth way to write a link, and the one that carries a relative
+destination or a handler past the others (`<a href="/x">`, `<img onerror=…>`),
+so a text panel may not contain an HTML tag start at all; and no spec string
+may contain CSS `url(`, a fetch whether relative or not.
 (Proposed in #621: the walker in `mecha-core/src/dashboard/vegalite.rs`, the
 string and link-syntax rules in `spec.rs`.) The renderer re-checks on load — the server check is the control, the
 browser one a convenience, the same split as §5.1's form evaluator.
