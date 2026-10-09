@@ -106,6 +106,17 @@ pub struct SampleArgs {
     )]
     pub surface: String,
 
+    /// Requests a sample may send (call-only). A picture call whose
+    /// arguments did not parse is answered by the real tool's own refusal,
+    /// as it was on the turn; a parsed one ends the sample. Each sample then
+    /// reports the first request whose call parsed within --parsed-limit.
+    #[arg(long, default_value_t = 1, requires = "persona")]
+    pub attempts: usize,
+
+    /// The most argument bytes a call may carry and count as parsed.
+    #[arg(long, default_value_t = 2048, requires = "persona")]
+    pub parsed_limit: usize,
+
     /// Sample i's pictures draw their fresh seeds from a stream seeded
     /// image-seed-base + i, so two arms run with the same base render each
     /// sample at the same seeds.
@@ -532,6 +543,15 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     // A picture call renders unless asked not to, where the persona can
     // draw at all.
     let render = !args.no_render && probe.registry().get(IMAGE_TOOL).is_some();
+    if args.attempts == 0 {
+        bail!("--attempts must be at least 1");
+    }
+    if render && args.attempts > 1 {
+        bail!(
+            "--attempts is call-only: a parsed picture call ends the sample rather than \
+             drawing — add --no-render"
+        );
+    }
     if render && recorded_tools.is_some() {
         bail!(
             "--surface recorded is call-only: a picture call that runs is today's tool, \
@@ -574,6 +594,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "calendar_matched": clock_at.is_some(),
             "call": branch.call,
             "render": render,
+            "attempts": args.attempts,
+            "parsed_limit": (args.attempts > 1).then_some(args.parsed_limit),
             "readers_stamped": render && !args.no_readers,
             "image_seed_base": render.then_some(args.image_seed_base),
             "tools_run": if render { vec![IMAGE_TOOL] } else { Vec::new() },
@@ -593,6 +615,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         max_tokens: args.max_tokens,
         clock: mecha_core::clock::for_replay(clock_at.or(recorded_clock)),
         recorded_tools,
+        attempts: args.attempts,
+        parsed_limit: args.parsed_limit,
         pinned_model: bound.model.clone(),
         allow_load: args.allow_load,
         surface,
@@ -657,6 +681,9 @@ pub struct Sampler {
     /// The recorded surface's tool names and specs, for `--surface
     /// recorded`: the stand-ins are described by them.
     recorded_tools: Option<(Vec<String>, Vec<mecha_core::message::ToolSpec>)>,
+    /// Requests a sample may send, and the parsed-call size that ends it.
+    attempts: usize,
+    parsed_limit: usize,
     /// The model the replay sends to, and whether it may load it over
     /// what the router holds (`guard_load`).
     pinned_model: String,
@@ -674,6 +701,55 @@ pub struct Sampler {
 
 /// The one tool a sample runs, when it renders.
 const IMAGE_TOOL: &str = "image_generate";
+
+/// The picture tool for an `--attempts` sample: a call whose arguments did
+/// not parse is answered by the real tool, which refuses it before any
+/// drawing (there is no `scene` or `picture` to draw), as it was answered on
+/// the turn; a parsed call ends the sample unrun.
+struct AnswerUnparsed {
+    inner: Arc<dyn mecha_core::tool::Tool>,
+    cancel: CancellationToken,
+}
+
+#[async_trait::async_trait]
+impl mecha_core::tool::Tool for AnswerUnparsed {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        self.inner.input_schema()
+    }
+    fn read_only(&self) -> bool {
+        self.inner.read_only()
+    }
+    fn capabilities(&self) -> mecha_core::tool::Capabilities {
+        self.inner.capabilities()
+    }
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        ctx: &mecha_core::tool::ToolCtx,
+    ) -> Result<mecha_core::tool::ToolOutput> {
+        if is_unparsed(&input) {
+            return self.inner.call(input, ctx).await;
+        }
+        self.cancel.cancel();
+        Ok(mecha_core::tool::ToolOutput::err(
+            "replay: a parsed call ends the sample; it was not run",
+        ))
+    }
+}
+
+/// Whether a call's input is the provider's wrapper for arguments that did
+/// not parse, and nothing else.
+fn is_unparsed(input: &serde_json::Value) -> bool {
+    input
+        .as_object()
+        .is_some_and(|o| o.len() == 1 && o.contains_key("__malformed_arguments"))
+}
 
 /// Every file under `dir`, relative.
 fn files_under(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
@@ -730,10 +806,11 @@ impl Sampler {
             inner: crate::setup::persona_provider_seeded(&bound, PersonaUse::Converse, seed)?,
             overlay: Arc::clone(&self.overlay),
             max_tokens: self.max_tokens,
-            requests: 1,
-            // A render must run its call: the sample ends when the run asks
-            // again (`SampleEnded`), not as the response comes back.
-            cancel_after_last: staged.is_none(),
+            requests: self.attempts,
+            // A render must run its call, and an attempt's unparsed call must
+            // be answered: the sample ends when the run asks past its
+            // requests (`SampleEnded`), not as the response comes back.
+            cancel_after_last: staged.is_none() && self.attempts == 1,
             cancel: cancel.clone(),
             log: Arc::clone(&log),
         };
@@ -743,9 +820,9 @@ impl Sampler {
         // The same tools, described by their own words, that never run: a
         // call to one cancels the run (`OnDivergence::Stop` with nothing
         // recorded). Rendering, the picture tool is the real one.
-        let real = staged
-            .as_ref()
-            .and_then(|_| agent.registry().get(IMAGE_TOOL).cloned());
+        let real = (staged.is_some() || self.attempts > 1)
+            .then(|| agent.registry().get(IMAGE_TOOL).cloned())
+            .flatten();
         let (names, specs, fallback) = match &self.recorded_tools {
             // The recording's names and words; a tool this build no longer
             // has is described from its spec and never runs.
@@ -775,7 +852,14 @@ impl Sampler {
             cancel.clone(),
         )?;
         if let Some(real) = real {
-            tools.insert(real);
+            if staged.is_some() {
+                tools.insert(real);
+            } else {
+                tools.insert(Arc::new(AnswerUnparsed {
+                    inner: real,
+                    cancel: cancel.clone(),
+                }));
+            }
         }
         if mecha_core::surface::fingerprint(&tools.specs()) != self.surface {
             bail!("the replay's tools do not describe themselves as the real ones do");
@@ -833,6 +917,12 @@ impl Sampler {
             error,
         );
         sample.call = branch.call;
+        if self.attempts > 1 {
+            // Every exchange, even one: a sample that parsed on its first
+            // request is a 1 in the histogram, not missing from it.
+            sample.exchanges = log.iter().map(pr::ExchangeFacts::of).collect();
+            sample.attempts_to_parsed = sample.first_parsed_within(self.parsed_limit);
+        }
         if let Some(st) = &staged {
             let after = &convo.messages[branch.messages.len().min(convo.messages.len())..];
             let new: Vec<PathBuf> = files_under(&st.workspace)
@@ -871,6 +961,26 @@ impl Sampler {
         }
         Ok(sample)
     }
+}
+
+/// How many samples first parsed a call on each request, and how many never
+/// did (`"none"`); `null` when no sample was allowed more than one.
+fn attempts_histogram(samples: &[Sample]) -> Option<BTreeMap<String, usize>> {
+    let tried: Vec<&Sample> = samples
+        .iter()
+        .filter(|s| s.error.is_none() && !s.exchanges.is_empty())
+        .collect();
+    if tried.is_empty() {
+        return None;
+    }
+    let mut h = BTreeMap::new();
+    for s in tried {
+        let key = s
+            .attempts_to_parsed
+            .map_or_else(|| "none".to_string(), |n| n.to_string());
+        *h.entry(key).or_default() += 1;
+    }
+    Some(h)
 }
 
 /// What a set of samples did, as counts: no words.
@@ -928,6 +1038,7 @@ fn summarise(samples: &[Sample]) -> serde_json::Value {
         "output_tokens_mean": (!output.is_empty())
             .then(|| output.iter().sum::<u64>() as f64 / output.len() as f64),
         "distinct_histories": digests.len(),
+        "attempts_to_parsed": attempts_histogram(samples),
         "rendered": rendered,
         "render_errors": render_errors,
     })
@@ -1017,6 +1128,101 @@ mod tests {
             .unwrap_err();
         assert!(format!("{err:#}").contains("no longer holds"), "{err:#}");
         assert!(recorded_tools_of(&branch(None), None).is_err());
+    }
+
+    struct Counting(Arc<Mutex<usize>>);
+
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for Counting {
+        fn name(&self) -> &str {
+            "image_generate"
+        }
+        fn description(&self) -> &str {
+            "a picture"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &mecha_core::tool::ToolCtx,
+        ) -> Result<mecha_core::tool::ToolOutput> {
+            *self.0.lock().unwrap() += 1;
+            Ok(mecha_core::tool::ToolOutput::err("Nothing was drawn."))
+        }
+    }
+
+    /// An attempt's unparsed call reaches the real tool's refusal; a parsed
+    /// one never runs, and ends the sample.
+    #[tokio::test]
+    async fn only_an_unparsed_call_reaches_the_picture_tool() {
+        use mecha_core::tool::Tool;
+        let calls = Arc::new(Mutex::new(0));
+        let cancel = CancellationToken::new();
+        let tool = AnswerUnparsed {
+            inner: Arc::new(Counting(Arc::clone(&calls))),
+            cancel: cancel.clone(),
+        };
+        let ctx = mecha_core::tool::ToolCtx::default();
+        let out = tool
+            .call(
+                serde_json::json!({"__malformed_arguments": "{\"scene\": "}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.content, "Nothing was drawn.");
+        assert!(!cancel.is_cancelled());
+        let out = tool
+            .call(serde_json::json!({"scene": {"setting": "a room"}}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("not run"),
+            "{}",
+            out.content
+        );
+        assert!(cancel.is_cancelled());
+        assert_eq!(*calls.lock().unwrap(), 1, "the parsed call never ran");
+        assert!(!is_unparsed(
+            &serde_json::json!({"__malformed_arguments": "x", "scene": {}})
+        ));
+    }
+
+    #[test]
+    fn attempts_count_the_first_request_with_a_small_parsed_call() {
+        let call = |bytes: usize, parsed: bool| pr::CallFacts {
+            name: "image_generate".into(),
+            argument_bytes: bytes,
+            parsed,
+            arguments: serde_json::json!({}),
+        };
+        let exchange = |calls: Vec<pr::CallFacts>| pr::ExchangeFacts {
+            tool_calls: calls,
+            ..Default::default()
+        };
+        let sample = |ex: Vec<pr::ExchangeFacts>| {
+            let mut s = Sample::of(0, None, 1, "m", &Overlay::default(), &[], None);
+            s.exchanges = ex;
+            s.attempts_to_parsed = s.first_parsed_within(2048);
+            s
+        };
+        let first = sample(vec![exchange(vec![call(400, true)])]);
+        let second = sample(vec![
+            exchange(vec![call(30_000, false)]),
+            exchange(vec![call(500, true)]),
+        ]);
+        let too_big = sample(vec![exchange(vec![call(9_000, true)])]);
+        let words = sample(vec![exchange(Vec::new())]);
+        assert_eq!(first.attempts_to_parsed, Some(1));
+        assert_eq!(second.attempts_to_parsed, Some(2));
+        assert_eq!(too_big.attempts_to_parsed, None);
+        let h = attempts_histogram(&[first, second, too_big, words]).unwrap();
+        assert_eq!(h["1"], 1);
+        assert_eq!(h["2"], 1);
+        assert_eq!(h["none"], 2);
+        assert!(attempts_histogram(&[]).is_none());
     }
 
     #[test]

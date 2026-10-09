@@ -517,6 +517,123 @@ struct OverlayFile {
     name: Option<String>,
     #[serde(default)]
     replace: Vec<ReplaceFile>,
+    #[serde(default)]
+    set: Vec<SetFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetFile {
+    #[serde(rename = "in")]
+    target: String,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    to_json: Option<String>,
+}
+
+/// A recorded call in the history a request carries, by its place among
+/// every call in it (1-based).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryTarget {
+    /// The result the call was answered with: the text set whole.
+    ToolResult(usize),
+    /// The call's input: the JSON set whole.
+    ToolInput(usize),
+}
+
+/// One history edit: a recorded call's result or input, set whole in the
+/// request sent. The transcript is never touched.
+#[derive(Debug, Clone)]
+pub struct Set {
+    pub target: HistoryTarget,
+    pub to: Value,
+}
+
+impl Set {
+    fn parse(f: SetFile) -> Result<Self> {
+        let (kind, n) = f
+            .target
+            .strip_prefix("history:")
+            .and_then(|t| t.rsplit_once(':'))
+            .with_context(|| {
+                format!(
+                    "a `[[set]]` `in` is history:tool_result:<n> or history:tool_input:<n>, \
+                     not `{}`",
+                    f.target
+                )
+            })?;
+        let n: usize = n
+            .parse()
+            .ok()
+            .filter(|n| *n > 0)
+            .with_context(|| format!("`{}`: calls count from 1", f.target))?;
+        Ok(match (kind, f.to, f.to_json) {
+            ("tool_result", Some(to), None) => Set {
+                target: HistoryTarget::ToolResult(n),
+                to: Value::String(to),
+            },
+            ("tool_input", None, Some(json)) => Set {
+                target: HistoryTarget::ToolInput(n),
+                to: serde_json::from_str(&json)
+                    .with_context(|| format!("`{}`: `to_json` is not JSON", f.target))?,
+            },
+            ("tool_result", ..) => bail!("`{}` takes `to` (the result's text)", f.target),
+            ("tool_input", ..) => bail!("`{}` takes `to_json` (the input as JSON)", f.target),
+            _ => bail!(
+                "`{}`: history:tool_result:<n> or history:tool_input:<n>",
+                f.target
+            ),
+        })
+    }
+
+    fn label(&self) -> String {
+        match self.target {
+            HistoryTarget::ToolResult(n) => format!("history:tool_result:{n}"),
+            HistoryTarget::ToolInput(n) => format!("history:tool_input:{n}"),
+        }
+    }
+
+    /// Set the target in `req`'s messages; how many places it set (0 or 1).
+    fn apply(&self, req: &mut CompletionRequest) -> usize {
+        let n = match self.target {
+            HistoryTarget::ToolResult(n) | HistoryTarget::ToolInput(n) => n,
+        };
+        let id = req
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .nth(n - 1);
+        let Some(id) = id else {
+            return 0;
+        };
+        let mut set = 0;
+        for b in req.messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
+            match (b, &self.target) {
+                (Block::ToolUse { id: i, input, .. }, HistoryTarget::ToolInput(_)) if *i == id => {
+                    *input = self.to.clone();
+                    set += 1;
+                }
+                (
+                    Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    },
+                    HistoryTarget::ToolResult(_),
+                ) if *tool_use_id == id => {
+                    *content = self.to.as_str().unwrap_or_default().to_string();
+                    set += 1;
+                }
+                _ => {}
+            }
+        }
+        set
+    }
 }
 
 /// One text edit.
@@ -540,6 +657,8 @@ pub struct Replace {
 pub struct Overlay {
     pub name: Option<String>,
     pub replace: Vec<Replace>,
+    /// History edits (`[[set]]`), applied after the text edits.
+    pub set: Vec<Set>,
     /// sha256 of the file as read, so a sample names the arm it ran.
     pub digest: Option<String>,
 }
@@ -561,12 +680,17 @@ impl Overlay {
         Ok(Overlay {
             name: file.name,
             replace,
+            set: file
+                .set
+                .into_iter()
+                .map(Set::parse)
+                .collect::<Result<_>>()?,
             digest: Some(crate::document::sha256_hex(text.as_bytes())),
         })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.replace.is_empty()
+        self.replace.is_empty() && self.set.is_empty()
     }
 
     /// Whether any edit changes tool text, so the surface sent is neither
@@ -579,7 +703,19 @@ impl Overlay {
 
     /// Apply every edit to `req`, and how many places each matched.
     pub fn apply(&self, req: &mut CompletionRequest) -> Vec<usize> {
-        self.replace.iter().map(|r| r.apply(req)).collect()
+        let mut matched: Vec<usize> = self.replace.iter().map(|r| r.apply(req)).collect();
+        matched.extend(self.set.iter().map(|s| s.apply(req)));
+        matched
+    }
+
+    /// Each edit's name, in [`apply`](Self::apply)'s order: what an edit
+    /// that matched nothing is called when the sample fails.
+    pub fn labels(&self) -> Vec<String> {
+        self.replace
+            .iter()
+            .map(|r| format!("`{}` in {:?}", r.find, r.target))
+            .chain(self.set.iter().map(Set::label))
+            .collect()
     }
 }
 
@@ -775,19 +911,15 @@ impl Provider for Capture {
         if let Some(m) = self.max_tokens {
             req.max_tokens = m;
         }
-        if let Some((r, _)) = self
+        if let Some((label, _)) = self
             .overlay
-            .replace
-            .iter()
+            .labels()
+            .into_iter()
             .zip(&matched)
             .find(|(_, n)| **n == 0)
         {
             self.cancel.cancel();
-            bail!(
-                "overlay: `{}` matched nothing in {:?}; the arm would measure the baseline",
-                r.find,
-                r.target
-            );
+            bail!("overlay: {label} matched nothing; the arm would measure the baseline");
         }
         let started = std::time::Instant::now();
         let response = self.inner.complete(&req, sink).await;
@@ -854,10 +986,67 @@ pub struct Sample {
     pub call: Option<usize>,
     /// What the sample's picture call made, when it rendered.
     pub render: Option<RenderFacts>,
+    /// Every request's facts, when it sent more than one (`--attempts`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exchanges: Vec<ExchangeFacts>,
+    /// The first request with a parsed call within `--parsed-limit` bytes,
+    /// when the sample was allowed more than one.
+    pub attempts_to_parsed: Option<usize>,
+}
+
+/// One request of a sample, as facts: the first is the sample's own fields;
+/// a sample that may try again (`--attempts`) carries every one.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ExchangeFacts {
+    pub stop_reason: Option<crate::message::StopReason>,
+    pub content: String,
+    pub reasoning_chars: usize,
+    pub tool_calls: Vec<CallFacts>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub wall_secs: f64,
+    pub error: Option<String>,
+}
+
+impl ExchangeFacts {
+    pub fn of(e: &Exchange) -> Self {
+        let mut f = ExchangeFacts {
+            wall_secs: e.wall_secs,
+            ..Default::default()
+        };
+        match &e.response {
+            Err(err) => f.error = Some(err.clone()),
+            Ok(r) => {
+                f.stop_reason = Some(r.stop_reason);
+                f.input_tokens = r.usage.total_input();
+                f.output_tokens = r.usage.output_tokens;
+                for b in &r.message.content {
+                    match b {
+                        Block::Text { text } => f.content.push_str(text),
+                        Block::Thinking { text, .. } => f.reasoning_chars += text.chars().count(),
+                        Block::ToolUse { name, input, .. } => {
+                            let raw = input.get("__malformed_arguments").and_then(Value::as_str);
+                            f.tool_calls.push(CallFacts {
+                                name: name.clone(),
+                                argument_bytes: raw
+                                    .map(str::len)
+                                    .unwrap_or_else(|| input.to_string().len()),
+                                parsed: raw.is_none(),
+                                arguments: input.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        f
+    }
 }
 
 impl Sample {
-    /// The facts of the first exchange in `log`, or the error that stopped it.
+    /// The facts of the first exchange in `log`, or the error that stopped
+    /// it, and every exchange's when there was more than one.
     pub fn of(
         sample: usize,
         seed: Option<u64>,
@@ -889,6 +1078,8 @@ impl Sample {
             error,
             call: None,
             render: None,
+            exchanges: Vec::new(),
+            attempts_to_parsed: None,
         };
         let Some(first) = log.first() else {
             return s;
@@ -900,36 +1091,35 @@ impl Sample {
             .as_ref()
             .map(|w| crate::document::sha256_hex(w.to_string().as_bytes()));
         s.wire = first.wire.clone();
-        s.wall_secs = first.wall_secs;
-        match &first.response {
-            Err(e) => {
-                s.error.get_or_insert_with(|| e.clone());
-            }
-            Ok(r) => {
-                s.stop_reason = Some(r.stop_reason);
-                s.input_tokens = r.usage.total_input();
-                s.output_tokens = r.usage.output_tokens;
-                for b in &r.message.content {
-                    match b {
-                        Block::Text { text } => s.content.push_str(text),
-                        Block::Thinking { text, .. } => s.reasoning_chars += text.chars().count(),
-                        Block::ToolUse { name, input, .. } => {
-                            let raw = input.get("__malformed_arguments").and_then(Value::as_str);
-                            s.tool_calls.push(CallFacts {
-                                name: name.clone(),
-                                argument_bytes: raw
-                                    .map(str::len)
-                                    .unwrap_or_else(|| input.to_string().len()),
-                                parsed: raw.is_none(),
-                                arguments: input.clone(),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-            }
+        let f = ExchangeFacts::of(first);
+        if let Some(e) = &f.error {
+            s.error.get_or_insert_with(|| e.clone());
+        }
+        s.stop_reason = f.stop_reason;
+        s.content = f.content;
+        s.reasoning_chars = f.reasoning_chars;
+        s.tool_calls = f.tool_calls;
+        s.input_tokens = f.input_tokens;
+        s.output_tokens = f.output_tokens;
+        s.wall_secs = f.wall_secs;
+        if log.len() > 1 {
+            s.exchanges = log.iter().map(ExchangeFacts::of).collect();
         }
         s
+    }
+
+    /// The first request (1-based) that made a parsed call of at most
+    /// `limit` argument bytes, over every exchange this sample sent.
+    pub fn first_parsed_within(&self, limit: usize) -> Option<usize> {
+        let fits =
+            |calls: &[CallFacts]| calls.iter().any(|c| c.parsed && c.argument_bytes <= limit);
+        if self.exchanges.is_empty() {
+            return fits(&self.tool_calls).then_some(1);
+        }
+        self.exchanges
+            .iter()
+            .position(|e| fits(&e.tool_calls))
+            .map(|i| i + 1)
     }
 }
 
@@ -1248,6 +1438,57 @@ mod tests {
         assert_eq!(body["seed"], 7);
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 100);
+    }
+
+    #[test]
+    fn a_history_edit_sets_one_recorded_call_in_the_request_only() {
+        let mut req = request();
+        req.messages = vec![
+            Message::user("an ask"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "c1".into(),
+                name: "widget".into(),
+                input: json!({"__malformed_arguments": "{\"a\": \"aaaa"}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "the recorded answer".into(),
+                is_error: true,
+            }]),
+        ];
+        let o = Overlay::parse(
+            r#"
+            name = "D2"
+            [[set]]
+            in = "history:tool_result:1"
+            to = "a truthful answer"
+            [[set]]
+            in = "history:tool_input:1"
+            to_json = '{"__cut_off": {"chars": 9}}'
+            "#,
+        )
+        .unwrap();
+        let before = req.messages.clone();
+        assert_eq!(o.apply(&mut req), [1, 1]);
+        assert!(matches!(&req.messages[2].content[0],
+            Block::ToolResult { content, .. } if content == "a truthful answer"));
+        assert!(matches!(&req.messages[1].content[0],
+            Block::ToolUse { input, .. } if input["__cut_off"]["chars"] == 9));
+        assert_ne!(req.messages, before);
+        assert!(!o.edits_tools());
+
+        // A call the history does not hold matches nothing.
+        let missing =
+            Overlay::parse("[[set]]\nin = \"history:tool_result:2\"\nto = \"x\"").unwrap();
+        assert_eq!(missing.apply(&mut req), [0]);
+        assert_eq!(missing.labels(), ["history:tool_result:2"]);
+        for bad in [
+            "[[set]]\nin = \"history:tool_result:1\"\nto_json = \"{}\"",
+            "[[set]]\nin = \"history:tool_input:0\"\nto_json = \"{}\"",
+            "[[set]]\nin = \"history:thinking:1\"\nto = \"x\"",
+        ] {
+            assert!(Overlay::parse(bad).is_err(), "{bad}");
+        }
     }
 
     struct Fixed;
