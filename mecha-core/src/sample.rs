@@ -44,9 +44,45 @@ pub fn take_uniform<T>(v: Vec<T>, seed: u64, k: usize) -> Vec<T> {
     shuffled(v, seed).into_iter().take(k).collect()
 }
 
+/// Seeds drawn in order from one seed: the same seed, the same stream.
+///
+/// A stream, never one value, because its callers redraw until they miss a
+/// value (a redraw must not land on the picture's own seed), and a fixed
+/// value would spin there forever. splitmix64: successive draws differ.
+/// Harness-only: a replay stamps one so its arms draw paired seeds
+/// (`ToolCtx::image_seeds`); nothing a model sends reaches it.
+#[derive(Debug)]
+pub struct SeedStream(std::sync::Mutex<u64>);
+
+impl SeedStream {
+    pub fn new(seed: u64) -> Self {
+        SeedStream(std::sync::Mutex::new(seed))
+    }
+
+    /// The next draw.
+    pub fn next(&self) -> u64 {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_seed_stream_repeats_from_its_seed_and_never_repeats_a_draw_in_a_row() {
+        let (a, b) = (SeedStream::new(7), SeedStream::new(7));
+        let first: Vec<u64> = (0..5).map(|_| a.next()).collect();
+        let second: Vec<u64> = (0..5).map(|_| b.next()).collect();
+        assert_eq!(first, second);
+        assert!(first.windows(2).all(|w| w[0] != w[1]));
+        assert_ne!(SeedStream::new(8).next(), first[0]);
+    }
 
     #[test]
     fn the_same_seed_draws_the_same_sample_and_a_different_one_does_not() {
