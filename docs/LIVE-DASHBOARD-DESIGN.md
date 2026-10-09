@@ -151,7 +151,11 @@ URL, source or loader is refused at any depth. And every string in the whole
 spec, chart or not, is refused if it is an address — the one exception being
 Vega-Lite's own `$schema` marker at a chart's top level, which vega-embed reads
 to pick a parser and never fetches, and which must have the marker's exact
-shape (proposed in #621). Between the two, a style
+shape (proposed in #621). The exception is kept rather than removed (the
+renderer could pass vega-embed an explicit `mode` instead): models write
+`$schema` by habit on nearly every chart, and refusing it would cost a retry
+each time for no safety gained, since the exact-shape match leaves the marker
+nothing to name but Vega-Lite's own schema. Between the two, a style
 object can change how a chart looks and cannot make it fetch or navigate.
 
 **Expressions live in named places only** — a `filter` or `calculate`
@@ -165,7 +169,10 @@ bounded in length, and all are evaluated by the same interpreter, whose
 language cannot fetch or navigate. Vega-Lite also accepts `{"expr": ...}` for almost any presentational
 property, and some take a bare expression under a key ending in `Expr`
 (`axis.labelExpr`); both pass the screens, so inside a style object an `expr`
-key and any key ending in `Expr` are refused. Data-dependent styling goes through an encoding's `condition`, and the
+key and any key ending in `Expr` are refused — and so are Vega's own spelling,
+`signal`, and `encode`, the block through which an axis or legend passes Vega
+through unchanged; likewise `formatType`, a custom formatter, at every depth,
+not only on a field definition (proposed in #621). Data-dependent styling goes through an encoding's `condition`, and the
 rest comes from the theme. Without this, R1's "no model-authored script" would
 erode through the one region no allowlist walks.
 
@@ -550,10 +557,16 @@ batch runs, when nothing yet knows which sources a spec will name:
   indirection, not a schema with no destination. Declared `Chosen`, an armed
   conversation could never preview a remote source; kept local, the question
   does not arise, and "no model in the refresh path" (§9) is the one rule
-  covering every remote read.
+  covering every remote read. `None` has a second leg — the headless render
+  itself must reach nothing — which step 6 pins with a loopback-only origin
+  and no other network (§8).
 
 **Installing is the owner's act.** `mecha hud install <dir>` copies a
-draft into `~/.mecha/hud/boards/<id>/` and enables its loaders; in the web UI it
+draft into `~/.mecha/hud/boards/<id>/` and enables its loaders. The `<id>` is
+the draft directory's own name unless the owner passes `--id`, and it is
+checked as an identifier before it is joined onto `boards/` — the same rule
+§5.1 applies on the read route — and an id already installed is refused rather
+than overwritten; in the web UI it
 is one accept on the proposals pane, as a fourth store beside the three it
 already reviews. A model-drafted loader is a
 model-proposed cron slot, and no lane promotes itself — the same reason
@@ -674,7 +687,8 @@ loader's query and declared shape**. Releasing it approves both. From then:
 - a refresh pushes only if the loader's digest equals the digest released;
 - **changing a loader, a query, or a shape is a new publish**, back through the
   outbox;
-- a loader over an `untrusted` source is allowed, and the review shows that it
+- a loader over third-party content — any remote source, or a local one whose
+  `content` is third-party or unset (§3.1) — is allowed, and the review shows that it
   is — its values are third-party text that will be published under the
   owner's name without a second look.
 
