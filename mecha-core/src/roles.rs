@@ -206,10 +206,10 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
             parts[j].1 = rest;
         }
     }
-    if parts
-        .iter()
-        .all(|(who, doing, _)| doing.is_empty() && given(who).is_none())
-    {
+    // The answer's own parts decide it: a pose the call gave is not the
+    // splitter's, and a split with no part from the answer drops the
+    // `together` it was asked to divide (review of #614, pass 4).
+    if parts.iter().all(|(_, doing, _)| doing.is_empty()) {
         return Err("nobody was given a part".into());
     }
     let taken: Vec<Where> = parts.iter().filter_map(|(_, _, at)| *at).collect();
@@ -376,13 +376,21 @@ mod tests {
         let mut given = names();
         given[0].doing = Some("reading".into());
         let kept = read_split(
-            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
-                {"who": "John", "where": "right", "doing": "Maya taking off his coat"}], "together": ""}"#,
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "standing up"},
+                {"who": "John", "where": "right", "doing": "taking off his coat"}], "together": ""}"#,
             &given,
         )
         .unwrap();
         assert_eq!(kept.roles[0].doing, "reading");
-        assert_eq!(kept.roles[1].doing, "with Maya");
+        assert_eq!(kept.roles[1].doing, "taking off his coat");
+        // Its only part misfiled onto a person the call posed, the answer
+        // gave nobody a part, and the split fails over to the call as sent.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": "Maya taking off his coat"}], "together": ""}"#,
+            &given,
+        )
+        .is_err());
         // A third person left out stands at an end, never between the two.
         let mut three = names();
         three.push(Asked {
@@ -429,6 +437,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(own.roles[1].doing, "Maya Chen smiling");
+        // An answer with no part fails even where the call posed someone,
+        // so the `together` is drawn whole rather than dropped.
+        assert!(read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": ""},
+                {"who": "John", "where": "right", "doing": ""}], "together": ""}"#,
+            &given,
+        )
+        .is_err());
         // A pair filed under each other swaps whole: neither part is lost.
         let crossed = read_split(
             r#"{"people": [{"who": "Maya", "where": "left", "doing": "John handing her the keys"},
