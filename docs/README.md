@@ -58,6 +58,7 @@ something shipped.
 | [`IMAGE-REGION-EDIT-RESEARCH.md`](IMAGE-REGION-EDIT-RESEARCH.md) | Whether Qwen-Image 2.1 can be told where to edit (a painted area, a box, a mask), which way keeps the rest of the picture, and what the Edit modal needs |
 | [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
 | [`LEARNING-STORE-RESEARCH.md`](LEARNING-STORE-RESEARCH.md) | Where the learning store should live — files, a mecha-owned database, or the graph — and when that changes |
+| [`LIVE-DASHBOARD-RESEARCH.md`](LIVE-DASHBOARD-RESEARCH.md) | How mecha should author a page attached to changing data and publish it on the factory — what Claude, OpenAI and the field ship, what a 27B model can author, and the dataset channel the trifecta argues for |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |
@@ -97,6 +98,7 @@ something shipped.
 | [`IMAGE-SCENE-DESIGN.md`](IMAGE-SCENE-DESIGN.md) | Why library identity was decided by the call's shape and lost on every edit, measured by the owner's eye: people declared on every render (head crop plus description), the canvas chosen by what changed, nothing chained, and the scene as the record (2026-10-07; its mechanism superseded by `IMAGE-DESIGN.md` the same day, its measurements kept) |
 | [`INCOGNITO-DESIGN.md`](INCOGNITO-DESIGN.md) | A web chat that leaves no trace once closed: the owner's rulings, the audit of every place a chat writes today, and what closes each. §8 is how "no trace" is measured |
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
+| [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) | Dashboards as a model-written spec, a Svelte renderer and loaders reviewed once: the owner's rulings, the Vega-Lite subset with no destinations, the tailnet rung, and the factory's dataset channel |
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
