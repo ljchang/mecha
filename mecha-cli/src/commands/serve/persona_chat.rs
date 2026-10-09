@@ -11602,9 +11602,11 @@ mod tests {
                 }
             }
         }
+        // `scene::stage` names a prompt log for a replay, only under a scratch
+        // folder it proves lies outside the store (`refuse_overlap`).
         assert_eq!(
             stamps.into_iter().collect::<Vec<_>>(),
-            ["chat.rs", "persona_chat.rs"],
+            ["chat.rs", "persona_chat.rs", "stage.rs"],
             "a prompt log is stamped elsewhere"
         );
         assert!(gated, "the assistant chat stamps a log only without a room");
@@ -11671,9 +11673,11 @@ mod tests {
                 }
             }
         }
+        // `scene::stage` builds a replay's slot, only under a scratch folder
+        // it proves lies outside the store (`refuse_overlap`).
         assert_eq!(
             stamps.into_iter().collect::<Vec<_>>(),
-            ["chat.rs", "persona_chat.rs", "scene.rs"],
+            ["chat.rs", "persona_chat.rs", "scene.rs", "stage.rs"],
             "a scene slot is stamped elsewhere"
         );
         assert!(room_slot, "an incognito chat's slot is its room's");
