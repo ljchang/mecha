@@ -168,7 +168,11 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
             .find(|a| a.who == who)
             .and_then(|a| a.doing.clone())
     };
-    // A part that opens with another person's name is theirs.
+    // A part that opens with another person's name is theirs. Every move is
+    // read from the answer as given, then applied: a pair filed under each
+    // other (the inversion this repairs) swaps whole, where moving one at a
+    // time lost the second person's part (review of #614, pass 3).
+    let mut moves: Vec<(usize, usize, String)> = Vec::new();
     for i in 0..parts.len() {
         // A part opening with the person's own name is theirs, whatever
         // other name it also begins with ("Maya Chen smiling" beside a
@@ -176,18 +180,31 @@ pub fn read_split(text: &str, asked: &[Asked]) -> Result<Split, String> {
         if given(&parts[i].0).is_some() || opens_with_name(&parts[i].1, &parts[i].0).is_some() {
             continue;
         }
-        let Some((j, rest)) = parts.iter().enumerate().find_map(|(j, (other, _, _))| {
+        if let Some((j, rest)) = parts.iter().enumerate().find_map(|(j, (other, _, _))| {
             (j != i)
                 .then(|| opens_with_name(&parts[i].1, other))
                 .flatten()
                 .map(|rest| (j, rest))
-        }) else {
-            continue;
-        };
-        if parts[j].1.is_empty() && given(&parts[j].0).is_none() && !crate::imagelib::blank(&rest) {
+        }) {
+            moves.push((i, j, rest));
+        }
+    }
+    let vacated: Vec<usize> = moves.iter().map(|(i, _, _)| *i).collect();
+    let before: Vec<String> = parts.iter().map(|(_, doing, _)| doing.clone()).collect();
+    for &i in &vacated {
+        parts[i].1 = String::new();
+    }
+    for (_, j, rest) in moves {
+        // To a person whose own line was empty, or was itself filed under
+        // someone else; never over a part that was theirs, never twice.
+        let free_line = before[j].is_empty() || vacated.contains(&j);
+        if free_line
+            && parts[j].1.is_empty()
+            && given(&parts[j].0).is_none()
+            && !crate::imagelib::blank(&rest)
+        {
             parts[j].1 = rest;
         }
-        parts[i].1 = String::new();
     }
     if parts
         .iter()
@@ -412,6 +429,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(own.roles[1].doing, "Maya Chen smiling");
+        // A pair filed under each other swaps whole: neither part is lost.
+        let crossed = read_split(
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "John handing her the keys"},
+                {"who": "John", "where": "right", "doing": "Maya taking the keys"}], "together": ""}"#,
+            &names(),
+        )
+        .unwrap();
+        assert_eq!(crossed.roles[0].doing, "taking the keys");
+        assert_eq!(crossed.roles[1].doing, "handing her the keys");
     }
 
     #[test]
