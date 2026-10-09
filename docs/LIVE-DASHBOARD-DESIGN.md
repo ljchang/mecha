@@ -186,7 +186,9 @@ what keeps a *relative* destination (`/outbox/approve/…`, on the origin that
 holds that button) from becoming one, since no scheme test can see it. Raw
 HTML is the fourth way to write a link, and the one that carries a relative
 destination or a handler past the others (`<a href="/x">`, `<img onerror=…>`),
-so a text panel may not contain an HTML tag start at all; and no spec string
+so a text panel may not contain an HTML tag start at all — which also refuses
+prose written as `x<y` (with a space, `x < y` stays prose), a small cost named
+here rather than discovered; and no spec string
 may contain CSS `url(`, a fetch whether relative or not.
 (Proposed in #621: the walker in `mecha-core/src/hud/vegalite.rs`, the
 string and link-syntax rules in `spec.rs`.) The renderer re-checks on load — the server check is the control, the
@@ -229,7 +231,8 @@ content = "owner"            # owner | third-party — who wrote the values
 [source.archive]
 kind = "postgres"
 url_env = "ARCHIVE_PG_URL"   # the *name* of an environment variable, never the value
-content = "owner"            # ignored for a remote kind: always external
+# no `content` line: a remote kind is always external, and writing one is a
+# parse error rather than a line that silently does nothing
 ```
 
 A credential is named the way mecha already names one — an environment
@@ -357,7 +360,10 @@ the binary, fetched like the llama.cpp engine (`fetch.rs`, sha256-pinned).
 
 The renderer is ours, so it obeys the house rules a model would not:
 
-- **No `{@html}`** anywhere.
+- **No `{@html}`** anywhere — the construct §5.2's "nothing agent-authored
+  executes" actually rests on — **and no `innerHTML`**. Gated, not only
+  stated: the renderer's source is scanned for both at build, beside the
+  `style=` scan below, and a hit fails step 3.
 - **Text panels render no links.** Markdown goes through a renderer with raw
   HTML off and links off — a link's text renders as text and its destination
   is dropped — so a scheme the server screen missed (an entity-encoded colon
@@ -742,7 +748,7 @@ after the factory path is proven.
 |---|---|---|---|
 | 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
 | 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/hud/` | unit tests refuse each forbidden field by name — proposed in #621 |
-| 2 | The host sampler (§11) and the SQLite loader; `mecha hud {list, validate, refresh, install}`; the timers; **a `doctor` finding** for a loader whose last refresh was refused or whose dataset is past twice its period — a shape refusal fails closed and would otherwise speak only on the dashboard page, which is a guard that fired and said nothing | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
+| 2 | The host sampler (§11) and the SQLite loader; `mecha hud {list, validate, refresh, install}`; the timers; **a `doctor` finding** for a loader whose last refresh was refused or whose dataset is past twice its period — and, once step 5 publishes, for a **push the factory refused** (stale release, forked bytes, an error): home records each push's outcome per published dashboard, because after such a refusal the local refresh *succeeded*, so the owner page and a refresh-only check both read green while the published page is frozen — a shape refusal fails closed and would otherwise speak only on the dashboard page, which is a guard that fired and said nothing | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
@@ -810,6 +816,17 @@ The rest of step 0's findings are in place: §4.2 (the interpreter passthrough,
 data before compile, the injected `<style>`) and §6.1 (the gate's three
 parts). Raw outputs, screenshots and the harness were kept in the session's
 scratch space, not the repository.
+
+### 8.2 It is a feature, in the registry
+
+HUD is an optional part of mecha, so it is an entry in `feature.rs`'s closed
+registry, and its parts ask the registry rather than deciding for themselves:
+`hud_preview` is registered (step 6), the serve routes answer (step 4) and the
+proposals pane shows its store only when the feature is switched on — the pane
+already gates a store this way. The pinned DuckDB binary (step 7) is a
+sidecar the registry knows about, so `features --probe` and onboarding report
+whether it is present instead of a loader discovering its absence at
+refresh. The registry is a wire format; the id, once shipped, is `hud`.
 
 ## 9. Deliberately not in scope
 
