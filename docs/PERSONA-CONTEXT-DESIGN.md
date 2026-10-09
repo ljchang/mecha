@@ -330,6 +330,16 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
 
 ### 5.3 The history is what happened, not what was attempted
 
+**Status (2026-10-07): built as #580, closed unmerged on the owner's word.** §5.4 (#583) removed
+its main case. A persona chat or a kept assistant chat now answers a picture call with "being
+made" at once, and speech never cancels the render, so the `Cancelled` result that fed the
+retry loop no longer arises from a barge-in. The projection's only dropping mark was
+`image_generate`'s inline cancel (`Nothing`). The other marks (`Part`) were kept as they were. So
+what §5.3 still covers is the paths that draw inline: an incognito chat, the CLI and the TUI.
+The replay gains #580 reported (M1 2/8 → 1/8, M2 3/8 → 0/8) were measured before §5.4. **Revive
+it** (branch `agent/interrupted-turns`, kept) if §5.4's step-5 scripted-call measurement still
+shows picture loops, with fresh numbers. The rule below stands as the design for that day.
+
 - A turn the owner interrupted is sent as **its delivered words plus whatever its tools delivered**,
   stated as a fact. A tool that finished before the barge-in, such as a memory write, stays.
 - **The test is whether a result carries content, not whether its call was cancelled.**
@@ -479,7 +489,8 @@ get started").
 - **Order:**
   1. §5.1 run notes, with §5.6 (the call note is rewritten in the same place anyway);
   2. §5.2 factual tool results;
-  3. §5.3 the projection of interrupted turns;
+  3. §5.3 the projection of interrupted turns (built as #580; parked once §5.4 landed. See §5.3's
+     status line);
   4. §5.5 edits only on the owner's initiative;
   5. §5.4 pictures as jobs, separately, once step 1's notes have landed.
 - **Gate for each step:**
