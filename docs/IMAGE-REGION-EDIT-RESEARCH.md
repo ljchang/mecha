@@ -1,6 +1,6 @@
 # Region-targeted image edits — research
 
-**2026-09-29, measured 2026-09-30.** One question: *can Qwen-Image 2.1 be told where to edit — a
+**2026-09-29, measured 2026-09-30; §7 written and measured 2026-10-09.** One question: *can Qwen-Image 2.1 be told where to edit — a
 painted area, a box, a mask — and if so, which way of telling it keeps the
 rest of the picture, lands the change, and costs least, so the web chat's
 Edit button can become a modal where the owner paints or boxes the part to
@@ -373,6 +373,13 @@ cannot rule out designed away.
   The panel's turn then carries `regions: [{colour, words}]` beside it.
   - The server derives everything from that one file: the union mask for C,
     each region's own mask (M3), and the outline image (M1 and M2).
+  - **The file's contract.** Strokes are drawn without smoothing, and any
+    resample to the picture's size is nearest-neighbour, so every pixel is
+    either a palette colour or black. A pixel that matches no palette colour
+    is unpainted, never the nearest region, since an anti-aliased rim
+    between two adjacent regions must not fall to a third. The server
+    refuses a typed `regions` entry whose colour has no pixels, rather than
+    sending its words with no region.
   - **It is an index, not a mask.** It is binarised per colour (a pixel of
     colour *k* is region *k*) before anything reaches `prepare_mask`, which
     takes luma and thresholds it at 16 after a resize. Saturated hues have
@@ -471,22 +478,22 @@ sleeves) and used the words as the owner would type them ("make her top red
 and his shirt green", "remove the cup on the left"). Otherwise the mask
 alone would answer "which one", and the control would test nothing.
 
-| | p | q | r | Wrong target | Marks left | Seconds |
-|---|---|---|---|---|---|---|
-| control (one brush over all, words) | 3/4 (his stayed grey once) | 4/4 | 2/4 (both sleeves red twice) | **3/12** | none | ~64 |
-| M1 marks on the canvas | 4/4 | 4/4 | 4/4 | 0/12 | 0–12 px, not visible | ~65 |
-| M2 marks on `<image2>` | 4/4 | 4/4 | 4/4 | 0/12 | none | ~82–90 |
-| M3 a pass per region | 4/4 | 4/4 | 4/4 | 0/12 | none | ~64 per region (~128 for p) |
+| | p | q | r | Target not changed | Wrong target changed | Marks left | Seconds |
+|---|---|---|---|---|---|---|---|
+| control (one brush over all, words) | 3/4 (his stayed grey once) | 4/4 | 2/4 (both sleeves red twice) | 1/12 | **2/12** | none | ~64 |
+| M1 marks on the canvas | 4/4 | 4/4 | 4/4 | 0/12 | 0/12 | 0–12 px, not visible | ~65 |
+| M2 marks on `<image2>` | 4/4 | 4/4 | 4/4 | 0/12 | 0/12 | none | ~82–90 |
+| M3 a pass per region | 4/4 | 4/4 | 4/4 | 0/12 | 0/12 | none | ~64 per region (~128 for p) |
 
 - **Regions settle what words cannot.** With one painted area and words,
-  the wrong target changed 3 times in 12. With a region per target it never
-  did, in any arm.
+  the wrong target changed 2 times in 12, and a target failed to change once
+  more. With a region per target, neither happened in any arm.
 - **Faces held** on (p) for every arm.
 - The GPU was shared during this set, so every arm ran slower than in
   §7.6. The gaps between arms hold.
-- **By the §7.5 rule M2 wins; M1 also passes.** Neither left a visible mark,
-  and M1 is about 20 s cheaper per edit. The choice between them is the
-  owner's.
+- **The §7.5 rule stands, and picks M2.** Both M2 and M1 pass it: neither
+  left a visible mark, and M1 is about 20 s cheaper per edit. Whether that
+  saving is worth M1's marks-on-the-canvas risk is the owner's call.
 - **A side finding, not about the arms:** removing a cup left a faint
   rectangular seam at the mask's edge, on the backsplash and the table, in
   every arm. That is the composite's feathered edge on a smooth background,
