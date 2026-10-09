@@ -796,6 +796,15 @@ fn parse_vm_stat(text: &str) -> Option<u64> {
 
 /// A seed nobody chose: process-random SipHash keys over the clock. Kept
 /// under 2³² so it reads back exactly anywhere, JavaScript included.
+/// A picture's fresh seed: the next from the stream a replay stamped
+/// (`ToolCtx::image_seeds`), else at random. In the range `fresh_seed` draws.
+fn draw_seed(ctx: &ToolCtx) -> u64 {
+    match &ctx.image_seeds {
+        Some(stream) => stream.next() & 0xFFFF_FFFF,
+        None => fresh_seed(),
+    }
+}
+
 fn fresh_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -2740,7 +2749,7 @@ impl Tool for ImageGenerate {
             size: None,
             steps: self.cfg.steps,
             seed: match plan.seed {
-                crate::picture::Seed::Fresh => fresh_seed(),
+                crate::picture::Seed::Fresh => draw_seed(ctx),
                 crate::picture::Seed::Base(s) | crate::picture::Seed::Given(s) => s,
             },
             references: Vec::new(),
@@ -2750,7 +2759,7 @@ impl Tool for ImageGenerate {
         // A redraw is drawn at a seed the picture was not (§5.1).
         if plan.route == "redrawn" {
             while Some(req.seed) == base.as_ref().and_then(|b| b.seed) {
-                req.seed = fresh_seed();
+                req.seed = draw_seed(ctx);
             }
         }
         let mut used: Vec<crate::imagelib::Used> = Vec::new();
@@ -2928,7 +2937,7 @@ impl Tool for ImageGenerate {
                 // Never the seed that drew a portrait: sampling there redraws it.
                 let asked = req.seed;
                 while compiled.source_seeds.contains(&req.seed) {
-                    req.seed = fresh_seed();
+                    req.seed = draw_seed(ctx);
                 }
                 if asked != req.seed && plan.seed == crate::picture::Seed::Given(asked) {
                     reseeded = Some(asked);
@@ -5841,6 +5850,43 @@ mod tests {
             .starts_with("sha256-"));
         assert_eq!(manifest["route"], "new");
         assert!(manifest.get("prompt").is_none(), "{manifest}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A replay's seed stream (`ToolCtx::image_seeds`): two arms stamped
+    /// with the same stream draw a fresh picture at the same seed, and a
+    /// collision redraws from the stream, never at random.
+    #[tokio::test]
+    async fn a_stamped_seed_stream_pairs_fresh_seeds_and_feeds_the_redraw() {
+        let (url, _) = fake(vec![done(), done(), done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let seeded = |n: u64| ToolCtx {
+            image_seeds: Some(std::sync::Arc::new(crate::sample::SeedStream::new(n))),
+            ..ctx(&dir)
+        };
+        let seed_of = |content: &str| -> u64 {
+            let at = content.find("(seed ").expect("a seed is said") + 6;
+            content[at..].split(',').next().unwrap().parse().unwrap()
+        };
+        let first_draw = crate::sample::SeedStream::new(3).next() & 0xFFFF_FFFF;
+        let call = json!({"scene": {"setting": "a park", "people": two_people()}});
+        let a = t.call(call.clone(), &seeded(3)).await.unwrap();
+        let b = t.call(call, &seeded(3)).await.unwrap();
+        assert!(!a.is_error && !b.is_error, "{} {}", a.content, b.content);
+        assert_eq!(seed_of(&a.content), first_draw);
+        assert_eq!(seed_of(&b.content), first_draw);
+        // 901 drew john's portrait: the redraw away from it is the stream's.
+        let c = t
+            .call(
+                json!({"scene": {"setting": "a park", "people": two_people()}, "seed": 901}),
+                &seeded(3),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seed_of(&c.content), first_draw, "{}", c.content);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
