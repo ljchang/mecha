@@ -687,7 +687,10 @@ The routes, in the result's own words and the manifest's `route`:
   whole first prompt drew the asked pose 0/3, with the old pose back every
   time; a room-only setting drew it 3/3 (`IMAGE-DESIGN.md` §2.6).
 - **Someone is drawn only when listed in `people`** (the owner's ruling,
-  2026-10-08). A library name in the words for someone not in the picture is
+  2026-10-08), with one exception: **a new picture that lists nobody** draws
+  the library characters its words name, up to `MAX_FACES` (owner,
+  2026-10-09: a chat asked for two characters at a café, listed neither, and
+  two strangers were drawn). Otherwise a library name in the words for someone not in the picture is
   neither drawn nor refused: the image model reads "the viewer" in its place
   (`picture::as_viewer`, `Plan::offstage`), since from words alone a
   character comes out as a stranger (E1), and the result says so. A persona
