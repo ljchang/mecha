@@ -269,12 +269,26 @@ pub enum ShapeRefusal {
 impl std::fmt::Display for ShapeRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShapeRefusal::Columns { declared, returned } => write!(
-                f,
-                "the query returned columns [{}] but the loader declares [{}]",
-                returned.join(", "),
-                declared.join(", ")
-            ),
+            ShapeRefusal::Columns { declared, returned } => {
+                // A returned name may come from a schema a third party
+                // controls; show it only when it is a plain identifier.
+                let returned: Vec<&str> = returned
+                    .iter()
+                    .map(|n| {
+                        if is_identifier(n) {
+                            n.as_str()
+                        } else {
+                            "(unnamed)"
+                        }
+                    })
+                    .collect();
+                write!(
+                    f,
+                    "the query returned columns [{}] but the loader declares [{}]",
+                    returned.join(", "),
+                    declared.join(", ")
+                )
+            }
             ShapeRefusal::TooManyRows { max } => {
                 write!(f, "the query returned more than max_rows ({max}) rows")
             }

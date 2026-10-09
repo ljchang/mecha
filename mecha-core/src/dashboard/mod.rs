@@ -11,8 +11,12 @@
 //! and a hand-written renderer draws it. The one property the spec must have
 //! for that to be safe on the same origin as the outbox's approve button is
 //! the one `Egress::Blind` is earned by: no field of it says where anything
-//! comes from or goes to. Charts bind to a dataset by name, and every string
-//! that is an address is refused wherever it sits ([`spec::Spec::parse`]).
+//! comes from or goes to. Charts bind to a dataset by name; every string
+//! that is an absolute address — a URL, a protocol-relative path, a scheme —
+//! is refused wherever it sits, as is any character reference that could
+//! spell one; and a text panel may not contain link syntax at all, which is
+//! what keeps a *relative* path from becoming a destination
+//! ([`spec::Spec::parse`]). The renderer drawing no links is the second layer.
 //!
 //! **Refusals are written for the model that will retry.** A 27B model that
 //! reads "invalid spec" learns nothing; one that reads
@@ -23,7 +27,10 @@
 //! **A shape refusal never echoes a value.** A loader's output may carry
 //! third-party text, and a refusal is shown on the owner's surfaces and may
 //! reach a later model context. It names the row, the column and the type it
-//! expected — never what it found.
+//! expected — never what it found. A column-set refusal shows the returned
+//! column names, because the drift is the point of it, but only those that
+//! are plain identifiers: under `SELECT *` they come from a schema someone
+//! else may control.
 
 pub mod loader;
 pub mod spec;
@@ -148,6 +155,10 @@ impl Installed {
                 ));
                 None
             }
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                refusals.push(Refusal::new("dashboard.json", "the spec is not UTF-8 text"));
+                None
+            }
             Err(e) => {
                 return Err(e).with_context(|| format!("reading {}", spec_path.display()));
             }
@@ -166,7 +177,7 @@ impl Installed {
             let mut paths: Vec<PathBuf> = std::fs::read_dir(&loader_dir)
                 .with_context(|| format!("reading {}", loader_dir.display()))?
                 .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+                .filter(|p| p.extension().is_some_and(|x| x == "toml") && p.is_file())
                 .collect();
             paths.sort();
             for path in paths {
@@ -175,9 +186,16 @@ impl Installed {
                     .and_then(|s| s.to_str())
                     .unwrap_or_default()
                     .to_string();
-                let text = std::fs::read_to_string(&path)
-                    .with_context(|| format!("reading {}", path.display()))?;
                 let file = format!("loaders/{name}.toml");
+                // One unreadable loader is a refusal beside the others, the
+                // same choice as a missing spec — not I/O that discards them.
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        refusals.push(Refusal::new(&file, format!("cannot be read: {}", e.kind())));
+                        continue;
+                    }
+                };
                 match Loader::parse(&name, &text) {
                     Ok(loader) => {
                         loaders.insert(name, loader);
