@@ -6826,6 +6826,25 @@ mod tests {
         let merged = merge_read(&mut change, read.as_object().unwrap());
         assert_eq!(change.people[1].doing.as_deref(), Some("clapping"));
         assert_eq!(merged, ["doing×2"]);
+        // Each condition alone holds the reader's poses back: a pose the
+        // call gave, with no `together` anywhere...
+        let mut posed = crate::scene::SceneChange {
+            people: vec![bare("maya"), bare("john")],
+            ..Default::default()
+        };
+        posed.people[0].doing = Some("waving".into());
+        merge_read(&mut posed, read.as_object().unwrap());
+        assert_eq!(posed.people[1].doing, None, "a call-given pose");
+        // ...and a `together` the reader supplied, with no pose given.
+        let mut joined = crate::scene::SceneChange {
+            people: vec![bare("maya"), bare("john")],
+            ..Default::default()
+        };
+        let read = json!({"together": "Maya and John dance",
+            "people": [{"who": "Maya", "doing": "spinning"}, {"who": "John", "doing": "clapping"}]});
+        merge_read(&mut joined, read.as_object().unwrap());
+        assert_eq!(joined.together.as_deref(), Some("Maya and John dance"));
+        assert_eq!(joined.people[1].doing, None, "a together from the reader");
         // Bounded as the call's own: a long act is clipped, a long part left.
         let long = format!("{}.", "Maya laughs ".repeat(40));
         let mut change = crate::scene::SceneChange {
