@@ -294,9 +294,10 @@ model) applies with more force here because part of this runs per turn.
 | | learning progress per goal | validation ledger, eval `by_tag` | scan |
 | | store and work-dir growth | `work.rs` | scan |
 
-> **Machine sensors are being consolidated into one layer** —
-> `SENSOR-DESIGN.md` (proposed 2026-10-10): one parser per source, a
-> per-minute series, and the homeostat reading it rather than probing.
+> **Machine state is being consolidated into one layer, `mecha system`** —
+> `SYSTEM-STATE-DESIGN.md` (proposed 2026-10-10): one parser per source,
+> specifically named measurements, a per-minute series, and the homeostat
+> reading it rather than probing.
 
 ### 4.2 Two findings from probing the machine, 2026-08-26
 
