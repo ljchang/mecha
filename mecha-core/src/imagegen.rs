@@ -2053,10 +2053,12 @@ impl ImageGenerate {
         let mut steps: Vec<Value> = Vec::new();
         let stopped = || ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled());
         let joined = |left: &[String]| (!left.is_empty()).then(|| left.join("; "));
-        // `[image] timeout_secs` bounds the whole build, not each of its
-        // n + 3 passes: per pass, a wedged build could hold the chat's one
-        // job slot for close to an hour (review of #624). Each pass gets
-        // what is left, and none starts with nothing left.
+        // `[image] timeout_secs` bounds the build's passes together, not
+        // each of its n + 3: per pass, a wedged build could hold the chat's
+        // one job slot for close to an hour (review of #624). Each pass gets
+        // what is left, and none starts with nothing left. A build that
+        // fails then draws the single pass with a timeout of its own, so a
+        // call can take up to twice it, and still delivers a picture.
         let deadline = Instant::now() + timeout;
         let pass = |step: &str, req: Request| {
             let step = step.to_string();
@@ -2101,11 +2103,7 @@ impl ImageGenerate {
                     "step": step,
                     "seed": req.seed,
                     "prompt": req.prompt,
-                    "words": lp.people.iter().map(|p| p.part.clone())
-                        .chain(lp.leftover.clone())
-                        .chain(std::iter::once(lp.plate.clone()))
-                        .filter(|w| !w.trim().is_empty())
-                        .collect::<Vec<_>>(),
+                    "words": lp.words,
                 });
                 if let Err(e) = append_prompt(log, &line) {
                     tracing::warn!("image_generate: prompt log: {e:#}");
@@ -3298,6 +3296,9 @@ impl Tool for ImageGenerate {
                                 .iter()
                                 .map(|p| crate::picture::shown(&p.who))
                                 .collect();
+                            let room = setting
+                                .as_deref()
+                                .and_then(|s| crate::layers::room_words(s, &names));
                             let plate_light = value(&plan.next.light)
                                 .filter(|l| crate::layers::names_no_one(l, &names));
                             let plate_framing = value(&plan.next.camera)
@@ -3334,9 +3335,17 @@ impl Tool for ImageGenerate {
                                     p.wearing.clone()
                                 }
                             };
+                            // The chat's words every pass is built from,
+                            // for the prompt log, as the single pass keeps
+                            // them, with the clothes each cutout wears.
+                            let mut words = record_prose(&plan.next);
+                            words.extend(plan.also.iter().cloned());
+                            words.extend(split_words.iter().cloned());
+                            words.extend(people.iter().map(fuller));
+                            words.retain(|w| !w.trim().is_empty());
                             layers_plan = Some(crate::layers::Plan {
                                 plate: crate::layers::plate_prompt(
-                                    setting.as_deref().unwrap_or_default(),
+                                    room.as_deref().unwrap_or_default(),
                                     plate_light.as_deref(),
                                     plate_framing.as_deref(),
                                 ),
@@ -3354,6 +3363,7 @@ impl Tool for ImageGenerate {
                                             wearing: fuller(p),
                                             at: p.at.map(|w| w.name().to_string()),
                                             part: p.doing.clone(),
+                                            expression: p.expression.clone(),
                                             portrait: bytes,
                                             ext,
                                         })
@@ -3375,10 +3385,21 @@ impl Tool for ImageGenerate {
                                 // compiler ask about any field added later
                                 // (review of #624).
                                 origin: plan.next.origin(),
+                                words,
                             });
+                            // Every clause of the setting names someone, so
+                            // the plate would have no room in words.
+                            if room.is_none() {
+                                layers_plan = None;
+                                dropped.push(
+                                    "Drawn in one pass, not in layers: every word of the \
+                                     setting names someone, and the room is drawn with no one \
+                                     in it."
+                                        .into(),
+                                );
                             // Two people set on one side of the frame would
                             // share a place tag (review of #624).
-                            if layers_plan
+                            } else if layers_plan
                                 .as_ref()
                                 .is_some_and(|lp| crate::layers::shares_a_place(&lp.people))
                             {
@@ -7349,6 +7370,105 @@ mod tests {
         let layers = landed.layers.expect("the build is recorded");
         assert_eq!(layers.people.len(), 2);
         assert_eq!(layers.people[0].who, "maya");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A layered build draws what the single pass would: each person's
+    /// expression rides with their part, the plate keeps only the setting's
+    /// clauses that name nobody, and the prompt log's `words` hold every
+    /// chat word its passes were built from, clothes included (review of
+    /// #626).
+    #[tokio::test]
+    async fn a_layered_build_keeps_expressions_and_logs_every_chat_word() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let log = store.join("sessions/chat-a.prompts.log");
+        cx.prompt_log = Some(log.clone());
+        let mut call = touching_call();
+        call["scene"]["setting"] =
+            json!("a sunlit kitchen with a long oak table, Maya's scarf over a chair");
+        call["scene"]["people"][1]["expression"] = json!("grinning");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert!(prompts[0].contains("a sunlit kitchen"), "{}", prompts[0]);
+        assert!(
+            !prompts[0].contains("scarf") && !prompts[0].contains("Maya"),
+            "{}",
+            prompts[0]
+        );
+        assert!(prompts[3].contains("grinning"), "{}", prompts[3]);
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .filter(|l: &Value| l["route"] == "layered")
+            .collect();
+        assert_eq!(lines.len(), 5, "{text}");
+        for line in &lines {
+            let words: Vec<&str> = line["words"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            for want in ["a yellow raincoat", "a flannel shirt", "grinning"] {
+                assert!(words.contains(&want), "{want}: {words:?}");
+            }
+            assert!(!words.iter().any(|w| w.contains("<image")), "{words:?}");
+        }
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A setting every clause of which names someone leaves the plate no
+    /// room in words, so the picture is one render and says why (review of
+    /// #626).
+    #[tokio::test]
+    async fn a_setting_that_only_names_people_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["setting"] = json!("Maya's flat");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("every word of the setting names someone"),
+            "{}",
+            out.content
+        );
+        let posts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(posts, 1);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();

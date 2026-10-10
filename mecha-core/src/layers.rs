@@ -19,6 +19,10 @@ pub struct Person {
     pub wearing: String,
     /// Their part from the split, or empty when the split fell back.
     pub part: String,
+    /// Their expression as the call gave it, said with their part: the
+    /// single pass carries it, so a layered build drops nothing it would
+    /// draw (review of #626).
+    pub expression: String,
     /// Where they stand in the frame ("on the left"), from the split's
     /// places: a placing pass that named no positions left a person out
     /// (mecha-a3, 2026-10-10: one of two never placed, 2 of 2 runs).
@@ -41,6 +45,9 @@ pub struct Plan {
     /// A library style's own words, laid on by the finish alone; the plate,
     /// the cutouts and the placing pass stay photographic.
     pub style: Option<String>,
+    /// Every chat-derived string the passes' prompts are built from, for
+    /// the prompt log's `words` (what `check-private` reads).
+    pub words: Vec<String>,
 }
 
 /// The most people a layered build has been measured with (mecha-a3's gate:
@@ -132,13 +139,30 @@ const PERSON_WORDS: [&str; 24] = [
     "chest", "legs",
 ];
 
-/// Whether `text` names nobody: no person word and none of `names`.
+/// Whether `text` names nobody: no person word and none of `names`. A name
+/// is matched whole, hyphens and all: a library name may hold one, and a
+/// word split on it never saw `jean-luc` (review of #626).
 pub fn names_no_one(text: &str, names: &[String]) -> bool {
     text.to_lowercase()
         .split(|c: char| !(c.is_alphanumeric() || c == '\''))
         .filter(|w| !w.is_empty())
         .map(|w| w.trim_end_matches("'s"))
-        .all(|w| !PERSON_WORDS.contains(&w) && !names.iter().any(|n| n.to_lowercase() == w))
+        .all(|w| !PERSON_WORDS.contains(&w))
+        && names.iter().all(|n| word_spans(text, n).is_empty())
+}
+
+/// The setting's words a plate may show: its clauses that name nobody,
+/// or `None` when every clause does. Light and camera were filtered from
+/// the start, and the setting went in whole: "her coat over the chair"
+/// can draw a figure from behind, which no face check catches, so the word
+/// filter is the guard here as it is for light (review of #626).
+pub fn room_words(setting: &str, names: &[String]) -> Option<String> {
+    let kept: Vec<&str> = setting
+        .split([',', ';', '.'])
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && names_no_one(c, names))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(", "))
 }
 
 /// The plate: the room alone, in the scene's framing (§15.3, step 1).
@@ -218,17 +242,22 @@ pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
         [] => String::new(),
     };
     for (i, (p, (_, tag))) in people.iter().zip(&tags).enumerate() {
-        let part = parts[i].as_str();
-        let at = match beside[i] {
+        let expression = untagged(&p.expression, &tags);
+        let expression = expression.trim().trim_end_matches('.');
+        let part = match (parts[i].as_str(), expression) {
+            (part, "") => part.to_string(),
+            ("", expression) => expression.to_string(),
+            (part, expression) => format!("{part}, {expression}"),
+        };
+        let part = part.as_str();
+        let mut at = match beside[i] {
             Some(j) => format!(" beside {}", tags[j].1),
             None => p.at.as_deref().map(|a| format!(" {a}")).unwrap_or_default(),
         };
+        if parts[i].is_empty() && at.is_empty() {
+            at = " in the scene".to_string();
+        }
         if part.is_empty() {
-            let at = if at.is_empty() {
-                " in the scene".to_string()
-            } else {
-                at
-            };
             s.push_str(&format!("Place {tag}{at}. "));
         } else {
             s.push_str(&format!("Place {tag}{at}, {part}. "));
@@ -332,30 +361,41 @@ fn untagged(text: &str, tags: &[(String, String)]) -> String {
 
 /// Replace `word` where it stands as a whole word, any case.
 fn replace_word(text: &str, word: &str, with: &str) -> String {
-    if word.trim().is_empty() {
-        return text.to_string();
-    }
-    let lower = text.to_lowercase();
-    let needle = word.to_lowercase();
-    // Lowercasing can change byte lengths outside ASCII; then leave it.
-    if lower.len() != text.len() {
-        return text.to_string();
-    }
     let mut out = String::new();
+    let mut at = 0;
+    for (start, end) in word_spans(text, word) {
+        out.push_str(&text[at..start]);
+        out.push_str(with);
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// Where `word` stands in `text` as a whole word, in any ASCII case. Names
+/// are ASCII (`imagelib::validate_name`), and ASCII lowercasing keeps every
+/// byte where it was, so no text makes the match give up: a full lowercase
+/// changed byte lengths outside ASCII, and the guard then left every name
+/// in place (review of #626).
+fn word_spans(text: &str, word: &str) -> Vec<(usize, usize)> {
+    let needle = word.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let lower = text.to_ascii_lowercase();
+    let mut spans = Vec::new();
     let mut at = 0;
     while let Some(found) = lower[at..].find(&needle) {
         let start = at + found;
         let end = start + needle.len();
         let before = text[..start].chars().next_back();
         let after = text[end..].chars().next();
-        let bounded =
-            !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric);
-        out.push_str(&text[at..start]);
-        out.push_str(if bounded { with } else { &text[start..end] });
+        if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
+            spans.push((start, end));
+        }
         at = end;
     }
-    out.push_str(&text[at..]);
-    out
+    spans
 }
 
 fn closed(s: &str) -> String {
@@ -400,10 +440,59 @@ mod tests {
             shown: shown.into(),
             wearing: "a coat".into(),
             part: part.into(),
+            expression: String::new(),
             at: None,
             portrait: Vec::new(),
             ext: "png",
         }
+    }
+
+    /// A name is matched whole, hyphens and all, and no text makes the match
+    /// give up: a hyphenated library name passed the plate's filter, and a
+    /// letter whose lowercase is longer left every name in a part (review
+    /// of #626).
+    #[test]
+    fn names_are_found_whole_in_any_text() {
+        let names = ["Jean-luc".to_string()];
+        assert!(!names_no_one("jean-luc's scarf over a chair", &names));
+        assert!(names_no_one("a jean jacket on a hook", &names));
+        let tags = [("Maya".to_string(), "the person from <image2>".to_string())];
+        assert_eq!(
+            untagged("Maya walks through İzmir", &tags),
+            "the person from <image2> walks through İzmir"
+        );
+        assert_eq!(untagged("Mayan ruins", &tags), "Mayan ruins");
+    }
+
+    /// The plate keeps the setting's clauses that name nobody, and has no
+    /// room in words when every clause names someone (review of #626).
+    #[test]
+    fn the_plate_keeps_only_the_setting_that_names_nobody() {
+        let names = ["Maya".to_string()];
+        assert_eq!(
+            room_words("a quiet harbour at dusk, Maya's coat over a rail", &names).as_deref(),
+            Some("a quiet harbour at dusk")
+        );
+        assert_eq!(room_words("her flat; Maya's sofa", &names), None);
+    }
+
+    /// An expression is said with its person's part, or alone when the
+    /// split gave no part, with names as tags (review of #626).
+    #[test]
+    fn the_placing_prompt_carries_each_expression() {
+        let mut maya = person("Maya", "sitting on a bench with a map");
+        maya.expression = "laughing at John".into();
+        let mut john = person("John", "");
+        john.expression = "grinning.".into();
+        let s = placing_prompt(&[maya, john], None);
+        assert!(
+            s.contains("with a map, laughing at the person from <image3>. "),
+            "{s}"
+        );
+        assert!(
+            s.contains("Place the person from <image3> in the scene, grinning. "),
+            "{s}"
+        );
     }
 
     /// A plate takes framing from a closed set and no person words: a camera
