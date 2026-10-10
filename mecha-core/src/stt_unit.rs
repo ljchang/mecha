@@ -121,10 +121,13 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     // is installed beside it: it would answer the check below while mecha's
     // own restart-looped against the port (`router_unit`'s refusal, #568;
     // review of #638).
-    if !wrote_unit(home, &unit)? && crate::router_unit::port_answers(naming.port) {
+    // `features enable` leaves such a server out of what it offers
+    // (`someone_elses`), so this is the backstop for one that started since.
+    if someone_elses(m, naming)? {
         bail!(
             "something already answers on :{} and mecha did not install it — nothing is \
-             installed over it; point `[voice] stt_url` at it instead",
+             installed over it; `mecha features enable voice --no-install` switches voice on \
+             and uses it as it is",
             naming.port
         );
     }
@@ -220,6 +223,15 @@ async fn ready(r: reqwest::Response) -> bool {
     r.json::<serde_json::Value>()
         .await
         .is_ok_and(|v| v["status"] == "ok")
+}
+
+/// Whether a server answers on the port whose unit mecha did not write —
+/// someone's own Parakeet, from a terminal or under another unit name. Its
+/// install would be refused, so it is never offered: it is used as it is.
+/// One loopback connect; nothing is sent.
+pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
+    let unit = crate::engine_gate::unit_dir(m)?.join(format!("{}.service", naming.unit));
+    Ok(!wrote_unit(&m.mecha_home, &unit)? && crate::router_unit::port_answers(naming.port))
 }
 
 /// Whether the record names this unit's file: mecha installed the server on
@@ -458,6 +470,40 @@ mod tests {
         assert_eq!(&w[..4], b"RIFF");
         assert_eq!(&w[8..16], b"WAVEfmt ");
         assert_eq!(u32::from_le_bytes(w[40..44].try_into().unwrap()), 32_000);
+    }
+
+    /// A server on the port is someone's until the record names the unit
+    /// mecha wrote there — then it is mecha's own, being reinstalled.
+    #[test]
+    fn a_server_is_someone_elses_until_mecha_wrote_its_unit() {
+        let root = std::env::temp_dir().join(format!("mecha-7d1-whose-{}", uuid::Uuid::new_v4()));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            unit: "mecha-test-stt-whose".into(),
+            port: listener.local_addr().unwrap().port(),
+        };
+        let m = Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: Vec::new(),
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let stranger = someone_elses(&m, &naming).unwrap();
+        Manifest::begin(&m.mecha_home, ID).unwrap();
+        Manifest::record(
+            &m.mecha_home,
+            ID,
+            &root.join("units/mecha-test-stt-whose.service"),
+        )
+        .unwrap();
+        let ours = someone_elses(&m, &naming).unwrap();
+        drop(listener);
+        let nobody = someone_elses(&m, &naming).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(stranger);
+        assert!(!ours);
+        assert!(!nobody);
     }
 
     /// A server mecha did not install on the port is refused before a byte

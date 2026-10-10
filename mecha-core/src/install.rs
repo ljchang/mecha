@@ -214,6 +214,29 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     }
 }
 
+/// Why an offered sidecar is left out after all, when it is: a server already
+/// answering where its install would put one, which mecha did not install.
+/// Asked by `features enable` after [`offered`], which reads no socket.
+pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
+    let port = match id {
+        crate::stt_unit::ID => {
+            let naming = crate::stt_unit::Naming::shipped();
+            crate::stt_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::voice_worker_unit::ID => {
+            let naming = crate::voice_worker_unit::Naming::shipped();
+            crate::voice_worker_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        _ => None,
+    };
+    Ok(port.map(|port| {
+        format!(
+            "a server already answers on :{port} that mecha did not install — left alone, and \
+             used as it is"
+        )
+    }))
+}
+
 /// What `mecha features enable` offers to install for one plan: each
 /// installable sidecar that is missing or unfinished — or installed, with a
 /// model its own install fetches now gone from the hub (a cleared cache

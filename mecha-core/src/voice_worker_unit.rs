@@ -98,10 +98,13 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     // the hand-built one under another name, or a terminal's. Nothing is
     // installed beside it: it would pass the checks below while mecha's own
     // restart-looped against the port (`stt_unit`'s refusal, #638).
-    if !wrote_unit(home, &unit)? && crate::router_unit::port_answers(naming.port) {
+    // `features enable` leaves such a worker out of what it offers
+    // (`someone_elses`), so this is the backstop for one that started since.
+    if someone_elses(m, naming)? {
         bail!(
             "something already answers on :{} and mecha did not install it — nothing is \
-             installed over it; point `[voice] offer_target` at it instead",
+             installed over it; `mecha features enable voice --no-install` switches voice on \
+             and uses it as it is",
             naming.port
         );
     }
@@ -149,10 +152,26 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         Err(e) => Err(e),
     };
     if let Err(e) = checked {
-        let _ = crate::engine_gate::systemctl("disable", &["--now", &service]);
-        return Err(e.context(format!("{service} was stopped and disabled")));
+        // Said as it went: a stop that failed leaves the worker listening,
+        // and the owner's next step depends on knowing (review of #639).
+        let stopped = match crate::engine_gate::systemctl("disable", &["--now", &service]) {
+            Ok(()) => format!("{service} was stopped and disabled"),
+            Err(stop) => format!(
+                "{service} could NOT be stopped ({stop:#}) — it may still be listening on :{}; \
+                 run `systemctl --user disable --now {service}`",
+                naming.port
+            ),
+        };
+        return Err(e.context(stopped));
     }
     Manifest::finish(home, ID)
+}
+
+/// Whether a worker answers on the port whose unit mecha did not write —
+/// someone's own, used as it is (`stt_unit::someone_elses`'s twin).
+pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
+    let unit = crate::engine_gate::unit_dir(m)?.join(format!("{}.service", naming.unit));
+    Ok(!wrote_unit(&m.mecha_home, &unit)? && crate::router_unit::port_answers(naming.port))
 }
 
 /// Whether the record names this unit's file (`stt_unit`'s twin).
@@ -422,6 +441,37 @@ mod tests {
         ));
         assert!(text.contains(&format!("--allowed-origins {NO_PAGE}")));
         assert!(!text.contains("Github") && !text.contains("ts.net"));
+    }
+
+    /// A worker on the port is someone's until the record names the unit
+    /// mecha wrote there.
+    #[test]
+    fn a_worker_is_someone_elses_until_mecha_wrote_its_unit() {
+        let root = std::env::temp_dir().join(format!("mecha-7d2-whose-{}", uuid::Uuid::new_v4()));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            unit: "mecha-test-worker-whose".into(),
+            port: listener.local_addr().unwrap().port(),
+        };
+        let m = Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: Vec::new(),
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let stranger = someone_elses(&m, &naming).unwrap();
+        Manifest::begin(&m.mecha_home, ID).unwrap();
+        Manifest::record(
+            &m.mecha_home,
+            ID,
+            &root.join("units/mecha-test-worker-whose.service"),
+        )
+        .unwrap();
+        let ours = someone_elses(&m, &naming).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(stranger);
+        assert!(!ours);
     }
 
     /// A worker mecha did not install on the port is refused before a byte
