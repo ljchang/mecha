@@ -350,23 +350,26 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         )
         .await?;
         handled.push("config-file".into());
+        // What is still open is shown, chat included when it was skipped or
+        // did not install — but only what the pass did not ask is offered:
+        // the chat question was the offer, and a second one is noise (review
+        // of #631).
         let left: Vec<&Step> = outstanding
             .iter()
             .filter(|s| !handled.contains(&s.id))
             .copied()
             .collect();
         if !left.is_empty() {
-            println!(
-                "
-A few more:"
-            );
+            println!("\nStill open:");
             render(&left.iter().map(|s| (*s).clone()).collect::<Vec<_>>());
-            offer(&left, &home, &mut std::io::stdin().lock())?;
+            let unasked: Vec<&Step> = left
+                .iter()
+                .filter(|s| !super::setup_guided::CHAT_STEPS.contains(&s.id.as_str()))
+                .copied()
+                .collect();
+            offer(&unasked, &home, &mut std::io::stdin().lock())?;
         }
-        println!(
-            "
-`mecha setup` again shows where everything stands."
-        );
+        println!("\n`mecha setup` again picks up whatever is still open.");
         finished_note(&steps);
         return Ok(());
     }
@@ -1111,7 +1114,9 @@ fn seed_config_file(path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, super::config::STARTER)
+    // `config init`'s file, `[features]` and all: a fresh install's list of
+    // what exists is the same whichever door made it (review of #631).
+    std::fs::write(path, super::config::global_starter())
         .with_context(|| format!("writing {}", path.display()))?;
     println!("created {}", path.display());
     Ok(())
@@ -1321,7 +1326,8 @@ mod tests {
             ("context_window", "65536".to_string()),
             ("vision", "true".to_string()),
         ];
-        let text = apply_text(super::super::config::STARTER, "local", &settings).unwrap();
+        // The file `setup` seeds, `[features]` after the providers.
+        let text = apply_text(&super::super::config::global_starter(), "local", &settings).unwrap();
         let cfg: toml::Value = toml::from_str(&text).unwrap();
         let local = &cfg["providers"]["local"];
         assert_eq!(local["model"].as_str(), Some("served-alias"));
@@ -1330,6 +1336,7 @@ mod tests {
         assert_eq!(cfg["default_provider"].as_str(), Some("local"));
         let pos = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
         assert!(pos("vision = true") < pos("# A hosted model"), "{text}");
+        assert_eq!(cfg["features"]["web"].as_bool(), Some(false), "{text}");
         assert!(pos("base_url") < pos("model = \"served-alias\""), "{text}");
 
         let again = apply_text(&text, "local", &[("model", "\"other\"".to_string())]).unwrap();
@@ -1381,7 +1388,7 @@ mod tests {
     /// one the owner wrote, whatever its kind, is theirs (review of #627).
     #[test]
     fn only_the_starter_s_bare_local_table_is_filled_from_a_probe() {
-        assert!(starter_shaped_local(super::super::config::STARTER));
+        assert!(starter_shaped_local(&super::super::config::global_starter()));
         let own = "[providers.local]\nkind = \"openai-compatible\"\nbase_url = \"http://192.168.1.5:8080\"\n";
         assert!(!starter_shaped_local(own));
         let named = "[providers.local]\nkind = \"local\"\nbase_url = \"http://127.0.0.1:8080\"\nmodel = \"x\"\n";
