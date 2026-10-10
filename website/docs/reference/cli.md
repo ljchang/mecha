@@ -1490,11 +1490,14 @@ config if there is none, then asks:
    config does not describe is one question: write what it reports. Installing
    a model here needs Linux and `:8080` free; elsewhere the menu offers what
    can be done.
-2. **Each feature that is off**, as a yes or no, with what it does and what it
-   would download.
+2. **Each feature that is off**, as yes, no or `never`, with what it does,
+   what it would download, and what else a yes switches on. `never` is
+   recorded at once, as in the step loop; `mecha setup --undecline <id>`
+   undoes it.
 3. **Once**, with everything listed and one total: *Start?* Then it installs
    the chat model, switches on and installs the features, and runs any sign-in
-   a feature still needs while you are there.
+   a feature still needs while you are there. Anything else a feature still
+   needs — a binary to build, say — is named, not run.
 
 What it does not cover — the charter, the scheduler, a feature switched on but
 not working — is offered after it, a step at a time. Naming a feature, a flag,
