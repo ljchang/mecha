@@ -188,12 +188,27 @@ pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<Str
     // only by `mecha setup` (found on review of #627). Only what the server
     // reports, so `mecha setup --write` can always clear it.
     if let (None, Some(served)) = (cfg.model.as_deref(), props.model_alias.as_deref()) {
-        out.push(format!(
-            "[providers.{name}] sets no `model`; the server is serving {served:?}. Behind a \
-             llama-server router the request's `model` selects what answers, and an unnamed \
-             one is not served; elsewhere it is what every record says answered. `mecha setup \
-             --write` writes it from the server."
-        ));
+        // Asked for only on this machine (`router::unnamed_model`): off it,
+        // nothing is asked at start, and an unnamed request is not served by
+        // a router.
+        let asked = cfg
+            .base_url
+            .as_deref()
+            .is_some_and(crate::provider::router::is_loopback);
+        out.push(if asked {
+            format!(
+                "[providers.{name}] sets no `model`; the server is serving {served:?}, so runs \
+                 ask for that — whatever is loaded when a command starts. Naming it keeps \
+                 every run on it; `mecha setup --write` writes it from the server."
+            )
+        } else {
+            format!(
+                "[providers.{name}] sets no `model`; the server is serving {served:?}. Behind \
+                 a llama-server router the request's `model` selects what answers, and an \
+                 unnamed one is not served; elsewhere it is what every record says answered. \
+                 `mecha setup --write` writes it from the server."
+            )
+        });
     }
     if let (None, Some(served)) = (cfg.context_window, props.default_generation_settings.n_ctx) {
         out.push(format!(
