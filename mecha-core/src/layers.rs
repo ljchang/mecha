@@ -207,10 +207,33 @@ pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
         ),
         [] => String::new(),
     };
-    for (p, (_, tag)) in people.iter().zip(&tags) {
-        let part = untagged(&p.part, &tags);
-        let part = part.trim().trim_end_matches('.');
-        let at = p.at.as_deref().map(|a| format!(" {a}")).unwrap_or_default();
+    let parts: Vec<String> = people
+        .iter()
+        .map(|p| {
+            untagged(&p.part, &tags)
+                .trim()
+                .trim_end_matches('.')
+                .to_string()
+        })
+        .collect();
+    // Whom each part acts on: the first other person it names.
+    let acts_on: Vec<Option<usize>> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| (0..tags.len()).find(|&j| j != i && part.contains(&tags[j].1)))
+        .collect();
+    for (i, (p, (_, tag))) in people.iter().zip(&tags).enumerate() {
+        let part = parts[i].as_str();
+        // A part that acts on someone is placed beside them, not on a side
+        // of the frame: "on the right" stood the actor apart and drew the act
+        // on his own body, 3 of 3 (mecha-a3, 2026-10-10). The person acted on
+        // keeps their side as the anchor; when two parts act on each other,
+        // the first does.
+        let relative = acts_on[i].filter(|&j| acts_on[j] != Some(i) || j < i);
+        let at = match relative {
+            Some(j) => format!(" beside {}", tags[j].1),
+            None => p.at.as_deref().map(|a| format!(" {a}")).unwrap_or_default(),
+        };
         if part.is_empty() {
             let at = if at.is_empty() {
                 " in the scene".to_string()
@@ -382,8 +405,8 @@ mod tests {
             p.starts_with(
                 "Both people are in the picture: the person from <image2> and the person from \
                  <image3>. Place the person from <image2>, lifting the person from <image3> off the \
-                 ground. Place the person from <image3>, with his arms around the person from \
-                 <image2>'s shoulders. They laugh, and the person from <image2>'s scarf slips."
+                 ground. Place the person from <image3> beside the person from <image2>, with his \
+                 arms around the person from <image2>'s shoulders. They laugh, and the person from <image2>'s scarf slips."
             ),
             "{p}"
         );
@@ -424,6 +447,22 @@ mod tests {
             ),
             "{p}"
         );
+        // A part acting on someone is placed beside them, not on a side: the
+        // one acted on keeps theirs as the anchor, whatever the order.
+        let mut acted_on = person("Maya", "sitting on a bench with a map");
+        acted_on.at = Some("in the centre".into());
+        let mut actor = person("John", "straightening Maya's collar");
+        actor.at = Some("on the right".into());
+        let p = placing_prompt(&[actor, acted_on], None);
+        assert!(
+            p.contains(
+                "Place the person from <image2> beside the person from <image3>, straightening \
+                 the person from <image3>'s collar. Place the person from <image3> in the \
+                 centre, sitting on a bench with a map."
+            ),
+            "{p}"
+        );
+        assert!(!p.contains("on the right"), "{p}");
     }
 
     #[test]
