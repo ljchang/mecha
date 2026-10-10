@@ -123,4 +123,16 @@ assert.deepEqual(opsWithout([paint1, paint2, eraseWith2, paint3], 1), [
 ]);
 assert.deepEqual(opsWithout([paint1, eraseWith2], 0), [{ ...eraseWith2, region: 0 }]);
 
+// The modal paints at a capped size in the photo's own shape: the server
+// takes any mask within 2% of the picture's shape and resamples it.
+import { workSize, WORK_EDGE } from '../src/lib/image-edit.js';
+assert.deepEqual(workSize(1344, 768), { width: 1344, height: 768 }, 'small pictures keep their size');
+assert.deepEqual(workSize(4032, 3024), { width: 2048, height: 1536 });
+assert.deepEqual(workSize(3024, 4032), { width: 1536, height: 2048 });
+for (const [w, h] of [[4032, 3024], [4000, 1800], [6000, 4000], [5000, 37]]) {
+  const s = workSize(w, h);
+  assert.ok(Math.max(s.width, s.height) <= WORK_EDGE);
+  assert.ok(Math.abs(w / h / (s.width / s.height) - 1) <= 0.02, `${w}x${h} keeps its shape`);
+}
+
 console.log('image-edit ok');

@@ -155,3 +155,16 @@ export function opsWithout(ops, k) {
     });
 }
 
+/** The longest side the edit modal's canvases work at. */
+export const WORK_EDGE = 2048;
+
+/** The size the modal paints at for a picture of `width`×`height`: its own
+ *  size up to `WORK_EDGE` on the long side, else scaled down to it, keeping
+ *  the shape the server checks a mask against (review of #623). */
+export function workSize(width, height) {
+  const scale = Math.min(1, WORK_EDGE / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}

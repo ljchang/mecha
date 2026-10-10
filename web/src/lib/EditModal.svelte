@@ -20,6 +20,7 @@
     editDirty,
     firstRegionWords,
     opsWithout,
+    workSize,
   } from './image-edit.js';
 
   let { src, path, initial = '', busy = false, error = null, multi = false, onsend, onclose } = $props();
@@ -109,7 +110,12 @@
   );
 
   function loaded() {
-    natural = { width: img.naturalWidth, height: img.naturalHeight };
+    // The canvases work at a capped size, not the photo's own: the server
+    // resamples the mask and the index to its ~1024 edit canvas anyway, and
+    // at a phone photo's full size four regions held ~390 MB of canvas, past
+    // what iOS Safari keeps, which then reads back blank with no error
+    // (review of #623). Points map to this size like any other.
+    natural = workSize(img.naturalWidth, img.naturalHeight);
     size = defaultBrush(natural.width);
     base = document.createElement('canvas');
     preview = document.createElement('canvas');
@@ -132,7 +138,8 @@
     // In regions mode the chat's draft is the first region's words, never
     // dropped once a region is painted (review of #623).
     regionList = [{ ...palette[0], words: multi ? initial : '' }];
-    layers = [makeLayer()];
+    // Single mode paints `base` alone; only regions keep a layer each.
+    layers = multi ? [makeLayer()] : [];
     active = 0;
     render();
   }
@@ -210,10 +217,6 @@
   // later region win, and the eraser clears it from all of them, so what is
   // shown painted is what is sent (review of #623).
   function apply(op) {
-    if (!multi) {
-      draw(layers[0].getContext('2d'), op);
-      return;
-    }
     layers.forEach((l, k) =>
       draw(l.getContext('2d'), op.erase || k === (op.region ?? 0) ? op : { ...op, erase: true }),
     );
@@ -224,12 +227,17 @@
   // event (review of #429). Only a regions-mode erase, which can take paint
   // out of several layers, composes them again.
   function commit(op) {
-    apply(op);
+    if (multi) apply(op);
     if (multi && op.erase) composeBase();
     else draw(base.getContext('2d'), op);
   }
 
   function replay() {
+    if (!multi) {
+      base.getContext('2d').clearRect(0, 0, base.width, base.height);
+      for (const op of ops) draw(base.getContext('2d'), op);
+      return;
+    }
     for (const l of layers) l.getContext('2d').clearRect(0, 0, l.width, l.height);
     for (const op of ops) apply(op);
     composeBase();
