@@ -243,7 +243,7 @@ pub fn fold(
 /// whole box — and nothing would say so. Refused, the sample unit fails, the
 /// `now` loader empties, and the doctor reports a sampler that stopped writing.
 pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample> {
-    let reader = Reader::new();
+    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET);
     let mem = reader.meminfo().map_err(|r| {
         anyhow::anyhow!(
             "/proc/meminfo could not be read ({}); no sample recorded",
@@ -257,7 +257,7 @@ pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample
 
     let units = unit_counters(&user_app_slice())?;
     let gpu = reader.gpu().unwrap_or_default();
-    let gpu_apps = source::nvidia_smi("--query-compute-apps=pid,used_memory")
+    let gpu_apps = source::nvidia_smi("--query-compute-apps=pid,used_memory", reader.budget())
         .out()
         .map(|t| {
             parse_gpu_apps(&t)
@@ -329,7 +329,7 @@ fn read_counters(reader: &Reader, at: DateTime<Utc>, since: Option<DateTime<Utc>
                 &format!("--since=@{}", since.timestamp()),
                 &format!("--until=@{}", at.timestamp()),
             ],
-            source::FORK_TIMEOUT,
+            reader.budget(),
         );
         ran.out().map(|t| {
             source::parse_oom_kills(&t)
@@ -405,6 +405,15 @@ fn net_counters(iface: &str) -> Result<NetCounters, Reading> {
         tx: num("statistics/tx_bytes")?,
     })
 }
+
+/// How long all of one sample's commands may take together. A sample runs
+/// several (`nvidia-smi` three times, `iw`, `tailscale`, `systemctl`,
+/// `journalctl`), and a wedged driver hangs every `nvidia-smi`; a bound per
+/// command would add up past the unit's `TimeoutStartSec`, and systemd would
+/// kill the sample before it wrote anything. Under one deadline the late
+/// readings are `Unread` and the minute is still written. A test pins it
+/// below the unit's timeout.
+pub const SAMPLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The user manager's `app.slice`, where systemd puts user services.
 fn user_app_slice() -> PathBuf {

@@ -23,11 +23,14 @@ pub struct MemInfo {
     pub swap_free: u64,
 }
 
-/// `None` when `MemTotal:` is absent — an unreadable `/proc/meminfo` is not a
-/// machine with no memory.
+/// `None` unless both `MemTotal:` and `MemAvailable:` are there — an
+/// unreadable `/proc/meminfo` is not a machine with no memory, and one with
+/// no `MemAvailable:` (a kernel before 3.14) is not a machine with nothing
+/// left. Swap absent is zero: a kernel without swap has none in use.
 pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
     let mut m = MemInfo::default();
     let mut seen_total = false;
+    let mut seen_available = false;
     for line in text.lines() {
         let mut parts = line.split_whitespace();
         let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
@@ -42,13 +45,16 @@ pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
                 m.total = bytes;
                 seen_total = true;
             }
-            "MemAvailable:" => m.available = bytes,
+            "MemAvailable:" => {
+                m.available = bytes;
+                seen_available = true;
+            }
             "SwapTotal:" => m.swap_total = bytes,
             "SwapFree:" => m.swap_free = bytes,
             _ => {}
         }
     }
-    seen_total.then_some(m)
+    (seen_total && seen_available).then_some(m)
 }
 
 /// The aggregate `cpu` line of `/proc/stat`: (busy, total) jiffies.
@@ -196,6 +202,11 @@ impl Ran {
 /// while it runs, so a large answer (`tailscale status --json` on a busy
 /// tailnet) cannot fill the pipe and stall the child into the timeout.
 pub fn run_bounded(cmd: &str, args: &[&str], timeout: Duration) -> Ran {
+    // A spent budget runs nothing: starting a command only to kill it would
+    // be load for no reading.
+    if timeout.is_zero() {
+        return Ran::TimedOut;
+    }
     let mut child = match std::process::Command::new(cmd)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -238,11 +249,11 @@ pub fn run_bounded(cmd: &str, args: &[&str], timeout: Duration) -> Ran {
 }
 
 /// One `nvidia-smi --query-<what>` in CSV with no header or units.
-pub fn nvidia_smi(query: &str) -> Ran {
+pub fn nvidia_smi(query: &str, timeout: Duration) -> Ran {
     run_bounded(
         "nvidia-smi",
         &[query, "--format=csv,noheader,nounits"],
-        FORK_TIMEOUT,
+        timeout,
     )
 }
 
