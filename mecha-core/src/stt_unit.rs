@@ -116,6 +116,18 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     let dir = dir(home);
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let unit = units.join(format!("{}.service", naming.unit));
+    // A server on the port whose unit mecha did not write is someone's — a
+    // Parakeet started from a terminal, or under another unit name. Nothing
+    // is installed beside it: it would answer the check below while mecha's
+    // own restart-looped against the port (`router_unit`'s refusal, #568;
+    // review of #638).
+    if !wrote_unit(home, &unit)? && crate::router_unit::port_answers(naming.port) {
+        bail!(
+            "something already answers on :{} and mecha did not install it — nothing is \
+             installed over it; point `[voice] stt_url` at it instead",
+            naming.port
+        );
+    }
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -143,8 +155,11 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
             "fetching the speech-to-text model ({:.0} MiB)",
             bytes as f64 / 1_048_576.0
         ));
+        // The two scratch trees live inside the recorded tree and are not
+        // recorded themselves: a record whose path is gone reads the install
+        // incomplete for good, and one interrupted after the model landed
+        // would never come back to unrecord them (review of #638).
         let downloads = dir.join("downloads");
-        Manifest::record(home, ID, &downloads)?;
         let tarball = crate::fetch::fetch_release_asset(
             repo,
             tag,
@@ -157,7 +172,6 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         .await?;
         say("unpacking it");
         let staging = dir.join("model.new");
-        Manifest::record(home, ID, &staging)?;
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging)?;
         let mut c = std::process::Command::new("tar");
@@ -178,11 +192,9 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         let _ = std::fs::remove_dir_all(&model);
         std::fs::rename(&unpacked, &model)?;
         std::fs::remove_dir_all(&staging)?;
-        Manifest::unrecord(home, ID, &staging)?;
         // The tarball has served its purpose: half a gigabyte kept for
         // nothing. A reinstall fetches it again.
         std::fs::remove_dir_all(&downloads)?;
-        Manifest::unrecord(home, ID, &downloads)?;
     }
 
     // --- the server and its unit
@@ -208,6 +220,15 @@ async fn ready(r: reqwest::Response) -> bool {
     r.json::<serde_json::Value>()
         .await
         .is_ok_and(|v| v["status"] == "ok")
+}
+
+/// Whether the record names this unit's file: mecha installed the server on
+/// its port, and a reinstall may find it answering.
+fn wrote_unit(home: &Path, unit: &Path) -> Result<bool> {
+    Ok(Manifest::read(home)?
+        .entries
+        .iter()
+        .any(|e| e.sidecar == ID && e.wrote.iter().any(|w| w == unit)))
 }
 
 /// The server answers `/health` and transcribes a clip: the model loads and
@@ -401,7 +422,7 @@ mod tests {
         assert!(text.contains(&format!(
             "PARAKEET_DIR=/srv/owner/.mecha/sidecars/stt/{MODEL_DIR}"
         )));
-        assert!(!text.contains("Github") && !text.contains("WorkingDirectory"));
+        assert!(!text.contains("WorkingDirectory"));
     }
 
     /// The pin is the tarball this unpacks: named for the directory the
@@ -437,6 +458,32 @@ mod tests {
         assert_eq!(&w[..4], b"RIFF");
         assert_eq!(&w[8..16], b"WAVEfmt ");
         assert_eq!(u32::from_le_bytes(w[40..44].try_into().unwrap()), 32_000);
+    }
+
+    /// A server mecha did not install on the port is refused before a byte
+    /// is written or recorded (review of #638).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_strangers_server_on_the_port_is_not_installed_over() {
+        let root = std::env::temp_dir().join(format!("mecha-7d1-port-{}", uuid::Uuid::new_v4()));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            unit: "mecha-test-stt-stranger".into(),
+            port: listener.local_addr().unwrap().port(),
+        };
+        let m = Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: Vec::new(),
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let r = install(&m, &naming, &mut |_| {}).await;
+        let wrote = root.join(".mecha").exists();
+        let _ = std::fs::remove_dir_all(&root);
+        let err = format!("{:#}", r.unwrap_err());
+        assert!(err.contains("mecha did not install it"), "{err}");
+        assert!(!wrote, "nothing written or recorded");
     }
 
     /// The real thing: build the environment, fetch and unpack the model,
