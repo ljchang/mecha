@@ -3,6 +3,9 @@ Description=Sample the host's load every minute
 
 [Timer]
 OnCalendar=*:*:30
+# systemd's default AccuracySec is a minute, which would let this coalesce
+# with mecha-hud.timer's :00 — the offset is the design, so it is pinned.
+AccuracySec=1s
 Persistent=true
 
 [Install]

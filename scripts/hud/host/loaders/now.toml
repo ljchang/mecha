@@ -8,7 +8,10 @@ SELECT at,
        round(cpu_pct, 1) AS cpu_pct,
        gpu_util,
        round(100.0 * disk_used / disk_total, 1) AS disk_used_pct
-FROM system_minute ORDER BY at DESC LIMIT 1
+FROM system_minute
+-- A stopped sampler must read as no figure, never as the machine now.
+WHERE at >= datetime('now', '-5 minutes')
+ORDER BY at DESC LIMIT 1
 """
 
 [[column]]
