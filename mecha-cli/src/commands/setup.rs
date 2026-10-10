@@ -716,7 +716,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
     // as the one below — read the values off the wire, show them, ask — with
     // one addition, which is that the table does not exist yet.
     if let onboarding::LocalProbe::Found(found) = &facts.local_probe {
-        return write_local_provider(found);
+        return write_local_provider(found).map(|_| ());
     }
     let Some(props) = &facts.props else {
         // "Nothing answered" is a claim about a probe, and it is only true
@@ -835,7 +835,10 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
 /// It also moves `default_provider`, which is a bigger change than the three
 /// keys `--write` otherwise touches: it changes what answers. So it is
 /// printed in full and confirmed, and the previous file is kept.
-pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
+///
+/// `true` when written: `setup chat`, which has just installed what this
+/// would name, says what a decline leaves behind (found on review of #627).
+pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bool> {
     let settings = onboarding::verified_settings(&found.props);
     println!(
         "Found a server at {} and nothing in the config names it.\n",
@@ -859,7 +862,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
 
     if !std::io::stdin().is_terminal() {
         println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(());
+        return Ok(false);
     }
     print!("\nwrite this, and make it the default provider? [y/N] ");
     std::io::stdout().flush()?;
@@ -867,7 +870,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
     std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
     if !line.trim().eq_ignore_ascii_case("y") {
         println!("not written");
-        return Ok(());
+        return Ok(false);
     }
 
     let path = mecha_core::config::Config::global_path()
@@ -929,7 +932,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
         "written to {} — `mecha setup` again to check it agrees with the server",
         path.display()
     );
-    Ok(())
+    Ok(true)
 }
 
 /// Append a provider table, refusing to duplicate one that is already there.
@@ -1054,6 +1057,18 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     let backup = path.with_extension("toml.bak");
     std::fs::copy(&path, &backup).ok();
     std::fs::write(&path, lines)?;
+    // Checked, not claimed — the read-back `write_local_provider` makes, and
+    // the one this path lacked: a line edit can land somewhere TOML does not
+    // allow (found on review of #627).
+    if let Err(e) = mecha_core::config::Config::load_global() {
+        let restored = std::fs::copy(&backup, &path).is_ok();
+        eprintln!(
+            "what was written to {} does not parse: {e:#}",
+            path.display()
+        );
+        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
+        crate::exit_with(1);
+    }
     println!(
         "written to {} (previous copy at {})",
         path.display(),
@@ -1080,13 +1095,25 @@ fn apply_text(text: &str, provider: &str, settings: &[(&'static str, String)]) -
         .find(|(_, l)| l.trim_start().starts_with('['))
         .map(|(i, _)| i)
         .unwrap_or(lines.len());
+    // An assignment whose value closes on its own line: the opening line of
+    // a multi-line array (`fallbacks = [`) is not where the table's last
+    // value ends, and a key put after it lands inside the array (found on
+    // review of #627). With none, the key goes just after the header.
     let assignment_line = |l: &str| {
         let t = l.trim_start();
-        !t.is_empty() && !t.starts_with('#') && t.contains('=')
+        let Some((_, value)) = t.split_once('=') else {
+            return false;
+        };
+        let opens = |o: char, c: char| value.matches(o).count() > value.matches(c).count();
+        !t.starts_with('#') && !opens('[', ']') && !opens('{', '}') && !value.contains("\"\"\"")
+    };
+    let closes_a_value = |l: &str| {
+        let t = l.trim_start();
+        !t.starts_with('#') && (t.starts_with(']') || t.starts_with('}'))
     };
     let mut after = (start + 1..end)
         .rev()
-        .find(|&i| assignment_line(&lines[i]))
+        .find(|&i| assignment_line(&lines[i]) || closes_a_value(&lines[i]))
         .map_or(start + 1, |i| i + 1);
 
     for (key, value) in settings {
@@ -1181,6 +1208,23 @@ mod tests {
         );
         assert!(again.contains("model = \"other\"") && !again.contains("served-alias"));
         assert!(apply_text(&text, "nowhere", &settings).is_err());
+
+        // A table ending in a multi-line array: the key goes after its
+        // closing line, never inside it (review of #627).
+        let arrayed = "[providers.local]\nkind = \"local\"\nfallbacks = [\n  \"other\",\n]\n\n[agent]\nmax_turns = 5\n";
+        let text = apply_text(arrayed, "local", &settings).unwrap();
+        let cfg: toml::Value = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert_eq!(
+            cfg["providers"]["local"]["model"].as_str(),
+            Some("served-alias")
+        );
+        assert_eq!(
+            cfg["providers"]["local"]["fallbacks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// `NotAttempted` has two causes, and `--write` must name the right one.

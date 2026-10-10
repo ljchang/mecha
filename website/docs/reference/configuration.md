@@ -863,7 +863,7 @@ variables above are the finer instrument.
 # Layered: ~/.mecha/config.toml, then ./mecha.toml, then MECHA_* environment
 # variables, then CLI flags. Each layer overrides only the fields it names.
 
-default_provider = "anthropic"     # the default is "local"; a hosted one is a choice
+default_provider = "local"         # the default; "anthropic" sends runs to a hosted model
 
 # ---------------------------------------------------------------- providers --
 

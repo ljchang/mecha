@@ -314,6 +314,10 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
                 "say where the secret does not go: {detail}"
             );
             assert!(
+                detail.contains("locally"),
+                "name the other way out, which is what this project is for: {detail}"
+            );
+            assert!(
                 !detail.contains("already have a local provider"),
                 "the default's entry is not one the owner configured: {detail}"
             );
@@ -634,7 +638,7 @@ fn a_credential_cannot_be_declined_even_by_editing_the_store() {
     let home = Home::new("undeclinable");
     std::fs::write(
         home.path().join("setup-declined.json"),
-        r#"{"declined": ["provider-credential", "local-server", "mail", "docs", "slack", "graph", "charter"]}"#,
+        r#"{"declined": ["provider-credential", "mail", "docs", "slack", "graph", "charter"]}"#,
     )
     .unwrap();
 
@@ -644,10 +648,7 @@ fn a_credential_cannot_be_declined_even_by_editing_the_store() {
         "missing",
         "a credential is not a feature somebody can decline"
     );
-    // Nor is the default's local server: whatever answers on :8080, a
-    // decline written for it is not honoured.
-    let local = steps(&mecha(&home, &["setup", "--json"]));
-    assert_ne!(step(&local, "local-server")["status"], "declined");
+
     // The genuinely optional ones still honour it, so this cannot pass on a
     // decline that never worked at all.
     assert_eq!(step(&s, "slack")["status"], "declined");
