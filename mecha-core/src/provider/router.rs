@@ -247,14 +247,21 @@ fn unnamed_bases(cfg: &Config) -> Vec<String> {
     let mut bases: Vec<String> = cfg
         .providers
         .values()
-        .filter(|p| p.configured_local() && p.model.is_none())
+        .filter(|p| asks_its_server(p))
         .filter_map(|p| p.base_url.as_deref())
-        .filter(|u| is_loopback(u))
         .map(base)
         .collect();
     bases.sort();
     bases.dedup();
     bases
+}
+
+/// Whether an entry with no `model` takes its name from its server — the one
+/// predicate [`observe`], the provider and the preflight warning all read, so
+/// what is said and what is sent cannot disagree (review of #637): owner
+/// configured, `kind = "local"`, on this machine, naming no model.
+pub fn asks_its_server(p: &ProviderConfig) -> bool {
+    p.configured_local() && p.model.is_none() && p.base_url.as_deref().is_some_and(is_loopback)
 }
 
 /// Which model a request to a router names when its entry names none: the
@@ -305,9 +312,18 @@ async fn observe_unnamed(cfg: &Config) -> (Vec<(String, String)>, Vec<String>) {
                 match name_for(&list) {
                     Some(m) => named.push((b, m.to_string())),
                     None if readable(&list) => warnings.push(format!(
-                        "a local provider at {b} names no `model`, and the router there serves                          several with none loaded — so a run cannot know which to ask for. Set                          `model` in its table (`mecha setup --write` writes it once one is                          loaded)."
+                        "a local provider at {b} names no `model`, and the router there serves \
+                         several with none loaded — so a run cannot know which to ask for. Set \
+                         `model` in its table (`mecha setup --write` writes it once one is \
+                         loaded)."
                     )),
-                    None => {}
+                    // The followed routers' rule: a list this cannot read
+                    // supports no conclusion, and says so (review of #637).
+                    None => warnings.push(format!(
+                        "a local provider at {b} names no `model`, and the router there answered \
+                         /models with a list this cannot read — so a run cannot know which model \
+                         to ask for. Set `model` in its table."
+                    )),
                 }
             }
             Some(false) => {
@@ -334,7 +350,8 @@ async fn observe_unnamed(cfg: &Config) -> (Vec<(String, String)>, Vec<String>) {
 /// one run. Four loopback round trips per router with a model resident —
 /// `/props` and `/models` here, then `preflight::fetch`'s bare `/props` and
 /// the resident model's own; a refused connection costs nothing and leaves
-/// the default standing.
+/// the default standing. Each owner-configured local entry with no `model`
+/// costs two more (`/props`, then `/models` or the plain server's `/props`).
 pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     observe_seen(cfg, follows).await.0
 }

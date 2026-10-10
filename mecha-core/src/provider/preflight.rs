@@ -188,13 +188,11 @@ pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<Str
     // only by `mecha setup` (found on review of #627). Only what the server
     // reports, so `mecha setup --write` can always clear it.
     if let (None, Some(served)) = (cfg.model.as_deref(), props.model_alias.as_deref()) {
-        // Asked for only on this machine (`router::unnamed_model`): off it,
-        // nothing is asked at start, and an unnamed request is not served by
-        // a router.
-        let asked = cfg
-            .base_url
-            .as_deref()
-            .is_some_and(crate::provider::router::is_loopback);
+        // Asked for only where `router::asks_its_server` says (an entry the
+        // owner configured, on this machine): elsewhere — off the machine, or
+        // the built-in default — nothing is asked at start, and an unnamed
+        // request is not served by a router.
+        let asked = crate::provider::router::asks_its_server(cfg);
         out.push(if asked {
             format!(
                 "[providers.{name}] sets no `model`; the server is serving {served:?}, so runs \
@@ -315,6 +313,20 @@ mod tests {
         // Nothing reported, nothing said: `--write` could not clear it.
         let silent: Props = serde_json::from_str("{}").unwrap();
         assert!(disagreements("local", &c, &silent).is_empty());
+
+        // "Runs ask for that" only where they do: an owner-configured entry
+        // here. The built-in default is never asked, so it is not told it
+        // was (review of #637).
+        let mut own = c.clone();
+        own.base_url = Some("http://127.0.0.1:8080".into());
+        own.built_in = false;
+        let said = disagreements("local", &own, &p).join("\n");
+        assert!(said.contains("so runs ask for that"), "{said}");
+        let mut builtin = own.clone();
+        builtin.built_in = true;
+        let said = disagreements("local", &builtin, &p).join("\n");
+        assert!(!said.contains("so runs ask for that"), "{said}");
+        assert!(said.contains("an unnamed one is not served"), "{said}");
     }
 
     /// A field llama-server stops sending must cost a check, never the
