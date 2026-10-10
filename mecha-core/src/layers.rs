@@ -48,6 +48,9 @@ pub struct Plan {
     /// Every chat-derived string the passes' prompts are built from, for
     /// the prompt log's `words` (what `check-private` reads).
     pub words: Vec<String>,
+    /// Library names said in the words but not in the picture: each pass
+    /// reads them as "the viewer", as the single pass does.
+    pub offstage: Vec<String>,
 }
 
 /// The most people a layered build has been measured with (mecha-a3's gate:
