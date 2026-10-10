@@ -459,8 +459,15 @@ pub async fn observe_all(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen>
         Vec::new()
     };
     warnings.extend(unreadable);
+    // Still asked when not following — a `--provider` naming a model-less
+    // entry resolves from it — but warned of only when the run's model is
+    // the default's to choose, as the orphans are: a run given `--model` has
+    // named what it asks for, and "cannot know which" is not true of it
+    // (review of #637).
     let (unnamed, unnamed_warnings) = observe_unnamed(cfg).await;
-    warnings.extend(unnamed_warnings);
+    if follows {
+        warnings.extend(unnamed_warnings);
+    }
     for (name, p) in &cfg.providers {
         if p.follow_loaded && !follows_here(p) {
             warnings.push(format!(
@@ -1346,6 +1353,17 @@ mod tests {
         server.await.unwrap();
         assert!(w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
         assert_eq!(unnamed_model(&url), None);
+
+        // A run given `--model` is not told it cannot know which: it named
+        // one (review of #637). Still asked, for a `--provider` run's sake.
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"a","status":{"value":"unloaded"}},{"id":"b","status":{"value":"unloaded"}}]}"#,
+        ])
+        .await;
+        let w = observe(&model_less(&url), false).await;
+        server.await.unwrap();
+        assert!(!w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
 
         // The built-in entry is never asked: a reset must not reach :8080.
         assert!(unnamed_bases(&Config::default()).is_empty());

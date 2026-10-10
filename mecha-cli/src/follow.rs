@@ -649,6 +649,9 @@ async fn build(
     }
     // The name this surface's own probe read, never the process global a
     // concurrent observe may have overwritten (`router::observe_seen`).
+    // The one exception: when the probe could not name it, `opts.model`
+    // stays unset and `from_config` falls back to the global (review of
+    // #637).
     if model.is_some() {
         opts.model = model;
     }
