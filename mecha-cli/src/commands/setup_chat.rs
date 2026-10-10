@@ -268,7 +268,25 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         base_url: base,
         props,
     };
-    super::setup::write_local_provider(&found)
+    if !super::setup::write_local_provider(&found)? {
+        // Declined, or no terminal to ask at: the default may still name
+        // this router — the starter's does, and so does the built-in entry
+        // with no file at all (ruling F12) — with no model, and a run would
+        // send a model name the router does not serve. Said here, not met
+        // as a bare 404 after the download (found on review of #627; the
+        // #618 incident, on the path F12 made the common one).
+        if let Some(p) = cfg.providers.get(&cfg.default_provider) {
+            if router_unit::names_this_router(p, naming.port) && p.model.as_deref() != Some(&alias)
+            {
+                println!(
+                    "The default provider `{}` names this router but not {alias}, so a run \
+                     through it fails until `mecha setup --write` writes it.",
+                    cfg.default_provider
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The table the owner wrote that names the router on `port` — never the
