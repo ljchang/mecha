@@ -187,16 +187,33 @@ pub struct GpuNow {
 }
 
 /// `nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.total
-/// --format=csv,noheader,nounits`.
+/// --format=csv,noheader,nounits` — one line per GPU. Utilisation and
+/// temperature are the hottest GPU's, power is the sum, and `unified` holds
+/// only when *every* GPU reports no memory total: whether GPU memory is
+/// folded into a category's memory must not depend on which GPU is listed
+/// first.
 pub fn parse_gpu(text: &str) -> GpuNow {
-    let line = text.lines().next().unwrap_or("");
-    let raw: Vec<&str> = line.split(',').map(str::trim).collect();
-    let num = |i: usize| raw.get(i).and_then(|f| f.parse::<f64>().ok());
+    let lines: Vec<Vec<&str>> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.split(',').map(str::trim).collect())
+        .collect();
+    let col = |i: usize| -> Vec<f64> {
+        lines
+            .iter()
+            .filter_map(|f| f.get(i).and_then(|v| v.parse::<f64>().ok()))
+            .collect()
+    };
+    let max = |v: Vec<f64>| v.into_iter().reduce(f64::max);
+    let power = col(2);
     GpuNow {
-        util: num(0),
-        temp: num(1),
-        power_w: num(2),
-        unified: raw.get(3).is_some_and(|f| f.contains("N/A")),
+        util: max(col(0)),
+        temp: max(col(1)),
+        power_w: (!power.is_empty()).then(|| power.iter().sum()),
+        unified: !lines.is_empty()
+            && lines
+                .iter()
+                .all(|f| f.get(3).is_some_and(|m| m.contains("N/A"))),
     }
 }
 

@@ -3,6 +3,7 @@ Description=Refresh due HUD datasets every minute
 
 [Timer]
 OnCalendar=*:*:00
+AccuracySec=1s
 RandomizedDelaySec=5s
 Persistent=true
 

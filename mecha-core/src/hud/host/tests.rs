@@ -133,6 +133,15 @@ fn the_parsers_read_what_the_system_prints() {
         unit_of_cgroup("0::/user.slice/user-1000.slice/session-3.scope\n"),
         None
     );
+
+    // Two GPUs: hottest wins, power sums, and unified only if both say so.
+    let two = parse_gpu("10, 40, 5, [N/A]\n70, 60, 7, 24576\n");
+    assert_eq!(
+        (two.util, two.temp, two.power_w, two.unified),
+        (Some(70.0), Some(60.0), Some(12.0), false)
+    );
+    assert!(parse_gpu("1, 2, 3, [N/A]\n4, 5, 6, [N/A]\n").unified);
+    assert_eq!(parse_gpu(""), GpuNow::default());
 }
 
 #[test]
@@ -341,6 +350,10 @@ fn the_shipped_host_board_validates_and_its_loaders_read_the_sampler() {
         smp.at = base + Duration::minutes(step);
         record(&db, &smp).unwrap();
     }
+    // And the current minute, which the `now` loader's freshness bound needs.
+    let mut current = sample(0, &units, 600, 6000);
+    current.at = Utc::now();
+    record(&db, &current).unwrap();
     for (name, loader) in installed.loaders() {
         assert_eq!(loader.source(), "host", "{name}");
         let fetched = run_sqlite(&db, loader.query(), loader.max_rows(), QUERY_TIMEOUT)
@@ -388,5 +401,25 @@ fn on_unified_memory_a_categorys_gpu_memory_is_its_memory() {
         mem(0),
         7_000_000_000 - (100_000 + gpu_bytes),
         "other is what is left"
+    );
+}
+
+/// A stopped sampler reads as no headline figure, not as the machine now.
+#[test]
+fn the_now_loader_refuses_a_stale_sample() {
+    use crate::hud::runner::{run_sqlite, QUERY_TIMEOUT};
+    use crate::hud::Installed;
+    let board = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/host");
+    let installed = Installed::load_dir(&board, "host").unwrap().unwrap();
+    let now = &installed.loaders()["now"];
+    let s = Scratch::new();
+    let db = s.0.join("host.sqlite");
+    let mut old = sample(0, &[], 0, 0);
+    old.at = Utc::now() - Duration::minutes(30);
+    record(&db, &old).unwrap();
+    let fetched = run_sqlite(&db, now.query(), now.max_rows(), QUERY_TIMEOUT).unwrap();
+    assert!(
+        fetched.rows.is_empty(),
+        "a 30-minute-old sample is not the machine now"
     );
 }
