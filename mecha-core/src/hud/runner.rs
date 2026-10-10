@@ -51,9 +51,11 @@ pub struct Fetched {
 pub enum RunError {
     /// The file could not be opened read-only.
     Open(String),
-    /// SQLite refused or failed the statement — a syntax error, a denied
-    /// action, a missing table. SQLite's own message, which names the query,
-    /// never the data.
+    /// SQLite failed the statement — a syntax error, a missing table, a
+    /// locked file. SQLite's own message, which names the query, never the
+    /// data. Classified as a failure rather than a refusal: the message does
+    /// not say whether the loader or the source moved, and either way the
+    /// previous dataset stays and the doctor reports it as broken.
     Sql(String),
     /// More than one statement.
     MultipleStatements,
@@ -89,11 +91,21 @@ impl std::fmt::Display for RunError {
                 "the statement needs an action a loader may not take (only reads are allowed): {why}"
             ),
             RunError::NotReadOnly => write!(f, "the statement would write; a loader only reads"),
-            RunError::Unrepresentable { row, column } => write!(
-                f,
-                "row {row}, column {column:?}: a blob, a non-finite number or non-UTF-8 text, \
-                 which a dataset cannot hold"
-            ),
+            RunError::Unrepresentable { row, column } => {
+                // A result column's name may come from a schema someone else
+                // wrote (`SELECT *`); show it only when it is a plain
+                // identifier, as `ShapeRefusal::Columns` does.
+                let column = if super::is_identifier(column) {
+                    column.as_str()
+                } else {
+                    "(unnamed)"
+                };
+                write!(
+                    f,
+                    "row {row}, column {column:?}: a blob, a non-finite number or non-UTF-8 text, \
+                     which a dataset cannot hold"
+                )
+            }
             RunError::TooManyRows { max } => {
                 write!(f, "the query returned more than max_rows ({max}) rows")
             }

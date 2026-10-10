@@ -138,6 +138,23 @@ impl Ledger {
             .max()
     }
 
+    /// The highest generation a refresh of this loader recorded. Read from
+    /// the ledger, not the dataset file: a file that will not parse must not
+    /// read as "never refreshed" and restart the count at 1.
+    pub fn last_generation(&self, loader: &str) -> Option<u64> {
+        self.entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::Refreshed {
+                    loader: l,
+                    generation,
+                    ..
+                } if l == loader => Some(*generation),
+                _ => None,
+            })
+            .max()
+    }
+
     /// The most recent event for one loader.
     pub fn last(&self, loader: &str) -> Option<&Entry> {
         self.entries
@@ -184,6 +201,9 @@ pub struct LoaderStatus {
     /// Older than two of the loader's periods, or never produced once two
     /// periods have passed since install.
     pub stale: bool,
+    /// Why the dataset file could not be read, if it could not — a finding of
+    /// its own, never "never produced".
+    pub dataset_error: Option<String>,
 }
 
 /// The store, rooted at a directory (`~/.mecha/hud/` in use, a scratch one
@@ -211,8 +231,15 @@ impl Store {
         self.root.join("boards")
     }
 
-    fn board(&self, id: &str) -> PathBuf {
-        self.boards().join(id)
+    /// A board's directory — for an id already proved an identifier.
+    /// Containment is proved at the join, here, for every public entry point
+    /// that takes an id from its caller: a request path or a model may supply
+    /// one (step 4's routes), and `../..` must never reach the filesystem.
+    fn board(&self, id: &str) -> Result<PathBuf> {
+        if !is_identifier(id) {
+            anyhow::bail!("{id:?} is not a board id ([a-z][a-z0-9_]*)");
+        }
+        Ok(self.boards().join(id))
     }
 
     pub fn sources(&self) -> Result<std::result::Result<Sources, Refusals>> {
@@ -244,7 +271,7 @@ impl Store {
     }
 
     pub fn ledger(&self, id: &str) -> Result<Ledger> {
-        let path = self.board(id).join("ledger.jsonl");
+        let path = self.board(id)?.join("ledger.jsonl");
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Ledger::default()),
@@ -261,7 +288,7 @@ impl Store {
     }
 
     fn append(&self, id: &str, entry: &Entry) -> Result<()> {
-        let path = self.board(id).join("ledger.jsonl");
+        let path = self.board(id)?.join("ledger.jsonl");
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -272,7 +299,10 @@ impl Store {
     }
 
     pub fn dataset(&self, id: &str, name: &str) -> Result<Option<Dataset>> {
-        let path = self.board(id).join("data").join(format!("{name}.json"));
+        if !is_identifier(name) {
+            anyhow::bail!("{name:?} is not a dataset name ([a-z][a-z0-9_]*)");
+        }
+        let path = self.board(id)?.join("data").join(format!("{name}.json"));
         match std::fs::read_to_string(&path) {
             Ok(text) => Ok(Some(
                 serde_json::from_str(&text)
@@ -321,7 +351,10 @@ impl Store {
     /// the draft directory's own name unless one is given; it is checked
     /// before it is joined, and a board already installed under it is
     /// refused rather than overwritten. The copy lands in a staging directory
-    /// and is renamed into place, so a reader never sees half a board.
+    /// and is renamed into place, so a reader never sees half a board. The
+    /// files are read again for the copy, so what lands need not be the bytes
+    /// that were checked — which is why every refresh re-checks the board
+    /// (`Installed::load`) rather than trusting the install. Keep that.
     pub fn install(
         &self,
         draft: &Path,
@@ -342,7 +375,7 @@ impl Store {
                 format!("a board id matches [a-z][a-z0-9_]* (got {id:?}); pass --id"),
             )])));
         }
-        let target = self.board(&id);
+        let target = self.board(&id)?;
         if target.exists() {
             return Ok(Err(Refusals(vec![Refusal::new(
                 "",
@@ -393,7 +426,7 @@ impl Store {
             Ok(installed) => installed,
             Err(r) => return Ok(Err(r)),
         };
-        let _lock = lock(&self.board(id))?;
+        let _lock = lock(&self.board(id)?)?;
         let ledger = self.ledger(id)?;
         let sources = self.sources()?;
         let mut outcomes = Vec::new();
@@ -411,7 +444,7 @@ impl Store {
                     slot,
                     reason: format!("sources.toml does not load: {r}"),
                 },
-                Ok(sources) => self.run_one(id, loader, sources, slot, now)?,
+                Ok(sources) => self.run_one(id, loader, sources, &ledger, slot, now)?,
             };
             self.append(
                 id,
@@ -434,6 +467,7 @@ impl Store {
         id: &str,
         loader: &Loader,
         sources: &Sources,
+        ledger: &Ledger,
         slot: Option<DateTime<Utc>>,
         now: DateTime<Utc>,
     ) -> Result<Event> {
@@ -486,11 +520,7 @@ impl Store {
                 })
             }
         };
-        let generation = self
-            .dataset(id, &name)
-            .ok()
-            .flatten()
-            .map_or(1, |d| d.generation + 1);
+        let generation = ledger.last_generation(&name).map_or(1, |g| g + 1);
         let count = rows.len();
         let dataset = Dataset {
             name: name.clone(),
@@ -501,10 +531,24 @@ impl Store {
             rows,
             external: source.external(),
         };
-        write_atomic(
-            &self.board(id).join("data").join(format!("{name}.json")),
-            serde_json::to_string(&dataset)?.as_bytes(),
-        )?;
+        // A dataset that cannot be written is the environment's failure and
+        // gets its ledger line like any other — never an error that leaves
+        // the loader reading green and aborts the boards after it.
+        let written = serde_json::to_string(&dataset)
+            .map_err(anyhow::Error::from)
+            .and_then(|json| {
+                write_atomic(
+                    &self.board(id)?.join("data").join(format!("{name}.json")),
+                    json.as_bytes(),
+                )
+            });
+        if let Err(e) = written {
+            return Ok(Event::Failed {
+                loader: name,
+                slot,
+                reason: format!("the dataset could not be written: {e:#}"),
+            });
+        }
         Ok(Event::Refreshed {
             loader: name,
             slot,
@@ -530,17 +574,17 @@ impl Store {
                 Ok(installed) => {
                     let mut loaders = Vec::new();
                     for (name, loader) in installed.loaders() {
-                        let generated_at = self
-                            .dataset(&id, name)
-                            .ok()
-                            .flatten()
-                            .map(|d| d.generated_at);
+                        let (generated_at, dataset_error) = match self.dataset(&id, name) {
+                            Ok(d) => (d.map(|d| d.generated_at), None),
+                            Err(e) => (None, Some(format!("{e:#}"))),
+                        };
                         loaders.push(LoaderStatus {
                             name: name.clone(),
                             source: loader.source().to_string(),
                             last: ledger.last(name).cloned(),
                             generated_at,
                             stale: stale(loader, generated_at.or(ledger.installed_at()), now),
+                            dataset_error,
                         });
                     }
                     out.push(BoardStatus {

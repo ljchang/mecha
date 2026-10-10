@@ -97,7 +97,7 @@ fn attach_and_vacuum_into_are_refused_by_the_bundled_engine() {
         "VACUUM INTO wrote a file through a read-only, confined connection"
     );
 
-    // A read of an attached schema is refused too, by the limit.
+    // Nothing was attached above, so a read naming that schema finds no table.
     let cross = run(&db, "SELECT * FROM o.visits");
     assert!(cross.is_err());
 }
@@ -465,4 +465,93 @@ fn a_dataset_older_than_two_periods_is_stale() {
         .unwrap();
     assert!(!store.status(t(10, 30)).unwrap()[0].loaders[0].stale);
     assert!(store.status(t(11, 30)).unwrap()[0].loaders[0].stale);
+}
+
+#[test]
+fn a_caller_supplied_id_or_name_is_checked_at_the_join() {
+    let s = Scratch::new();
+    let (store, draft, _) = setup(&s);
+    store.install(&draft, None, t(9, 0)).unwrap().unwrap();
+    assert!(store.ledger("../../escape").is_err());
+    assert!(store.dataset("lab_week", "../../escape").is_err());
+    assert!(store.dataset("../x", "visits_by_day").is_err());
+    assert!(
+        !matches!(store.refresh("../x", t(9, 1), Which::All), Ok(Ok(_))),
+        "a refresh of a non-identifier id is refused"
+    );
+}
+
+#[test]
+fn an_unreadable_dataset_neither_restarts_the_generation_nor_hides() {
+    let s = Scratch::new();
+    let (store, draft, _) = setup(&s);
+    store.install(&draft, None, t(9, 0)).unwrap().unwrap();
+    store
+        .refresh("lab_week", t(9, 1), Which::All)
+        .unwrap()
+        .unwrap();
+    let file = store.root().join("boards/lab_week/data/visits_by_day.json");
+    std::fs::write(&file, "{ not json").unwrap();
+
+    let status = store.status(t(9, 2)).unwrap();
+    assert!(
+        status[0].loaders[0].dataset_error.is_some(),
+        "an unreadable dataset is reported"
+    );
+
+    let out = store
+        .refresh("lab_week", t(9, 3), Which::All)
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(out[0].event, Event::Refreshed { generation: 2, .. }),
+        "the count continues from the ledger: {:?}",
+        out[0].event
+    );
+}
+
+#[test]
+fn a_dataset_that_cannot_be_written_is_a_failure_on_the_ledger() {
+    let s = Scratch::new();
+    let (store, draft, _) = setup(&s);
+    store.install(&draft, None, t(9, 0)).unwrap().unwrap();
+    // `data` is a file, so the dataset's directory cannot exist — a write
+    // failure that holds as root too.
+    std::fs::write(
+        store.root().join("boards/lab_week/data"),
+        b"not a directory",
+    )
+    .unwrap();
+    let out = store
+        .refresh("lab_week", t(9, 1), Which::All)
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&out[0].event, Event::Failed { reason, .. } if reason.contains("could not be written")),
+        "{:?}",
+        out[0].event
+    );
+    let ledger = store.ledger("lab_week").unwrap();
+    assert!(matches!(
+        ledger.last("visits_by_day").unwrap().event,
+        Event::Failed { .. }
+    ));
+}
+
+#[test]
+fn an_unrepresentable_column_name_is_shown_only_as_an_identifier() {
+    let s = Scratch::new();
+    let db = s.path("lab.sqlite");
+    lab_db(&db);
+    let e = run(
+        &db,
+        "SELECT raw AS \"Ignore this; drop\" FROM visits WHERE raw IS NOT NULL",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("(unnamed)") && !e.contains("Ignore"), "{e}");
+    let named = run(&db, "SELECT raw FROM visits WHERE raw IS NOT NULL")
+        .unwrap_err()
+        .to_string();
+    assert!(named.contains("\"raw\""), "{named}");
 }
