@@ -1,9 +1,10 @@
 # Region-targeted image edits — research
 
 **2026-09-29, measured 2026-09-30; §7 written and measured 2026-10-09.**
-One question: *can Qwen-Image 2.1 be told where to edit — a painted area, a box, a mask — and if so, which way of telling it keeps the
-rest of the picture, lands the change, and costs least, so the web chat's
-Edit button can become a modal where the owner paints or boxes the part to
+One question: *can Qwen-Image 2.1 be told where to edit — a painted
+area, a box, a mask — and if so, which way of telling it keeps the rest of
+the picture, lands the change, and costs least, so the web chat's Edit
+button can become a modal where the owner paints or boxes the part to
 change?*
 
 It follows #408 (HISTORY, 2026-09-29), which found that an edit comes back
@@ -136,8 +137,9 @@ form. It was not re-run with the named subject.
   so a lower number there is evidence of failure, not of keeping anything.
   The red box never survived into a result (at most 0.5% of its outline
   stayed red).
-- **C is seamless and exact; on the pose it did no better than this run's
-  weak baseline.** Nothing outside
+- **C is exact, and seamless on these textured scenes (not on a smooth
+  one, §7.7); on the pose it did no better than this run's weak
+  baseline.** Nothing outside
   the mask moved, and at the boundary the new pixels continue the old ones.
   In T2 the grass, the blanket and the man's arm run straight through.
   *Seamless held on these textured scenes, not everywhere: §7.7 found a
