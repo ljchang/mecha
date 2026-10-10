@@ -124,3 +124,18 @@ export function composeRegionsMessage(picturePath, indexPath, regions) {
   return `Edit ${picturePath} in regions ${indexPath}: ${each}`;
 }
 
+// Whether the modal holds work: paint, or words changed from the chat's draft.
+// In regions mode the first region opens holding that draft, which is not
+// work; single mode has no region words to read (review of #623).
+export function editDirty({ multi, painted, words, initial, regionWords }) {
+  if (painted || words.trim() !== initial.trim()) return true;
+  return multi && regionWords.some((w, k) => (w ?? '').trim() !== (k === 0 ? initial.trim() : ''));
+}
+
+// The first region's words at the moment a region is first painted: what the
+// owner typed in the whole-picture box, unless the region's own words were
+// already changed from the draft it opened with. Without this the typed
+// sentence was replaced by the draft with no sign (review of #623).
+export function firstRegionWords(regionWords, typed, initial) {
+  return (regionWords ?? '').trim() === initial.trim() ? typed : regionWords;
+}

@@ -72,3 +72,21 @@ assert.equal(composeEditMessage('images/a.png', 'inbox/m.png', '   '), null, 'no
 }
 
 console.log('image-edit ok');
+
+// An untouched modal closes, in either mode, whatever draft the chat held:
+// the first region opening with the draft is not work (review of #623).
+import { editDirty, firstRegionWords } from '../src/lib/image-edit.js';
+const draft = 'make it dusk';
+assert.equal(editDirty({ multi: false, painted: false, words: draft, initial: draft, regionWords: [''] }), false);
+assert.equal(editDirty({ multi: true, painted: false, words: draft, initial: draft, regionWords: [draft] }), false);
+assert.equal(editDirty({ multi: true, painted: false, words: draft, initial: draft, regionWords: [draft, 'a hat'] }), true);
+assert.equal(editDirty({ multi: true, painted: false, words: draft, initial: draft, regionWords: ['a hat'] }), true);
+assert.equal(editDirty({ multi: false, painted: false, words: 'other', initial: draft, regionWords: [''] }), true);
+assert.equal(editDirty({ multi: false, painted: true, words: draft, initial: draft, regionWords: [''] }), true);
+
+// What was typed before the first stroke carries into the first region,
+// unless that region's words were already changed.
+assert.equal(firstRegionWords(draft, 'make the scarf yellow', draft), 'make the scarf yellow');
+assert.equal(firstRegionWords('', 'make the scarf yellow', ''), 'make the scarf yellow');
+assert.equal(firstRegionWords('a red hat', 'make the scarf yellow', draft), 'a red hat');
+
