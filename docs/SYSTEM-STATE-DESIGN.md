@@ -175,6 +175,88 @@ now.
 | `image.loaded` | ComfyUI `GET /system_stats` | bool | Loopback | yes | imagegen |
 | `services.failed` | `systemctl --user --failed` | count | Fork | yes | CLI doctor |
 | `backlog.outbox`, `backlog.questions`, `backlog.frontdoor`, `backlog.proposals`, `backlog.candidates` | `backlog::Backlog::survey`, one per field | count | Scan | yes | homeostat, charter readings |
+| **Pressure and health** (added 2026-10-10, second pass) | | | | | |
+| `pressure.cpu`, `pressure.memory`, `pressure.io` | `/proc/pressure/*`, `some avg60`: the share of time work was stalled waiting on that resource | % | File | yes | nothing |
+| `memory.oom_kills` | `/proc/vmstat` `oom_kill`, delta per minute | count | File | yes | nothing |
+| `category.oom_kills` | each unit's `memory.events` `oom_kill`, per `Category` | count | File | yes | nothing |
+| `cpu.temperature` | the hottest `/sys/class/thermal` zone | °C | File | yes | nothing |
+| `gpu.throttled` | `nvidia-smi` `clocks_throttle_reasons.active` ≠ 0 | bool | Fork | yes | nothing |
+| `system.uptime` | `/proc/uptime`; a fall is a reboot | seconds | File | yes | nothing |
+| **Storage** | | | | | |
+| `disk.read_rate`, `disk.write_rate`, `disk.busy` | `/proc/diskstats` deltas on the disk holding `/` | bytes/s, % | File | yes | nothing |
+| `store.mecha.size`, `store.work.size`, `store.models.size` | directory walks of `~/.mecha`, `~/.mecha/work` and the model hub cache | bytes | Scan, **hourly** | yes | `mecha work` (work dir only) |
+| **Network** | | | | | |
+| `network.uplink.rx_rate`, `network.uplink.tx_rate` | `/proc/net/dev` deltas on the default-route interface (from `/proc/net/route`) | bytes/s | File | yes | nothing |
+| `network.uplink.kind` | `wired` or `wireless`, from `/sys/class/net/<if>/wireless` | label | File | yes | nothing |
+| `network.wifi.signal` | `/proc/net/wireless` link quality; `NotHere` on a wired uplink | % | File | yes | nothing |
+| `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/proc/net/dev` deltas on the tailnet interface | bytes/s | File | yes | nothing |
+| `network.tailnet.up`, `network.tailnet.peers_online` | `tailscale status --json`: backend state, and a count of online peers, never their names | bool, count | Fork | yes | nothing |
+| **Work in flight** | | | | | |
+| `tasks.running` | `taskruns` markers, plus pid checks | count | Scan | yes | serve board |
+| `tasks.open` | open board tasks, from the graph store read-only | count | Scan, **hourly** | yes | `kg_task_list` |
+| `jobs.live` | background jobs (`jobs.rs`); **not readable outside the serving process today** (§2.1) | count | File | yes | nothing |
+| `image.queue.running`, `image.queue.pending` | ComfyUI `GET /queue` | count | Loopback | yes | nothing |
+| `triggers.missed`, `triggers.failed` | the trigger ledger: slots past due with no run, and runs that failed, over 24 h | count | Scan | yes | doctor |
+| `mail.drain.pending` | `~/.mecha/requests`, not yet drained | count | Scan | yes | doctor |
+| `messages.unread` | the inter-agent mailbox (`mailbox.rs`) | count | Scan | yes | nothing |
+
+### 2.1 Notes on the second pass
+
+**Every addition above was read on this machine on 2026-10-10 before it was
+listed.**
+- PSI is present for cpu, memory and io.
+- `oom_kill` is present in `/proc/vmstat`.
+- The default route runs over Wi-Fi (`wlP9s9`), and the wired port has
+  carried nothing.
+- Six ACPI thermal zones read.
+- The GPU reports throttle reasons.
+- `tailscale status --json` answers.
+- ComfyUI's `/queue` answers.
+
+**Pressure is the single best "is the machine struggling" signal.** Load
+average counts runnable tasks, while PSI measures *time lost waiting*, per
+resource. On this box, where memory is one pool and a model load can starve
+everything, `pressure.memory` is what explains a slow turn. A load average
+can only hint at it.
+
+**`memory.oom_kills` counts more than the system's own kills.** The
+`/proc/vmstat` counter read 986 after about 14.5 days of uptime. Over the
+same 14 days the kernel log held only two system out-of-memory kills, both
+on 2026-10-03, during the build incident.
+- The rest must be kills inside memory-limited cgroups. Commands the
+  sandbox confines with a memory cap are a plausible source, but this is
+  not yet verified.
+- So `category.oom_kills` from each user unit's `memory.events` is the
+  measurement that says *whose* work was killed. The machine-wide counter
+  is kept beside it as a total and never read as "the system ran out of
+  memory".
+
+**Network speed means measured throughput, never a speed test.** An active
+test is egress to a third party and load on the link, and it breaks §4 rules
+3 and 7. The counters show what the link actually carried. Link quality
+(`network.wifi.signal`) says whether it could carry more.
+- Interface names are machine detail, not process detail. Even so, the
+  series records roles (`uplink`, `tailnet`), never names, so that a board
+  stays portable to a machine whose interfaces are named differently.
+- Docker bridges and loopback are excluded. Loopback traffic here is mostly
+  llama-server and the voice pipeline talking to each other, and
+  `category.*` already attributes that work.
+
+**`jobs.live` needs a marker before it can be read.** Background jobs
+(`jobs.rs`) live in a `JobQueue` inside the serving process, so nothing
+outside it can count them. The fix is the shape `runmarker.rs` already uses:
+- a file per live job, written when the job starts;
+- removed when it ends;
+- checked against a live pid.
+
+That marker is part of S2. Until it exists, `jobs.live` reads `Unread`,
+never 0.
+
+**Hourly is a cadence, not a tier.** A directory walk over the model cache
+or the graph store costs more than a minute deserves. So `store.*` and
+`tasks.open` are sampled on the hour, and their minutes in between are
+NULL. They are not carried forward, because a repeated value would claim a
+reading that was never taken.
 
 **A `category.*` measurement is one name with a closed dimension.**
 - `mecha system read category.memory --by category` gives one row per
@@ -385,8 +467,8 @@ one by deleting a copy.
 | Step | What | Depends on |
 |---|---|---|
 | **S0** | Move `hud::host` into `system`. The store becomes `~/.mecha/system/series.sqlite`, `mecha hud sample` becomes `mecha system sample`, and the unit becomes `mecha-system-sample`. The `host` board's source and the doctor check follow. **Before the dashboard's step 2b deploys** (R2), so nothing migrates. | #630 merged |
-| **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
-| **S2** | `model.*`, `runs.live`, `holds.live`, `permits.live`, `voice.live` and `image.loaded`. The brief reads them through `system`, and they are recorded in the series, except `model.resident`. | S1 |
+| **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers, including pressure, OOM kills, temperatures, uptime, disk I/O and network throughput. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
+| **S2** | `model.*`, `runs.live`, `holds.live`, `permits.live`, `voice.live`, `image.*`, `tasks.*`, `triggers.*`, `mail.drain.pending`, `messages.unread`, and the job marker that makes `jobs.live` readable. The brief reads them through `system`, and they are recorded in the series, except `model.resident`. | S1 |
 | **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2 |
 | **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | R4; S3 |
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
