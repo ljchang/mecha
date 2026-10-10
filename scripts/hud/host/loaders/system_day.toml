@@ -1,5 +1,5 @@
 # The GPU across the last 24 hours, at five-minute steps.
-source = "host"
+source = "system"
 schedule = "*/5 * * * *"
 max_rows = 1000
 query = """

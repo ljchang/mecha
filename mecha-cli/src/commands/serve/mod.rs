@@ -570,6 +570,11 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::frame),
         )
         .at(
+            "/api/personas/{name}/image-touching",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::image_touching),
+        )
+        .at(
             "/api/personas/{name}/memory",
             Owner::Of(Feature::Personas),
             get(persona_chat::memory).post(persona_chat::memory_act),

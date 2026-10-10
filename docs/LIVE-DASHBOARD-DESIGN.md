@@ -74,7 +74,8 @@ their reason: a loader is a cron slot that reads private data, and **a cloned
 repository must not be able to bring one into a trusted session**. Never in
 layered config, never in a project's `mecha.toml`. Installed dashboards sit one
 level down, in `boards/<id>/`, so an id can never collide with the store's
-fixed entries (`sources.toml`, `themes/`, `host.sqlite`).
+fixed entries (`sources.toml`, `themes/`). The host board's data is not one of
+them: since S0 of `SYSTEM-STATE-DESIGN.md` it lives in `~/.mecha/system/`.
 
 ---
 
@@ -748,7 +749,7 @@ after the factory path is proven.
 |---|---|---|---|
 | 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
 | 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/hud/` | unit tests refuse each forbidden field by name — proposed in #621 |
-| 2 ⧗ | **Split in two PRs.** **2a** (built): `sources.toml`, the confined SQLite runner, the dataset store and ledger, `mecha hud {list, validate, install, refresh}`, `scripts/mecha-hud.timer`, the `doctor` finding. **2b** (built): the host sampler (`hud/host.rs`, `mecha hud sample`, `scripts/mecha-hud-sample.timer`) and the host board (`scripts/hud/host/`, validated and run against sampler-written data in a test). The `doctor` finding also owes, once step 5 publishes, a **push the factory refused** (stale release, forked bytes, an error): home records each push's outcome, because after such a refusal the local refresh *succeeded* and a refresh-only check reads green while the published page is frozen. | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
+| 2 ⧗ | **Split in two PRs.** **2a** (built): `sources.toml`, the confined SQLite runner, the dataset store and ledger, `mecha hud {list, validate, install, refresh}`, `scripts/mecha-hud.timer`, the `doctor` finding. **2b** (built): the host sampler (`hud/host.rs`, `mecha hud sample`, `scripts/mecha-hud-sample.timer` — since moved to `system.rs`, `mecha system sample` and `scripts/mecha-system-sample.timer` by S0 of `SYSTEM-STATE-DESIGN.md`) and the host board (`scripts/hud/host/`, validated and run against sampler-written data in a test). The `doctor` finding also owes, once step 5 publishes, a **push the factory refused** (stale release, forked bytes, an error): home records each push's outcome, because after such a refusal the local refresh *succeeded* and a refresh-only check reads green while the published page is frozen. | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
 | 3 | The renderer, both builds (web app and standalone) | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
 | 4 | Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
@@ -960,9 +961,12 @@ dashboard must not draw an empty GPU-memory gauge as if the GPU had none. A
 
 ### 11.3 Storage and retention
 
-`~/.mecha/hud/host.sqlite`: one-minute rows kept seven days, a
-fifteen-minute rollup kept ninety. The sampler runs on its own user timer
-(`scripts/mecha-hud-sample.timer`, at :30 each minute, so the :00 refresh reads
+`~/.mecha/system/series.sqlite` (moved from `~/.mecha/hud/host.sqlite`
+before it was ever deployed: the sampler is now `mecha system`'s, and the
+HUD one reader of it — `SYSTEM-STATE-DESIGN.md`, S0): one-minute rows kept
+seven days, a fifteen-minute rollup kept ninety. The sampler runs on its own
+user timer (`scripts/mecha-system-sample.timer`, at :30 each minute, so the
+:00 refresh reads
 a completed sample) and writes nothing else. The fifteen-minute rollups are written for
 step 3's longer ranges and have no reader yet; every bucket a gap in sampling
 straddled is still closed, so the ninety-day series never shows "nothing"

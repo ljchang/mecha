@@ -498,6 +498,11 @@ pub enum Command {
     /// loader's last refresh went. No model runs here.
     Hud(commands::hud::Args),
 
+    /// The state of the machine mecha runs on: `mecha system sample` records
+    /// one minute of the host's load by kind of work (what the timer runs).
+    /// No model runs here.
+    System(commands::system::Args),
+
     /// Inspect saved transcripts.
     #[command(subcommand)]
     Sessions(commands::sessions::Args),
@@ -647,6 +652,7 @@ impl Command {
             | Command::Document(_)
             | Command::Charter(_)
             | Command::Hud(_)
+            | Command::System(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -743,6 +749,7 @@ impl Command {
             | Command::Document(_)
             | Command::Charter(_)
             | Command::Hud(_)
+            | Command::System(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -947,6 +954,7 @@ async fn dispatch() -> Result<()> {
         Command::Persona(args) => commands::persona::execute(&cli.global, args).await,
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Hud(args) => commands::hud::run(&cli.global, args).await,
+        Command::System(args) => commands::system::run(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
         Command::Model(args) => commands::model::execute(&cli.global, args).await,

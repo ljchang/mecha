@@ -216,6 +216,8 @@ session.rs   append-only JSONL transcripts; a rewrite record when compaction edi
              and a `RunStats` outcome record per run — how it went, beside what it said
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
 homeostat.rs the conditions a run happened under, recorded beside what it did
+system.rs    the machine's state, read in one place: a per-minute series of numbers
+             and closed categories, never a name; unknown is refused, never zero
 backlog.rs   what waits on the owner across five stores; one walk, three readers
 doctor.rs    every store's distress, read in one pass — no network, no model
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
@@ -486,7 +488,7 @@ images ·
 the security model in full · the front door · web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
-triggers · the HUD · the run-quality corpus (the gate, diagnosis, harness rumination) ·
+triggers · the HUD · system state · the run-quality corpus (the gate, diagnosis, harness rumination) ·
 the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
 features ·
 the experiment store ·
