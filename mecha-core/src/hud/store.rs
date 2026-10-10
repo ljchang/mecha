@@ -688,3 +688,36 @@ fn lock(board: &Path) -> Result<BoardLock> {
     }
     Ok(BoardLock { _file: file })
 }
+
+#[cfg(test)]
+mod lock_tests {
+    use super::lock;
+    use std::os::unix::io::AsRawFd;
+
+    fn try_lock(path: &std::path::Path) -> bool {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        // SAFETY: flock on an fd we own; LOCK_NB so a held lock answers now.
+        let ok = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if ok {
+            // SAFETY: as above.
+            unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+        }
+        ok
+    }
+
+    /// Two refreshes of one board take turns: while the guard lives, a second
+    /// claim is refused, and dropping the guard releases it.
+    #[test]
+    fn the_board_lock_holds_until_its_guard_drops() {
+        let dir = std::env::temp_dir().join(format!("mecha-hud-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = lock(&dir).unwrap();
+        assert!(!try_lock(&dir.join(".lock")), "a second claim while held");
+        drop(guard);
+        assert!(
+            try_lock(&dir.join(".lock")),
+            "released when the guard drops"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

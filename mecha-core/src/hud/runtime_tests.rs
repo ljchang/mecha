@@ -575,3 +575,33 @@ fn refreshing_a_board_that_is_not_installed_says_so() {
         .unwrap_err();
     assert!(r.to_string().contains("no board named"), "{r}");
 }
+
+/// The table-valued form of a pragma (`pragma_table_info(...)`) fires the
+/// `PRAGMA` action too, so the allowlist refuses it — measured on the bundled
+/// engine, since the alternative would put the source's own path
+/// (`pragma_database_list`) into a dataset a publish could carry. The file's
+/// own schema (`sqlite_schema`) stays readable: it is the file the loader may
+/// already read.
+#[test]
+fn pragma_table_valued_functions_are_refused_but_the_schema_is_readable() {
+    let s = Scratch::new();
+    let db = s.path("lab.sqlite");
+    lab_db(&db);
+    for q in [
+        "SELECT name FROM pragma_table_info('visits')",
+        "SELECT file FROM pragma_database_list",
+        "SELECT * FROM pragma_function_list",
+    ] {
+        assert!(
+            matches!(run(&db, q).unwrap_err(), RunError::NotAllowed(_)),
+            "{q}"
+        );
+    }
+    assert_eq!(
+        run(&db, "SELECT name FROM sqlite_schema")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
