@@ -199,7 +199,7 @@ function rig({ live = true } = {}) {
        const send = async () => log.push('chat-send');
        const fetch = async (url, opts) => {
          log.push('post:' + url + ' ' + opts.body);
-         return { ok: true, json: async () => ({ line: 'Regenerate images/b.png' }) };
+         return { ok: true, json: async () => ({ line: 'Regenerate images/b.png', id: 7 }) };
        };
        ${src2}
        return async () => { await regenerateInCall('images/b.png'); await null; return { log }; };`,
@@ -215,7 +215,7 @@ function rig({ live = true } = {}) {
     dead.log.slice(1),
     [
       'say:Regenerate images/b.png',
-      'post:/api/persona-chat/k1/call-regenerate {"picture":"images/b.png","withdraw":true}',
+      'post:/api/persona-chat/k1/call-regenerate {"picture":"images/b.png","withdraw":7}',
       'notice:The call is not connected, so the picture was not drawn again.',
     ],
     'a call with no live line takes the registration back and says so (review of #634)',

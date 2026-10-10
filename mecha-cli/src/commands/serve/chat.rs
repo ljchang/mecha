@@ -870,6 +870,10 @@ pub enum WireEvent {
         /// one, said live as the transcript says it (`Entry::Tool`), so the
         /// page need not read the turn again to show it (IMAGE-DESIGN.md
         /// §5.4). `None` for every other call, and for any a model made.
+        /// It is the call's intent, sent before the result: a version is
+        /// still only a picture that landed, which the page's fold checks
+        /// (`pictureVersions` takes no card without a picture), as the
+        /// transcript's mark does.
         #[serde(skip_serializing_if = "Option::is_none")]
         version_of: Option<String>,
     },
