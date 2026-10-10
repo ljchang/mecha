@@ -2136,7 +2136,13 @@ impl ImageGenerate {
             let (step, req, secs, out) = pass(
                 &name,
                 Request {
-                    prompt: crate::layers::cutout_prompt(&p.wearing, &lp.light),
+                    // A replay's posed arm puts the part into the cutout
+                    // (`ToolCtx::layers_posed`); a chat never does.
+                    prompt: if ctx.layers_posed && !p.part.trim().is_empty() {
+                        crate::layers::cutout_prompt_posed(&p.wearing, &p.part, &lp.light)
+                    } else {
+                        crate::layers::cutout_prompt(&p.wearing, &lp.light)
+                    },
                     negative: base.negative.clone(),
                     size: Some((1024, 1024)),
                     steps: base.steps,
@@ -2209,7 +2215,7 @@ impl ImageGenerate {
         let (step, req, secs, out) = pass(
             "finish",
             Request {
-                prompt: crate::layers::FINISH.into(),
+                prompt: crate::layers::finish_prompt(lp.style.as_deref()),
                 negative: base.negative.clone(),
                 size: None,
                 steps: base.steps,
@@ -3200,7 +3206,6 @@ impl Tool for ImageGenerate {
                         library,
                         portraits.iter().flatten().count(),
                         setting.is_some(),
-                        plan.next.style.is_some(),
                     ) {
                         Some(why) => {
                             dropped.push(format!("Drawn in one pass, not in layers: {why}."))
@@ -3212,12 +3217,22 @@ impl Tool for ImageGenerate {
                                     .filter(|v| !v.is_empty())
                             };
                             let applied = roles_said.as_deref() == Some("applied");
+                            // The style's own words, as the compile pasted
+                            // them for a single pass (mecha-a3, 2026-10-10:
+                            // 11 of 15 real touching calls named one).
+                            let style_words = style.as_deref().and_then(|name| {
+                                lib.get(crate::imagelib::Kind::Style, &name.trim().to_lowercase())
+                                    .filter(|e| e.status == crate::imagelib::Status::Approved)
+                                    .map(|e| e.text.clone())
+                            });
                             layers_plan = Some(crate::layers::Plan {
                                 plate: crate::layers::plate_prompt(
                                     setting.as_deref().unwrap_or_default(),
                                     value(&plan.next.light).as_deref(),
                                     value(&plan.next.camera).as_deref(),
+                                    style_words.as_deref(),
                                 ),
+                                style: style_words,
                                 light: value(&plan.next.light)
                                     .unwrap_or_else(|| "soft, even light".into()),
                                 people: people
@@ -7046,6 +7061,81 @@ mod tests {
         let layers = landed.layers.expect("the build is recorded");
         assert_eq!(layers.people.len(), 2);
         assert_eq!(layers.people[0].who, "maya");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A scene with a library style is layered too, the style's words on
+    /// the plate and the finish only (mecha-a3: 11 of 15 real touching calls
+    /// named one); a replay's posed arm puts each part into its cutout.
+    #[tokio::test]
+    async fn a_styled_scene_is_layered_and_the_posed_arm_poses_cutouts() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "inkwash".into(),
+                text: "loose ink and wash, soft paper grain".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        cx.layers_posed = true;
+        let mut call = touching_call();
+        call["scene"]["style"] = json!("inkwash");
+        call["scene"]["people"][0]["doing"] = json!("lifting John off the ground");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert!(
+            prompts[0].contains("loose ink and wash"),
+            "the plate: {}",
+            prompts[0]
+        );
+        assert!(
+            prompts[4].contains("loose ink and wash"),
+            "the finish: {}",
+            prompts[4]
+        );
+        assert!(
+            !prompts[1].contains("ink and wash"),
+            "never a cutout: {}",
+            prompts[1]
+        );
+        assert!(
+            !prompts[3].contains("ink and wash"),
+            "never the placing: {}",
+            prompts[3]
+        );
+        assert!(
+            prompts[1].contains("lifting"),
+            "the posed cutout: {}",
+            prompts[1]
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();

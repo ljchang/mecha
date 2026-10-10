@@ -34,6 +34,9 @@ pub struct Plan {
     pub leftover: Option<String>,
     /// The parts are prose from the scene's `together`: its origin.
     pub origin: crate::scene::Origin,
+    /// A library style's own words, laid on the plate and the finish; the
+    /// cutouts and the placing pass stay photographic, as measured.
+    pub style: Option<String>,
 }
 
 /// Why a picture the switch would layer is drawn in one pass instead, or
@@ -43,7 +46,6 @@ pub fn not_layered(
     library_people: usize,
     with_portraits: usize,
     setting_words: bool,
-    style: bool,
 ) -> Option<&'static str> {
     if library_people < people {
         Some("someone in it is described in words, not drawn from the library")
@@ -51,15 +53,18 @@ pub fn not_layered(
         Some("someone in it has no library portrait")
     } else if !setting_words {
         Some("it has no setting in words to build the room from")
-    } else if style {
-        Some("a style is not yet built in layers")
     } else {
         None
     }
 }
 
 /// The plate: the room alone, in the scene's framing (§15.3, step 1).
-pub fn plate_prompt(setting: &str, light: Option<&str>, camera: Option<&str>) -> String {
+pub fn plate_prompt(
+    setting: &str,
+    light: Option<&str>,
+    camera: Option<&str>,
+    style: Option<&str>,
+) -> String {
     let mut s = closed(setting);
     for part in [light, camera].into_iter().flatten() {
         if !part.trim().is_empty() {
@@ -68,6 +73,10 @@ pub fn plate_prompt(setting: &str, light: Option<&str>, camera: Option<&str>) ->
         }
     }
     s.push_str(" No people.");
+    if let Some(style) = style.filter(|s| !s.trim().is_empty()) {
+        s.push(' ');
+        s.push_str(&closed(style));
+    }
     s
 }
 
@@ -83,6 +92,27 @@ pub fn cutout_prompt(wearing: &str, light: &str) -> String {
         wearing.trim().trim_end_matches('.'),
         light.trim().trim_end_matches('.')
     )
+}
+
+/// A cutout posed in the person's part, as mecha-a3 first measured it: a
+/// replay arm only (`--layers-posed`), against the neutral cutout.
+pub fn cutout_prompt_posed(wearing: &str, part: &str, light: &str) -> String {
+    format!(
+        "This is an RGBA image with transparency. A full-length realistic photograph of the \
+         person in the image, {}, {}, lit by {}. The image has alpha channel and the background \
+         is transparent.",
+        wearing.trim().trim_end_matches('.'),
+        part.trim().trim_end_matches('.'),
+        light.trim().trim_end_matches('.')
+    )
+}
+
+/// The finish, with a library style's words when the scene has one.
+pub fn finish_prompt(style: Option<&str>) -> String {
+    match style.filter(|s| !s.trim().is_empty()) {
+        Some(style) => format!("{FINISH} {}", closed(style)),
+        None => FINISH.to_string(),
+    }
 }
 
 /// The placing pass: the plate as `<image1>`, each person by their tag
@@ -214,17 +244,10 @@ mod tests {
 
     #[test]
     fn a_picture_is_layered_only_when_every_part_can_be_built() {
-        assert_eq!(not_layered(2, 2, 2, true, false), None);
-        assert!(not_layered(2, 1, 1, true, false)
-            .unwrap()
-            .contains("described"));
-        assert!(not_layered(2, 2, 1, true, false)
-            .unwrap()
-            .contains("portrait"));
-        assert!(not_layered(2, 2, 2, false, false)
-            .unwrap()
-            .contains("setting"));
-        assert!(not_layered(2, 2, 2, true, true).unwrap().contains("style"));
+        assert_eq!(not_layered(2, 2, 2, true), None);
+        assert!(not_layered(2, 1, 1, true).unwrap().contains("described"));
+        assert!(not_layered(2, 2, 1, true).unwrap().contains("portrait"));
+        assert!(not_layered(2, 2, 2, false).unwrap().contains("setting"));
     }
 
     /// Names never reach the placing prompt: each becomes its person's tag,
@@ -265,9 +288,20 @@ mod tests {
             plate_prompt(
                 "a kitchen with a long oak table",
                 Some("late sun"),
-                Some("eye level")
+                Some("eye level"),
+                None
             ),
             "a kitchen with a long oak table. late sun. eye level. No people."
+        );
+        // A style's words go on the plate and the finish, never the cutout.
+        assert!(plate_prompt("a pier", None, None, Some("ink and wash"))
+            .ends_with("No people. ink and wash."));
+        assert!(finish_prompt(Some("ink and wash")).ends_with("Change nothing else. ink and wash."));
+        assert_eq!(finish_prompt(None), FINISH);
+        let posed = cutout_prompt_posed("a coat", "lifting the other person", "dusk");
+        assert!(
+            posed.contains("a coat, lifting the other person, lit by dusk."),
+            "{posed}"
         );
         let c = cutout_prompt("a green coat.", "late sun");
         assert!(c.contains(
