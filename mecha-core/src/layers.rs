@@ -362,6 +362,17 @@ fn untagged(text: &str, tags: &[(String, String)]) -> String {
     out
 }
 
+/// `text` with every one of `names` read as "the person": in a solo
+/// cutout that is the one in the image, so "John's jacket" becomes their
+/// own and no one absent is invited in (review of #626).
+pub fn unnamed(text: &str, names: &[String]) -> String {
+    let tags: Vec<(String, String)> = names
+        .iter()
+        .map(|n| (n.clone(), "the person".to_string()))
+        .collect();
+    untagged(text, &tags)
+}
+
 /// Replace `word` where it stands as a whole word, any case.
 fn replace_word(text: &str, word: &str, with: &str) -> String {
     let mut out = String::new();
@@ -448,6 +459,17 @@ mod tests {
             portrait: Vec::new(),
             ext: "png",
         }
+    }
+
+    /// A solo cutout's clothes name no one (review of #626).
+    #[test]
+    fn a_cutouts_clothes_name_no_one() {
+        let names = ["John".to_string(), "Wren".to_string()];
+        assert_eq!(
+            unnamed("John's old flannel shirt and Wren's scarf", &names),
+            "the person's old flannel shirt and the person's scarf"
+        );
+        assert_eq!(unnamed("a red dress", &names), "a red dress");
     }
 
     /// A name is matched whole, hyphens and all, and no text makes the match

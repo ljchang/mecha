@@ -2241,8 +2241,21 @@ impl ImageGenerate {
         // seed, then the single pass. A detector that cannot run is said in
         // the manifest; it does not stop the build, since it guards the
         // picture's quality, not the owner's data.
-        let faces = |png: &[u8]| self.faces.faces_in(png);
-        match faces(&plate) {
+        // The detector runs off the async workers, as the crops' does: it
+        // can take seconds, and a panic there must cost the check, never
+        // the job, whose slot is freed only when its future ends (review of
+        // #626).
+        let detector = Arc::clone(&self.faces);
+        let faces = |png: &[u8]| {
+            let detector = Arc::clone(&detector);
+            let png = png.to_vec();
+            async move {
+                tokio::task::spawn_blocking(move || detector.faces_in(&png))
+                    .await
+                    .unwrap_or_else(|_| Err("the face detector panicked".into()))
+            }
+        };
+        match faces(&plate).await {
             Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
             Ok(n) => {
                 steps.push(json!({"step": "plate check", "faces": n}));
@@ -2264,7 +2277,7 @@ impl ImageGenerate {
                 )
                 .await;
                 plate = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
-                match faces(&plate) {
+                match faces(&plate).await {
                     Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
                     Ok(n) => {
                         return Err(LayersFailed::At(
@@ -2284,6 +2297,12 @@ impl ImageGenerate {
         // flattened on grey before it is a reference.
         let mut flats: Vec<Reference> = Vec::new();
         let mut people: Vec<crate::scene::LayerPerson> = Vec::new();
+        let named: Vec<String> = lp
+            .people
+            .iter()
+            .map(|p| p.shown.clone())
+            .chain(lp.offstage.iter().cloned())
+            .collect();
         for (i, p) in lp.people.iter().enumerate() {
             if stopped() {
                 return Err(LayersFailed::Cancelled(joined(left)));
@@ -2294,10 +2313,21 @@ impl ImageGenerate {
                 Request {
                     // A replay's posed arm puts the part into the cutout
                     // (`ToolCtx::layers_posed`); a chat never does.
+                    // A solo cutout names no one: clothes said by
+                    // someone's name ("John's jacket") read as the
+                    // person's own, as the light names nobody (review of
+                    // #626).
                     prompt: if ctx.layers_posed && !p.part.trim().is_empty() {
-                        crate::layers::cutout_prompt_posed(&p.wearing, &p.part, &lp.light)
+                        crate::layers::cutout_prompt_posed(
+                            &crate::layers::unnamed(&p.wearing, &named),
+                            &p.part,
+                            &lp.light,
+                        )
                     } else {
-                        crate::layers::cutout_prompt(&p.wearing, &lp.light)
+                        crate::layers::cutout_prompt(
+                            &crate::layers::unnamed(&p.wearing, &named),
+                            &lp.light,
+                        )
                     },
                     negative: base.negative.clone(),
                     size: Some((1024, 1024)),
@@ -7830,6 +7860,7 @@ mod tests {
             json!("a sunlit kitchen with a long oak table, Maya's scarf over a chair");
         call["scene"]["people"][1]["expression"] = json!("grinning");
         call["scene"]["light"] = json!("lamplight falling on John's shoulders");
+        call["scene"]["people"][0]["wearing"] = json!("John's old flannel shirt");
         let out = t.call(call, &cx).await.unwrap();
         assert!(out.content.contains("built in layers"), "{}", out.content);
         let seen = seen.lock().unwrap().clone();
@@ -7844,11 +7875,18 @@ mod tests {
             prompts[0]
         );
         assert!(prompts[3].contains("grinning"), "{}", prompts[3]);
-        // A cutout is lit by light that names nobody, as the plate is.
+        // A cutout is lit by light that names nobody, as the plate is, and
+        // wears clothes said by no one's name.
         for cutout in &prompts[1..3] {
             assert!(cutout.contains("soft, even light"), "{cutout}");
             assert!(!cutout.contains("lamplight"), "{cutout}");
+            assert!(!cutout.contains("John"), "{cutout}");
         }
+        assert!(
+            prompts[1].contains("the person's old flannel shirt"),
+            "{}",
+            prompts[1]
+        );
         // One line per pass sent, and none for the single pass never sent.
         let text = std::fs::read_to_string(&log).unwrap();
         let lines: Vec<Value> = text
@@ -7864,7 +7902,7 @@ mod tests {
                 .iter()
                 .filter_map(Value::as_str)
                 .collect();
-            for want in ["a yellow raincoat", "a flannel shirt", "grinning"] {
+            for want in ["John's old flannel shirt", "a flannel shirt", "grinning"] {
                 assert!(words.contains(&want), "{want}: {words:?}");
             }
             assert!(!words.iter().any(|w| w.contains("<image")), "{words:?}");
@@ -8096,6 +8134,58 @@ mod tests {
             "the posed cutout: {}",
             prompts[1]
         );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A plate check whose detector panics costs the check, never the job:
+    /// the build goes on and the manifest says the plate went unchecked
+    /// (review of #626).
+    #[tokio::test]
+    async fn a_panicking_plate_check_costs_the_check_not_the_build() {
+        struct PanicsOnPlates;
+        impl crate::face::FaceAnchors for PanicsOnPlates {
+            fn anchor(
+                &self,
+                _library: &crate::imagelib::Library,
+                _entry: &crate::imagelib::Entry,
+            ) -> crate::face::Anchor {
+                crate::face::Anchor::NoFace
+            }
+            fn faces_in(&self, _png: &[u8]) -> std::result::Result<usize, String> {
+                panic!("detector down")
+            }
+        }
+        let (url, _seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::new(PanicsOnPlates));
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let manifest = manifest_of(&dir, &out.content);
+        let check = manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["step"] == "plate check")
+            .cloned()
+            .unwrap();
+        assert_eq!(check["unchecked"], "the face detector panicked");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
