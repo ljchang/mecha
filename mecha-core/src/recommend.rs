@@ -718,10 +718,6 @@ enum GpuRead {
     None,
 }
 
-/// A wedged driver can hang `nvidia-smi`; the probe gives it this long, then
-/// reports no card it could read rather than hanging with it.
-const NVIDIA_SMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
 fn nvidia_total_mb() -> GpuRead {
     match nvidia_smi("memory.total") {
         Some(text) => parse_nvidia_total(&text),
@@ -730,35 +726,12 @@ fn nvidia_total_mb() -> GpuRead {
 }
 
 /// One `nvidia-smi --query-gpu=<field>` reading, or `None` when it is not
-/// there, fails, or outlives [`NVIDIA_SMI_TIMEOUT`] — killed rather than
-/// waited on. The engine's driver read (`engine::read_nvidia`) shares it.
+/// there, fails, or outlives `system::source::FORK_TIMEOUT` — killed rather
+/// than waited on. The engine's driver read (`engine::read_nvidia`) shares
+/// it; the bounded runner is `mecha system`'s, so there is one.
 pub(crate) fn nvidia_smi(field: &str) -> Option<String> {
-    let mut child = std::process::Command::new("nvidia-smi")
-        .arg(format!("--query-gpu={field}"))
-        .args(["--format=csv,noheader,nounits"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if started.elapsed() > NVIDIA_SMI_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-        }
-    }
-    let mut text = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        use std::io::Read;
-        let _ = out.read_to_string(&mut text);
-    }
-    Some(text)
+    use crate::system::source;
+    source::nvidia_smi(&format!("--query-gpu={field}"), source::FORK_TIMEOUT).out()
 }
 
 fn parse_nvidia_total(text: &str) -> GpuRead {
@@ -785,22 +758,16 @@ fn parse_nvidia_total(text: &str) -> GpuRead {
     }
 }
 
+/// The machine's memory in MB, through `mecha system` (`memory.total`):
+/// `/proc/meminfo` here, `sysctl hw.memsize` on macOS.
 fn host_total_mb() -> anyhow::Result<u64> {
-    if cfg!(target_os = "macos") {
-        let out = std::process::Command::new("sysctl")
-            .args(["-n", "hw.memsize"])
-            .output()?;
-        let bytes: u64 = String::from_utf8_lossy(&out.stdout).trim().parse()?;
-        return Ok(bytes / 1_048_576);
+    match crate::system::Reader::new().now(crate::system::Measurement::MemoryTotal) {
+        crate::system::Reading::Observed { value } => Ok(value as u64 / 1_048_576),
+        crate::system::Reading::Unread { why } => anyhow::bail!("{why}"),
+        crate::system::Reading::NotHere => {
+            anyhow::bail!("this machine's memory total is not readable here")
+        }
     }
-    let text = std::fs::read_to_string("/proc/meminfo")?;
-    parse_meminfo_total(&text).ok_or_else(|| anyhow::anyhow!("/proc/meminfo has no MemTotal"))
-}
-
-fn parse_meminfo_total(text: &str) -> Option<u64> {
-    let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
-    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb / 1024)
 }
 
 /// llmfit's endpoints (≤60 % Perfect, >98 % Too Tight); the band between is
@@ -1172,10 +1139,6 @@ mod tests {
             GpuRead::Cards(ref c) if c == &[24_576, 24_576]
         ));
         assert!(matches!(parse_nvidia_total(""), GpuRead::None));
-        assert_eq!(
-            parse_meminfo_total("MemTotal:       127600524 kB\nMemFree: 1 kB\n"),
-            Some(124_609)
-        );
     }
 
     /// A model several features need is counted once — and is counted
