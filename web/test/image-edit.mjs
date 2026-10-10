@@ -94,3 +94,19 @@ assert.equal(firstRegionWords('a red hat', 'make the scarf yellow', draft), 'a r
 assert.equal(firstRegionWords('', 'make the scarf yellow', ''), 'make the scarf yellow');
 assert.equal(firstRegionWords('a red hat', 'make the scarf yellow', ''), 'a red hat');
 
+// The page's colour table is the server's, value for value: the server
+// matches the index by exact pixel, so a one-step drift would refuse every
+// edit in that colour as an empty region (review of #623). Read from the
+// Rust source, as call-edit.mjs reads Personas.svelte.
+import fs from 'node:fs';
+import { REGION_COLOURS, MAX_REGIONS } from '../src/lib/image-edit.js';
+const rust = fs.readFileSync(new URL('../../mecha-core/src/picture.rs', import.meta.url), 'utf8');
+const table = rust.match(/pub const REGION_COLOURS[^=]*=\s*\[([\s\S]*?)\];/)[1];
+const server = [...table.matchAll(/\("(\w+)",\s*\[(\d+),\s*(\d+),\s*(\d+)\]\)/g)].map((m) => [
+  m[1],
+  [Number(m[2]), Number(m[3]), Number(m[4])],
+]);
+assert.equal(server.length, 8, 'the server table was read');
+assert.deepEqual(REGION_COLOURS, server);
+assert.equal(MAX_REGIONS, Number(rust.match(/pub const MAX_REGIONS: usize = (\d+);/)[1]));
+

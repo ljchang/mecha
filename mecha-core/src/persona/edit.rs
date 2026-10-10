@@ -791,8 +791,6 @@ impl Extracted {
     }
 }
 
-/// A painted area is a retouch by definition: the owner's words go to the
-/// tool as written, with the mask, and no extraction runs.
 /// One painted region from the edit panel: its colour and its words.
 #[derive(serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct PanelRegion {
@@ -823,6 +821,8 @@ pub fn regions_change(regions: &[PanelRegion]) -> String {
     format!("in the painted regions, {}", each.join("; "))
 }
 
+/// A painted area is a retouch by definition: the owner's words go to the
+/// tool as written, with the mask, and no extraction runs.
 pub fn masked_call(picture: &str, mask: &str, words: &str) -> serde_json::Value {
     serde_json::json!({ "picture": picture, "retouch": words, "mask": mask })
 }
