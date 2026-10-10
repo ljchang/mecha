@@ -213,10 +213,33 @@ pub(super) fn feature_questions(steps: &[Step]) -> Vec<Feature> {
         .collect()
 }
 
-/// Each feature as a yes or no, with what it is and what it downloads.
-pub(super) fn ask_features(read: &mut impl BufRead, qs: &[Question]) -> Result<Vec<Feature>> {
+/// The answers to the feature questions: switched on, and never to be
+/// asked about again. Anything else is *not now*.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Answers {
+    pub yes: Vec<Feature>,
+    pub never: Vec<Feature>,
+}
+
+/// What a yes to `f` switches on besides it — the same ids the install runs,
+/// so the sentence and the act cannot drift, and nothing already on.
+fn also_enables(cfg: &mecha_core::config::Config, f: Feature) -> Vec<String> {
+    enable_ids(&feature::enable_command(cfg, f))
+        .into_iter()
+        .filter(|id| id != f.id())
+        .collect()
+}
+
+/// Each feature as yes, no, or never, with what it is and what it downloads.
+/// `never` is the step loop's answer kept: *not now* is about today, *never*
+/// is about the install (review of #631).
+pub(super) fn ask_features(
+    read: &mut impl BufRead,
+    qs: &[Question],
+    cfg: &mecha_core::config::Config,
+) -> Result<Answers> {
     println!("\nFeatures — enable each? (all can be changed later with `mecha features`)");
-    let mut yes = Vec::new();
+    let mut answers = Answers::default();
     for q in qs {
         let cost = match q.bytes {
             Some(b) if b > 0 => format!(" ({} download)", gib(b)),
@@ -224,23 +247,25 @@ pub(super) fn ask_features(read: &mut impl BufRead, qs: &[Question]) -> Result<V
         };
         // A yes switches on what the feature needs too, so it is said here
         // rather than discovered (found on review of #631).
-        let needs: Vec<&str> = q.feature.requires().iter().map(|r| r.label()).collect();
+        let needs = also_enables(cfg, q.feature);
         let needs = if needs.is_empty() {
             String::new()
         } else {
-            format!(" — needs {} too", needs.join(", ").to_lowercase())
+            format!(" — a yes switches on {} too", needs.join(", "))
         };
         println!("  {}{cost}{needs}", q.feature.label());
         let blurb = onboarding::blurb(q.feature);
         if !blurb.is_empty() {
             println!("    {blurb}");
         }
-        prompt("    Enable? [y/N] ")?;
-        if matches!(line(read)?.to_ascii_lowercase().as_str(), "y" | "yes") {
-            yes.push(q.feature);
+        prompt("    Enable? [y/N/never] ")?;
+        match line(read)?.to_ascii_lowercase().as_str() {
+            "y" | "yes" => answers.yes.push(q.feature),
+            "never" | "n!" => answers.never.push(q.feature),
+            _ => {}
         }
     }
-    Ok(yes)
+    Ok(answers)
 }
 
 /// What is about to happen, said before the one yes that starts it.
@@ -327,9 +352,17 @@ pub(super) async fn run(
     };
 
     // --- the chat question, and what answering it would cost
-    let server_disagrees = steps
-        .iter()
-        .any(|s| s.id == "local-server" && s.status == Status::Wrong);
+    // A server to write down: one the config names but misdescribes, or one
+    // the probe found that nothing in the config names — the second surfaces
+    // as `provider-credential`, never as `local-server` (review of #631).
+    let found = match &facts.local_probe {
+        onboarding::LocalProbe::Found(found) => Some(found),
+        _ => None,
+    };
+    let server_disagrees = found.is_some()
+        || steps
+            .iter()
+            .any(|s| s.id == "local-server" && s.status == Status::Wrong);
     // Whether `setup chat` could install here is asked only when nothing
     // answers prompts and no server is merely misdescribed — a hosted
     // provider missing its key included, so the local route is offered there
@@ -403,12 +436,23 @@ pub(super) async fn run(
                 .collect()
         })
     };
-    let chosen = if questions.is_empty() {
-        Vec::new()
+    let Answers { yes: chosen, never } = if questions.is_empty() {
+        Answers::default()
     } else {
-        ask_features(read, &questions)?
+        ask_features(read, &questions, cfg)?
     };
     handled.extend(asked.iter().map(|f| f.id().to_string()));
+    // A preference, not an install: recorded now, whatever Start says.
+    for f in &never {
+        match onboarding::decline(home, f.id()) {
+            Ok(_) => println!(
+                "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
+                f.id(),
+                f.id()
+            ),
+            Err(e) => println!("could not record that for `{}`: {e}", f.id()),
+        }
+    }
 
     // --- one total, one yes
     let total = chat_bytes + features_total(&questions, &chosen, engine_for_chat > 0);
@@ -445,7 +489,15 @@ pub(super) async fn run(
         }
         ChatPick::Hosted => {
             super::setup::offer_default("anthropic", &cfg.default_provider, true)?;
-            settle_chat(&mut handled);
+            // Settled only when the key resolves: a default with no key
+            // answers nothing, and the checklist must still say so.
+            let keyed = cfg
+                .providers
+                .get("anthropic")
+                .is_some_and(|p| p.resolve_api_key().is_some());
+            if keyed {
+                settle_chat(&mut handled);
+            }
             if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
                 println!(
                     "Set ANTHROPIC_API_KEY in your shell (`export ANTHROPIC_API_KEY=…`) and start \
@@ -454,10 +506,13 @@ pub(super) async fn run(
             }
         }
         ChatPick::WriteServer => {
-            if let Some(props) = &facts.props {
-                if super::setup::offer_settings(provider_name, props, true)? {
-                    settle_chat(&mut handled);
-                }
+            let written = match (found, &facts.props) {
+                (Some(found), _) => super::setup::write_local_provider(found, true)?,
+                (None, Some(props)) => super::setup::offer_settings(provider_name, props, true)?,
+                (None, None) => false,
+            };
+            if written {
+                settle_chat(&mut handled);
             }
         }
         ChatPick::Answering | ChatPick::Skip => {}
@@ -572,8 +627,12 @@ fn sign_ins(chosen: &[Feature], home: &std::path::Path) -> Result<()> {
             (feature::State::On { .. }, _) => println!("`{}` is on", f.id()),
             (feature::State::Unready { reason, .. }, Some(next)) => {
                 println!("\n`{}` needs one more thing: {reason}.", f.id());
+                // A sign-in only — the `auth` the feature is waiting on. An
+                // install (`cargo install mecha-mail`) was neither listed nor
+                // counted before the one Start, so it is named, not run
+                // (review of #631).
                 match onboarding::runnable(next) {
-                    Some((argv, _)) if !argv.iter().any(|a| a == "enable") => {
+                    Some((argv, true)) => {
                         println!("Running `{}`…", argv.join(" "));
                         let status = std::process::Command::new(&argv[0])
                             .args(&argv[1..])
@@ -746,9 +805,21 @@ mod tests {
                 engine: 0,
             },
         ];
+        let cfg = mecha_core::config::Config::default();
         assert_eq!(
-            ask_features(&mut reader("y\n\nyes\n"), &qs).unwrap(),
-            vec![Feature::Web, Feature::Search]
+            ask_features(&mut reader("y\n\nyes\n"), &qs, &cfg).unwrap(),
+            Answers {
+                yes: vec![Feature::Web, Feature::Search],
+                never: vec![],
+            }
+        );
+        // `never` is kept apart from no (review of #631).
+        assert_eq!(
+            ask_features(&mut reader("never\nn\n"), &qs, &cfg).unwrap(),
+            Answers {
+                yes: vec![],
+                never: vec![Feature::Web],
+            }
         );
     }
 
@@ -782,6 +853,11 @@ mod tests {
             ["search"]
         );
         assert!(enable_ids("nothing to run").is_empty());
+        // What the question names is what is not on yet.
+        assert_eq!(also_enables(&cfg, Feature::Incognito), ["web"]);
+        let mut on = cfg.clone();
+        on.features.0.insert("web".into(), true);
+        assert!(also_enables(&on, Feature::Incognito).is_empty());
     }
 
     /// The summary names what will happen and the one total.
