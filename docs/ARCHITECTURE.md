@@ -952,7 +952,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   then σ = 8), the setting a 60-image comparison on one textured picture
   found seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
   saw a faint rectangular seam where the edge crossed a smooth background,
-  on one scene at n = 4, open in HANDOFF. The graph samples on the
+  on one scene at n = 4 (`IMAGE-REGION-EDIT-RESEARCH.md` §7.7). The graph samples on the
   encoded picture under a `SetLatentNoiseMask`. The result is then laid over
   the original in mecha's code (`composite_masked`), not the server's, so
   every pixel beyond the grown, feathered edge (up to about 37 px outside
@@ -962,10 +962,9 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   already is, and the result says so. A dab too small to survive the grow
   step is refused rather than silently changing nothing. The near-copy check
   reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. Measured seamless on one textured
-  picture, and landing 8 of 8 local edits, in
-  `IMAGE-REGION-EDIT-RESEARCH.md` §4, with §7.7's one smooth-background
-  seam the exception seen so far. It under-edits a pose,
+  masked edit would look unchanged. It landed 8 of 8 local edits in
+  `IMAGE-REGION-EDIT-RESEARCH.md` §4 (the seam caveat is above). It
+  under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
   nothing, or was painted over a picture of another shape, is refused before
   the GPU. A `size` beside a mask is set aside and said, never refused,

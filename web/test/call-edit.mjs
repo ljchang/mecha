@@ -122,7 +122,6 @@ function rig({ live = true } = {}) {
     `'use strict';
      const bodies = [];
      let input = '', attachments = [], key = 'k1', token = null, error = null;
-     let regenerated = null;
      const chosen = { display: 'Mara' };
      const withAttachments = (typed) => typed;
      const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
@@ -132,17 +131,13 @@ function rig({ live = true } = {}) {
        return { ok: true, json: async () => ({ started: true }) };
      };
      ${sendSrc}
-     return async (typed, opts) => { input = typed; regenerated = null; await send(opts); return { body: bodies.at(-1), regenerated }; };`,
+     return async (typed, opts) => { input = typed; await send(opts); return { body: bodies.at(-1) }; };`,
   )();
   const edit = { picture: 'images/a.png', words: 'add a hat' };
   const panel = await run('Edit images/a.png: add a hat', { edit });
   is(panel.body.edit, edit, "the panel's turn carries its fields");
-  // Any panel edit can come back a redraw, with a version_of only the
-  // transcript carries (review of #634).
-  is(panel.regenerated, 'k1', 'and the finished turn is read again for its version_of');
   const typed = await run('hello');
   is('edit' in typed.body, false, 'a typed turn sends no edit field');
-  is(typed.regenerated, null, 'and owes no re-read');
 }
 
 // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing goes out with
@@ -159,7 +154,6 @@ function rig({ live = true } = {}) {
        const bodies = [];
        let input = 'half a thought', attachments = ['inbox/notes.pdf'], key = 'k1', token = null, error = null;
        let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
-       let regenerated = null;
        const run = { running };
        const chosen = { display: 'Mara' };
        const withAttachments = (typed, files) => [typed, ...files].join(' ');
@@ -174,7 +168,7 @@ function rig({ live = true } = {}) {
        ${regenSrc}
        return async () => {
          await regenerate('images/a.png', 'images/b.png');
-         return { bodies, input, attachments, chosen: [...chosenVersion.keys()], regenerated };
+         return { bodies, input, attachments, chosen: [...chosenVersion.keys()] };
        };`,
     )(running);
   const out = await make(false)();
@@ -184,7 +178,6 @@ function rig({ live = true } = {}) {
   is(out.bodies[0].attachments, [], 'the composer\'s files are not attached to it');
   is([out.input, out.attachments], ['half a thought', ['inbox/notes.pdf']], "the owner's draft and files stay in the composer");
   is(out.chosen, [], 'the card goes back to the newest, so the new version is what lands');
-  is(out.regenerated, 'k1', 'and the finished turn is read again for its version_of');
   const busy = await make(true)();
   is(busy.bodies.length, 0, 'nothing is sent while a run is live');
 }
@@ -199,7 +192,7 @@ function rig({ live = true } = {}) {
       'live',
       `'use strict';
        const log = [];
-       let key = 'k1', token = null, regenerated = null;
+       let key = 'k1', token = null;
        const caller = { say: (text) => (log.push('say:' + text), live) };
        const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
        const notice = (text) => log.push('notice:' + text);
@@ -209,7 +202,7 @@ function rig({ live = true } = {}) {
          return { ok: true, json: async () => ({ line: 'Regenerate images/b.png' }) };
        };
        ${src2}
-       return async () => { await regenerateInCall('images/b.png'); return { log, regenerated }; };`,
+       return async () => { await regenerateInCall('images/b.png'); await null; return { log }; };`,
     )(live);
   const out = await make(true)();
   is(
@@ -217,10 +210,16 @@ function rig({ live = true } = {}) {
     ['post:/api/persona-chat/k1/call-regenerate {"picture":"images/b.png"}', 'say:Regenerate images/b.png'],
     "the redraw is registered, then the server's line goes into the call, not the chat's send",
   );
-  is(out.regenerated, 'k1', 'and the finished turn is read again for its version_of');
   const dead = await make(false)();
-  is(dead.log.at(-1), 'notice:The call is not connected, so the picture was not drawn again.', 'a call with no live line says so');
-  is(dead.regenerated, null, 'and owes no re-read');
+  is(
+    dead.log.slice(1),
+    [
+      'say:Regenerate images/b.png',
+      'post:/api/persona-chat/k1/call-regenerate {"picture":"images/b.png","withdraw":true}',
+      'notice:The call is not connected, so the picture was not drawn again.',
+    ],
+    'a call with no live line takes the registration back and says so (review of #634)',
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

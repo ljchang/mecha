@@ -275,6 +275,17 @@ struct PanelNames {
     persona: String,
 }
 
+/// Which turn a panel edit rides, for how its drawing may be stopped
+/// ([`draw_panel_edit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelTurn {
+    /// Typed: Stop ends the drawing with the turn.
+    Typed,
+    /// A call's: talking barges in by cancelling the run, so the drawing
+    /// runs under no run token and only its wait for the line can be ended.
+    Spoken,
+}
+
 /// The edit panel's change, drawn by the harness (IMAGE-DESIGN.md §5.3):
 /// the owner's words and the picture's record through a one-shot extraction
 /// (a painted area skips it: that is a retouch), then the typed call through
@@ -290,7 +301,7 @@ async fn draw_panel_edit(
     extractor: &Result<(Box<dyn mecha_core::provider::Provider>, String), String>,
     names: &PanelNames,
     events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
-    spoken: bool,
+    turn: PanelTurn,
 ) -> (String, bool) {
     use mecha_core::persona::edit;
     let fail = |why: String| {
@@ -427,7 +438,7 @@ async fn draw_panel_edit(
     // resolve into a draw: the Stop count is read before and after, as
     // `dispatch`'s own wait reads it (review of #606), and a Stop meanwhile
     // ends it undrawn too.
-    if spoken {
+    if turn == PanelTurn::Spoken {
         if let (Some(sink), Some(stop)) = (&cx.jobs, &cx.cancel) {
             let stops = sink.stops();
             let waited = tokio::select! {
@@ -447,7 +458,7 @@ async fn draw_panel_edit(
         }
     }
     let detached;
-    let cx = if spoken {
+    let cx = if turn == PanelTurn::Spoken {
         let mut free = cx.clone();
         free.cancel = None;
         detached = free;
@@ -2839,6 +2850,31 @@ impl PersonaChats {
         Ok(mecha_core::persona::edit::regenerate_line(picture))
     }
 
+    /// Withdraw a Regenerate registered on `key` for `picture` whose line
+    /// never reached the call — the page could not say it — so a later
+    /// turn that happened to say those words is not taken as one (review
+    /// of #634). A newer press for another picture stays.
+    pub async fn withdraw_call_regenerate(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+        picture: &str,
+    ) -> Result<(), Refusal> {
+        self.persona_of(library, key, token).await?;
+        let mut held = self
+            .call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if held
+            .get(key)
+            .is_some_and(|(edit, _)| edit.picture == picture.trim())
+        {
+            held.remove(key);
+        }
+        Ok(())
+    }
+
     /// The Regenerate a spoken turn on `key` carries: the registered one,
     /// when `utterance` is its line and it is still fresh, with when it was
     /// registered. Left in place: it is spent (`spend_call_regenerate`) only
@@ -3913,7 +3949,11 @@ impl PersonaChats {
                             extractor,
                             &names,
                             &Some(tx.clone()),
-                            spoken_turn,
+                            if spoken_turn {
+                                PanelTurn::Spoken
+                            } else {
+                                PanelTurn::Typed
+                            },
                         )
                         .await;
                         mecha_core::agent::append_user_text(
@@ -5343,6 +5383,10 @@ pub struct CallRegenerateBody {
     picture: String,
     #[serde(default)]
     unlock: Option<String>,
+    /// The page could not say the line: take the registration back
+    /// (`PersonaChats::withdraw_call_regenerate`).
+    #[serde(default)]
+    withdraw: bool,
 }
 
 /// POST /api/persona-chat/{key}/call-regenerate — a Regenerate pressed on
@@ -5357,6 +5401,16 @@ pub async fn call_regenerate(
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
+    if body.withdraw {
+        return match chat
+            .personas
+            .withdraw_call_regenerate(&state.library, &key, body.unlock.as_deref(), &body.picture)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({ "withdrawn": true })).into_response(),
+            Err(r) => r.into_response(),
+        };
+    }
     match chat
         .personas
         .call_regenerate(&state.library, &key, body.unlock.as_deref(), &body.picture)
@@ -6408,6 +6462,39 @@ mod tests {
     /// spent once, and never a newer press that replaced it. Before, the
     /// lookup took it, so a turn refused as Busy lost the redraw and the
     /// worker's retry reached the persona as bare words.
+    /// A Regenerate whose line the page could not say is taken back, so a
+    /// later turn saying those words is words (review of #634). Only the
+    /// press for that picture: a newer press for another stays.
+    #[tokio::test]
+    async fn a_call_regenerate_never_said_is_withdrawn() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let chats = w.personas();
+        let line = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        chats
+            .withdraw_call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &line).is_none());
+        let other = chats
+            .call_regenerate(&w.library, &key, None, "images/b.png")
+            .await
+            .unwrap();
+        chats
+            .withdraw_call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &other).is_some());
+    }
+
     #[tokio::test]
     async fn a_call_regenerate_is_spent_only_by_the_turn_that_starts_with_it() {
         let w = world_built(Mode::Say("Done.".into()), |_| {}, true);

@@ -326,10 +326,16 @@
       const { line } = await res.json();
       if (k !== key) return;
       if (!caller?.say(line)) {
+        // Taken back, so a later turn that says those words is words
+        // (review of #634).
+        fetch(chatUrl(k, '/call-regenerate'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ picture: path, unlock: token ?? undefined, withdraw: true }),
+        }).catch(() => {});
         notice('The call is not connected, so the picture was not drawn again.');
         return;
       }
-      regenerated = k;
     } catch (err) {
       if (k === key) notice(`The picture could not be drawn again: ${err?.message ?? err}.`);
     }
@@ -889,8 +895,6 @@
     imageEdit = null;
     pictureNote = null;
     attachments = [];
-    // A re-read owed to the last chat is not this one's (review of #634).
-    regenerated = null;
     chosenVersion = new Map();
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
@@ -919,14 +923,12 @@
       scrollDown();
       if (ev.type === 'done') {
         doneSeq += 1;
-        const again = regenerated === k;
-        regenerated = null;
         // Only a run that finished is re-read: a failed one was rolled back
         // on the server, and the page's own record of it — the message and
         // why it failed — is the one worth keeping on screen.
         // And only when this page joined it midway: otherwise the stream
         // carried the whole turn (review of #415).
-        if (ev.ok && (partial || again)) {
+        if (ev.ok && partial) {
           partial = false;
           reread(k).catch((e) => (error = String(e?.message ?? e)));
         }
@@ -1343,13 +1345,6 @@
       input = '';
       attachments = [];
     }
-    // A panel turn's card says which picture it is a version of
-    // (`version_of`), and only the transcript carries that, never the live
-    // stream: any panel edit can come back as a redraw, not only a
-    // Regenerate (review of #634), so the finished turn is read again. Set
-    // before the POST, so a turn that ends before its answer arrives is not
-    // missed.
-    if (edit) regenerated = key;
     try {
       const res = await fetch(chatUrl(key, '/send'), {
         method: 'POST',
@@ -1379,7 +1374,6 @@
         attachments = attached;
       }
       error = String(e?.message ?? e);
-      if (edit) regenerated = null;
       return false;
     }
     return true;
@@ -1389,10 +1383,10 @@
   // it is at a new seed by the harness, with no words and no painted area.
   // Not while a run is live: a message into a running turn steers it as text
   // alone, and the persona would read "Regenerate" as words to act on.
-  // The card's `version_of` arrives only with the transcript, not on the
-  // live stream, so the finished turn is read again (`regenerated`, set in
-  // `send`). The card goes back to the newest once the turn is taken, so the
-  // new version is what lands; a send that failed leaves it where it was.
+  // The card's `version_of` arrives with the harness's call on the live
+  // stream (`applyEvent`). The card goes back to the newest once the turn is
+  // taken, so the new version is what lands; a send that failed leaves it
+  // where it was.
   async function regenerate(root, picture) {
     if (!key || run.running) return;
     if (await send({ text: composeRegenerateMessage(picture), edit: { picture, redraw: true } })) {
@@ -1400,8 +1394,6 @@
       chosenVersion = new Map(chosenVersion);
     }
   }
-  // The chat whose finished turn is read again for its `version_of`.
-  let regenerated = null;
 
   function stepVersion(root, list, by) {
     const at = list.indexOf(shownVersion(list, chosenVersion.get(root)));
