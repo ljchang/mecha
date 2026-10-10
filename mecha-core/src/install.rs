@@ -468,7 +468,8 @@ pub async fn install_layout(
 /// hash, for the sidecar `id` — the venv, its managed Python and the lock
 /// each recorded before they are written (§10.2 item 2), and the install run
 /// every time, since it is idempotent and a half-finished one is resumed by
-/// it. Returns the environment's interpreter.
+/// it. Its download cache is dropped after: the wheels are in the venv, and
+/// the cache would keep their size again for nothing.
 pub(crate) async fn locked_env(
     m: &Machinery,
     id: &str,
@@ -477,7 +478,7 @@ pub(crate) async fn locked_env(
     lock: &str,
     what: &str,
     say: Say<'_>,
-) -> Result<PathBuf> {
+) -> Result<()> {
     let home = &m.mecha_home;
     let uv = ensure_uv(m, say).await?;
     let venv = dir.join("venv");
@@ -507,7 +508,8 @@ pub(crate) async fn locked_env(
         .arg(&lock_file);
     uv_env(&mut c, dir);
     run(&mut c, "uv pip install")?;
-    Ok(python)
+    let _ = std::fs::remove_dir_all(dir.join(".uv-cache"));
+    Ok(())
 }
 
 /// `uv`'s environment for an install whose tree is `dir`: its Python, its
