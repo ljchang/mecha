@@ -393,15 +393,17 @@ A harness predicate, at plan time. All of these must hold:
 - the switch is on;
 - the route is `new`: a fresh picture, not an edit, restage, retouch or redraw;
 - the scene has two or more people;
-- the scene has a `together`. That is the splitter's own trigger, and its parts feed the placing pass.
+- the scene has a `together`. That is the splitter's own trigger, and its parts feed the placing pass;
+- every person is a library character with a portrait. A described person has nothing for step 2 to cut out, and finding that after the plate would cost a wasted render and then the fallback anyway;
+- the setting is words. A scene set in a photo is a placement, not a new picture, so it already fails the route condition.
 
-Everything else draws as today.
+All of this is known at plan time, before the first render. Everything else draws as today, and the result says which condition sent it to one pass.
 
 ### 15.3 The pipeline
 
-The steps run in one deferred job (`jobs.rs`), in order, with **the job's own cancellation** checked between steps: the job's token, which Stop fires, never the run's, which the owner's typing fires (`jobs.rs`: talking cancels the run, never the job). Other pictures never interleave with a build. The queue line names the step: plate, cutout *i* of *n*, placing, finish. Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
+The steps run in one deferred job (`jobs.rs`), in order, with **the job's own cancellation** checked between steps: the job's token, which Stop fires, never the run's, which the owner's typing fires (`jobs.rs`: talking cancels the run, never the job). Other pictures never interleave with a build. **The queue line keeps one label for the whole build in this build.** Naming the step (plate, cutout *i* of *n*, placing, finish) needs two changes to `jobs.rs`. First, the job needs a label that can be written more than once; today it is a write-once `OnceLock`, and a second `set` is dropped. Second, `JobQueue::running` must read that label, not the `String` it copied at submit time. Both are left for the queue's owner (15.6). Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
 
-1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small. A setting photo is the plate as it is, with no render.
+1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small.
 2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, drawn at **1024 × 1024** (the measured size; with no size the canvas would follow the portrait's own shape, which was not measured), in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
    - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. In the measured runs 2 of 4 cutouts came out in the wrong pose, and the placing pass staged all 4 correctly.
    - **A person with no `wearing`** takes the scene's (the chat copy's) clothes, else "clothes that suit the scene", as today. Left empty, the cutout would copy the portrait's outfit.
@@ -423,11 +425,17 @@ The steps run in one deferred job (`jobs.rs`), in order, with **the job's own ca
 
 The picture's scene record gets a `layers` entry, written wherever the record is (the chat's copy, the persona's latest and the index entry, as any render lands), so a later chat that starts from the latest carries it too:
 
-- the plate's hash (photo or render);
+- the plate's hash;
 - per person: who, the cutout's hash (the RGBA PNG, kept in the workspace beside the picture), the part, and the seed;
 - the placing seed and the finish seed.
 
-Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on. The parts carry the `layers` entry's own origin, the scene's `together`'s, counted by `Scene::origin`. The cutout files live in the workspace, which `work::clean` reaps; a re-place that finds a cutout gone redraws it from the portrait, or says it cannot.
+Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on. The parts carry the `layers` entry's own origin, the scene's `together`'s, counted by `Scene::origin`. The cutout files live in the workspace, which `work::clean` reaps.
+
+**A hash is a check on reuse, not only a record of provenance.** The workspace is the jail a run can write, and §6's rule holds here: nothing is read back out of the workspace on trust. A re-place reads each cutout, hashes it, and treats a mismatch the way it treats a missing file: it redraws from the portrait, or says it cannot. The plate is handled the same way.
+
+**Incognito is kept as it is, because every pass takes the one adapter path.** All *n* + 3 renders go through the same `generate` call with the run's `image_trail`, so each pass's job and files are written to the trail before the server has them, and `forget_trail` reaches all of them. The plate and the cutouts are saved into the run's own jail, which in an incognito room is the room's tmpfs, never `work/<producer>/`. A room with no `server_temp_dir` already has the tool withheld.
+
+**The result names the picture, never the intermediates.** The model is told about the finished picture as a new picture, the way a single pass is described. It is never handed the plate's or the cutouts' paths, because a named intermediate invites an `image_view` of a picture the owner never asked for.
 
 ### 15.5 Failure is said, never silent
 
@@ -443,6 +451,8 @@ All of these were measured; none is built yet:
 - **Reframing the finished picture to the people, and a face pass.**
   - The crop needs the people's boxes.
   - The face pass must be gated on head turn under about 45°. At profile it pasted a frontal face 4 of 8.
+
+Also not built, and not a measurement: **the queue line that names the step** (15.3), which needs the two `jobs.rs` changes and belongs to whoever owns the queue.
 
 ### 15.7 The gate (mecha-a3, before the switch is offered)
 
