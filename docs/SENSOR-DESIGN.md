@@ -1,6 +1,6 @@
 # Sensors — design
 
-**2026-10-10. Proposed; the rulings in §9 are open.** One layer through
+**2026-10-10. Proposed; R2, R3 and R3b ruled the same day, R1 and R4 open (§9).** One layer through
 which mecha reads the state of the machine it runs on and the services it
 runs beside. Every consumer (the homeostat, the HUD, the doctor, the
 situation brief, the gates, and a model tool if one is ruled in) reads the
@@ -346,18 +346,24 @@ S0 is small, and it is the only step that is cheaper now than later.
   layer rather than to one board.
 - **The charter.** §1.3 explains why.
 
-## 9. Rulings this waits on
+## 9. Rulings
 
-- **R1. The name.** The CLI is `mecha sensor` and the module is `sensor`,
-  with the charter's `SensorKind` left as it is and the difference
-  documented (§1.3). The alternative is a word that does not collide, such
-  as `vitals`. Recommended: `sensor`, as proposed.
-- **R2. Timing.** Do S0 before deploying the dashboard's step 2b.
-  Recommended: yes. #630 merges as it is, and S0 is the first commit of
-  this arc.
-- **R3. The model tool**, and **R3b**, whether its results carry
-  `private_data`. Recommended: build S0 to S3 first, then add the tool
-  behind its own switch with `private_data: true` until the owner rules
-  the series publishable.
-- **R4. The homeostat reads the series** (S4), so a run's record carries
-  the minutes it ran in, rather than a probe at start. Recommended: yes.
+- **R1. The name — proposed, awaiting the owner's word.** The owner
+  suggested `mecha system` (2026-10-10). Proposed: **`mecha system` for the
+  CLI, `sensor` for the module.** The collision that confuses is the
+  user-facing one, because the charter's surfaces already show an owner the
+  word "sensor" for something else (§1.3). Inside the code the parts are
+  sensors, which is the goal design's word, and module paths keep
+  `charter::SensorKind` and `sensor::Id` apart. Wherever §3.5 and §7 say
+  `mecha sensor`, read the CLI's final name.
+- **R2. Timing — ruled 2026-10-10:** #630 merges as it is, S0 moves the
+  sampler, and the dashboard's step 2b deploys once, at the final path.
+- **R3. The model tool — ruled 2026-10-10:** after the CLI and the HUD (S0
+  to S3), behind its own feature switch, forced off in eval, and not on
+  persona tool lists.
+- **R3b. Private — ruled 2026-10-10:** `sensor_read` results carry
+  `private_data: true`. A category series records when work happened, and
+  unknown is never clean.
+- **R4. The homeostat reads the series (S4) — open.** A run's record would
+  carry the minutes it ran in rather than a probe at start. Recommended:
+  yes.
