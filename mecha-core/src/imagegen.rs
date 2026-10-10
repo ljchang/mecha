@@ -2097,6 +2097,306 @@ impl ImageGenerate {
         self
     }
 
+    /// Build a touching scene in layers (IMAGE-DESIGN.md §15.3): the plate,
+    /// one cutout per person flattened on grey, the placing pass and the
+    /// finish, in one job, with the job's Stop read between steps and handed
+    /// to each render. The plate and each cutout are kept beside the
+    /// picture, and each pass is a line of the prompt log. `left` gathers
+    /// the image server's copies no pass could remove, and stays the
+    /// caller's on every exit, so a build that fails part-way still says
+    /// them beside its fallback (review of #626).
+    async fn build_layers(
+        &self,
+        ctx: &ToolCtx,
+        lp: &crate::layers::Plan,
+        base: &Request,
+        timeout: Duration,
+        stamp: &str,
+        left: &mut Vec<String>,
+    ) -> std::result::Result<Built, LayersFailed> {
+        let mut steps: Vec<Value> = Vec::new();
+        let stopped = || ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled());
+        let joined = |left: &[String]| (!left.is_empty()).then(|| left.join("; "));
+        // `[image] timeout_secs` bounds the build's passes together, not
+        // each of its n + 3: per pass, a wedged build could hold the chat's
+        // one job slot for close to an hour (review of #624). Each pass gets
+        // what is left, and none starts with nothing left. A build that
+        // fails then draws the single pass with a timeout of its own, so a
+        // call can take up to twice it, and still delivers a picture.
+        let deadline = Instant::now() + timeout;
+        let pass = |step: &str, mut req: Request| {
+            let step = step.to_string();
+            // Someone named but not in the picture reaches the image model
+            // as "the viewer", on every pass as on the single one (the
+            // owner's ruling, 2026-10-08; review of #626).
+            req.prompt = crate::picture::as_viewer(&req.prompt, &lp.offstage, &[]);
+            async move {
+                let started = Instant::now();
+                let remaining = deadline.saturating_duration_since(started);
+                if remaining.is_zero() {
+                    let out = Outcome {
+                        image: Err(Failure::Other(anyhow::anyhow!(
+                            "the build ran past its {} s",
+                            timeout.as_secs()
+                        ))),
+                        left: None,
+                    };
+                    return (step, req, 0, out);
+                }
+                let out = self
+                    .backend
+                    .generate(
+                        &self.cfg,
+                        &req,
+                        ctx.cancel.as_ref(),
+                        remaining,
+                        ctx.image_trail.as_deref(),
+                    )
+                    .await;
+                (step, req, started.elapsed().as_secs(), out)
+            }
+        };
+        let run = |step: String,
+                   req: Request,
+                   secs: u64,
+                   out: Outcome,
+                   left: &mut Vec<String>,
+                   steps: &mut Vec<Value>| {
+            left.extend(out.left);
+            steps.push(json!({"step": step, "seed": req.seed, "secs": secs}));
+            if let Some(log) = &ctx.prompt_log {
+                let line = json!({
+                    "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "route": "layered",
+                    "step": step,
+                    "seed": req.seed,
+                    "prompt": req.prompt,
+                    "words": lp.words,
+                });
+                if let Err(e) = append_prompt(log, &line) {
+                    tracing::warn!("image_generate: prompt log: {e:#}");
+                }
+            }
+            match out.image {
+                Ok(bytes) => Ok(bytes),
+                Err(Failure::Cancelled) => Err(LayersFailed::Cancelled(None)),
+                Err(Failure::Other(e)) => Err(LayersFailed::At(step, format!("{e:#}"))),
+            }
+        };
+        let fail = |e: LayersFailed, left: &[String]| match e {
+            LayersFailed::Cancelled(_) => LayersFailed::Cancelled(joined(left)),
+            other => other,
+        };
+        // 1. The plate: the room alone, in the scene's shape.
+        let (step, req, secs, out) = pass(
+            "plate",
+            Request {
+                prompt: lp.plate.clone(),
+                negative: base.negative.clone(),
+                size: base.size,
+                steps: base.steps,
+                seed: base.seed,
+                references: Vec::new(),
+                reference_size: base.reference_size,
+                mask: None,
+            },
+        )
+        .await;
+        let mut plate = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
+        // The room must be empty: a face in it is a stranger the placing
+        // pass would keep (mecha-a3, 2026-10-10). One more draw at a new
+        // seed, then the single pass. A detector that cannot run is said in
+        // the manifest; it does not stop the build, since it guards the
+        // picture's quality, not the owner's data.
+        // The detector runs off the async workers, as the crops' does: it
+        // can take seconds, and a panic there must cost the check, never
+        // the job, whose slot is freed only when its future ends (review of
+        // #626).
+        let detector = Arc::clone(&self.faces);
+        let faces = |png: &[u8]| {
+            let detector = Arc::clone(&detector);
+            let png = png.to_vec();
+            async move {
+                tokio::task::spawn_blocking(move || detector.faces_in(&png))
+                    .await
+                    .unwrap_or_else(|_| Err("the face detector panicked".into()))
+            }
+        };
+        match faces(&plate).await {
+            Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
+            Ok(n) => {
+                steps.push(json!({"step": "plate check", "faces": n}));
+                if stopped() {
+                    return Err(LayersFailed::Cancelled(joined(left)));
+                }
+                let (step, req, secs, out) = pass(
+                    "plate again",
+                    Request {
+                        prompt: lp.plate.clone(),
+                        negative: base.negative.clone(),
+                        size: base.size,
+                        steps: base.steps,
+                        seed: draw_seed(ctx),
+                        references: Vec::new(),
+                        reference_size: base.reference_size,
+                        mask: None,
+                    },
+                )
+                .await;
+                plate = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
+                match faces(&plate).await {
+                    Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
+                    Ok(n) => {
+                        return Err(LayersFailed::At(
+                            "plate".into(),
+                            format!("the room came back with {n} face(s) in it, twice"),
+                        ))
+                    }
+                    Err(why) => steps.push(json!({"step": "plate check", "unchecked": why})),
+                }
+            }
+            Err(why) => steps.push(json!({"step": "plate check", "unchecked": why})),
+        }
+        save_named(ctx, &format!("images/{stamp}-plate.png"), &plate)
+            .await
+            .map_err(|e| LayersFailed::At("plate".into(), format!("{e:#}")))?;
+        // 2. A cutout per person, from their portrait, in a neutral pose,
+        // flattened on grey before it is a reference.
+        let mut flats: Vec<Reference> = Vec::new();
+        let mut people: Vec<crate::scene::LayerPerson> = Vec::new();
+        let named: Vec<String> = lp
+            .people
+            .iter()
+            .map(|p| p.shown.clone())
+            .chain(lp.offstage.iter().cloned())
+            .collect();
+        for (i, p) in lp.people.iter().enumerate() {
+            if stopped() {
+                return Err(LayersFailed::Cancelled(joined(left)));
+            }
+            let name = format!("cutout {} of {}", i + 1, lp.people.len());
+            let (step, req, secs, out) = pass(
+                &name,
+                Request {
+                    // A replay's posed arm puts the part into the cutout
+                    // (`ToolCtx::layers_posed`); a chat never does.
+                    // A solo cutout names no one: clothes said by
+                    // someone's name ("John's jacket") read as the
+                    // person's own, as the light names nobody (review of
+                    // #626).
+                    prompt: if ctx.layers_posed && !p.part.trim().is_empty() {
+                        crate::layers::cutout_prompt_posed(
+                            &crate::layers::unnamed(&p.wearing, &named),
+                            &p.part,
+                            &lp.light,
+                        )
+                    } else {
+                        crate::layers::cutout_prompt(
+                            &crate::layers::unnamed(&p.wearing, &named),
+                            &lp.light,
+                        )
+                    },
+                    negative: base.negative.clone(),
+                    size: Some((1024, 1024)),
+                    steps: base.steps,
+                    seed: draw_seed(ctx),
+                    references: vec![Reference {
+                        path: format!("library:{}", p.key),
+                        bytes: p.portrait.clone(),
+                        ext: p.ext,
+                    }],
+                    reference_size: EDIT_REFERENCE_SIZE,
+                    mask: None,
+                },
+            )
+            .await;
+            let seed = req.seed;
+            let cutout = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
+            let flat = crate::layers::flatten_on_grey(&cutout)
+                .map_err(|why| LayersFailed::At(name.clone(), why))?;
+            save_named(
+                ctx,
+                &format!("images/{stamp}-cutout-{}.png", p.key),
+                &cutout,
+            )
+            .await
+            .map_err(|e| LayersFailed::At(name.clone(), format!("{e:#}")))?;
+            people.push(crate::scene::LayerPerson {
+                who: p.key.clone(),
+                cutout: crate::scene::hash(&cutout),
+                part: p.part.clone(),
+                seed,
+            });
+            flats.push(Reference {
+                path: format!("layers:{}", p.key),
+                bytes: flat,
+                ext: "png",
+            });
+        }
+        if stopped() {
+            return Err(LayersFailed::Cancelled(joined(left)));
+        }
+        // 3. The placing pass: the plate as the canvas, each person by tag.
+        let mut references = vec![Reference {
+            path: "layers:plate".into(),
+            bytes: plate.clone(),
+            ext: "png",
+        }];
+        references.extend(flats);
+        let (step, req, secs, out) = pass(
+            "placing",
+            Request {
+                prompt: crate::layers::placing_prompt(&lp.people, lp.leftover.as_deref()),
+                negative: base.negative.clone(),
+                size: None,
+                steps: base.steps,
+                seed: draw_seed(ctx),
+                references,
+                reference_size: EDIT_REFERENCE_SIZE,
+                mask: None,
+            },
+        )
+        .await;
+        let placing_seed = req.seed;
+        let placed = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
+        if stopped() {
+            return Err(LayersFailed::Cancelled(joined(left)));
+        }
+        // 4. The finish: light, depth of field and detail, nothing else.
+        let (step, req, secs, out) = pass(
+            "finish",
+            Request {
+                prompt: crate::layers::finish_prompt(lp.style.as_deref()),
+                negative: base.negative.clone(),
+                size: None,
+                steps: base.steps,
+                seed: draw_seed(ctx),
+                references: vec![Reference {
+                    path: "layers:placed".into(),
+                    bytes: placed,
+                    ext: "png",
+                }],
+                reference_size: EDIT_REFERENCE_SIZE,
+                mask: None,
+            },
+        )
+        .await;
+        let finish_seed = req.seed;
+        let bytes = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
+        Ok(Built {
+            bytes,
+            record: crate::scene::Layers {
+                plate: crate::scene::hash(&plate),
+                people,
+                placing_seed,
+                finish_seed,
+                origin: lp.origin,
+            },
+            steps,
+            left: joined(left),
+        })
+    }
+
     fn arm_unload(&self) {
         let after = self.cfg.unload_after_secs;
         if after == 0 {
@@ -2869,6 +3169,8 @@ impl Tool for ImageGenerate {
         // The words a split put in the prompt, for the owner's prompt log
         // (`words`), which the privacy guard reads.
         let mut split_words: Vec<String> = Vec::new();
+        // A touching scene the persona's switch builds in layers (§15).
+        let mut layers_plan: Option<crate::layers::Plan> = None;
         let mut reseeded: Option<u64> = None;
         let mut dropped: Vec<String> = Vec::new();
         let is_edit = matches!(plan.render, crate::picture::Render::Edit { .. });
@@ -2918,12 +3220,34 @@ impl Tool for ImageGenerate {
                                 doing: (!p.doing.trim().is_empty()).then(|| p.doing.clone()),
                             })
                             .collect();
+                        // A split for a picture that may be built in
+                        // layers is asked to name whom each part acts on
+                        // (`roles::NAME_WHOM`); one for a single pass is
+                        // asked as before, since there it emptied parts and
+                        // kept no more acts (mecha-a3, 2026-10-10). These
+                        // are the layering checks known before the split;
+                        // the rest (portraits, places, the setting's words)
+                        // follow it, and a picture they send to one pass
+                        // keeps the named split.
+                        let may_layer = ctx.layers
+                            && plan.route == "new"
+                            && as_called
+                            && people.len() == crate::layers::MEASURED_PEOPLE
+                            && people
+                                .iter()
+                                .all(|p| matches!(p.who, crate::scene::Who::Library(_)))
+                            && matches!(
+                                plan.next.setting.as_ref().map(|f| &f.value),
+                                Some(crate::scene::Setting::Words { .. })
+                            )
+                            && plan.also.is_none()
+                            && plan.next.text.as_ref().is_none_or(|t| t.value.is_empty());
                         // ~1-3 s on the router, 9 s once beside two live
                         // turns (mecha-a3): bounded, and a late split draws
                         // the call as sent.
                         let answer = tokio::time::timeout(
                             ROLE_SPLIT_TIMEOUT,
-                            splitter.split(&asked, &sentence.value),
+                            splitter.split(&asked, &sentence.value, may_layer),
                         )
                         .await
                         .unwrap_or_else(|_| Err("the splitter took too long".into()));
@@ -3044,6 +3368,211 @@ impl Tool for ImageGenerate {
                 // #591 pass 6 had it).
                 let shape = picture.as_ref().and_then(|r| Size::nearest(&r.bytes));
                 req.size = Some(call.size.or(shape).unwrap_or(Size::Square).dims());
+                // Layers (IMAGE-DESIGN.md §15): the owner's switch, a new
+                // picture, two or more people sharing an act. Decided here,
+                // before anything is drawn, so the layers are kept.
+                if ctx.layers && plan.route == "new" && people.len() >= 2 && as_called {
+                    let portraits: Vec<Option<(Vec<u8>, &'static str)>> = people
+                        .iter()
+                        .map(|p| match &p.who {
+                            crate::scene::Who::Library(n) => req
+                                .references
+                                .iter()
+                                .find(|r| r.path == format!("library:{n}"))
+                                .map(|r| (r.bytes.clone(), r.ext)),
+                            crate::scene::Who::Described(_) => None,
+                        })
+                        .collect();
+                    let library = people
+                        .iter()
+                        .filter(|p| matches!(p.who, crate::scene::Who::Library(_)))
+                        .count();
+                    let setting = match plan.next.setting.as_ref().map(|f| &f.value) {
+                        Some(crate::scene::Setting::Words { text }) => Some(text.clone()),
+                        _ => None,
+                    };
+                    // A split that applied places everyone; one that fell
+                    // back leaves only the places the call gave.
+                    let placed = roles_said.as_deref() == Some("applied")
+                        || people.iter().all(|p| p.at.is_some());
+                    match crate::layers::not_layered(
+                        people.len(),
+                        library,
+                        portraits.iter().flatten().count(),
+                        setting.is_some(),
+                        placed,
+                        people.len() < EDIT_REFERENCE_BUDGET,
+                    ) {
+                        Some(why) => {
+                            dropped.push(format!("Drawn in one pass, not in layers: {why}."))
+                        }
+                        None => {
+                            let value = |f: &Option<crate::scene::Field<String>>| {
+                                f.as_ref()
+                                    .map(|f| f.value.trim().to_string())
+                                    .filter(|v| !v.is_empty())
+                            };
+                            let applied = roles_said.as_deref() == Some("applied");
+                            // The style's own words, as the compile pasted
+                            // them for a single pass (mecha-a3, 2026-10-10:
+                            // 11 of 15 real touching calls named one).
+                            let style_words = style.as_deref().and_then(|name| {
+                                lib.get(crate::imagelib::Kind::Style, &name.trim().to_lowercase())
+                                    .filter(|e| e.status == crate::imagelib::Status::Approved)
+                                    .map(|e| e.text.clone())
+                            });
+                            // The plate never sees a person (mecha-a3: a
+                            // camera dwelling on someone drew a stranger
+                            // into the empty room): framing words from a
+                            // closed set, and light that names nobody.
+                            // The plate names no one at all: not the
+                            // people, and not anyone named offstage.
+                            let names: Vec<String> = people
+                                .iter()
+                                .map(|p| crate::picture::shown(&p.who))
+                                .chain(plan.offstage.iter().cloned())
+                                .collect();
+                            let room = setting
+                                .as_deref()
+                                .and_then(|s| crate::layers::room_words(s, &names));
+                            let plate_light = value(&plan.next.light)
+                                .filter(|l| crate::layers::names_no_one(l, &names));
+                            let plate_framing = value(&plan.next.camera)
+                                .as_deref()
+                                .and_then(crate::layers::framing);
+                            // Each person's clothes, the fuller of the
+                            // call's and the chat's record (mecha-a3: the
+                            // shorter lost half an outfit).
+                            let recorded = ctx.scene.as_ref().and_then(|s| s.current());
+                            let fuller = |p: &crate::scene::Person| {
+                                // The call's own clothes, when it names any:
+                                // a fuller record's outfit replaced the one
+                                // asked for (mecha-a3, 2026-10-10).
+                                if let Some(asked) = call
+                                    .change
+                                    .people
+                                    .iter()
+                                    .find(|c| c.who.key() == p.who.key())
+                                    .and_then(|c| c.wearing.clone())
+                                    .filter(|w| !w.trim().is_empty())
+                                {
+                                    return asked;
+                                }
+                                let kept = recorded
+                                    .as_ref()
+                                    .and_then(|r| {
+                                        r.people.iter().find(|q| q.who.key() == p.who.key())
+                                    })
+                                    .map(|q| q.wearing.clone())
+                                    .unwrap_or_default();
+                                if kept.trim().chars().count() > p.wearing.trim().chars().count() {
+                                    kept
+                                } else {
+                                    p.wearing.clone()
+                                }
+                            };
+                            // The chat's words every pass is built from,
+                            // for the prompt log, as the single pass keeps
+                            // them, with the clothes each cutout wears.
+                            let mut words = record_prose(&plan.next);
+                            words.extend(plan.also.iter().cloned());
+                            words.extend(split_words.iter().cloned());
+                            words.extend(people.iter().map(fuller));
+                            words.retain(|w| !w.trim().is_empty());
+                            layers_plan = Some(crate::layers::Plan {
+                                plate: crate::layers::plate_prompt(
+                                    room.as_deref().unwrap_or_default(),
+                                    plate_light.as_deref(),
+                                    plate_framing.as_deref(),
+                                ),
+                                style: style_words,
+                                // The cutout is lit by light that names
+                                // nobody, as the plate is: a solo cutout
+                                // naming someone absent invites them in.
+                                light: plate_light
+                                    .clone()
+                                    .unwrap_or_else(|| "soft, even light".into()),
+                                people: people
+                                    .iter()
+                                    .zip(portraits)
+                                    .filter_map(|(p, portrait)| {
+                                        let (bytes, ext) = portrait?;
+                                        Some(crate::layers::Person {
+                                            key: p.who.key(),
+                                            shown: crate::picture::shown(&p.who),
+                                            wearing: fuller(p),
+                                            at: p.at.map(|w| w.name().to_string()),
+                                            part: p.doing.clone(),
+                                            expression: p.expression.clone(),
+                                            portrait: bytes,
+                                            ext,
+                                        })
+                                    })
+                                    .collect(),
+                                // The split's leftover; the call's own act
+                                // when the split fell back (§15.3).
+                                leftover: if applied {
+                                    value(&words_scene.together)
+                                } else {
+                                    value(&plan.next.together)
+                                },
+                                // The build draws on the whole scene: the
+                                // plate on setting, light and camera, each
+                                // cutout on clothes, the parts on the
+                                // `together` and the people's own words. So
+                                // the record takes the scene's own origin,
+                                // which names every field and so makes the
+                                // compiler ask about any field added later
+                                // (review of #624).
+                                origin: plan.next.origin(),
+                                words,
+                                offstage: plan.offstage.clone(),
+                            });
+                            // Words the picture renders, or a retouch beside
+                            // the scene: the single pass draws them, and no
+                            // layered pass has been measured with them, so
+                            // the picture is one render rather than one that
+                            // quietly leaves them out (review of #626).
+                            let renders_words =
+                                plan.next.text.as_ref().is_some_and(|t| !t.value.is_empty());
+                            if renders_words || plan.also.is_some() {
+                                layers_plan = None;
+                                dropped.push(
+                                    if renders_words {
+                                        "Drawn in one pass, not in layers: the picture has words \
+                                         to render, which only the single pass draws."
+                                    } else {
+                                        "Drawn in one pass, not in layers: a retouch beside the \
+                                         scene is drawn only by the single pass."
+                                    }
+                                    .into(),
+                                );
+                            // Every clause of the setting names someone, so
+                            // the plate would have no room in words.
+                            } else if room.is_none() {
+                                layers_plan = None;
+                                dropped.push(
+                                    "Drawn in one pass, not in layers: every word of the \
+                                     setting names someone, and the room is drawn with no one \
+                                     in it."
+                                        .into(),
+                                );
+                            // Two people set on one side of the frame would
+                            // share a place tag (review of #624).
+                            } else if layers_plan
+                                .as_ref()
+                                .is_some_and(|lp| crate::layers::shares_a_place(&lp.people))
+                            {
+                                layers_plan = None;
+                                dropped.push(
+                                    "Drawn in one pass, not in layers: two people would share \
+                                     one place."
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
+                }
             }
             crate::picture::Render::Edit {
                 canvas,
@@ -3456,16 +3985,61 @@ impl Tool for ImageGenerate {
             me.generation.fetch_add(1, Ordering::SeqCst);
             let started = Instant::now();
             let timeout = Duration::from_secs(me.cfg.timeout_secs);
-            let Outcome { image, left } = me
-                .backend
-                .generate(
-                    &me.cfg,
-                    &req,
-                    ctx.cancel.as_ref(),
-                    timeout,
-                    ctx.image_trail.as_deref(),
-                )
-                .await;
+            // Built in layers when the switch decided so; any step that
+            // fails draws the single pass and says so (§15.5).
+            let mut layered: Option<(crate::scene::Layers, Vec<Value>)> = None;
+            let mut layers_note: Option<String> = None;
+            let mut layer_left: Vec<String> = Vec::new();
+            let Outcome { image, left } = match &layers_plan {
+                Some(lp) => match me
+                    .build_layers(ctx, lp, &req, timeout, &stamp, &mut layer_left)
+                    .await
+                {
+                    Ok(built) => {
+                        layered = Some((built.record, built.steps));
+                        Outcome {
+                            image: Ok(built.bytes),
+                            left: built.left,
+                        }
+                    }
+                    Err(LayersFailed::Cancelled(left)) => Outcome {
+                        image: Err(Failure::Cancelled),
+                        left,
+                    },
+                    Err(LayersFailed::At(step, why)) => {
+                        tracing::warn!("image_generate: layers failed at {step}: {why}");
+                        layers_note = Some(format!(
+                            "Layers failed at {step}: {why}; drawn in one pass."
+                        ));
+                        let mut out = me
+                            .backend
+                            .generate(
+                                &me.cfg,
+                                &req,
+                                ctx.cancel.as_ref(),
+                                timeout,
+                                ctx.image_trail.as_deref(),
+                            )
+                            .await;
+                        // The failed build's own copies the server kept,
+                        // said beside the single pass's.
+                        layer_left.extend(out.left.take());
+                        out.left = (!layer_left.is_empty()).then(|| layer_left.join("; "));
+                        out
+                    }
+                },
+                None => {
+                    me.backend
+                        .generate(
+                            &me.cfg,
+                            &req,
+                            ctx.cancel.as_ref(),
+                            timeout,
+                            ctx.image_trail.as_deref(),
+                        )
+                        .await
+                }
+            };
             me.arm_unload();
             let left = left
                 .map(|left| {
@@ -3574,6 +4148,9 @@ impl Tool for ImageGenerate {
                     next.seed = Some(req.seed);
                 }
                 next.chat = Some(slot.chat.clone());
+                // A picture drawn in one pass has no layers, whatever the
+                // picture it came from had.
+                next.layers = layered.as_ref().map(|(r, _)| r.clone());
                 (slot.clone(), next)
             });
             let size = match req.size {
@@ -3584,7 +4161,9 @@ impl Tool for ImageGenerate {
                 "image": path,
                 "tool_use_id": ctx.call_id,
                 "created": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "route": plan.route,
+                "route": if layered.is_some() { "layered" } else { plan.route },
+                "layers": layered.as_ref().map(|(_, steps)| json!(steps)),
+                "layers_fell_back": layers_note,
                 "picture": picture_path,
                 "mask": plan.mask,
                 "seed": req.seed,
@@ -3611,8 +4190,9 @@ impl Tool for ImageGenerate {
             });
             // The prompt, for the owner only, outside the jail (the manifest
             // never carries it): a line that cannot be written costs the
-            // picture nothing.
-            if let Some(log) = &ctx.prompt_log {
+            // picture nothing. A layered picture's passes wrote their own
+            // lines; this compiled prompt was never sent (review of #626).
+            if let Some(log) = ctx.prompt_log.as_ref().filter(|_| layered.is_none()) {
                 let line = json!({
                     "created": manifest["created"],
                     "image": path,
@@ -3724,6 +4304,16 @@ impl Tool for ImageGenerate {
                     )
                 });
             }
+            if layered.is_some() {
+                text.push_str(
+                    " It was built in layers: the room, each person on their own, then placed \
+                     together and finished.",
+                );
+            }
+            if let Some(note) = &layers_note {
+                text.push(' ');
+                text.push_str(note);
+            }
             if let Some(asked) = reseeded {
                 text.push_str(&format!(
                     " Seed {asked} was not used: it drew a portrait in the picture, and \
@@ -3761,6 +4351,43 @@ impl Tool for ImageGenerate {
 const BUSY: &str = "Nothing was drawn. This conversation already has a picture being made and \
                     the queue behind it is full; each appears on the owner's screen when it is \
                     done.";
+
+/// A layered build that finished: the picture, its record, each step's seed
+/// and seconds, and any server temp copies left.
+struct Built {
+    bytes: Vec<u8>,
+    record: crate::scene::Layers,
+    steps: Vec<Value>,
+    left: Option<String>,
+}
+
+/// Why a layered build ended early: a Stop, or the step that failed and
+/// why, which draws the single pass instead (IMAGE-DESIGN.md §15.5).
+enum LayersFailed {
+    Cancelled(Option<String>),
+    At(String, String),
+}
+
+/// Write `bytes` to the workspace path `name`, created new and never through
+/// a link, as `save` writes the picture itself.
+async fn save_named(ctx: &ToolCtx, name: &str, bytes: &[u8]) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let path = ctx.resolve(name)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options
+        .open(&path)
+        .await
+        .map_err(|e| anyhow!("cannot write {name}: {e}"))?;
+    file.write_all(bytes).await?;
+    file.flush().await?;
+    Ok(())
+}
 
 /// The tests call the tool directly and read the finished picture: an
 /// inherent `call`, which the concrete type resolves before the trait's,
@@ -6910,6 +7537,773 @@ mod tests {
         .await
     }
 
+    /// A cutout as the server returns one: RGBA, a figure on transparency,
+    /// or nothing at all.
+    fn cutout_png(figure: bool) -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(64, 64, |x, y| {
+            if figure && (24..40).contains(&x) && (8..60).contains(&y) {
+                image::Rgba([180, 60, 60, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        png.into_inner()
+    }
+
+    /// The tests' context has no splitter, so the call gives the places a
+    /// split would have.
+    fn touching_call() -> Value {
+        json!({"scene": {"setting": "a sunlit kitchen with a long oak table",
+            "people": [{"who": "maya", "wearing": "a yellow raincoat", "where": "left"},
+                       {"who": "john", "wearing": "a flannel shirt", "where": "right"}],
+            "together": "Maya lifts John off the ground"}})
+    }
+
+    /// `[image] timeout_secs` bounds the whole layered build: a pass that
+    /// would start past it is never sent, rather than each of n + 3 passes
+    /// having the full time (review of #624).
+    #[tokio::test]
+    async fn a_layered_build_past_its_time_sends_no_more_passes() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 2],
+            views: vec![picture(20, [200, 40, 40])],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            timeout_secs: 0,
+            ..Default::default()
+        })
+        .unwrap()
+        .polling_every(Duration::from_millis(10))
+        .with_seeds()
+        .with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        // With no time at all the single pass it falls back to times out too.
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(out.content.contains("longer than 0 s"), "{}", out.content);
+        let plates = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt") && l.contains("No people."))
+            .count();
+        assert_eq!(plates, 0, "no pass is sent with no time left");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A layered picture's `layers` entry describes that picture only: an
+    /// edit of it lands with none, or a later re-place would be built on the
+    /// previous picture's plate and cutouts (review of #624).
+    #[tokio::test]
+    async fn an_edit_of_a_layered_picture_lands_without_its_layers() {
+        let (url, _seen) = fake_with(Fake {
+            history: vec![done(); 6],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+                picture(24, [30, 60, 200]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let first = t.call(touching_call(), &cx).await.unwrap();
+        assert!(
+            first.content.contains("built in layers"),
+            "{}",
+            first.content
+        );
+        let slot = cx.scene.as_ref().unwrap();
+        let layered = picture_of(&first.content);
+        assert!(slot
+            .lookup(&std::fs::read(dir.join(&layered)).unwrap())
+            .unwrap()
+            .layers
+            .is_some());
+        let edit = t
+            .call(json!({"picture": layered, "retouch": "a red scarf"}), &cx)
+            .await
+            .unwrap();
+        assert!(!edit.is_error, "{}", edit.content);
+        let landed = slot
+            .lookup(&std::fs::read(dir.join(picture_of(&edit.content))).unwrap())
+            .unwrap();
+        assert!(landed.layers.is_none(), "{:?}", landed.layers);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Two people given the same side, neither acting on the other, would
+    /// share a place tag in the placing prompt: drawn in one pass, and said
+    /// (review of #624).
+    #[tokio::test]
+    async fn a_shared_place_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["people"][1]["where"] = json!("left");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("two people would share one place"),
+            "{}",
+            out.content
+        );
+        let prompts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(prompts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A split that fell back leaves only the call's places, and a placing
+    /// pass with no places dropped a person 2 of 2 runs (mecha-a3): with
+    /// nobody placed, the switch draws one pass and says why (review of
+    /// #624).
+    #[tokio::test]
+    async fn an_unplaced_touching_scene_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        for p in call["scene"]["people"].as_array_mut().unwrap() {
+            p.as_object_mut().unwrap().remove("where");
+        }
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("not everyone has a place"),
+            "{}",
+            out.content
+        );
+        let prompts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(prompts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// The persona's switch builds a touching scene in layers (IMAGE-DESIGN.md
+    /// §15): a plate, a cutout per person from their portrait, the placing
+    /// pass with the plate first and names as tags, and the finish; the
+    /// plate and cutouts kept, the record carrying the build, and the result
+    /// and manifest saying so. Fails on a tool with no layers, which draws
+    /// one render.
+    #[tokio::test]
+    async fn a_touching_scene_is_built_in_layers_when_the_switch_is_on() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(prompts.len(), 5, "plate, two cutouts, placing, finish");
+        assert!(prompts[0].contains("No people."), "{}", prompts[0]);
+        assert!(
+            prompts[1].contains("RGBA image with transparency"),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            prompts[3].contains("Place the person from <image2>"),
+            "{}",
+            prompts[3]
+        );
+        assert!(
+            !prompts[3].contains("Maya") && !prompts[3].contains("John"),
+            "{}",
+            prompts[3]
+        );
+        assert!(prompts[4].contains("85 mm"), "{}", prompts[4]);
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["route"], "layered");
+        let renders = manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s.get("seed").is_some())
+            .count();
+        assert_eq!(renders, 5);
+        let kept: Vec<String> = std::fs::read_dir(dir.join("images"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(kept.iter().any(|n| n.ends_with("-plate.png")), "{kept:?}");
+        assert!(
+            kept.iter().any(|n| n.ends_with("-cutout-maya.png")),
+            "{kept:?}"
+        );
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        let layers = landed.layers.expect("the build is recorded");
+        assert_eq!(layers.people.len(), 2);
+        assert_eq!(layers.people[0].who, "maya");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A layered build draws what the single pass would: each person's
+    /// expression rides with their part, the plate keeps only the setting's
+    /// clauses that name nobody, and the prompt log's `words` hold every
+    /// chat word its passes were built from, clothes included (review of
+    /// #626).
+    #[tokio::test]
+    async fn a_layered_build_keeps_expressions_and_logs_every_chat_word() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let log = store.join("sessions/chat-a.prompts.log");
+        cx.prompt_log = Some(log.clone());
+        let mut call = touching_call();
+        call["scene"]["setting"] =
+            json!("a sunlit kitchen with a long oak table, Maya's scarf over a chair");
+        call["scene"]["people"][1]["expression"] = json!("grinning");
+        call["scene"]["light"] = json!("lamplight falling on John's shoulders");
+        call["scene"]["people"][0]["wearing"] = json!("John's old flannel shirt");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert!(prompts[0].contains("a sunlit kitchen"), "{}", prompts[0]);
+        assert!(
+            !prompts[0].contains("scarf") && !prompts[0].contains("Maya"),
+            "{}",
+            prompts[0]
+        );
+        assert!(prompts[3].contains("grinning"), "{}", prompts[3]);
+        // A cutout is lit by light that names nobody, as the plate is, and
+        // wears clothes said by no one's name.
+        for cutout in &prompts[1..3] {
+            assert!(cutout.contains("soft, even light"), "{cutout}");
+            assert!(!cutout.contains("lamplight"), "{cutout}");
+            assert!(!cutout.contains("John"), "{cutout}");
+        }
+        assert!(
+            prompts[1].contains("the person's old flannel shirt"),
+            "{}",
+            prompts[1]
+        );
+        // One line per pass sent, and none for the single pass never sent.
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 5, "{text}");
+        assert!(lines.iter().all(|l| l["route"] == "layered"), "{text}");
+        for line in &lines {
+            let words: Vec<&str> = line["words"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            for want in ["John's old flannel shirt", "a flannel shirt", "grinning"] {
+                assert!(words.contains(&want), "{want}: {words:?}");
+            }
+            assert!(!words.iter().any(|w| w.contains("<image")), "{words:?}");
+        }
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Someone named but not in the picture reaches every layered pass as
+    /// "the viewer", and the plate as nothing at all, as the single pass
+    /// reads them (the owner's ruling, 2026-10-08; review of #626).
+    #[tokio::test]
+    async fn a_layered_build_reads_someone_offstage_as_the_viewer() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (
+            tempdir(),
+            tempdir(),
+            library_with(&["maya", "john", "wren"]),
+        );
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["setting"] =
+            json!("a sunlit kitchen with a long oak table, Wren's bicycle by the door");
+        call["scene"]["together"] = json!("Maya lifts John off the ground while Wren laughs");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(prompts.len(), 5);
+        assert!(!prompts.iter().any(|p| p.contains("Wren")), "{prompts:?}");
+        assert!(!prompts[0].contains("bicycle"), "{}", prompts[0]);
+        assert!(prompts[3].contains("the viewer laughs"), "{}", prompts[3]);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Words the picture renders are drawn by the single pass only, so a
+    /// scene with them is one render and says why, rather than a layered
+    /// picture that quietly leaves them out (review of #626).
+    #[tokio::test]
+    async fn a_scene_with_words_to_render_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["text"] = json!([{"words": "OPEN LATE"}]);
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("words to render"), "{}", out.content);
+        let posts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(posts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A build that fails part-way still says the server copies its
+    /// finished passes left, beside the single pass it falls back to
+    /// (review of #626).
+    #[tokio::test]
+    async fn a_failed_build_says_the_copies_its_passes_left() {
+        let dir = tempdir();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        for f in ["cut_00001_.png", "one_00001_.png"] {
+            std::fs::write(temp.join(f), "x").unwrap();
+        }
+        let (url, _seen) = fake_with(Fake {
+            history: vec![
+                done_as("plate_00001_.png"),
+                done_as("cut_00001_.png"),
+                done_as("one_00001_.png"),
+            ],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(false),
+                picture(20, [200, 40, 40]),
+            ],
+            temp: Some(temp.clone()),
+            ..Fake::default()
+        })
+        .await;
+        let (store, lib) = (tempdir(), library_with(&["maya", "john"]));
+        let t = tool_in(&url, &temp).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(
+            out.content.contains("Layers failed at cutout 1 of 2"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("could not all be removed")
+                && out.content.contains("plate_00001_.png"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A setting every clause of which names someone leaves the plate no
+    /// room in words, so the picture is one render and says why (review of
+    /// #626).
+    #[tokio::test]
+    async fn a_setting_that_only_names_people_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["setting"] = json!("Maya's flat");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("every word of the setting names someone"),
+            "{}",
+            out.content
+        );
+        let posts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(posts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A scene with a library style is layered too, the style's words on
+    /// the finish only (mecha-a3: 11 of 15 real touching calls named one,
+    /// and a portrait-recipe style on the plate drew a person there); a
+    /// replay's posed arm puts each part into its cutout.
+    #[tokio::test]
+    async fn a_styled_scene_is_layered_and_the_posed_arm_poses_cutouts() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Style,
+                name: "inkwash".into(),
+                text: "loose ink and wash, soft paper grain".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        cx.layers_posed = true;
+        let mut call = touching_call();
+        call["scene"]["style"] = json!("inkwash");
+        call["scene"]["people"][0]["doing"] = json!("lifting John off the ground");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert!(
+            !prompts[0].contains("ink and wash"),
+            "never the plate: {}",
+            prompts[0]
+        );
+        assert!(
+            prompts[4].contains("loose ink and wash"),
+            "the finish: {}",
+            prompts[4]
+        );
+        assert!(
+            !prompts[1].contains("ink and wash"),
+            "never a cutout: {}",
+            prompts[1]
+        );
+        assert!(
+            !prompts[3].contains("ink and wash"),
+            "never the placing: {}",
+            prompts[3]
+        );
+        assert!(
+            prompts[1].contains("lifting"),
+            "the posed cutout: {}",
+            prompts[1]
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A plate check whose detector panics costs the check, never the job:
+    /// the build goes on and the manifest says the plate went unchecked
+    /// (review of #626).
+    #[tokio::test]
+    async fn a_panicking_plate_check_costs_the_check_not_the_build() {
+        struct PanicsOnPlates;
+        impl crate::face::FaceAnchors for PanicsOnPlates {
+            fn anchor(
+                &self,
+                _library: &crate::imagelib::Library,
+                _entry: &crate::imagelib::Entry,
+            ) -> crate::face::Anchor {
+                crate::face::Anchor::NoFace
+            }
+            fn faces_in(&self, _png: &[u8]) -> std::result::Result<usize, String> {
+                panic!("detector down")
+            }
+        }
+        let (url, _seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::new(PanicsOnPlates));
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let manifest = manifest_of(&dir, &out.content);
+        let check = manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["step"] == "plate check")
+            .cloned()
+            .unwrap();
+        assert_eq!(check["unchecked"], "the face detector panicked");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Reports a face in every picture: the plate is never empty.
+    struct SeesFaces;
+
+    impl crate::face::FaceAnchors for SeesFaces {
+        fn anchor(
+            &self,
+            _library: &crate::imagelib::Library,
+            _entry: &crate::imagelib::Entry,
+        ) -> crate::face::Anchor {
+            crate::face::Anchor::NoFace
+        }
+        fn faces_in(&self, _png: &[u8]) -> std::result::Result<usize, String> {
+            Ok(1)
+        }
+    }
+
+    /// The plate must come back empty: a face in it is drawn once more at a
+    /// new seed, and twice is the single pass, said (mecha-a3's blocker: a
+    /// stranger in the plate was kept and one person never placed). The
+    /// plate prompt names nobody, whatever the camera said.
+    #[tokio::test]
+    async fn a_plate_with_someone_in_it_is_redrawn_then_given_up() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 3],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                picture(9, [91, 90, 90]),
+                picture(20, [200, 40, 40]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::new(SeesFaces));
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["camera"] = json!("Medium shot, low angle, lingering on Maya's scarf");
+        call["scene"]["light"] = json!("a lamp warming his collar");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(
+            out.content.contains(
+                "Layers failed at plate: the room came back with 1 face(s) in it, twice; drawn \
+                 in one pass."
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "the plate, once more, then the single pass"
+        );
+        let plate = prompts[0];
+        assert!(
+            plate.contains("medium shot") && plate.contains("No people."),
+            "{plate}"
+        );
+        assert!(
+            !plate.contains("Maya") && !plate.contains("behind") && !plate.contains("her skin"),
+            "{plate}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A step that fails draws the single pass and says where, never a
+    /// different picture quietly (§15.5); the record carries no layers.
+    #[tokio::test]
+    async fn a_failed_layer_draws_the_single_pass_and_says_so() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 3],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(false),
+                picture(20, [200, 40, 40]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "Layers failed at cutout 1 of 2: the cutout came back empty; drawn in one pass."
+            ),
+            "{}",
+            out.content
+        );
+        let prompts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(prompts, 3, "plate, the empty cutout, then the single pass");
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["route"], "new");
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+            .unwrap();
+        assert!(landed.layers.is_none());
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// With the switch off, or for a scene that does not qualify, the
+    /// picture is one render as today.
+    #[tokio::test]
+    async fn without_the_switch_a_touching_scene_is_one_render() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = scene_ctx(&dir, &store, "chat-a");
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("layers"), "{}", out.content);
+        let prompts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(prompts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// Someone is drawn only when listed in `people` (the owner's ruling,
     /// 2026-10-08): a library name in the words for someone not in the
     /// picture reaches the image model as "the viewer", no portrait of them
@@ -7516,9 +8910,56 @@ mod tests {
             &self,
             _people: &[crate::roles::Asked],
             _together: &str,
+            _layered: bool,
         ) -> std::result::Result<crate::roles::Split, String> {
             self.0.clone()
         }
+    }
+
+    /// A splitter that answers nothing and keeps whether each ask was for
+    /// a layered build.
+    #[derive(Debug, Default)]
+    struct AskedSplit(std::sync::Mutex<Vec<bool>>);
+
+    #[async_trait]
+    impl crate::roles::RoleSplit for AskedSplit {
+        async fn split(
+            &self,
+            _people: &[crate::roles::Asked],
+            _together: &str,
+            layered: bool,
+        ) -> std::result::Result<crate::roles::Split, String> {
+            self.0.lock().unwrap().push(layered);
+            Err("no answer".into())
+        }
+    }
+
+    /// The split asks for named parts only where the picture may be built in
+    /// layers: on the single pass the naming sentence emptied parts and kept
+    /// no more acts (mecha-a3, 2026-10-10; review of #626).
+    #[tokio::test]
+    async fn only_a_picture_that_may_layer_asks_for_named_parts() {
+        let (url, _seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let asked = Arc::new(AskedSplit::default());
+        cx.role_split = Some(asked.clone());
+        // No places given, so the failed split leaves the picture one pass.
+        let mut call = touching_call();
+        for p in call["scene"]["people"].as_array_mut().unwrap() {
+            p.as_object_mut().unwrap().remove("where");
+        }
+        cx.layers = true;
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        cx.layers = false;
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(*asked.0.lock().unwrap(), [true, false]);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     /// A call that puts the whole act in `together` and poses nobody is
