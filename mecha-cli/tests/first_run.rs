@@ -272,13 +272,16 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
             .unwrap_or_default()
     };
     match local["status"].as_str().unwrap() {
-        // Nothing answers here: the way out installs one, in setup's own verb.
-        "missing" => assert_eq!(argv(local), ["mecha", "setup", "chat"]),
-        // The developer's own server answers and the starter names no model:
-        // writing down what it serves is the way out.
+        // Nothing answers here: the way out installs one, in setup's own verb
+        // — on Linux, the one place `setup chat` runs.
+        "missing" if cfg!(target_os = "linux") => {
+            assert_eq!(argv(local), ["mecha", "setup", "chat"])
+        }
+        "missing" => assert!(argv(local).is_empty(), "{local:#}"),
+        // The developer's own server answers and the default names no model:
+        // writing down what it serves is the way out. Never "done" — a table
+        // naming nothing does not agree with a server (review of #627).
         "wrong" => assert_eq!(argv(local), ["mecha", "setup", "--write"]),
-        // It answers and agrees: nothing is blocked.
-        "done" => {}
         other => panic!("`local-server` is {other}: {local:#}"),
     }
     assert_ne!(local["status"], "declined");

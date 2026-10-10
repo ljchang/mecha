@@ -228,11 +228,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     // and nor is one with no `base_url`, which `Openai::new` sends to
     // api.openai.com (found on review of #618; `router::follows_here` is
     // strict for the same reason).
-    if let Some((name, table)) = cfg
-        .providers
-        .iter()
-        .find(|(_, p)| router_unit::names_this_router(p, naming.port))
-    {
+    if let Some((name, table)) = owners_router_table(cfg, naming.port) {
         println!();
         // The default moves only onto a table that names what the router
         // serves: already agreeing, or rewritten now. Declined, its `model`
@@ -261,7 +257,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         }
         return Ok(());
     }
-    if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| p.kind == "local") {
+    if let Some((name, _)) = cfg.providers.iter().find(|(_, p)| p.configured_local()) {
         println!(
             "Your config's local provider `{name}` names a server elsewhere, so it is left as it \
              is — the router here serves {alias} on {base}."
@@ -275,9 +271,37 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     super::setup::write_local_provider(&found)
 }
 
+/// The table the owner wrote that names the router on `port` — never the
+/// default's built-in entry (ruling F12), which names it too but is in no
+/// file: rewriting it bailed after the download on any config file without a
+/// `[providers.local]`, which is every one the older starter wrote (found on
+/// review of #627). With none, `write_local_provider` writes one.
+fn owners_router_table(
+    cfg: &mecha_core::config::Config,
+    port: u16,
+) -> Option<(&String, &mecha_core::config::ProviderConfig)> {
+    cfg.providers
+        .iter()
+        .find(|(_, p)| !p.built_in && router_unit::names_this_router(p, port))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default's own entry names the router but is no table to rewrite;
+    /// one the owner wrote is (review of #627).
+    #[test]
+    fn only_the_owners_table_is_the_router_s_to_rewrite() {
+        let mut cfg = mecha_core::config::Config::default();
+        assert!(router_unit::names_this_router(
+            &cfg.providers["local"],
+            8080
+        ));
+        assert!(owners_router_table(&cfg, 8080).is_none());
+        cfg.providers.get_mut("local").unwrap().built_in = false;
+        assert_eq!(owners_router_table(&cfg, 8080).unwrap().0, "local");
+    }
 
     /// `chat` is a noun in `setup`'s feature position, as `engine` is, so no
     /// feature may ever be called that.
