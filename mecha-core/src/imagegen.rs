@@ -690,12 +690,11 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
     match loaded {
         // What a load costs is what a loaded server has already paid; the
         // rest of the operator's figure is their margin, theirs to keep
-        // (review of #515).
-        // Never computed down to 0: `memory_verdict` reads 0 as "check off",
-        // which would also drop its refusal on an unreadable gauge. Only the
-        // operator's own 0 switches the check off.
-        Some(true) if min_mb == 0 => 0,
-        Some(true) => min_mb.saturating_sub(LOAD_COST_MB).max(1),
+        // (review of #515). A need computed down to 0 is "the reserve
+        // alone", not "check off": `memory_guard` reads the operator's 0 off
+        // the config, and the floor refuses an unreadable gauge whatever the
+        // need.
+        Some(true) => min_mb.saturating_sub(LOAD_COST_MB),
         Some(false) | None => min_mb,
     }
 }
@@ -717,46 +716,6 @@ pub const LOAD_COST_MB: u64 = 20_480 - 12_288;
 pub fn loaded_from_stats(stats: &Value) -> Option<bool> {
     let total = stats.pointer("/devices/0/torch_vram_total")?.as_f64()?;
     Some(total > 0.0)
-}
-
-/// Whether there is room to start, as a sentence for the model if not.
-/// `available` is `None` when it could not be read, which is a refusal rather
-/// than a pass: an unreadable gauge is not an empty tank.
-pub fn memory_verdict(available_mb: Option<u64>, min_mb: u64) -> std::result::Result<(), String> {
-    if min_mb == 0 {
-        return Ok(());
-    }
-    match available_mb {
-        None => Err(
-            "Could not read this machine's available memory, so the generation was not \
-             started. The operator can set `[image] min_available_mb = 0` to skip this check."
-                .into(),
-        ),
-        Some(mb) if mb < min_mb => Err(format!(
-            "Only {:.1} GB of memory is available and a generation needs about {:.1} GB, so it \
-             was not started — the machine shares one memory pool between the GPU and \
-             everything else. Try again once something large (a build, another model) is done.",
-            mb as f64 / 1024.0,
-            min_mb as f64 / 1024.0
-        )),
-        Some(_) => Ok(()),
-    }
-}
-
-/// Available memory in MB, through `mecha system` (`memory.available`),
-/// which reads `/proc/meminfo` here and `vm_stat` on macOS. `None` where it
-/// cannot be read, which [`memory_verdict`] refuses on.
-///
-/// macOS has no `/proc`; it is also unified memory, the machine class the
-/// check exists for, so it gets a reader rather than a dead tool (found on
-/// review of #303 — every call refused there, and CI stayed green because
-/// the tests switch the check off). The reader now lives in
-/// `system::measure`, and its parser in `system::source::parse_vm_stat`.
-fn mem_available_mb() -> Option<u64> {
-    crate::system::Reader::new()
-        .now(crate::system::Measurement::MemoryAvailable)
-        .value()
-        .map(|b| b as u64 / (1024 * 1024))
 }
 
 /// A picture's fresh seed: the next from the stream a replay stamped
@@ -1983,6 +1942,10 @@ pub struct ImageGenerate {
     /// names and the library character it looks like. `None` outside a
     /// persona chat.
     self_as: Option<crate::tool::PersonaSelf>,
+    /// The memory floor a generation is admitted against (`[system]`;
+    /// `docs/SYSTEM-STATE-DESIGN.md` §3.7). R5's defaults until the caller
+    /// passes the operator's (`with_floor`).
+    floor: crate::system::floor::SystemConfig,
     /// Whether a new picture's `seed` is in the schema: the CLI and evals
     /// only ([`ImageGenerate::with_seeds`]). A chat never has it — 177 of
     /// 211 model-sent seeds copied an earlier result's (IMAGE-DESIGN.md §5.1).
@@ -2019,13 +1982,31 @@ fn described(library_dir: Option<&std::path::Path>) -> String {
 impl ImageGenerate {
     /// Whether this machine has the memory a generation needs, asked before
     /// any reference is read: reading them is itself a cost on that pool.
+    /// The shared memory floor (`system::floor::admit_now`) decides: the
+    /// need below plus the reserve, refused under memory pressure, and
+    /// refused when the gauge cannot be read. Only the operator's own
+    /// `min_available_mb = 0` switches it off.
     async fn memory_guard(&self) -> std::result::Result<(), String> {
-        let need = if self.cfg.min_available_mb == 0 {
-            0
-        } else {
-            memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb)
-        };
-        memory_verdict(mem_available_mb(), need)
+        if self.cfg.min_available_mb == 0 {
+            return Ok(());
+        }
+        let need_mb = memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb);
+        let series = crate::system::db_path().ok();
+        let verdict =
+            crate::system::floor::admit_now(need_mb * 1024 * 1024, &self.floor, series.as_deref());
+        match verdict.sentence("a generation") {
+            None => Ok(()),
+            Some(why) => Err(format!(
+                "{why} Try again once something large (a build, another model) is done. The \
+                 operator can set `[image] min_available_mb = 0` to skip this check."
+            )),
+        }
+    }
+
+    /// Admit generations against the operator's `[system]` floor.
+    pub fn with_floor(mut self, floor: crate::system::floor::SystemConfig) -> Self {
+        self.floor = floor;
+        self
     }
 
     /// Refuses a configuration whose server is not on this machine.
@@ -2038,6 +2019,7 @@ impl ImageGenerate {
             description: described(library_dir.as_deref()),
             library_dir,
             self_as: None,
+            floor: crate::system::floor::SystemConfig::default(),
             seeds: false,
             reference_pixels: MAX_REFERENCE_PIXELS,
             faces: Arc::new(crate::face::CachedRetinaFace),
@@ -2080,6 +2062,9 @@ impl ImageGenerate {
             generation: Arc::clone(&self.generation),
             library_dir: self.library_dir.clone(),
             self_as: who,
+            // The persona form is where most pictures are made: it keeps the
+            // operator's floor, never falls back to the defaults.
+            floor: self.floor.clone(),
             seeds: false,
             reference_pixels: self.reference_pixels,
             faces: Arc::clone(&self.faces),
@@ -4557,8 +4542,16 @@ mod tests {
         assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
         // A small figure is not computed into the "check off" sentinel: the
         // unreadable-gauge refusal must survive it.
-        assert_eq!(memory_need_mb(Some(true), 4_000), 1);
-        assert!(memory_verdict(None, memory_need_mb(Some(true), 4_000)).is_err());
+        assert_eq!(memory_need_mb(Some(true), 4_000), 0);
+        // A need of 0 is the reserve alone, and the floor still refuses an
+        // unreadable gauge for it: only the operator's own 0 is "off".
+        assert!(!crate::system::floor::admit(
+            &crate::system::Reading::Unread { why: "x".into() },
+            &crate::system::Reading::NotHere,
+            0,
+            &crate::system::floor::SystemConfig::default(),
+        )
+        .admitted());
         // Only the operator's own 0 switches it off.
         assert_eq!(memory_need_mb(Some(true), 0), 0);
     }
@@ -5116,14 +5109,22 @@ mod tests {
         }
     }
 
+    /// The operator's `[system]` floor reaches the persona form, which is
+    /// where most pictures are made — never R5's defaults instead.
     #[test]
-    fn an_unreadable_gauge_refuses_and_zero_disables_the_check() {
-        assert!(memory_verdict(None, 16_384).is_err());
-        assert!(memory_verdict(Some(8_000), 16_384).is_err());
-        assert!(memory_verdict(Some(20_000), 16_384).is_ok());
-        assert!(memory_verdict(None, 0).is_ok());
-        let why = memory_verdict(Some(8_192), 16_384).unwrap_err();
-        assert!(why.contains("8.0 GB") && why.contains("16.0 GB"), "{why}");
+    fn the_persona_form_keeps_the_operators_memory_floor() {
+        let floor = crate::system::floor::SystemConfig {
+            memory_reserve_mb: 1234,
+            memory_pressure_ceiling: 42.0,
+        };
+        let tool = ImageGenerate::new(ImageConfig {
+            url: "http://127.0.0.1:8188".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .with_floor(floor.clone());
+        assert_eq!(tool.floor, floor);
+        assert_eq!(tool.persona_form(None).floor, floor);
     }
 
     #[test]
@@ -5224,21 +5225,27 @@ mod tests {
                 ..Default::default()
             })
             .unwrap()
+            .with_floor(crate::system::floor::SystemConfig {
+                memory_reserve_mb: 0,
+                memory_pressure_ceiling: f64::INFINITY,
+            })
             .polling_every(Duration::from_millis(10))
             .call(json!({"scene": {"setting": "a fox"}}), &ctx(&dir))
             .await
             .unwrap();
-            let asked = seen
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|l| l.starts_with("GET /system_stats"));
-            asked
+            let seen = seen.lock().unwrap();
+            let asked = seen.iter().any(|l| l.starts_with("GET /system_stats"));
+            let submitted = seen.iter().any(|l| l.starts_with("POST /prompt"));
+            (asked, submitted)
         };
-        // 1 MB is available on any machine, so the verdict passes and only
-        // the question is measured.
-        assert!(ask(1).await, "the check never asked the server");
-        assert!(!ask(0).await, "a switched-off check still asked");
+        // A floor of 1 MB with no reserve and no pressure ceiling passes on
+        // any machine, so the admitted path through the real gate runs to a
+        // submitted generation (a test runner may have under 8 GiB free,
+        // which R5's reserve would refuse).
+        let (asked, submitted) = ask(1).await;
+        assert!(asked, "the check never asked the server");
+        assert!(submitted, "an admitted generation was never submitted");
+        assert!(!ask(0).await.0, "a switched-off check still asked");
     }
 
     #[tokio::test]

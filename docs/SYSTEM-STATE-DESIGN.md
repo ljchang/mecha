@@ -1,6 +1,6 @@
 # System state — design
 
-**2026-10-10. R1–R5b ruled the same day (§9). S0 and S1 built (§7, §7.1).** `mecha system` is one layer through which mecha reads the state of
+**2026-10-10. R1–R5b ruled the same day (§9). S0, S1 and S6 built (§7, §7.1, §7.2).** `mecha system` is one layer through which mecha reads the state of
 the machine it runs on and the services it runs beside. Each measurement in
 it has its own specific name, drawn from one closed list. Every consumer
 reads the system through it, and none probes for itself:
@@ -628,6 +628,34 @@ read on this machine:
 
 `mecha system probe` (S3's diagnostic) shipped with S1 because it is how
 S1 was checked on this machine. `read`, over a range, is still S3.
+
+### 7.2 What S6 built, and what it moved
+
+S6 is built:
+- `system::floor`: `SystemConfig` (`[system]`, global-file only),
+  `admit`, `admit_now` and `Admit`;
+- `mecha system admit --need SIZE`, which exits non-zero when refused;
+- the image tool's gate, moved onto the floor. `imagegen::memory_verdict`
+  and its own `mem_available_mb` are gone.
+
+**Pictures can now be refused where they were not before.** The image
+figure, `min_available_mb` (20 GiB cold, 12 GiB warm), was a measured need
+with "a little room", not a reserve. The floor adds R5's 8 GiB on top, so a
+generation needs 28 GiB cold and 20 GiB warm. With the chat model and the
+image server both resident, this machine had 28–33 GiB available on
+2026-10-10, so the warm path passes with room. The pressure ceiling is
+new protection for pictures as well.
+
+Two callers from §3.7's table are deliberately not in S6:
+- **Model loads and switches** move to S2. The router keeps one resident
+  model, so a switch frees the old model before loading the new one, and
+  the real need is the difference between the two presets' sizes. Nothing
+  in mecha knows a preset's size yet: that is S2's `model.*` work, and a
+  guessed need would be the wrong number in a refusal.
+- **Background admission** needs no gate of its own. A background run
+  allocates through the same points a foreground run does (a picture, a
+  model load), and those are gated where the allocation happens. A second
+  gate at admission would refuse on a need it could only guess.
 
 S0 is small, and it is the only step that is cheaper now than later.
 **S0 is built**, in the same change as this document (the owner asked for
