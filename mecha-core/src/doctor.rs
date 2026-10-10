@@ -1769,17 +1769,22 @@ fn check_host_sampler(path: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         argv: vec!["mecha".into(), "hud".into(), "sample".into()],
         needs_terminal: false,
     };
-    let stopped = |detail: String| Finding {
+    let stopped = |summary: &str, detail: String| Finding {
         component: "hud".into(),
         severity: Severity::Attention,
-        summary: "hud host sampler has not written for ten minutes".into(),
+        summary: summary.into(),
         detail,
         remedy: Some(sample.clone()),
     };
     match crate::hud::host::last_written(path) {
         Err(e) => vec![Finding::unreadable("hud", "hud/host.sqlite", e)],
-        Ok(None) => vec![stopped("the store holds no minute yet; is mecha-hud-sample.timer running?".into())],
-        Ok(Some(at)) if now - at > chrono::Duration::minutes(10) => vec![stopped(format!(
+        Ok(None) => vec![stopped(
+            "hud host sampler has not written a minute yet",
+            "the store holds no minute yet; is mecha-hud-sample.timer running?".into(),
+        )],
+        Ok(Some(at)) if now - at > chrono::Duration::minutes(10) => vec![stopped(
+            "hud host sampler has not written for ten minutes",
+            format!(
             "last minute {at}; is mecha-hud-sample.timer running? `journalctl --user -u mecha-hud-sample` says why a sample was refused"
         ))],
         Ok(Some(_)) => Vec::new(),

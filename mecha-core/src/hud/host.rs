@@ -167,6 +167,21 @@ pub fn parse_proc_stat(text: &str) -> Option<(u64, u64)> {
     Some((total - idle, total))
 }
 
+/// `/proc/stat`'s per-core lines: the cores the aggregate `cpu` line sums
+/// over. Read from the same text as the jiffies on purpose — the sampler's
+/// own affinity or `CPUQuota=` narrows `available_parallelism()` but not
+/// this, and the two denominators must agree.
+pub fn parse_cores(text: &str) -> Option<u64> {
+    let n = text
+        .lines()
+        .filter(|l| {
+            l.strip_prefix("cpu")
+                .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .count() as u64;
+    (n > 0).then_some(n)
+}
+
 /// `/proc/loadavg`: the one-minute load and the total task count.
 pub fn parse_loadavg(text: &str) -> Option<(f64, u64)> {
     let mut parts = text.split_whitespace();
@@ -272,6 +287,8 @@ pub struct Sample {
     pub at: DateTime<Utc>,
     pub mem: MemInfo,
     pub cpu_jiffies: Option<(u64, u64)>,
+    /// The machine's cores, from the same `/proc/stat` (`parse_cores`).
+    pub cores: Option<u64>,
     pub load1: Option<f64>,
     pub tasks_total: Option<u64>,
     pub gpu: GpuNow,
@@ -324,7 +341,9 @@ pub fn collect(at: DateTime<Utc>) -> Result<Sample> {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
     let mem = parse_meminfo(&read("/proc/meminfo"))
         .context("/proc/meminfo could not be read; no sample recorded")?;
-    let cpu_jiffies = parse_proc_stat(&read("/proc/stat"));
+    let stat = read("/proc/stat");
+    let cpu_jiffies = parse_proc_stat(&stat);
+    let cores = parse_cores(&stat);
     let (load1, tasks_total) = parse_loadavg(&read("/proc/loadavg")).unzip();
 
     let units = unit_counters(&user_app_slice())?;
@@ -362,6 +381,7 @@ pub fn collect(at: DateTime<Utc>) -> Result<Sample> {
         at,
         mem,
         cpu_jiffies,
+        cores,
         load1,
         tasks_total,
         gpu,
@@ -538,7 +558,9 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
     }
 
     // Machine CPU from /proc/stat, as a delta against the previous sample.
-    let ncpu = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+    // Whole-machine cores, as `machine_pct` counts them — never the
+    // sampler's own parallelism (`parse_cores`).
+    let ncpu = s.cores.map(|n| n as f64);
     let mut machine_pct = None;
     if let Some((busy, total)) = s.cpu_jiffies {
         let prev: Option<(i64, i64)> = tx
@@ -605,6 +627,7 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
                 .and_utc();
             let secs = (s.at - prev_at).num_milliseconds() as f64 / 1000.0;
             let delta = load.cpu_usec as i64 - usec;
+            let ncpu = ncpu?;
             (secs > 0.0 && delta >= 0).then(|| delta as f64 / (secs * 1e6 * ncpu) * 100.0)
         });
         tx.execute(

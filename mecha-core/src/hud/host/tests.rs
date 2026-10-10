@@ -155,6 +155,16 @@ fn the_parsers_read_what_the_system_prints() {
     assert!(parse_gpu("1, 2, 3, [N/A]\n4, 5, 6, [N/A]\n").unified);
     assert_eq!(parse_gpu(""), GpuNow::default());
     assert!(!parse_gpu("").answered);
+
+    assert_eq!(
+        parse_cores("cpu  1 2 3 4 5 6 7 8\ncpu0 1\ncpu1 2\ncpu17 3\nintr 9\nctxt 4\n"),
+        Some(3)
+    );
+    assert_eq!(
+        parse_cores(""),
+        None,
+        "an unread /proc/stat has no cores, not zero"
+    );
 }
 
 /// "No services ran" and "the services could not be read" are opposite
@@ -323,6 +333,7 @@ fn sample(min: u32, units: &[UnitCounters], busy: u64, total: u64) -> Sample {
             swap_free: 0,
         },
         cpu_jiffies: Some((busy, total)),
+        cores: Some(4),
         load1: Some(1.5),
         tasks_total: Some(100),
         gpu: GpuNow {
@@ -356,7 +367,8 @@ fn a_second_sample_yields_cpu_and_other_is_the_remainder() {
     record(&db, &sample(1, &u2, 500, 1000)).unwrap();
 
     let c = Connection::open(&db).unwrap();
-    let ncpu = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+    // Four cores from /proc/stat, whatever this test process may use.
+    let ncpu = 4.0;
     let chat: f64 = c
         .query_row(
             "SELECT cpu_pct FROM category_minute WHERE at = '2031-04-17 09:01:00' AND category = 1",
