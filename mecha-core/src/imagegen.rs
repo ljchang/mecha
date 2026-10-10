@@ -7084,6 +7084,55 @@ mod tests {
             "together": "Maya lifts John off the ground"}})
     }
 
+    /// A layered picture's `layers` entry describes that picture only: an
+    /// edit of it lands with none, or a later re-place would be built on the
+    /// previous picture's plate and cutouts (review of #624).
+    #[tokio::test]
+    async fn an_edit_of_a_layered_picture_lands_without_its_layers() {
+        let (url, _seen) = fake_with(Fake {
+            history: vec![done(); 6],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+                picture(24, [30, 60, 200]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let first = t.call(touching_call(), &cx).await.unwrap();
+        assert!(
+            first.content.contains("built in layers"),
+            "{}",
+            first.content
+        );
+        let slot = cx.scene.as_ref().unwrap();
+        let layered = picture_of(&first.content);
+        assert!(slot
+            .lookup(&std::fs::read(dir.join(&layered)).unwrap())
+            .unwrap()
+            .layers
+            .is_some());
+        let edit = t
+            .call(json!({"picture": layered, "retouch": "a red scarf"}), &cx)
+            .await
+            .unwrap();
+        assert!(!edit.is_error, "{}", edit.content);
+        let landed = slot
+            .lookup(&std::fs::read(dir.join(picture_of(&edit.content))).unwrap())
+            .unwrap();
+        assert!(landed.layers.is_none(), "{:?}", landed.layers);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// A split that fell back leaves only the call's places, and a placing
     /// pass with no places dropped a person 2 of 2 runs (mecha-a3): with
     /// nobody placed, the switch draws one pass and says why (review of
