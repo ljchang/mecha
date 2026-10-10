@@ -53,7 +53,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, DurationRound, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+
+pub mod measure;
+pub mod source;
+
+pub use measure::{Measurement, Reader, Reading};
+pub use source::{
+    parse_cores, parse_cpu_stat, parse_gpu, parse_gpu_apps, parse_loadavg, parse_meminfo,
+    parse_proc_stat, unit_of_cgroup, GpuNow, MemInfo,
+};
 
 /// What kind of work a unit does. Numbers are fixed: never reorder, never
 /// reuse one; a new category takes the next free number.
@@ -117,160 +126,6 @@ pub fn category_of(unit: &str) -> Category {
     }
 }
 
-// ---- parsers: pure functions of what the system printed ----
-
-/// `/proc/meminfo`, in bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct MemInfo {
-    pub total: u64,
-    pub available: u64,
-    pub swap_total: u64,
-    pub swap_free: u64,
-}
-
-/// `None` when `MemTotal:` is absent — an unreadable `/proc/meminfo` is not a
-/// machine with no memory.
-pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
-    let mut m = MemInfo::default();
-    let mut seen_total = false;
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        let Ok(kib) = value.parse::<u64>() else {
-            continue;
-        };
-        let bytes = kib * 1024;
-        match key {
-            "MemTotal:" => {
-                m.total = bytes;
-                seen_total = true;
-            }
-            "MemAvailable:" => m.available = bytes,
-            "SwapTotal:" => m.swap_total = bytes,
-            "SwapFree:" => m.swap_free = bytes,
-            _ => {}
-        }
-    }
-    seen_total.then_some(m)
-}
-
-/// The aggregate `cpu` line of `/proc/stat`: (busy, total) jiffies.
-pub fn parse_proc_stat(text: &str) -> Option<(u64, u64)> {
-    let line = text.lines().find(|l| l.starts_with("cpu "))?;
-    let v: Vec<u64> = line
-        .split_whitespace()
-        .skip(1)
-        .filter_map(|x| x.parse().ok())
-        .collect();
-    if v.len() < 8 {
-        return None;
-    }
-    // user nice system idle iowait irq softirq steal …
-    let idle = v[3] + v[4];
-    let total: u64 = v[..8].iter().sum();
-    Some((total - idle, total))
-}
-
-/// `/proc/stat`'s per-core lines: the cores the aggregate `cpu` line sums
-/// over. Read from the same text as the jiffies on purpose — the sampler's
-/// own affinity or `CPUQuota=` narrows `available_parallelism()` but not
-/// this, and the two denominators must agree.
-pub fn parse_cores(text: &str) -> Option<u64> {
-    let n = text
-        .lines()
-        .filter(|l| {
-            l.strip_prefix("cpu")
-                .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
-        })
-        .count() as u64;
-    (n > 0).then_some(n)
-}
-
-/// `/proc/loadavg`: the one-minute load and the total task count.
-pub fn parse_loadavg(text: &str) -> Option<(f64, u64)> {
-    let mut parts = text.split_whitespace();
-    let load1 = parts.next()?.parse().ok()?;
-    let tasks = parts.nth(2)?.split('/').nth(1)?.parse().ok()?;
-    Some((load1, tasks))
-}
-
-/// `usage_usec` from a cgroup's `cpu.stat`.
-pub fn parse_cpu_stat(text: &str) -> Option<u64> {
-    text.lines()
-        .find_map(|l| l.strip_prefix("usage_usec "))
-        .and_then(|v| v.trim().parse().ok())
-}
-
-/// The GPU as a whole: utilisation %, temperature °C, power draw W — each
-/// `None` when the GB10 answers `[N/A]`.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct GpuNow {
-    pub util: Option<f64>,
-    pub temp: Option<f64>,
-    pub power_w: Option<f64>,
-    /// The GPU reported no memory total of its own — it allocates from the
-    /// system pool (the GB10).
-    pub unified: bool,
-    /// `nvidia-smi` answered at all. When it did not, `unified` says nothing
-    /// and the store's last known answer is used instead (`record`).
-    pub answered: bool,
-}
-
-/// `nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.total
-/// --format=csv,noheader,nounits` — one line per GPU. Utilisation and
-/// temperature are the hottest GPU's, power is the sum, and `unified` holds
-/// only when *every* GPU reports no memory total: whether GPU memory is
-/// folded into a category's memory must not depend on which GPU is listed
-/// first.
-pub fn parse_gpu(text: &str) -> GpuNow {
-    let lines: Vec<Vec<&str>> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.split(',').map(str::trim).collect())
-        .collect();
-    let col = |i: usize| -> Vec<f64> {
-        lines
-            .iter()
-            .filter_map(|f| f.get(i).and_then(|v| v.parse::<f64>().ok()))
-            .collect()
-    };
-    let max = |v: Vec<f64>| v.into_iter().reduce(f64::max);
-    let power = col(2);
-    GpuNow {
-        util: max(col(0)),
-        temp: max(col(1)),
-        // A total only when every GPU answered: a partial sum is not the
-        // machine's draw.
-        power_w: (!power.is_empty() && power.len() == lines.len()).then(|| power.iter().sum()),
-        unified: !lines.is_empty()
-            && lines
-                .iter()
-                .all(|f| f.get(3).is_some_and(|m| m.contains("N/A"))),
-        answered: !lines.is_empty(),
-    }
-}
-
-/// `nvidia-smi --query-compute-apps=pid,used_memory
-/// --format=csv,noheader,nounits`: (pid, MiB) per process.
-pub fn parse_gpu_apps(text: &str) -> Vec<(u32, u64)> {
-    text.lines()
-        .filter_map(|l| {
-            let mut f = l.split(',').map(str::trim);
-            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?))
-        })
-        .collect()
-}
-
-/// The unit a process belongs to, from `/proc/<pid>/cgroup`: the last path
-/// segment when it is a `.service`. Used in memory only.
-pub fn unit_of_cgroup(text: &str) -> Option<String> {
-    let path = text.lines().find_map(|l| l.strip_prefix("0::"))?;
-    let last = path.rsplit('/').next()?;
-    last.ends_with(".service").then(|| last.to_string())
-}
-
 // ---- one sample ----
 
 /// Per category, what one sample measured. Numbers only.
@@ -300,6 +155,50 @@ pub struct Sample {
     pub gpu: GpuNow,
     pub disk: Option<(u64, u64)>,
     pub by_category: BTreeMap<Category, CategoryLoad>,
+    /// Every `Now` measurement, read once this minute.
+    pub now: Vec<(Measurement, Reading)>,
+    /// The cumulative counters the `Rate` measurements are differences of.
+    pub counters: Counters,
+}
+
+/// Cumulative counters, as read this minute. `Err(Reading::NotHere)` is a
+/// counter this machine does not have (no tailnet interface), which records
+/// no row; any other `Err` records the rate as unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Counters {
+    /// `/proc/vmstat` `oom_kill`, since boot.
+    pub oom_kills: Result<u64, Reading>,
+    /// The kernel log's OOM kills since the previous sample, already folded:
+    /// whether the machine ran out, and the victim's category. `None` when
+    /// there was no previous sample to start the window at, or the log could
+    /// not be read.
+    pub oom_log: Option<Vec<(bool, Category)>>,
+    /// The disk holding `/`: its device number and counters.
+    pub disk: Result<(u64, source::DiskCounters), Reading>,
+    pub uplink: Result<NetCounters, Reading>,
+    pub tailnet: Result<NetCounters, Reading>,
+}
+
+impl Default for Counters {
+    fn default() -> Counters {
+        Counters {
+            oom_kills: Err(Reading::NotHere),
+            oom_log: None,
+            disk: Err(Reading::NotHere),
+            uplink: Err(Reading::NotHere),
+            tailnet: Err(Reading::NotHere),
+        }
+    }
+}
+
+/// An interface's byte counters, keyed by its index rather than its name:
+/// if a different interface takes the role, the index changes and no rate
+/// is drawn across the switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetCounters {
+    pub ifindex: u64,
+    pub rx: u64,
+    pub tx: u64,
 }
 
 /// Each unit's counters, as read from its cgroup: (unit, memory bytes, CPU
@@ -343,45 +242,42 @@ pub fn fold(
 /// draw an idle machine — `Other` is a remainder, so it would absorb the
 /// whole box — and nothing would say so. Refused, the sample unit fails, the
 /// `now` loader empties, and the doctor reports a sampler that stopped writing.
-pub fn collect(at: DateTime<Utc>) -> Result<Sample> {
-    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    let mem = parse_meminfo(&read("/proc/meminfo"))
-        .context("/proc/meminfo could not be read; no sample recorded")?;
-    let stat = read("/proc/stat");
+pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample> {
+    let reader = Reader::new();
+    let mem = reader.meminfo().map_err(|r| {
+        anyhow::anyhow!(
+            "/proc/meminfo could not be read ({}); no sample recorded",
+            why(&r)
+        )
+    })?;
+    let stat = reader.stat().unwrap_or_default();
     let cpu_jiffies = parse_proc_stat(&stat);
     let cores = parse_cores(&stat);
-    let (load1, tasks_total) = parse_loadavg(&read("/proc/loadavg")).unzip();
+    let (load1, tasks_total) = reader.loadavg().ok().unzip();
 
     let units = unit_counters(&user_app_slice())?;
-    let gpu = run(
-        "nvidia-smi",
-        &[
-            "--query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.total",
-            "--format=csv,noheader,nounits",
-        ],
-    )
-    .map(|t| parse_gpu(&t))
-    .unwrap_or_default();
-    let gpu_apps = run(
-        "nvidia-smi",
-        &[
-            "--query-compute-apps=pid,used_memory",
-            "--format=csv,noheader,nounits",
-        ],
-    )
-    .map(|t| {
-        parse_gpu_apps(&t)
-            .into_iter()
-            .map(|(pid, mib)| {
-                // The pid finds its unit and is dropped here.
-                let unit = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-                    .ok()
-                    .and_then(|c| unit_of_cgroup(&c))
-                    .unwrap_or_default();
-                (unit, mib)
-            })
-            .collect::<Vec<_>>()
-    });
+    let gpu = reader.gpu().unwrap_or_default();
+    let gpu_apps = source::nvidia_smi("--query-compute-apps=pid,used_memory")
+        .out()
+        .map(|t| {
+            parse_gpu_apps(&t)
+                .into_iter()
+                .map(|(pid, mib)| {
+                    // The pid finds its unit and is dropped here.
+                    let unit = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+                        .ok()
+                        .and_then(|c| unit_of_cgroup(&c))
+                        .unwrap_or_default();
+                    (unit, mib)
+                })
+                .collect::<Vec<_>>()
+        });
+
+    let now = Measurement::ALL
+        .iter()
+        .filter(|m| m.how() == measure::How::Now)
+        .map(|&m| (m, reader.now(m)))
+        .collect();
 
     Ok(Sample {
         at,
@@ -391,8 +287,122 @@ pub fn collect(at: DateTime<Utc>) -> Result<Sample> {
         load1,
         tasks_total,
         gpu,
-        disk: disk_usage(Path::new("/")),
+        disk: reader.disk(),
         by_category: fold(&units, gpu_apps.as_deref()),
+        now,
+        counters: read_counters(&reader, at, since),
+    })
+}
+
+fn why(r: &Reading) -> String {
+    match r {
+        Reading::Unread { why } => why.clone(),
+        Reading::NotHere => "not on this machine".into(),
+        Reading::Observed { .. } => "read".into(),
+    }
+}
+
+fn read_counters(reader: &Reader, at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Counters {
+    let text = |path: &str| -> Result<String, Reading> {
+        std::fs::read_to_string(path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Reading::NotHere,
+            _ => Reading::Unread {
+                why: format!("{path}: {e}"),
+            },
+        })
+    };
+    let unread = |why: &str| Reading::Unread { why: why.into() };
+    let oom_kills = text("/proc/vmstat").and_then(|t| {
+        source::parse_vmstat_oom_kill(&t).ok_or_else(|| unread("/proc/vmstat has no oom_kill"))
+    });
+    // The window starts at the previous sample, so each kill is counted
+    // once; the first sample has no window, and nothing to compare with.
+    let oom_log = since.and_then(|since| {
+        let ran = source::run_bounded(
+            "journalctl",
+            &[
+                "-k",
+                "-q",
+                "--no-pager",
+                "-o",
+                "cat",
+                &format!("--since=@{}", since.timestamp()),
+                &format!("--until=@{}", at.timestamp()),
+            ],
+            source::FORK_TIMEOUT,
+        );
+        ran.out().map(|t| {
+            source::parse_oom_kills(&t)
+                .into_iter()
+                .map(|k| {
+                    (
+                        k.global,
+                        k.unit.as_deref().map_or(Category::Other, category_of),
+                    )
+                })
+                .collect()
+        })
+    });
+    let disk = root_device().and_then(|(dev, major, minor)| {
+        let t = text("/proc/diskstats")?;
+        source::parse_diskstats(&t, major, minor)
+            .map(|c| (dev, c))
+            .ok_or_else(|| unread("the disk holding / is not in /proc/diskstats"))
+    });
+    let uplink = match reader.uplink() {
+        Some(iface) => net_counters(&iface),
+        None => Err(unread("no default route")),
+    };
+    let tailnet = std::fs::read_dir("/sys/class/net")
+        .ok()
+        .and_then(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| n.starts_with("tailscale"))
+        })
+        .map_or(Err(Reading::NotHere), |iface| net_counters(&iface));
+    Counters {
+        oom_kills,
+        oom_log,
+        disk,
+        uplink,
+        tailnet,
+    }
+}
+
+/// The device number of the filesystem holding `/`, and its major and minor.
+fn root_device() -> Result<(u64, u64, u64), Reading> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata("/")
+        .map_err(|e| Reading::Unread {
+            why: format!("/: {e}"),
+        })?
+        .dev();
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    // Major 0 is a filesystem with no block device (overlay, tmpfs, btrfs
+    // subvolumes): there is no disk to count.
+    if major == 0 {
+        return Err(Reading::NotHere);
+    }
+    Ok((dev, major, minor))
+}
+
+/// An interface's counters. Its name is used to find them and dropped.
+fn net_counters(iface: &str) -> Result<NetCounters, Reading> {
+    let num = |file: &str| -> Result<u64, Reading> {
+        let path = format!("/sys/class/net/{iface}/{file}");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .ok_or_else(|| Reading::Unread {
+                why: format!("an interface counter ({file}) could not be read"),
+            })
+    };
+    Ok(NetCounters {
+        ifindex: num("ifindex")?,
+        rx: num("statistics/rx_bytes")?,
+        tx: num("statistics/tx_bytes")?,
     })
 }
 
@@ -415,13 +425,15 @@ pub(crate) fn unit_counters(slice: &Path) -> Result<Vec<UnitCounters>> {
             slice.display()
         )
     })?;
-    let num = |p: PathBuf| {
+    let read = |p: PathBuf| {
         std::fs::read_to_string(p)
             .ok()
             .and_then(|t| t.trim().parse::<u64>().ok())
-            .unwrap_or(0)
     };
-    Ok(entries
+    let num = |p: PathBuf| read(p).unwrap_or(0);
+    let mut services = 0usize;
+    let mut with_memory = 0usize;
+    let units = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_string();
@@ -429,39 +441,28 @@ pub(crate) fn unit_counters(slice: &Path) -> Result<Vec<UnitCounters>> {
                 return None;
             }
             let dir = e.path();
+            services += 1;
+            let mem = read(dir.join("memory.current"));
+            with_memory += usize::from(mem.is_some());
             let cpu = std::fs::read_to_string(dir.join("cpu.stat"))
                 .ok()
                 .and_then(|t| parse_cpu_stat(&t))
                 .unwrap_or(0);
-            Some((
-                name,
-                num(dir.join("memory.current")),
-                cpu,
-                num(dir.join("pids.current")),
-            ))
+            Some((name, mem.unwrap_or(0), cpu, num(dir.join("pids.current"))))
         })
-        .collect::<Vec<_>>())
-}
-
-fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(cmd).args(args).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-fn disk_usage(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: a zeroed statvfs is a valid out-parameter; `c` is a valid path.
-    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
-        return None;
+        .collect::<Vec<_>>();
+    // `memory.current` exists only where the memory controller is enabled for
+    // the slice. Without it every unit would read zero and `Other` — the
+    // remainder — would draw the whole machine: refuse, as for an unreadable
+    // slice.
+    if services > 0 && with_memory == 0 {
+        anyhow::bail!(
+            "no user service under {} reports memory.current (is memory accounting \
+             enabled for the user manager?); no sample recorded",
+            slice.display()
+        );
     }
-    let block = s.f_frsize as u64;
-    let total = s.f_blocks as u64 * block;
-    let free = s.f_bavail as u64 * block;
-    Some((total.saturating_sub(free), total))
+    Ok(units)
 }
 
 // ---- the store ----
@@ -522,6 +523,15 @@ CREATE TABLE IF NOT EXISTS system_15m (
 CREATE TABLE IF NOT EXISTS counters (category INTEGER PRIMARY KEY, cpu_usec INTEGER NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY CHECK (id = 0), busy INTEGER NOT NULL, total INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS gpu_mode (id INTEGER PRIMARY KEY CHECK (id = 0), unified INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS measurements (id INTEGER PRIMARY KEY, name TEXT NOT NULL, unit TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reading_minute (
+  at TEXT NOT NULL, measurement INTEGER NOT NULL, value REAL,
+  PRIMARY KEY (at, measurement));
+CREATE TABLE IF NOT EXISTS category_reading_minute (
+  at TEXT NOT NULL, measurement INTEGER NOT NULL, category INTEGER NOT NULL, value REAL,
+  PRIMARY KEY (at, measurement, category));
+CREATE TABLE IF NOT EXISTS counter_state (
+  key TEXT PRIMARY KEY, value INTEGER NOT NULL, ident INTEGER NOT NULL, at TEXT NOT NULL);
 ";
 
 /// What one write recorded, for the CLI to show. Categories and numbers.
@@ -709,8 +719,16 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         ],
     )?;
 
+    record_readings(&tx, s, &at, machine_pct)?;
+
     rollup(&tx, s.at)?;
     let cutoff = |days: i64| ts(s.at - Duration::days(days));
+    for table in ["reading_minute", "category_reading_minute"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE at < ?1"),
+            params![cutoff(MINUTE_KEEP_DAYS)],
+        )?;
+    }
     tx.execute(
         "DELETE FROM category_minute WHERE at < ?1",
         params![cutoff(MINUTE_KEEP_DAYS)],
@@ -734,6 +752,312 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         cpu_pct: machine_pct,
         by_category: shown,
     })
+}
+
+/// The named measurements' rows for one minute: every `Now` reading as it
+/// was read, and every `Rate` as a difference of counters against the
+/// previous sample. `Observed` writes its value, `Unread` writes NULL, and
+/// `NotHere` writes no row — three findings, kept apart in the store too.
+fn record_readings(
+    tx: &rusqlite::Transaction<'_>,
+    s: &Sample,
+    at: &str,
+    machine_pct: Option<f64>,
+) -> Result<()> {
+    use Measurement as M;
+    for m in Measurement::ALL {
+        let unit = serde_json::to_value(m.unit())?;
+        let unit = unit
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| "label".to_string());
+        tx.execute(
+            "INSERT OR REPLACE INTO measurements (id, name, unit) VALUES (?1, ?2, ?3)",
+            params![*m as u16, m.name(), unit],
+        )?;
+    }
+    let put = |m: Measurement, v: Option<f64>| -> Result<()> {
+        tx.execute(
+            "INSERT OR REPLACE INTO reading_minute (at, measurement, value) VALUES (?1, ?2, ?3)",
+            params![at, m as u16, v],
+        )?;
+        Ok(())
+    };
+    for (m, reading) in &s.now {
+        match reading {
+            Reading::Observed { value } => put(*m, Some(*value))?,
+            Reading::Unread { .. } => put(*m, None)?,
+            Reading::NotHere => {}
+        }
+    }
+    put(M::CpuBusy, machine_pct)?;
+
+    // A counter's rate, or what stands in for one: NotHere writes nothing.
+    let rate = |m: Measurement,
+                counter: &Result<(u64, u64), Reading>,
+                key: &str,
+                per: fn(u64, f64) -> f64|
+     -> Result<()> {
+        match counter {
+            Err(Reading::NotHere) => Ok(()),
+            Err(_) => put(m, None),
+            Ok((value, ident)) => {
+                let d = delta(tx, key, *value, *ident, s.at)?;
+                put(m, d.map(|(d, secs)| per(d, secs)))
+            }
+        }
+    };
+    let per_sec = |d: u64, secs: f64| d as f64 / secs;
+    let c = &s.counters;
+    rate(
+        M::DiskReadRate,
+        &c.disk.clone().map(|(dev, d)| (d.read_bytes, dev)),
+        "disk.read_bytes",
+        per_sec,
+    )?;
+    rate(
+        M::DiskWriteRate,
+        &c.disk.clone().map(|(dev, d)| (d.write_bytes, dev)),
+        "disk.write_bytes",
+        per_sec,
+    )?;
+    rate(
+        M::DiskBusy,
+        &c.disk.clone().map(|(dev, d)| (d.io_ms, dev)),
+        "disk.io_ms",
+        |ms, secs| (ms as f64 / (secs * 10.0)).min(100.0),
+    )?;
+    for (rx, tx_, counters, key) in [
+        (
+            M::NetworkUplinkRxRate,
+            M::NetworkUplinkTxRate,
+            &c.uplink,
+            "uplink",
+        ),
+        (
+            M::NetworkTailnetRxRate,
+            M::NetworkTailnetTxRate,
+            &c.tailnet,
+            "tailnet",
+        ),
+    ] {
+        rate(
+            rx,
+            &counters.clone().map(|n| (n.rx, n.ifindex)),
+            &format!("{key}.rx"),
+            per_sec,
+        )?;
+        rate(
+            tx_,
+            &counters.clone().map(|n| (n.tx, n.ifindex)),
+            &format!("{key}.tx"),
+            per_sec,
+        )?;
+    }
+
+    // OOM kills: the kernel's counter is the authority on how many; the
+    // log says which kind and whose. The split is recorded only when the log
+    // accounts for exactly the counter's kills — a log that could not be
+    // read, or a window that missed one, is unknown, never a guess.
+    let kills = match &c.oom_kills {
+        Err(Reading::NotHere) => None,
+        Err(_) => {
+            put(M::MemoryOomKills, None)?;
+            None
+        }
+        Ok(v) => {
+            let d = delta(tx, "vmstat.oom_kill", *v, 0, s.at)?.map(|(d, _)| d);
+            put(M::MemoryOomKills, d.map(|d| d as f64))?;
+            d
+        }
+    };
+    let split: Option<Vec<(bool, Category)>> = match (kills, &c.oom_log) {
+        (Some(0), _) => Some(Vec::new()),
+        (Some(n), Some(log)) if log.len() as u64 == n => Some(log.clone()),
+        _ => None,
+    };
+    if c.oom_kills != Err(Reading::NotHere) {
+        let count = |global: bool| {
+            split
+                .as_ref()
+                .map(|k| k.iter().filter(|(g, _)| *g == global).count() as f64)
+        };
+        put(M::MemoryOomKillsGlobal, count(true))?;
+        put(M::MemoryOomKillsCapped, count(false))?;
+        for cat in Category::ALL {
+            let n = split
+                .as_ref()
+                .map(|k| k.iter().filter(|(_, c)| *c == cat).count() as f64);
+            tx.execute(
+                "INSERT OR REPLACE INTO category_reading_minute (at, measurement, category, value)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![at, M::CategoryOomKills as u16, cat as u8, n],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// A cumulative counter's change since the previous sample, with the
+/// seconds between. `None` on the first sample, when the counter fell (a
+/// reboot, a restarted interface), or when `ident` changed (another device
+/// or interface now holds the role): a difference across any of those is
+/// not a rate. The counter's state is updated either way.
+fn delta(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: u64,
+    ident: u64,
+    at: DateTime<Utc>,
+) -> Result<Option<(u64, f64)>> {
+    let prev: Option<(i64, i64, String)> = tx
+        .query_row(
+            "SELECT value, ident, at FROM counter_state WHERE key = ?1",
+            params![key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    tx.execute(
+        "INSERT OR REPLACE INTO counter_state (key, value, ident, at) VALUES (?1, ?2, ?3, ?4)",
+        params![key, value as i64, ident as i64, ts(at)],
+    )?;
+    Ok(prev.and_then(|(v, i, prev_at)| {
+        let prev_at = chrono::NaiveDateTime::parse_from_str(&prev_at, "%Y-%m-%d %H:%M:%S")
+            .ok()?
+            .and_utc();
+        let secs = (at - prev_at).num_milliseconds() as f64 / 1000.0;
+        (i == ident as i64 && value as i64 >= v && secs > 0.0)
+            .then(|| ((value as i64 - v) as u64, secs))
+    }))
+}
+
+/// When the previous sample was taken, to the second — where the next
+/// sample's kernel-log window starts. Read-only; `None` without a store or
+/// a previous sample.
+pub fn last_sample_at(db: &Path) -> Option<DateTime<Utc>> {
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let at: String = conn
+        .query_row(
+            "SELECT at FROM counter_state WHERE key = 'vmstat.oom_kill'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()?;
+    chrono::NaiveDateTime::parse_from_str(&at, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|t| t.and_utc())
+}
+
+/// What a probe found: one reading, or one per category.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(untagged)]
+pub enum Probed {
+    One(Reading),
+    ByCategory(Vec<(&'static str, Reading)>),
+}
+
+/// How old the series' newest minute may be for a probe to answer from it.
+const FRESH: i64 = 3;
+
+/// Read one measurement: a `Now` one from the machine, anything else from
+/// the series' newest minute when it is fresh. Never writes.
+pub fn probe(reader: &Reader, db: &Path, m: Measurement, now: DateTime<Utc>) -> Probed {
+    if m.how() == measure::How::Now {
+        return Probed::One(reader.now(m));
+    }
+    match latest(db, m, now) {
+        Ok(p) => p,
+        Err(e) => Probed::One(Reading::Unread {
+            why: format!("the series could not be read: {e:#}"),
+        }),
+    }
+}
+
+fn latest(db: &Path, m: Measurement, now: DateTime<Utc>) -> Result<Probed> {
+    let stale = |why: String| Probed::One(Reading::Unread { why });
+    if !db.exists() {
+        return Ok(stale(
+            "no series yet; is mecha-system-sample.timer running?".into(),
+        ));
+    }
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let newest: Option<String> =
+        conn.query_row("SELECT max(at) FROM system_minute", [], |r| r.get(0))?;
+    let Some(newest) = newest else {
+        return Ok(stale("the series holds no minute yet".into()));
+    };
+    let at = chrono::NaiveDateTime::parse_from_str(&newest, "%Y-%m-%d %H:%M:%S")?.and_utc();
+    if now - at > Duration::minutes(FRESH) {
+        return Ok(stale(format!(
+            "the series' newest minute is {newest}; is mecha-system-sample.timer running?"
+        )));
+    }
+    // A series written by a sampler older than this measurement has no table
+    // for it yet; that is not a broken store.
+    let table = match m {
+        Measurement::CategoryOomKills => "category_reading_minute",
+        _ if m.how() == measure::How::Rate => "reading_minute",
+        _ => "category_minute",
+    };
+    let has_table: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![table],
+        |r| r.get(0),
+    )?;
+    if !has_table {
+        return Ok(stale(
+            "the series was written by an older sampler; it is recorded from the next sample"
+                .into(),
+        ));
+    }
+    let cell = |v: Option<Option<f64>>, missing: Reading| match v {
+        None => missing,
+        Some(None) => Reading::Unread {
+            why: "the sampler could not compute it this minute".into(),
+        },
+        Some(Some(value)) => Reading::Observed { value },
+    };
+    if m.how() == measure::How::Rate {
+        let v: Option<Option<f64>> = conn
+            .query_row(
+                "SELECT value FROM reading_minute WHERE at = ?1 AND measurement = ?2",
+                params![newest, m as u16],
+                |r| r.get(0),
+            )
+            .optional()?;
+        return Ok(Probed::One(cell(v, Reading::NotHere)));
+    }
+    let mut out = Vec::new();
+    for cat in Category::ALL {
+        let v: Option<Option<f64>> = match m {
+            Measurement::CategoryOomKills => conn
+                .query_row(
+                    "SELECT value FROM category_reading_minute
+                     WHERE at = ?1 AND measurement = ?2 AND category = ?3",
+                    params![newest, m as u16, cat as u8],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            _ => {
+                let column = match m {
+                    Measurement::CategoryMemory => "CAST(mem_bytes AS REAL)",
+                    Measurement::CategoryCpu => "cpu_pct",
+                    Measurement::CategoryTasks => "CAST(tasks AS REAL)",
+                    _ => "gpu_mib * 1048576.0",
+                };
+                conn.query_row(
+                    &format!(
+                        "SELECT {column} FROM category_minute WHERE at = ?1 AND category = ?2"
+                    ),
+                    params![newest, cat as u8],
+                    |r| r.get(0),
+                )
+                .optional()?
+            }
+        };
+        out.push((cat.label(), cell(v, Reading::NotHere)));
+    }
+    Ok(Probed::ByCategory(out))
 }
 
 /// The fifteen-minute bucket a stored `at` falls in, in SQL.

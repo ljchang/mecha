@@ -1,6 +1,6 @@
 # System state — design
 
-**2026-10-10. Proposed; R1, R2, R3 and R3b ruled the same day; R4 ruled 2026-10-10; R5 and R5b open (§9).** `mecha system` is one layer through which mecha reads the state of
+**2026-10-10. R1–R5b ruled the same day (§9). S0 and S1 built (§7, §7.1).** `mecha system` is one layer through which mecha reads the state of
 the machine it runs on and the services it runs beside. Each measurement in
 it has its own specific name, drawn from one closed list. Every consumer
 reads the system through it, and none probes for itself:
@@ -22,7 +22,9 @@ sensor.
 ## 0. Why: the system is read in many places today
 
 An inventory of `origin/main` at `5669f2579`, plus the host sampler on #630,
-found every reader below written for one consumer:
+found every reader below written for one consumer. The table is that
+snapshot, so it uses the paths of the time: `hud::host` is `system` since S0,
+and S1 folded the first four rows into `system::source`.
 
 | Source | Readers today |
 |---|---|
@@ -175,9 +177,10 @@ now.
 | `services.failed` | `systemctl --user --failed` | count | Fork | yes | CLI doctor |
 | `backlog.outbox`, `backlog.questions`, `backlog.frontdoor`, `backlog.proposals`, `backlog.candidates` | `backlog::Backlog::survey`, one per field | count | Scan | yes | homeostat, charter readings |
 | **Pressure and health** (added 2026-10-10, second pass) | | | | | |
-| `pressure.cpu`, `pressure.memory`, `pressure.io` | `/proc/pressure/*`, `some avg60`: the share of time work was stalled waiting on that resource | % | File | yes | nothing |
-| `memory.oom_kills` | `/proc/vmstat` `oom_kill`, delta per minute | count | File | yes | nothing |
-| `category.oom_kills` | each unit's `memory.events` `oom_kill`, per `Category` | count | File | yes | nothing |
+| `pressure.{cpu,memory,io}.avg10`, `.avg60` | `/proc/pressure/*`, the `some` line: the share of the last ten or sixty seconds that work was stalled waiting on that resource | % | File | yes | nothing |
+| `memory.oom_kills` | `/proc/vmstat` `oom_kill`, since the previous sample: how many | count | File | yes | nothing |
+| `memory.oom_kills.global`, `memory.oom_kills.capped` | the kernel log's `oom-kill:` lines (`constraint=`): the machine ran out, or a cgroup hit its cap. Recorded only when they reconcile with the counter (§7.1) | count | Fork | yes | nothing |
+| `category.oom_kills` | the kernel log's victim cgroup, per `Category` — not `memory.events`, which resets when a killed service restarts (§7.1) | count | Fork | yes | nothing |
 | `cpu.temperature` | the hottest `/sys/class/thermal` zone | °C | File | yes | nothing |
 | `gpu.throttled` | `nvidia-smi` `clocks_throttle_reasons.active` ≠ 0 | bool | Fork | yes | nothing |
 | `system.uptime` | `/proc/uptime`; a fall is a reboot | seconds | File | yes | nothing |
@@ -187,7 +190,7 @@ now.
 | **Network** | | | | | |
 | `network.uplink.rx_rate`, `network.uplink.tx_rate` | `/proc/net/dev` deltas on the default-route interface (from `/proc/net/route`) | bytes/s | File | yes | nothing |
 | `network.uplink.kind` | `wired` or `wireless`, from `/sys/class/net/<if>/wireless` | label | File | yes | nothing |
-| `network.wifi.signal` | `/proc/net/wireless` link quality; `NotHere` on a wired uplink | % | File | yes | nothing |
+| `network.wifi.signal`, `network.wifi.bitrate` | `iw dev <uplink> link`: signal level and the link's transmit rate; `NotHere` on a wired uplink. This driver reports nothing in `/proc/net/wireless` (§7.1) | dBm, Mbit/s | Fork | yes | nothing |
 | `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/proc/net/dev` deltas on the tailnet interface | bytes/s | File | yes | nothing |
 | `network.tailnet.up`, `network.tailnet.peers_online` | `tailscale status --json`: backend state, and a count of online peers, never their names | bool, count | Fork | yes | nothing |
 | **Work in flight** | | | | | |
@@ -563,6 +566,55 @@ one by deleting a copy.
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
 | **S6** | The memory floor (§3.7): `system::admit` and `mecha system admit --need`, with image generation, model loads, background admission and the build scripts all calling it. The image tool's `memory_verdict` becomes a caller of `admit`, not a second implementation. | R5; S1 (it needs `memory.available` and `pressure.memory`, nothing more) |
 
+### 7.1 What S1 built, and where it differs from §2
+
+S1 is built: `system::source` (one parser per source, with the bounded
+runner taken from `recommend::nvidia_smi`), `system::measure` (the closed
+list, `Reading`, and a `Reader` that reads each source once per probe or
+sample), the series' named-reading tables, and `mecha system probe`.
+`homeostat`, `imagegen` and `recommend` read through it, and their own
+parsers are gone. Building it changed six things in §2, each from something
+read on this machine:
+
+- **Pressure is two names per resource.** `pressure.memory.avg10` and
+  `pressure.memory.avg60` use the kernel's own field names. The floor reads
+  the ten-second figure (R5), and the series records both, so a minute's
+  row holds the minute's average as well as the moment's.
+- **OOM kills are three names, not one.** On 2026-10-10 `/proc/vmstat`
+  counted 986 kills. The kernel log held 991 `oom-kill:` lines over 15
+  days, 989 of them `constraint=CONSTRAINT_MEMCG`: cgroups hitting the cap
+  they were given, nearly all in `run-*.scope` cgroups like the ones the
+  sandbox runs confined commands in. Only two were `CONSTRAINT_NONE`, the
+  machine actually running out. So:
+  - `memory.oom_kills` is the counter, and it is authoritative on how many;
+  - `memory.oom_kills.global` and `memory.oom_kills.capped` come from the
+    log;
+  - `category.oom_kills` takes the victim's unit from the log.
+
+  The split is recorded only when the log accounts for exactly the
+  counter's kills in that window, and otherwise it is NULL.
+  `category.oom_kills` comes from the log rather than `memory.events`
+  because a service whose main process is killed is restarted in a fresh
+  cgroup, which resets that counter: it would lose exactly the kill it
+  was meant to record.
+- **Wi-Fi is read from `iw`, not `/proc/net/wireless`.** This driver
+  reports nothing there. `iw dev <if> link` gives the signal in dBm and
+  the link's transmit rate, so `network.wifi.bitrate` is the link's speed
+  without any test traffic.
+- **`cpu.temperature` is the package on this machine.** The GB10's thermal
+  zones sit on the die the GPU shares, and they read 93 °C at peak with the
+  GPU at 96%. It is still the measurement to read; its doc says what it is.
+- **Rates come from the series, with a rule.** A rate is recorded only
+  between two samples where the counter did not fall (a reboot) and its
+  device or interface did not change. Interfaces are keyed by index, never
+  by name.
+- **A slice with no memory accounting is refused.** If no user service
+  reports `memory.current`, the sample is refused rather than recorded as
+  zeros. This was #630's last open minor.
+
+`mecha system probe` (S3's diagnostic) shipped with S1 because it is how
+S1 was checked on this machine. `read`, over a range, is still S3.
+
 S0 is small, and it is the only step that is cheaper now than later.
 **S0 is built**, in the same change as this document (the owner asked for
 the design to ship with the first implementation PR rather than be reviewed
@@ -609,18 +661,19 @@ on its own).
   - It is not on persona tool lists.
 - **R3b. Private — ruled 2026-10-10:** `system_read` results carry
   `private_data: true`.
-- **R5. The memory floor's reserve — open.** This is the headroom
-  `admit` keeps back beyond a stated need (§3.7). Recommended: a fixed
-  figure in config, `[system] memory_reserve`, starting at 8 GiB. That is
-  about one voice pipeline plus margin on this box. A pressure ceiling
-  (`pressure.memory` avg10 above 10%) refuses regardless of headroom. Both
-  are tuned only from `memory.oom_kills` and `pressure.memory` once the
-  series has weeks in it.
-- **R5b. `MemoryHigh=` on the heavy units — open.** This is the operational
-  complement in §3.7: the router and ComfyUI get reclaimed and slowed
-  inside their own cgroups before the global OOM killer chooses a victim.
-  Recommended: yes, after S1 is recording, so that its effect is measured
-  rather than assumed.
+- **R5. The memory floor's reserve — ruled 2026-10-10** as the starting
+  plan, "adjust as needed". The reserve is the headroom `admit` keeps back
+  beyond a stated need (§3.7). It is a fixed figure in config,
+  `[system] memory_reserve`, starting at 8 GiB: about one voice pipeline
+  plus margin on this box. A pressure ceiling refuses regardless of
+  headroom: `pressure.memory.avg10` above 10%. Both are tuned from
+  `memory.oom_kills.global` and `pressure.memory.avg60` once the series has
+  weeks in it.
+- **R5b. `MemoryHigh=` on the heavy units — ruled 2026-10-10: yes.** This
+  is the operational complement in §3.7: the router and ComfyUI are
+  reclaimed and slowed inside their own cgroups before the global OOM
+  killer chooses a victim. It is applied once S1 has been recording for a
+  while, so that its effect is measured against a before, not assumed.
 - **R4. The homeostat reads the series — ruled 2026-10-10:** yes, "so we
   have a unified system measurement". The homeostat stops probing `/proc`
   itself and reads `system`, and a run's record carries the minutes it ran

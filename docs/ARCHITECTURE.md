@@ -5940,9 +5940,29 @@ was ever deployed.
 - **The machine's denominators, never the sampler's.** Per-category CPU
   divides by the cores `/proc/stat` lists, never `available_parallelism()`,
   which a `CPUQuota=` on the sampler's own unit would narrow.
-- **Both oneshots are bounded.** `Type=oneshot` has no start timeout and a
-  run still active holds its timer, so a wedged `nvidia-smi` would stop
-  sampling for good; the units set `TimeoutStartSec`.
+- **Both oneshots are bounded, and so is every command inside them.**
+  `Type=oneshot` has no start timeout, and a run that is still active holds
+  its timer, so a wedged `nvidia-smi` would stop sampling for good. The
+  units set `TimeoutStartSec`, and `source::run_bounded` kills any command
+  after `FORK_TIMEOUT`. It drains the output on a thread while the command
+  runs: waiting first and reading after fills a 64 KiB pipe and stalls the
+  child into the timeout, which is what the old shape did with a large
+  answer.
+- **One parser per source (S1).** `system::source` parses `/proc/meminfo`,
+  `/proc/stat`, `nvidia-smi` and every other source exactly once. The
+  homeostat, the image gate and `recommend` read through
+  `system::Reader`. A second parser of any of them is the duplication the
+  layer exists to end.
+- **A reading is one of three things**, `Observed`, `Unread { why }` or
+  `NotHere`, and the series keeps them apart: a value, a NULL, or no row.
+- **A rate never spans a reset or a switch.** `delta` returns `None` when
+  a counter fell or its `ident` (device number, interface index) changed.
+  Interfaces are keyed by index, so a name never enters the series.
+- **The OOM split reconciles or is unknown.** The vmstat counter says how
+  many kills there were. The kernel log says which kind and whose, and is
+  believed only when it accounts for exactly that many. Do not read
+  `category.oom_kills` from `memory.events`: a restarted service gets a
+  fresh cgroup, and the counter resets on exactly the kill that mattered.
 
 ## Session records and replay
 
