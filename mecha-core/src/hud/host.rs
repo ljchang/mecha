@@ -209,7 +209,9 @@ pub fn parse_gpu(text: &str) -> GpuNow {
     GpuNow {
         util: max(col(0)),
         temp: max(col(1)),
-        power_w: (!power.is_empty()).then(|| power.iter().sum()),
+        // A total only when every GPU answered: a partial sum is not the
+        // machine's draw.
+        power_w: (!power.is_empty() && power.len() == lines.len()).then(|| power.iter().sum()),
         unified: !lines.is_empty()
             && lines
                 .iter()
@@ -462,6 +464,13 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         crate::create_private_dir(dir)?;
     }
     let mut conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
+    // A refresh reading mid-sample makes the writer wait rather than drop the
+    // minute: in rollback-journal mode a reader blocks the writer as much as
+    // the reverse. rusqlite already defaults to five seconds; it is set here
+    // so the guarantee does not rest on a library default, and a test pins
+    // both directions. (Not WAL: the loaders open read-only, and a read-only
+    // connection cannot recreate WAL's -shm file.)
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)?;
     let tx = conn.transaction()?;
     let at = ts(s.at.duration_trunc(Duration::minutes(1)).unwrap_or(s.at));
@@ -610,27 +619,45 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
     })
 }
 
-/// Average the last *completed* fifteen-minute bucket into the rollups.
-/// Idempotent: re-running a minute rewrites the same bucket.
+/// The fifteen-minute bucket a stored `at` falls in, in SQL.
+const BUCKET: &str = "strftime('%Y-%m-%d %H:', at) || \
+    printf('%02d', (CAST(strftime('%M', at) AS INTEGER) / 15) * 15) || ':00'";
+
+/// Average every *completed* fifteen-minute bucket not yet rolled up — from
+/// the last bucket already in the rollup (re-closed, since it may have been
+/// closed early) up to the one before `now`'s. Not only the previous bucket:
+/// a gap in sampling (a suspend, a stopped timer) would otherwise leave the
+/// bucket it straddled never rolled up, and its minute rows would age out of
+/// the seven-day window with the ninety-day history showing nothing where
+/// data existed. Idempotent, and bounded by the minute rows still kept.
 fn rollup(tx: &rusqlite::Transaction<'_>, now: DateTime<Utc>) -> Result<()> {
-    let bucket = now.duration_trunc(Duration::minutes(15)).unwrap_or(now) - Duration::minutes(15);
-    let (from, to) = (ts(bucket), ts(bucket + Duration::minutes(15)));
+    let current = ts(now.duration_trunc(Duration::minutes(15)).unwrap_or(now));
+    let from: String = tx
+        .query_row("SELECT max(at) FROM system_15m", [], |r| {
+            r.get::<_, Option<String>>(0)
+        })?
+        .unwrap_or_default();
     tx.execute(
-        "INSERT OR REPLACE INTO category_15m (at, category, mem_bytes, cpu_pct, tasks, gpu_mib)
-         SELECT ?1, category, CAST(avg(mem_bytes) AS INTEGER), avg(cpu_pct),
-                CAST(avg(tasks) AS INTEGER), CAST(avg(gpu_mib) AS INTEGER)
-         FROM category_minute WHERE at >= ?1 AND at < ?2 GROUP BY category",
-        params![from, to],
+        &format!(
+            "INSERT OR REPLACE INTO category_15m (at, category, mem_bytes, cpu_pct, tasks, gpu_mib)
+             SELECT {BUCKET} AS bucket, category, CAST(avg(mem_bytes) AS INTEGER), avg(cpu_pct),
+                    CAST(avg(tasks) AS INTEGER), CAST(avg(gpu_mib) AS INTEGER)
+             FROM category_minute WHERE at >= ?1 AND at < ?2 GROUP BY bucket, category"
+        ),
+        params![from, current],
     )?;
     tx.execute(
-        "INSERT OR REPLACE INTO system_15m (at, mem_total, mem_available, swap_used, cpu_pct,
-           load1, tasks, gpu_util, gpu_temp, gpu_power_w, disk_used, disk_total)
-         SELECT ?1, CAST(avg(mem_total) AS INTEGER), CAST(avg(mem_available) AS INTEGER),
-                CAST(avg(swap_used) AS INTEGER), avg(cpu_pct), avg(load1),
-                CAST(avg(tasks) AS INTEGER), avg(gpu_util), avg(gpu_temp), avg(gpu_power_w),
-                CAST(avg(disk_used) AS INTEGER), CAST(avg(disk_total) AS INTEGER)
-         FROM system_minute WHERE at >= ?1 AND at < ?2 HAVING count(*) > 0",
-        params![from, to],
+        &format!(
+            "INSERT OR REPLACE INTO system_15m (at, mem_total, mem_available, swap_used, cpu_pct,
+               load1, tasks, gpu_util, gpu_temp, gpu_power_w, disk_used, disk_total)
+             SELECT {BUCKET} AS bucket, CAST(avg(mem_total) AS INTEGER),
+                    CAST(avg(mem_available) AS INTEGER), CAST(avg(swap_used) AS INTEGER),
+                    avg(cpu_pct), avg(load1), CAST(avg(tasks) AS INTEGER), avg(gpu_util),
+                    avg(gpu_temp), avg(gpu_power_w), CAST(avg(disk_used) AS INTEGER),
+                    CAST(avg(disk_total) AS INTEGER)
+             FROM system_minute WHERE at >= ?1 AND at < ?2 GROUP BY bucket"
+        ),
+        params![from, current],
     )?;
     Ok(())
 }

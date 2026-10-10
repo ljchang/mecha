@@ -140,6 +140,11 @@ fn the_parsers_read_what_the_system_prints() {
         (two.util, two.temp, two.power_w, two.unified),
         (Some(70.0), Some(60.0), Some(12.0), false)
     );
+    assert_eq!(
+        parse_gpu("1, 2, [N/A], 3\n4, 5, 6, 7\n").power_w,
+        None,
+        "a partial sum is not the machine's draw"
+    );
     assert!(parse_gpu("1, 2, 3, [N/A]\n4, 5, 6, [N/A]\n").unified);
     assert_eq!(parse_gpu(""), GpuNow::default());
 }
@@ -422,4 +427,68 @@ fn the_now_loader_refuses_a_stale_sample() {
         fetched.rows.is_empty(),
         "a 30-minute-old sample is not the machine now"
     );
+}
+
+/// A gap in sampling must not lose the bucket it straddled: minutes 09:00-09:09
+/// recorded, a suspend, then 09:50 — the 09:00 bucket is still rolled up.
+#[test]
+fn a_gap_in_sampling_still_rolls_up_the_bucket_it_straddled() {
+    let s = Scratch::new();
+    let db = s.0.join("host.sqlite");
+    let u = vec![("llama-local.service".to_string(), 300_000, 0, 10)];
+    for m in [0, 5, 9] {
+        record(&db, &sample(m, &u, 0, 0)).unwrap();
+    }
+    record(&db, &sample(50, &u, 0, 0)).unwrap();
+    let c = Connection::open(&db).unwrap();
+    let buckets: Vec<String> = c
+        .prepare("SELECT at FROM system_15m ORDER BY at")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        buckets.contains(&"2031-04-17 09:00:00".to_string()),
+        "the 09:00 bucket held real minutes: {buckets:?}"
+    );
+    assert!(
+        !buckets.contains(&"2031-04-17 09:45:00".to_string()),
+        "the current bucket is not closed yet: {buckets:?}"
+    );
+}
+
+/// Both sides of the database wait for the other: a sample waits out a
+/// reader holding the file, and a loader waits out a sample mid-commit.
+#[test]
+fn the_sampler_and_a_loader_wait_for_each_other() {
+    use crate::hud::runner::{run_sqlite, QUERY_TIMEOUT};
+    let s = Scratch::new();
+    let db = s.0.join("host.sqlite");
+    let u = vec![("llama-local.service".to_string(), 300_000, 0, 10)];
+    record(&db, &sample(0, &u, 0, 0)).unwrap();
+
+    // A reader holds a shared lock for a moment; the writer waits it out.
+    let reader = Connection::open(&db).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM system_minute;")
+        .unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        reader.execute_batch("COMMIT").unwrap();
+    });
+    record(&db, &sample(1, &u, 0, 0)).expect("the sample waits for the reader");
+    release.join().unwrap();
+
+    // A writer holds the file exclusively for a moment; the loader waits.
+    let writer = Connection::open(&db).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        writer.execute_batch("COMMIT").unwrap();
+    });
+    let fetched = run_sqlite(&db, "SELECT count(*) FROM system_minute", 10, QUERY_TIMEOUT)
+        .expect("the loader waits for the writer");
+    release.join().unwrap();
+    assert_eq!(fetched.rows[0][0], serde_json::json!(2));
 }

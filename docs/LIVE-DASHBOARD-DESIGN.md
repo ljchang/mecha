@@ -953,7 +953,10 @@ dashboard must not draw an empty GPU-memory gauge as if the GPU had none. A
 `~/.mecha/hud/host.sqlite`: one-minute rows kept seven days, a
 fifteen-minute rollup kept ninety. The sampler runs on its own user timer
 (`scripts/mecha-hud-sample.timer`, at :30 each minute, so the :00 refresh reads
-a completed sample) and writes nothing else. The dashboard's loaders are ordinary SQLite loaders over
+a completed sample) and writes nothing else. The fifteen-minute rollups are written for
+step 3's longer ranges and have no reader yet; every bucket a gap in sampling
+straddled is still closed, so the ninety-day series never shows "nothing"
+where minutes were recorded. The dashboard's loaders are ordinary SQLite loaders over
 it.
 
 **The labels live in the store, written from code.** A loader reads the rows
