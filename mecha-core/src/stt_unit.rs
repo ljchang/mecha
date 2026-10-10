@@ -393,6 +393,15 @@ mod tests {
         assert_eq!(slot.rows.len(), 1, "a second row would need choosing");
     }
 
+    /// The shipped port is the one `[voice] stt_url` names by default.
+    #[test]
+    fn the_shipped_port_is_the_stt_url_default() {
+        assert_eq!(
+            crate::config::VoiceConfig::DEFAULT_STT_URL,
+            format!("http://127.0.0.1:{}/v1", Naming::shipped().port)
+        );
+    }
+
     /// The clip the check sends is a WAV the server's reader accepts: 44
     /// bytes of header, a second of samples.
     #[test]
@@ -426,10 +435,14 @@ mod tests {
         let r = install(&m, &naming, &mut |s| said.push(s.to_string())).await;
         let cleaned = remove(&m, &naming);
         eprintln!("{said:#?}");
+        // Read before the scratch tree goes: the manifest lives inside it
+        // (`Manifest::path`), and an absent one reads as no entries — the
+        // assertion would hold whatever `remove` left (review of #639).
+        let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
         r.unwrap();
         cleaned.unwrap();
-        let man = Manifest::read(&m.mecha_home).unwrap_or_default();
+        let man = man.unwrap();
         assert!(
             !man.entries.iter().any(|e| e.sidecar == ID),
             "{:?}",
