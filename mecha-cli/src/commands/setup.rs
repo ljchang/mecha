@@ -329,6 +329,49 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     if args.minimal {
         return minimal(&outstanding, &home);
     }
+    // The guided pass (ruling F14, FEATURES-DESIGN §11): at a terminal, with
+    // no feature named, setup asks about chat first, then each feature, and
+    // installs everything on one yes — never "go and run `setup chat`, then
+    // come back". What it does not cover (the charter, the scheduler,
+    // anything switched on but not working) goes to the step loop after it.
+    if only.is_none() && !outstanding.is_empty() && std::io::stdin().is_terminal() {
+        let path = mecha_core::config::Config::global_path()
+            .context("no global config path — is $HOME set?")?;
+        // Somewhere to put the answers: the starter, as `config init` writes
+        // it, never a question of its own.
+        seed_config_file(&path)?;
+        let guided = super::setup_guided::run(
+            &cfg,
+            &name,
+            &steps,
+            &facts,
+            &home,
+            &mut std::io::stdin().lock(),
+        )
+        .await?;
+        // What is still open is shown — chat when it was skipped or did not
+        // install, a feature whose yes did not end up on — but only what the
+        // pass did not ask is offered: its question was the offer, and a
+        // second one is noise (review of #631).
+        let left: Vec<&Step> = outstanding
+            .iter()
+            .filter(|s| s.id != "config-file" && !guided.settled.contains(&s.id))
+            .copied()
+            .collect();
+        if !left.is_empty() {
+            println!("\nStill open:");
+            render(&left.iter().map(|s| (*s).clone()).collect::<Vec<_>>());
+            let unasked: Vec<&Step> = left
+                .iter()
+                .filter(|s| !guided.asked.contains(&s.id))
+                .copied()
+                .collect();
+            offer(&unasked, &home, &mut std::io::stdin().lock())?;
+        }
+        println!("\n`mecha setup` again picks up whatever is still open.");
+        finished_note(&steps);
+        return Ok(());
+    }
     render(&steps);
 
     if outstanding.is_empty() {
@@ -638,6 +681,18 @@ fn run(remedy: &Remedy) -> Result<bool> {
     })
 }
 
+/// A write whose read-back did not parse, as an error rather than an exit:
+/// the step loop and `--write` still end non-zero through `main`, and the
+/// guided pass can carry on to the features its one Start covered (review of
+/// #631) — `exit_with` there ended the process past every `Err` guard.
+fn unparsed(path: &std::path::Path, e: anyhow::Error, restored: bool) -> anyhow::Error {
+    anyhow::anyhow!(
+        "what was written to {} does not parse: {e:#}\n{}",
+        path.display(),
+        if restored { RESTORED } else { NOT_RESTORED }
+    )
+}
+
 /// What `--write` says after putting a bad config back.
 ///
 /// Constants rather than literals inline, so they are **reachable from a
@@ -661,7 +716,7 @@ const NOT_RESTORED: &str = "the previous config could NOT be put back; it is at 
 /// whole path exists to avoid: somebody's recorded answers disappearing with
 /// no word. They are still on disk, and this is the only line that says
 /// where.
-fn report_salvage(salvaged: Option<std::path::PathBuf>) {
+pub(super) fn report_salvage(salvaged: Option<std::path::PathBuf>) {
     if let Some(path) = salvaged {
         println!(
             "  (the previous declined-steps file could not be read and was kept at {} \n\
@@ -716,7 +771,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
     // as the one below — read the values off the wire, show them, ask — with
     // one addition, which is that the table does not exist yet.
     if let onboarding::LocalProbe::Found(found) = &facts.local_probe {
-        return write_local_provider(found).map(|_| ());
+        return write_local_provider(found, false).map(|_| ());
     }
     let Some(props) = &facts.props else {
         // "Nothing answered" is a claim about a probe, and it is only true
@@ -741,7 +796,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
-    offer_settings(provider, props).map(|_| ())
+    offer_settings(provider, props, false).map(|_| ())
 }
 
 /// Show what a server reports for an existing provider table, ask, and write
@@ -749,9 +804,28 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
 /// installed replaces one the table already names. `true` when written: a
 /// caller that goes on to move `default_provider` must not point it at a
 /// table the owner declined to update (found on review of #618).
+/// Ask `question` at the terminal: `Some(answer)`, or `None` with no terminal
+/// to ask at. `yes` is an answer already given — the guided setup's one
+/// confirmation for everything it listed (ruling F14) — so it is not asked
+/// again; what would be written is still shown first.
+fn confirm(question: &str, yes: bool) -> Result<Option<bool>> {
+    if yes {
+        return Ok(Some(true));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    print!("\n{question} [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    Ok(Some(line.trim().eq_ignore_ascii_case("y")))
+}
+
 pub(super) fn offer_settings(
     provider: &str,
     props: &mecha_core::provider::preflight::Props,
+    yes: bool,
 ) -> Result<bool> {
     let settings = onboarding::verified_settings(props);
     println!("Read back from the server, for [providers.{provider}]:\n");
@@ -762,18 +836,16 @@ pub(super) fn offer_settings(
         "\nThese are what the server reports, not what it was asked for — which is the point: \
          `context_window` is the *per-slot* figure, so `-c` divided by `-np`."
     );
-    if std::io::stdin().is_terminal() {
-        print!("\nwrite them into the config? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
-        if !line.trim().eq_ignore_ascii_case("y") {
+    match confirm("write them into the config?", yes)? {
+        Some(true) => {}
+        Some(false) => {
             println!("not written");
             return Ok(false);
         }
-    } else {
-        println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(false);
+        None => {
+            println!("\n(not a terminal, so nothing was written — copy the lines above)");
+            return Ok(false);
+        }
     }
     apply(provider, &settings).map(|()| true)
 }
@@ -784,7 +856,7 @@ pub(super) fn offer_settings(
 /// and exiting 0 while every run still went to `current` is ruling F12's
 /// case, reached through the command that exists to avoid it (found on
 /// review of #568). Asked, never assumed: it changes what answers.
-pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
+pub(super) fn offer_default(provider: &str, current: &str, yes: bool) -> Result<()> {
     if provider == current {
         return Ok(());
     }
@@ -793,31 +865,26 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
          that:\n\n    default_provider = {}",
         onboarding::toml_string(provider)
     );
-    if !std::io::stdin().is_terminal() {
-        println!("\n(not a terminal, so nothing was written — copy the line above)");
-        return Ok(());
-    }
-    print!("\nmake `{provider}` the default provider? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
-    if !line.trim().eq_ignore_ascii_case("y") {
-        println!("not written — runs still go to `{current}`");
-        return Ok(());
+    match confirm(&format!("make `{provider}` the default provider?"), yes)? {
+        Some(true) => {}
+        Some(false) => {
+            println!("not written — runs still go to `{current}`");
+            return Ok(());
+        }
+        None => {
+            println!("\n(not a terminal, so nothing was written — copy the line above)");
+            return Ok(());
+        }
     }
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
+    seed_config_file(&path)?;
     backup(&path)?;
     set_default_provider(&path, provider)?;
     // Checked, not claimed — the same read-back `write_local_provider` makes.
     if let Err(e) = mecha_core::config::Config::load_global() {
         let restored = std::fs::copy(path.with_extension("toml.bak"), &path).is_ok();
-        eprintln!(
-            "what was written to {} does not parse: {e:#}",
-            path.display()
-        );
-        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        crate::exit_with(1);
+        return Err(unparsed(&path, e, restored));
     }
     println!("`{provider}` is now the default provider");
     Ok(())
@@ -838,7 +905,7 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
 ///
 /// `true` when written: `setup chat`, which has just installed what this
 /// would name, says what a decline leaves behind (found on review of #627).
-pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bool> {
+pub(super) fn write_local_provider(found: &onboarding::LocalServer, yes: bool) -> Result<bool> {
     let settings = onboarding::verified_settings(&found.props);
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
@@ -881,17 +948,16 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bo
          number people get wrong by hand."
     );
 
-    if !std::io::stdin().is_terminal() {
-        println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(false);
-    }
-    print!("\nwrite this, and make it the default provider? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
-    if !line.trim().eq_ignore_ascii_case("y") {
-        println!("not written");
-        return Ok(false);
+    match confirm("write this, and make it the default provider?", yes)? {
+        Some(true) => {}
+        Some(false) => {
+            println!("not written");
+            return Ok(false);
+        }
+        None => {
+            println!("\n(not a terminal, so nothing was written — copy the lines above)");
+            return Ok(false);
+        }
     }
 
     seed_config_file(&path)?;
@@ -939,12 +1005,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bo
     if let Err(e) = mecha_core::config::Config::load_global() {
         let backup = path.with_extension("toml.bak");
         let restored = std::fs::copy(&backup, &path).is_ok();
-        eprintln!(
-            "what was written to {} does not parse: {e:#}",
-            path.display()
-        );
-        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        crate::exit_with(1);
+        return Err(unparsed(&path, e, restored));
     }
 
     println!(
@@ -1054,7 +1115,10 @@ fn seed_config_file(path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, super::config::STARTER)
+    // `config init`'s file with every feature listed but unanswered: the list
+    // of what exists is the same whichever door made it (review of #631,
+    // pass 2), and a feature not answered yet is asked again (pass 5).
+    std::fs::write(path, super::config::global_starter())
         .with_context(|| format!("writing {}", path.display()))?;
     println!("created {}", path.display());
     Ok(())
@@ -1085,12 +1149,7 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     // allow (found on review of #627).
     if let Err(e) = mecha_core::config::Config::load_global() {
         let restored = std::fs::copy(&backup, &path).is_ok();
-        eprintln!(
-            "what was written to {} does not parse: {e:#}",
-            path.display()
-        );
-        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        crate::exit_with(1);
+        return Err(unparsed(&path, e, restored));
     }
     println!(
         "written to {} (previous copy at {})",
@@ -1264,7 +1323,8 @@ mod tests {
             ("context_window", "65536".to_string()),
             ("vision", "true".to_string()),
         ];
-        let text = apply_text(super::super::config::STARTER, "local", &settings).unwrap();
+        // The file `setup` seeds, `[features]` after the providers.
+        let text = apply_text(&super::super::config::global_starter(), "local", &settings).unwrap();
         let cfg: toml::Value = toml::from_str(&text).unwrap();
         let local = &cfg["providers"]["local"];
         assert_eq!(local["model"].as_str(), Some("served-alias"));
@@ -1273,6 +1333,9 @@ mod tests {
         assert_eq!(cfg["default_provider"].as_str(), Some("local"));
         let pos = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
         assert!(pos("vision = true") < pos("# A hosted model"), "{text}");
+        // Listed, never answered: a not-now is asked again (review of #631).
+        assert!(cfg["features"].as_table().unwrap().is_empty(), "{text}");
+        assert!(text.contains("# web = false"), "{text}");
         assert!(pos("base_url") < pos("model = \"served-alias\""), "{text}");
 
         let again = apply_text(&text, "local", &[("model", "\"other\"".to_string())]).unwrap();
@@ -1324,7 +1387,7 @@ mod tests {
     /// one the owner wrote, whatever its kind, is theirs (review of #627).
     #[test]
     fn only_the_starter_s_bare_local_table_is_filled_from_a_probe() {
-        assert!(starter_shaped_local(super::super::config::STARTER));
+        assert!(starter_shaped_local(&super::super::config::global_starter()));
         let own = "[providers.local]\nkind = \"openai-compatible\"\nbase_url = \"http://192.168.1.5:8080\"\n";
         assert!(!starter_shaped_local(own));
         let named = "[providers.local]\nkind = \"local\"\nbase_url = \"http://127.0.0.1:8080\"\nmodel = \"x\"\n";
