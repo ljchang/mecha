@@ -71,7 +71,6 @@ assert.equal(composeEditMessage('images/a.png', 'inbox/m.png', '   '), null, 'no
   assert.equal(composeRegionsMessage('images/a.png', 'inbox/r.png', [{ colour: 'cyan', words: ' ' }]), null);
 }
 
-console.log('image-edit ok');
 
 // An untouched modal closes, in either mode, whatever draft the chat held:
 // the first region opening with the draft is not work (review of #623).
@@ -124,3 +123,4 @@ assert.deepEqual(opsWithout([paint1, paint2, eraseWith2, paint3], 1), [
 ]);
 assert.deepEqual(opsWithout([paint1, eraseWith2], 0), [{ ...eraseWith2, region: 0 }]);
 
+console.log('image-edit ok');
