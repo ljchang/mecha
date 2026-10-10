@@ -310,7 +310,19 @@ async fn observe_unnamed(cfg: &Config) -> (Vec<Named>, Vec<String>) {
                     continue;
                 };
                 match name_for(&list) {
-                    Some(m) => named.push((b, m.to_string())),
+                    Some(m) => {
+                        // R4 for an entry that asks: its temperature reaches
+                        // this model. A followed router's resident model is
+                        // checked in `observe_all` already, for every entry.
+                        if !followed_bases(cfg).contains(&b) {
+                            if let Some(model) = list.iter().find(|x| x.id == m) {
+                                warnings.extend(sampling_mismatches_of(cfg, &b, model, |p| {
+                                    asks_its_server(p)
+                                }));
+                            }
+                        }
+                        named.push((b, m.to_string()))
+                    }
                     // Two states reach here, and the advice differs (review
                     // of #637): several loaded is a server started otherwise.
                     None if list.iter().filter(|m| m.is_resident()).count() > 1 => {
@@ -611,10 +623,12 @@ pub fn would_not_follow(cfg: &Config, b: &str, model: &str) -> Option<String> {
 /// How many entries name `model` on `b`, when that count means runs would not
 /// follow it (none, or several) — `None` when they would.
 fn unfollowed_namers(cfg: &Config, b: &str, model: &str) -> Option<usize> {
+    // A default that names no model asks its server, so it names whatever is
+    // loaded there — this one included (review of #637).
     let default_names = cfg.providers.get(&cfg.default_provider).is_some_and(|p| {
         follows_here(p)
             && p.base_url.as_deref().map(base).as_deref() == Some(b)
-            && p.model.as_deref() == Some(model)
+            && (p.model.as_deref() == Some(model) || asks_its_server(p))
     });
     if default_names {
         return None;
@@ -645,13 +659,24 @@ pub fn preset_temperature(m: &RouterModel) -> Option<f64> {
 /// config that disagrees with its tuning is un-tuned without a word. An entry
 /// with no `temperature` sends none, and the preset governs.
 pub fn sampling_mismatches(cfg: &Config, b: &str, m: &RouterModel) -> Vec<String> {
+    sampling_mismatches_of(cfg, b, m, |p| {
+        p.model.as_deref() == Some(m.id.as_str()) || asks_its_server(p)
+    })
+}
+
+/// [`sampling_mismatches`] over the entries at `b` that `which` picks. An
+/// entry that names no model and asks its server sends its temperature to
+/// whatever is loaded, so it is checked against that (review of #637).
+fn sampling_mismatches_of(
+    cfg: &Config,
+    b: &str,
+    m: &RouterModel,
+    which: impl Fn(&ProviderConfig) -> bool,
+) -> Vec<String> {
     let preset = preset_temperature(m);
     cfg.providers
         .iter()
-        .filter(|(_, p)| {
-            p.base_url.as_deref().map(base).as_deref() == Some(b)
-                && p.model.as_deref() == Some(m.id.as_str())
-        })
+        .filter(|(_, p)| p.base_url.as_deref().map(base).as_deref() == Some(b) && which(p))
         .filter_map(|(name, p)| {
             let t = p.temperature?;
             let agrees = preset.is_some_and(|pt| (pt - t).abs() < 1e-9);
@@ -1158,6 +1183,42 @@ mod tests {
             "two disagree: no guess"
         );
         assert_eq!(seats_for(&[at(Some(1)), at(Some(1))], 3), 1, "two agree");
+    }
+
+    /// A followed default that names no model asks its server, so it names
+    /// whatever is loaded: no "runs will swap it back out" for it, and its
+    /// temperature is checked against that model's preset (review of #637).
+    #[test]
+    fn a_followed_default_that_asks_names_the_resident_model() {
+        let mut c = cfg();
+        let local = c.providers.get_mut("local").unwrap();
+        local.model = None;
+        assert!(asks_its_server(local));
+        let b = "http://127.0.0.1:8080";
+        // Loaded and named by no entry: the default asks and gets it.
+        assert_eq!(unfollowable(&c, b, "a-model-nobody-names"), None);
+        assert_eq!(would_not_follow(&c, b, "a-model-nobody-names"), None);
+        assert!(orphans(&c, &seen(Some("a-model-nobody-names"))).is_empty());
+        // An entry that does name it is still followed to.
+        assert_eq!(
+            followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))).as_deref(),
+            Some("gemma26")
+        );
+        c.providers.get_mut("local").unwrap().temperature = Some(0.2);
+        let m = RouterModel {
+            id: "a-model-nobody-names".into(),
+            status: Status {
+                value: "loaded".into(),
+                args: vec!["--temperature".into(), "0.6".into()],
+                ..Default::default()
+            },
+        };
+        let w = sampling_mismatches(&c, b, &m);
+        assert!(
+            w.iter()
+                .any(|w| w.contains("[providers.local] temperature = 0.2")),
+            "{w:?}"
+        );
     }
 
     #[test]
