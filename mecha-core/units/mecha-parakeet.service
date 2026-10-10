@@ -11,6 +11,9 @@ Description=mecha speech to text: Parakeet TDT 0.6B v3 int8 (:@PORT@)
 After=network.target
 
 [Service]
+# `exec`: a missing interpreter fails the start at once, rather than as the
+# install check's two-minute timeout (review of #638).
+Type=exec
 Environment=PARAKEET_DIR=@MODEL@
 ExecStart=@VENV@/bin/uvicorn --app-dir @DIR@ parakeet_server:app --host 127.0.0.1 --port @PORT@
 Restart=on-failure
