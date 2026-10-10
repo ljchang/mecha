@@ -62,9 +62,22 @@ impl OpenAiCompatible {
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com".to_string()),
+            // A local entry with no `model` asks for what its server said it
+            // serves when this process looked (`router::unnamed_model`): on a
+            // router an unnamed request is not served, and anywhere a record
+            // must name what answered.
             default_model: cfg
                 .model
                 .clone()
+                .or_else(|| {
+                    crate::provider::router::asks_its_server(cfg)
+                        .then(|| {
+                            cfg.base_url
+                                .as_deref()
+                                .and_then(crate::provider::router::unnamed_model)
+                        })
+                        .flatten()
+                })
                 .unwrap_or_else(|| "gpt-4o-mini".to_string()),
             temperature: cfg.temperature,
             seed: cfg.seed,
