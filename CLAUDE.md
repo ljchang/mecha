@@ -184,6 +184,8 @@ clock.rs     what time it is, asked per turn: a trait object, so nothing can
              freeze a reading into a process that outlives the day
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
+hud/         dashboards: a spec that names no destinations, loaders confined to
+             one read of one owner-registered file, a ledger answered backwards
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
 permit.rs    how many background runs may hold the model at once — seats on
              llama-server, as files in a directory; a latency control, not memory
@@ -484,7 +486,7 @@ images ·
 the security model in full · the front door · web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
-triggers · the run-quality corpus (the gate, diagnosis, harness rumination) ·
+triggers · the HUD · the run-quality corpus (the gate, diagnosis, harness rumination) ·
 the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
 features ·
 the experiment store ·

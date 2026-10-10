@@ -384,10 +384,25 @@ impl Default for Config {
                 structured_output: StructuredOutput::Disabled,
                 fallbacks: Vec::new(),
                 follow_loaded: false,
+                built_in: true,
+            },
+        );
+        // The default is a model on this machine, never a hosted one (ruling
+        // F12, 2026-10-05: "we definitely don't want to default to
+        // anthropic"). The router `mecha setup chat` installs answers here;
+        // its model, context window and vision are read off it by `mecha
+        // setup --write`, never guessed into a default.
+        providers.insert(
+            "local".to_string(),
+            ProviderConfig {
+                kind: "local".to_string(),
+                base_url: Some("http://127.0.0.1:8080".to_string()),
+                built_in: true,
+                ..ProviderConfig::default()
             },
         );
         Config {
-            default_provider: "anthropic".to_string(),
+            default_provider: "local".to_string(),
             providers,
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
@@ -516,9 +531,22 @@ pub struct ProviderConfig {
     /// Off by default, and cleared in experiment trials: an arm names its
     /// model. See `provider::router`.
     pub follow_loaded: bool,
+    /// Supplied by `Config::default()`, not written by the owner. Never read
+    /// from or written to a file: a file's `[providers.<name>]` replaces the
+    /// whole entry, and with it this mark. Providers layer by key, so no file
+    /// can remove a default entry — and since ruling F12 put a `local` one
+    /// there, "has the owner configured a local provider?" must not be
+    /// answered by the default's (found on review of #627).
+    #[serde(skip)]
+    pub built_in: bool,
 }
 
 impl ProviderConfig {
+    /// A `local` entry the owner wrote — not the default's.
+    pub fn configured_local(&self) -> bool {
+        self.kind == "local" && !self.built_in
+    }
+
     /// Whether to render images onto this provider's wire.
     ///
     /// The default is per-kind rather than a flat `false` because the two
@@ -2519,6 +2547,27 @@ mod tests {
         assert!(c.providers["local"].follow_loaded, "no override, no pin");
     }
 
+    /// The default's `local` entry (ruling F12) is marked built-in, so it
+    /// never reads as a local provider the owner configured; a file's own
+    /// `[providers.local]` replaces the entry and the mark with it (review
+    /// of #627).
+    #[test]
+    fn the_default_local_entry_is_not_one_the_owner_configured() {
+        let mut cfg = Config::default();
+        assert!(cfg.providers["local"].built_in);
+        assert!(!cfg.providers.values().any(|p| p.configured_local()));
+        let layer: ConfigLayer = toml::from_str(
+            r#"
+            [providers.local]
+            kind = "local"
+            base_url = "http://127.0.0.1:8080"
+            "#,
+        )
+        .unwrap();
+        layer.apply(&mut cfg);
+        assert!(cfg.providers["local"].configured_local());
+    }
+
     #[test]
     fn layer_overrides_only_named_fields() {
         let mut cfg = Config::default();
@@ -2533,7 +2582,8 @@ mod tests {
         assert_eq!(cfg.agent.max_turns, 5);
         // Untouched fields keep their defaults.
         assert_eq!(cfg.agent.max_tokens, 64_000);
-        assert_eq!(cfg.default_provider, "anthropic");
+        // Ruling F12: the default is a local model, never a hosted one.
+        assert_eq!(cfg.default_provider, "local");
     }
 
     #[test]
