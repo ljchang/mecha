@@ -204,7 +204,12 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     write_owned(home, ID, &dir.join("parakeet_server.py"), SERVER, 0o644)?;
     write_owned(home, ID, &unit, &render(&dir, naming), 0o644)?;
     crate::engine_gate::systemctl("daemon-reload", &[])?;
-    crate::engine_gate::systemctl("enable", &["--now", &format!("{}.service", naming.unit)])?;
+    let service = format!("{}.service", naming.unit);
+    crate::engine_gate::systemctl("enable", &[&service])?;
+    // A restart, not `enable --now`: a reinstall over a running server must
+    // reach it with the new script and model, or `check` passes against the
+    // old process (`router_unit`'s reason; review of #638).
+    crate::engine_gate::systemctl("restart", &[&service])?;
     say(&format!(
         "starting it on :{} and transcribing a second of silence",
         naming.port
@@ -395,6 +400,21 @@ mod tests {
             "PARAKEET_DIR=/srv/owner/.mecha/sidecars/stt/{MODEL_DIR}"
         )));
         assert!(!text.contains("Github") && !text.contains("WorkingDirectory"));
+    }
+
+    /// The pin is the tarball this unpacks: named for the directory the
+    /// server reads, bzip2 as `tar -xjf` expects, the slot's only row — so a
+    /// pin bump fails here, not on someone's machine (review of #638).
+    #[test]
+    fn the_pin_is_the_tarball_this_unpacks() {
+        let (_, _, asset, _, bytes) = pin().unwrap();
+        assert_eq!(asset, format!("{MODEL_DIR}.tar.bz2"));
+        assert_eq!(download_bytes(), Some(bytes));
+        let slot = crate::recommend::SLOTS
+            .iter()
+            .find(|s| s.id == "stt")
+            .unwrap();
+        assert_eq!(slot.rows.len(), 1, "a second row would need choosing");
     }
 
     /// The clip the check sends is a WAV the server's reader accepts: 44

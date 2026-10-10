@@ -99,9 +99,7 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "stt" => cfg!(target_os = "linux"),
-        // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "stt" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
@@ -511,8 +509,12 @@ pub async fn install(
             crate::llama_units::install(m, which, &which.shipped(), machine, hub, say).await
         }
         "stt" => {
-            crate::stt_unit::install(m, &crate::stt_unit::Naming::shipped(), say).await?;
-            say("speech to text answers on :8992 — `[voice] stt_url`'s default");
+            let naming = crate::stt_unit::Naming::shipped();
+            crate::stt_unit::install(m, &naming, say).await?;
+            say(&format!(
+                "speech to text answers on :{} — `[voice] stt_url`'s default",
+                naming.port
+            ));
             Ok(())
         }
         "llama" => {
@@ -622,6 +624,37 @@ mod tests {
             panic!("probed for an unneeded engine")
         });
         assert_eq!(unneeded.download_bytes, 0);
+    }
+
+    /// The speech-to-text model's tarball is in a plan that installs the
+    /// server, and in nothing else's (review of #638).
+    #[test]
+    fn the_speech_to_text_download_is_in_the_plan() {
+        let stt = |state| Plan {
+            feature: Feature::Voice,
+            sidecars: vec![PlannedSidecar {
+                id: crate::stt_unit::ID,
+                label: "the speech-to-text server",
+                state,
+                bytes: None,
+            }],
+            files: vec![],
+            download_bytes: 5,
+            nothing_to_do: false,
+        };
+        let mut p = stt(SidecarState::Missing { step: "7d-1" });
+        price(&mut p, true, || crate::engine::Nvidia::None);
+        let b = crate::stt_unit::download_bytes().expect("pinned");
+        if installable(crate::stt_unit::ID) {
+            assert_eq!(p.sidecars[0].bytes, Some(b));
+            assert_eq!(p.download_bytes, 5 + b);
+        } else {
+            assert_eq!(p.download_bytes, 5, "not offered here, not priced");
+        }
+        let mut provided = stt(SidecarState::Provided { by: "x".into() });
+        price(&mut provided, true, || crate::engine::Nvidia::None);
+        assert_eq!(provided.download_bytes, 5);
+        assert_eq!(provided.sidecars[0].bytes, None);
     }
 
     fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
