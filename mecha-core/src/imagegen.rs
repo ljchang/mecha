@@ -3125,6 +3125,16 @@ impl Tool for ImageGenerate {
                     },
                     None => None,
                 };
+                // Regions carry no words of the owner's own beside them, so
+                // there is no whole-picture edit to fall back to: a regions
+                // edit whose index is gone draws nothing and says so, never
+                // a redraw of the picture the owner painted (review of #623).
+                if mask_read.is_none() && !call.regions.is_empty() {
+                    return Ok(refused(
+                        "The painted regions could not be read, so nothing was drawn. Ask the \
+                         owner to paint them again.",
+                    ));
+                }
                 if let Some((raw, mask)) = mask_read {
                     let pic = req.references[0].bytes.clone();
                     let resolution = req.reference_size;
@@ -6365,6 +6375,36 @@ mod tests {
     /// A regions edit sends the clean picture as the canvas, the outlined
     /// copy as `<image2>`, the union as the mask, and the legend as the
     /// words; the rest of the picture comes back as it was.
+    /// A regions edit whose index cannot be read draws nothing: there are no
+    /// owner's words for a whole-picture edit to run on (review of #623).
+    #[tokio::test]
+    async fn a_regions_edit_without_its_index_draws_nothing() {
+        let (url, seen) = distinct(1).await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/missing.png",
+                       "regions": [{"colour": "magenta", "words": "make it red"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("painted regions could not be read"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[tokio::test]
     async fn a_regions_edit_sends_the_outlines_as_the_second_picture() {
         let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));

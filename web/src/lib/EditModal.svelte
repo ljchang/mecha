@@ -111,7 +111,9 @@
     } else {
       palette = [{ colour: null, rgb: [255, 255, 255] }];
     }
-    regionList = [{ ...palette[0], words: '' }];
+    // In regions mode the chat's draft is the first region's words, never
+    // dropped once a region is painted (review of #623).
+    regionList = [{ ...palette[0], words: multi ? initial : '' }];
     layers = [makeLayer()];
     active = 0;
     render();
@@ -154,6 +156,8 @@
       .map((op) => (op.region > k ? { ...op, region: op.region - 1 } : op));
     regionList = regionList.filter((_, i) => i !== k);
     layers = layers.filter((_, i) => i !== k);
+    // The brush stays on the region it was on (review of #623).
+    if (k < active) active -= 1;
     active = Math.min(active, regionList.length - 1);
     replay();
     repaint();
