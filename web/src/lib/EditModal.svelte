@@ -84,9 +84,14 @@
     }
     painted = any;
     // The whole-picture box gives way to the regions' own boxes: what was
-    // typed in it carries into the first region rather than vanishing.
-    if (multi && !was && painted && regionList[0]) {
-      regionList[0].words = firstRegionWords(regionList[0].words, words, initial);
+    // typed in it carries into the first region that holds paint, which is
+    // not region one when a region was added before the first stroke.
+    if (multi && !was && painted) {
+      const first = paintedRegions.findIndex(Boolean);
+      if (first >= 0 && regionList[first]) {
+        // Region one opens holding the draft, an added one empty.
+        regionList[first].words = firstRegionWords(regionList[first].words, words, first === 0 ? initial : '');
+      }
     }
   }
   // With regions painted, every painted region needs its words; with none,

@@ -89,4 +89,8 @@ assert.equal(editDirty({ multi: false, painted: true, words: draft, initial: dra
 assert.equal(firstRegionWords(draft, 'make the scarf yellow', draft), 'make the scarf yellow');
 assert.equal(firstRegionWords('', 'make the scarf yellow', ''), 'make the scarf yellow');
 assert.equal(firstRegionWords('a red hat', 'make the scarf yellow', draft), 'a red hat');
+// A region added before the first stroke opens empty, so it takes the typed
+// words even with a draft in the chat.
+assert.equal(firstRegionWords('', 'make the scarf yellow', ''), 'make the scarf yellow');
+assert.equal(firstRegionWords('a red hat', 'make the scarf yellow', ''), 'a red hat');
 

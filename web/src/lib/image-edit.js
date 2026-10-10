@@ -132,10 +132,11 @@ export function editDirty({ multi, painted, words, initial, regionWords }) {
   return multi && regionWords.some((w, k) => (w ?? '').trim() !== (k === 0 ? initial.trim() : ''));
 }
 
-// The first region's words at the moment a region is first painted: what the
-// owner typed in the whole-picture box, unless the region's own words were
-// already changed from the draft it opened with. Without this the typed
-// sentence was replaced by the draft with no sign (review of #623).
-export function firstRegionWords(regionWords, typed, initial) {
-  return (regionWords ?? '').trim() === initial.trim() ? typed : regionWords;
+// The words of the first region to hold paint, at the moment it does: what
+// the owner typed in the whole-picture box, unless the region's own words
+// were already changed from what it opened with (the chat's draft for region
+// one, nothing for an added one). Without this the typed sentence vanished
+// with no sign (review of #623).
+export function firstRegionWords(regionWords, typed, opened) {
+  return (regionWords ?? '').trim() === opened.trim() ? typed : regionWords;
 }
