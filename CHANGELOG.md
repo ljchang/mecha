@@ -135,8 +135,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Regenerate a persona's picture, and step through its versions.** A
-  picture in a persona chat has a Regenerate button beside Edit. It draws
+- **Regenerate a picture, and step through its versions.** A picture in
+  the assistant's chat or a persona chat has a Regenerate button beside
+  Edit. It draws
   the same picture again at a new seed, with no words and no painted area,
   and the new one shows on the same card, with ‹ › to step between the
   versions. Edit, Regenerate and Download act on the version showing.
