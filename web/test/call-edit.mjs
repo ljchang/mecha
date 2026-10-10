@@ -189,5 +189,39 @@ function rig({ live = true } = {}) {
   is(busy.bodies.length, 0, 'nothing is sent while a run is live');
 }
 
+// Regenerate on the call screen (owner, 2026-10-10: a spoken call turn):
+// registered through the chat's own door first, then the server's line said
+// into the call, never the chat's send; a call with no live line says so.
+{
+  const src2 = readOut('  async function regenerateInCall(path) {');
+  const make = (live) =>
+    new Function(
+      'live',
+      `'use strict';
+       const log = [];
+       let key = 'k1', token = null, regenerated = null;
+       const caller = { say: (text) => (log.push('say:' + text), live) };
+       const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
+       const notice = (text) => log.push('notice:' + text);
+       const send = async () => log.push('chat-send');
+       const fetch = async (url, opts) => {
+         log.push('post:' + url + ' ' + opts.body);
+         return { ok: true, json: async () => ({ line: 'Regenerate images/b.png' }) };
+       };
+       ${src2}
+       return async () => { await regenerateInCall('images/b.png'); return { log, regenerated }; };`,
+    )(live);
+  const out = await make(true)();
+  is(
+    out.log,
+    ['post:/api/persona-chat/k1/call-regenerate {"picture":"images/b.png"}', 'say:Regenerate images/b.png'],
+    "the redraw is registered, then the server's line goes into the call, not the chat's send",
+  );
+  is(out.regenerated, 'k1', 'and the finished turn is read again for its version_of');
+  const dead = await make(false)();
+  is(dead.log.at(-1), 'notice:The call is not connected, so the picture was not drawn again.', 'a call with no live line says so');
+  is(dead.regenerated, null, 'and owes no re-read');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
