@@ -75,9 +75,39 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
 }
 
 /// What a new global config holds: the starter and every feature, off —
-/// `config init` and `setup`'s seeding write the same file (ruling F1).
+/// `config init`'s file (ruling F1).
 pub fn global_starter() -> String {
     format!("{STARTER}{FEATURES_STARTER}")
+}
+
+/// What `mecha setup` seeds before its questions: the same file, with every
+/// feature listed but **commented out**. An explicit `false` is the owner's
+/// answer (`Declined`), so seeding it would turn each *not now* into a
+/// *never* and the guided pass would ask each feature once ever (review of
+/// #631). Listed, so the file still shows what exists (F1); unanswered, so
+/// `mecha setup` asks again.
+pub fn unanswered_starter() -> String {
+    let features: String = FEATURES_STARTER
+        .lines()
+        .map(|l| {
+            let switch = l.split_once(" = false").is_some_and(|(id, _)| {
+                !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase())
+            });
+            if switch {
+                format!("# {l}\n")
+            } else if l.starts_with("# Optional features. Every one is off") {
+                "# Optional features, not answered yet: `mecha setup` asks about each, and\n\
+                 # `mecha features enable <id>` switches one on. A line set to false is a\n\
+                 # no that `mecha setup` keeps.\n"
+                    .to_string()
+            } else if l.starts_with("# `mecha features enable <id>`; `mecha features` shows") {
+                "# `mecha features` shows what each still needs.\n".to_string()
+            } else {
+                format!("{l}\n")
+            }
+        })
+        .collect();
+    format!("{STARTER}{features}")
 }
 
 /// Every optional feature, listed and off — the light install, and the list
@@ -270,6 +300,34 @@ mark_untrusted_output = true
 mod tests {
     use super::*;
     use mecha_core::feature::Feature;
+
+    /// What `mecha setup` seeds lists every switch but answers none: each is
+    /// a commented line, so the feature is `Missing` and asked again, never
+    /// `Declined` by a file nobody answered (review of #631). And `features
+    /// enable` writes its switch into that table.
+    #[test]
+    fn the_seeded_starter_lists_every_switch_and_answers_none() {
+        let text = unanswered_starter();
+        let cfg: Config = toml::from_str(&text).expect("the seed loads");
+        assert!(cfg.features.0.is_empty(), "{text}");
+        for f in Feature::ALL.iter().filter(|f| f.has_switch()) {
+            assert!(
+                text.contains(&format!("# {} = false", f.id())),
+                "{}",
+                f.id()
+            );
+        }
+        let dir = std::env::temp_dir().join(format!("mecha-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, &text).unwrap();
+        mecha_core::feature::write_switches(&path, &[(Feature::Web, true)]).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg: Config = toml::from_str(&after).unwrap();
+        assert_eq!(cfg.features.get("web"), Some(true), "{after}");
+        assert_eq!(cfg.features.0.len(), 1, "{after}");
+    }
 
     /// The starter lists every feature with a switch, all off, and nothing
     /// else — so a new feature does not ship missing from the list a new user
