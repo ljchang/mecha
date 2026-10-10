@@ -215,9 +215,11 @@ installs a one-minute timer that restarts an idle ComfyUI holding a model,
 which brings it to ~1.1 GB; the next picture reloads the model in ~15–22 s.
 Without it, count image generation's peak if you use it at all.
 
-By default `image_generate` refuses to start with less than 19 GiB available
-when ComfyUI holds no model (`[image] min_available_mb`), and ~7 GiB less (12 GiB at the default) once it
-has loaded one, since most of that cost is already paid. So on a smaller
+By default `image_generate` refuses to start with less than 28 GiB available
+when ComfyUI holds no model: `[image] min_available_mb` (20 GiB) plus the
+[memory floor's](/docs/reference/configuration#system) 8 GiB reserve. Once it
+has loaded one it needs 20 GiB, since most of the cost is already paid. It
+also waits while the machine is already stalling on memory. So on a smaller
 unified machine it refuses while the chat model is loaded rather than taking
 the machine down.
 
