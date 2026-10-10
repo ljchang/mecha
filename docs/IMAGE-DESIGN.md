@@ -278,6 +278,8 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
 6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` and `minor` marks and the default portrait. Usage rules are not part of this build (§14). **Ruled 2026-10-07: get it working first, with no restrictions; step 6 is not held for §14.**
 
+7. **Layers for touching scenes** (§15), behind a per-persona switch, offered once §15.7's gate passes.
+
 Steps 1 and 2 are independent and can run in parallel lanes.
 
 ## 11. Questions for the owner
@@ -294,6 +296,8 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 10. **Rewrite old-shape image calls in existing chats' history** (mecha-a3's send-time view)? **Deferred 2026-10-08.** With the planner absorbing over-filled fields, edits in chats holding old calls already scored 33 of 35 (G1b, H0), and the owner ruled out backwards compatibility. See §14.
 11. **A name the persona uses for the owner is also a library character** (mecha-a3's G1b: every refusal was the persona writing "…with Luke watching", and the library holds a `luke`)? **Ruled 2026-10-08: someone is drawn only when listed in `people`.** A library name in the other words is "the viewer" to the image model (§4). **Narrowed 2026-10-09:** a new picture that lists nobody draws the characters its words name (§4). The owner and the `luke` entry may be treated as the same person.
 12. **Queue a picture asked for while another is drawing, instead of refusing it** (mecha-a3)? **Ruled 2026-10-08: no;** it is refused, as §5.5 has it.
+13. **Layer restages too** (§15.2)? Open, to be decided once §15.7's gate shows the staging gain.
+14. **A failed finish delivers the placed composite** rather than redrawing in one pass (§15.5)? Open, to be decided from the gate's finish failure rate.
 
 ## 12. Review and how each point is met
 
@@ -367,3 +371,114 @@ The owner deferred decisions about how pictures may be used (2026-10-07). The fu
 - **Minors.** The library holds an entry described as 16. The proposed rule: a `minor` mark on library entries, set by the owner, and set automatically for any proposed entry with an age under 18. A marked entry is never drawn nude or sexually, under the same three checks, and possibly never in a persona chat whose chats are sexual. The image model here is local with no guard of its own. **Ruled 2026-10-07: that entry is left out of all tests.** mecha-7e and mecha-a3 also will not generate such content.
 - **Existing entries.** Which current library entries are real people or minors; the owner marks them.
 - **Old-shape calls in existing chats** (deferred 2026-10-08, §11 item 10). Chats from before the redesign hold `image_generate` calls in the retired shapes, and the model imitates its history. mecha-a3's measurement: edit turns 19 of 35 right before the planner absorbed over-filled fields, 33 of 35 after, against 35 of 35 in a fresh history. A send-time view that rewrites those calls into the new shape would close the rest; it is a compatibility layer, so it waits on a ruling.
+
+## 15. Layers for touching scenes (owner, 2026-10-10)
+
+Owner rulings, 2026-10-09 and 10:
+
+- **"Let's build the layer pipeline."** By eye, the owner found the layered composites "the best in terms of instruction following and generating a coherent scene with minimal distortions". The single pass was not enough.
+- **No older models.** No Qwen-Image-Layered: Qwen-Image 2.1 returns one flattened picture, and the layers are built here.
+- **A per-persona setting decides the route,** before generation, so the layers exist and are kept. The model never chooses the pipeline.
+
+mecha-a3's measurements are local (`QWEN-PROMPT-GUIDE-REVIEW.md`, the layers sections). Its design note is `LAYERS-PIPELINE-DESIGN.md`, also local, and this section follows it with a3's two later changes (15.3).
+
+### 15.1 The switch
+
+- **"Touching scenes: precise (slower)", per persona, off by default.**
+  - It lives in the persona's `state.toml`, under an `[image]` table, as the first per-persona image setting. The assistant chat has no persona settings, so it never layers.
+  - **Only the owner sets it**, from the persona settings page's own route, as with the avatar framing. No tool sets it. Other writers of `state.toml` (`persona_propose`, the lock, a version) rewrite the file whole from the `State` they loaded, so each carries the switch through unchanged.
+  - **Read leniently**, as `frame` is, through a `deserialize_with` reader of its own (`lenient_image`, after `lenient_frame`). `#[serde(default)]` alone would not do: a malformed `[image]` table fails the whole file, and a `state.toml` that does not parse loads as unapproved. An unknown value is one pass, and a damaged table reads as the defaults. Because every writer rewrites the file whole from what it loaded, the next ordinary write keeps that default: a damaged switch is lost, not ignored for a turn. That is the cheap direction, one pass and never anything unsafe, and the owner sets it again from the settings page.
+- **Read fresh every turn from the store** (`persona::touching`), never from the session's pinned copy, which lives as long as the session does, and stamped on `ToolCtx` by the persona host as it stamps `role_split`. `image_generate` reads a value. The tool schema does not change, and nothing new enters the cached prefix.
+
+### 15.2 When a picture is layered
+
+A harness predicate, at plan time. All of these must hold:
+
+- the switch is on;
+- the route is `new`: a fresh picture, not an edit, restage, retouch or redraw. **Open: restages.** A restage on a words setting renders exactly as a new picture does (`Render::New` at the picture's base seed), and a changed `together` is a restage, so in a chat with a record, "now they hug" over the current picture never layers. Layering it would give up the room the base seed keeps, because the plate is a fresh render of the setting. Measured, it is the smaller case: of the touching calls that drew in the 2026-10-08/09 persona chats, 16 of 18 came in as `new`, mid-chat ones included, and 2 as restages (mecha-a3, from the live manifests), because the persona mostly re-describes the whole scene. Whether staging is worth that is the owner's call, best made once the gate shows how large the staging gain is;
+- the scene has two people. The gate measured only two-person scenes, every recorded touching call being one. Three to five would be *n* + 3 renders in one time budget and a fuller placing pass, unmeasured, so they draw in one pass and say so until a gate covers them (`layers::MEASURED_PEOPLE`);
+- the scene has a `together`. That is the splitter's own trigger, and its parts feed the placing pass;
+- every person is a library character with a portrait. A described person has nothing for step 2 to cut out, and finding that after the plate would cost a wasted render and then the fallback anyway;
+- the setting is words. The route alone does not ensure it: a new picture's scene may give people and no setting at all, and the plate is drawn from the setting's words, so without them it would be drawn from light and camera alone. (A scene set in a photo is a placement, not a new picture, so that case already fails the route condition.)
+
+All of this is known at plan time, before the first render; the one check decided later, after the split but still before any render, is a shared place (15.3). Everything else draws as today, and the result says which condition sent it to one pass.
+
+### 15.3 The pipeline
+
+The steps run in one deferred job (`jobs.rs`), in order, with **the job's own cancellation** checked between steps **and handed to each pass's render**, as a single pass's is, so a Stop mid-render takes that job off the image server rather than waiting it out. It is the job's token, which Stop fires, never the run's, which the owner's typing fires (`jobs.rs`: talking cancels the run, never the job). Other pictures never interleave with a build. **The queue line keeps one label for the whole build in this build.** Naming the step (plate, cutout *i* of *n*, placing, finish) needs two changes to `jobs.rs`. First, the job needs a label that can be written more than once; today it is a write-once `OnceLock`, and a second `set` is dropped. Second, `JobQueue::list`, which builds the rows the queue panel shows, must read that live label, not `Running.label`, the `String` copied in `JobQueue::launch`. Both are left for the queue's owner (15.6). Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass. **The global config's `[image] timeout_secs` (not the persona's `[image]` table) bounds the whole build, not each pass:** each pass gets whatever time is left, and no pass is sent once none is. The rejected alternative, a full timeout per pass, would let a wedged two-person build hold the chat's one job slot for five passes × 600 s, about 50 min, and §5.5's busy refusal ends any persona turn that asks for a picture meanwhile. As specified, the build gets 600 s, and the single-pass fallback that follows gets its own 600 s, so the worst case is twice the setting.
+
+1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small.
+2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, drawn at **1024 × 1024** (the measured size; with no size the canvas would follow the portrait's own shape, which was not measured), in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
+   - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. In the measured runs 2 of 4 cutouts came out in the wrong pose, and the placing pass staged all 4 correctly.
+   - **A person with no `wearing`** takes the scene's (the chat copy's) clothes, else "clothes that suit the scene", as today. Left empty, the cutout would copy the portrait's outfit.
+   - Every output arrives RGBA, so each cutout is **flattened on mid-grey (128) in code** before it is a reference. What the encoder does with a transparent reference is untested and not relied on.
+3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order, every reference encoded at `EDIT_REFERENCE_SIZE`: a budget of about 1024² pixels over each reference's own shape, not a square like step 2's cutouts. `build_layers` sets that size on each pass itself, never through the ordinary edit path. That path would force `UNMASKED_EDIT_REFERENCE_SIZE` (512) on exactly this call shape, a picture canvas with a reference for every person. 512 was measured for head crops, where the canvas still carries the body, but here the cutout is the only source of the whole figure. That is by decision rather than through the unmasked edit's 512 rule. Each person is placed by tag at the split's place ("on the left") with their part from the split, and the leftover `together` follows. A placing prompt that named no places left one of two people out, 2 of 2 runs (mecha-a3).
+   - **A split that fell back** (no parts, now including an answer of only names, #622): the placing pass carries the call's `together` as written, after the per-person tags. A split that applied always gives everyone a place (`read_split` fills a missing one from the free places), but one that fell back leaves only the places the call itself gave (`where`). **If anyone is then unplaced, or two people would stand on one side of the frame, the picture is drawn in one pass and says so**, since a placing pass with no places is the case just measured losing a person. A shared place counts only between people the placing pass sets on their own sides: someone placed beside another has no side of their own, so two who act on each other may share one. An embrace's split answers `centre` for both in about 9% of two-person splits, and that is right (mecha-a3). The collision that matters is the four-and-five-person case: `Where` has four values and the split's free-place fill uses three (never `centre`, then `background` as the backstop). Split success is not known at plan time, so this is the one reason to draw in one pass that is decided after the split, still before any render.
+   - A role noun goes beside a tag only where it is unambiguous ("the woman from `<image2>`" in a mixed pair), else "the person from `<image2>`" (mecha-a3's change 2). Names never appear inside the prompt.
+   - It closes with: "Keep `<image1>`'s room, framing, camera angle and light unchanged. Take each person's face, hair, body and clothing from their own image; each appears exactly once. Lit by the room's light, with natural contact and shadows."
+4. **The finish (F1).** One keep-everything edit:
+   - relight the people with the room's light so their skin, highlights and shadows match;
+   - natural contact shadows;
+   - an 85 mm lens at f/1.8, the people sharp and the room softly out of focus;
+   - natural fine detail in skin, hair and fabric;
+   - "change nothing else".
+
+   It fixes the lighting mismatch. **This exact combination is untested:** staging-safe 8 of 8 was measured on F1 with the crop (crop, upscale, relight, depth of field and detail in one pass) and on relighting alone, uncropped. F1 without the crop is those two put together, and the gate covers it.
+
+### 15.4 What is kept
+
+The picture's scene record gets a `layers` entry, written wherever the record is (the chat's copy, the persona's latest and the index entry, as any render lands), so a later chat that starts from the latest carries it too. **A carried entry is a reference, not a build:** the plate and cutouts sit in the jail of the chat that drew them (`work/persona/<key>/`), outside any other chat's, so a re-place from another chat always redraws from the portraits. Where the intermediates should live so a re-place can find them from any chat, likely the `scene/` folder the persona's chats already share and key by picture hash, is decided with the re-place (15.6), not here. The entry holds:
+
+- the plate's hash;
+- per person: who, the cutout's hash (the RGBA PNG, kept in the workspace beside the picture), the part, and the seed;
+- the placing seed and the finish seed.
+
+Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on. It is also the first place the splitter's output is kept. `roles.rs` says a split feeds the prompt only and the record keeps the call as sent. A layered picture extends that rule: its parts ride the record into a later re-place's prompt, and the build updates `roles.rs`'s module doc to say so. The placing pass's references fit the edit budget: every person must have a library portrait, which caps them at `MAX_CAST` (5), so plate plus cutouts is at most `EDIT_REFERENCE_BUDGET` (6). That is not left to the arithmetic: the ordinary edit's budget check never sees the placing pass, so the layered decision asks it directly, and a scene that would not fit draws in one pass and says so. **The `layers` entry stores its own `origin`: the landed scene's whole origin** (`Scene::origin`), counted again by `Scene::origin` afterwards. The build draws on every field: the plate on setting, light and camera, each cutout on clothes, the parts on the `together` and the people's own words. So no smaller union would do; one clean field must never launder another. `Scene::origin` names every field, so the compiler asks about any field added later. It does not lean on the `together` field still being there: `Scene::apply` clears `together` on any pose change, and parts kept without an origin of their own would then read clean. An entry with no origin reads untrusted.
+
+**The entry describes its own picture and no other.** `Scene::apply` clones the previous scene forward, so a `layers` entry would otherwise ride into the next picture's record. A re-place would then be built on a plate the owner had moved on from, and the hash check below cannot catch that: those files are intact, they just belong to another picture. So every render, when it lands, sets `layers` from its own build alone: a layered build's entry, or none. There is one site that does it, `image_generate`'s landing, which builds the one scene `SceneSlot::land` writes to all three places. That site is pinned by a test, an edit of a layered picture landing with none, not by the compiler: `Scene::apply` clones forward without naming every field. A field added to `Scene` later carries forward by default, so its author decides at that site whether it should. **The plate and cutouts are kept as long as the chat's workspace is, like every picture in it.** `work::clean` keeps the last few entries per producer, and for persona chats an entry is a whole chat's directory, so it never removes files inside a live chat. A layered picture leaves *n* + 2 more files than a single pass. 15.6's re-place wants them kept, so this is deliberate, not an oversight; a cap per chat, if the disk ever asks for one, comes with the re-place.
+
+**A hash is a check on reuse, not only a record of provenance.** The workspace is the jail a run can write, and §6's rule holds here: nothing is read back out of the workspace on trust. A re-place reads each cutout, hashes it, and treats a mismatch the way it treats a missing file: it redraws from the portrait, or says it cannot. The plate is handled the same way.
+
+**A layered build never runs in an incognito room.** Rooms belong to the assistant's web chat (`serve/chat.rs` stamps `image_trail` from the room), and the assistant chat has no persona settings, so it never layers (15.1). The persona chat, the only place the switch is stamped, has no rooms.
+
+**If layers ever reach a room, the close must cancel the chat's job first.** Every pass does go through the same `generate` call with the run's `image_trail`, so the trail would see each one. But `close_incognito_locked` cancels only the run, never the chat's deferred job, then removes the room's tmpfs, trail included. A pass that renders after a close writes server copies that nothing reaps. `release_recorded` guards the same case for recorded chats, and the incognito close has no equivalent. That gap is pre-existing and covers one ~45 s pass today; a layered build would stretch it to *n* + 3 passes.
+
+**The result names the picture, never the intermediates.** The model is told about the finished picture as a new picture, the way a single pass is described. It is never handed the plate's or the cutouts' paths, because a named intermediate invites an `image_view` of a picture the owner never asked for. That is a nudge, not a guard: a persona the owner allows `image_view` or a file tool could still find them by listing its jail. Low stakes, since it is the owner's own chat and workspace; if it ever needs to be structural, the lever is where the files land, not what the result names.
+
+### 15.5 Failure is said, never silent
+
+- **A failed step.** A render error, an empty alpha or a missing portrait draws the picture by the single pass, and says "layers failed at {step}: {why}; drawn in one pass", in the result and the manifest.
+- **Open: a failed finish.** The finish is the one step with a complete picture behind it, the placed composite, and the step 15.3 calls untested. As built, it falls back like the rest, discarding *n* + 2 renders and then spending another single pass. Delivering the placed composite with "layers stopped at the placing pass: {why}" would keep them. That is the owner's call, best made once the gate shows how often the finish fails.
+- **A Stop between steps.** It ends the job and says so. Nothing reaches the record: the `layers` entry rides the one `SceneSlot::land` of the finished picture, so no plate or cutout is ever keyed in the index, where `lookup` would later serve it as a recorded scene. The intermediates' files may stay in the jail. A layered picture never quietly becomes another kind of picture.
+
+### 15.6 Not in this build
+
+All of these were measured; none is built yet:
+
+- **Reshaping a layered picture** (arm A): redraw one cutout and re-place it at the same placing seed. It landed 16 of 16.
+- **In-place per-person edits** (arm B): segmentation-backed. The segmentation service is the owner's open decision.
+- **Reframing the finished picture to the people, and a face pass.**
+  - The crop needs the people's boxes.
+  - The face pass must be gated on head turn under about 45°. At profile it pasted a frontal face 4 of 8.
+
+Also not built, and not a measurement: **the queue line that names the step** (15.3), which needs the two `jobs.rs` changes and belongs to whoever owns the queue.
+
+### 15.7 The gate (mecha-a3, before the switch is offered)
+
+- **Arms:** three: today's single pass; layers with cutouts posed by the part; layers with neutral cutouts (change 1's own test).
+- **Calls:** the recorded touching-scene calls, byte-identical, n = 3, paired seeds. They include the facing-away call, where layers most clearly won. **The by-step failure rates need a wider base:** which step fails depends on the call more than the seed, so seven calls at n = 3 give the finish a denominator of about seven, not 21. §11's items 13 and 14 are read from every touching call on record (18 in the 2026-10-08/09 chats, §15.2) run once each, beside the gate's arms.
+- **Measured:**
+  - a person drawn twice;
+  - roles right and the act drawn (by eye);
+  - truly facing away when asked;
+  - identity, with head turn (yaw) and face size reported beside ArcFace;
+  - framing (face height in px);
+  - seconds per picture;
+  - how often layers fell back or failed, **by step** (plate, cutout, placing, finish), since 15.5's open question on a failed finish is decided from the finish's own rate;
+  - the plate's own framing;
+  - the owner's preference on a contact sheet.
+- **Known weak spots to watch:**
+  - a clothing state lost in placing (0 of 4 in one scene);
+  - lower identity on profile faces (yaw 64–83°);
+  - the cost.
+

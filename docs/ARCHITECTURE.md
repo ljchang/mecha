@@ -965,6 +965,22 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   local model read the refusal as the mask being at fault and retried
   without the mask: a whole-picture edit of a picture the owner had painted
   a region on.
+- **Several coloured regions, each with its own words, go in one masked
+  edit** (the owner's ruling, 2026-10-10: M2 of
+  `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints
+  up to four regions in colours chosen against the picture, and sends a
+  colour-indexed picture of them as `mask` with `regions: [{colour, words}]`.
+  `prepare_regions` reads the index by exact colour before `prepare_mask`.
+  That gives each region the identity its empty check and outline need, and
+  masks only the colours the call names, where the luma threshold alone
+  would mask any bright pixel. A region with no pixels is refused. The union is the mask, so the composite
+  keeps everything else as above. A copy of the canvas with each region
+  outlined in its colour rides as `<image2>`, and the clean picture stays
+  the canvas, so no mark can survive into the result. The words are a
+  legend the harness builds (`picture::region_legend`), never coordinates.
+  Measured on same-class targets: the wrong target changed 0 of 12, against
+  2 of 12 for one painted area with words, for about 15 s more than a plain
+  masked edit. A Regenerate sent with a painted area is refused by name.
 
 The model sees what it made on request — `image_view` on the result's path
 (§Images) — and the result hands the seed back: revising is an edited prompt
@@ -5894,6 +5910,16 @@ the owner's rulings; this section is the invariants a change to
   a failure (source missing, timeout) is the environment's. `mecha doctor`
   reports both as broken, with the refresh command; a stale dataset is
   attention. No refusal echoes a value from the data.
+- **The host sampler writes numbers and categories, nothing else**
+  (`host.rs`). Per-unit counters come from the user manager's cgroups and
+  GPU memory from `nvidia-smi`, folded into a closed `Category` whose numbers
+  are a wire format; a unit, process or model name never reaches
+  `host.sqlite`, and a test greps the file's bytes to prove it. On unified
+  memory (no GPU memory total) a category's GPU memory counts as its memory.
+  Unknown stays unknown: a sample it cannot read is refused (the doctor
+  reports a sampler silent for ten minutes), and on unified memory a minute
+  the per-process GPU query missed records memory as `NULL`, not the cgroup
+  figure alone.
 - **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
