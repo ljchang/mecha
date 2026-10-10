@@ -3261,9 +3261,18 @@ impl Tool for ImageGenerate {
                         _ => None,
                     };
                     // A split that applied places everyone; one that fell
-                    // back leaves only the places the call gave.
-                    let placed = roles_said.as_deref() == Some("applied")
-                        || people.iter().all(|p| p.at.is_some());
+                    // back leaves only the places the call gave. Places must
+                    // also differ: there are four and the split fills three,
+                    // so four or five people would give two the same tag
+                    // (review of #624).
+                    let places: Vec<_> = people.iter().map(|p| p.at).collect();
+                    let distinct = places
+                        .iter()
+                        .enumerate()
+                        .all(|(i, a)| a.is_none() || !places[..i].contains(a));
+                    let placed = distinct
+                        && (roles_said.as_deref() == Some("applied")
+                            || people.iter().all(|p| p.at.is_some()));
                     match crate::layers::not_layered(
                         people.len(),
                         library,
@@ -7184,6 +7193,37 @@ mod tests {
             .lookup(&std::fs::read(dir.join(picture_of(&edit.content))).unwrap())
             .unwrap();
         assert!(landed.layers.is_none(), "{:?}", landed.layers);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Two people given the same place would share a place tag in the
+    /// placing prompt: drawn in one pass, and said (review of #624).
+    #[tokio::test]
+    async fn a_shared_place_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["people"][1]["where"] = json!("left");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("not everyone has a place of their own"),
+            "{}",
+            out.content
+        );
+        let prompts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(prompts, 1);
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
