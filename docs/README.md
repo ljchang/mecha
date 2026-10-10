@@ -113,6 +113,7 @@ something shipped.
 | [`SLACK-ACTIONS-DESIGN.md`](SLACK-ACTIONS-DESIGN.md) | Executable actions from a phone: the closed `Action` enum and the tainted two-step |
 | [`SLACK-DESIGN.md`](SLACK-DESIGN.md) | How mecha is driven from Slack: the transport, the allowlist, the thread state machine |
 | [`SPOKEN-OVERRIDE-DESIGN.md`](SPOKEN-OVERRIDE-DESIGN.md) | Changing a harness-supplied parameter by ear: state the default, accept an override, read the result back |
+| [`SYSTEM-STATE-DESIGN.md`](SYSTEM-STATE-DESIGN.md) | `mecha system`: one layer through which mecha reads the machine and its services — a closed list of specifically named measurements, a probe that keeps unknown apart from zero, and a per-minute series with no names in it — read by the homeostat, the HUD, the doctor, the brief and the gates instead of each probing for itself; and why the charter's sensors stay a different thing. §9 holds the rulings |
 | [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md) | The switchboard over the public surface |
 | [`TASK-AGENT-DESIGN.md`](TASK-AGENT-DESIGN.md) | The medium tier: delegated tasks, the resource model, and who holds the ball |
 | [`VOICE-BREEZE-DESIGN.md`](VOICE-BREEZE-DESIGN.md) | Breeze TTS 2 on a qwentts.cpp fork replaces Chatterbox: why this engine (measured against four alternatives), the adapter that keeps the worker's surface, the director that writes each spoken sentence's delivery, the default voice (`default.wav`) and transcripts, and the gates the switch left open. §6 holds the rulings |

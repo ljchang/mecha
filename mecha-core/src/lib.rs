@@ -141,6 +141,7 @@ pub mod step;
 pub mod subagent;
 pub mod success;
 pub mod surface;
+pub mod system;
 pub mod tenure;
 pub(crate) mod text;
 pub mod title;

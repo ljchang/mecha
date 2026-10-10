@@ -1,6 +1,12 @@
-//! The host's load, by category: what the machine running mecha is doing —
-//! memory, CPU, tasks, GPU memory — broken down by what *kind* of work it is,
-//! and nothing finer (design §11, owner ruling R13).
+//! `mecha system`: the state of the machine mecha runs on, read in one place
+//! (`docs/SYSTEM-STATE-DESIGN.md`). This is its first step (S0): the
+//! per-minute sampler and the series it writes, moved here from the HUD,
+//! which is now one reader of it among several. The probe API and the named
+//! measurements arrive in S1.
+//!
+//! What it records today is the host's load, by category: memory, CPU, tasks
+//! and GPU memory, broken down by what *kind* of work it is, and nothing
+//! finer (`LIVE-DASHBOARD-DESIGN.md` §11, owner ruling R13).
 //!
 //! **Privacy by construction.** The owner's condition is absolute: no detail
 //! about any process beyond a generic category. So it is not enforced by a
@@ -463,9 +469,14 @@ fn disk_usage(path: &Path) -> Option<(u64, u64)> {
 const MINUTE_KEEP_DAYS: i64 = 7;
 const ROLLUP_KEEP_DAYS: i64 = 90;
 
-/// `~/.mecha/hud/host.sqlite`.
+/// `~/.mecha/system/series.sqlite`.
 pub fn db_path() -> Result<PathBuf> {
-    Ok(super::dir()?.join("host.sqlite"))
+    Ok(dir()?.join("series.sqlite"))
+}
+
+/// `~/.mecha/system/` — the series and, from S1, nothing a model writes.
+pub fn dir() -> Result<PathBuf> {
+    Ok(crate::work::mecha_home()?.join("system"))
 }
 
 /// When the sampler last wrote a minute, read without creating or changing
