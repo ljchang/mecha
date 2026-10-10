@@ -297,12 +297,15 @@ pub(super) fn ask_start(read: &mut impl BufRead) -> Result<bool> {
     ))
 }
 
+/// The steps the chat question answers.
+pub(super) const CHAT_STEPS: [&str; 2] = ["local-server", "provider-credential"];
+
 /// Whether something can already answer a prompt: neither of the steps that
 /// say whether one can is outstanding.
 fn chat_answering(steps: &[Step]) -> bool {
-    !steps.iter().any(|s| {
-        matches!(s.id.as_str(), "local-server" | "provider-credential") && s.status != Status::Done
-    })
+    !steps
+        .iter()
+        .any(|s| CHAT_STEPS.contains(&s.id.as_str()) && s.status != Status::Done)
 }
 
 /// The guided pass. Returns the ids of the steps it dealt with, so `setup`'s
@@ -315,7 +318,13 @@ pub(super) async fn run(
     home: &std::path::Path,
     read: &mut impl BufRead,
 ) -> Result<Vec<String>> {
-    let mut handled: Vec<String> = vec!["local-server".into(), "provider-credential".into()];
+    // The chat steps join `handled` only once the answer settled them, so a
+    // skip, a "no" to Start, or a failed install leaves them on the
+    // checklist `setup` prints after this (review of #631).
+    let mut handled: Vec<String> = Vec::new();
+    let settle_chat = |handled: &mut Vec<String>| {
+        handled.extend(CHAT_STEPS.iter().map(|s| s.to_string()));
+    };
 
     // --- the chat question, and what answering it would cost
     let server_disagrees = steps
@@ -425,14 +434,18 @@ pub(super) async fn run(
                     _ => Choice::Recommended,
                 };
                 println!("\nInstalling the chat model…");
-                if let Err(e) = super::setup_chat::install_choice(cfg, ready, &choice, true).await {
-                    println!("the chat model was not installed: {e:#}");
-                    println!("`mecha setup chat` tries it again on its own.");
+                match super::setup_chat::install_choice(cfg, ready, &choice, true).await {
+                    Ok(()) => settle_chat(&mut handled),
+                    Err(e) => {
+                        println!("the chat model was not installed: {e:#}");
+                        println!("`mecha setup chat` tries it again on its own.");
+                    }
                 }
             }
         }
         ChatPick::Hosted => {
             super::setup::offer_default("anthropic", &cfg.default_provider, true)?;
+            settle_chat(&mut handled);
             if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
                 println!(
                     "Set ANTHROPIC_API_KEY in your shell (`export ANTHROPIC_API_KEY=…`) and start \
@@ -442,7 +455,9 @@ pub(super) async fn run(
         }
         ChatPick::WriteServer => {
             if let Some(props) = &facts.props {
-                super::setup::offer_settings(provider_name, props, true)?;
+                if super::setup::offer_settings(provider_name, props, true)? {
+                    settle_chat(&mut handled);
+                }
             }
         }
         ChatPick::Answering | ChatPick::Skip => {}

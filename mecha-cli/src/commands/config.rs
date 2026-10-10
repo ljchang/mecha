@@ -64,7 +64,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             let text = if project {
                 STARTER.to_string()
             } else {
-                format!("{STARTER}{FEATURES_STARTER}")
+                global_starter()
             };
             std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
             println!("wrote {}", path.display());
@@ -72,6 +72,12 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// What a new global config holds: the starter and every feature, off —
+/// `config init` and `setup`'s seeding write the same file (ruling F1).
+pub fn global_starter() -> String {
+    format!("{STARTER}{FEATURES_STARTER}")
 }
 
 /// Every optional feature, listed and off — the light install, and the list
