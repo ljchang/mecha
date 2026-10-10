@@ -305,10 +305,9 @@ async fn draw_panel_edit(
 ) -> (String, bool) {
     use mecha_core::persona::edit;
     let fail = |why: String| {
-        (
-            edit::fact(&edit.picture, "not understood", &edit::not_understood(&why)),
-            false,
-        )
+        let result = edit::not_understood(&why);
+        undrawn_card(events, &result);
+        (edit::fact(&edit.picture, "not understood", &result), false)
     };
     // A Regenerate never quietly discards what was painted (mecha-05, on
     // #616's note): the pair is refused by name.
@@ -446,14 +445,10 @@ async fn draw_panel_edit(
                 () = stop.cancelled() => false,
             };
             if !waited || sink.stops() != stops {
-                return (
-                    edit::fact(
-                        &edit.picture,
-                        &change,
-                        "Nothing was drawn: stopped while it waited for the picture before it.",
-                    ),
-                    false,
-                );
+                let result =
+                    "Nothing was drawn: stopped while it waited for the picture before it.";
+                undrawn_card(events, result);
+                return (edit::fact(&edit.picture, &change, result), false);
             }
         }
     }
@@ -473,6 +468,30 @@ async fn draw_panel_edit(
         edit::fact(&edit.picture, &change, &dispatched.content),
         !dispatched.is_error,
     )
+}
+
+/// A panel edit that ended before the harness's call, said on the live
+/// stream as a refused call is: its fact reaches the transcript, but no
+/// `ToolCall` reaches the page, which would show the persona saying it
+/// wasn't drawn with no card saying why until a reload (review of #642).
+fn undrawn_card(events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>, result: &str) {
+    let Some(tx) = events else { return };
+    let id = format!(
+        "{}{}",
+        mecha_core::agent::HARNESS_CALL,
+        uuid::Uuid::new_v4().simple()
+    );
+    let _ = tx.send(AgentEvent::ToolCall {
+        id: id.clone(),
+        name: "image_generate".into(),
+        input: serde_json::json!({}),
+    });
+    let _ = tx.send(AgentEvent::ToolResult {
+        id,
+        name: "image_generate".into(),
+        is_error: true,
+        content: result.into(),
+    });
 }
 
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
@@ -499,10 +518,6 @@ const REGENERATE_WAITS: &str = "a reply is running; Regenerate waits for it to f
 /// answer still finds it.
 const CALL_REGENERATE_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
 
-/// How many tokens a persona may reason for on a spoken turn (owner,
-/// 2026-10-03: "start with call turns first"). A typed turn keeps the
-/// server's `--reasoning-budget` (4096).
-///
 /// Why a door refused, as the route will say it.
 #[derive(Debug)]
 pub enum Refusal {
@@ -5975,18 +5990,29 @@ mod tests {
 
     /// `turn`, sent from the picture edit panel when `edit`.
     async fn turn_as(w: &World, key: &str, text: &str, edit: Option<PanelEdit>) {
+        turn_events(w, key, text, edit).await;
+    }
+
+    /// `turn_as`, and every event the page was sent for it, `Done` last.
+    async fn turn_events(
+        w: &World,
+        key: &str,
+        text: &str,
+        edit: Option<PanelEdit>,
+    ) -> Vec<WireEvent> {
         let (mut rx, _) = w.personas().subscribe(&w.library, key, None).await.unwrap();
         w.personas()
             .send_with(&w.chat, &w.library, key, text, None, None, Vec::new(), edit)
             .await
             .unwrap();
+        let mut seen = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
                 Ok(Ok(WireEvent::Done { ok, error, .. })) => {
                     assert!(ok, "{error:?}");
-                    return;
+                    return seen;
                 }
-                Ok(Ok(_)) => continue,
+                Ok(Ok(event)) => seen.push(event),
                 other => panic!("no Done event: {other:?}"),
             }
         }
@@ -6878,7 +6904,7 @@ mod tests {
             redraw: false,
             regions: Vec::new(),
         };
-        turn_as(
+        let live = turn_events(
             &w,
             &key,
             "Edit images/a.png with mask inbox/mask-a.png",
@@ -6886,6 +6912,15 @@ mod tests {
         )
         .await;
         assert_eq!(w.drawn.lock().unwrap().len(), 2, "nothing more drawn");
+        // Its card is said live, as a refused call: no re-read is needed to
+        // see why nothing was drawn (review of #642).
+        assert!(
+            live.iter().any(|e| matches!(e,
+                WireEvent::ToolResult { name, is_error: true, preview, .. }
+                    if name == "image_generate"
+                        && preview.contains("nothing was said for the painted area"))),
+            "{live:?}"
+        );
         let reply = w.seen.lock().unwrap().last().unwrap().clone();
         let owner = reply.messages.last().unwrap().text();
         assert!(

@@ -6088,9 +6088,17 @@ mod held_tests {
         // The card says live which picture it is a version of, so the page
         // need not read the turn again (review of #634).
         let mut live_version = None;
-        while let Ok(event) = live.try_recv() {
-            if let WireEvent::Tool { version_of, .. } = event {
-                live_version = version_of;
+        loop {
+            match live.try_recv() {
+                Ok(WireEvent::Tool { version_of, .. }) => live_version = version_of,
+                Ok(_) => {}
+                // Read to the end: none left, or the turn is over and its
+                // sender gone.
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
+                // A lagged channel dropped events: the check would be vacuous.
+                Err(e) => panic!("the live events were not all read: {e:?}"),
             }
         }
         assert_eq!(live_version.as_deref(), Some("images/a.png"));

@@ -5958,7 +5958,11 @@ impl Agent {
 }
 
 /// What every [`Agent::dispatch_one`] call id opens with, so a reader of
-/// the live events can tell the harness's own call from a model's.
+/// the live events can tell the harness's own call from a model's. A
+/// convention, not a proof: a provider that let the model choose its call
+/// ids could send one that opens the same way. Nothing gates on it; it
+/// marks a card on the page (`WireEvent::Tool::version_of`), and a gate
+/// must never.
 pub const HARNESS_CALL: &str = "harness_";
 
 /// Whether `id` is a call the harness made ([`Agent::dispatch_one`]), not
