@@ -1066,7 +1066,9 @@ doing; this code writes how they look. Decisions, each a bug if undone:
   part opening with another asked person's name moves to the longest such
   name, the pair swapping whole when filed under each other; and a person
   with no place gets a free one, an end of the group or the background,
-  never between the others. An answer that gives nobody a part still fails. It feeds the
+  never between the others. A part made only of the asked names is read as no
+part first (an answer of only names was applied with no act in the prompt,
+mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds the
   prompt only, so the record keeps the call as the persona sent it (a
   history showing her calls split taught her to drop the act, 31 of 39). A
   split that fails, takes past `ROLE_SPLIT_TIMEOUT`, or yields parts the
