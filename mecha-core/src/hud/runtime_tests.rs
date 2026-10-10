@@ -564,3 +564,14 @@ fn validate_refuses_an_id_install_would_refuse() {
     assert!(r.to_string().contains("board id"), "{r}");
     assert!(store.validate(&draft, "lab_week").unwrap().is_ok());
 }
+
+#[test]
+fn refreshing_a_board_that_is_not_installed_says_so() {
+    let s = Scratch::new();
+    let (store, _, _) = setup(&s);
+    let r = store
+        .refresh("lab_wek", t(9, 0), Which::All)
+        .unwrap()
+        .unwrap_err();
+    assert!(r.to_string().contains("no board named"), "{r}");
+}

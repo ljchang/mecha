@@ -617,7 +617,12 @@ fn normalise(s: &str) -> String {
             !c.is_control()
                 && !matches!(
                     c,
-                    '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}' | '\u{ad}'
+                    '\u{200b}'..='\u{200f}'
+                        | '\u{2060}'..='\u{2064}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{061c}'
+                        | '\u{feff}'
+                        | '\u{ad}'
                 )
         })
         .map(|c| c.to_ascii_lowercase())

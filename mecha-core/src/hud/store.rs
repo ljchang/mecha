@@ -430,6 +430,13 @@ impl Store {
         now: DateTime<Utc>,
         which: Which,
     ) -> Result<std::result::Result<Vec<Outcome>, Refusals>> {
+        // A typo is "no such board", not a board that looks corrupt.
+        if is_identifier(id) && !self.board(id)?.is_dir() {
+            return Ok(Err(Refusals(vec![Refusal::new(
+                "",
+                format!("no board named {id:?} is installed (`mecha hud list`)"),
+            )])));
+        }
         let installed = match self.load(id)? {
             Ok(installed) => installed,
             Err(r) => return Ok(Err(r)),
