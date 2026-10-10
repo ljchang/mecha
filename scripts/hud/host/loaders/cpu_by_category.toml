@@ -4,8 +4,8 @@ source = "host"
 schedule = "*/5 * * * *"
 max_rows = 5000
 query = """
-SELECT m.at, c.label AS category, round(m.cpu_pct, 1) AS cpu_pct
-FROM category_minute m JOIN categories c ON c.id = m.category
+SELECT m.at, coalesce(c.label, 'unknown') AS category, round(m.cpu_pct, 1) AS cpu_pct
+FROM category_minute m LEFT JOIN categories c ON c.id = m.category
 WHERE m.at >= datetime('now', '-24 hours') AND CAST(strftime('%M', m.at) AS INTEGER) % 5 = 0
 ORDER BY m.at, m.category
 """

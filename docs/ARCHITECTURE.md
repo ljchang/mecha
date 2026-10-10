@@ -5900,6 +5900,10 @@ the owner's rulings; this section is the invariants a change to
   are a wire format; a unit, process or model name never reaches
   `host.sqlite`, and a test greps the file's bytes to prove it. On unified
   memory (no GPU memory total) a category's GPU memory counts as its memory.
+  Unknown stays unknown: a sample it cannot read is refused (the doctor
+  reports a sampler silent for ten minutes), and on unified memory a minute
+  the per-process GPU query missed records memory as `NULL`, not the cgroup
+  figure alone.
 - **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is

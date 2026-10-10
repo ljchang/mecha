@@ -212,7 +212,7 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
 
 fn sample(json: bool) -> Result<()> {
     use mecha_core::hud::host;
-    let recorded = host::record(&host::db_path()?, &host::collect(Utc::now()))?;
+    let recorded = host::record(&host::db_path()?, &host::collect(Utc::now())?)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&recorded)?);
     } else {
@@ -220,12 +220,12 @@ fn sample(json: bool) -> Result<()> {
             .cpu_pct
             .map_or("—".to_string(), |p| format!("{p:.1}%"));
         println!("{}  cpu {cpu}", recorded.at);
-        for (label, mem, pct) in &recorded.by_category {
-            let pct = pct.map_or("—".to_string(), |p| format!("{p:.1}%"));
-            println!(
-                "  {label:<17} {:>8.2} GiB  cpu {pct}",
-                *mem as f64 / 1073741824.0
-            );
+        for c in &recorded.by_category {
+            let pct = c.cpu_pct.map_or("—".to_string(), |p| format!("{p:.1}%"));
+            let mem = c.mem_bytes.map_or("—".to_string(), |m| {
+                format!("{:.2} GiB", m as f64 / 1073741824.0)
+            });
+            println!("  {:<17} {mem:>11}  cpu {pct}", c.category);
         }
     }
     Ok(())
