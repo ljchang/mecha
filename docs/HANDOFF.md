@@ -613,15 +613,21 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
 **2026-09-30 — region-targeted edits: measured, C chosen by the owner,
 built in #429, merged and installed (04:31Z).** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
 Edit button opens a modal where the owner paints the area to change. C (a
-latent noise mask, composited in mecha) was exact and seamless, and landed
-every local edit. In #429's live check it kept the outside identical to the
-byte in 4 of 4 real edits. Open:
+latent noise mask, composited in mecha) was exact, seamless on the
+textured scenes measured, and landed every local edit. In #429's live
+check it kept the outside identical to the byte in 4 of 4 real edits.
+Open:
 
 - **A pose or a move inside a region is unsolved.** C under-edits it (n = 4,
   and on weaker wording than #408's, §4). C′, the region hidden from the
   reference, was measured and dropped: it lost her identity, or copied its
   placeholder into the picture. The untested candidate is D's crop edit
   followed by a thin C pass over the seam (§6).
+- **A faint seam on a smooth background.** Removing a cup left a
+  rectangular seam at the mask's edge, on the backsplash and the table, in
+  every arm of §7.7 (2026-10-09). It is the composite's feathered edge, so
+  it is in shipped code: `prepare_mask`'s grow and feather
+  (`MASK_GROW_SIGMA`). Seen on that one scene only, and not fixed.
 - **The mask is a path the model passes, not a registered object** (§6).
   The page could register it and the tool accept only that one. Not built.
 - **`NEAR_COPY_LAYOUT` (0.78) is reused for the masked reading** over
