@@ -499,6 +499,13 @@ alone would answer "which one", and the control would test nothing.
   every arm. That is the composite's feathered edge on a smooth background,
   a question for `prepare_mask`'s grow and feather, not for regions.
 
+### 7.8 Ruled and built (2026-10-10)
+
+The owner chose **M2**, taking the marks that cannot survive over M1's
+roughly 20 s saving. It is built as §7.4 describes, with one change: the
+whole-picture note is left for later, so v1 sends only each region's words.
+`ARCHITECTURE.md` §images holds the invariants.
+
 ## Sources
 
 - [QwenLM/Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1): "specify
