@@ -1332,12 +1332,13 @@
         body: JSON.stringify({ text, request_id, attachments: attached, regenerate: regenerate ?? undefined }),
       });
       if (res.status === 410) {
+        if (regenerate && regenerated === sessionKey) regenerated = null;
         if (sessionKey === key) closeIncognito('closed');
-        return;
+        return false;
       }
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      if (sessionKey !== key) return;
+      if (sessionKey !== key) return false;
       if (data.started || data.steered) {
         receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
