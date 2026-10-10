@@ -174,17 +174,20 @@ impl Follower {
         let cfg = load_config(&opts)?;
         let pinned = opts.provider.is_some() || opts.model.is_some();
         let warned = Mutex::new(HashSet::new());
-        let seen = observe(&cfg, pinned, &warned).await;
+        let (seen, named) = observe(&cfg, pinned, &warned).await;
         let generations = AtomicU64::new(0);
-        let first = build(
-            &opts,
-            &finish,
-            &generations,
-            resolve(&cfg, pinned, &seen),
-            None,
-            &seen,
-        )
-        .await?;
+        let want = resolve(&cfg, pinned, &seen);
+        // Never over a `--model`: that is the owner's name, not the server's.
+        let asks = if opts.model.is_none() {
+            let entry = want
+                .clone()
+                .or_else(|| opts.provider.clone())
+                .unwrap_or_else(|| cfg.default_provider.clone());
+            asked_name(&cfg, &entry, &named)
+        } else {
+            None
+        };
+        let first = build(&opts, &finish, &generations, want, asks, None, &seen).await?;
         Ok(Follower {
             opts,
             pinned,
@@ -299,17 +302,24 @@ impl Follower {
                 return Ok(self.current());
             }
         };
-        let seen = observe(&cfg, self.pinned, &self.warned).await;
+        let (seen, named) = observe(&cfg, self.pinned, &self.warned).await;
         let Some(want) = resolve(&cfg, self.pinned, &seen) else {
             return Ok(self.current());
         };
-        if self.current().provider_name == want {
+        // A default that names no model asks for what its server serves, as
+        // this probe read it: a surface that outlives a `mecha model use`
+        // moves with it rather than load the old pick back (review of #637).
+        let asks = asked_name(&cfg, &want, &named);
+        let stays = |cur: &Bound| {
+            cur.provider_name == want && asks.as_deref().is_none_or(|n| n == cur.model)
+        };
+        if stays(&self.current()) {
             return Ok(self.current());
         }
         let _one = self.rebuilding.lock().await;
         // Another turn may have rebuilt while this one waited.
         let cur = self.current();
-        if cur.provider_name == want {
+        if stays(&cur) {
             return Ok(cur);
         }
         let built = build(
@@ -317,6 +327,7 @@ impl Follower {
             &self.finish,
             &self.generations,
             Some(want.clone()),
+            asks.clone(),
             Some(&cur),
             &seen,
         );
@@ -533,8 +544,11 @@ async fn observe(
     cfg: &Config,
     pinned: bool,
     warned: &Mutex<HashSet<String>>,
-) -> Vec<mecha_core::provider::router::Seen> {
-    let (warnings, seen) = mecha_core::provider::router::observe_seen(cfg, !pinned).await;
+) -> (
+    Vec<mecha_core::provider::router::Seen>,
+    Vec<mecha_core::provider::router::Named>,
+) {
+    let (warnings, seen, named) = mecha_core::provider::router::observe_all(cfg, !pinned).await;
     let mut warned = warned.lock().unwrap_or_else(|e| e.into_inner());
     warned.retain(|w| warnings.contains(w));
     for w in warnings {
@@ -542,7 +556,26 @@ async fn observe(
             tracing::warn!("{w}");
         }
     }
-    seen
+    (seen, named)
+}
+
+/// The model entry `want` asks for when it names none and its server said
+/// what it serves in this probe (`router::asks_its_server`); `None` for an
+/// entry that names its own, or a server that did not say.
+fn asked_name(
+    cfg: &Config,
+    want: &str,
+    named: &[mecha_core::provider::router::Named],
+) -> Option<String> {
+    let p = cfg.providers.get(want)?;
+    if !mecha_core::provider::router::asks_its_server(p) {
+        return None;
+    }
+    let b = mecha_core::provider::router::base(p.base_url.as_deref()?);
+    named
+        .iter()
+        .find(|(at, _)| *at == b)
+        .map(|(_, m)| m.clone())
 }
 
 /// The provider the default resolves to now, or `None` to stay where the
@@ -606,12 +639,18 @@ async fn build(
     finish: &Finish,
     generations: &AtomicU64,
     provider: Option<String>,
+    model: Option<String>,
     carry: Option<&Bound>,
     seen: &[mecha_core::provider::router::Seen],
 ) -> Result<Arc<Bound>> {
     let mut opts = opts.clone();
     if provider.is_some() {
         opts.provider = provider;
+    }
+    // The name this surface's own probe read, never the process global a
+    // concurrent observe may have overwritten (`router::observe_seen`).
+    if model.is_some() {
+        opts.model = model;
     }
     // The old todo handle goes in where `prepare` registers one, before the
     // subagents are built from the registry — so parent, children and page
@@ -638,6 +677,35 @@ mod tests {
     use mecha_core::provider::router::Seen;
 
     const ROUTER: &str = "http://127.0.0.1:8080";
+
+    /// A model-less entry the owner configured here asks for what this probe
+    /// read for its server; one that names its model, or the built-in
+    /// default, asks for nothing (review of #637).
+    #[test]
+    fn a_model_less_default_asks_for_what_this_probe_read() {
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers.insert(
+            "local".into(),
+            ProviderConfig {
+                kind: "local".into(),
+                base_url: Some(format!("{ROUTER}/v1")),
+                ..Default::default()
+            },
+        );
+        let named = vec![(ROUTER.to_string(), "gemma-4-26b-a4b".to_string())];
+        assert_eq!(
+            asked_name(&cfg, "local", &named).as_deref(),
+            Some("gemma-4-26b-a4b")
+        );
+        assert_eq!(asked_name(&cfg, "local", &[]), None);
+        cfg.providers.get_mut("local").unwrap().model = Some("qwen".into());
+        assert_eq!(asked_name(&cfg, "local", &named), None);
+        let builtin = Config::default();
+        assert_eq!(asked_name(&builtin, "local", &named), None);
+    }
 
     /// Production following the router, the uncensored arm and Gemma as its
     /// siblings on the same port — the installed shape (§14).

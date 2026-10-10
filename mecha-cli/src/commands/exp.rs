@@ -363,6 +363,28 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
     ))
 }
 
+/// An experiment names the model it measures. A default provider that
+/// names none asks its server for whatever is loaded when each trial starts
+/// (`router::asks_its_server`), and the condition hash records
+/// `"(default)"` — so two halves of one arm could run on two models and be
+/// paired (review of #637). Refused before anything runs.
+fn refuse_an_unnamed_model(cfg: &mecha_core::config::Config) -> Result<()> {
+    let name = &cfg.default_provider;
+    if cfg
+        .providers
+        .get(name)
+        .is_some_and(mecha_core::provider::router::asks_its_server)
+    {
+        anyhow::bail!(
+            "[providers.{name}] names no `model`, so each trial would run on whatever its server \
+             has loaded when it starts, and the condition hash could not say which — an \
+             experiment must name the model it measures. Set `model` in [providers.{name}] \
+             (`mecha setup --write` writes it from the server)."
+        );
+    }
+    Ok(())
+}
+
 /// Each arm's world, by arm name.
 type Worlds = std::collections::BTreeMap<String, mecha_core::trial_env::World>;
 
@@ -410,6 +432,7 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
     );
     let cases = cases_for(&manifest).await?;
     let loaded = mecha_core::config::Config::load_global()?;
+    refuse_an_unnamed_model(&loaded)?;
     let (provider, model) = provider_and_model(&loaded)?;
     let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
     // The manifest's paths resolve against the checkout `exp run` starts
@@ -2949,6 +2972,31 @@ mod tests {
     }
 
     use super::*;
+
+    /// A default provider that would ask its server for its model is refused
+    /// before any trial runs; one that names its model is not (review of
+    /// #637).
+    #[test]
+    fn an_experiment_refuses_a_default_that_names_no_model() {
+        let mut cfg = mecha_core::config::Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                kind: "local".into(),
+                base_url: Some("http://127.0.0.1:8080".into()),
+                ..Default::default()
+            },
+        );
+        let e = refuse_an_unnamed_model(&cfg).unwrap_err().to_string();
+        assert!(e.contains("names no `model`"), "{e}");
+        cfg.providers.get_mut("local").unwrap().model = Some("qwen".into());
+        assert!(refuse_an_unnamed_model(&cfg).is_ok());
+        // The built-in default asks nothing, and is not this refusal's.
+        assert!(refuse_an_unnamed_model(&mecha_core::config::Config::default()).is_ok());
+    }
 
     /// A position whose home could not be rendered leaves the principal's
     /// two points on the ledger as skipped, so a resumed driver — which
