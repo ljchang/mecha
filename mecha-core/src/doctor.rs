@@ -1655,6 +1655,7 @@ fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     }
     let store = Store::at(dir);
     let mut out = Vec::new();
+    out.extend(check_host_sampler(&dir.join("host.sqlite"), now));
     match store.sources() {
         Err(e) => out.push(Finding::unreadable("hud", "hud/sources.toml", e)),
         Ok(Err(r)) => out.push(Finding {
@@ -1754,6 +1755,40 @@ fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// The host sampler refuses a sample it cannot read rather than recording
+/// an idle machine (`hud::host::collect`), so a sampler that has stopped is
+/// silent everywhere but here: the board's `now` loader just empties.
+fn check_host_sampler(path: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let sample = Remedy {
+        description: "take one host sample now and show it, or why it was refused".into(),
+        argv: vec!["mecha".into(), "hud".into(), "sample".into()],
+        needs_terminal: false,
+    };
+    let stopped = |summary: &str, detail: String| Finding {
+        component: "hud".into(),
+        severity: Severity::Attention,
+        summary: summary.into(),
+        detail,
+        remedy: Some(sample.clone()),
+    };
+    match crate::hud::host::last_written(path) {
+        Err(e) => vec![Finding::unreadable("hud", "hud/host.sqlite", e)],
+        Ok(None) => vec![stopped(
+            "hud host sampler has not written a minute yet",
+            "the store holds no minute yet; is mecha-hud-sample.timer running?".into(),
+        )],
+        Ok(Some(at)) if now - at > chrono::Duration::minutes(10) => vec![stopped(
+            "hud host sampler has not written for ten minutes",
+            format!(
+            "last minute {at}; is mecha-hud-sample.timer running? `journalctl --user -u mecha-hud-sample` says why a sample was refused"
+        ))],
+        Ok(Some(_)) => Vec::new(),
+    }
 }
 
 /// A charter that fails to load degrades every run to un-chartered with
@@ -4500,6 +4535,40 @@ mod tests {
         assert_eq!(
             found[0].remedy.as_ref().unwrap().argv,
             ["mecha", "hud", "refresh", "lab"]
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The sampler refuses a sample it cannot read, so a stopped one is
+    /// silent everywhere but here; a fresh minute says nothing.
+    #[test]
+    fn a_host_sampler_that_stopped_writing_is_reported() {
+        let home = home("hud-sampler");
+        let hud = home.join("hud");
+        std::fs::create_dir_all(&hud).unwrap();
+        let db = hud.join("host.sqlite");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE system_minute (at TEXT PRIMARY KEY);")
+            .unwrap();
+        let sampler = |now: &str| -> Vec<Finding> {
+            examine(&home, utc(now))
+                .into_iter()
+                .filter(|f| f.component == "hud" && f.summary.contains("sampler"))
+                .collect()
+        };
+        assert_eq!(sampler(NOW).len(), 1, "a store with no minute yet");
+
+        c.execute(
+            "INSERT INTO system_minute (at) VALUES ('2026-08-14 11:55:00')",
+            [],
+        )
+        .unwrap();
+        assert!(sampler(NOW).is_empty(), "five minutes old is running");
+        let stopped = sampler("2026-08-14T12:30:00Z");
+        assert_eq!(stopped.len(), 1, "{stopped:?}");
+        assert_eq!(
+            stopped[0].remedy.as_ref().unwrap().argv,
+            ["mecha", "hud", "sample"]
         );
         let _ = std::fs::remove_dir_all(&home);
     }

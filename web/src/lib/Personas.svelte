@@ -12,7 +12,7 @@
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
-  import { composeEditMessage, maskName } from './image-edit.js';
+  import { composeEditMessage, composeRegionsMessage, maskName } from './image-edit.js';
   import { pictureOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
@@ -310,7 +310,7 @@
   // never attached — it is for `image_generate`, not for the persona to look
   // at (image-edit.js). The words then go out through `send`, like anything
   // typed, so a live run is steered just as a typed message steers it.
-  async function sendEdit({ text, mask }) {
+  async function sendEdit({ text, mask, regions = [] }) {
     const chatKey = key;
     const edit = imageEdit;
     if (!edit || !chatKey) return;
@@ -324,7 +324,11 @@
         maskPath = (await res.json()).path;
       }
       if (chatKey !== key) return;
-      const message = composeEditMessage(edit.path, maskPath, text);
+      // Coloured regions (IMAGE-REGION-EDIT-RESEARCH.md §7, M2): the upload
+      // is their index, and each region's words go as fields beside it.
+      const message = regions.length
+        ? composeRegionsMessage(edit.path, maskPath, regions)
+        : composeEditMessage(edit.path, maskPath, text);
       if (!message) {
         edit.busy = false; // never a modal that no button can close
         return;
@@ -343,7 +347,11 @@
       // The edit as fields beside the message the owner sees: the harness
       // draws it itself and the persona only replies (IMAGE-DESIGN.md §5.3),
       // so nothing is parsed back out of the words.
-      await send({ edit: { picture: edit.path, mask: maskPath ?? undefined, words: text.trim() } });
+      await send({
+        edit: regions.length
+          ? { picture: edit.path, mask: maskPath, words: '', regions }
+          : { picture: edit.path, mask: maskPath ?? undefined, words: text.trim() },
+      });
     } catch (err) {
       if (imageEdit === edit) {
         edit.busy = false;
@@ -2158,6 +2166,7 @@
     initial={imageEdit.initial}
     busy={imageEdit.busy}
     error={imageEdit.error}
+    multi={!imageEdit.call}
     onsend={sendEdit}
     onclose={closeEdit}
   />

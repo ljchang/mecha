@@ -291,8 +291,21 @@ async fn draw_panel_edit(
             false,
         )
     };
+    // A Regenerate never quietly discards what was painted (mecha-05, on
+    // #616's note): the pair is refused by name.
+    if edit.redraw && (edit.mask.is_some() || !edit.regions.is_empty()) {
+        return fail("Regenerate redraws the whole picture, so it takes no painted area".into());
+    }
     let (call, change) = if edit.redraw {
         (edit::redraw_call(&edit.picture), edit::REDRAWN.to_string())
+    } else if !edit.regions.is_empty() {
+        let Some(index) = &edit.mask else {
+            return fail("the regions came without the picture they were painted on".into());
+        };
+        (
+            edit::regions_call(&edit.picture, index, &edit.regions),
+            edit::regions_change(&edit.regions),
+        )
     } else {
         match &edit.mask {
             // A painted area with nothing said for it is not drawn: an empty
@@ -4312,6 +4325,10 @@ pub struct PanelEdit {
     /// at a new seed. No words are read and nothing is extracted.
     #[serde(default)]
     redraw: bool,
+    /// Coloured regions painted in `mask`, each with its own words
+    /// (IMAGE-REGION-EDIT-RESEARCH.md §7, M2); `mask` is then their index.
+    #[serde(default)]
+    regions: Vec<mecha_core::persona::edit::PanelRegion>,
 }
 
 #[derive(serde::Deserialize)]
@@ -5946,6 +5963,7 @@ mod tests {
             mask: None,
             words: "make the sky pink".into(),
             redraw: false,
+            regions: Vec::new(),
         };
         turn_as(&w, &key, "Edit images/a.png: make the sky pink", Some(edit)).await;
 
@@ -6026,6 +6044,7 @@ mod tests {
             mask: None,
             words: String::new(),
             redraw: true,
+            regions: Vec::new(),
         };
         turn_as(&w, &key, "Regenerate images/a.png", Some(edit)).await;
         assert_eq!(
@@ -6121,6 +6140,7 @@ mod tests {
             mask: None,
             words: "make it night".into(),
             redraw: false,
+            regions: Vec::new(),
         };
         turn_as(&w, &key, "Edit images/a.png: make it night", Some(edit)).await;
         assert_eq!(w.drawn_untrusted.lock().unwrap().clone(), vec![true]);
@@ -6152,6 +6172,7 @@ mod tests {
             mask: None,
             words: "add Bob waving".into(),
             redraw: false,
+            regions: Vec::new(),
         };
         turn_as(&w, &key, "Edit images/a.png: add Bob waving", Some(edit)).await;
         assert!(w.drawn.lock().unwrap().is_empty(), "nothing drawn");
@@ -6168,6 +6189,7 @@ mod tests {
             mask: Some("inbox/mask-a.png".into()),
             words: "a red umbrella".into(),
             redraw: false,
+            regions: Vec::new(),
         };
         turn_as(
             &w,
@@ -6183,12 +6205,61 @@ mod tests {
                 "mask": "inbox/mask-a.png"})
             ]
         );
+        // Regions go to the tool as values: the index as `mask`, and each
+        // colour with its words; the fact names each region's change.
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: Some("inbox/regions-a.png".into()),
+            words: String::new(),
+            redraw: false,
+            regions: vec![
+                mecha_core::persona::edit::PanelRegion {
+                    colour: "magenta".into(),
+                    words: "make the scarf yellow".into(),
+                },
+                mecha_core::persona::edit::PanelRegion {
+                    colour: "cyan".into(),
+                    words: "remove the lamp".into(),
+                },
+            ],
+        };
+        turn_as(&w, &key, "Edit images/a.png in two regions", Some(edit)).await;
+        assert_eq!(
+            w.drawn.lock().unwrap().last().unwrap().clone(),
+            serde_json::json!({"picture": "images/a.png", "mask": "inbox/regions-a.png",
+                "regions": [{"colour": "magenta", "words": "make the scarf yellow"},
+                            {"colour": "cyan", "words": "remove the lamp"}]})
+        );
+        let drawn_so_far = w.drawn.lock().unwrap().len();
+        // A Regenerate with a painted area is refused by name, never a
+        // silent redraw that drops the paint.
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: Some("inbox/regions-a.png".into()),
+            words: String::new(),
+            redraw: true,
+            regions: Vec::new(),
+        };
+        turn_as(&w, &key, "Regenerate images/a.png", Some(edit)).await;
+        assert_eq!(w.drawn.lock().unwrap().len(), drawn_so_far, "nothing drawn");
+        let owner = w
+            .seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .text();
+        assert!(owner.contains("takes no painted area"), "{owner}");
         // A painted area with no words is said, not drawn as a whole redraw.
         let edit = PanelEdit {
             picture: "images/a.png".into(),
             mask: Some("inbox/mask-a.png".into()),
             words: String::new(),
             redraw: false,
+            regions: Vec::new(),
         };
         turn_as(
             &w,
@@ -6197,7 +6268,7 @@ mod tests {
             Some(edit),
         )
         .await;
-        assert_eq!(w.drawn.lock().unwrap().len(), 1, "nothing more drawn");
+        assert_eq!(w.drawn.lock().unwrap().len(), 2, "nothing more drawn");
         let reply = w.seen.lock().unwrap().last().unwrap().clone();
         let owner = reply.messages.last().unwrap().text();
         assert!(
