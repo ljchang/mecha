@@ -1,0 +1,9 @@
+[Unit]
+Description=Sample the host's load every minute
+
+[Timer]
+OnCalendar=*:*:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
