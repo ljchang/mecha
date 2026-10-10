@@ -91,10 +91,8 @@ cargo build --release                     # ./target/release/mecha
 ## Quick start
 
 ```bash
-mecha config init                         # writes ~/.mecha/config.toml; the default is a local model
-mecha setup chat                          # installs llama.cpp and a model for this machine (Linux)
-mecha setup                               # what is still missing, and the fix for each
-# a hosted model instead: export ANTHROPIC_API_KEY=… and pass -p anthropic
+mecha setup                               # chat model first, then each feature; installs on one yes
+# the default is a local model; a hosted one instead: export ANTHROPIC_API_KEY=… and pick it in setup
 
 mecha run "summarise what changed in this repo today"
 mecha chat                                # interactive

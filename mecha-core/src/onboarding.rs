@@ -904,7 +904,7 @@ fn with_next(mut step: Step, next: Option<&str>) -> Step {
 /// this project ships, with nothing in it a person has to fill in. A
 /// `<name>` the mail server needs is filled with `personal`, as the step this
 /// replaced offered. An `auth` needs a terminal — a browser or a pasted code.
-fn runnable(next: &str) -> Option<(Vec<String>, bool)> {
+pub fn runnable(next: &str) -> Option<(Vec<String>, bool)> {
     let argv: Vec<String> = next
         .split_whitespace()
         .map(|w| {
@@ -931,7 +931,7 @@ fn runnable(next: &str) -> Option<(Vec<String>, bool)> {
 
 /// What a feature is for, in one line — what a step says when it is off.
 /// Exhaustive, so a new feature says what it is before setup can offer it.
-fn blurb(f: crate::feature::Feature) -> &'static str {
+pub fn blurb(f: crate::feature::Feature) -> &'static str {
     use crate::feature::Feature;
     match f {
         Feature::Web => {
