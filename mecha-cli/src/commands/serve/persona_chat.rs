@@ -1285,6 +1285,23 @@ impl PersonaChats {
         Ok(serde_json::json!({ "frame": state.frame }))
     }
 
+    /// Set how this persona's touching scenes are drawn (IMAGE-DESIGN.md
+    /// §15.1): the owner's switch, written to `state.toml` and nowhere else.
+    pub fn touching(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        touching: mecha_core::persona::Touching,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let state =
+            mecha_core::persona::set_touching(&self.store, &p.name, touching).map_err(failed)?;
+        Ok(serde_json::json!({ "touching": state.image.touching }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
     /// `Config::timezone` documents — not UTC (review of #418).
@@ -1333,6 +1350,7 @@ impl PersonaChats {
                     // Where the owner placed it in the circle; null is the
                     // page's default framing.
                     "frame": p.state.frame,
+                    "touching": p.state.image.touching,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     // Waiting on the owner — the page's Waiting section —
@@ -3631,6 +3649,9 @@ impl PersonaChats {
                 ),
                 // A served picture's seeds are random, as every chat's.
                 image_seeds: None,
+                // The owner's switch, read fresh this turn (§15.1).
+                layers: mecha_core::persona::touching(&self.store, &name)
+                    == mecha_core::persona::Touching::Precise,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -4462,6 +4483,42 @@ pub struct FrameBody {
     frame: Option<mecha_core::persona::Frame>,
     #[serde(default)]
     unlock: Option<String>,
+}
+
+/// The touching-scenes switch, a closed set: a value outside it is refused
+/// at the door (a 400), never stored.
+#[derive(serde::Deserialize)]
+pub struct TouchingBody {
+    touching: TouchingValue,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TouchingValue {
+    Single,
+    Precise,
+}
+
+/// POST /api/personas/{name}/image-touching
+pub async fn image_touching(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<TouchingBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let touching = match body.touching {
+        TouchingValue::Single => mecha_core::persona::Touching::Single,
+        TouchingValue::Precise => mecha_core::persona::Touching::Precise,
+    };
+    respond(
+        chat.personas
+            .touching(&state.library, &name, touching, body.unlock.as_deref()),
+    )
 }
 
 /// POST /api/personas/{name}/frame
@@ -7282,6 +7339,50 @@ mod tests {
             .frame(&w.library, "mara", None, Some(&token))
             .unwrap();
         assert!(row(Some(&token))["frame"].is_null(), "the default again");
+    }
+
+    /// The touching-scenes switch: set from the page, carried by the list,
+    /// read by the host each turn, behind the lock like every write, and a
+    /// value outside the closed set refused at the door (IMAGE-DESIGN.md
+    /// §15.1).
+    #[tokio::test]
+    async fn the_touching_switch_is_set_listed_read_and_locked() {
+        use mecha_core::persona::Touching;
+        let w = world();
+        let row = |token: Option<&str>| {
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0].clone()
+        };
+        assert_eq!(
+            row(None)["touching"],
+            "single",
+            "off until the owner sets it"
+        );
+        let set = w
+            .personas()
+            .touching(&w.library, "mara", Touching::Precise, None)
+            .unwrap();
+        assert_eq!(set["touching"], "precise");
+        assert_eq!(row(None)["touching"], "precise");
+        assert_eq!(
+            mecha_core::persona::touching(&w.store(), "mara"),
+            Touching::Precise
+        );
+        assert!(
+            serde_json::from_value::<TouchingBody>(serde_json::json!({"touching": "sideways"}))
+                .is_err(),
+            "an unknown value never reaches the store"
+        );
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas()
+                .touching(&w.library, "mara", Touching::Single, None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        w.personas()
+            .touching(&w.library, "mara", Touching::Single, Some(&token))
+            .unwrap();
+        assert_eq!(row(Some(&token))["touching"], "single");
     }
 
     /// A proposal from the main chat, read and approved where personas live
