@@ -54,13 +54,15 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Seven tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]`, `[slack]`, `[web]`, `[harness]`, `[image]`, `[documents]` and `[approval]`.
+Eight tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]`, `[system]`, `[harness]`, `[image]`, `[documents]` and `[approval]`.
 `[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
 repository that could name a Slack owner would have been handed it; `[web]` names
-the tailnet surface's port and the one identity allowed through it; and
+the tailnet surface's port and the one identity allowed through it; `[system]` is
+the memory floor, and a repository that could set its reserve to zero would switch
+off the check standing between a picture and an out-of-memory;
 `[harness]` names the checkout an unattended nightly reads and treats as the
 authority on which of this harness's protections are load-bearing — a repository
 able to set that could hand the diagnostician its own prose about what is safe to
@@ -569,6 +571,21 @@ Global file only. See [The web surface](/docs/features/interfaces/web) for insta
 | `assets` | path | unset | Built web app directory. Unset serves API routes only. |
 | `voices_dir` | path | unset | **Moved to `[voice] voices_dir`.** Still read for one release, as if it were `[voice] voices_dir`; where both are set, `[voice]` wins. |
 
+## `[system]`
+
+Global file only. The memory floor: before something large starts (a picture,
+or a build that asks with `mecha system admit`), the memory it needs **plus a
+reserve** must be available, and the machine must not already be stalling on
+memory. It refuses before allocating; it never stops anything already running.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `memory_reserve_mb` | integer | `8192` | Headroom kept free beyond any stated need, for what runs uninvited (the voice pipeline mid-call, the page cache, a turn's context growth). |
+| `memory_pressure_ceiling` | float | `10.0` | Refuse when work spent more than this percentage of the last ten seconds stalled waiting on memory (`/proc/pressure/memory`), however much is free. A kernel without pressure stall information is asked for headroom only. |
+
+An available-memory figure that cannot be read is a refusal, never a pass. Both
+values are a starting plan, to be tuned from what the machine records.
+
 ## `[voice]`
 
 Global file only: a project's `mecha.toml` and an experiment environment
@@ -770,7 +787,7 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 | `vae` | string | `qwen_image_2.1_vae_bf16.safetensors` | |
 | `steps` | integer | `40` | Denoising steps; 40 is the model's reference setting. |
 | `timeout_secs` | integer | `600` | A generation running longer is abandoned on the server. |
-| `min_available_mb` | integer | `20480` | Refuse to start below this much available memory when the image server holds no model (just started, or its stats can't be read). A server that has already loaded the model is asked for this figure less the ~8 GB a load costs (12 GB at the default). `0` skips the check. |
+| `min_available_mb` | integer | `20480` | What a generation needs when the image server holds no model (just started, or its stats can't be read). A server that has already loaded the model needs this figure less the ~8 GB a load costs (12 GB at the default). The [memory floor](#system) adds its reserve on top and refuses under memory pressure. `0` skips the check. |
 | `unload_after_secs` | integer | `900` | Ask the server to unload its models after this long idle. `0` keeps them loaded. |
 | `server_temp_dir` | path | unset | The directory the server writes temp files into — for ComfyUI, the `--temp-directory` path with `temp` appended. When set, each job's uploaded references and preview are deleted there after the job. Unset, they stay until the server restarts, and incognito chats cannot generate images. |
 

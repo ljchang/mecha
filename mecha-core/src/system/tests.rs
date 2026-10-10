@@ -1149,3 +1149,108 @@ fn every_category_measurement_reads_back_its_own_column() {
         }
     }
 }
+
+// ---- S6: the memory floor ----
+
+const GIB: u64 = 1024 * 1024 * 1024;
+
+fn obs(value: f64) -> Reading {
+    Reading::Observed { value }
+}
+
+/// The floor is need + reserve; pressure refuses regardless of headroom; an
+/// unreadable gauge refuses; a kernel without PSI is asked headroom only.
+#[test]
+fn the_floor_admits_need_plus_reserve_and_refuses_on_pressure_or_unknown() {
+    use floor::{admit, Admit, SystemConfig};
+    let cfg = SystemConfig::default();
+    assert_eq!(cfg.memory_reserve_mb, 8 * 1024, "R5: 8 GiB");
+    assert_eq!(cfg.memory_pressure_ceiling, 10.0, "R5: 10%");
+
+    let calm = obs(0.5);
+    assert!(admit(&obs((20 * GIB) as f64), &calm, 12 * GIB, &cfg).admitted());
+    assert!(
+        matches!(
+            admit(&obs((19 * GIB) as f64), &calm, 12 * GIB, &cfg),
+            Admit::Short { .. }
+        ),
+        "19 GB is short of 12 + 8"
+    );
+    assert!(
+        matches!(
+            admit(&obs((100 * GIB) as f64), &obs(25.0), GIB, &cfg),
+            Admit::Pressure { .. }
+        ),
+        "free bytes while thrashing is a no"
+    );
+    assert!(
+        admit(&obs((20 * GIB) as f64), &Reading::NotHere, 12 * GIB, &cfg).admitted(),
+        "no PSI in this kernel: headroom alone"
+    );
+    let unread = || Reading::Unread { why: "x".into() };
+    assert!(matches!(
+        admit(&obs((100 * GIB) as f64), &unread(), GIB, &cfg),
+        Admit::Unread { .. }
+    ));
+    assert!(matches!(
+        admit(&unread(), &calm, GIB, &cfg),
+        Admit::Unread { .. }
+    ));
+    assert!(matches!(
+        admit(&Reading::NotHere, &calm, GIB, &cfg),
+        Admit::Unread { .. }
+    ));
+    // A reserve of zero is the operator's to set, and it is just the need.
+    let zero = SystemConfig {
+        memory_reserve_mb: 0,
+        ..cfg
+    };
+    assert!(admit(&obs((12 * GIB) as f64), &calm, 12 * GIB, &zero).admitted());
+}
+
+/// A refusal says what was asked, what was kept back, and who holds the
+/// memory — by category, never a process.
+#[test]
+fn a_refusal_names_the_shortfall_and_the_largest_holders() {
+    use floor::Admit;
+    let short = Admit::Short {
+        available: 19 * GIB,
+        need: 13 * GIB,
+        reserve: 7 * GIB,
+        holders: vec![("chat model", 55 * GIB), ("image generation", 16 * GIB)],
+    };
+    let s = short.sentence("a generation").unwrap();
+    for part in [
+        "19.0 GB",
+        "13.0 GB",
+        "7.0 GB",
+        "chat model 55.0 GB",
+        "image generation 16.0 GB",
+    ] {
+        assert!(s.contains(part), "{part}: {s}");
+    }
+    assert_eq!(
+        Admit::Yes {
+            available: GIB,
+            floor: GIB
+        }
+        .sentence("x"),
+        None
+    );
+}
+
+#[test]
+fn a_size_reads_as_a_person_writes_it() {
+    use floor::parse_size;
+    assert_eq!(parse_size("24G"), Some(24 * GIB));
+    assert_eq!(parse_size("1.5g"), Some(GIB + GIB / 2));
+    assert_eq!(parse_size("512M"), Some(512 * 1024 * 1024));
+    assert_eq!(
+        parse_size("2048"),
+        Some(2048 * 1024 * 1024),
+        "a bare number is MB"
+    );
+    assert_eq!(parse_size("lots"), None);
+    assert_eq!(parse_size("-3G"), None);
+    assert_eq!(parse_size(""), None);
+}

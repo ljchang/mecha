@@ -5972,6 +5972,14 @@ was ever deployed.
 - **A rate never spans a reset or a switch.** `delta` returns `None` when
   a counter fell or its `ident` (device number, interface index) changed.
   Interfaces are keyed by index, so a name never enters the series.
+- **The memory floor refuses before allocating (S6).** `system::floor::admit`
+  is a pure function of two readings and a stated need. The floor is the
+  need plus `[system] memory_reserve_mb`, and the pressure ceiling refuses
+  regardless of headroom. An unreadable gauge refuses. The caller refuses;
+  the floor kills nothing. `[system]` is stripped from project layers,
+  because a cloned repository must not lower a safety floor. The image
+  tool's persona form carries the operator's floor, not R5's defaults, and a
+  test pins it, since that form is where most pictures are made.
 - **The OOM split reconciles or is unknown.** The vmstat counter says how
   many kills there were. The kernel log says which kind and whose, and is
   believed only when it accounts for exactly that many. Do not read

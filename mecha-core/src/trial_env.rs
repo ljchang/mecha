@@ -62,7 +62,7 @@ pub const MACHINE_TABLES: [&str; 7] = [
     "search",
 ];
 
-/// Tables a checked-out file may never set: the eight a project layer is
+/// Tables a checked-out file may never set: the nine a project layer is
 /// stripped of (`Config::merge_file`), for the reason given there — a file
 /// that arrives with a cloned repository must not name the Slack surface,
 /// the web surface, the mailbox, the image server model-written prompts go
@@ -74,16 +74,19 @@ pub const MACHINE_TABLES: [&str; 7] = [
 /// server the owner's audio goes to (`[voice]`), or a persona safety
 /// setting (`[personas]`: configuration supplied with a checkout may only
 /// narrow, and a safety setting is the operator's — FEATURES-DESIGN.md §9
-/// step 5). An environment directory is resolved against a checkout,
+/// step 5), or the memory floor (`[system]`: a reserve of zero would switch
+/// off the check standing between a picture and an out-of-memory —
+/// SYSTEM-STATE-DESIGN.md §3.7). An environment directory is resolved against a checkout,
 /// so it is refused them outright rather than stripped with a warning
 /// (found on review).
-pub const OPERATOR_ONLY_TABLES: [&str; 8] = [
+pub const OPERATOR_ONLY_TABLES: [&str; 9] = [
     "documents",
     "harness",
     "image",
     "messages",
     "personas",
     "slack",
+    "system",
     "voice",
     "web",
 ];
