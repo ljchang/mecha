@@ -87,7 +87,11 @@
   );
   // Work is paint or words: an eraser tap on nothing is neither (review of #429).
   const dirty = $derived(
-    painted || words.trim() !== initial.trim() || regionList.some((r) => (r.words ?? '').trim()),
+    painted ||
+      words.trim() !== initial.trim() ||
+      // The first region opens holding the chat's draft, which is not work
+      // (review of #623).
+      regionList.some((r, k) => (r.words ?? '').trim() !== (k === 0 ? initial.trim() : '')),
   );
 
   function loaded() {
