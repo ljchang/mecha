@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "title": "Host load",
+  "theme": "default",
+  "datasets": ["now", "memory_by_category", "cpu_by_category", "gpu_by_category", "system_day"],
+  "panels": [
+    { "type": "kpi", "title": "Memory used (%)", "dataset": "now", "value": { "op": "last", "field": "mem_used_pct" } },
+    { "type": "kpi", "title": "CPU busy (%)", "dataset": "now", "value": { "op": "last", "field": "cpu_pct" } },
+    { "type": "kpi", "title": "GPU utilisation (%)", "dataset": "now", "value": { "op": "last", "field": "gpu_util" } },
+    { "type": "kpi", "title": "Disk used (%)", "dataset": "now", "value": { "op": "last", "field": "disk_used_pct" } },
+    { "type": "chart", "title": "Memory by kind of work, last 24 hours (GiB)", "span": 4,
+      "vegalite": {
+        "data": { "name": "memory_by_category" },
+        "mark": "area",
+        "encoding": {
+          "x": { "field": "at", "type": "temporal", "title": null },
+          "y": { "field": "mem_gib", "type": "quantitative", "stack": "zero", "title": "GiB" },
+          "color": { "field": "category", "type": "nominal", "title": null },
+          "tooltip": [
+            { "field": "at", "type": "temporal" },
+            { "field": "category", "type": "nominal" },
+            { "field": "mem_gib", "type": "quantitative", "format": ".1f" }
+          ]
+        }
+      } },
+    { "type": "chart", "title": "CPU by kind of work, last 24 hours (%)", "span": 2,
+      "vegalite": {
+        "data": { "name": "cpu_by_category" },
+        "mark": "area",
+        "encoding": {
+          "x": { "field": "at", "type": "temporal", "title": null },
+          "y": { "field": "cpu_pct", "type": "quantitative", "stack": "zero", "title": "%" },
+          "color": { "field": "category", "type": "nominal", "title": null }
+        }
+      } },
+    { "type": "chart", "title": "GPU memory by kind of work, last 24 hours (GiB)", "span": 2,
+      "vegalite": {
+        "data": { "name": "gpu_by_category" },
+        "mark": "area",
+        "encoding": {
+          "x": { "field": "at", "type": "temporal", "title": null },
+          "y": { "field": "gpu_gib", "type": "quantitative", "stack": "zero", "title": "GiB" },
+          "color": { "field": "category", "type": "nominal", "title": null }
+        }
+      } },
+    { "type": "chart", "title": "GPU utilisation and temperature, last 24 hours", "span": 4,
+      "vegalite": {
+        "data": { "name": "system_day" },
+        "transform": [{ "fold": ["gpu_util", "gpu_temp"], "as": ["measure", "value"] }],
+        "mark": "line",
+        "encoding": {
+          "x": { "field": "at", "type": "temporal", "title": null },
+          "y": { "field": "value", "type": "quantitative", "title": null },
+          "color": { "field": "measure", "type": "nominal", "title": null }
+        }
+      } },
+    { "type": "text", "markdown": "Load by kind of work only: no process, unit or model name is recorded. Unrecognised work is summed under other." }
+  ]
+}

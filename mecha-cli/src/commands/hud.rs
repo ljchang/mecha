@@ -42,6 +42,13 @@ pub enum Cmd {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Record one sample of the host's load, by kind of work only, into
+    /// ~/.mecha/hud/host.sqlite — what `scripts/mecha-hud-sample.timer` runs
+    /// each minute. No process, unit or model name is ever written.
+    Sample {
+        #[arg(long)]
+        json: bool,
+    },
     /// Refresh datasets: every loader of one board (or of all), now — or,
     /// with --due, only the loaders whose schedule says so, which is what the
     /// timer runs.
@@ -86,6 +93,7 @@ pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
             Err(r) => refused(&r),
         },
         Cmd::Refresh { id, due, json } => refresh(&store, id, due, json),
+        Cmd::Sample { json } => sample(json),
     }
 }
 
@@ -198,6 +206,27 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
             "{} board(s) did not load, {failed} loader(s) did not refresh",
             broken
         );
+    }
+    Ok(())
+}
+
+fn sample(json: bool) -> Result<()> {
+    use mecha_core::hud::host;
+    let recorded = host::record(&host::db_path()?, &host::collect(Utc::now())?)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&recorded)?);
+    } else {
+        let cpu = recorded
+            .cpu_pct
+            .map_or("—".to_string(), |p| format!("{p:.1}%"));
+        println!("{}  cpu {cpu}", recorded.at);
+        for c in &recorded.by_category {
+            let pct = c.cpu_pct.map_or("—".to_string(), |p| format!("{p:.1}%"));
+            let mem = c.mem_bytes.map_or("—".to_string(), |m| {
+                format!("{:.2} GiB", m as f64 / 1073741824.0)
+            });
+            println!("  {:<17} {mem:>11}  cpu {pct}", c.category);
+        }
     }
     Ok(())
 }

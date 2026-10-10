@@ -143,6 +143,12 @@ pub fn run_sqlite(
     )
     .map_err(|e| RunError::Open(e.to_string()))?;
     confine(&conn).map_err(|e| RunError::Open(e.to_string()))?;
+    // A writer mid-commit (the host sampler) makes a reader wait rather than
+    // fail the refresh: the timers are offset, and this is the backstop for
+    // when they are not. rusqlite already defaults to five seconds; set here
+    // so the guarantee does not rest on that default.
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|e| RunError::Open(e.to_string()))?;
 
     let started = Instant::now();
     let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
