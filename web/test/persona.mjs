@@ -47,7 +47,7 @@ assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
   for (const suffix of used) assert.doesNotThrow(() => chatUrl('p-0123456789ab', suffix), suffix);
 }
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 27);
+assert.equal(ENDPOINTS.length, 28);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));

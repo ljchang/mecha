@@ -307,6 +307,33 @@
     imageEdit = { path, src: pictureUrl(path), initial: '', busy: false, error: null, call: true };
     caller?.holdMic(true);
   }
+  // Regenerate from the call screen (owner, 2026-10-10: a spoken call turn).
+  // A call's turns reach the server as words through the voice worker, so
+  // the redraw is registered first, through this chat's own door, and the
+  // line the server hands back is said into the call: the turn that says it
+  // takes the registration, the harness draws, and the persona answers
+  // aloud. The words alone grant nothing (`persona::edit::regenerate_line`).
+  async function regenerateInCall(path) {
+    const k = key;
+    if (!k) return;
+    try {
+      const res = await fetch(chatUrl(k, '/call-regenerate'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ picture: path, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const { line } = await res.json();
+      if (k !== key) return;
+      if (!caller?.say(line)) {
+        notice('The call is not connected, so the picture was not drawn again.');
+        return;
+      }
+      regenerated = k;
+    } catch (err) {
+      if (k === key) notice(`The picture could not be drawn again: ${err?.message ?? err}.`);
+    }
+  }
   function closeEdit() {
     if (imageEdit?.call) caller?.holdMic(false);
     imageEdit = null;
@@ -2201,6 +2228,7 @@
       onstoppicture={() => stopPicture()}
       ondownload={savePicture}
       onedit={editInCall}
+      onregenerate={regenerateInCall}
     />
   {/if}
 </div>

@@ -610,6 +610,11 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::reorder_jobs),
         )
         .at(
+            "/api/persona-chat/{key}/call-regenerate",
+            Owner::Of(Feature::Personas),
+            axum::routing::post(persona_chat::call_regenerate),
+        )
+        .at(
             "/api/persona-chat/{key}/call",
             Owner::Of(Feature::Personas),
             axum::routing::post(persona_chat::call_ended),
