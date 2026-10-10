@@ -36,6 +36,7 @@
 //! are plain identifiers: under `SELECT *` they come from a schema someone
 //! else may control.
 
+pub mod host;
 pub mod loader;
 pub mod runner;
 pub mod source;
