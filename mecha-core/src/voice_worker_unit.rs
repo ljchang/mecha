@@ -126,14 +126,20 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         "starting it on :{} and checking the direct door is shut",
         naming.port
     ));
-    check(naming.port).await?;
+    serves(naming.port).await?;
+    // Exposure is not liveness: a worker that would take a page's call is
+    // stopped before the install says so, never left listening behind the
+    // error (review of #639).
+    if let Err(e) = door_shut(naming.port).await {
+        let _ = crate::engine_gate::systemctl("disable", &["--now", &service]);
+        return Err(e.context(format!("{service} was stopped and disabled")));
+    }
     Manifest::finish(home, ID)
 }
 
-/// The worker serves, and refuses a page's direct request: a cross-origin
-/// preflight to the offer route is not allowed through. Retried while it
-/// starts — pipecat imports for a few seconds before it listens.
-async fn check(port: u16) -> Result<()> {
+/// The worker answers. Retried while it starts — pipecat imports for a few
+/// seconds before it listens.
+async fn serves(port: u16) -> Result<()> {
     let base = format!("http://127.0.0.1:{port}");
     // Loopback, never through a proxy (`llama_units::check`'s reason).
     let client = reqwest::Client::builder()
@@ -159,6 +165,19 @@ async fn check(port: u16) -> Result<()> {
             _ => tokio::time::sleep(Duration::from_secs(2)).await,
         }
     }
+    Ok(())
+}
+
+/// The direct door is shut and the relay's is open: a page's preflight is
+/// refused, a page's simple request is not read as an offer, and an offer
+/// with no `Origin` — as `mecha serve` relays one — reaches the handler.
+async fn door_shut(port: u16) -> Result<()> {
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     let preflight = client
         .request(reqwest::Method::OPTIONS, format!("{base}/api/offer"))
         .header("Origin", "https://a-page.example")
@@ -174,6 +193,31 @@ async fn check(port: u16) -> Result<()> {
         bail!(
             "the voice worker on :{port} let a page's request through — its origin allowlist \
              is not in force, so any page in a browser here could start a call"
+        );
+    }
+    // A page needs no preflight for a "simple" request, so the second half of
+    // the door is that one cannot carry an offer: a `text/plain` body is not
+    // read as one. (Pipecat's offer handler checks no origin itself — a
+    // page's JSON POST reaches it, measured 2026-10-10 — so a JSON offer is
+    // held off by the refused preflight above, and a simple one by this.)
+    let simple = client
+        .post(format!("{base}/api/offer"))
+        .header("Origin", "https://a-page.example")
+        .header("content-type", "text/plain")
+        .body("{}")
+        .send()
+        .await
+        .context("posting a page's simple request")?;
+    let status = simple.status();
+    let read_as_offer = simple
+        .text()
+        .await
+        .unwrap_or_default()
+        .contains("\"missing\"");
+    if status.is_success() || read_as_offer {
+        bail!(
+            "the voice worker on :{port} read a page's text/plain request as an offer ({status}) \
+             — a page could start a call without a preflight"
         );
     }
     // And the relay's door open: an offer with no `Origin`, as `mecha serve`
@@ -255,6 +299,9 @@ mod tests {
             include_str!("../../scripts/voice/fragments.py"),
             include_str!("../../scripts/voice/journal.py"),
         ];
+        // A fifth file without a fifth script would end the zip early and go
+        // unchecked (review of #639).
+        assert_eq!(FILES.len(), scripts.len());
         for ((name, shipped), script) in FILES.iter().zip(scripts) {
             assert_eq!(*shipped, script, "{name}");
         }
