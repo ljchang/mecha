@@ -272,8 +272,8 @@ pub struct Layers {
     pub people: Vec<LayerPerson>,
     pub placing_seed: u64,
     pub finish_seed: u64,
-    /// The parts are prose from the scene's `together` and the people's own
-    /// words: they carry the union of those origins. Absent reads untrusted.
+    /// The build drew on the whole scene, so this is the scene's own origin
+    /// when it landed. Absent reads untrusted.
     #[serde(default)]
     pub origin: Origin,
 }

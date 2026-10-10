@@ -36,8 +36,7 @@ pub struct Plan {
     /// What of the act no part says: the split's leftover, or the call's
     /// `together` as written when the split fell back (§15.3).
     pub leftover: Option<String>,
-    /// The parts are prose from the scene's `together` and the people's own
-    /// words: the union of their origins.
+    /// The scene the build drew on: its whole origin (`Scene::origin`).
     pub origin: crate::scene::Origin,
     /// A library style's own words, laid on by the finish alone; the plate,
     /// the cutouts and the placing pass stay photographic.
