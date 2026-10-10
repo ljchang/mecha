@@ -3366,11 +3366,18 @@ impl Tool for ImageGenerate {
                                 } else {
                                     value(&plan.next.together)
                                 },
-                                origin: plan
-                                    .next
-                                    .together
-                                    .as_ref()
-                                    .map_or(crate::scene::Origin::Untrusted, |f| f.origin),
+                                // The parts come from the `together` and from
+                                // each person's own words, which the split
+                                // keeps verbatim: their origins union, so one
+                                // clean field never launders another (review
+                                // of #624).
+                                origin: people.iter().fold(
+                                    plan.next
+                                        .together
+                                        .as_ref()
+                                        .map_or(crate::scene::Origin::Untrusted, |f| f.origin),
+                                    |o, p| o.union(p.origin),
+                                ),
                             });
                             // Two people set on one side of the frame would
                             // share a place tag (review of #624).
