@@ -48,15 +48,22 @@ pub struct Plan {
 /// `placed` is whether everyone has a place: a split that applied always
 /// gives one, and a split that fell back leaves only the call's own. A
 /// placing pass with no places left one of two people out, 2 of 2 runs
-/// (mecha-a3), so that build is not attempted (review of #624).
+/// (mecha-a3), so that build is not attempted (review of #624). `fits` is
+/// whether the placing pass's references, the plate and a cutout each, fit
+/// one edit: today the cast cap implies it, but the ordinary edit's budget
+/// check never sees this pass, so it is asked here rather than assumed
+/// (review of #624).
 pub fn not_layered(
     people: usize,
     library_people: usize,
     with_portraits: usize,
     setting_words: bool,
     placed: bool,
+    fits: bool,
 ) -> Option<&'static str> {
-    if library_people < people {
+    if !fits {
+        Some("it has more people than one edit can hold")
+    } else if library_people < people {
         Some("someone in it is described in words, not drawn from the library")
     } else if with_portraits < people {
         Some("someone in it has no library portrait")
@@ -378,17 +385,22 @@ mod tests {
 
     #[test]
     fn a_picture_is_layered_only_when_every_part_can_be_built() {
-        assert_eq!(not_layered(2, 2, 2, true, true), None);
-        assert!(not_layered(2, 1, 1, true, true)
+        assert_eq!(not_layered(2, 2, 2, true, true, true), None);
+        assert!(not_layered(2, 1, 1, true, true, true)
             .unwrap()
             .contains("described"));
-        assert!(not_layered(2, 2, 1, true, true)
+        assert!(not_layered(2, 2, 1, true, true, true)
             .unwrap()
             .contains("portrait"));
-        assert!(not_layered(2, 2, 2, false, true)
+        assert!(not_layered(2, 2, 2, false, true, true)
             .unwrap()
             .contains("setting"));
-        assert!(not_layered(2, 2, 2, true, false).unwrap().contains("place"));
+        assert!(not_layered(2, 2, 2, true, false, true)
+            .unwrap()
+            .contains("place"));
+        assert!(not_layered(6, 6, 6, true, true, false)
+            .unwrap()
+            .contains("one edit"));
     }
 
     /// Names never reach the placing prompt: each becomes its person's tag,

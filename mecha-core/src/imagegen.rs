@@ -3254,6 +3254,7 @@ impl Tool for ImageGenerate {
                         portraits.iter().flatten().count(),
                         setting.is_some(),
                         placed,
+                        people.len() < EDIT_REFERENCE_BUDGET,
                     ) {
                         Some(why) => {
                             dropped.push(format!("Drawn in one pass, not in layers: {why}."))
