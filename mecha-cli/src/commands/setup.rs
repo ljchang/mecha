@@ -1052,8 +1052,12 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
         .context("no global config path — is $HOME set?")?;
     seed_config_file(&path)?;
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
-    let lines =
-        apply_text(&text, provider, settings).with_context(|| format!("in {}", path.display()))?;
+    let entry = mecha_core::config::Config::load_global()?
+        .providers
+        .get(provider)
+        .cloned();
+    let lines = apply_or_add(&text, provider, entry.as_ref(), settings)
+        .with_context(|| format!("in {}", path.display()))?;
     let backup = path.with_extension("toml.bak");
     std::fs::copy(&path, &backup).ok();
     std::fs::write(&path, lines)?;
@@ -1075,6 +1079,39 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
         backup.display()
     );
     Ok(())
+}
+
+/// `apply_text`, or — for a provider the config has but no file names, the
+/// built-in `local` entry (ruling F12) — a new table written from that
+/// entry's kind and address with the settings beneath. `--write` is the
+/// remedy named for exactly that shape, and refusing it with "no table"
+/// after the owner said yes left them nowhere (found on review of #627).
+fn apply_or_add(
+    text: &str,
+    provider: &str,
+    entry: Option<&mecha_core::config::ProviderConfig>,
+    settings: &[(&'static str, String)],
+) -> Result<String> {
+    let header = format!("[providers.{provider}]");
+    if text.lines().any(|l| l.trim() == header) {
+        return apply_text(text, provider, settings);
+    }
+    let entry = entry.with_context(|| format!("no {header} in the config"))?;
+    let mut out = text.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "\n# Written by `mecha setup --write` from this server's own /props.\n{header}\nkind = {}\n",
+        onboarding::toml_string(&entry.kind)
+    ));
+    if let Some(url) = &entry.base_url {
+        out.push_str(&format!("base_url = {}\n", onboarding::toml_string(url)));
+    }
+    for (k, v) in settings {
+        out.push_str(&format!("{k} = {v}\n"));
+    }
+    Ok(out)
 }
 
 /// The text of `apply`: each setting replaces its key in `[providers.<p>]`,
@@ -1208,6 +1245,25 @@ mod tests {
         );
         assert!(again.contains("model = \"other\"") && !again.contains("served-alias"));
         assert!(apply_text(&text, "nowhere", &settings).is_err());
+
+        // A file with no `[providers.local]`, for the built-in entry the
+        // config still has: the table is added from it, never refused
+        // (review of #627).
+        let builtin = mecha_core::config::Config::default().providers["local"].clone();
+        let only_agent = "[agent]\nmax_turns = 5\n";
+        let added = apply_or_add(only_agent, "local", Some(&builtin), &settings).unwrap();
+        let cfg: toml::Value = toml::from_str(&added).unwrap_or_else(|e| panic!("{e}\n{added}"));
+        assert_eq!(cfg["providers"]["local"]["kind"].as_str(), Some("local"));
+        assert_eq!(
+            cfg["providers"]["local"]["base_url"].as_str(),
+            Some("http://127.0.0.1:8080")
+        );
+        assert_eq!(
+            cfg["providers"]["local"]["model"].as_str(),
+            Some("served-alias")
+        );
+        assert_eq!(cfg["agent"]["max_turns"].as_integer(), Some(5));
+        assert!(apply_or_add(only_agent, "local", None, &settings).is_err());
 
         // A table ending in a multi-line array: the key goes after its
         // closing line, never inside it (review of #627).
