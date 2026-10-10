@@ -764,6 +764,17 @@ pub fn plan(
         .mask
         .clone()
         .filter(|_| delta.is_empty() && unknown_removes.is_empty());
+    // Regions are the owner's words for places in this picture, and their
+    // legend is already the retouch: with the mask dropped it would ride
+    // into a redrawn picture's prompt describing outlines that are not there
+    // (review of #623, pass 4).
+    if call.mask.is_some() && mask.is_none() && !call.regions.is_empty() {
+        return Err(
+            "The painted regions keep everything outside them, so they cannot carry a \
+                    scene change: ask for the scene change on its own."
+                .into(),
+        );
+    }
     if call.mask.is_some() && mask.is_none() {
         notes.push(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
@@ -1491,6 +1502,32 @@ mod tests {
             c.change.people[0].doing.as_deref(),
             Some("waves at the sea")
         );
+    }
+
+    /// Regions beside a scene change are refused: the change drops the mask,
+    /// and the regions' legend would ride into a redrawn picture's prompt
+    /// describing outlines that are not there (review of #623, pass 4).
+    #[test]
+    fn regions_beside_a_scene_change_are_refused() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a study", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "reading"}]}})),
+            None,
+        );
+        let base = landed(&first, 3);
+        let why = plan(
+            &call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "magenta", "words": "make it red"}],
+                "scene": {"camera": "from above"}})),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(why.contains("cannot carry a scene change"), "{why}");
     }
 
     /// A room photo as the setting with nobody to place is refused, never a
