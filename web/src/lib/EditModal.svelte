@@ -17,6 +17,8 @@
     pickColours,
     indexPixels,
     MAX_REGIONS,
+    editDirty,
+    firstRegionWords,
   } from './image-edit.js';
 
   let { src, path, initial = '', busy = false, error = null, multi = false, onsend, onclose } = $props();
@@ -62,7 +64,12 @@
   // that is still there (review of #429). `hasPaint` answers first, cheaply.
   let painted = $state(false);
   function repaint() {
-    paintedRegions = layers.map((l, k) => hasPaint(ops.filter((op) => op.region === k)) && layerHasPaint(l));
+    // Only regions mode reads which regions hold paint: in single mode it
+    // would be a second full-size readback per stroke (review of #623).
+    paintedRegions = multi
+      ? layers.map((l, k) => hasPaint(ops.filter((op) => op.region === k)) && layerHasPaint(l))
+      : [];
+    const was = painted;
     if (!base || !hasPaint(ops)) {
       painted = false;
       return;
@@ -76,6 +83,11 @@
       }
     }
     painted = any;
+    // The whole-picture box gives way to the regions' own boxes: what was
+    // typed in it carries into the first region rather than vanishing.
+    if (multi && !was && painted && regionList[0]) {
+      regionList[0].words = firstRegionWords(regionList[0].words, words, initial);
+    }
   }
   // With regions painted, every painted region needs its words; with none,
   // the words edit the whole picture.
@@ -87,11 +99,7 @@
   );
   // Work is paint or words: an eraser tap on nothing is neither (review of #429).
   const dirty = $derived(
-    painted ||
-      words.trim() !== initial.trim() ||
-      // The first region opens holding the chat's draft, which is not work
-      // (review of #623).
-      regionList.some((r, k) => (r.words ?? '').trim() !== (k === 0 ? initial.trim() : '')),
+    editDirty({ multi, painted, words, initial, regionWords: regionList.map((r) => r.words) }),
   );
 
   function loaded() {
