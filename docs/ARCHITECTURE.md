@@ -5910,8 +5910,9 @@ the owner's rulings; this section is the invariants a change to
   a failure (source missing, timeout) is the environment's. `mecha doctor`
   reports both as broken, with the refresh command; a stale dataset is
   attention. No refusal echoes a value from the data.
-- **The host board reads `mecha system`'s series** through an ordinary
-  `sqlite` source; it samples nothing itself. The sampler's invariants are
+- **The HUD is generic; the host board is one example.** It reads
+  `mecha system`'s series through an ordinary `sqlite` source like any other
+  board, and `hud` holds no host-specific code — nothing in it samples. The sampler's invariants are
   §System state's.
 - **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
   loader is a cron slot over private data, and a cloned repository must not

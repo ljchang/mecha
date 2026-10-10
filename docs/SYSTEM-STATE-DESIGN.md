@@ -314,6 +314,13 @@ run reads the recorded snapshot.
 
 ### 3.2 The HUD
 
+**The HUD is a generic dashboard system for anything the owner registers
+as a source** (`LIVE-DASHBOARD-DESIGN.md`). The host board is one example
+board: a spec and five loaders over one source. S0 is what makes that true
+in the code. The sampler used to live inside `hud/`, and that is the only
+reason the HUD ever looked machine-specific. Now `hud` holds no
+host-specific code, and the system series is a source like any other.
+
 The only change is a path. The `host` board's source becomes
 `kind = "sqlite"` over `~/.mecha/system/series.sqlite`, and its loaders keep
 their SQL. The privacy property R13 demands now belongs to the whole series
