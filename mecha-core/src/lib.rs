@@ -138,6 +138,7 @@ pub mod sidecar;
 pub mod situation;
 pub mod skill;
 pub mod step;
+pub mod stt_unit;
 pub mod subagent;
 pub mod success;
 pub mod surface;

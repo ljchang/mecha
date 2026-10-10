@@ -99,6 +99,8 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
+        "stt" => cfg!(target_os = "linux"),
+        // systemd user units: on macOS they stay manual (§10.5).
         "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
         _ => false,
     }
@@ -171,12 +173,27 @@ pub fn may_offer(feature: Feature, chat_here: bool) -> bool {
 }
 
 /// Price what a plan would install whose size is known before installing:
-/// the engine's pinned archives for this machine, on its line and in the
-/// total. `nvidia` is read only when the engine is to be installed, so a plan
-/// with nothing to fetch probes no driver. A machine `engine::choose` refuses
-/// is priced at nothing, and its install says why.
+/// the engine's pinned archives for this machine, and the speech-to-text
+/// model's pinned tarball (its own tree, so the plan's file rows leave it
+/// out), each on its line and in the total. `nvidia` is read only when the
+/// engine is to be installed, so a plan with nothing to fetch probes no
+/// driver. A machine `engine::choose` refuses is priced at nothing, and its
+/// install says why.
 pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::engine::Nvidia) {
     let feature = plan.feature;
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == crate::stt_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && installable(s.id)
+    }) {
+        if let Some(bytes) = crate::stt_unit::download_bytes() {
+            s.bytes = Some(bytes);
+            plan.download_bytes += bytes;
+        }
+    }
     let Some(s) = plan.sidecars.iter_mut().find(|s| {
         s.id == "llama"
             && matches!(
@@ -383,15 +400,7 @@ pub async fn install_layout(
     // `document::layout_tree` does, so they would disagree with no way out.
     Manifest::record(home, id, &dir.join("python"))?;
     Manifest::record(home, id, &link)?;
-    let uv_env = |c: &mut std::process::Command| {
-        c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
-            .env("UV_CACHE_DIR", dir.join(".uv-cache"))
-            .env("UV_PYTHON_PREFERENCE", "only-managed")
-            .env("UV_NO_CONFIG", "1")
-            // `only-managed` needs the download; an operator's `never` would
-            // turn the install into a confusing failure.
-            .env("UV_PYTHON_DOWNLOADS", "automatic");
-    };
+    let uv_env = |c: &mut std::process::Command| uv_env(c, &dir);
     if !python.exists() {
         say(&format!("building a Python {LAYOUT_PYTHON} environment"));
         // `--clear`: a venv whose interpreter dangles (its managed Python
@@ -457,8 +466,21 @@ pub async fn install_layout(
     Ok(())
 }
 
+/// `uv`'s environment for an install whose tree is `dir`: its Python, its
+/// cache and nothing of the operator's uv configuration — one tree per
+/// install, removable whole.
+pub(crate) fn uv_env(c: &mut std::process::Command, dir: &Path) {
+    c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
+        .env("UV_CACHE_DIR", dir.join(".uv-cache"))
+        .env("UV_PYTHON_PREFERENCE", "only-managed")
+        .env("UV_NO_CONFIG", "1")
+        // `only-managed` needs the download; an operator's `never` would
+        // turn the install into a confusing failure.
+        .env("UV_PYTHON_DOWNLOADS", "automatic");
+}
+
 /// Run a step; a failure is an error carrying its own output.
-fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
+pub(crate) fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
     let out = c.output().with_context(|| format!("starting {what}"))?;
     if !out.status.success() {
         bail!(
@@ -487,6 +509,11 @@ pub async fn install(
                 crate::llama_units::Which::Ocr
             };
             crate::llama_units::install(m, which, &which.shipped(), machine, hub, say).await
+        }
+        "stt" => {
+            crate::stt_unit::install(m, &crate::stt_unit::Naming::shipped(), say).await?;
+            say("speech to text answers on :8992 — `[voice] stt_url`'s default");
+            Ok(())
         }
         "llama" => {
             let server = crate::engine::install_engine(m, say).await?;
@@ -689,7 +716,7 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1"]
         } else {
             &["7a-3", "7b"]
         };

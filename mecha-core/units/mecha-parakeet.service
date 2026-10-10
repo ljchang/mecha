@@ -1,0 +1,20 @@
+# mecha's speech-to-text server, as `mecha features enable voice` installs it
+# (mecha-core/src/stt_unit.rs). Rendered at install: the four placeholders
+# become absolute paths under this mecha home and the port, so nothing here
+# names a checkout — what runs is the copy mecha wrote.
+#
+# CPU on purpose: int8 Parakeet is faster than real time on CPU cores, and a
+# GPU saturated by llama-server cannot starve it.
+
+[Unit]
+Description=mecha speech to text: Parakeet TDT 0.6B v3 int8 (:@PORT@)
+After=network.target
+
+[Service]
+Environment=PARAKEET_DIR=@MODEL@
+ExecStart=@VENV@/bin/uvicorn --app-dir @DIR@ parakeet_server:app --host 127.0.0.1 --port @PORT@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

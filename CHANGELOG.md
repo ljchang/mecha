@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Speech to text installs itself.** On Linux, `mecha features enable voice`
+  now offers the speech-to-text server: an environment built from a
+  hash-pinned lock, the Parakeet model fetched by its pinned sha256, and
+  `mecha-parakeet.service` started on `:8992`, all under
+  `~/.mecha/sidecars/stt/`. The model's 465 MiB counts in the plan's total.
+  A Parakeet you already run is left alone.
+
 ### Changed
 
 - **A new install uses a model on your machine, not Anthropic.** `mecha
