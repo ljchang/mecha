@@ -88,6 +88,16 @@ pub fn redraw_call(picture: &str) -> serde_json::Value {
     serde_json::json!({ "picture": picture })
 }
 
+/// The line a Regenerate says in a call, which the owner hears the call
+/// take as typed: the page says it, and the server matches it to the
+/// Regenerate the page registered (`persona_chat::call_regenerate`). The
+/// words bind the turn and grant nothing: a spoken turn that says them with
+/// no registration is words. The page's own `composeRegenerateMessage`
+/// writes the same line for a typed Regenerate.
+pub fn regenerate_line(picture: &str) -> String {
+    format!("Regenerate {picture}")
+}
+
 /// The picture a Regenerate's fact drew again, so the page shows the new one
 /// as a version on that picture's card (§5.4). `None` for any other fact.
 pub fn fact_redraw_of(text: &str) -> Option<&str> {
