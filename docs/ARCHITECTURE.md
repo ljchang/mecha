@@ -225,6 +225,18 @@ The parts that bite hardest:
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A model-less local entry takes its name from its server, once per
+  process** (`router::asks_its_server`, the one predicate the probe, the
+  provider and the preflight warning read). Only an entry the owner
+  configured, `kind = "local"`, at a loopback address: the built-in default
+  is never asked, so a hosted-only machine sends nothing to `:8080`. The
+  name is the router's loaded model, else its only one, else nothing — two
+  unloaded models get a warning, never a guess — or a plain server's
+  `model_alias`; it is read from the process snapshot, so a run, its record
+  and an eval's arm all name the same model. A long-lived surface reads it
+  from its own probe and rebuilds when it moves (`follow.rs`, the #347
+  rule); `exp run` refuses a model-less default, because a trial's
+  condition hash would record `(default)`, not the model.
 - **A process that outlives a switch follows it per turn**
   (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
   the Slack connector). An agent resolved at startup names the model loaded
