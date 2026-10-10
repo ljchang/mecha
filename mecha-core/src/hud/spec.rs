@@ -599,7 +599,9 @@ fn has_email_shape(s: &str) -> bool {
             .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
             .collect();
         local
-            && host.rsplit_once('.').is_some_and(|(name, tld)| {
+            // GFM links `x@a.b` out of `x@a.b.`: a sentence's full stop is not
+            // part of the address, so it is not part of the check either.
+            && host.trim_end_matches('.').rsplit_once('.').is_some_and(|(name, tld)| {
                 !name.is_empty() && tld.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
             })
     })

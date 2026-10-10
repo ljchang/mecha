@@ -308,7 +308,11 @@ fn a_scheme_followed_by_a_unicode_space_is_still_an_address() {
 
 #[test]
 fn a_bare_email_is_an_address_since_markdown_autolinks_it() {
-    for s in ["mail alerts@example.org now", "a.b+c@sub.example.co"] {
+    for s in [
+        "mail alerts@example.org now",
+        "a.b+c@sub.example.co",
+        "Questions to alerts@example.org.",
+    ] {
         let at = "/panels/3/markdown";
         let r = refused_at(&with(example(), at, json!(s)), at);
         assert!(
