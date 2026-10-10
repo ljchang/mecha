@@ -1020,38 +1020,58 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
-    let header = format!("[providers.{provider}]");
-    let Some(start) = text.lines().position(|l| l.trim() == header) else {
-        anyhow::bail!("no {header} table in {}", path.display());
-    };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let end = lines
-        .iter()
-        .enumerate()
-        .skip(start + 1)
-        .find(|(_, l)| l.trim_start().starts_with('['))
-        .map(|(i, _)| i)
-        .unwrap_or(lines.len());
-
-    for (key, value) in settings {
-        let assignment = format!("{key} = {value}");
-        match lines[start + 1..end]
-            .iter()
-            .position(|l| l.split('=').next().map(str::trim) == Some(*key))
-        {
-            Some(rel) => lines[start + 1 + rel] = assignment,
-            None => lines.insert(end, assignment),
-        }
-    }
+    let lines =
+        apply_text(&text, provider, settings).with_context(|| format!("in {}", path.display()))?;
     let backup = path.with_extension("toml.bak");
     std::fs::copy(&path, &backup).ok();
-    std::fs::write(&path, lines.join("\n") + "\n")?;
+    std::fs::write(&path, lines)?;
     println!(
         "written to {} (previous copy at {})",
         path.display(),
         backup.display()
     );
     Ok(())
+}
+
+/// The text of `apply`: each setting replaces its key in `[providers.<p>]`,
+/// or is added after the table's last assignment. Not before the next
+/// header — the comment block that introduces the next table sits above it,
+/// and a key put there reads as that table's (found writing F12, where the
+/// starter's `[providers.anthropic]` follows `[providers.local]`).
+fn apply_text(text: &str, provider: &str, settings: &[(&'static str, String)]) -> Result<String> {
+    let header = format!("[providers.{provider}]");
+    let Some(start) = text.lines().position(|l| l.trim() == header) else {
+        anyhow::bail!("no {header} table");
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, l)| l.trim_start().starts_with('['))
+        .map(|(i, _)| i)
+        .unwrap_or(lines.len());
+    let assignment_line = |l: &str| {
+        let t = l.trim_start();
+        !t.is_empty() && !t.starts_with('#') && t.contains('=')
+    };
+    let mut after = (start + 1..end)
+        .rev()
+        .find(|&i| assignment_line(&lines[i]))
+        .map_or(start + 1, |i| i + 1);
+
+    for (key, value) in settings {
+        let assignment = format!("{key} = {value}");
+        match (start + 1..end).find(|&i| lines[i].split('=').next().map(str::trim) == Some(*key)) {
+            Some(i) => lines[i] = assignment,
+            None => {
+                lines.insert(after, assignment);
+                after += 1;
+                end += 1;
+            }
+        }
+    }
+    Ok(lines.join("\n") + "\n")
 }
 
 fn trigger_count(home: &std::path::Path) -> usize {
@@ -1103,6 +1123,36 @@ fn shell_words(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--write` and `setup chat` fill the starter's `[providers.local]`
+    /// (ruling F12) without landing under the next table's introduction,
+    /// and a key already set is replaced in place.
+    #[test]
+    fn settings_land_in_their_own_table_of_the_starter() {
+        let settings = [
+            ("model", "\"served-alias\"".to_string()),
+            ("context_window", "65536".to_string()),
+            ("vision", "true".to_string()),
+        ];
+        let text = apply_text(super::super::config::STARTER, "local", &settings).unwrap();
+        let cfg: toml::Value = toml::from_str(&text).unwrap();
+        let local = &cfg["providers"]["local"];
+        assert_eq!(local["model"].as_str(), Some("served-alias"));
+        assert_eq!(local["context_window"].as_integer(), Some(65536));
+        assert_eq!(local["vision"].as_bool(), Some(true));
+        assert_eq!(cfg["default_provider"].as_str(), Some("local"));
+        let pos = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        assert!(pos("vision = true") < pos("# A hosted model"), "{text}");
+        assert!(pos("base_url") < pos("model = \"served-alias\""), "{text}");
+
+        let again = apply_text(&text, "local", &[("model", "\"other\"".to_string())]).unwrap();
+        assert_eq!(
+            again.matches("model = \"").count(),
+            text.matches("model = \"").count()
+        );
+        assert!(again.contains("model = \"other\"") && !again.contains("served-alias"));
+        assert!(apply_text(&text, "nowhere", &settings).is_err());
+    }
 
     /// `NotAttempted` has two causes, and `--write` must name the right one.
     /// A hosted provider with its key skipped the probe: say nothing was

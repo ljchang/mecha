@@ -67,13 +67,21 @@ a defensible default.
 ### Provider and model
 
 ```toml
-default_provider = "anthropic"
+default_provider = "local"         # a model on this machine — the default
+
+[providers.local]
+kind = "local"
+base_url = "http://127.0.0.1:8080"
 
 [providers.anthropic]
 kind = "anthropic"
 model = "claude-opus-5"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
+
+The default is local, never hosted: `mecha setup chat` installs a model and the
+server for it (Linux) and fills in `[providers.local]`'s `model`,
+`context_window` and `vision` from what the server reports.
 
 `kind` selects the backend: `anthropic` speaks the Anthropic API, and `openai`,
 `openai-compatible` and `local` are three names for the same
@@ -180,7 +188,7 @@ the summary before installing it.
 ## A worked starting config
 
 ```toml
-default_provider = "anthropic"
+default_provider = "local"
 
 [providers.anthropic]
 kind = "anthropic"

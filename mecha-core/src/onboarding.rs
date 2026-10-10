@@ -311,16 +311,30 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     // --- 2. a local server, checked against itself
     if let Some(pcfg) = local {
         match &facts.props {
-            None => steps.push(Step::new(
-                "local-server",
-                "The local server is reachable",
-                Status::Missing,
-                format!(
-                    "Nothing answered at {}. Start the server before the rest of this can be \
-                     checked — every value below is read back from it rather than guessed.",
-                    pcfg.base_url.as_deref().unwrap_or("(no base_url)")
+            // A fresh install's state since ruling F12 (the starter's
+            // default is a local provider on :8080): the remedy is the
+            // command that installs a server, not only "start it" — which
+            // presumes a server the machine may not have.
+            None => steps.push(
+                Step::new(
+                    "local-server",
+                    "The local server is reachable",
+                    Status::Missing,
+                    format!(
+                        "Nothing answered at {}. Start your server, or install one: `mecha \
+                         setup chat` installs llama.cpp, a model recommended for this machine \
+                         and the router that serves it (Linux). The rest of this is checked \
+                         once it answers — every value below is read back from it rather than \
+                         guessed.",
+                        pcfg.base_url.as_deref().unwrap_or("(no base_url)")
+                    ),
+                )
+                .with(
+                    "Install a local chat model and the router that serves it.",
+                    &["mecha", "setup", "chat"],
+                    true,
                 ),
-            )),
+            ),
             Some(props) => {
                 let mismatches =
                     crate::provider::preflight::disagreements(provider_name, pcfg, props);
@@ -1232,8 +1246,18 @@ mod tests {
     use super::*;
     use crate::provider::preflight::{GenerationSettings, Modalities, Props};
 
-    fn cfg_with_local(context_window: u64, vision: Option<bool>) -> Config {
+    /// A config that chats through a hosted provider alone — the shape
+    /// these tests were written against before ruling F12 made a local
+    /// provider the default, and still a config people have.
+    fn hosted_only() -> Config {
         let mut cfg = Config::default();
+        cfg.providers.remove("local");
+        cfg.default_provider = "anthropic".into();
+        cfg
+    }
+
+    fn cfg_with_local(context_window: u64, vision: Option<bool>) -> Config {
+        let mut cfg = hosted_only();
         let mut p = cfg.providers.get("anthropic").cloned().unwrap();
         p.kind = "local".into();
         p.model = Some("qwen3.6-35b-a3b".into());
@@ -1619,7 +1643,7 @@ mod tests {
     /// forward.
     #[test]
     fn a_running_local_server_turns_the_blocking_step_into_something_runnable() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         f.local_probe = LocalProbe::Found(LocalServer {
@@ -1650,7 +1674,7 @@ mod tests {
     /// command that could not help.
     #[test]
     fn with_no_server_the_step_names_the_variable_and_promises_not_to_store_it() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         f.local_probe = LocalProbe::NothingAnswered;
@@ -1682,7 +1706,7 @@ mod tests {
     /// make.
     #[test]
     fn a_provider_naming_no_key_variable_is_not_told_to_set_one() {
-        let mut cfg = Config::default();
+        let mut cfg = hosted_only();
         cfg.providers.get_mut("anthropic").unwrap().api_key_env = None;
         let mut f = facts(None);
         f.provider_credential = false;
@@ -1708,7 +1732,7 @@ mod tests {
     /// behind it, which is this module's own header rule inverted.
     #[test]
     fn an_unattempted_probe_is_never_reported_as_a_failed_one() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
 
@@ -1747,7 +1771,7 @@ mod tests {
     /// never mentioned the provider sitting in their own config.
     #[test]
     fn a_configured_but_unselected_local_provider_is_named_as_the_way_out() {
-        let mut cfg = Config::default();
+        let mut cfg = hosted_only();
         let mut local = cfg.providers.get("anthropic").cloned().unwrap();
         local.kind = "local".into();
         local.base_url = Some("http://127.0.0.1:8080".into());
@@ -1820,7 +1844,7 @@ mod tests {
     /// nobody ever learned about it.
     #[test]
     fn a_missing_config_file_is_offered_and_a_present_one_is_not_mentioned() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.config_file = false;
         let s = plan(&cfg, "anthropic", &f);
@@ -1852,7 +1876,7 @@ mod tests {
     /// enforced would be one anybody could edit around.
     #[test]
     fn a_step_that_is_not_optional_cannot_be_declined_even_by_editing_the_file() {
-        let mut cfg = Config::default();
+        let mut cfg = hosted_only();
         // A provider with no credential and no local server: the one step
         // that blocks every other.
         let p = cfg.providers.get_mut("anthropic").unwrap();
@@ -1889,7 +1913,7 @@ mod tests {
     /// being refusable.
     #[test]
     fn only_genuinely_optional_things_are_declinable() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         // Every feature unanswered: each is a coherent "I don't want this".
@@ -1933,7 +1957,7 @@ mod tests {
     /// Caught by running the command; kept by this.
     #[test]
     fn no_step_detail_carries_its_source_indentation() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         f.charter = CharterState::Empty;
@@ -2249,7 +2273,10 @@ mod tests {
         let cfg = cfg_with_local(262144, Some(true));
         let steps = plan(&cfg, "local", &facts(None));
         assert_eq!(step(&steps, "local-server").status, Status::Missing);
-        assert!(step(&steps, "local-server").remedy.is_none());
+        // Nothing answering is a fresh install's state since ruling F12, so
+        // the remedy is the command that installs a server.
+        let remedy = step(&steps, "local-server").remedy.as_ref().unwrap();
+        assert_eq!(remedy.argv, ["mecha", "setup", "chat"]);
     }
 
     /// "Cannot tell from here" is not "not done". A person told their mail is

@@ -84,16 +84,25 @@ impl Drop for Home {
 /// is the thing that was just compiled, which is the distinction
 /// `CLAUDE.md`'s "a fresh mtime is not a fresh build" rule is about.
 fn mecha(home: &Home, args: &[&str]) -> Output {
-    run(home, args, false)
+    run(home, args, false, false)
 }
 
-/// The same, with a credential in the environment — for the one test whose
-/// subject is what a *finished* install looks like.
+/// The same, with a hosted provider selected and a credential for it in the
+/// environment — for the tests whose subject is what a *finished* install
+/// looks like. Selected, not defaulted: since ruling F12 the default is a
+/// local server on :8080, and whether one answers there is a fact about the
+/// developer's machine.
 fn mecha_with_key(home: &Home, args: &[&str]) -> Output {
-    run(home, args, true)
+    run(home, args, true, true)
 }
 
-fn run(home: &Home, args: &[&str], with_key: bool) -> Output {
+/// A hosted provider selected and **no** credential for it: the install
+/// whose provider step is a missing key, whatever serves on :8080.
+fn mecha_hosted(home: &Home, args: &[&str]) -> Output {
+    run(home, args, false, true)
+}
+
+fn run(home: &Home, args: &[&str], with_key: bool, hosted: bool) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mecha"));
     cmd.args(args)
         .current_dir(&home.work)
@@ -115,14 +124,20 @@ fn run(home: &Home, args: &[&str], with_key: bool) -> Output {
         // *configured* empty on some code paths.
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OPENAI_API_KEY")
+        // Likewise a provider or model chosen in the developer's shell.
+        .env_remove("MECHA_PROVIDER")
+        .env_remove("MECHA_MODEL")
         // Nothing here should ever open an editor. If a code path tries,
         // `true` exits 0 having touched nothing, so the test reports the
         // wrong outcome rather than hanging a CI job forever.
         .env("VISUAL", "true")
         .env("EDITOR", "true");
+    if hosted {
+        cmd.env("MECHA_PROVIDER", "anthropic");
+    }
     if with_key {
         // Never used to reach anything: `setup` only checks that the
-        // variable the provider names resolves, and the default provider is
+        // variable the provider names resolves, and the selected provider is
         // not `local`, so nothing on this path opens a socket.
         cmd.env("ANTHROPIC_API_KEY", "not-a-real-key");
     }
@@ -190,7 +205,7 @@ fn a_fresh_install_says_what_it_needs() {
     // one is.
     for id in [
         "config-file",
-        "provider-credential",
+        "local-server",
         "mail",
         "docs",
         "slack",
@@ -211,7 +226,7 @@ fn a_fresh_install_says_what_it_needs() {
     // Ordered by what blocks what: somewhere to put settings, then something
     // that can answer, then everything those two make testable. A new user
     // wiring up mail against a provider that cannot answer is an hour spent
-    // on the wrong end.
+    // on the wrong end. Since ruling F12 the something is a local server.
     let order: Vec<&str> = steps
         .iter()
         .map(|s| s["id"].as_str().unwrap())
@@ -219,8 +234,13 @@ fn a_fresh_install_says_what_it_needs() {
         .collect();
     assert_eq!(
         order,
-        ["config-file", "provider-credential"],
+        ["config-file", "local-server"],
         "the blocking steps come first: {steps:#?}"
+    );
+    // Never a hosted provider's key: a fresh install does not default to one.
+    assert!(
+        steps.iter().all(|s| s["id"] != "provider-credential"),
+        "{steps:#?}"
     );
 }
 
@@ -241,7 +261,30 @@ fn a_fresh_install_says_what_it_needs() {
 #[test]
 fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
     let home = Home::new("blocking");
+
+    // A fresh install: the local server is the blocking step (ruling F12).
     let s = steps(&mecha(&home, &["setup", "--json"]));
+    let local = step(&s, "local-server");
+    let argv = |step: &serde_json::Value| -> Vec<String> {
+        step["remedy"]["argv"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default()
+    };
+    match local["status"].as_str().unwrap() {
+        // Nothing answers here: the way out installs one, in setup's own verb.
+        "missing" => assert_eq!(argv(local), ["mecha", "setup", "chat"]),
+        // The developer's own server answers and the starter names no model:
+        // writing down what it serves is the way out.
+        "wrong" => assert_eq!(argv(local), ["mecha", "setup", "--write"]),
+        // It answers and agrees: nothing is blocked.
+        "done" => {}
+        other => panic!("`local-server` is {other}: {local:#}"),
+    }
+    assert_ne!(local["status"], "declined");
+
+    // A hosted provider selected without its key.
+    let s = steps(&mecha_hosted(&home, &["setup", "--json"]));
     let step = step(&s, "provider-credential");
     let detail = step["detail"].as_str().unwrap();
 
@@ -255,21 +298,12 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
         ),
         // Nothing is running: the fix is a secret, which no command may set
         // on somebody's behalf, so the detail carries the exact variable and
-        // both ways forward instead.
-        None => {
-            assert!(
-                detail.contains("ANTHROPIC_API_KEY"),
-                "name the variable rather than describing it: {detail}"
-            );
-            assert!(
-                detail.contains("never the key itself"),
-                "say where the secret does not go: {detail}"
-            );
-            assert!(
-                detail.contains("locally"),
-                "name the other way out, which is what this project is for: {detail}"
-            );
-        }
+        // both ways forward instead — or, with the default's local provider
+        // configured beside it, names that provider as the way out.
+        None => assert!(
+            detail.contains("ANTHROPIC_API_KEY") || detail.contains("`local`"),
+            "name the variable, or the local provider already configured: {detail}"
+        ),
     }
 
     // Whichever branch, it is never something you can wave away.
@@ -586,23 +620,27 @@ fn a_credential_cannot_be_declined_even_by_editing_the_store() {
     let home = Home::new("undeclinable");
     std::fs::write(
         home.path().join("setup-declined.json"),
-        r#"{"declined": ["provider-credential", "mail", "docs", "slack", "graph", "charter"]}"#,
+        r#"{"declined": ["provider-credential", "local-server", "mail", "docs", "slack", "graph", "charter"]}"#,
     )
     .unwrap();
 
-    let s = steps(&mecha(&home, &["setup", "--json"]));
+    let s = steps(&mecha_hosted(&home, &["setup", "--json"]));
     assert_eq!(
         step(&s, "provider-credential")["status"],
         "missing",
         "a credential is not a feature somebody can decline"
     );
+    // Nor is the default's local server: whatever answers on :8080, a
+    // decline written for it is not honoured.
+    let local = steps(&mecha(&home, &["setup", "--json"]));
+    assert_ne!(step(&local, "local-server")["status"], "declined");
     // The genuinely optional ones still honour it, so this cannot pass on a
     // decline that never worked at all.
     assert_eq!(step(&s, "slack")["status"], "declined");
 
     // And the install is still reported as unfinished.
     assert!(
-        !mecha(&home, &["setup"]).status.success(),
+        !mecha_hosted(&home, &["setup"]).status.success(),
         "an install that cannot answer a prompt is not a finished one"
     );
 }

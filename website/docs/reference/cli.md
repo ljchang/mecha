@@ -1555,11 +1555,14 @@ installs mecha's pinned llama.cpp first if the machine has none, then the
 router: a systemd user service on `:8080`, its launcher in
 `~/.mecha/sidecars/bin/`, and its presets in `~/.mecha/sidecars/router/models.ini`.
 It starts the router, waits for the model to load — several minutes for a large
-one — and asks it which model it serves. A model you brought stays yours: `mecha features
-enable` never offers the recommended one over it, and running `setup chat` again
-is how to change it.
+one — and asks it which model it serves. A model you brought stays yours, and
+running `setup chat` again is how to change it, or to fetch the model again if
+its files went missing; `mecha features enable` never installs the chat model.
 
-When no local provider is configured yet, it then offers to write one, from
+The starter config's `[providers.local]` already names this router, so on a
+fresh install it shows what the router reports — model name, context window and
+vision — and asks before writing them into that table. When no local provider
+is configured at all, it offers to write one, from
 what the router reports about the model it installed — the same write-and-confirm
 step as `mecha setup --write`, so the model name, context window and vision are
 read off the server, never typed. When one already names this router — `setup
@@ -1801,8 +1804,10 @@ packages and the pinned model, all under `~/.mecha/sidecars/layout/` — and the
 llama.cpp engine: the official release for this machine (CUDA by the NVIDIA
 driver's version, Metal on Apple silicon, else the CPU build), checked by
 sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. The
-engine is offered only where it runs something: when the chat model is served
-from this machine, or the feature runs an embeddings or OCR server. A machine
+engine is offered only where the feature runs something on it — an embeddings
+or OCR server. **The chat model is never `enable`'s**: its engine, model and
+router are `mecha setup chat`'s, where the model is chosen, so switching on the
+web app does not stand behind a chat model's download. A machine
 whose NVIDIA device `nvidia-smi` cannot read gets no engine rather than the
 CPU build. On Linux it also covers the **embeddings and OCR servers** — the
 pinned model, a launcher under `~/.mecha/sidecars/bin/`, and the three systemd
