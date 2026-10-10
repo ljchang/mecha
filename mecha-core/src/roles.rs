@@ -23,11 +23,16 @@ use crate::scene::Where;
 /// interacting people adjacent. The sentence on anyone `together` does not
 /// name is a3's too: without it, a third person stood between two who hand
 /// something over, and the reach crossed them (4 of 4); with it, at the end
-/// of the group, watching (4 of 4).
+/// of the group, watching (4 of 4). The sentence on naming whom a part acts
+/// on is for layers: the placing pass swaps names for image tags, and a
+/// pronoun has nothing to swap, so an act on the other person's clothes was
+/// drawn on the actor's own, 3 of 3 (mecha-a3, 2026-10-10).
 pub const SPLIT_SYSTEM: &str = "You place the people of a picture and give each their own part. \
 Given the people (by name) and `together`, one sentence about what they do with each other, \
 answer each person's `doing`: their pose and their own part of that sentence, naming whom they \
-act on, so that every detail of `together` is in someone's `doing` and nothing is added. Give \
+act on, so that every detail of `together` is in someone's `doing` and nothing is added. Name \
+anyone else a `doing` acts on, and anything of theirs, by name (\"Maya's coat\"), never by he, \
+she, him, her or his. Give \
 `where` (left, centre, right or background) so that people who touch or hand something to each \
 other stand next to each other. Anyone `together` does not name stands at one end of the group \
 (left or right, never between the others) with a quiet part of their own, such as watching. \
@@ -365,6 +370,7 @@ mod tests {
     fn the_request_is_quarantined_and_carries_the_names_and_the_sentence() {
         let r = split_request("m", &names(), "Maya hands John a cup", true);
         assert!(SPLIT_SYSTEM.contains("never between the others"));
+        assert!(SPLIT_SYSTEM.contains("never by he, she, him, her or his"));
         assert!(r.tools.is_empty());
         assert_eq!(r.messages.len(), 1);
         assert_eq!(r.think, Some(false));
