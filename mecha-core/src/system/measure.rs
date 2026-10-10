@@ -307,6 +307,8 @@ pub struct Reader {
     home: Option<PathBuf>,
     /// `[messages] dir`, when the config moves the mailbox.
     messages: Option<PathBuf>,
+    /// `[agent] timezone`: where a trigger with no zone of its own fires.
+    timezone: Option<chrono_tz::Tz>,
     /// Delegated-task markers, read once so `runs.live` and `tasks.running`
     /// count the same moment: (live, unreadable).
     tasks: OnceCell<Result<(usize, usize), Reading>>,
@@ -372,10 +374,15 @@ impl Reader {
         self
     }
 
-    /// Read the mailbox at `dir` (`[messages] dir`) rather than the default
-    /// one. `None` keeps the default.
-    pub fn with_messages(mut self, dir: Option<PathBuf>) -> Reader {
-        self.messages = dir;
+    /// What the operator's config says about where things are, read the way
+    /// their owners read it: the mailbox `[messages] dir` moves, and the zone
+    /// a trigger with none of its own fires in (`[agent] timezone`). `None`,
+    /// a config that did not load, keeps the defaults.
+    pub fn configured(mut self, cfg: Option<&crate::config::Config>) -> Reader {
+        if let Some(cfg) = cfg {
+            self.messages = cfg.messages.dir.clone();
+            self.timezone = cfg.agent.timezone();
+        }
         self
     }
 
@@ -414,7 +421,11 @@ impl Reader {
                     // No store is no triggers, which missed and failed nothing.
                     None => Ok(crate::trigger::Tally::default()),
                     Some(store) => store
-                        .tally(chrono::Utc::now(), chrono::Duration::hours(24))
+                        .tally(
+                            chrono::Utc::now(),
+                            chrono::Duration::hours(24),
+                            self.timezone,
+                        )
                         .map_err(|e| Reading::unread(format!("{e:#}"))),
                 }
             })

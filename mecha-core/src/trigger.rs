@@ -1075,7 +1075,17 @@ impl TriggerStore {
     ///
     /// A trigger file that does not load cannot be walked: it is counted in
     /// `unloadable`, and the missed count is then a floor.
-    pub fn tally(&self, now: DateTime<Utc>, window: chrono::Duration) -> Result<Tally> {
+    ///
+    /// `fallback_tz` is `[agent] timezone`, exactly as the scheduler's tick
+    /// passes it to [`Trigger::due`]: a trigger with no `timezone` line fires
+    /// in that zone, and walked in any other it would be charged for slots
+    /// that never existed while the real one went unchecked (review of #641).
+    pub fn tally(
+        &self,
+        now: DateTime<Utc>,
+        window: chrono::Duration,
+        fallback_tz: Option<Tz>,
+    ) -> Result<Tally> {
         let since = now - window;
         let (triggers, problems) = self.list()?;
         let mut ran: BTreeMap<String, std::collections::BTreeSet<DateTime<Utc>>> = BTreeMap::new();
@@ -1108,7 +1118,7 @@ impl TriggerStore {
                 .max()
                 .unwrap_or(since);
             let in_flight = self.markers().peek(&t.name).and_then(|m| m.slot);
-            let tz = t.tz(None);
+            let tz = t.tz(fallback_tz);
             let mut at = from;
             // A once-a-minute schedule has 1440 slots a day; the bound is
             // against an expression this walk has not imagined.
@@ -1373,7 +1383,11 @@ mod tests {
             .mark_running("queue", Some(utc("2031-04-17T12:00:00Z")))
             .unwrap();
         let t = store
-            .tally(utc("2031-04-17T12:30:00Z"), chrono::Duration::hours(24))
+            .tally(
+                utc("2031-04-17T12:30:00Z"),
+                chrono::Duration::hours(24),
+                None,
+            )
             .unwrap();
         assert_eq!(
             t,
@@ -1388,9 +1402,42 @@ mod tests {
 
         std::fs::write(root.join("broken.toml"), "schedule = [").unwrap();
         let t = store
-            .tally(utc("2031-04-17T12:30:00Z"), chrono::Duration::hours(24))
+            .tally(
+                utc("2031-04-17T12:30:00Z"),
+                chrono::Duration::hours(24),
+                None,
+            )
             .unwrap();
         assert_eq!(t.unloadable, 1, "a file that does not load is said");
+    }
+
+    /// A trigger with no `timezone` line fires in `[agent] timezone`, and is
+    /// walked in it: 09:00 in New York is 13:00 UTC in April, and that is
+    /// the slot owed — never 09:00 UTC (review of #641).
+    #[test]
+    fn the_tally_walks_a_zoneless_trigger_in_the_agents_timezone() {
+        let root = scratch("tally-zone");
+        let store = TriggerStore::open(&root).unwrap();
+        let mut t = Trigger::new("brief", "0 9 * * *".parse().unwrap(), "brief me");
+        t.created_at = Some(utc("2031-04-16T14:00:00Z"));
+        store.save(&t).unwrap();
+        store
+            .append_run(&row(
+                "brief",
+                Some("2031-04-17T13:00:00Z"),
+                "2031-04-17T13:00:30Z",
+                RunStatus::Ok,
+            ))
+            .unwrap();
+        let now = utc("2031-04-17T13:30:00Z");
+        let day = chrono::Duration::hours(24);
+        let new_york: Tz = "America/New_York".parse().unwrap();
+        assert_eq!(store.tally(now, day, Some(new_york)).unwrap().missed, 0);
+        assert_eq!(
+            store.tally(now, day, None).unwrap().missed,
+            1,
+            "walked in UTC, 09:00Z is charged and the real slot unchecked"
+        );
     }
 
     /// A trigger is charged only for slots since its file last changed: an
@@ -1410,12 +1457,20 @@ mod tests {
             .set_modified(edited)
             .unwrap();
         let t = store
-            .tally(utc("2031-04-17T12:30:00Z"), chrono::Duration::hours(24))
+            .tally(
+                utc("2031-04-17T12:30:00Z"),
+                chrono::Duration::hours(24),
+                None,
+            )
             .unwrap();
         assert_eq!(t.missed, 2, "11:00 and 12:00, nothing before the edit");
         // The grace: a slot a minute old is not missed yet.
         let t = store
-            .tally(utc("2031-04-17T12:01:00Z"), chrono::Duration::hours(24))
+            .tally(
+                utc("2031-04-17T12:01:00Z"),
+                chrono::Duration::hours(24),
+                None,
+            )
             .unwrap();
         assert_eq!(t.missed, 1, "only 11:00");
     }

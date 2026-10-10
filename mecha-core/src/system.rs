@@ -251,9 +251,9 @@ pub fn fold(
 pub fn collect(
     at: DateTime<Utc>,
     since: Option<DateTime<Utc>>,
-    messages: Option<PathBuf>,
+    cfg: Option<&crate::config::Config>,
 ) -> Result<Sample> {
-    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET).with_messages(messages);
+    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET).configured(cfg);
     let mem = reader.meminfo().map_err(|r| {
         anyhow::anyhow!(
             "/proc/meminfo could not be read ({}); no sample recorded",

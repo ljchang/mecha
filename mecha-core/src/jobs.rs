@@ -293,6 +293,30 @@ impl Drop for JobQueue {
     }
 }
 
+/// Remove the markers, and the half-written ones beside them, whose host is
+/// gone: by the pid inside, or the one leading the name when the file does
+/// not parse. A file whose name carries no pid is left for a person.
+fn sweep_dead_markers(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.ends_with(".json") || name.ends_with(".json.tmp")) {
+            continue;
+        }
+        let pid = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<MarkerFile>(&b).ok())
+            .map(|m| m.pid)
+            .or_else(|| name.split('-').next()?.parse().ok());
+        if pid.is_some_and(|pid| !crate::process_alive(pid)) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Where a mecha home keeps the job markers.
 pub fn marker_dir_under(home: &std::path::Path) -> std::path::PathBuf {
     home.join("jobs")
@@ -408,7 +432,17 @@ impl JobQueue {
     /// Counts only: no key, no tool, no label, so a job in an incognito chat
     /// is a number like any other. Opt-in, by the host: a queue a test
     /// builds writes nothing. `name` tells this process's queues apart.
+    ///
+    /// **A host sweeps the dead hosts' markers as it starts.** `Drop` is the
+    /// only other remover, and a killed or crashed host never runs it, so
+    /// without this the directory gained a file per restart for every scan
+    /// to walk (review of #641). The host owns this directory; a reader of it
+    /// never sweeps.
     pub fn set_marker(&self, dir: &std::path::Path, name: &str) {
+        if let Err(e) = crate::create_private_dir(dir) {
+            tracing::debug!("job markers in {} unavailable: {e}", dir.display());
+        }
+        sweep_dead_markers(dir);
         let path = dir.join(format!("{}-{name}.json", std::process::id()));
         *self.marker.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
         self.write_marker();
@@ -434,14 +468,11 @@ impl JobQueue {
             running,
             waiting,
         };
-        let written = path
-            .parent()
-            .map_or(Ok(()), crate::create_private_dir)
-            .and_then(|()| {
-                let tmp = path.with_extension("json.tmp");
-                std::fs::write(&tmp, serde_json::to_vec(&count)?)?;
-                std::fs::rename(&tmp, path)
-            });
+        let tmp = path.with_extension("json.tmp");
+        let written = serde_json::to_vec(&count)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&tmp, bytes))
+            .and_then(|()| std::fs::rename(&tmp, path));
         if let Err(e) = written {
             tracing::debug!("job marker {} not written: {e}", path.display());
         }
@@ -1013,14 +1044,30 @@ mod tests {
         assert_eq!(count_live(&dir).unwrap(), JobCount::default());
 
         // Another host, gone without removing its marker: not counted.
-        std::fs::write(
-            dir.join("4294967295-chat.json"),
-            r#"{"pid":4294967295,"running":4,"waiting":0}"#,
-        )
-        .unwrap();
+        let dead = dir.join("4294967295-chat.json");
+        std::fs::write(&dead, r#"{"pid":4294967295,"running":4,"waiting":0}"#).unwrap();
         assert_eq!(count_live(&dir).unwrap().running, 0);
+        assert!(dead.exists(), "a reader swept a marker");
+        let torn = dir.join("4294967295-persona.json.tmp");
+        std::fs::write(&torn, "{").unwrap();
         std::fs::write(dir.join("torn.json"), "{").unwrap();
         assert_eq!(count_live(&dir).unwrap().unreadable, 1);
+
+        // A host starting sweeps what dead hosts left, and only that.
+        let (next, _) = collecting();
+        next.set_marker(&dir, "persona");
+        assert!(
+            !dead.exists() && !torn.exists(),
+            "a dead host's marker stayed"
+        );
+        assert!(
+            dir.join("torn.json").exists(),
+            "a file naming no pid was swept"
+        );
+        assert!(dir
+            .join(format!("{}-chat.json", std::process::id()))
+            .exists());
+        drop(next);
 
         // The ended jobs' tasks let go of their clones of the queue.
         for _ in 0..200 {
