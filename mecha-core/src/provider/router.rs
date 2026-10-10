@@ -227,12 +227,102 @@ pub fn resident(models: &[RouterModel]) -> Option<&str> {
 struct Snapshot {
     seen: Vec<Seen>,
     follows: bool,
+    /// What each model-less local entry's server serves, by normalised base:
+    /// the name its requests carry (see [`unnamed_model`]).
+    unnamed: Vec<(String, String)>,
 }
 
 static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
     seen: Vec::new(),
     follows: false,
+    unnamed: Vec::new(),
 });
+
+/// The servers a request would reach with no model to name: entries the
+/// owner configured as `kind = "local"` on this machine, with no `model`.
+/// The built-in entry is left out — it is a default nobody chose, and asking
+/// `:8080` on every start of a hosted-only machine would be a request nobody
+/// asked for (and would make a test's reset depend on the box).
+fn unnamed_bases(cfg: &Config) -> Vec<String> {
+    let mut bases: Vec<String> = cfg
+        .providers
+        .values()
+        .filter(|p| p.configured_local() && p.model.is_none())
+        .filter_map(|p| p.base_url.as_deref())
+        .filter(|u| is_loopback(u))
+        .map(base)
+        .collect();
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// Which model a request to a router names when its entry names none: the
+/// resident one, else the only one it lists — the first request then loads
+/// it. `None` when several are listed and none is resident, since naming one
+/// would be a guess and could evict nothing but would load a stranger.
+pub fn name_for(models: &[RouterModel]) -> Option<&str> {
+    if let Some(r) = resident(models) {
+        return Some(r);
+    }
+    match models {
+        [only] => Some(only.id.as_str()),
+        _ => None,
+    }
+}
+
+/// What an entry with no `model` at `base_url` asks for in this process —
+/// what its server said it serves when [`observe`] looked. `None` when it was
+/// not asked (off-machine, not configured by the owner) or did not say.
+///
+/// Read, like [`follow`], from the process snapshot: a request must name a
+/// model on a router (an unnamed one is not served), and a record must name
+/// the model that answered — a placeholder like `gpt-4o-mini` is wrong on
+/// both counts (the known limitation of #627).
+pub fn unnamed_model(base_url: &str) -> Option<String> {
+    let b = base(base_url);
+    let s = SNAPSHOT.read().ok()?;
+    s.unnamed
+        .iter()
+        .find(|(at, _)| *at == b)
+        .map(|(_, m)| m.clone())
+}
+
+/// Ask each model-less entry's server what it serves. Warnings for a router
+/// that cannot be answered for: several models, none loaded.
+async fn observe_unnamed(cfg: &Config) -> (Vec<(String, String)>, Vec<String>) {
+    let mut named = Vec::new();
+    let mut warnings = Vec::new();
+    for b in unnamed_bases(cfg) {
+        match is_router(&b).await {
+            Some(true) => {
+                let Some(http) = client(Duration::from_secs(2)) else {
+                    continue;
+                };
+                let Some(list) = list_on(&http, &b).await else {
+                    continue;
+                };
+                match name_for(&list) {
+                    Some(m) => named.push((b, m.to_string())),
+                    None if readable(&list) => warnings.push(format!(
+                        "a local provider at {b} names no `model`, and the router there serves                          several with none loaded — so a run cannot know which to ask for. Set                          `model` in its table (`mecha setup --write` writes it once one is                          loaded)."
+                    )),
+                    None => {}
+                }
+            }
+            Some(false) => {
+                if let Some(m) = crate::provider::preflight::fetch(&b, None)
+                    .await
+                    .and_then(|p| p.model_alias)
+                {
+                    named.push((b, m));
+                }
+            }
+            None => {}
+        }
+    }
+    (named, warnings)
+}
 
 /// Snapshot every router a `follow_loaded` provider points at, replacing the
 /// last snapshot. `follows` is whether this process's default provider may
@@ -330,6 +420,8 @@ pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen
         Vec::new()
     };
     warnings.extend(unreadable);
+    let (unnamed, unnamed_warnings) = observe_unnamed(cfg).await;
+    warnings.extend(unnamed_warnings);
     for (name, p) in &cfg.providers {
         if p.follow_loaded && !follows_here(p) {
             warnings.push(format!(
@@ -346,6 +438,7 @@ pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen
         *slot = Snapshot {
             seen: seen.clone(),
             follows,
+            unnamed,
         };
     }
     (warnings, seen)
@@ -1139,6 +1232,85 @@ mod tests {
         c.providers
             .insert("gemma26".into(), entry("gemma-4-26b-a4b", url, false));
         c
+    }
+
+    /// A model-less entry's request names the router's resident model, else
+    /// its only one; with several and none loaded, nothing is guessed.
+    #[test]
+    fn a_model_less_entry_names_the_resident_or_the_only_model() {
+        let m = |id: &str, status: &str| RouterModel {
+            id: id.into(),
+            status: Status {
+                value: status.into(),
+                ..Default::default()
+            },
+        };
+        assert_eq!(name_for(&[m("a", "unloaded"), m("b", "loaded")]), Some("b"));
+        assert_eq!(name_for(&[m("a", "unloaded")]), Some("a"));
+        assert_eq!(name_for(&[m("a", "unloaded"), m("b", "unloaded")]), None);
+        assert_eq!(name_for(&[]), None);
+    }
+
+    /// The wiring: `observe` asks a model-less entry's server, and the
+    /// provider built from that entry names what it serves — never
+    /// `gpt-4o-mini` (the known limitation of #627). A router with one model
+    /// listed and nothing loaded, then a plain llama-server.
+    #[tokio::test]
+    async fn a_model_less_local_entry_asks_for_what_its_server_serves() {
+        use crate::provider::Provider;
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let built = |c: &Config| {
+            crate::provider::openai::OpenAiCompatible::from_config(&c.providers["local"])
+                .unwrap()
+                .default_model()
+                .to_string()
+        };
+        let model_less = |url: &str| {
+            let mut c = Config {
+                default_provider: "local".into(),
+                ..Default::default()
+            };
+            let mut e = entry("unused", url, false);
+            e.model = None;
+            c.providers.insert("local".into(), e);
+            c
+        };
+
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"unloaded"}}]}"#,
+        ])
+        .await;
+        let c = model_less(&url);
+        assert!(observe(&c, true).await.is_empty());
+        server.await.unwrap();
+        assert_eq!(built(&c), "qwen3.6-35b-a3b");
+
+        let (url, server) = stub(vec![
+            r#"{"model_alias":"plain-model","default_generation_settings":{"n_ctx":8192}}"#,
+            r#"{"model_alias":"plain-model","default_generation_settings":{"n_ctx":8192}}"#,
+        ])
+        .await;
+        let c = model_less(&url);
+        observe(&c, true).await;
+        server.await.unwrap();
+        assert_eq!(built(&c), "plain-model");
+
+        // Several, none loaded: a warning, and no name made up.
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"a","status":{"value":"unloaded"}},{"id":"b","status":{"value":"unloaded"}}]}"#,
+        ])
+        .await;
+        let c = model_less(&url);
+        let w = observe(&c, true).await;
+        server.await.unwrap();
+        assert!(w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
+        assert_eq!(unnamed_model(&url), None);
+
+        // The built-in entry is never asked: a reset must not reach :8080.
+        assert!(unnamed_bases(&Config::default()).is_empty());
+        observe(&Config::default(), false).await;
     }
 
     /// The wiring, not just the pure half: `observe` reads a router, and
