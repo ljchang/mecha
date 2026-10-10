@@ -1,9 +1,10 @@
 # Region-targeted image edits — research
 
-**2026-09-29, measured 2026-09-30; §7 written and measured 2026-10-09.** One question: *can Qwen-Image 2.1 be told where to edit — a
-painted area, a box, a mask — and if so, which way of telling it keeps the
-rest of the picture, lands the change, and costs least, so the web chat's
-Edit button can become a modal where the owner paints or boxes the part to
+**2026-09-29, measured 2026-09-30; §7 written and measured 2026-10-09.**
+One question: *can Qwen-Image 2.1 be told where to edit — a painted
+area, a box, a mask — and if so, which way of telling it keeps the rest of
+the picture, lands the change, and costs least, so the web chat's Edit
+button can become a modal where the owner paints or boxes the part to
 change?*
 
 It follows #408 (HISTORY, 2026-09-29), which found that an edit comes back
@@ -136,10 +137,15 @@ form. It was not re-run with the named subject.
   so a lower number there is evidence of failure, not of keeping anything.
   The red box never survived into a result (at most 0.5% of its outline
   stayed red).
-- **C is seamless and exact; on the pose it did no better than this run's
+- **C is exact, and seamless on this one textured picture (§7.7 later saw
+  a seam on a smooth one); on the pose it did no better than this run's
   weak baseline.** Nothing outside
   the mask moved, and at the boundary the new pixels continue the old ones.
-  In T2 the grass, the blanket and the man's arm run straight through. It
+  In T2 the grass, the blanket and the man's arm run straight through.
+  *Seamless held on this one picture, not everywhere: §7.7 found a faint
+  rectangular seam where a removal's mask edge crossed a smooth
+  background, the feathered edge of the composite, on one scene at
+  n = 4.* It
   landed every swap and every detail, but it stood the woman up less often
   than this run's plain edit did: 1 clear against 2, with the weaker wording
   above. The reference and the source latent still show her sitting.
@@ -267,9 +273,11 @@ Set, or narrowed, by the results:
 - Whether a region without a note falls back to the chat message as the
   instruction.
 
-Set later by §7.6–7.7 (2026-10-09):
+Set later by §7.6–7.8 (2026-10-09 and 10):
 - Whether annotations on several regions run as one edit or one per region:
   one edit, with each region's words in a colour legend (§7.7).
+- M2 or M1, which §7.7 left to the owner (M1's marks on the canvas against
+  about 20 s per edit): the owner chose M2 on 2026-10-10 (§7.8).
 
 ## 7. Several regions, each with its own instruction (2026-10-09)
 
@@ -363,7 +371,10 @@ cannot rule out designed away.
     sent empty. The owner is asked, never guessed for.
 - **Colours chosen against the picture.** The palette is **eight**
   saturated hues, and at load the page picks the four least present in the
-  picture, so there is always a choice: Qwen asks for colours "that appear
+  picture (`pickColours`, by a count of near pixels). Least present is not
+  absent: there is no threshold, so a picture full of all eight hues still
+  gets four, and the outline then sits on a colour the picture also has.
+  There is always a choice: Qwen asks for colours "that appear
   nowhere else in the frame". With four hues for four regions there would
   be nothing to pick.
 - **What the page sends.** It sends one colour-indexed **region index** PNG
@@ -373,11 +384,16 @@ cannot rule out designed away.
   The panel's turn then carries `regions: [{colour, words}]` beside it.
   - The server derives everything from that one file: the union mask for C,
     each region's own mask (M3), and the outline image (M1 and M2).
-  - **The file's contract.** Strokes are drawn without smoothing, and any
-    resample to the picture's size is nearest-neighbour, so every pixel is
-    either a palette colour or black. A pixel that matches no palette colour
-    is unpainted, never the nearest region, since an anti-aliased rim
-    between two adjacent regions must not fall to a third. The server
+  - **The file's contract.** Every pixel of the file is exactly a palette
+    colour or black. The strokes themselves cannot promise that, since
+    Canvas 2D anti-aliases every path, so the page quantises when it builds
+    the file: each region is drawn on its own layer, and a pixel takes that
+    region's colour only where the layer's alpha is over half, black
+    otherwise (`indexPixels` in `web/src/lib/image-edit.js`, as built in
+    #623). The server reads the file by exact value (`prepare_regions`), so
+    a pixel that matches no palette colour is unpainted, never the nearest
+    region, and an anti-aliased rim between two adjacent regions cannot
+    fall to a third. The server
     refuses a typed `regions` entry whose colour has no pixels, rather than
     sending its words with no region.
   - **It is an index, not a mask.** It is binarised per colour (a pixel of

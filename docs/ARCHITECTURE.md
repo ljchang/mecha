@@ -945,8 +945,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   picture is resized to the encoder's own canvas (`edit_canvas`, the node's
   sizing with Python's round-half-even), and the mask is grown by about 21
   px and feathered by about 16 (`prepare_mask`; σ = 12 thresholded at 10,
-  then σ = 8), the setting a 60-image comparison found seamless
-  (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424). The graph samples on the
+  then σ = 8), the setting a 60-image comparison on one textured picture
+  found seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
+  saw a faint rectangular seam where the edge crossed a smooth background,
+  on one scene at n = 4, open in HANDOFF. The graph samples on the
   encoded picture under a `SetLatentNoiseMask`. The result is then laid over
   the original in mecha's code (`composite_masked`), not the server's, so
   every pixel beyond the grown, feathered edge (up to about 37 px outside
@@ -956,8 +958,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   already is, and the result says so. A dab too small to survive the grow
   step is refused rather than silently changing nothing. The near-copy check
   reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. Measured seamless, and landing 8 of 8
-  local edits, in `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose,
+  masked edit would look unchanged. Measured seamless on one textured
+  picture, and landing 8 of 8 local edits, in
+  `IMAGE-REGION-EDIT-RESEARCH.md` §4, with §7.7's one smooth-background
+  seam the exception seen so far. It under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
   nothing, or was painted over a picture of another shape, is refused before
   the GPU. A `size` beside a mask is set aside and said, never refused,
@@ -970,7 +974,11 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints
   up to four regions in colours chosen against the picture, and sends a
   colour-indexed picture of them as `mask` with `regions: [{colour, words}]`.
-  `prepare_regions` reads the index by exact colour before `prepare_mask`.
+  `prepare_regions` reads the index by exact colour before `prepare_mask`,
+  which is safe only because the page quantises it: each region's layer at
+  alpha > 127 into its exact colour, black otherwise (`indexPixels` in
+  `web/src/lib/image-edit.js`). A page that sent anti-aliased strokes
+  as they are would lose every rim pixel.
   That gives each region the identity its empty check and outline need, and
   masks only the colours the call names, where the luma threshold alone
   would mask any bright pixel. A region with no pixels is refused. The union is the mask, so the composite
@@ -5910,20 +5918,39 @@ the owner's rulings; this section is the invariants a change to
   a failure (source missing, timeout) is the environment's. `mecha doctor`
   reports both as broken, with the refresh command; a stale dataset is
   attention. No refusal echoes a value from the data.
-- **The host sampler writes numbers and categories, nothing else**
-  (`host.rs`). Per-unit counters come from the user manager's cgroups and
-  GPU memory from `nvidia-smi`, folded into a closed `Category` whose numbers
-  are a wire format; a unit, process or model name never reaches
-  `host.sqlite`, and a test greps the file's bytes to prove it. On unified
-  memory (no GPU memory total) a category's GPU memory counts as its memory.
-  Unknown stays unknown: a sample it cannot read is refused (the doctor
-  reports a sampler silent for ten minutes), and on unified memory a minute
-  the per-process GPU query missed records memory as `NULL`, not the cgroup
-  figure alone.
+- **The HUD is generic; the host board is one example.** It reads
+  `mecha system`'s series through an ordinary `sqlite` source like any other
+  board, and `hud` holds no host-specific code — nothing in it samples. The sampler's invariants are
+  §System state's.
 - **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
   joined, and an installed id is never overwritten.
+
+## System state
+
+`system.rs`, `mecha system`, `docs/SYSTEM-STATE-DESIGN.md`. One layer
+through which mecha reads the machine; S0 (built) is the per-minute sampler
+and its series, `~/.mecha/system/series.sqlite`, moved from the HUD before it
+was ever deployed.
+
+- **Numbers and categories, nothing else.** Per-unit counters come from the
+  user manager's cgroups and GPU memory from `nvidia-smi`, folded into a
+  closed `Category` whose numbers are a wire format; a unit, process or model
+  name never reaches the series, and a test greps the file's bytes — and its
+  `-journal`/`-wal` sidecars — to prove it.
+- **Unknown stays unknown.** A sample whose `/proc/meminfo` or cgroup tree
+  cannot be read is refused, not recorded as an idle machine (`Other` is a
+  remainder and would absorb the whole box); the doctor reports a sampler
+  silent for ten minutes. Whether memory is unified is remembered across
+  samples, and on unified memory a minute the per-process GPU query missed
+  records memory as `NULL`, not the cgroup figure alone.
+- **The machine's denominators, never the sampler's.** Per-category CPU
+  divides by the cores `/proc/stat` lists, never `available_parallelism()`,
+  which a `CPUQuota=` on the sampler's own unit would narrow.
+- **Both oneshots are bounded.** `Type=oneshot` has no start timeout and a
+  run still active holds its timer, so a wedged `nvidia-smi` would stop
+  sampling for good; the units set `TimeoutStartSec`.
 
 ## Session records and replay
 

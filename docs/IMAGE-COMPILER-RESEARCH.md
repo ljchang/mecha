@@ -60,7 +60,8 @@ principle 10 earning its keep.
 > restated in the edit prompt, not one blanket clause. The mask and the
 > validator check are untested. *(2026-09-30: the mask has since been
 > measured, in `IMAGE-REGION-EDIT-RESEARCH.md` §4. A latent noise mask with
-> a composite kept the outside exact and seamless, and crop-edit-paste left
+> a composite kept the outside exact and seamless on the picture measured
+> (§7.7 later saw a seam on a smooth background), and crop-edit-paste left
 > seams where its edge crossed a person. The validator check is still
 > untested.)*
 

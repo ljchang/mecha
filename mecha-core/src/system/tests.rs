@@ -10,7 +10,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!(
-            "mecha-hud-host-{}-{}",
+            "mecha-system-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -199,7 +199,7 @@ fn mem_at(db: &Path, at: &str) -> Vec<Option<i64>> {
 #[test]
 fn a_silent_gpu_on_unified_memory_records_memory_as_unknown() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let units = vec![("llama-local.service".to_string(), 100_000, 0, 10)];
     let mut first = sample(0, &units, 0, 0);
     first.gpu.unified = true;
@@ -231,7 +231,7 @@ fn a_silent_gpu_on_unified_memory_records_memory_as_unknown() {
     // A discrete GPU that goes silent keeps measuring: cgroup memory is all
     // of a category's system memory there.
     let s2 = Scratch::new();
-    let db2 = s2.0.join("host.sqlite");
+    let db2 = s2.0.join("series.sqlite");
     record(&db2, &sample(0, &units, 0, 0)).unwrap();
     let mut quiet = sample(1, &units, 0, 0);
     quiet.gpu = GpuNow::default();
@@ -249,7 +249,7 @@ fn the_loaders_keep_a_row_whose_category_has_no_label() {
     let board = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/host");
     let installed = Installed::load_dir(&board, "host").unwrap().unwrap();
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let mut now = sample(0, &[], 0, 0);
     // The by-category loaders read five-minute steps of the last day.
     now.at = Utc::now().duration_trunc(Duration::minutes(5)).unwrap();
@@ -273,7 +273,7 @@ fn the_loaders_keep_a_row_whose_category_has_no_label() {
 #[test]
 fn last_written_reads_without_creating() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     assert!(
         last_written(&db).is_err(),
         "no file is an error, not a fresh store"
@@ -351,7 +351,7 @@ fn sample(min: u32, units: &[UnitCounters], busy: u64, total: u64) -> Sample {
 #[test]
 fn a_second_sample_yields_cpu_and_other_is_the_remainder() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let u1 = vec![
         ("llama-local.service".to_string(), 300_000, 0, 10),
         ("mecha-serve.service".to_string(), 100_000, 0, 5),
@@ -400,7 +400,7 @@ fn a_second_sample_yields_cpu_and_other_is_the_remainder() {
 #[test]
 fn a_completed_quarter_hour_rolls_up_and_old_rows_are_dropped() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let u = vec![("llama-local.service".to_string(), 300_000, 0, 10)];
     for m in [0, 5, 10, 15] {
         record(&db, &sample(m, &u, 0, 0)).unwrap();
@@ -443,7 +443,7 @@ fn a_completed_quarter_hour_rolls_up_and_old_rows_are_dropped() {
 #[test]
 fn no_unit_name_ever_reaches_the_database_file() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let secret = "zzprivatemodelnamezz";
     let units = vec![
         (format!("{secret}.service"), 5_000, 1, 1),
@@ -457,7 +457,7 @@ fn no_unit_name_ever_reaches_the_database_file() {
 
     let mut bytes = std::fs::read(&db).unwrap();
     for side in ["-journal", "-wal"] {
-        if let Ok(more) = std::fs::read(s.0.join(format!("host.sqlite{side}"))) {
+        if let Ok(more) = std::fs::read(s.0.join(format!("series.sqlite{side}"))) {
             bytes.extend(more);
         }
     }
@@ -483,7 +483,7 @@ fn the_shipped_host_board_validates_and_its_loaders_read_the_sampler() {
     assert_eq!(installed.loaders().len(), 5);
 
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let units = vec![
         ("llama-local.service".to_string(), 300_000, 0, 10),
         ("mecha-serve.service".to_string(), 100_000, 0, 5),
@@ -500,7 +500,7 @@ fn the_shipped_host_board_validates_and_its_loaders_read_the_sampler() {
     current.at = Utc::now();
     record(&db, &current).unwrap();
     for (name, loader) in installed.loaders() {
-        assert_eq!(loader.source(), "host", "{name}");
+        assert_eq!(loader.source(), "system", "{name}");
         let fetched = run_sqlite(&db, loader.query(), loader.max_rows(), QUERY_TIMEOUT)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let rows = loader
@@ -515,7 +515,7 @@ fn the_shipped_host_board_validates_and_its_loaders_read_the_sampler() {
 #[test]
 fn on_unified_memory_a_categorys_gpu_memory_is_its_memory() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let units = vec![("llama-local.service".to_string(), 100_000, 0, 10)];
     let mut smp = sample(0, &units, 0, 0);
     smp.gpu.unified = true;
@@ -558,7 +558,7 @@ fn the_now_loader_refuses_a_stale_sample() {
     let installed = Installed::load_dir(&board, "host").unwrap().unwrap();
     let now = &installed.loaders()["now"];
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let mut old = sample(0, &[], 0, 0);
     old.at = Utc::now() - Duration::minutes(30);
     record(&db, &old).unwrap();
@@ -574,7 +574,7 @@ fn the_now_loader_refuses_a_stale_sample() {
 #[test]
 fn a_gap_in_sampling_still_rolls_up_the_bucket_it_straddled() {
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let u = vec![("llama-local.service".to_string(), 300_000, 0, 10)];
     for m in [0, 5, 9] {
         record(&db, &sample(m, &u, 0, 0)).unwrap();
@@ -604,7 +604,7 @@ fn a_gap_in_sampling_still_rolls_up_the_bucket_it_straddled() {
 fn the_sampler_and_a_loader_wait_for_each_other() {
     use crate::hud::runner::{run_sqlite, QUERY_TIMEOUT};
     let s = Scratch::new();
-    let db = s.0.join("host.sqlite");
+    let db = s.0.join("series.sqlite");
     let u = vec![("llama-local.service".to_string(), 300_000, 0, 10)];
     record(&db, &sample(0, &u, 0, 0)).unwrap();
 
