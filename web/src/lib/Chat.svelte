@@ -7,8 +7,8 @@
   import PictureQueue from './PictureQueue.svelte';
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
-  import { composeEditMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, waitingPictures, repeatedPictures, downloadPicture } from './picture.js';
+  import { composeEditMessage, composeRegenerateMessage, maskName } from './image-edit.js';
+  import { pictureOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
@@ -596,9 +596,15 @@
           );
           // The conversation is back in the server's hands by now (it is
           // handed back before `done` is sent), so this read is the whole of it.
-          if (partialRun) {
-            partialRun = false;
-            catchUp(sessionKey);
+          // A Regenerate's card says which picture it is a version of only in
+          // the transcript, never on the live stream: read it again too.
+          {
+            const again = regenerated === sessionKey;
+            regenerated = null;
+            if (partialRun || again) {
+              partialRun = false;
+              catchUp(sessionKey);
+            }
           }
           break;
       }
@@ -706,6 +712,9 @@
     // its own start, and a read for the old key is dropped by its key check.
     partialRun = false;
     liveFrom = 0;
+    // A re-read owed to the last chat, and its version steps, are not this one's.
+    regenerated = null;
+    chosenVersion = new Map();
     // Same rule as everywhere else this readout guards against staleness
     // (the TUI's `/clear`, voice's `Hosted::Unknown` fall-through): the
     // tint describes the *previous* conversation's last run, and nothing
@@ -1297,14 +1306,21 @@
 
   $effect(() => () => vSession?.end());
 
-  async function send() {
+  // `text` and `regenerate`: a Regenerate's turn (IMAGE-DESIGN.md §5.4),
+  // which the page composes and sends as it is, leaving the owner's draft
+  // and files in the composer. True when the server started the turn.
+  async function send({ text: fixed = null, regenerate = null } = {}) {
+    const own = fixed === null;
     // Named in the text and listed beside it (`withAttachments`).
-    const attached = [...attachments];
-    const text = withAttachments(draft.trim(), attached);
-    attachments = [];
-    if (!text) return;
-    draft = '';
+    const attached = own ? [...attachments] : [];
+    const text = own ? withAttachments(draft.trim(), attached) : fixed;
+    if (own) attachments = [];
+    if (!text) return false;
+    if (own) draft = '';
     const sessionKey = key;
+    // Set before the POST, so a turn that ends before its answer arrives
+    // still owes the re-read.
+    if (regenerate) regenerated = sessionKey;
     try {
       // Tailnet HTTP pages may not expose the secure-context UUID method.
       // This id correlates UI events; it is not an authorization token.
@@ -1313,15 +1329,16 @@
       const res = await fetch(`/api/chat/${sessionKey}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, request_id, attachments: attached }),
+        body: JSON.stringify({ text, request_id, attachments: attached, regenerate: regenerate ?? undefined }),
       });
       if (res.status === 410) {
+        if (regenerate && regenerated === sessionKey) regenerated = null;
         if (sessionKey === key) closeIncognito('closed');
-        return;
+        return false;
       }
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      if (sessionKey !== key) return;
+      if (sessionKey !== key) return false;
       if (data.started || data.steered) {
         receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
@@ -1345,11 +1362,29 @@
           text: 'A run was in progress, so the picture went in by name only — the model was not shown it.',
         });
       }
+      return !!data.started;
     } catch (e) {
-      if (sessionKey !== key) return;
+      if (regenerate && regenerated === sessionKey) regenerated = null;
+      if (sessionKey !== key) return false;
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
+      return false;
     }
   }
+
+  // Regenerate (IMAGE-DESIGN.md §5.4; owner, 2026-10-10): the picture
+  // showing, drawn again as it is at a new seed by the harness before the
+  // model replies. Not while a reply runs: a message into a running turn
+  // steers it as text alone, so the server refuses it. The card goes back to
+  // the newest once the turn has started, so the new version is what lands.
+  async function regenerate(root, picture) {
+    if (!key || running) return;
+    if (await send({ text: composeRegenerateMessage(picture), regenerate: picture })) {
+      chosenVersion.delete(root);
+      chosenVersion = new Map(chosenVersion);
+    }
+  }
+  // The chat whose finished turn is read again for its `version_of`.
+  let regenerated = null;
 
   // Phase 4's upload half: the file lands in the session jail's inbox/, its
   // path is named in the message, and send() lists it so the server puts a
@@ -1362,6 +1397,23 @@
   let attachments = $state([]); // workspace-relative paths, announced on send
 
   const repeats = $derived(repeatedPictures(entries));
+  // A Regenerate's picture shows on the card it was drawn again from,
+  // ‹ k/n ›, and Edit, Regenerate, Download and Save act on the version
+  // showing (IMAGE-DESIGN.md §5.4). The version stepped to, per first
+  // picture; none means the newest.
+  const versions = $derived(pictureVersions(entries));
+  let chosenVersion = $state(new Map());
+  function stepVersion(root, list, by) {
+    const at = list.indexOf(shownVersion(list, chosenVersion.get(root)));
+    const next = list[Math.min(list.length - 1, Math.max(0, at + by))];
+    chosenVersion = new Map(chosenVersion).set(root, next);
+  }
+  // From a version's own place in the chat, to the card that shows it.
+  function showVersion(root, picture) {
+    chosenVersion = new Map(chosenVersion).set(root, picture);
+    const card = [...(transcriptEl?.querySelectorAll('[data-versions]') ?? [])].find((el) => el.dataset.versions === root);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
   // Pictures waiting behind the one drawing (`waitingPictures`).
   const queuedPictures = $derived(waitingPictures(entries, queue));
 
@@ -1992,6 +2044,7 @@
         {@const detail = !!(entry.draft || entry.args || entry.preview)}
         {@const picture = pictureOf(entry)}
         {@const repeat = repeats.has(i)}
+        {@const fold = versions.folded.get(i)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
           <button
             class="toolhead"
@@ -2071,27 +2124,38 @@
         <!-- Outside the disclosure: the picture is the answer, not a detail
              of the call. Served from this session's own jail, images only
              (serve/files.rs), so a tap opens it full size. -->
-        {#if picture && !repeat}
+        {#if picture && !repeat && !fold}
+          {@const list = versions.groups.get(picture) ?? [picture]}
+          {@const shown = shownVersion(list, chosenVersion.get(picture))}
+          {@const at = list.indexOf(shown)}
           {#if incognito}
             <!-- No link in an incognito chat: opening the picture in a tab
                  writes its address into the browser's history, which
                  outlives the chat (R6). -->
-            <span class="genimg"><img src={workspaceFile(picture)} alt="generated" loading="lazy" /></span>
+            <span class="genimg" data-versions={picture}><img src={workspaceFile(shown)} alt="generated" loading="lazy" /></span>
           {:else}
-            <a class="genimg" href={workspaceFile(picture)} target="_blank" rel="noopener">
-              <img src={workspaceFile(picture)} alt="generated" loading="lazy" />
+            <a class="genimg" data-versions={picture} href={workspaceFile(shown)} target="_blank" rel="noopener">
+              <img src={workspaceFile(shown)} alt="generated" loading="lazy" />
             </a>
           {/if}
           <!-- Opens the edit modal (EditModal.svelte): paint what may change,
                say what to change. The path is what lets the model pass the
                right file as the reference. -->
-          <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
-          <button class="genedit" onclick={() => savePicture(picture)}>Download</button>
-          {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
+          {#if list.length > 1}
+            <span class="versions">
+              <button class="vstep" aria-label="Previous version" disabled={at === 0} onclick={() => stepVersion(picture, list, -1)}>‹</button>
+              <span aria-live="polite">{at + 1}/{list.length}</span>
+              <button class="vstep" aria-label="Next version" disabled={at === list.length - 1} onclick={() => stepVersion(picture, list, 1)}>›</button>
+            </span>
+          {/if}
+          <button class="genedit" onclick={() => editImage(shown)}>Edit</button>
+          <button class="genedit" disabled={running} title={running ? 'A reply is running' : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>
+          <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
+          {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
           {#if !incognito}
             <!-- Not in an incognito chat: saving writes outside the room. -->
-            <button class="genedit" onclick={() => (saving?.path === picture ? (saving = null) : startSave(picture))}>Save to library</button>
-            {#if saving?.path === picture}
+            <button class="genedit" onclick={() => (saving?.path === shown ? (saving = null) : startSave(shown))}>Save to library</button>
+            {#if saving?.path === shown}
               <form class="libsave" onsubmit={(e) => { e.preventDefault(); saveToLibrary(); }}>
                 {#if !saving.done}
                   <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
@@ -2107,6 +2171,11 @@
               </form>
             {/if}
           {/if}
+        {:else if picture && fold}
+          <!-- Drawn again (IMAGE-DESIGN.md §5.4): the picture shows on the
+               card it is a version of, which may be far above. -->
+          <span class="genwait">drawn again: version {fold.k} of {versions.groups.get(fold.root).length}, on the picture above</span>
+          <button class="genedit" onclick={() => showVersion(fold.root, picture)}>Show</button>
         {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
@@ -2350,7 +2419,7 @@
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
         </button>
       {/if}
-      <button class="round send" onclick={send} title="send">
+      <button class="round send" onclick={() => send()} title="send">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="var(--void)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
       </button>
     </div>
@@ -3088,6 +3157,18 @@
   .libsave-why { color: var(--hazard); font-family: var(--mono); font-size: 11px; }
   .libsave-msg { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   .genfail { font-size: 12px; color: var(--hazard); }
+  .genwait { margin-left: 18px; font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+  .versions {
+    display: inline-flex; align-items: center; gap: 4px; margin: -4px 0 6px 18px;
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  }
+  /* 44px targets: the stepper is the one control a thumb aims at on a phone. */
+  .vstep {
+    min-width: 44px; min-height: 44px; padding: 0; font-size: 18px;
+    color: var(--accent-400); background: none; border: none; cursor: pointer;
+  }
+  .vstep:disabled { opacity: 0.3; cursor: default; }
+  .genedit:disabled { opacity: 0.4; cursor: default; }
   .genedit {
     align-self: flex-start;
     margin: -4px 0 10px 18px;
