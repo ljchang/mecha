@@ -105,25 +105,20 @@ pub const STARTER: &str = r#"# mecha configuration.
 # Layered: ~/.mecha/config.toml, then ./mecha.toml, then MECHA_* environment
 # variables, then CLI flags. Each layer overrides only the fields it names.
 
-default_provider = "anthropic"
+default_provider = "local"
 
-[providers.anthropic]
-kind = "anthropic"
-model = "claude-opus-5"
-api_key_env = "ANTHROPIC_API_KEY"
-# Needed for cost budgets and reporting; omit for a local model.
-# input_price_per_mtok = 5.0
-# output_price_per_mtok = 25.0
-
-# A local OpenAI-compatible server (llama-server, vLLM, Ollama).
+# The chat model, served on this machine by llama-server — the default, so a
+# prompt is answered here unless you choose a provider that sends it elsewhere.
+# `mecha setup chat` installs llama.cpp, a model recommended for this
+# machine's memory and the router on :8080 (Linux), then fills in the three
+# commented settings below; for a server you run yourself (llama-server,
+# vLLM, Ollama), `mecha setup --write` does the same.
 #
-# Do not type the last three by hand — `mecha setup` reads them off the
-# server's own /props and `mecha setup --write` fills them in. Each is a
-# setting nothing can check afterwards, because each degrades quietly rather
-# than failing.
-# [providers.local]
-# kind = "local"
-# base_url = "http://127.0.0.1:8080"
+# Do not type those three by hand — each is read off the server's own /props,
+# and each degrades quietly rather than failing when it is wrong.
+[providers.local]
+kind = "local"
+base_url = "http://127.0.0.1:8080"
 # model = "qwen3-14b"          # what /props reports as model_alias
 # context_window = 32768       # the PER-SLOT window, not `-c`: llama-server
 #                              # divides -c across slots and recent builds
@@ -132,6 +127,17 @@ api_key_env = "ANTHROPIC_API_KEY"
 # vision = true                # only if a projector is loaded. A multimodal
 #                              # model served without --mmproj reports
 #                              # vision:false and simply says it cannot see.
+
+# A hosted model, if you want one beside it: export the key, then pass
+# `-p anthropic` for a run, or point default_provider here. Whatever a run
+# sends — your files, mail, notes — goes to Anthropic.
+[providers.anthropic]
+kind = "anthropic"
+model = "claude-opus-5"
+api_key_env = "ANTHROPIC_API_KEY"
+# Needed for cost budgets and reporting; omit for a local model.
+# input_price_per_mtok = 5.0
+# output_price_per_mtok = 25.0
 
 [agent]
 # system_prompt_file = "prompts/agent.md"

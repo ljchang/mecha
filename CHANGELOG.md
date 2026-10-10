@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A new install uses a model on your machine, not Anthropic.** `mecha
+  config init` now makes the local provider (`127.0.0.1:8080`) the default,
+  with Anthropic kept beside it for `-p anthropic`; `mecha setup` names `mecha
+  setup chat` to install a local model when nothing answers there. An existing
+  config is not changed — but one that never set `default_provider` now
+  answers from `127.0.0.1:8080`, and a `[providers.local]` that names no
+  `model` or `context_window` is reported by `mecha setup` until `mecha setup
+  --write` fills them in from the server.
+- **`mecha features enable` no longer installs the chat model.** Switching
+  on the web app or documents used to offer the chat model's ~22 GiB download
+  on a machine without one; the chat model is chosen and installed by `mecha
+  setup chat`, and `enable` installs only what the feature itself runs.
+
 - **Each picture's prompt is saved for you, for now.** Beside every kept
   chat's transcript, `<chat>.prompts.log` holds one line per picture: what
   was drawn, how, and the prompt the image model was given, so prompts can

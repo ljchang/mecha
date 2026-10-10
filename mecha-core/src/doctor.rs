@@ -368,6 +368,7 @@ pub fn examine_with(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> Vec<F
     findings.extend(check_questions(&home.join("questions"), now, charter));
     findings.extend(check_frontdoor(&home.join("requests"), now, charter));
     findings.extend(check_triggers(&home.join("triggers"), now, charter));
+    findings.extend(check_hud(&home.join("hud"), now));
     findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_runs(&home.join("sessions"), charter));
     findings.extend(check_unfinished_forgets(&home.join("sessions")));
@@ -1640,6 +1641,119 @@ const CUT_SHORT_RATE: f64 = 0.25;
 /// shared with the candidate gate's metric — see its doc for why there were two.
 fn cut_short(stats: &crate::session::RunStats) -> bool {
     stats.stop_cause.is_some_and(|c| c.cut_short())
+}
+
+/// The HUD store: a board that does not load, a loader whose last refresh
+/// was refused or failed, a dataset gone stale, and a `sources.toml` that does
+/// not parse. A refused refresh keeps the previous dataset and says so only on
+/// the board's own page — without this it is a guard that fired and said
+/// nothing (LIVE-DASHBOARD-DESIGN §8 step 2).
+fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    use crate::hud::store::{Event, Store};
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let store = Store::at(dir);
+    let mut out = Vec::new();
+    match store.sources() {
+        Err(e) => out.push(Finding::unreadable("hud", "hud/sources.toml", e)),
+        Ok(Err(r)) => out.push(Finding {
+            component: "hud".into(),
+            severity: Severity::Broken,
+            summary: "hud: sources.toml does not load — no loader can refresh".into(),
+            detail: r.to_string(),
+            remedy: None,
+        }),
+        Ok(Ok(_)) => {}
+    }
+    let boards = match store.status(now) {
+        Ok(boards) => boards,
+        Err(e) => {
+            out.push(Finding::unreadable("hud", "the hud boards", e));
+            return out;
+        }
+    };
+    let refresh = |id: &str| Remedy {
+        description: format!("refresh board {id} now and show what each loader did"),
+        argv: vec!["mecha".into(), "hud".into(), "refresh".into(), id.into()],
+        needs_terminal: false,
+    };
+    for board in boards {
+        if !board.refusals.is_empty() {
+            out.push(Finding {
+                component: "hud".into(),
+                severity: Severity::Broken,
+                summary: format!("hud board {} does not load", board.id),
+                detail: board.refusals.join("\n"),
+                remedy: None,
+            });
+            continue;
+        }
+        if board.unreadable_ledger_lines > 0 {
+            out.push(Finding {
+                component: "hud".into(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "hud board {}: {} ledger line(s) this build cannot read",
+                    board.id, board.unreadable_ledger_lines
+                ),
+                detail: "skipped on read; due-ness and status ignore them".into(),
+                remedy: None,
+            });
+        }
+        for loader in &board.loaders {
+            if let Some(why) = &loader.dataset_error {
+                out.push(Finding {
+                    component: "hud".into(),
+                    severity: Severity::Broken,
+                    summary: format!(
+                        "hud {}/{}: the dataset file cannot be read",
+                        board.id, loader.name
+                    ),
+                    detail: why.clone(),
+                    remedy: Some(refresh(&board.id)),
+                });
+                continue;
+            }
+            let last = loader.last.as_ref().map(|e| &e.event);
+            match last {
+                Some(Event::Refused { reason, .. }) | Some(Event::Failed { reason, .. }) => {
+                    let verb = if matches!(last, Some(Event::Refused { .. })) {
+                        "was refused"
+                    } else {
+                        "failed"
+                    };
+                    out.push(Finding {
+                        component: "hud".into(),
+                        severity: Severity::Broken,
+                        summary: format!(
+                            "hud {}/{}: the last refresh {verb} — the page shows older data",
+                            board.id, loader.name
+                        ),
+                        detail: reason.clone(),
+                        remedy: Some(refresh(&board.id)),
+                    });
+                }
+                _ if loader.stale => out.push(Finding {
+                    component: "hud".into(),
+                    severity: Severity::Attention,
+                    summary: format!(
+                        "hud {}/{}: the dataset is older than two of its periods",
+                        board.id, loader.name
+                    ),
+                    detail: match loader.generated_at {
+                        Some(at) => format!("last produced {at}; is the refresh timer running?"),
+                        None => {
+                            "never produced since install; is the refresh timer running?".into()
+                        }
+                    },
+                    remedy: Some(refresh(&board.id)),
+                }),
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// A charter that fails to load degrades every run to un-chartered with
@@ -4322,6 +4436,71 @@ mod tests {
             front[0].detail
         );
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A HUD loader whose last refresh was refused is broken, names the
+    /// board and loader, and carries the refresh command — and a board with
+    /// nothing wrong says nothing.
+    #[test]
+    fn a_hud_loader_whose_refresh_was_refused_is_broken() {
+        use crate::hud::store::{Store, Which};
+        use chrono::TimeZone;
+        let home = home("hud-refused");
+        let hud = home.join("hud");
+        let db = home.join("lab.sqlite");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE v (day TEXT, n INTEGER); INSERT INTO v VALUES ('2031-04-17', 1);",
+            )
+            .unwrap();
+        std::fs::create_dir_all(&hud).unwrap();
+        std::fs::write(
+            hud.join("sources.toml"),
+            format!(
+                "[source.lab]\nkind = \"sqlite\"\npath = \"{}\"\ncontent = \"owner\"\n",
+                db.display()
+            ),
+        )
+        .unwrap();
+        let draft = home.join("draft/lab");
+        std::fs::create_dir_all(draft.join("loaders")).unwrap();
+        std::fs::write(
+            draft.join("hud.json"),
+            r#"{"version":1,"title":"Lab","datasets":["v"],"panels":[{"type":"table","title":"V","dataset":"v","columns":["day","n"]}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("loaders/v.toml"),
+            "source = \"lab\"\nschedule = \"0 * * * *\"\nmax_rows = 10\nquery = \"SELECT day, n FROM v\"\n[[column]]\nname = \"day\"\ntype = \"date\"\n[[column]]\nname = \"n\"\ntype = \"integer\"\n",
+        )
+        .unwrap();
+        let t = |m| Utc.with_ymd_and_hms(2031, 4, 17, 9, m, 0).unwrap();
+        let store = Store::at(&hud);
+        store.install(&draft, None, t(0)).unwrap().unwrap();
+        store.refresh("lab", t(1), Which::All).unwrap().unwrap();
+        assert!(
+            !examine(&home, t(2)).iter().any(|f| f.component == "hud"),
+            "a healthy board says nothing"
+        );
+
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute("UPDATE v SET n = 'lots'", [])
+            .unwrap();
+        store.refresh("lab", t(3), Which::All).unwrap().unwrap();
+        let found: Vec<Finding> = examine(&home, t(4))
+            .into_iter()
+            .filter(|f| f.component == "hud")
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].severity, Severity::Broken);
+        assert!(found[0].summary.contains("lab/v") && found[0].summary.contains("refused"));
+        assert_eq!(
+            found[0].remedy.as_ref().unwrap().argv,
+            ["mecha", "hud", "refresh", "lab"]
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -46,19 +46,21 @@ is worse than no search tool.
 
 ## 2. Point it at a model
 
-### Anthropic
-
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
 mecha config init                 # writes ~/.mecha/config.toml
 ```
 
 `config init` writes a commented starter file rather than a dump of defaults,
-because the point of the file is to show what is adjustable. The provider block
-it writes:
+because the point of the file is to show what is adjustable. **The default is a
+model on this machine**, never a hosted one, so a prompt is answered here unless
+you choose a provider that sends it elsewhere. The provider blocks it writes:
 
 ```toml
-default_provider = "anthropic"
+default_provider = "local"
+
+[providers.local]
+kind = "local"
+base_url = "http://127.0.0.1:8080"
 
 [providers.anthropic]
 kind = "anthropic"
@@ -66,17 +68,41 @@ model = "claude-opus-5"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 
+### A local model (the default)
+
+On Linux, `mecha setup chat` installs everything the default needs: llama.cpp,
+the model recommended for this machine's memory (or a GGUF you already have),
+and the router that serves it on `:8080`. It then reads the model's settings
+off the server and writes them into `[providers.local]`:
+
+```bash
+mecha setup chat
+```
+
+A server you already run on `:8080` is left alone; `mecha setup --write` reads
+its settings into the config instead.
+
+### Anthropic
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+mecha run -p anthropic "..."      # one run; or set default_provider = "anthropic"
+```
+
+Whatever a run sends — your files, mail, notes — then goes to Anthropic.
+
 `api_key_env` names an environment variable. There is also an `api_key` field
 that takes the key inline; prefer the variable, because the inline form puts a
 credential in a file on disk.
 
 Model ids are exact strings with no date suffix.
 
-### An OpenAI-compatible server
+### Another OpenAI-compatible server
 
 Anything speaking `/v1/chat/completions` works: llama-server, vLLM, Ollama, or a
-hosted API. Add a second provider entry — providers merge by key, so a project
-file can add a local endpoint without restating the Anthropic one.
+hosted API. Point `[providers.local]` at it, or add another provider entry —
+providers merge by key, so a project file can add an endpoint without restating
+the others.
 
 ```toml
 [providers.local]
@@ -91,17 +117,17 @@ vision = true                      # only if the server has a projector loaded
 afterwards, because each degrades quietly rather than failing — which is what
 the next step is for.
 
-Then either make it the default:
+A new entry under another name is selected by making it the default:
 
 ```toml
-default_provider = "local"
+default_provider = "my-server"
 ```
 
-or select it per run:
+or per run:
 
 ```bash
-mecha run -p local "..."
-export MECHA_PROVIDER=local        # or via the environment
+mecha run -p my-server "..."
+export MECHA_PROVIDER=my-server    # or via the environment
 ```
 
 Naming a provider or a model — `-p`, `--model`, `MECHA_PROVIDER`,

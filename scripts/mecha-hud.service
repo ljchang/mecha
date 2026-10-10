@@ -1,0 +1,17 @@
+# Refresh HUD datasets whose loaders are due. Installed as a user unit:
+#   cp scripts/mecha-hud.{service,timer} ~/.config/systemd/user/
+#   systemctl --user enable --now mecha-hud.timer
+#
+# `refresh --due` is the primitive: due-ness is answered backwards from each
+# board's ledger, so this timer holds no state and a missed minute costs
+# nothing. No model runs here. A refused or failed refresh exits non-zero, so
+# the unit shows failed and `mecha doctor` names the loader.
+[Unit]
+Description=mecha hud refresh (due loaders → datasets)
+
+[Service]
+Type=oneshot
+# No GUI login on this machine means no ~/.local/bin or ~/.cargo/bin on PATH.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.cargo/bin/mecha hud refresh --due
+Nice=10
