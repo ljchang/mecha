@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A local provider with no `model` asks for what its server serves.** A
+  `[providers.local]` on this machine that names no `model` used to send
+  `gpt-4o-mini` — which a llama-server router does not serve, and which
+  every session record then named as the model that answered. It now asks
+  for the router's loaded model, or its only one, or a plain server's alias,
+  read once when the command starts; a router with several and none loaded
+  is reported rather than guessed at.
+
 - **A new install uses a model on your machine, not Anthropic.** `mecha
   config init` now makes the local provider (`127.0.0.1:8080`) the default,
   with Anthropic kept beside it for `-p anthropic`; `mecha setup` names `mecha

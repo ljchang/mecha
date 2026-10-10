@@ -93,7 +93,7 @@ enforced by the merge, not asked for in a comment. See
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | — | `anthropic`, `openai`, `openai-compatible`, or `local`. |
-| `model` | string | `"claude-opus-5"` for the built-in `anthropic` entry | Model id sent to the backend. |
+| `model` | string | `"claude-opus-5"` for the built-in `anthropic` entry | Model id sent to the backend. Unset on a `kind = "local"` entry at a loopback address, it is what the server says it serves when the command starts: a router's loaded model, or its only one, or a plain llama-server's alias. A router with several models and none loaded can't be answered for, and says so; set it then (`mecha setup --write` writes it from the server). |
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` for the built-in entry | Environment variable holding the key. Preferred over `api_key`. |
 | `api_key` | string | unset | Inline key. Convenient, but it lands in a file on disk. |
 | `base_url` | string | `"http://127.0.0.1:8080"` for the built-in `local` entry, else unset | Endpoint override. Required for a local OpenAI-compatible server. |
