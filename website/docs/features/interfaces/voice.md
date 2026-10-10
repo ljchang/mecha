@@ -49,8 +49,8 @@ over WebRTC. **Speech to text installs itself** on Linux:
 `mecha features enable voice` offers it, and the install builds its own
 Python environment from a hash-pinned lock, fetches the Parakeet model by its
 pinned sha256, and starts `mecha-parakeet.service` on `:8992`, all under
-`~/.mecha/sidecars/stt/`. A Parakeet you already run on that unit is left as
-it is. Breeze is a local build of a
+`~/.mecha/sidecars/stt/`. A Parakeet you already run on `:8992` — on that
+unit, from a terminal, or under another name — is left as it is and used. Breeze is a local build of a
 qwentts.cpp fork, behind a small adapter that runs from the checkout
 (`scripts/voice/breeze_server.py`); Chatterbox, the voice before it, still
 runs as a container image if you would rather use it.
