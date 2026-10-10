@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config init` now makes the local provider (`127.0.0.1:8080`) the default,
   with Anthropic kept beside it for `-p anthropic`; `mecha setup` names `mecha
   setup chat` to install a local model when nothing answers there. An existing
-  config is not changed.
+  config is not changed — but one that never set `default_provider` now
+  answers from `127.0.0.1:8080`, and a `[providers.local]` that names no
+  `model` or `context_window` is reported by `mecha setup` until `mecha setup
+  --write` fills them in from the server.
 - **`mecha features enable` no longer installs the chat model.** Switching
   on the web app or documents used to offer the chat model's ~22 GiB download
   on a machine without one; the chat model is chosen and installed by `mecha

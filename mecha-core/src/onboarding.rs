@@ -316,23 +316,39 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
             // command that installs a server, not only "start it" — which
             // presumes a server the machine may not have.
             None => {
+                // `setup chat` is offered where it can run, and only for a
+                // table that names this router: it installs systemd user
+                // units (refusing elsewhere before asking anything), and it
+                // leaves a local provider pointing somewhere else alone — so
+                // for one of those it would download a model and not clear
+                // this step (found on review of #627).
+                let installs_here = cfg!(target_os = "linux")
+                    && crate::router_unit::names_this_router(
+                        pcfg,
+                        crate::router_unit::Naming::shipped().port,
+                    );
+                let at = pcfg.base_url.as_deref().unwrap_or("(no base_url)");
                 let step = Step::new(
                     "local-server",
                     "The local server is reachable",
                     Status::Missing,
-                    format!(
-                        "Nothing answered at {}. Start your server, or install one: `mecha \
-                         setup chat` installs llama.cpp, a model recommended for this machine \
-                         and the router that serves it (Linux). The rest of this is checked \
-                         once it answers — every value below is read back from it rather than \
-                         guessed.",
-                        pcfg.base_url.as_deref().unwrap_or("(no base_url)")
-                    ),
+                    if installs_here {
+                        format!(
+                            "Nothing answered at {at}. Start your server, or install one: \
+                             `mecha setup chat` installs llama.cpp, a model recommended for \
+                             this machine and the router that serves it. The rest of this is \
+                             checked once it answers — every value below is read back from it \
+                             rather than guessed."
+                        )
+                    } else {
+                        format!(
+                            "Nothing answered at {at}. Start the server there — the rest of \
+                             this is checked once it answers, every value below read back from \
+                             it rather than guessed."
+                        )
+                    },
                 );
-                // Offered where it can run: `setup chat` installs systemd
-                // user units, and refuses elsewhere before asking anything
-                // (found on review of #627).
-                steps.push(if cfg!(target_os = "linux") {
+                steps.push(if installs_here {
                     step.with(
                         "Install a local chat model and the router that serves it.",
                         &["mecha", "setup", "chat"],
@@ -354,7 +370,10 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
                 // Each key with its own consequence: one sentence for the
                 // set told a table naming its model that "a run names the
                 // wrong model" (found on review of #627).
-                if pcfg.model.is_none() {
+                // Only where the server names one: `--write` writes what it
+                // reports, so a model it does not report is a finding `--write`
+                // could never clear (found on review of #627).
+                if pcfg.model.is_none() && props.model_alias.is_some() {
                     mismatches.push(format!(
                         "[providers.{provider_name}] sets no `model` — a run sends a model \
                          name this server did not report, which a router selects by."
@@ -2334,6 +2353,19 @@ mod tests {
         } else {
             assert!(remedy.is_none(), "`setup chat` refuses off Linux");
         }
+    }
+
+    /// A local table that names a server other than this router is not
+    /// offered `setup chat`, which would leave it as it is (review of #627).
+    #[test]
+    fn a_server_elsewhere_is_not_offered_the_router() {
+        let mut cfg = cfg_with_local(262144, Some(true));
+        cfg.providers.get_mut("local").unwrap().base_url = Some("http://box.lan:8080".into());
+        let steps = plan(&cfg, "local", &facts(None));
+        let s = step(&steps, "local-server");
+        assert_eq!(s.status, Status::Missing);
+        assert!(s.remedy.is_none(), "{:?}", s.remedy);
+        assert!(!s.detail.contains("setup chat"), "{}", s.detail);
     }
 
     /// A table naming no model or window does not agree with a server just
