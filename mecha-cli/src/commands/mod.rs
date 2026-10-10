@@ -40,6 +40,7 @@ pub mod setup_chat;
 pub mod setup_engine;
 pub mod skills;
 pub mod slack;
+pub mod system;
 pub mod tasks;
 pub mod tools;
 pub mod trigger;

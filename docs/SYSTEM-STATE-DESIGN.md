@@ -1,7 +1,6 @@
 # System state — design
 
-**2026-10-10. Proposed; R1, R2, R3 and R3b ruled the same day; R4, R5 and
-R5b open (§9).** `mecha system` is one layer through which mecha reads the state of
+**2026-10-10. Proposed; R1, R2, R3 and R3b ruled the same day; R4 ruled 2026-10-10; R5 and R5b open (§9).** `mecha system` is one layer through which mecha reads the state of
 the machine it runs on and the services it runs beside. Each measurement in
 it has its own specific name, drawn from one closed list. Every consumer
 reads the system through it, and none probes for itself:
@@ -290,7 +289,7 @@ sends `autoload=false` on anything that names a model.
 
 ## 3. Who reads what
 
-### 3.1 The homeostat (R4, open)
+### 3.1 The homeostat (R4, ruled)
 
 Today `Homeostat::at_start` reads the load average and `MemAvailable`
 itself. It does not read `/slots`, because that is an HTTP call, and the
@@ -553,11 +552,14 @@ one by deleting a copy.
 | **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers, including pressure, OOM kills, temperatures, uptime, disk I/O and network throughput. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
 | **S2** | `model.*`, `runs.live`, `holds.live`, `permits.live`, `voice.live`, `image.*`, `tasks.*`, `triggers.*`, `mail.drain.pending`, `messages.unread`, and the job marker that makes `jobs.live` readable. The brief reads them through `system`, and they are recorded in the series, except `model.resident`. | S1 |
 | **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2 |
-| **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | R4; S3 |
+| **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | S3 |
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
 | **S6** | The memory floor (§3.7): `system::admit` and `mecha system admit --need`, with image generation, model loads, background admission and the build scripts all calling it. The image tool's `memory_verdict` becomes a caller of `admit`, not a second implementation. | R5; S1 (it needs `memory.available` and `pressure.memory`, nothing more) |
 
 S0 is small, and it is the only step that is cheaper now than later.
+**S0 is built**, in the same change as this document (the owner asked for
+the design to ship with the first implementation PR rather than be reviewed
+on its own).
 
 ## 8. Deliberately out of scope
 
@@ -612,6 +614,7 @@ S0 is small, and it is the only step that is cheaper now than later.
   inside their own cgroups before the global OOM killer chooses a victim.
   Recommended: yes, after S1 is recording, so that its effect is measured
   rather than assumed.
-- **R4. The homeostat reads the series (S4) — open.** A run's record would
-  carry the minutes it ran through, rather than a probe at its start.
-  Recommended: yes.
+- **R4. The homeostat reads the series — ruled 2026-10-10:** yes, "so we
+  have a unified system measurement". The homeostat stops probing `/proc`
+  itself and reads `system`, and a run's record carries the minutes it ran
+  through (§3.1, S4).
