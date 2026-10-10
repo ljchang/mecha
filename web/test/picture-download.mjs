@@ -71,7 +71,8 @@ const PNG = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
     const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', file), 'utf8');
     // Download follows Edit, whatever sits between them.
     const edit = src.indexOf('>Edit</button>');
-    const download = src.indexOf('onclick={() => savePicture(picture)}>Download</button>');
+    // The persona chat's card downloads the version showing (`shown`).
+    const download = src.search(/onclick=\{\(\) => savePicture\((?:picture|shown)\)\}>Download<\/button>/);
     assert.ok(edit > 0 && download > edit, file);
     assert.match(src, /downloadPicture\(fetch, /, file);
     // `fetch` there is the same-origin, /api/-checked wrapper, not the global.
