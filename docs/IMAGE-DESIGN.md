@@ -278,7 +278,7 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
 6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` and `minor` marks and the default portrait. Usage rules are not part of this build (§14). **Ruled 2026-10-07: get it working first, with no restrictions; step 6 is not held for §14.**
 
-7. **Layers for touching scenes** (§15), behind a per-persona switch, offered once §15.7's gate passes. **The owner took the gate's result and offered the switch on 2026-10-10** (§15.7).
+7. **Layers for touching scenes** (§15), behind a per-persona switch, offered once §15.7's gate passes. **Built: #625 (the switch) and #626 (the pipeline), merged 2026-10-10,** after the owner took the gate's result and offered the switch (§15.7).
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
@@ -305,7 +305,7 @@ mecha-a3's review (local `REVIEW-IMAGE-DESIGN.md`, with new measurements in the 
 
 | Point | Met in |
 |---|---|
-| B1: the forced end breaks the assistant; LoopGuard is generic | §5.5, split into two rules; LoopGuard unchanged, and counting harness refusals is an open question (§11 item 8) |
+| B1: the forced end breaks the assistant; LoopGuard is generic | §5.5, split into two rules; LoopGuard unchanged; counting harness refusals was ruled out on 2026-10-08 (§11 item 8) |
 | B2: retiring the name guard reopens E1 through prose fields | §4, every prose field checked; `who` resolves names and the persona's names |
 | B3, N1: a no-record picture is not an empty room, and faces cannot tell | §5.1 and §5.2: the call says a photo's role; a no-record `picture` is always the current picture |
 | N2: no people is not the same as people unknown | §5.1: unknown people are recorded as unknown; a restage of them is drawn as an edit |
@@ -467,7 +467,7 @@ All of these were measured; none is built yet:
 
 Also not built, and not a measurement: **the queue line that names the step** (15.3), which needs the two `jobs.rs` changes and belongs to whoever owns the queue.
 
-### 15.7 The gate (mecha-a3, before the switch is offered)
+### 15.7 The gate (mecha-a3, run before the switch was offered)
 
 - **Arms:** three: today's single pass; layers with cutouts posed by the part; layers with neutral cutouts (change 1's own test).
 - **Calls:** the recorded touching-scene calls, byte-identical, n = 3, paired seeds. They include the facing-away call, where layers most clearly won. **The by-step failure rates need a wider base:** which step fails depends on the call more than the seed, so seven calls at n = 3 give the finish a denominator of about seven, not 21. §11's items 13 and 14 are read from every touching call on record (18 in the 2026-10-08/09 chats, §15.2) run once each, beside the gate's arms.
@@ -482,6 +482,10 @@ Also not built, and not a measurement: **the queue line that names the step** (1
   - the plate's own framing;
   - the owner's preference on a contact sheet.
 - **Result (mecha-a3, 2026-10-10).**
+  - **The arms, as run** (seven calls, n = 3, image seed base 71000; `layersgate/run.sh`, `run2.sh`, `run3.sh` in mecha-a3's research tree):
+    - gate v1 on c62839eda: the single pass; layers with neutral cutouts; layers with posed cutouts (`--layers-posed`). The posed arm ran only here: it lost the same person on the same call as the neutral one (6 of 6) and did no better on any other, so it was dropped, as change 1 argued.
+    - c8a50fec6: layers with neutral cutouts plus places, the headcount and the fell-back rule.
+    - the follow-up on 1db43a922: the single pass against layers with neutral cutouts plus name binding, "beside" and the style off the plate. The built arm, and the comparison below.
   - Against the single pass, on 1db43a922, seven calls at n = 3: layers won 4, tied 2 and lost 1, with fewer people drawn twice and fewer anatomy errors. Faces came out about half the size (75–128 px high against 146–229) with lower ArcFace similarity for both people, at 213–223 s a picture against about 45 s.
   - By step, on 33e23a21c, every recorded touching call once: of 18, 16 were layered and 2 drew in one pass by the route rule (restages). None fell back at any step: plate 16 of 16, the plate's face check 16 of 16, cutouts 32 of 32, placing 16 of 16, finish 16 of 16, at about 215–232 s a picture. By the section's own base (which step fails depends on the call more than the seed), the finish's denominator is those 16 calls; counting every finish pass in every run, seeded repeats included, it is 0 of 37.
   - **The owner's verdict (2026-10-10):** the switch is offered, with the cost taken: faces about half the size, lower identity and about 3.5 min a picture, against fewer people drawn twice and the act drawn more often.
