@@ -1,6 +1,6 @@
 # Per kind of work, the last 24 hours at five-minute steps. Labels come from
 # the categories table, which the sampler writes from code.
-source = "host"
+source = "system"
 schedule = "*/5 * * * *"
 max_rows = 5000
 query = """

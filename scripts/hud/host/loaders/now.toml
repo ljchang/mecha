@@ -1,5 +1,5 @@
 # The latest minute, as the four headline figures.
-source = "host"
+source = "system"
 schedule = "* * * * *"
 max_rows = 1
 query = """
