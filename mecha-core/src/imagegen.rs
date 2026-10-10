@@ -3366,18 +3366,15 @@ impl Tool for ImageGenerate {
                                 } else {
                                     value(&plan.next.together)
                                 },
-                                // The parts come from the `together` and from
-                                // each person's own words, which the split
-                                // keeps verbatim: their origins union, so one
-                                // clean field never launders another (review
-                                // of #624).
-                                origin: people.iter().fold(
-                                    plan.next
-                                        .together
-                                        .as_ref()
-                                        .map_or(crate::scene::Origin::Untrusted, |f| f.origin),
-                                    |o, p| o.union(p.origin),
-                                ),
+                                // The build draws on the whole scene: the
+                                // plate on setting, light and camera, each
+                                // cutout on clothes, the parts on the
+                                // `together` and the people's own words. So
+                                // the record takes the scene's own origin,
+                                // which names every field and so makes the
+                                // compiler ask about any field added later
+                                // (review of #624).
+                                origin: plan.next.origin(),
                             });
                             // Two people set on one side of the frame would
                             // share a place tag (review of #624).
