@@ -19,6 +19,10 @@ pub struct Person {
     pub wearing: String,
     /// Their part from the split, or empty when the split fell back.
     pub part: String,
+    /// Where they stand in the frame ("on the left"), from the split's
+    /// places: a placing pass that named no positions left a person out
+    /// (mecha-a3, 2026-10-10: one of two never placed, 2 of 2 runs).
+    pub at: Option<String>,
     pub portrait: Vec<u8>,
     pub ext: &'static str,
 }
@@ -187,10 +191,16 @@ pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
     for (p, (_, tag)) in people.iter().zip(&tags) {
         let part = untagged(&p.part, &tags);
         let part = part.trim().trim_end_matches('.');
+        let at = p.at.as_deref().map(|a| format!(" {a}")).unwrap_or_default();
         if part.is_empty() {
-            s.push_str(&format!("Place {tag} in the scene. "));
+            let at = if at.is_empty() {
+                " in the scene".to_string()
+            } else {
+                at
+            };
+            s.push_str(&format!("Place {tag}{at}. "));
         } else {
-            s.push_str(&format!("Place {tag}, {part}. "));
+            s.push_str(&format!("Place {tag}{at}, {part}. "));
         }
     }
     if let Some(left) = leftover.map(|l| untagged(l, &tags)) {
@@ -296,6 +306,7 @@ mod tests {
             shown: shown.into(),
             wearing: "a coat".into(),
             part: part.into(),
+            at: None,
             portrait: Vec::new(),
             ext: "png",
         }
@@ -359,6 +370,19 @@ mod tests {
         let p = placing_prompt(&[person("Maya", ""), person("John", "")], None);
         assert!(
             p.starts_with("Place the person from <image2> in the scene."),
+            "{p}"
+        );
+        // A place, when the split gave one, is said.
+        let mut left = person("Maya", "");
+        left.at = Some("on the left".into());
+        let mut right = person("John", "waving");
+        right.at = Some("on the right".into());
+        let p = placing_prompt(&[left, right], None);
+        assert!(
+            p.starts_with(
+                "Place the person from <image2> on the left. Place the person from <image3> on \
+                 the right, waving."
+            ),
             "{p}"
         );
     }

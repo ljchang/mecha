@@ -3286,6 +3286,19 @@ impl Tool for ImageGenerate {
                             // shorter lost half an outfit).
                             let recorded = ctx.scene.as_ref().and_then(|s| s.current());
                             let fuller = |p: &crate::scene::Person| {
+                                // The call's own clothes, when it names any:
+                                // a fuller record's outfit replaced the one
+                                // asked for (mecha-a3, 2026-10-10).
+                                if let Some(asked) = call
+                                    .change
+                                    .people
+                                    .iter()
+                                    .find(|c| c.who.key() == p.who.key())
+                                    .and_then(|c| c.wearing.clone())
+                                    .filter(|w| !w.trim().is_empty())
+                                {
+                                    return asked;
+                                }
                                 let kept = recorded
                                     .as_ref()
                                     .and_then(|r| {
@@ -3318,6 +3331,7 @@ impl Tool for ImageGenerate {
                                             key: p.who.key(),
                                             shown: crate::picture::shown(&p.who),
                                             wearing: fuller(p),
+                                            at: p.at.map(|w| w.name().to_string()),
                                             part: p.doing.clone(),
                                             portrait: bytes,
                                             ext,
