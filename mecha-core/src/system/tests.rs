@@ -345,6 +345,8 @@ fn sample(min: u32, units: &[UnitCounters], busy: u64, total: u64) -> Sample {
         },
         disk: Some((300, 1000)),
         by_category: fold(units, Some(&[("llama-local.service".to_string(), 6000)])),
+        now: Vec::new(),
+        counters: Counters::default(),
     }
 }
 
@@ -631,4 +633,433 @@ fn the_sampler_and_a_loader_wait_for_each_other() {
         .expect("the loader waits for the writer");
     release.join().unwrap();
     assert_eq!(fetched.rows[0][0], serde_json::json!(2));
+}
+
+// ---- S1: sources, measurements, rates ----
+
+#[test]
+fn the_new_parsers_read_what_the_system_prints() {
+    use source::*;
+    let p = parse_pressure(
+        "some avg10=1.50 avg60=0.25 avg300=0.00 total=99\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+    )
+    .unwrap();
+    assert_eq!(
+        (p.avg10, p.avg60),
+        (1.5, 0.25),
+        "the `some` line, not `full`"
+    );
+    assert_eq!(parse_pressure(""), None);
+
+    assert_eq!(
+        parse_vmstat_oom_kill("nr_free_pages 3\noom_kill 7\n"),
+        Some(7)
+    );
+    assert_eq!(parse_vmstat_oom_kill("nr_free_pages 3\n"), None);
+    assert_eq!(parse_uptime("1258406.10 23617715.72\n"), Some(1258406.10));
+    assert_eq!(parse_thermal("44800\n"), Some(44.8));
+    assert_eq!(
+        parse_thermal("-273000\n"),
+        None,
+        "nonsense is not a temperature"
+    );
+    assert_eq!(parse_thermal("999000\n"), None);
+
+    let disk = parse_diskstats(
+        " 259       0 nvme0n1 1 2 100 4 5 6 300 8 0 40 9\n 259       2 nvme0n1p2 1 2 10 4 5 6 30 8 0 7 9\n",
+        259,
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        (disk.read_bytes, disk.write_bytes, disk.io_ms),
+        (10 * 512, 30 * 512, 7),
+        "the device asked for, in 512-byte sectors"
+    );
+    assert_eq!(parse_diskstats("", 259, 2), None);
+
+    let route = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n\
+        eth9\t00000000\t0101A8C0\t0003\t0\t0\t700\t00000000\n\
+        wlan9\t00000000\t0132A8C0\t0003\t0\t0\t600\t00000000\n\
+        down9\t00000000\t0132A8C0\t0002\t0\t0\t1\t00000000\n\
+        br9\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\n";
+    assert_eq!(
+        parse_default_route(route).as_deref(),
+        Some("wlan9"),
+        "lowest metric among default routes that are up"
+    );
+
+    let link = parse_iw_link(
+        "Connected to 00:11:22:33:44:55 (on wlan9)\n\tsignal: -47 dBm\n\ttx bitrate: 286.7 MBit/s HE-MCS 11\n",
+    )
+    .unwrap();
+    assert_eq!(
+        (link.signal_dbm, link.bitrate_mbit),
+        (Some(-47.0), Some(286.7))
+    );
+    assert_eq!(parse_iw_link("Not connected.\n"), None);
+
+    let ts = r#"{"BackendState":"Running","Peer":{"k1":{"HostName":"made-up-a","Online":true},"k2":{"HostName":"made-up-b","Online":false},"k3":{"Online":true}}}"#;
+    assert_eq!(
+        parse_tailscale_status(ts),
+        Some(Tailnet {
+            up: true,
+            peers_online: 2
+        })
+    );
+    assert_eq!(
+        parse_tailscale_status(r#"{"BackendState":"Stopped"}"#),
+        Some(Tailnet {
+            up: false,
+            peers_online: 0
+        })
+    );
+
+    assert_eq!(
+        parse_throttle("0x0000000000000001\n"),
+        Some(false),
+        "idle is not throttled"
+    );
+    assert_eq!(
+        parse_throttle("0x0000000000000000\n0x0000000000000040\n"),
+        Some(true)
+    );
+    assert_eq!(parse_throttle(""), None, "no answer is not 'not throttled'");
+    assert_eq!(
+        parse_failed_units("a.service loaded failed failed A\nb.service loaded failed failed B\n"),
+        2
+    );
+    assert_eq!(parse_failed_units(""), 0);
+}
+
+/// The kernel log names the killed task and its pid on the same line; only
+/// the constraint and the cgroup's unit are read, and the unit is folded
+/// into a category before anything is stored.
+#[test]
+fn an_oom_kill_is_read_as_its_kind_and_its_unit_only() {
+    let log = "\
+oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=user.slice,mems_allowed=0,oom_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/run-rabc.scope,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/run-rabc.scope,task=made-up-tool,pid=11,uid=1000
+something else entirely
+oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/llama-local.service,task=made-up-server,pid=22,uid=1000
+";
+    let kills = source::parse_oom_kills(log);
+    assert_eq!(
+        kills,
+        vec![
+            source::OomKill {
+                global: false,
+                unit: None
+            },
+            source::OomKill {
+                global: true,
+                unit: Some("llama-local.service".into())
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_bounded_command_is_killed_and_a_large_answer_does_not_stall_it() {
+    use source::{run_bounded, Ran};
+    use std::time::Duration;
+    assert_eq!(
+        run_bounded("mecha-no-such-program", &[], Duration::from_secs(1)),
+        Ran::Missing,
+        "not installed is a fact about the machine"
+    );
+    assert_eq!(
+        run_bounded("sleep", &["5"], Duration::from_millis(200)),
+        Ran::TimedOut
+    );
+    assert_eq!(
+        run_bounded("false", &[], Duration::from_secs(5)),
+        Ran::Failed
+    );
+    // Far beyond a pipe's 64 KiB: drained while running, so it finishes.
+    match run_bounded(
+        "head",
+        &["-c", "300000", "/dev/zero"],
+        Duration::from_secs(5),
+    ) {
+        Ran::Out(t) => assert_eq!(t.len(), 300_000),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A measurement's number is a wire format: the series stores readings
+/// under it for a week.
+#[test]
+fn measurement_numbers_and_names_are_pinned_and_unique() {
+    let pinned: &[(u16, &str)] = &[
+        (1, "memory.total"),
+        (2, "memory.available"),
+        (4, "memory.oom_kills"),
+        (5, "memory.oom_kills.global"),
+        (6, "memory.oom_kills.capped"),
+        (10, "cpu.busy"),
+        (22, "pressure.memory.avg10"),
+        (32, "disk.read_rate"),
+        (43, "gpu.unified"),
+        (52, "network.uplink.kind"),
+        (61, "services.failed"),
+        (104, "category.oom_kills"),
+    ];
+    for (n, name) in pinned {
+        let m = Measurement::from_u16(*n).unwrap_or_else(|| panic!("{n} is gone"));
+        assert_eq!(m.name(), *name);
+        assert_eq!(m as u16, *n);
+    }
+    assert_eq!(
+        Measurement::from_u16(9999),
+        None,
+        "unknown is None, never a neighbour"
+    );
+    let mut names: Vec<&str> = Measurement::ALL.iter().map(|m| m.name()).collect();
+    let n = names.len();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), n, "every name is unique");
+    for m in Measurement::ALL {
+        assert_eq!(Measurement::from_u16(*m as u16), Some(*m));
+    }
+}
+
+#[test]
+fn a_query_matches_a_name_or_a_whole_group_never_a_fragment() {
+    assert_eq!(
+        Measurement::matching("memory.available"),
+        vec![Measurement::MemoryAvailable]
+    );
+    assert_eq!(Measurement::matching("gpu").len(), 5);
+    assert_eq!(
+        Measurement::matching("pressure.memory"),
+        vec![
+            Measurement::PressureMemoryAvg10,
+            Measurement::PressureMemoryAvg60
+        ]
+    );
+    assert!(
+        Measurement::matching("gp").is_empty(),
+        "a fragment is not a group"
+    );
+    assert!(Measurement::matching("nonsense").is_empty());
+}
+
+fn reading_at(db: &Path, at: &str, m: Measurement) -> Option<Option<f64>> {
+    let c = Connection::open(db).unwrap();
+    c.query_row(
+        "SELECT value FROM reading_minute WHERE at = ?1 AND measurement = ?2",
+        rusqlite::params![at, m as u16],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap()
+}
+
+/// Observed writes its value, Unread writes NULL, NotHere writes no row.
+#[test]
+fn a_reading_is_stored_as_a_value_a_null_or_no_row() {
+    let s = Scratch::new();
+    let db = s.0.join("series.sqlite");
+    let mut smp = sample(0, &[], 0, 0);
+    smp.now = vec![
+        (
+            Measurement::MemoryAvailable,
+            Reading::Observed { value: 4.0 },
+        ),
+        (
+            Measurement::GpuThrottled,
+            Reading::Unread {
+                why: "nvidia-smi failed".into(),
+            },
+        ),
+        (Measurement::NetworkWifiSignal, Reading::NotHere),
+    ];
+    record(&db, &smp).unwrap();
+    let at = "2031-04-17 09:00:00";
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryAvailable),
+        Some(Some(4.0))
+    );
+    assert_eq!(reading_at(&db, at, Measurement::GpuThrottled), Some(None));
+    assert_eq!(reading_at(&db, at, Measurement::NetworkWifiSignal), None);
+}
+
+fn with_counters(min: u32, disk_read: u64, dev: u64, rx: u64, ifindex: u64, oom: u64) -> Sample {
+    let mut s = sample(min, &[], 0, 0);
+    s.counters = Counters {
+        oom_kills: Ok(oom),
+        oom_log: None,
+        disk: Ok((
+            dev,
+            source::DiskCounters {
+                read_bytes: disk_read,
+                write_bytes: 0,
+                io_ms: 0,
+            },
+        )),
+        uplink: Ok(NetCounters { ifindex, rx, tx: 0 }),
+        tailnet: Err(Reading::NotHere),
+    };
+    s
+}
+
+/// A rate is a difference over time — never across a reset or a change of
+/// the device or interface holding the role.
+#[test]
+fn a_rate_is_drawn_between_samples_and_never_across_a_reset_or_a_switch() {
+    let s = Scratch::new();
+    let db = s.0.join("series.sqlite");
+    record(&db, &with_counters(0, 1_000, 7, 500, 3, 0)).unwrap();
+    assert_eq!(
+        reading_at(&db, "2031-04-17 09:00:00", Measurement::DiskReadRate),
+        Some(None),
+        "the first sample has nothing to differ from"
+    );
+
+    record(&db, &with_counters(1, 61_000, 7, 6_500, 3, 0)).unwrap();
+    let at = "2031-04-17 09:01:00";
+    assert_eq!(
+        reading_at(&db, at, Measurement::DiskReadRate),
+        Some(Some(1_000.0))
+    );
+    assert_eq!(
+        reading_at(&db, at, Measurement::NetworkUplinkRxRate),
+        Some(Some(100.0))
+    );
+    assert_eq!(
+        reading_at(&db, at, Measurement::NetworkTailnetRxRate),
+        None,
+        "no tailnet interface writes no row"
+    );
+
+    // A reboot: the disk counter fell. Another interface took the route.
+    record(&db, &with_counters(2, 5, 7, 9_999_999, 4, 0)).unwrap();
+    let at = "2031-04-17 09:02:00";
+    assert_eq!(reading_at(&db, at, Measurement::DiskReadRate), Some(None));
+    assert_eq!(
+        reading_at(&db, at, Measurement::NetworkUplinkRxRate),
+        Some(None)
+    );
+
+    // And from there it measures again.
+    record(&db, &with_counters(3, 60_005, 7, 9_999_999 + 60, 4, 0)).unwrap();
+    let at = "2031-04-17 09:03:00";
+    assert_eq!(
+        reading_at(&db, at, Measurement::DiskReadRate),
+        Some(Some(1_000.0))
+    );
+    assert_eq!(
+        reading_at(&db, at, Measurement::NetworkUplinkRxRate),
+        Some(Some(1.0))
+    );
+}
+
+fn category_oom(db: &Path, at: &str, cat: Category) -> Option<f64> {
+    let c = Connection::open(db).unwrap();
+    c.query_row(
+        "SELECT value FROM category_reading_minute WHERE at = ?1 AND measurement = ?2 AND category = ?3",
+        rusqlite::params![at, Measurement::CategoryOomKills as u16, cat as u8],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// The kernel's counter says how many; the log says which kind and whose,
+/// and is believed only when it accounts for exactly that many.
+#[test]
+fn the_oom_split_is_recorded_only_when_the_log_accounts_for_every_kill() {
+    let s = Scratch::new();
+    let db = s.0.join("series.sqlite");
+    record(&db, &with_counters(0, 0, 7, 0, 3, 100)).unwrap();
+
+    // Two kills; the log names both: one capped scope, one global chat model.
+    let mut two = with_counters(1, 0, 7, 0, 3, 102);
+    two.counters.oom_log = Some(vec![(false, Category::Other), (true, Category::ChatModel)]);
+    record(&db, &two).unwrap();
+    let at = "2031-04-17 09:01:00";
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryOomKills),
+        Some(Some(2.0))
+    );
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryOomKillsGlobal),
+        Some(Some(1.0))
+    );
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryOomKillsCapped),
+        Some(Some(1.0))
+    );
+    assert_eq!(category_oom(&db, at, Category::ChatModel), Some(1.0));
+    assert_eq!(category_oom(&db, at, Category::Voice), Some(0.0));
+
+    // Three kills, but the log saw one: the total stands, the split is unknown.
+    let mut short = with_counters(2, 0, 7, 0, 3, 105);
+    short.counters.oom_log = Some(vec![(true, Category::ChatModel)]);
+    record(&db, &short).unwrap();
+    let at = "2031-04-17 09:02:00";
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryOomKills),
+        Some(Some(3.0))
+    );
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryOomKillsGlobal),
+        Some(None)
+    );
+    assert_eq!(category_oom(&db, at, Category::ChatModel), None);
+
+    // No kills: zero of each kind, whatever the log window happened to hold.
+    let mut none = with_counters(3, 0, 7, 0, 3, 105);
+    none.counters.oom_log = Some(vec![(true, Category::Voice)]);
+    record(&db, &none).unwrap();
+    let at = "2031-04-17 09:03:00";
+    assert_eq!(
+        reading_at(&db, at, Measurement::MemoryOomKillsGlobal),
+        Some(Some(0.0))
+    );
+    assert_eq!(category_oom(&db, at, Category::Voice), Some(0.0));
+}
+
+/// Without the memory controller every unit would read zero and `Other`
+/// would absorb the machine.
+#[test]
+fn a_slice_whose_units_report_no_memory_is_refused() {
+    let s = Scratch::new();
+    let unit = s.0.join("made-up.service");
+    std::fs::create_dir_all(&unit).unwrap();
+    std::fs::write(unit.join("pids.current"), "3\n").unwrap();
+    let err = unit_counters(&s.0).unwrap_err();
+    assert!(format!("{err:#}").contains("memory.current"), "{err:#}");
+    std::fs::write(unit.join("memory.current"), "4096\n").unwrap();
+    assert_eq!(unit_counters(&s.0).unwrap()[0].1, 4096);
+}
+
+/// A rate is probed from the series' newest minute while it is fresh; a
+/// stale series is unknown with a reason, never its last value.
+#[test]
+fn a_rate_probe_reads_the_fresh_series_and_refuses_a_stale_one() {
+    let s = Scratch::new();
+    let db = s.0.join("series.sqlite");
+    let reader = Reader::new();
+    let m = Measurement::DiskReadRate;
+    assert!(matches!(
+        probe(&reader, &db, m, Utc::now()),
+        Probed::One(Reading::Unread { .. })
+    ));
+    record(&db, &with_counters(0, 1_000, 7, 0, 3, 0)).unwrap();
+    record(&db, &with_counters(1, 61_000, 7, 0, 3, 0)).unwrap();
+    let then = Utc.with_ymd_and_hms(2031, 4, 17, 9, 2, 0).unwrap();
+    assert_eq!(
+        probe(&reader, &db, m, then),
+        Probed::One(Reading::Observed { value: 1_000.0 })
+    );
+    let later = Utc.with_ymd_and_hms(2031, 4, 17, 9, 30, 0).unwrap();
+    match probe(&reader, &db, m, later) {
+        Probed::One(Reading::Unread { why }) => assert!(why.contains("newest minute"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    match probe(&reader, &db, Measurement::CategoryMemory, then) {
+        Probed::ByCategory(rows) => assert_eq!(rows.len(), Category::ALL.len()),
+        other => panic!("{other:?}"),
+    }
 }
