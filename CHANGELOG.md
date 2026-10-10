@@ -135,6 +135,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Regenerate a picture, and step through its versions.** A picture in
+  the assistant's chat or a persona chat has a Regenerate button beside
+  Edit. It draws
+  the same picture again at a new seed, with no words and no painted area,
+  and the new one shows on the same card, with ‹ › to step between the
+  versions. Edit, Regenerate and Download act on the version showing.
+  Regenerate is off while the persona is answering. On a call, Regenerate
+  is in the picture viewer: the persona answers aloud, and talking over the
+  redraw does not stop it.
+
 - **`mecha replay --persona` samples a persona chat's turn.** It branches at
   one of the chat's turns (`--list` shows them) and sends that turn's first
   request again, `--samples` times with a different seed each, as the chat

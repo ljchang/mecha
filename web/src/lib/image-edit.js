@@ -61,6 +61,13 @@ export function composeEditMessage(picturePath, maskPath, instruction) {
     : `Edit ${picturePath}: ${words}`;
 }
 
+// Regenerate (IMAGE-DESIGN.md §5.4): the message the owner sees for the
+// picture drawn again as it is. The turn's `edit` carries `redraw` and the
+// picture alone, never a mask or regions, which the server refuses beside it.
+export function composeRegenerateMessage(picturePath) {
+  return `Regenerate ${picturePath}`;
+}
+
 // Regions (IMAGE-REGION-EDIT-RESEARCH.md §7, M2): the colours a region may
 // be painted in, by name and exact value, mirroring `picture::REGION_COLOURS`
 // on the server. The page picks four, those least present in the picture,
