@@ -99,7 +99,7 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "stt" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
@@ -171,12 +171,27 @@ pub fn may_offer(feature: Feature, chat_here: bool) -> bool {
 }
 
 /// Price what a plan would install whose size is known before installing:
-/// the engine's pinned archives for this machine, on its line and in the
-/// total. `nvidia` is read only when the engine is to be installed, so a plan
-/// with nothing to fetch probes no driver. A machine `engine::choose` refuses
-/// is priced at nothing, and its install says why.
+/// the engine's pinned archives for this machine, and the speech-to-text
+/// model's pinned tarball (its own tree, so the plan's file rows leave it
+/// out), each on its line and in the total. `nvidia` is read only when the
+/// engine is to be installed, so a plan with nothing to fetch probes no
+/// driver. A machine `engine::choose` refuses is priced at nothing, and its
+/// install says why.
 pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::engine::Nvidia) {
     let feature = plan.feature;
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == crate::stt_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && installable(s.id)
+    }) {
+        if let Some(bytes) = crate::stt_unit::download_bytes() {
+            s.bytes = Some(bytes);
+            plan.download_bytes += bytes;
+        }
+    }
     let Some(s) = plan.sidecars.iter_mut().find(|s| {
         s.id == "llama"
             && matches!(
@@ -383,15 +398,7 @@ pub async fn install_layout(
     // `document::layout_tree` does, so they would disagree with no way out.
     Manifest::record(home, id, &dir.join("python"))?;
     Manifest::record(home, id, &link)?;
-    let uv_env = |c: &mut std::process::Command| {
-        c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
-            .env("UV_CACHE_DIR", dir.join(".uv-cache"))
-            .env("UV_PYTHON_PREFERENCE", "only-managed")
-            .env("UV_NO_CONFIG", "1")
-            // `only-managed` needs the download; an operator's `never` would
-            // turn the install into a confusing failure.
-            .env("UV_PYTHON_DOWNLOADS", "automatic");
-    };
+    let uv_env = |c: &mut std::process::Command| uv_env(c, &dir);
     if !python.exists() {
         say(&format!("building a Python {LAYOUT_PYTHON} environment"));
         // `--clear`: a venv whose interpreter dangles (its managed Python
@@ -457,8 +464,21 @@ pub async fn install_layout(
     Ok(())
 }
 
+/// `uv`'s environment for an install whose tree is `dir`: its Python, its
+/// cache and nothing of the operator's uv configuration — one tree per
+/// install, removable whole.
+pub(crate) fn uv_env(c: &mut std::process::Command, dir: &Path) {
+    c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
+        .env("UV_CACHE_DIR", dir.join(".uv-cache"))
+        .env("UV_PYTHON_PREFERENCE", "only-managed")
+        .env("UV_NO_CONFIG", "1")
+        // `only-managed` needs the download; an operator's `never` would
+        // turn the install into a confusing failure.
+        .env("UV_PYTHON_DOWNLOADS", "automatic");
+}
+
 /// Run a step; a failure is an error carrying its own output.
-fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
+pub(crate) fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
     let out = c.output().with_context(|| format!("starting {what}"))?;
     if !out.status.success() {
         bail!(
@@ -487,6 +507,15 @@ pub async fn install(
                 crate::llama_units::Which::Ocr
             };
             crate::llama_units::install(m, which, &which.shipped(), machine, hub, say).await
+        }
+        "stt" => {
+            let naming = crate::stt_unit::Naming::shipped();
+            crate::stt_unit::install(m, &naming, say).await?;
+            say(&format!(
+                "speech to text answers on :{} — `[voice] stt_url`'s default",
+                naming.port
+            ));
+            Ok(())
         }
         "llama" => {
             let server = crate::engine::install_engine(m, say).await?;
@@ -597,6 +626,37 @@ mod tests {
         assert_eq!(unneeded.download_bytes, 0);
     }
 
+    /// The speech-to-text model's tarball is in a plan that installs the
+    /// server, and in nothing else's (review of #638).
+    #[test]
+    fn the_speech_to_text_download_is_in_the_plan() {
+        let stt = |state| Plan {
+            feature: Feature::Voice,
+            sidecars: vec![PlannedSidecar {
+                id: crate::stt_unit::ID,
+                label: "the speech-to-text server",
+                state,
+                bytes: None,
+            }],
+            files: vec![],
+            download_bytes: 5,
+            nothing_to_do: false,
+        };
+        let mut p = stt(SidecarState::Missing { step: "7d-1" });
+        price(&mut p, true, || crate::engine::Nvidia::None);
+        let b = crate::stt_unit::download_bytes().expect("pinned");
+        if installable(crate::stt_unit::ID) {
+            assert_eq!(p.sidecars[0].bytes, Some(b));
+            assert_eq!(p.download_bytes, 5 + b);
+        } else {
+            assert_eq!(p.download_bytes, 5, "not offered here, not priced");
+        }
+        let mut provided = stt(SidecarState::Provided { by: "x".into() });
+        price(&mut provided, true, || crate::engine::Nvidia::None);
+        assert_eq!(provided.download_bytes, 5);
+        assert_eq!(provided.sidecars[0].bytes, None);
+    }
+
     fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
         offered(p, chat_here).iter().map(|s| s.id).collect()
     }
@@ -689,7 +749,7 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1"]
         } else {
             &["7a-3", "7b"]
         };
