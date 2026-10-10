@@ -314,12 +314,15 @@ pub fn tidy(raw: &str) -> Option<String> {
 
 /// Unicode format characters (`Cf`) that survive [`char::is_control`].
 ///
-/// The bidi controls and isolates, the zero-width set, and the byte-order
-/// mark — the ones that change how the text *around* them renders, which is
-/// the whole risk in a row of a list.
+/// The bidi controls and isolates, the zero-width set, the byte-order mark,
+/// the soft hyphen and Arabic letter mark, and the tag block — the ones that
+/// change how the text *around* them renders, or hide text a reader cannot
+/// see, which is the whole risk in a row of a list and in a dashboard's
+/// address screen alike (`hud::spec`). One list, so the two cannot drift.
 pub(crate) fn is_format_char(ch: char) -> bool {
     matches!(ch as u32,
-        0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF)
+        0x00AD | 0x061C | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFEFF
+        | 0xE0001 | 0xE0020..=0xE007F)
 }
 
 #[cfg(test)]
