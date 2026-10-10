@@ -1,0 +1,15 @@
+# Record one sample of the host's load, by kind of work only, into
+# ~/.mecha/hud/host.sqlite (LIVE-DASHBOARD-DESIGN §11). Installed as a user unit:
+#   cp scripts/mecha-hud-sample.{service,timer} ~/.config/systemd/user/
+#   systemctl --user enable --now mecha-hud-sample.timer
+# No model runs here, and no process, unit or model name is ever written.
+[Unit]
+Description=mecha hud sample (host load by category)
+
+[Service]
+Type=oneshot
+# No GUI login on this machine means no ~/.cargo/bin on the manager's PATH;
+# nvidia-smi lives in /usr/bin.
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.cargo/bin/mecha hud sample
+Nice=10

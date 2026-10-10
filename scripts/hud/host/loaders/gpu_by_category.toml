@@ -1,0 +1,21 @@
+# Per kind of work, the last 24 hours at five-minute steps. Labels come from
+# the categories table, which the sampler writes from code.
+source = "host"
+schedule = "*/5 * * * *"
+max_rows = 5000
+query = """
+SELECT m.at, c.label AS category, round(m.gpu_mib / 1024.0, 2) AS gpu_gib
+FROM category_minute m JOIN categories c ON c.id = m.category
+WHERE m.at >= datetime('now', '-24 hours') AND CAST(strftime('%M', m.at) AS INTEGER) % 5 = 0
+ORDER BY m.at, m.category
+"""
+
+[[column]]
+name = "at"
+type = "timestamp"
+[[column]]
+name = "category"
+type = "string"
+[[column]]
+name = "gpu_gib"
+type = "float"
