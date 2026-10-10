@@ -419,25 +419,27 @@ file and carries none by default.
 
 Which optional parts of mecha are switched on: one `true` or `false` per
 feature. **Global file only** — a project's `mecha.toml` is stripped of it, so a
-cloned repository can never turn a feature on. `mecha config init` writes the
-table in full with every feature off, and `mecha features enable <id>` edits it
-in place.
+cloned repository can never turn a feature on. `mecha config init` (and `mecha
+setup`, when there is no file yet) writes the table with every feature listed
+and none answered: each line is commented, so the feature is off and `mecha
+setup` asks about it. `mecha features enable <id>` writes `true` in place; a
+`false` is a no that `mecha setup` keeps rather than asks about again.
 
 ```toml
 [features]
-web = false        # the web app (`mecha serve`)
-slack = false      # Slack remote control
-mail = false       # mail and calendar
-docs = false       # Google Docs, Sheets and Slides
-graph = false      # the knowledge graph and the task board
-search = false     # web search and open
-documents = false  # PDF extraction (OCR and layout are [documents] settings)
-image = false      # image generation and the character library
-personas = false   # characters you write and talk to
-voice = false      # dictation and voice calls
-incognito = false  # a web chat that leaves no trace
-frontdoor = false  # inbound requests, polls and publishing
-messages = false   # messages between sessions on this machine
+# web = false        # the web app (`mecha serve`)
+# slack = false      # Slack remote control
+# mail = false       # mail and calendar
+# docs = false       # Google Docs, Sheets and Slides
+# graph = false      # the knowledge graph and the task board
+# search = false     # web search and open
+# documents = false  # PDF extraction (OCR and layout are [documents] settings)
+# image = false      # image generation and the character library
+# personas = false   # characters you write and talk to
+# voice = false      # dictation and voice calls
+# incognito = false  # a web chat that leaves no trace
+# frontdoor = false  # inbound requests, polls and publishing
+# messages = false   # messages between sessions on this machine
 ```
 
 The switch is the only switch; a settings table such as `[image]` or
