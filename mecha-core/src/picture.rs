@@ -846,7 +846,14 @@ pub fn plan(
             prose.push((k, f.value.clone()));
         }
     }
-    if let Some(r) = &call.retouch {
+    // With regions the retouch is the harness's legend, whose own words
+    // ("mark", a colour's name) would read as library names: what is checked
+    // is what the owner wrote in each region (review of #623, pass 12).
+    if !call.regions.is_empty() {
+        for r in &call.regions {
+            prose.push(("retouch", r.words.clone()));
+        }
+    } else if let Some(r) = &call.retouch {
         prose.push(("retouch", r.clone()));
     }
     if let Some(Setting::Words { text }) = next.setting.as_ref().map(|f| &f.value) {
@@ -1502,6 +1509,56 @@ mod tests {
             c.change.people[0].doing.as_deref(),
             Some("waves at the sea")
         );
+    }
+
+    /// The names check reads each region's own words, never the legend the
+    /// harness wrote: a character keyed `mark` or `red` would otherwise be
+    /// offstage on every regions edit, and the measured legend rewritten to
+    /// "the viewer" (review of #623, pass 12).
+    #[test]
+    fn a_regions_legend_is_not_read_for_names() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a study", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "reading"}]}})),
+            None,
+        );
+        let base = landed(&first, 3);
+        let approved = |n: &str| n == "mark" || n == "red" || lib(n);
+        let named = |t: &str| {
+            let t = t.to_lowercase();
+            ["mark", "red", "maya", "wren"]
+                .into_iter()
+                .filter(|n| t.split(|c: char| !c.is_alphanumeric()).any(|w| w == *n))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        };
+        let regions = |words: &str| {
+            call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "red", "words": words}]}))
+        };
+        let p = plan(
+            &regions("a green scarf"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        // The owner's own words still are.
+        let p = plan(
+            &regions("Wren's green scarf"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(p.offstage, vec!["wren".to_string()]);
     }
 
     /// Regions beside a scene change are refused: the change drops the mask,
