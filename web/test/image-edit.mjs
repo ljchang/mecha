@@ -110,3 +110,17 @@ assert.equal(server.length, 8, 'the server table was read');
 assert.deepEqual(REGION_COLOURS, server);
 assert.equal(MAX_REGIONS, Number(rust.match(/pub const MAX_REGIONS: usize = (\d+);/)[1]));
 
+// Removing a region keeps every erase, whichever region was selected when
+// it was made, and shifts later regions down (review of #623).
+import { opsWithout } from '../src/lib/image-edit.js';
+const paint1 = { kind: 'stroke', region: 0, erase: false };
+const paint2 = { kind: 'stroke', region: 1, erase: false };
+const eraseWith2 = { kind: 'stroke', region: 1, erase: true };
+const paint3 = { kind: 'stroke', region: 2, erase: false };
+assert.deepEqual(opsWithout([paint1, paint2, eraseWith2, paint3], 1), [
+  paint1,
+  { ...eraseWith2, region: 0 },
+  { ...paint3, region: 1 },
+]);
+assert.deepEqual(opsWithout([paint1, eraseWith2], 0), [{ ...eraseWith2, region: 0 }]);
+
