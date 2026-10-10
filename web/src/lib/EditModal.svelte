@@ -19,6 +19,7 @@
     MAX_REGIONS,
     editDirty,
     firstRegionWords,
+    opsWithout,
   } from './image-edit.js';
 
   let { src, path, initial = '', busy = false, error = null, multi = false, onsend, onclose } = $props();
@@ -168,9 +169,7 @@
 
   function removeRegion(k) {
     if (busy || regionList.length < 2) return;
-    ops = ops
-      .filter((op) => op.region !== k)
-      .map((op) => (op.region > k ? { ...op, region: op.region - 1 } : op));
+    ops = opsWithout(ops, k);
     regionList = regionList.filter((_, i) => i !== k);
     layers = layers.filter((_, i) => i !== k);
     // The brush stays on the region it was on (review of #623).

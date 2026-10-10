@@ -98,8 +98,9 @@ export function pickColours(data) {
 /** A region index's pixels (RGBA): black everywhere, and each region's own
  *  colour exactly where its layer's alpha is over half. No smoothing, so the
  *  server can read every pixel as one colour or none. `layers` are each
- *  region's RGBA data at the picture's size, in region order; a later region
- *  wins where two overlap. */
+ *  region's RGBA data at the picture's size, in region order. The modal
+ *  keeps regions apart (paint takes a pixel from the others), so a later
+ *  region winning is only a tie-break on anti-aliased rims. */
 export function indexPixels(width, height, layers, rgbs) {
   const out = new Uint8ClampedArray(width * height * 4);
   for (let i = 3; i < out.length; i += 4) out[i] = 255;
@@ -140,3 +141,17 @@ export function editDirty({ multi, painted, words, initial, regionWords }) {
 export function firstRegionWords(regionWords, typed, opened) {
   return (regionWords ?? '').trim() === opened.trim() ? typed : regionWords;
 }
+
+// The operations left when region `k` is removed: its paint goes, but every
+// erase stays, since the eraser clears all regions whichever was selected.
+// Dropping an erase made with `k` selected brought back paint it had rubbed
+// out of another region (review of #623). Later regions shift down one.
+export function opsWithout(ops, k) {
+  return ops
+    .filter((op) => op.erase || op.region !== k)
+    .map((op) => {
+      if (op.region === k) return { ...op, region: Math.max(0, k - 1) };
+      return op.region > k ? { ...op, region: op.region - 1 } : op;
+    });
+}
+
