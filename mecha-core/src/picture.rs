@@ -1245,8 +1245,6 @@ mod tests {
         s
     }
 
-    /// The retired inputs are refused with what to do instead; nothing to
-    /// draw is refused; a mask needs a retouch and a picture.
     /// Regions go with a mask and a picture, in palette colours, each with
     /// words, at most four; their legend becomes the retouch.
     #[test]
@@ -1293,6 +1291,8 @@ mod tests {
         );
     }
 
+    /// The retired inputs are refused with what to do instead; nothing to
+    /// draw is refused; a mask needs a retouch and a picture.
     #[test]
     fn retired_inputs_and_empty_calls_are_refused_plainly() {
         for k in [

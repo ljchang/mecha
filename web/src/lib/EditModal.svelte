@@ -219,11 +219,13 @@
     );
   }
 
-  // An operation as it lands: single mode draws it onto `base` too, rather
-  // than recompositing the whole picture per pointer event (review of #429).
+  // An operation as it lands: paint only grows the union, so it goes onto
+  // `base` directly rather than recompositing the whole picture per pointer
+  // event (review of #429). Only a regions-mode erase, which can take paint
+  // out of several layers, composes them again.
   function commit(op) {
     apply(op);
-    if (multi) composeBase();
+    if (multi && op.erase) composeBase();
     else draw(base.getContext('2d'), op);
   }
 
