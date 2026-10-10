@@ -916,6 +916,8 @@ mod tests {
         );
         assert!(crate::agent::is_harness_voice(DONE));
         assert!(crate::agent::is_harness_voice(NOT_DRAWN));
+        assert!(crate::agent::is_harness_voice(REDRAW_DONE));
+        assert!(crate::agent::is_harness_voice(REDRAW_NOT_DRAWN));
     }
 
     #[test]
