@@ -493,6 +493,11 @@ pub enum Command {
     /// file to $EDITOR — and never a model.
     Charter(commands::charter::Args),
 
+    /// Dashboards over your own data: install a drafted board, refresh its
+    /// datasets on schedule (`--due`, what the timer runs), list how each
+    /// loader's last refresh went. No model runs here.
+    Hud(commands::hud::Args),
+
     /// Inspect saved transcripts.
     #[command(subcommand)]
     Sessions(commands::sessions::Args),
@@ -641,6 +646,7 @@ impl Command {
             | Command::Imagelib(_)
             | Command::Document(_)
             | Command::Charter(_)
+            | Command::Hud(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -736,6 +742,7 @@ impl Command {
             | Command::Imagelib(_)
             | Command::Document(_)
             | Command::Charter(_)
+            | Command::Hud(_)
             | Command::Config(_)
             | Command::Model(_) => false,
         }
@@ -939,6 +946,7 @@ async fn dispatch() -> Result<()> {
         Command::Document(args) => commands::document::execute(args).await,
         Command::Persona(args) => commands::persona::execute(&cli.global, args).await,
         Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
+        Command::Hud(args) => commands::hud::run(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
         Command::Model(args) => commands::model::execute(&cli.global, args).await,
