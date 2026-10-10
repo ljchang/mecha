@@ -861,7 +861,7 @@ families, because there are two directions.
 templates/
   report/        outbound, class=static|interactive   prose + computed figures
   notebook/      outbound, class=compute              a whole marimo notebook
-  dashboard/     outbound, class=interactive          charts, no network, no eval
+  dashboard/     outbound, class=interactive          charts, no network, no eval  (built as `hud/` — LIVE-DASHBOARD-DESIGN R15)
   booking/       inbound + outbound                   availability page + claim
   request/       inbound                              the generic typed form
 ```
@@ -872,17 +872,21 @@ question actually lives:
 | Template | Renderer | Where | Executes code? |
 |---|---|---|---|
 | `report` (markdown) | pulldown-cmark + MiniJinja | Rust, in process | no |
-| `dashboard` | MiniJinja + a data file | Rust, in process | no |
+| `dashboard` | ~~MiniJinja + a data file~~ — superseded: a Svelte renderer bundle over a spec and datasets, [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) §4 | Rust, in process — it assembles a renderer bundle Node built once, ahead of time, with the spec and theme | no — the renderer is ours and pre-built; the spec is data |
 | `booking` | MiniJinja + availability JSON | Rust, in process | no |
 | `request` (the form) | generated from the manifest | Rust, in process | no |
 | `notebook` | `marimo export html-wasm` | Python subprocess | **yes** |
 | `report` with live cells | `marimo-book build` | Python subprocess | **yes** |
 
-Four of six render in Rust with nothing to execute. **The sandbox is required
-exactly where the renderer runs code we did not write** — the marimo rows,
-because both `marimo export` and `MarimoIslandGenerator.build()` execute the
-notebook to capture its outputs. That is the real boundary, and it happens to
-fall on a language line rather than being caused by one.
+Four of six render in Rust with nothing to execute. The dashboard's renderer is
+built once, ahead of time, by a toolchain (Node, Vite) whose output is vendored
+and gated; publishing a dashboard only assembles that bundle with a spec. **The
+sandbox is required where the renderer executes the *content*** — the marimo
+rows, because both `marimo export` and `MarimoIslandGenerator.build()` execute
+the notebook to capture its outputs. A build tool compiling our own renderer
+is foreign code too, but it runs at build time over code we wrote, and its
+output passes the vendor gate like any bundle; the boundary is *what* runs,
+not which language runs it.
 
 The corollary worth holding onto: **a report, a dashboard, a booking page and
 a form need no Python at all.** If marimo were never wired up, everything
@@ -2024,6 +2028,10 @@ the thing **collects**, and those are independent:
 |---|---|---|
 | **Publication** | a report, a blog page, a WASM notebook | immutable versions, a moving alias |
 | **Instrument** | an intake form, a booking page | a schema, an inbox, a lease, a handler |
+
+A third kind sits between them — the **live publication**, immutable code over
+datasets that move, such as a dashboard — and is designed in
+[`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) (research Part 7).
 
 Everything in §§1–13 is about publications, and publications are finished when
 they are published: no inbox, no lease, nothing to attach, and a notebook is a

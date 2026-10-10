@@ -786,8 +786,14 @@ pub fn plan(
         }
     }
 
+    // The total is what `features enable` would fetch, and the chat model —
+    // its files — is `mecha setup chat`'s, never `enable`'s (ruling F13):
+    // counted here, a plan for `web` read "To download: 22 GiB" about a
+    // download `enable web` would never make (found on review of #627). Its
+    // rows still show, and a machine without it never reads as having all.
     let download_bytes = files
         .iter()
+        .filter(|f| f.slot != "chat")
         .map(|f| match f.state {
             FileState::Download { bytes } => bytes,
             _ => 0,
@@ -1081,7 +1087,8 @@ mod tests {
     /// that model: the chat row's pinned files are neither priced nor a
     /// reason to offer the router again — which would rewrite its presets
     /// with the recommended row (found on review of #568). The pinned row's
-    /// router, its files gone, is offered as before.
+    /// router, its files gone, is neither offered nor in the plan's total:
+    /// re-running `mecha setup chat` fetches it (ruling F13).
     #[test]
     fn a_router_serving_a_brought_model_is_not_offered_the_row() {
         use crate::router_unit::{presets_path, presets_text, Preset, PINNED_ALIAS};
@@ -1134,13 +1141,15 @@ mod tests {
             .files
             .iter()
             .any(|f| f.slot == "chat" && matches!(f.state, FileState::Download { .. })));
-        assert!(
-            !cfg!(target_os = "linux")
-                || crate::install::offered(&pinned, true)
-                    .iter()
-                    .any(|s| s.id == "router"),
-            "the pinned row's router, its model gone, is offered again"
+        assert_eq!(
+            pinned.download_bytes, 0,
+            "the chat model is not enable's to fetch (review of #627)"
         );
+        // Its model gone, the pinned row's router is still not `enable`'s
+        // to fetch again: `mecha setup chat` is (ruling F13).
+        assert!(!crate::install::offered(&pinned, true)
+            .iter()
+            .any(|s| s.id == "router"));
 
         std::fs::write(&presets, "version = 1\n").unwrap();
         let unread = plan(Feature::Messages, &m, &GB10, &root.join("hub"), false).unwrap();

@@ -218,37 +218,6 @@ pub fn names_this_router(p: &crate::config::ProviderConfig, port: u16) -> bool {
             .is_some_and(|u| crate::provider::router::is_loopback(u) && u.contains(&port))
 }
 
-/// Whether the default provider is mecha's router on its shipped port — the
-/// only chat a `features enable` may install a router for. A chat server
-/// already named on another loopback port is the owner's, and a router beside
-/// it would be a second resident chat model and its download, answering
-/// nothing the config names (found on review of #618).
-pub fn chat_is_the_routers(cfg: &crate::config::Config) -> bool {
-    cfg.providers
-        .get(&cfg.default_provider)
-        .is_some_and(|p| names_this_router(p, Naming::shipped().port))
-}
-
-/// What to say when the default provider names this router but not the
-/// model it now serves: `features enable` installs the router for a config
-/// whose `model` it does not write, and with one preset resident every run
-/// through that provider would fail — after the download, in silence (found
-/// on review of #618). `setup chat` says the same of a declined rewrite.
-pub fn provider_lags(cfg: &crate::config::Config, naming: &Naming, alias: &str) -> Option<String> {
-    let name = &cfg.default_provider;
-    let p = cfg.providers.get(name)?;
-    if !names_this_router(p, naming.port) || p.model.as_deref() == Some(alias) {
-        return None;
-    }
-    Some(format!(
-        "the router serves only {alias}, and [providers.{name}] names {} — a run through `{name}` \
-         fails until `mecha setup --write --provider {name}` writes it",
-        p.model
-            .as_deref()
-            .map_or("no model".to_string(), |m| format!("`{m}`"))
-    ))
-}
-
 /// The base URLs runs hold this router by. Holds and switches are keyed by
 /// the configured string (`hold::Holds::switch_path`), so a provider that
 /// names the router as `localhost` holds a different key from the
@@ -604,8 +573,8 @@ mod tests {
 
     /// Only a loopback table on the router's port is this router: a `local`
     /// table with no `base_url` is api.openai.com, and one on another port
-    /// is a chat server the owner runs — `features enable` installs no
-    /// router beside it (found on review of #618).
+    /// is a chat server the owner runs — `setup chat` rewrites neither
+    /// (found on review of #618).
     #[test]
     fn only_a_loopback_table_on_the_port_names_this_router() {
         let table = |base: Option<&str>| crate::config::ProviderConfig {
@@ -626,18 +595,6 @@ mod tests {
             &table(Some("http://box.lan:8080/v1")),
             8080
         ));
-
-        let mut cfg = crate::config::Config {
-            default_provider: "local".into(),
-            ..Default::default()
-        };
-        cfg.providers
-            .insert("local".into(), table(Some("http://127.0.0.1:9090/v1")));
-        assert!(crate::install::chat_runs_here(&cfg), "chat is here…");
-        assert!(!chat_is_the_routers(&cfg), "…but not the router's");
-        cfg.providers
-            .insert("local".into(), table(Some("http://127.0.0.1:8080/v1")));
-        assert!(chat_is_the_routers(&cfg));
     }
 
     /// The pinned row's preset is the GB10's, at the tier's geometry; a
@@ -904,41 +861,6 @@ mod tests {
             .entries
             .iter()
             .any(|e| e.sidecar == ID)
-    }
-
-    /// A default provider naming this router but another model is told so;
-    /// one already naming the alias, or another server, is not.
-    #[test]
-    fn a_provider_naming_a_model_the_router_dropped_is_told() {
-        let naming = Naming::shipped();
-        let cfg = |base: &str, model: Option<&str>| crate::config::Config {
-            default_provider: "local".into(),
-            providers: [(
-                "local".to_string(),
-                crate::config::ProviderConfig {
-                    kind: "local".into(),
-                    base_url: Some(base.into()),
-                    model: model.map(str::to_string),
-                    ..Default::default()
-                },
-            )]
-            .into(),
-            ..Default::default()
-        };
-        let here = "http://127.0.0.1:8080/v1";
-        let said = provider_lags(&cfg(here, Some("old")), &naming, "new").unwrap();
-        assert!(
-            said.contains("serves only new") && said.contains("`old`"),
-            "{said}"
-        );
-        assert!(provider_lags(&cfg(here, None), &naming, "new").is_some());
-        assert!(provider_lags(&cfg(here, Some("new")), &naming, "new").is_none());
-        assert!(provider_lags(
-            &cfg("http://127.0.0.1:9090/v1", Some("old")),
-            &naming,
-            "new"
-        )
-        .is_none());
     }
 
     /// Runs hold the router by the spelling their provider uses: a switch

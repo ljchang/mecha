@@ -5871,6 +5871,52 @@ append-only ledger beside the definitions (`trigger.rs`, `TriggerStore`).
 The per-trigger run lock (`TriggerStore::try_claim`) is a separate,
 non-blocking flock, so a hand edit never contends with a fire.
 
+## The HUD
+
+`mecha hud` puts dashboards over the owner's own data: the model drafts a
+**spec** (`hud.json`, chart leaves in a Vega-Lite subset) and **loaders**
+(`loaders/*.toml`: a source by name, a query, a declared shape, a cron
+schedule); the owner installs them; a timer refreshes the datasets with no
+model in the loop. `docs/LIVE-DASHBOARD-DESIGN.md` is the authority and §0 is
+the owner's rulings; this section is the invariants a change to
+`mecha-core/src/hud/` must keep.
+
+- **A spec names no destinations.** The walk is an allowlist over the
+  structure (`vegalite.rs`) and a screen over the style objects beneath it —
+  keys naming a link/URL/source/loader, `expr`/`*Expr`/`signal`/`encode`,
+  `formatType` — and every string and key in the document is screened for
+  addresses, character references and CSS `url(`; prose fields refuse link
+  and HTML syntax, which is what keeps a *relative* path from becoming one.
+  The walker is also the main **correctness** check: models write other
+  grammars' syntax that Vega-Lite ignores silently (design §8.1).
+- **Checked by type.** `Spec`, `Loader` and `Installed` carry a private
+  `Checked`, have private fields and no `Deserialize`, so the only way to
+  hold one is the function that checked it — and nothing can change one
+  afterwards. A `compile_fail` doctest pins it.
+- **A loader is confined to reading its one file** (`runner.rs`): a
+  read-only open bounds writes, not reach, so `SQLITE_LIMIT_ATTACHED` is 0,
+  the authorizer is an *allowlist* (`SELECT`, `READ`, `FUNCTION`,
+  `RECURSIVE`), `load_extension` and `fts3_tokenizer` are refused by name
+  (they arrive as `FUNCTION`), and one prepared, read-only statement runs.
+  `VACUUM INTO` writes through a `mode=ro` connection and is refused because
+  it runs as an `ATTACH` — the tests probe that against the bundled engine,
+  not the system one. The row cap and byte budget stop a query *while it
+  fetches*; a wall-clock budget interrupts one that runs too long.
+- **The model names a source, never a path or a credential.** Sources live in
+  the owner-written `~/.mecha/hud/sources.toml`. The source's *kind* decides
+  `external`; `content` only tightens it, and unset is third-party.
+- **Due-ness is answered backwards from the ledger**, as for triggers: one
+  refresh owed after a week asleep, and a refresh run by hand records no slot.
+- **Refused and failed are different findings, and neither is silent.** A
+  refusal (drifted shape, a write, a denied action) keeps the previous dataset;
+  a failure (source missing, timeout) is the environment's. `mecha doctor`
+  reports both as broken, with the refresh command; a stale dataset is
+  attention. No refusal echoes a value from the data.
+- **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
+  loader is a cron slot over private data, and a cloned repository must not
+  bring one. Installing is the owner's act; the id is checked before it is
+  joined, and an installed id is never overwritten.
+
 ## Session records and replay
 
 `session.rs` writes append-only JSONL transcripts; `replay.rs` re-drives them.
@@ -9904,11 +9950,14 @@ the full checklist this grows into as each build step lands.
    sources — then `install::installable` names it, and `features enable`
    offers it (the engine's, larger, is `engine.rs`). A **shared** sidecar —
    empty `needed_by`, in every plan because chat runs on it — is offered only
-   where `install::not_needed` says it runs something: the chat model here,
-   or the feature's own embeddings or OCR server; a machine that chats
-   through a hosted provider is never handed the engine for `enable
-   messages`. And an install that does not fetch its models is never
-   re-offered because one is missing (`install::fetches_models`), or it
+   where `install::not_needed` says the feature runs something on it: its
+   own embeddings or OCR server. **The chat model is never `enable`'s**
+   (ruling F13): its engine, model and router are `mecha setup chat`'s —
+   and the guided `mecha setup`'s, which asks about chat first — so `enable
+   web` on a fresh machine is a switch write, not a 22 GiB question, and the
+   chat model's files stay out of a plan's download total. And an install
+   that does not fetch its models is never re-offered because one is missing
+   (`install::fetches_models`, which no longer names the router), or it
    would be offered, change nothing, and be offered again on every enable.
 
 ## Context, and knowing how much is left

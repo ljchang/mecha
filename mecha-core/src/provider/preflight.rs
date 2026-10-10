@@ -182,6 +182,28 @@ pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<Str
         }
     }
 
+    // **Unset is not agreement** — and since ruling F12 it is the default
+    // state: the starter's `[providers.local]` names neither, to be read off
+    // the server. Said here, where every `run` and `chat` checks, and not
+    // only by `mecha setup` (found on review of #627). Only what the server
+    // reports, so `mecha setup --write` can always clear it.
+    if let (None, Some(served)) = (cfg.model.as_deref(), props.model_alias.as_deref()) {
+        out.push(format!(
+            "[providers.{name}] sets no `model`; the server is serving {served:?}. Behind a \
+             llama-server router the request's `model` selects what answers, and an unnamed \
+             one is not served; elsewhere it is what every record says answered. `mecha setup \
+             --write` writes it from the server."
+        ));
+    }
+    if let (None, Some(served)) = (cfg.context_window, props.default_generation_settings.n_ctx) {
+        out.push(format!(
+            "[providers.{name}] sets no `context_window`; the server is serving {served} \
+             tokens per slot. The compaction threshold and the tool-output budget derive from \
+             it, and fall back to guesses without it. `mecha setup --write` writes it from the \
+             server."
+        ));
+    }
+
     out
 }
 
@@ -235,7 +257,8 @@ mod tests {
     /// looks: the model has eyes and nothing is using them.
     #[test]
     fn a_vision_model_served_with_no_one_configured_to_use_it_is_reported() {
-        let c = cfg(); // vision unset, and `local` defaults to false
+        let mut c = cfg(); // vision unset, and `local` defaults to false
+        c.context_window = Some(8192);
         let found = disagreements("local", &c, &props(8192, 1, true));
         assert_eq!(found.len(), 1);
         assert!(found[0].contains("vision = true"), "{}", found[0]);
@@ -246,6 +269,7 @@ mod tests {
     fn vision_declared_against_a_text_only_server_says_mmproj() {
         let mut c = cfg();
         c.vision = Some(true);
+        c.context_window = Some(8192);
         let found = disagreements("local", &c, &props(8192, 1, false));
         assert_eq!(found.len(), 1);
         assert!(found[0].contains("--mmproj"), "{}", found[0]);
@@ -254,6 +278,28 @@ mod tests {
             "the failure is silent, and the warning has to say so: {}",
             found[0]
         );
+    }
+
+    /// Unset is not agreement — the starter's own state since ruling F12 —
+    /// and is said wherever the check runs, not only in `mecha setup`; but
+    /// only for what the server reports, so `--write` can clear it (review
+    /// of #627).
+    #[test]
+    fn an_unset_model_or_window_is_named_when_the_server_reports_one() {
+        let c = cfg(); // model and context_window unset
+        let mut p = props(65536, 1, false);
+        p.model_alias = Some("served".into());
+        let found = disagreements("local", &c, &p);
+        assert_eq!(found.len(), 2, "{found:#?}");
+        assert!(found
+            .iter()
+            .any(|f| f.contains("sets no `model`") && f.contains("\"served\"")));
+        assert!(found
+            .iter()
+            .any(|f| f.contains("sets no `context_window`") && f.contains("65536")));
+        // Nothing reported, nothing said: `--write` could not clear it.
+        let silent: Props = serde_json::from_str("{}").unwrap();
+        assert!(disagreements("local", &c, &silent).is_empty());
     }
 
     /// A field llama-server stops sending must cost a check, never the

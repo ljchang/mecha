@@ -93,6 +93,7 @@ pub mod harness;
 pub mod hold;
 pub mod homeostat;
 pub mod hooks;
+pub mod hud;
 pub mod image;
 pub mod imagegen;
 pub mod imagelib;

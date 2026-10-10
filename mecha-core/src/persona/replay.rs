@@ -163,7 +163,11 @@ fn record_kind(line: &str) -> Option<String> {
 /// The message a record leaves at the tail: a message record's own, or a
 /// rewrite's last.
 fn tail_of(line: &str) -> Option<Message> {
-    let v = serde_json::from_str::<Value>(line).ok()?;
+    tail_of_record(&serde_json::from_str::<Value>(line).ok()?)
+}
+
+/// [`tail_of`] over a record already parsed.
+fn tail_of_record(v: &Value) -> Option<Message> {
     let message = match v.get("record").and_then(Value::as_str)? {
         "message" => v.clone(),
         "rewrite" => v.get("messages")?.as_array()?.last()?.clone(),
@@ -177,7 +181,16 @@ fn tail_of(line: &str) -> Option<Message> {
 /// messages too, and carry no owner words. Not every such record is a turn
 /// ([`shape_at`]).
 fn holds_owner_words(line: &str) -> bool {
-    tail_of(line).is_some_and(|m| {
+    serde_json::from_str::<Value>(line).is_ok_and(|v| record_holds_owner_words(&v))
+}
+
+/// [`holds_owner_words`] over a record already parsed: the one test of
+/// "an owner turn's record" that `scene::stage` shares with `--list` and
+/// `--at`, so a turn one of them lists the other stages. Two tests had
+/// drifted: a turn folded onto the tail by a `rewrite` was listed and then
+/// refused by the stage as "not an owner message" (found by mecha-a3).
+pub(crate) fn record_holds_owner_words(v: &Value) -> bool {
+    tail_of_record(v).is_some_and(|m| {
         m.role == Role::User
             && !m
                 .content
