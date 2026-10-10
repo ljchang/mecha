@@ -970,9 +970,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints
   up to four regions in colours chosen against the picture, and sends a
   colour-indexed picture of them as `mask` with `regions: [{colour, words}]`.
-  `prepare_regions` reads the index by exact colour before `prepare_mask`,
-  whose luma threshold would drop a blue region (luma about 18 of 255), and
-  refuses a region with no pixels. The union is the mask, so the composite
+  `prepare_regions` reads the index by exact colour before `prepare_mask`.
+  That gives each region the identity its empty check and outline need, and
+  masks only the colours the call names, where the luma threshold alone
+  would mask any bright pixel. A region with no pixels is refused. The union is the mask, so the composite
   keeps everything else as above. A copy of the canvas with each region
   outlined in its colour rides as `<image2>`, and the clean picture stays
   the canvas, so no mark can survive into the result. The words are a

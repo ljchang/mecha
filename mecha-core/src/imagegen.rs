@@ -1806,9 +1806,12 @@ pub fn prepare_mask(
 /// reads as `<image2>`: the canvas with each region outlined in its colour.
 ///
 /// The index is read per colour, by exact pixel value, before anything
-/// reaches `prepare_mask`: its luma threshold would let a blue region vanish
-/// (blue's luma is about 18 of white's 255). A region with no pixels is
-/// refused rather than sent as words with no place.
+/// reaches `prepare_mask`. That gives each region its identity, which the
+/// empty check and the outline both need. It also masks only the colours
+/// the call names: `prepare_mask`'s luma threshold alone would mask any
+/// pixel brighter than near-black, a stray or a palette colour with no
+/// words among them. A region with no pixels is refused rather than sent as
+/// words with no place.
 pub fn prepare_regions(
     picture: &[u8],
     index: &[u8],
@@ -6337,10 +6340,10 @@ mod tests {
         }
     }
 
-    /// The index is read per colour, so a blue region counts as fully as a
-    /// light one: through `prepare_mask`'s luma threshold alone, blue
-    /// (luma about 18) would be lost. Each region is outlined in its own
-    /// colour on the canvas copy, and one with nothing painted is refused.
+    /// The index is read per colour: each named region is masked, and a
+    /// pixel in no named colour is not, which `prepare_mask`'s luma
+    /// threshold alone would mask. Each region is outlined in its own colour
+    /// on the canvas copy, and one with nothing painted is refused.
     #[test]
     fn regions_are_read_by_colour_and_outlined() {
         let original = picture(8, [240, 220, 40]);
@@ -6354,6 +6357,9 @@ mod tests {
             &[
                 ([255, 0, 255], (4, 4, 20, 20)),
                 ([0, 64, 255], (40, 40, 60, 60)),
+                // A stray grey and a palette colour with no words.
+                ([128, 128, 128], (40, 4, 56, 20)),
+                ([0, 255, 255], (4, 40, 20, 56)),
             ],
         );
         let (plan, outlined) = prepare_regions(&original, &index, &regions, 1024).unwrap();
@@ -6368,6 +6374,15 @@ mod tests {
         );
         let (mx, my) = at(12.0 / 64.0, 12.0 / 64.0);
         assert_eq!(plan.soft.get_pixel(mx, my).0[0], 255);
+        // Neither the stray grey nor the unnamed cyan is.
+        for (fx, fy) in [(48.0, 12.0), (12.0, 48.0)] {
+            let (x, y) = at(fx / 64.0, fy / 64.0);
+            assert_eq!(
+                plan.soft.get_pixel(x, y).0[0],
+                0,
+                "an unnamed colour is not masked"
+            );
+        }
         // Outlined in each colour, the inside left as the picture.
         let colours: std::collections::HashSet<[u8; 3]> = outlined.pixels().map(|p| p.0).collect();
         assert!(colours.contains(&[255, 0, 255]) && colours.contains(&[0, 64, 255]));
