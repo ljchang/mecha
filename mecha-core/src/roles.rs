@@ -10,7 +10,10 @@
 //!
 //! The split is a quarantined one-shot (no tools, no history, a typed answer,
 //! the same shape as the edit panel's reader), and it feeds the prompt only:
-//! the record keeps the call as the persona sent it.
+//! the record keeps the call as the persona sent it. The one exception is a
+//! picture built in layers (IMAGE-DESIGN.md §15.4): its `layers` entry keeps
+//! each person's part from the split, under the `together`'s origin, because
+//! a later re-place is built on them.
 
 use crate::message::StopReason;
 use crate::scene::Where;
