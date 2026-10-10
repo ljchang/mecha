@@ -54,7 +54,8 @@ way and starts `mecha-voice-worker.service` on `:7860`, under
 `~/.mecha/sidecars/voice-worker/`. The installed worker accepts a call only
 through `mecha serve`'s relay — its origin allowlist names no page, so a
 browser cannot reach it directly — which needs no hostname. Either one you
-already run on those units is left as it is. Breeze is a local build of a
+already run on those ports — on those units, from a terminal, or under
+another name — is left as it is and used. Breeze is a local build of a
 qwentts.cpp fork, behind a small adapter that runs from the checkout
 (`scripts/voice/breeze_server.py`); Chatterbox, the voice before it, still
 runs as a container image if you would rather use it.
