@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`mecha setup` is one guided pass.** At a terminal it asks about the chat
+  model first — the one recommended for your machine, a GGUF you have, or a
+  hosted model — then each feature as a yes or no with what it downloads, then
+  shows everything and the total and asks once before installing it all. No
+  more stopping to run `mecha setup chat` and coming back.
 - **A new install uses a model on your machine, not Anthropic.** `mecha
   config init` now makes the local provider (`127.0.0.1:8080`) the default,
   with Anthropic kept beside it for `-p anthropic`; `mecha setup` names `mecha

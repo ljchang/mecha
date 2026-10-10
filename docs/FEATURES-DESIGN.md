@@ -1,8 +1,8 @@
 # Features — design
 
 > **Status (2026-10-10):** 7c-2 merged as #618; F12 (a local default) and F13
-> (`enable` never installs the chat model) are one PR, and F14 — the guided
-> setup, §11 — is the next. The status below is as of 2026-10-05.
+> (`enable` never installs the chat model) are one PR (#627), and F14 — the
+> guided setup, §11 — is built on it. The status below is as of 2026-10-05.
 >
 > **Status (2026-09-30):** this design merged as #427; **step 0 shipped** —
 > the registry and a read-only `mecha features`, merged as #428 and deployed
@@ -1714,6 +1714,13 @@ Ready: 23.4 GiB to download. Start? [Y/n]
    was and was not done, and a second `mecha setup` resumes it.
 4. **What `enable` alone does is unchanged** (F13): a single feature never
    pulls the chat model.
+
+**What was built differs in one place.** *Choose another* is not in the
+menu: the registry pins one chat model — Qwen3.6-35B-A3B, served at each
+tier's geometry — so there is nothing else to list. The option belongs to the
+day a second model is pinned, with its evidence (§6, F5); the menu is built
+from what this machine can do, so it already leaves out an install where none
+can run (off Linux, or `:8080` someone else's).
 
 Out of scope here, still: the web app's toggles and *Set up* button (§8),
 which this is the terminal half of; and the voice and image installers (7d–7f)

@@ -31,12 +31,40 @@ fn ask(question: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
-pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
-    anyhow::ensure!(
-        std::io::stdin().is_terminal(),
-        "`mecha setup chat` installs a model server and asks which model, so it runs only at a \
-         terminal"
-    );
+/// What `setup chat` found before asking anything: a machine it may install
+/// the router on, what it would cost, and what is recommended for it.
+pub struct Ready {
+    m: mecha_core::sidecar::Machinery,
+    machine: mecha_core::recommend::Machine,
+    hub: std::path::PathBuf,
+    naming: Naming,
+    /// llama.cpp's download when the machine has no engine of its own.
+    pub engine_bytes: Option<u64>,
+    /// The chat row recommended for this machine's tier, if there is one.
+    pub row: Option<&'static mecha_core::recommend::Recommendation>,
+}
+
+impl Ready {
+    /// The recommended row's files, in full — less whatever the cache holds.
+    pub fn row_bytes(&self) -> Option<u64> {
+        self.row.map(|row| {
+            row.sources
+                .iter()
+                .filter_map(|s| match s {
+                    mecha_core::recommend::Source::HuggingFace { files, .. } => {
+                        Some(files.iter().map(|f| f.bytes).sum::<u64>())
+                    }
+                    _ => None,
+                })
+                .sum()
+        })
+    }
+}
+
+/// The checks `setup chat` makes before asking anything, shared with the
+/// guided `mecha setup` (ruling F14). `Ok(None)` — said why — when the chat
+/// server here is someone else's and nothing is installed over it.
+pub async fn prepare() -> Result<Option<Ready>> {
     // Refused before anything is asked or fetched: the router is a systemd
     // user unit, and the engine download ahead of it would otherwise run
     // and then fail (found on review of #568).
@@ -66,7 +94,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
                      hand ({by}) — nothing is installed over it. `mecha model list` shows what \
                      it serves; `mecha setup` checks the config agrees with it."
                 );
-                return Ok(());
+                return Ok(None);
             }
             // Nothing is installed over an unknown, as `features enable`
             // says: whose the router is cannot be told, and finding out at
@@ -77,7 +105,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
                     "The chat router here could not be checked ({why}), so nothing is installed \
                      over it."
                 );
-                return Ok(());
+                return Ok(None);
             }
             _ => {}
         }
@@ -94,7 +122,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
              the config.",
             naming.port
         );
-        return Ok(());
+        return Ok(None);
     }
 
     // A machine no pinned engine build fits is told so before it is asked
@@ -115,25 +143,37 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         Some(mecha_core::engine::download_bytes(target))
     };
 
-    // The choice: the tier's row, or the owner's own GGUF.
     let slot = mecha_core::recommend::SLOTS
         .iter()
         .find(|s| s.id == "chat")
         .context("no chat slot")?;
     let row = mecha_core::recommend::row_for(slot, &machine).map(|(r, _)| r);
+    Ok(Some(Ready {
+        m,
+        machine,
+        hub,
+        naming,
+        engine_bytes,
+        row,
+    }))
+}
+
+pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
+    anyhow::ensure!(
+        std::io::stdin().is_terminal(),
+        "`mecha setup chat` installs a model server and asks which model, so it runs only at a \
+         terminal"
+    );
+    let Some(ready) = prepare().await? else {
+        return Ok(());
+    };
+
+    // The choice: the tier's row, or the owner's own GGUF.
+    let row = ready.row;
     println!("Chat model for this machine:");
     if let Some(row) = row {
         let geo = mecha_core::recommend::chat_geometry(row.tier_gb);
-        let bytes: u64 = row
-            .sources
-            .iter()
-            .filter_map(|s| match s {
-                mecha_core::recommend::Source::HuggingFace { files, .. } => {
-                    Some(files.iter().map(|f| f.bytes).sum::<u64>())
-                }
-                _ => None,
-            })
-            .sum();
+        let bytes = ready.row_bytes().unwrap_or(0);
         println!(
             "  1) {} — {:.1} GiB to download (less what is already in the cache){}   (recommended)",
             row.model,
@@ -187,25 +227,47 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         "\nThis installs{} the router (a systemd user service on :{}) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
-        match engine_bytes {
+        match ready.engine_bytes {
             Some(b) => format!(
                 " llama.cpp (mecha's pinned build, {:.0} MiB to download) and",
                 b as f64 / 1_048_576.0
             ),
             None => String::new(),
         },
-        naming.port
+        ready.naming.port
     );
     if !matches!(ask("Go ahead? [y/N] ")?.as_str(), "y" | "Y" | "yes") {
         println!("Nothing was changed.");
         return Ok(());
     }
+    install_choice(cfg, &ready, &choice, false).await
+}
+
+/// Install the chosen model: the engine if the machine has none, the router
+/// serving it, and then the provider read back from it. `yes` is an answer
+/// already given — the guided setup's one confirmation (ruling F14) — so the
+/// provider is written and made the default without asking again; without
+/// it, each is shown and asked.
+pub async fn install_choice(
+    cfg: &mecha_core::config::Config,
+    ready: &Ready,
+    choice: &Choice,
+    yes: bool,
+) -> Result<()> {
+    let Ready {
+        m,
+        machine,
+        hub,
+        naming,
+        engine_bytes,
+        ..
+    } = ready;
     if engine_bytes.is_some() {
-        mecha_core::engine::install_engine(&m, &mut |s| println!("  {s}"))
+        mecha_core::engine::install_engine(m, &mut |s| println!("  {s}"))
             .await
             .context("installing llama.cpp")?;
     }
-    let alias = router_unit::install(&m, cfg, &choice, &naming, &machine, &hub, &mut |s| {
+    let alias = router_unit::install(m, cfg, choice, naming, machine, hub, &mut |s| {
         println!("  {s}")
     })
     .await
@@ -240,10 +302,10 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             println!("[providers.{name}] already names what the router serves.");
             true
         } else {
-            super::setup::offer_settings(name, &props)?
+            super::setup::offer_settings(name, &props, yes)?
         };
         if current {
-            super::setup::offer_default(name, &cfg.default_provider)?;
+            super::setup::offer_default(name, &cfg.default_provider, yes)?;
         } else {
             // Declined: the table names what the router served before, and
             // the router now serves only `alias` — said here, or a run that
@@ -269,7 +331,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         base_url: base,
         props,
     };
-    if !super::setup::write_local_provider(&found)? {
+    if !super::setup::write_local_provider(&found, yes)? {
         default_lags(cfg, naming.port, &alias);
     }
     Ok(())

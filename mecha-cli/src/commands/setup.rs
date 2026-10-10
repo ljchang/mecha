@@ -329,6 +329,47 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     if args.minimal {
         return minimal(&outstanding, &home);
     }
+    // The guided pass (ruling F14, FEATURES-DESIGN §11): at a terminal, with
+    // no feature named, setup asks about chat first, then each feature, and
+    // installs everything on one yes — never "go and run `setup chat`, then
+    // come back". What it does not cover (the charter, the scheduler,
+    // anything switched on but not working) goes to the step loop after it.
+    if only.is_none() && !outstanding.is_empty() && std::io::stdin().is_terminal() {
+        let path = mecha_core::config::Config::global_path()
+            .context("no global config path — is $HOME set?")?;
+        // Somewhere to put the answers: the starter, as `config init` writes
+        // it, never a question of its own.
+        seed_config_file(&path)?;
+        let mut handled = super::setup_guided::run(
+            &cfg,
+            &name,
+            &steps,
+            &facts,
+            &home,
+            &mut std::io::stdin().lock(),
+        )
+        .await?;
+        handled.push("config-file".into());
+        let left: Vec<&Step> = outstanding
+            .iter()
+            .filter(|s| !handled.contains(&s.id))
+            .copied()
+            .collect();
+        if !left.is_empty() {
+            println!(
+                "
+A few more:"
+            );
+            render(&left.iter().map(|s| (*s).clone()).collect::<Vec<_>>());
+            offer(&left, &home, &mut std::io::stdin().lock())?;
+        }
+        println!(
+            "
+`mecha setup` again shows where everything stands."
+        );
+        finished_note(&steps);
+        return Ok(());
+    }
     render(&steps);
 
     if outstanding.is_empty() {
@@ -716,7 +757,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
     // as the one below — read the values off the wire, show them, ask — with
     // one addition, which is that the table does not exist yet.
     if let onboarding::LocalProbe::Found(found) = &facts.local_probe {
-        return write_local_provider(found).map(|_| ());
+        return write_local_provider(found, false).map(|_| ());
     }
     let Some(props) = &facts.props else {
         // "Nothing answered" is a claim about a probe, and it is only true
@@ -741,7 +782,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
         }
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
-    offer_settings(provider, props).map(|_| ())
+    offer_settings(provider, props, false).map(|_| ())
 }
 
 /// Show what a server reports for an existing provider table, ask, and write
@@ -749,9 +790,28 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
 /// installed replaces one the table already names. `true` when written: a
 /// caller that goes on to move `default_provider` must not point it at a
 /// table the owner declined to update (found on review of #618).
+/// Ask `question` at the terminal: `Some(answer)`, or `None` with no terminal
+/// to ask at. `yes` is an answer already given — the guided setup's one
+/// confirmation for everything it listed (ruling F14) — so it is not asked
+/// again; what would be written is still shown first.
+fn confirm(question: &str, yes: bool) -> Result<Option<bool>> {
+    if yes {
+        return Ok(Some(true));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    print!("\n{question} [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    Ok(Some(line.trim().eq_ignore_ascii_case("y")))
+}
+
 pub(super) fn offer_settings(
     provider: &str,
     props: &mecha_core::provider::preflight::Props,
+    yes: bool,
 ) -> Result<bool> {
     let settings = onboarding::verified_settings(props);
     println!("Read back from the server, for [providers.{provider}]:\n");
@@ -762,18 +822,16 @@ pub(super) fn offer_settings(
         "\nThese are what the server reports, not what it was asked for — which is the point: \
          `context_window` is the *per-slot* figure, so `-c` divided by `-np`."
     );
-    if std::io::stdin().is_terminal() {
-        print!("\nwrite them into the config? [y/N] ");
-        std::io::stdout().flush()?;
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
-        if !line.trim().eq_ignore_ascii_case("y") {
+    match confirm("write them into the config?", yes)? {
+        Some(true) => {}
+        Some(false) => {
             println!("not written");
             return Ok(false);
         }
-    } else {
-        println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(false);
+        None => {
+            println!("\n(not a terminal, so nothing was written — copy the lines above)");
+            return Ok(false);
+        }
     }
     apply(provider, &settings).map(|()| true)
 }
@@ -784,7 +842,7 @@ pub(super) fn offer_settings(
 /// and exiting 0 while every run still went to `current` is ruling F12's
 /// case, reached through the command that exists to avoid it (found on
 /// review of #568). Asked, never assumed: it changes what answers.
-pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
+pub(super) fn offer_default(provider: &str, current: &str, yes: bool) -> Result<()> {
     if provider == current {
         return Ok(());
     }
@@ -793,20 +851,20 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
          that:\n\n    default_provider = {}",
         onboarding::toml_string(provider)
     );
-    if !std::io::stdin().is_terminal() {
-        println!("\n(not a terminal, so nothing was written — copy the line above)");
-        return Ok(());
-    }
-    print!("\nmake `{provider}` the default provider? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
-    if !line.trim().eq_ignore_ascii_case("y") {
-        println!("not written — runs still go to `{current}`");
-        return Ok(());
+    match confirm(&format!("make `{provider}` the default provider?"), yes)? {
+        Some(true) => {}
+        Some(false) => {
+            println!("not written — runs still go to `{current}`");
+            return Ok(());
+        }
+        None => {
+            println!("\n(not a terminal, so nothing was written — copy the line above)");
+            return Ok(());
+        }
     }
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
+    seed_config_file(&path)?;
     backup(&path)?;
     set_default_provider(&path, provider)?;
     // Checked, not claimed — the same read-back `write_local_provider` makes.
@@ -838,7 +896,7 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
 ///
 /// `true` when written: `setup chat`, which has just installed what this
 /// would name, says what a decline leaves behind (found on review of #627).
-pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bool> {
+pub(super) fn write_local_provider(found: &onboarding::LocalServer, yes: bool) -> Result<bool> {
     let settings = onboarding::verified_settings(&found.props);
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
@@ -881,17 +939,16 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bo
          number people get wrong by hand."
     );
 
-    if !std::io::stdin().is_terminal() {
-        println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(false);
-    }
-    print!("\nwrite this, and make it the default provider? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
-    if !line.trim().eq_ignore_ascii_case("y") {
-        println!("not written");
-        return Ok(false);
+    match confirm("write this, and make it the default provider?", yes)? {
+        Some(true) => {}
+        Some(false) => {
+            println!("not written");
+            return Ok(false);
+        }
+        None => {
+            println!("\n(not a terminal, so nothing was written — copy the lines above)");
+            return Ok(false);
+        }
     }
 
     seed_config_file(&path)?;
