@@ -922,6 +922,16 @@ as `None` — the repo's rule for a closed enum written to an append-only store.
   read 57 GiB beside 6 GiB. The sampler adds GPU memory to a category's when
   `nvidia-smi` reports no memory total of its own, and keeps them apart on a
   discrete GPU. `Other` is a remainder clamped at zero.
+- **Unknown is recorded as unknown, never as zero.** Whether memory is
+  unified is remembered across samples, so one silent `nvidia-smi` cannot
+  flip what a minute's memory means; on unified memory a minute whose
+  per-process GPU query failed records every category's memory as `NULL`,
+  drawn as a gap. A sample whose `/proc/meminfo` or cgroup tree cannot be
+  read is **refused** — recorded as zeros it would draw an idle machine,
+  with `Other` absorbing the whole box — so the unit fails, the `now`
+  loader empties, and `mecha doctor` reports a sampler that has not written
+  for ten minutes. A category number this build cannot label reads as
+  `unknown` in every shipped loader rather than dropping out of the join.
 - **A test pins it, on the artifact**: `no_unit_name_ever_reaches_the_database_file`
   records samples that include an invented unit name and greps the database
   file's bytes for it — and for every real unit name — finding none. The

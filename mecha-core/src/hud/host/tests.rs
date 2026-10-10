@@ -77,12 +77,17 @@ fn the_parsers_read_what_the_system_prints() {
     let m = parse_meminfo("MemTotal:  1000 kB\nMemFree: 1 kB\nMemAvailable:  400 kB\nSwapTotal: 10 kB\nSwapFree: 4 kB\n");
     assert_eq!(
         m,
-        MemInfo {
+        Some(MemInfo {
             total: 1_024_000,
             available: 409_600,
             swap_total: 10_240,
             swap_free: 4_096
-        }
+        })
+    );
+    assert_eq!(
+        parse_meminfo(""),
+        None,
+        "an unreadable /proc/meminfo is not a machine with no memory"
     );
 
     // user nice system idle iowait irq softirq steal
@@ -105,7 +110,8 @@ fn the_parsers_read_what_the_system_prints() {
             util: Some(37.0),
             temp: Some(50.0),
             power_w: Some(12.05),
-            unified: false
+            unified: false,
+            answered: true,
         }
     );
     assert_eq!(
@@ -114,7 +120,8 @@ fn the_parsers_read_what_the_system_prints() {
             util: None,
             temp: Some(50.0),
             power_w: None,
-            unified: true
+            unified: true,
+            answered: true,
         },
         "[N/A] is None, never zero"
     );
@@ -147,6 +154,126 @@ fn the_parsers_read_what_the_system_prints() {
     );
     assert!(parse_gpu("1, 2, 3, [N/A]\n4, 5, 6, [N/A]\n").unified);
     assert_eq!(parse_gpu(""), GpuNow::default());
+    assert!(!parse_gpu("").answered);
+}
+
+/// "No services ran" and "the services could not be read" are opposite
+/// findings; the second refuses the sample instead of recording zeros.
+#[test]
+fn an_unreadable_cgroup_tree_is_an_error_not_an_idle_machine() {
+    let s = Scratch::new();
+    assert!(unit_counters(&s.0.join("no-such-slice")).is_err());
+    assert_eq!(
+        unit_counters(&s.0).unwrap(),
+        Vec::new(),
+        "an empty slice is empty"
+    );
+}
+
+fn mem_at(db: &Path, at: &str) -> Vec<Option<i64>> {
+    let c = Connection::open(db).unwrap();
+    let rows = c
+        .prepare("SELECT mem_bytes FROM category_minute WHERE at = ?1 ORDER BY category")
+        .unwrap()
+        .query_map([at], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    rows
+}
+
+/// One failed `nvidia-smi` must not flip what `mem_bytes` means for a
+/// minute: unified memory is remembered, and with the per-process query
+/// silent too, every category's memory is unknown rather than its cgroup
+/// figure alone presented as the whole.
+#[test]
+fn a_silent_gpu_on_unified_memory_records_memory_as_unknown() {
+    let s = Scratch::new();
+    let db = s.0.join("host.sqlite");
+    let units = vec![("llama-local.service".to_string(), 100_000, 0, 10)];
+    let mut first = sample(0, &units, 0, 0);
+    first.gpu.unified = true;
+    record(&db, &first).unwrap();
+
+    let mut silent = sample(1, &units, 0, 0);
+    silent.gpu = GpuNow::default();
+    silent.by_category = fold(&units, None);
+    let recorded = record(&db, &silent).unwrap();
+    assert!(
+        recorded.by_category.iter().all(|c| c.mem_bytes.is_none()),
+        "{recorded:?}"
+    );
+    assert_eq!(
+        mem_at(&db, "2031-04-17 09:01:00"),
+        vec![None; Category::ALL.len()]
+    );
+
+    // Answered unified, but the per-process query failed: still unknown.
+    let mut half = sample(2, &units, 0, 0);
+    half.gpu.unified = true;
+    half.by_category = fold(&units, None);
+    record(&db, &half).unwrap();
+    assert_eq!(
+        mem_at(&db, "2031-04-17 09:02:00"),
+        vec![None; Category::ALL.len()]
+    );
+
+    // A discrete GPU that goes silent keeps measuring: cgroup memory is all
+    // of a category's system memory there.
+    let s2 = Scratch::new();
+    let db2 = s2.0.join("host.sqlite");
+    record(&db2, &sample(0, &units, 0, 0)).unwrap();
+    let mut quiet = sample(1, &units, 0, 0);
+    quiet.gpu = GpuNow::default();
+    quiet.by_category = fold(&units, None);
+    record(&db2, &quiet).unwrap();
+    assert_eq!(mem_at(&db2, "2031-04-17 09:01:00")[1], Some(100_000));
+}
+
+/// A category number this build does not label reads as `unknown` in every
+/// shipped loader, never as a dropped row.
+#[test]
+fn the_loaders_keep_a_row_whose_category_has_no_label() {
+    use crate::hud::runner::{run_sqlite, QUERY_TIMEOUT};
+    use crate::hud::Installed;
+    let board = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/hud/host");
+    let installed = Installed::load_dir(&board, "host").unwrap().unwrap();
+    let s = Scratch::new();
+    let db = s.0.join("host.sqlite");
+    let mut now = sample(0, &[], 0, 0);
+    // The by-category loaders read five-minute steps of the last day.
+    now.at = Utc::now().duration_trunc(Duration::minutes(5)).unwrap();
+    record(&db, &now).unwrap();
+    let c = Connection::open(&db).unwrap();
+    c.execute(
+        "INSERT INTO category_minute (at, category, mem_bytes, cpu_pct, tasks, gpu_mib)
+         SELECT at, 200, 1073741824, 1.0, 1, 1024 FROM system_minute",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    for name in ["memory_by_category", "cpu_by_category", "gpu_by_category"] {
+        let loader = &installed.loaders()[name];
+        let fetched = run_sqlite(&db, loader.query(), loader.max_rows(), QUERY_TIMEOUT).unwrap();
+        let text = format!("{:?}", fetched.rows);
+        assert!(text.contains("unknown"), "{name}: {text}");
+    }
+}
+
+#[test]
+fn last_written_reads_without_creating() {
+    let s = Scratch::new();
+    let db = s.0.join("host.sqlite");
+    assert!(
+        last_written(&db).is_err(),
+        "no file is an error, not a fresh store"
+    );
+    assert!(!db.exists(), "the probe created the store");
+    record(&db, &sample(7, &[], 0, 0)).unwrap();
+    assert_eq!(
+        last_written(&db).unwrap(),
+        Some(Utc.with_ymd_and_hms(2031, 4, 17, 9, 7, 0).unwrap())
+    );
 }
 
 #[test]
@@ -203,6 +330,7 @@ fn sample(min: u32, units: &[UnitCounters], busy: u64, total: u64) -> Sample {
             temp: Some(50.0),
             power_w: Some(12.0),
             unified: false,
+            answered: true,
         },
         disk: Some((300, 1000)),
         by_category: fold(units, Some(&[("llama-local.service".to_string(), 6000)])),

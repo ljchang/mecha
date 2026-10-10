@@ -87,7 +87,9 @@ impl Category {
     }
 
     /// A stored number back to a category; one this build does not know is
-    /// `None`, never a neighbour.
+    /// `None`, never a neighbour. Loaders read through SQL rather than this
+    /// function, so the same rule is kept there by the `categories` table and
+    /// a `LEFT JOIN … coalesce(label, 'unknown')` in every shipped loader.
     pub fn from_u8(n: u8) -> Option<Category> {
         Category::ALL.into_iter().find(|c| *c as u8 == n)
     }
@@ -120,8 +122,11 @@ pub struct MemInfo {
     pub swap_free: u64,
 }
 
-pub fn parse_meminfo(text: &str) -> MemInfo {
+/// `None` when `MemTotal:` is absent — an unreadable `/proc/meminfo` is not a
+/// machine with no memory.
+pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
     let mut m = MemInfo::default();
+    let mut seen_total = false;
     for line in text.lines() {
         let mut parts = line.split_whitespace();
         let (Some(key), Some(value)) = (parts.next(), parts.next()) else {
@@ -132,14 +137,17 @@ pub fn parse_meminfo(text: &str) -> MemInfo {
         };
         let bytes = kib * 1024;
         match key {
-            "MemTotal:" => m.total = bytes,
+            "MemTotal:" => {
+                m.total = bytes;
+                seen_total = true;
+            }
             "MemAvailable:" => m.available = bytes,
             "SwapTotal:" => m.swap_total = bytes,
             "SwapFree:" => m.swap_free = bytes,
             _ => {}
         }
     }
-    m
+    seen_total.then_some(m)
 }
 
 /// The aggregate `cpu` line of `/proc/stat`: (busy, total) jiffies.
@@ -184,6 +192,9 @@ pub struct GpuNow {
     /// The GPU reported no memory total of its own — it allocates from the
     /// system pool (the GB10).
     pub unified: bool,
+    /// `nvidia-smi` answered at all. When it did not, `unified` says nothing
+    /// and the store's last known answer is used instead (`record`).
+    pub answered: bool,
 }
 
 /// `nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.total
@@ -216,6 +227,7 @@ pub fn parse_gpu(text: &str) -> GpuNow {
             && lines
                 .iter()
                 .all(|f| f.get(3).is_some_and(|m| m.contains("N/A"))),
+        answered: !lines.is_empty(),
     }
 }
 
@@ -301,13 +313,21 @@ pub fn fold(
 }
 
 /// Read the machine now. The one function here that touches the system.
-pub fn collect(at: DateTime<Utc>) -> Sample {
+///
+/// **Refuses** rather than records when the two readings everything else is
+/// measured against cannot be had: `/proc/meminfo` (every memory figure) and
+/// the user manager's cgroups (every category). Recorded as zeros they would
+/// draw an idle machine — `Other` is a remainder, so it would absorb the
+/// whole box — and nothing would say so. Refused, the sample unit fails, the
+/// `now` loader empties, and the doctor reports a sampler that stopped writing.
+pub fn collect(at: DateTime<Utc>) -> Result<Sample> {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
-    let mem = parse_meminfo(&read("/proc/meminfo"));
+    let mem = parse_meminfo(&read("/proc/meminfo"))
+        .context("/proc/meminfo could not be read; no sample recorded")?;
     let cpu_jiffies = parse_proc_stat(&read("/proc/stat"));
     let (load1, tasks_total) = parse_loadavg(&read("/proc/loadavg")).unzip();
 
-    let units = unit_counters(&user_app_slice());
+    let units = unit_counters(&user_app_slice())?;
     let gpu = run(
         "nvidia-smi",
         &[
@@ -338,7 +358,7 @@ pub fn collect(at: DateTime<Utc>) -> Sample {
             .collect::<Vec<_>>()
     });
 
-    Sample {
+    Ok(Sample {
         at,
         mem,
         cpu_jiffies,
@@ -347,7 +367,7 @@ pub fn collect(at: DateTime<Utc>) -> Sample {
         gpu,
         disk: disk_usage(Path::new("/")),
         by_category: fold(&units, gpu_apps.as_deref()),
-    }
+    })
 }
 
 /// The user manager's `app.slice`, where systemd puts user services.
@@ -359,17 +379,23 @@ fn user_app_slice() -> PathBuf {
     ))
 }
 
-fn unit_counters(slice: &Path) -> Vec<UnitCounters> {
-    let Ok(entries) = std::fs::read_dir(slice) else {
-        return Vec::new();
-    };
+/// Each user service's counters. An unreadable slice is an error, not an
+/// empty machine — "no services ran" and "the services could not be read"
+/// are opposite findings.
+pub(crate) fn unit_counters(slice: &Path) -> Result<Vec<UnitCounters>> {
+    let entries = std::fs::read_dir(slice).with_context(|| {
+        format!(
+            "the user manager's cgroups at {} could not be read; no sample recorded",
+            slice.display()
+        )
+    })?;
     let num = |p: PathBuf| {
         std::fs::read_to_string(p)
             .ok()
             .and_then(|t| t.trim().parse::<u64>().ok())
             .unwrap_or(0)
     };
-    entries
+    Ok(entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_string();
@@ -388,7 +414,7 @@ fn unit_counters(slice: &Path) -> Vec<UnitCounters> {
                 num(dir.join("pids.current")),
             ))
         })
-        .collect()
+        .collect::<Vec<_>>())
 }
 
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
@@ -422,6 +448,24 @@ pub fn db_path() -> Result<PathBuf> {
     Ok(super::dir()?.join("host.sqlite"))
 }
 
+/// When the sampler last wrote a minute, read without creating or changing
+/// anything — the doctor's question. `Ok(None)`: the store exists and holds
+/// no minute yet.
+pub fn last_written(path: &Path) -> Result<Option<DateTime<Utc>>> {
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let at: Option<String> =
+        conn.query_row("SELECT max(at) FROM system_minute", [], |r| r.get(0))?;
+    at.map(|at| {
+        chrono::NaiveDateTime::parse_from_str(&at, "%Y-%m-%d %H:%M:%S")
+            .map(|t| t.and_utc())
+            .with_context(|| format!("system_minute holds an unreadable time {at:?}"))
+    })
+    .transpose()
+}
+
 fn ts(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M:%S").to_string()
 }
@@ -430,7 +474,7 @@ const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY, label TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS category_minute (
   at TEXT NOT NULL, category INTEGER NOT NULL,
-  mem_bytes INTEGER NOT NULL, cpu_pct REAL, tasks INTEGER NOT NULL, gpu_mib INTEGER,
+  mem_bytes INTEGER, cpu_pct REAL, tasks INTEGER NOT NULL, gpu_mib INTEGER,
   PRIMARY KEY (at, category));
 CREATE TABLE IF NOT EXISTS system_minute (
   at TEXT PRIMARY KEY, mem_total INTEGER, mem_available INTEGER, swap_used INTEGER,
@@ -446,6 +490,7 @@ CREATE TABLE IF NOT EXISTS system_15m (
   gpu_util REAL, gpu_temp REAL, gpu_power_w REAL, disk_used INTEGER, disk_total INTEGER);
 CREATE TABLE IF NOT EXISTS counters (category INTEGER PRIMARY KEY, cpu_usec INTEGER NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY CHECK (id = 0), busy INTEGER NOT NULL, total INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS gpu_mode (id INTEGER PRIMARY KEY CHECK (id = 0), unified INTEGER NOT NULL);
 ";
 
 /// What one write recorded, for the CLI to show. Categories and numbers.
@@ -453,7 +498,17 @@ CREATE TABLE IF NOT EXISTS machine (id INTEGER PRIMARY KEY CHECK (id = 0), busy 
 pub struct Recorded {
     pub at: String,
     pub cpu_pct: Option<f64>,
-    pub by_category: Vec<(String, u64, Option<f64>)>,
+    pub by_category: Vec<CategoryRecorded>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CategoryRecorded {
+    pub category: &'static str,
+    /// `None` when it could not be known this minute (module docs).
+    pub mem_bytes: Option<u64>,
+    pub cpu_pct: Option<f64>,
+    pub tasks: u64,
+    pub gpu_mib: Option<u64>,
 }
 
 /// Record one sample: the minute rows, the CPU deltas against the previous
@@ -507,17 +562,32 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
     // named units — the units it covers are not written anywhere.
     let mut shown = Vec::new();
     let used = s.mem.total.saturating_sub(s.mem.available);
-    // On unified memory a category's GPU allocations are system RAM its
-    // cgroup was not charged for (module docs).
-    let mem_of = |load: &CategoryLoad| {
-        let gpu = if s.gpu.unified {
-            load.gpu_mib.unwrap_or(0) * 1024 * 1024
-        } else {
-            0
-        };
-        load.mem_bytes + gpu
+    // Unified memory is a property of the machine, not of one sample: a probe
+    // that failed this minute must not flip what `mem_bytes` means. The last
+    // answer the GPU gave is kept and used when it does not answer.
+    let unified = if s.gpu.answered {
+        tx.execute(
+            "INSERT OR REPLACE INTO gpu_mode (id, unified) VALUES (0, ?1)",
+            params![s.gpu.unified],
+        )?;
+        s.gpu.unified
+    } else {
+        tx.query_row("SELECT unified FROM gpu_mode WHERE id = 0", [], |r| {
+            r.get(0)
+        })
+        .unwrap_or(false)
     };
-    let mut named_mem = 0u64;
+    // On unified memory a category's GPU allocations are system RAM its
+    // cgroup was not charged for (module docs) — so where the per-process GPU
+    // query did not answer this minute, its memory is unknown, never the
+    // cgroup figure alone presented as the whole.
+    let mem_of = |load: &CategoryLoad| -> Option<u64> {
+        if !unified {
+            return Some(load.mem_bytes);
+        }
+        load.gpu_mib.map(|g| load.mem_bytes + g * 1024 * 1024)
+    };
+    let mut named_mem = Some(0u64);
     let mut named_cpu = 0f64;
     let mut named_tasks = 0u64;
     let mut cat_pct: BTreeMap<Category, Option<f64>> = BTreeMap::new();
@@ -543,7 +613,7 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         )?;
         cat_pct.insert(*cat, pct);
         if *cat != Category::Other {
-            named_mem += mem_of(load);
+            named_mem = named_mem.zip(mem_of(load)).map(|(a, b)| a + b);
             named_cpu += pct.unwrap_or(0.0);
             named_tasks += load.tasks;
         }
@@ -552,7 +622,7 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         let load = s.by_category.get(&cat).copied().unwrap_or_default();
         let (mem, pct, tasks) = if cat == Category::Other {
             (
-                used.saturating_sub(named_mem),
+                named_mem.map(|n| used.saturating_sub(n)),
                 machine_pct.map(|m| (m - named_cpu).max(0.0)),
                 s.tasks_total
                     .map_or(load.tasks, |t| t.saturating_sub(named_tasks)),
@@ -567,9 +637,22 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         tx.execute(
             "INSERT OR REPLACE INTO category_minute (at, category, mem_bytes, cpu_pct, tasks, gpu_mib)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![at, cat as u8, mem as i64, pct, tasks as i64, load.gpu_mib.map(|g| g as i64)],
+            params![
+                at,
+                cat as u8,
+                mem.map(|m| m as i64),
+                pct,
+                tasks as i64,
+                load.gpu_mib.map(|g| g as i64)
+            ],
         )?;
-        shown.push((cat.label().to_string(), mem, pct));
+        shown.push(CategoryRecorded {
+            category: cat.label(),
+            mem_bytes: mem,
+            cpu_pct: pct,
+            tasks,
+            gpu_mib: load.gpu_mib,
+        });
     }
 
     tx.execute(
