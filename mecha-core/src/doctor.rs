@@ -1719,7 +1719,7 @@ fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             match last {
                 Some(Event::Refused { reason, .. }) | Some(Event::Failed { reason, .. }) => {
                     let verb = if matches!(last, Some(Event::Refused { .. })) {
-                        "refused"
+                        "was refused"
                     } else {
                         "failed"
                     };
@@ -1727,7 +1727,7 @@ fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                         component: "hud".into(),
                         severity: Severity::Broken,
                         summary: format!(
-                            "hud {}/{}: the last refresh was {verb} — the page shows older data",
+                            "hud {}/{}: the last refresh {verb} — the page shows older data",
                             board.id, loader.name
                         ),
                         detail: reason.clone(),

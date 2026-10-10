@@ -221,9 +221,17 @@ pub fn run_sqlite(
     Ok(Fetched { columns, rows: out })
 }
 
+/// The limit on its own, so a test can show it stands without the authorizer
+/// (which refuses `ATTACH` earlier, at prepare time) — the two are redundant
+/// on purpose, and each is measured alone.
+fn no_attached_databases(conn: &Connection) -> rusqlite::Result<()> {
+    conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    Ok(())
+}
+
 /// The four confinements, applied before any statement is prepared.
 fn confine(conn: &Connection) -> rusqlite::Result<()> {
-    conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    no_attached_databases(conn)?;
     conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
         AuthAction::Select | AuthAction::Read { .. } | AuthAction::Recursive => {
             Authorization::Allow
@@ -238,4 +246,30 @@ fn confine(conn: &Connection) -> rusqlite::Result<()> {
         _ => Authorization::Deny,
     }));
     Ok(())
+}
+
+#[cfg(test)]
+mod layers {
+    use super::*;
+
+    /// With no authorizer at all, the limit alone refuses an `ATTACH` — so
+    /// deleting either confinement fails a test.
+    #[test]
+    fn the_attach_limit_stands_without_the_authorizer() {
+        let dir = std::env::temp_dir().join(format!("mecha-hud-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("other.sqlite");
+        Connection::open(&other)
+            .unwrap()
+            .execute_batch("CREATE TABLE t(x)")
+            .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        no_attached_databases(&conn).unwrap();
+        let err = conn
+            .execute(&format!("ATTACH DATABASE '{}' AS o", other.display()), [])
+            .unwrap_err()
+            .to_string();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.contains("too many attached databases"), "{err}");
+    }
 }
