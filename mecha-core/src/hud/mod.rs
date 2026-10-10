@@ -17,6 +17,10 @@
 //! spell one; and a text panel may not contain link syntax at all, which is
 //! what keeps a *relative* path from becoming a destination
 //! ([`spec::Spec::parse`]). The renderer drawing no links is the second layer.
+//! The link and HTML screens cover the spec's own prose — the titles, the
+//! filter labels, a text panel's markdown — and not strings inside a chart's
+//! `vegalite`: Vega draws those as SVG text nodes, never as HTML, so there the
+//! renderer owns the property and the spec's job is the address screen.
 //!
 //! **Refusals are written for the model that will retry.** A 27B model that
 //! reads "invalid spec" learns nothing; one that reads
