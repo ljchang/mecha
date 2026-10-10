@@ -474,7 +474,7 @@ Also not built, and not a measurement: **the queue line that names the step** (1
   - identity, with head turn (yaw) and face size reported beside ArcFace;
   - framing (face height in px);
   - seconds per picture;
-  - how often layers fell back or failed, **by step** (plate, cutout, placing, finish), since 15.5's open question on a failed finish is decided from the finish's own rate;
+  - how often layers fell back or failed, **by step** (plate, cutout, placing, finish), since §11 item 14 (a failed finish, 15.5) was decided from the finish's own rate;
   - the plate's own framing;
   - the owner's preference on a contact sheet.
 - **Result (mecha-a3, 2026-10-10).**
