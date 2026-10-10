@@ -637,8 +637,10 @@ table that turns a feature on by existing is invisible until you already
 know its name, and a list of toggles is its own documentation.
 
 ```toml
-# ~/.mecha/config.toml — written in full by `mecha config init`, every
-# feature listed, every one off; `mecha features enable <id>` flips one.
+# ~/.mecha/config.toml as this section first specified it. Since F14 (§11)
+# `mecha config init` and `mecha setup` write every line commented: listed
+# and off, but not answered — an explicit `false` reads as Declined, and
+# `mecha setup` would ask about none of them (review of #631).
 [features]
 web = false        # the web app (`mecha serve`)
 slack = false      # Slack remote control

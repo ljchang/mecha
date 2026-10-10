@@ -274,14 +274,28 @@ pub(super) fn ask_features(
         if !blurb.is_empty() {
             println!("    {blurb}");
         }
-        prompt("    Enable? [y/N/never] ")?;
-        // End of input ends the questions: the rest are not asked to nobody.
-        let Some(answer) = answer(read)? else {
-            println!();
-            break;
+        // An answer it cannot read is asked again, as the chat menu does — a
+        // typo folded into no would settle the feature without a word
+        // (review of #631).
+        let answer = loop {
+            prompt("    Enable? [y/N/never] ")?;
+            // End of input ends the questions: the rest are not asked to
+            // nobody.
+            let Some(answer) = answer(read)? else {
+                println!();
+                return Ok(answers);
+            };
+            let answer = answer.to_ascii_lowercase();
+            if matches!(
+                answer.as_str(),
+                "" | "n" | "no" | "y" | "yes" | "never" | "n!"
+            ) {
+                break answer;
+            }
+            println!("    `{answer}` is not y, n or never");
         };
         answers.answered += 1;
-        match answer.to_ascii_lowercase().as_str() {
+        match answer.as_str() {
             "y" | "yes" => answers.yes.push(q.feature),
             "never" | "n!" => answers.never.push(q.feature),
             _ => {}
@@ -548,7 +562,7 @@ pub(super) async fn run(
     }
     print!("{}", summary(&chat, chat_bytes, &chosen, total));
     if !ask_start(read)? {
-        println!("Nothing was changed. `mecha setup` asks again.");
+        println!("Nothing was installed or switched on. `mecha setup` asks again.");
         guided.settled.extend(settled_features(asked, &chosen, &[]));
         return Ok(guided);
     }
@@ -951,6 +965,15 @@ mod tests {
             ask_features(&mut reader("y\n\nyes\n"), &qs, &cfg).unwrap(),
             Answers {
                 yes: vec![Feature::Web, Feature::Search],
+                never: vec![],
+                answered: 3,
+            }
+        );
+        // A typo is asked again, never read as no (review of #631).
+        assert_eq!(
+            ask_features(&mut reader("yse\ny\nn\nn\n"), &qs, &cfg).unwrap(),
+            Answers {
+                yes: vec![Feature::Web],
                 never: vec![],
                 answered: 3,
             }

@@ -681,6 +681,18 @@ fn run(remedy: &Remedy) -> Result<bool> {
     })
 }
 
+/// A write whose read-back did not parse, as an error rather than an exit:
+/// the step loop and `--write` still end non-zero through `main`, and the
+/// guided pass can carry on to the features its one Start covered (review of
+/// #631) — `exit_with` there ended the process past every `Err` guard.
+fn unparsed(path: &std::path::Path, e: anyhow::Error, restored: bool) -> anyhow::Error {
+    anyhow::anyhow!(
+        "what was written to {} does not parse: {e:#}\n{}",
+        path.display(),
+        if restored { RESTORED } else { NOT_RESTORED }
+    )
+}
+
 /// What `--write` says after putting a bad config back.
 ///
 /// Constants rather than literals inline, so they are **reachable from a
@@ -872,12 +884,7 @@ pub(super) fn offer_default(provider: &str, current: &str, yes: bool) -> Result<
     // Checked, not claimed — the same read-back `write_local_provider` makes.
     if let Err(e) = mecha_core::config::Config::load_global() {
         let restored = std::fs::copy(path.with_extension("toml.bak"), &path).is_ok();
-        eprintln!(
-            "what was written to {} does not parse: {e:#}",
-            path.display()
-        );
-        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        crate::exit_with(1);
+        return Err(unparsed(&path, e, restored));
     }
     println!("`{provider}` is now the default provider");
     Ok(())
@@ -998,12 +1005,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer, yes: bool) -
     if let Err(e) = mecha_core::config::Config::load_global() {
         let backup = path.with_extension("toml.bak");
         let restored = std::fs::copy(&backup, &path).is_ok();
-        eprintln!(
-            "what was written to {} does not parse: {e:#}",
-            path.display()
-        );
-        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        crate::exit_with(1);
+        return Err(unparsed(&path, e, restored));
     }
 
     println!(
@@ -1147,12 +1149,7 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     // allow (found on review of #627).
     if let Err(e) = mecha_core::config::Config::load_global() {
         let restored = std::fs::copy(&backup, &path).is_ok();
-        eprintln!(
-            "what was written to {} does not parse: {e:#}",
-            path.display()
-        );
-        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
-        crate::exit_with(1);
+        return Err(unparsed(&path, e, restored));
     }
     println!(
         "written to {} (previous copy at {})",
