@@ -298,12 +298,23 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
         ),
         // Nothing is running: the fix is a secret, which no command may set
         // on somebody's behalf, so the detail carries the exact variable and
-        // both ways forward instead — or, with the default's local provider
-        // configured beside it, names that provider as the way out.
-        None => assert!(
-            detail.contains("ANTHROPIC_API_KEY") || detail.contains("`local`"),
-            "name the variable, or the local provider already configured: {detail}"
-        ),
+        // both ways forward instead. The default's own `local` entry is not
+        // a provider anybody configured, so it is never named as the way out
+        // (review of #627).
+        None => {
+            assert!(
+                detail.contains("ANTHROPIC_API_KEY"),
+                "name the variable rather than describing it: {detail}"
+            );
+            assert!(
+                detail.contains("never the key itself"),
+                "say where the secret does not go: {detail}"
+            );
+            assert!(
+                !detail.contains("already have a local provider"),
+                "the default's entry is not one the owner configured: {detail}"
+            );
+        }
     }
 
     // Whichever branch, it is never something you can wave away.

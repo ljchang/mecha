@@ -465,6 +465,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         };
         let state = match &f.state {
             FileState::Cached => "in the cache, matching its pin".to_string(),
+            // The chat model's download is `mecha setup chat`'s, never
+            // `enable`'s (F13), and is not in the total below.
+            FileState::Download { bytes } if f.slot == "chat" => format!(
+                "not here — `mecha setup chat` chooses and fetches the chat model ({})",
+                bytes_text(*bytes)
+            ),
             FileState::Download { bytes } => format!("to download, {}", bytes_text(*bytes)),
             FileState::Mismatch => {
                 "a different file is at its path — not replaced, and not used".to_string()
@@ -866,13 +872,26 @@ mod tests {
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
             }],
-            files: vec![],
+            // The chat model's files are named but not counted: the plan's
+            // total is what `enable` fetches (review of #627).
+            files: vec![mecha_core::sidecar::PlannedFile {
+                slot: "chat",
+                model: "the-chat-row",
+                repo: Some("org/r"),
+                path: "m.gguf",
+                state: mecha_core::sidecar::FileState::Download { bytes: 22 << 30 },
+            }],
             download_bytes: 0,
             nothing_to_do: false,
         };
         let here = render_plan(&p, true);
         assert!(here.contains("mecha setup chat"), "{here}");
         assert!(!here.contains("features enable"), "{here}");
+        assert!(
+            here.contains("chooses and fetches the chat model (22.0 GiB)"),
+            "{here}"
+        );
+        assert!(!here.contains("To download"), "{here}");
         let elsewhere = render_plan(&p, false);
         assert!(elsewhere.contains("not needed here"), "{elsewhere}");
         assert!(!elsewhere.contains("features enable"), "{elsewhere}");

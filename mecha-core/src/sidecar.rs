@@ -786,8 +786,14 @@ pub fn plan(
         }
     }
 
+    // The total is what `features enable` would fetch, and the chat model —
+    // its files — is `mecha setup chat`'s, never `enable`'s (ruling F13):
+    // counted here, a plan for `web` read "To download: 22 GiB" about a
+    // download `enable web` would never make (found on review of #627). Its
+    // rows still show, and a machine without it never reads as having all.
     let download_bytes = files
         .iter()
+        .filter(|f| f.slot != "chat")
         .map(|f| match f.state {
             FileState::Download { bytes } => bytes,
             _ => 0,
