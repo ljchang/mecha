@@ -371,6 +371,24 @@ pub(super) fn ask_start(read: &mut impl BufRead) -> Result<bool> {
     ))
 }
 
+/// The step a hosted pick with no key leaves: the key, named by its
+/// variable. No command fixes it — the key is the owner's to set.
+fn key_step(var: &str) -> Step {
+    Step {
+        id: "provider-credential".into(),
+        title: "A provider that can answer".into(),
+        status: Status::Missing,
+        detail: format!(
+            "The default provider is now `anthropic`, and {var} is not set — so nothing answers \
+             yet. Set it in your shell and start a new one; mecha keeps the variable's name, \
+             never the key."
+        ),
+        remedy: None,
+        optional: false,
+        undo: None,
+    }
+}
+
 /// The steps the chat question answers. Alternatives, not a pair:
 /// `onboarding::plan` emits `local-server` for a local default provider and
 /// `provider-credential` otherwise, never both.
@@ -392,6 +410,10 @@ fn chat_answering(steps: &[Step]) -> bool {
 pub(super) struct Guided {
     pub asked: Vec<String>,
     pub settled: Vec<String>,
+    /// What the pass's own answers left open that the checklist from before
+    /// them could not say: a hosted pick with no key settles the local
+    /// server it declined, and leaves the key (review of #631).
+    pub open: Vec<Step>,
 }
 
 /// The features a pass settled: every one asked, less a yes that did not
@@ -419,6 +441,7 @@ pub(super) async fn run(
     let mut guided = Guided {
         asked: CHAT_STEPS.iter().map(|s| s.to_string()).collect(),
         settled: Vec::new(),
+        open: Vec::new(),
     };
     let settle_chat = |guided: &mut Guided| {
         guided
@@ -604,17 +627,29 @@ pub(super) async fn run(
         ChatPick::Hosted => {
             // Caught, as the install's failure is: one Start covered every
             // answer, so one write that fails must not cost the features.
-            if let Err(e) = super::setup::offer_default("anthropic", &cfg.default_provider, true) {
-                println!("the default provider was not changed: {e:#}");
-            }
+            let moved = match super::setup::offer_default("anthropic", &cfg.default_provider, true)
+            {
+                Ok(()) => true,
+                Err(e) => {
+                    println!("the default provider was not changed: {e:#}");
+                    false
+                }
+            };
             // Settled only when the key resolves: a default with no key
-            // answers nothing, and the checklist must still say so.
-            let keyed = cfg
-                .providers
-                .get("anthropic")
-                .is_some_and(|p| p.resolve_api_key().is_some());
+            // answers nothing, and the checklist must still say so — by the
+            // key, not by the local server the owner just chose against,
+            // which is the step the checklist from before the pick holds
+            // (review of #631).
+            let anthropic = cfg.providers.get("anthropic");
+            let keyed = anthropic.is_some_and(|p| p.resolve_api_key().is_some());
             if keyed {
                 settle_chat(&mut guided);
+            } else if moved {
+                settle_chat(&mut guided);
+                let var = anthropic
+                    .and_then(|p| p.api_key_env.as_deref())
+                    .unwrap_or("ANTHROPIC_API_KEY");
+                guided.open.push(key_step(var));
             }
             if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
                 println!(
@@ -883,6 +918,18 @@ mod tests {
             ..options()
         };
         assert_eq!(ask_chat(&mut reader("1\n\n"), &o).unwrap(), ChatPick::Skip);
+    }
+
+    /// A hosted pick with no key leaves the key open, by the variable the
+    /// table names — never the local server it chose against.
+    #[test]
+    fn a_hosted_pick_with_no_key_leaves_the_key() {
+        let step = key_step("MY_KEY");
+        assert_eq!(step.id, "provider-credential");
+        assert!(CHAT_STEPS.contains(&step.id.as_str()));
+        assert_eq!(step.status, Status::Missing);
+        assert!(step.detail.contains("MY_KEY"), "{}", step.detail);
+        assert!(step.remedy.is_none() && !step.optional);
     }
 
     /// A GGUF must be a file; asked again until it is, Enter to give up.
