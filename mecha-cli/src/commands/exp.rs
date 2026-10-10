@@ -368,6 +368,11 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
 /// (`router::asks_its_server`), and the condition hash records
 /// `"(default)"` — so two halves of one arm could run on two models and be
 /// paired (review of #637). Refused before anything runs.
+///
+/// Only the default provider is checked, and that is enough: an environment
+/// file may not set `default_provider` or `providers` (`MACHINE_TABLES`), and
+/// a principal may not carry `--model` (`PRINCIPAL_BLOCKED_OPTIONS`), so
+/// every trial runs the operator's default. Widen this if either changes.
 fn refuse_an_unnamed_model(cfg: &mecha_core::config::Config) -> Result<()> {
     let name = &cfg.default_provider;
     if cfg
