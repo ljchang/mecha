@@ -690,12 +690,11 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
     match loaded {
         // What a load costs is what a loaded server has already paid; the
         // rest of the operator's figure is their margin, theirs to keep
-        // (review of #515).
-        // Never computed down to 0: `memory_guard` reads 0 as "check off",
-        // which would also drop its refusal on an unreadable gauge. Only the
-        // operator's own 0 switches the check off.
-        Some(true) if min_mb == 0 => 0,
-        Some(true) => min_mb.saturating_sub(LOAD_COST_MB).max(1),
+        // (review of #515). A need computed down to 0 is "the reserve
+        // alone", not "check off": `memory_guard` reads the operator's 0 off
+        // the config, and the floor refuses an unreadable gauge whatever the
+        // need.
+        Some(true) => min_mb.saturating_sub(LOAD_COST_MB),
         Some(false) | None => min_mb,
     }
 }
@@ -3916,11 +3915,13 @@ mod tests {
         assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
         // A small figure is not computed into the "check off" sentinel: the
         // unreadable-gauge refusal must survive it.
-        assert_eq!(memory_need_mb(Some(true), 4_000), 1);
+        assert_eq!(memory_need_mb(Some(true), 4_000), 0);
+        // A need of 0 is the reserve alone, and the floor still refuses an
+        // unreadable gauge for it: only the operator's own 0 is "off".
         assert!(!crate::system::floor::admit(
             &crate::system::Reading::Unread { why: "x".into() },
             &crate::system::Reading::NotHere,
-            memory_need_mb(Some(true), 4_000) * 1024 * 1024,
+            0,
             &crate::system::floor::SystemConfig::default(),
         )
         .admitted());
@@ -4597,21 +4598,27 @@ mod tests {
                 ..Default::default()
             })
             .unwrap()
+            .with_floor(crate::system::floor::SystemConfig {
+                memory_reserve_mb: 0,
+                memory_pressure_ceiling: f64::INFINITY,
+            })
             .polling_every(Duration::from_millis(10))
             .call(json!({"scene": {"setting": "a fox"}}), &ctx(&dir))
             .await
             .unwrap();
-            let asked = seen
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|l| l.starts_with("GET /system_stats"));
-            asked
+            let seen = seen.lock().unwrap();
+            let asked = seen.iter().any(|l| l.starts_with("GET /system_stats"));
+            let submitted = seen.iter().any(|l| l.starts_with("POST /prompt"));
+            (asked, submitted)
         };
-        // 1 MB is available on any machine, so the verdict passes and only
-        // the question is measured.
-        assert!(ask(1).await, "the check never asked the server");
-        assert!(!ask(0).await, "a switched-off check still asked");
+        // A floor of 1 MB with no reserve and no pressure ceiling passes on
+        // any machine, so the admitted path through the real gate runs to a
+        // submitted generation (a test runner may have under 8 GiB free,
+        // which R5's reserve would refuse).
+        let (asked, submitted) = ask(1).await;
+        assert!(asked, "the check never asked the server");
+        assert!(submitted, "an admitted generation was never submitted");
+        assert!(!ask(0).await.0, "a switched-off check still asked");
     }
 
     #[tokio::test]
