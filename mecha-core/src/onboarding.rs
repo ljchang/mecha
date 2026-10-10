@@ -311,20 +311,72 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     // --- 2. a local server, checked against itself
     if let Some(pcfg) = local {
         match &facts.props {
-            None => steps.push(Step::new(
-                "local-server",
-                "The local server is reachable",
-                Status::Missing,
-                format!(
-                    "Nothing answered at {}. Start the server before the rest of this can be \
-                     checked — every value below is read back from it rather than guessed.",
-                    pcfg.base_url.as_deref().unwrap_or("(no base_url)")
-                ),
-            )),
+            // A fresh install's state since ruling F12 (the starter's
+            // default is a local provider on :8080): the remedy is the
+            // command that installs a server, not only "start it" — which
+            // presumes a server the machine may not have.
+            None => {
+                // `setup chat` is offered where it can run, and only for a
+                // table that names this router: it installs systemd user
+                // units (refusing elsewhere before asking anything), and it
+                // leaves a local provider pointing somewhere else alone — so
+                // for one of those it would download a model and not clear
+                // this step (found on review of #627).
+                let installs_here = cfg!(target_os = "linux")
+                    && crate::router_unit::names_this_router(
+                        pcfg,
+                        crate::router_unit::Naming::shipped().port,
+                    );
+                let at = pcfg.base_url.as_deref().unwrap_or("(no base_url)");
+                let step = Step::new(
+                    "local-server",
+                    "The local server is reachable",
+                    Status::Missing,
+                    if installs_here {
+                        format!(
+                            "Nothing answered at {at}. Start your server, or install one: \
+                             `mecha setup chat` installs llama.cpp, a model recommended for \
+                             this machine and the router that serves it. The rest of this is \
+                             checked once it answers — every value below is read back from it \
+                             rather than guessed."
+                        )
+                    } else {
+                        format!(
+                            "Nothing answered at {at}. Start the server there — the rest of \
+                             this is checked once it answers, every value below read back from \
+                             it rather than guessed."
+                        )
+                    },
+                );
+                steps.push(if installs_here {
+                    step.with(
+                        "Install a local chat model and the router that serves it.",
+                        &["mecha", "setup", "chat"],
+                        true,
+                    )
+                } else {
+                    step
+                });
+            }
             Some(props) => {
                 let mismatches =
                     crate::provider::preflight::disagreements(provider_name, pcfg, props);
-                if mismatches.is_empty() {
+                // Nothing to disagree with is not agreement: an answer that
+                // names neither a model nor a window is not shown as one —
+                // since ruling F12 anything answering JSON on :8080 reaches
+                // here on a default install (found on review of #627).
+                if mismatches.is_empty() && !answers_like_a_model_server(props) {
+                    steps.push(Step::new(
+                        "local-server",
+                        "The local server could not be identified",
+                        Status::Unknown,
+                        format!(
+                            "Something answers at {}, but it names neither a model nor a \
+                             context window, so nothing here can be checked against it.",
+                            pcfg.base_url.as_deref().unwrap_or("(no base_url)")
+                        ),
+                    ));
+                } else if mismatches.is_empty() {
                     steps.push(Step::new(
                         "local-server",
                         "The local server agrees with the config",
@@ -548,7 +600,9 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
     if let Some((name, pcfg)) = cfg
         .providers
         .iter()
-        .find(|(name, p)| p.kind == "local" && *name != provider_name)
+        // One the owner wrote: the default's (ruling F12) is no evidence of
+        // a server anybody set up (found on review of #627).
+        .find(|(name, p)| p.configured_local() && *name != provider_name)
     {
         let where_it_points = pcfg
             .base_url
@@ -1232,8 +1286,18 @@ mod tests {
     use super::*;
     use crate::provider::preflight::{GenerationSettings, Modalities, Props};
 
-    fn cfg_with_local(context_window: u64, vision: Option<bool>) -> Config {
+    /// A config that chats through a hosted provider alone — the shape
+    /// these tests were written against before ruling F12 made a local
+    /// provider the default, and still a config people have.
+    fn hosted_only() -> Config {
         let mut cfg = Config::default();
+        cfg.providers.remove("local");
+        cfg.default_provider = "anthropic".into();
+        cfg
+    }
+
+    fn cfg_with_local(context_window: u64, vision: Option<bool>) -> Config {
+        let mut cfg = hosted_only();
         let mut p = cfg.providers.get("anthropic").cloned().unwrap();
         p.kind = "local".into();
         p.model = Some("qwen3.6-35b-a3b".into());
@@ -1241,6 +1305,7 @@ mod tests {
         p.api_key_env = None;
         p.context_window = Some(context_window);
         p.vision = vision;
+        p.built_in = false; // written by the owner, as a file's table is
         cfg.providers.insert("local".into(), p);
         cfg
     }
@@ -1619,7 +1684,7 @@ mod tests {
     /// forward.
     #[test]
     fn a_running_local_server_turns_the_blocking_step_into_something_runnable() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         f.local_probe = LocalProbe::Found(LocalServer {
@@ -1650,7 +1715,7 @@ mod tests {
     /// command that could not help.
     #[test]
     fn with_no_server_the_step_names_the_variable_and_promises_not_to_store_it() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         f.local_probe = LocalProbe::NothingAnswered;
@@ -1676,13 +1741,33 @@ mod tests {
         );
     }
 
+    /// The default's own `local` entry (ruling F12) is not a provider the
+    /// owner configured: a hosted provider chosen without its key is told
+    /// the variable to export, never "you already have a local provider"
+    /// about a table nobody wrote (review of #627).
+    #[test]
+    fn the_default_local_entry_is_never_named_as_one_the_owner_configured() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+        f.local_probe = LocalProbe::NothingAnswered;
+        let detail = step(&plan(&cfg, "anthropic", &f), "provider-credential")
+            .detail
+            .clone();
+        assert!(detail.contains("ANTHROPIC_API_KEY"), "{detail}");
+        assert!(
+            !detail.contains("already have a local provider"),
+            "{detail}"
+        );
+    }
+
     /// A provider with no `api_key_env` cannot be fixed by exporting
     /// anything, and telling somebody to "set the variable it names" about a
     /// provider that names none sends them looking for a typo they did not
     /// make.
     #[test]
     fn a_provider_naming_no_key_variable_is_not_told_to_set_one() {
-        let mut cfg = Config::default();
+        let mut cfg = hosted_only();
         cfg.providers.get_mut("anthropic").unwrap().api_key_env = None;
         let mut f = facts(None);
         f.provider_credential = false;
@@ -1708,7 +1793,7 @@ mod tests {
     /// behind it, which is this module's own header rule inverted.
     #[test]
     fn an_unattempted_probe_is_never_reported_as_a_failed_one() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
 
@@ -1747,11 +1832,12 @@ mod tests {
     /// never mentioned the provider sitting in their own config.
     #[test]
     fn a_configured_but_unselected_local_provider_is_named_as_the_way_out() {
-        let mut cfg = Config::default();
+        let mut cfg = hosted_only();
         let mut local = cfg.providers.get("anthropic").cloned().unwrap();
         local.kind = "local".into();
         local.base_url = Some("http://127.0.0.1:8080".into());
         local.api_key_env = None;
+        local.built_in = false; // written by the owner, as a file's table is
         cfg.providers.insert("local".into(), local);
 
         let mut f = facts(None);
@@ -1820,7 +1906,7 @@ mod tests {
     /// nobody ever learned about it.
     #[test]
     fn a_missing_config_file_is_offered_and_a_present_one_is_not_mentioned() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.config_file = false;
         let s = plan(&cfg, "anthropic", &f);
@@ -1852,7 +1938,7 @@ mod tests {
     /// enforced would be one anybody could edit around.
     #[test]
     fn a_step_that_is_not_optional_cannot_be_declined_even_by_editing_the_file() {
-        let mut cfg = Config::default();
+        let mut cfg = hosted_only();
         // A provider with no credential and no local server: the one step
         // that blocks every other.
         let p = cfg.providers.get_mut("anthropic").unwrap();
@@ -1889,7 +1975,7 @@ mod tests {
     /// being refusable.
     #[test]
     fn only_genuinely_optional_things_are_declinable() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         // Every feature unanswered: each is a coherent "I don't want this".
@@ -1933,7 +2019,7 @@ mod tests {
     /// Caught by running the command; kept by this.
     #[test]
     fn no_step_detail_carries_its_source_indentation() {
-        let cfg = Config::default();
+        let cfg = hosted_only();
         let mut f = facts(None);
         f.provider_credential = false;
         f.charter = CharterState::Empty;
@@ -2249,7 +2335,72 @@ mod tests {
         let cfg = cfg_with_local(262144, Some(true));
         let steps = plan(&cfg, "local", &facts(None));
         assert_eq!(step(&steps, "local-server").status, Status::Missing);
-        assert!(step(&steps, "local-server").remedy.is_none());
+        // Nothing answering is a fresh install's state since ruling F12, so
+        // the remedy is the command that installs a server — where it runs.
+        let remedy = step(&steps, "local-server").remedy.as_ref();
+        if cfg!(target_os = "linux") {
+            assert_eq!(remedy.unwrap().argv, ["mecha", "setup", "chat"]);
+        } else {
+            assert!(remedy.is_none(), "`setup chat` refuses off Linux");
+        }
+    }
+
+    /// An answer naming neither a model nor a window is not agreement: since
+    /// ruling F12 anything answering JSON on :8080 reaches this step on a
+    /// default install (review of #627).
+    #[test]
+    fn a_server_that_names_nothing_is_unknown_not_agreeing() {
+        let cfg = cfg_with_local(262144, Some(false));
+        let nameless: Props = serde_json::from_str("{}").unwrap();
+        let steps = plan(&cfg, "local", &facts(Some(nameless)));
+        assert_eq!(step(&steps, "local-server").status, Status::Unknown);
+    }
+
+    /// A local table that names a server other than this router is not
+    /// offered `setup chat`, which would leave it as it is (review of #627).
+    #[test]
+    fn a_server_elsewhere_is_not_offered_the_router() {
+        let mut cfg = cfg_with_local(262144, Some(true));
+        cfg.providers.get_mut("local").unwrap().base_url = Some("http://box.lan:8080".into());
+        let steps = plan(&cfg, "local", &facts(None));
+        let s = step(&steps, "local-server");
+        assert_eq!(s.status, Status::Missing);
+        assert!(s.remedy.is_none(), "{:?}", s.remedy);
+        assert!(!s.detail.contains("setup chat"), "{}", s.detail);
+    }
+
+    /// A table naming no model or window does not agree with a server just
+    /// because nothing contradicts it: the starter's own state since ruling
+    /// F12 (review of #627). Unset is wrong, with `--write` as the fix.
+    #[test]
+    fn a_local_table_naming_nothing_does_not_agree_with_its_server() {
+        let mut cfg = cfg_with_local(262144, Some(true));
+        let p = cfg.providers.get_mut("local").unwrap();
+        p.model = None;
+        p.context_window = None;
+        p.vision = None;
+        let steps = plan(&cfg, "local", &facts(Some(props(262144, 4, false))));
+        let s = step(&steps, "local-server");
+        assert_eq!(s.status, Status::Wrong, "{}", s.detail);
+        assert!(s.detail.contains("sets no `model`"), "{}", s.detail);
+        assert!(
+            s.detail.contains("sets no `context_window`"),
+            "{}",
+            s.detail
+        );
+        // Each key is told its own consequence, never the other's.
+        let mut named = cfg_with_local(262144, Some(true));
+        named.providers.get_mut("local").unwrap().context_window = None;
+        let steps = plan(&named, "local", &facts(Some(props(262144, 4, true))));
+        let d = &step(&steps, "local-server").detail;
+        assert!(
+            d.contains("sets no `context_window`") && !d.contains("sets no `model`"),
+            "{d}"
+        );
+        assert_eq!(
+            s.remedy.as_ref().unwrap().argv,
+            ["mecha", "setup", "--write"]
+        );
     }
 
     /// "Cannot tell from here" is not "not done". A person told their mail is

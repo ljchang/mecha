@@ -414,15 +414,32 @@ jobs:
           # Ordered by what blocks what: somewhere to put settings, then
           # something that can answer. A new user wiring up mail against a
           # provider that cannot answer is an hour spent on the wrong end.
-          jq -e '[.[0].id, .[1].id] == ["config-file", "provider-credential"]' steps.json
+          # Since ruling F12 the default is a local model, so the something is
+          # the local server — never a hosted provider's key.
+          jq -e '[.[0].id, .[1].id] == ["config-file", "local-server"]' steps.json
+          jq -e 'all(.[]; .id != "provider-credential")' steps.json
 
           # And the blocking step offers a way *out*, not a viewer. Nothing is
-          # serving on a CI runner, so this is the no-server branch: the fix
-          # is a secret, which no command may set on somebody's behalf, so the
-          # detail has to name the exact variable and promise the key never
-          # lands in a file.
+          # serving on a CI runner, so on Linux its remedy is the command that
+          # installs a local model; elsewhere `setup chat` cannot run, so it
+          # offers none rather than one that always fails.
+          if [ "$(uname)" = Linux ]; then
+            jq -e '.[] | select(.id == "local-server") | .remedy.argv
+                   == ["mecha", "setup", "chat"]' steps.json
+          else
+            jq -e '.[] | select(.id == "local-server") | .remedy == null' steps.json
+          fi
+
+          # A hosted provider chosen without its key: the fix is a secret,
+          # which no command may set on somebody's behalf, so the detail has
+          # to name the exact variable and promise the key never lands in a
+          # file.
+          if MECHA_PROVIDER=anthropic $NOKEY mecha setup --json > hosted.json; then
+            echo "a hosted provider with no key is outstanding work, so this must exit non-zero"
+            exit 1
+          fi
           jq -e '.[] | select(.id == "provider-credential") | .detail
-                 | test("ANTHROPIC_API_KEY") and test("never the key itself")' steps.json
+                 | test("ANTHROPIC_API_KEY") and test("never the key itself")' hosted.json
 
           # The charter is offered, and the offer hands over an editor rather
           # than composing anything.
@@ -497,13 +514,15 @@ jobs:
         run: |
           set -eux
           cd "${{ runner.temp }}/fresh/work"
-          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
 
-          # A key in the environment, because what remains outstanding then is
-          # exactly the optional half — which is the state this step is about.
-          # It reaches nothing: the default provider is not `local`, so
-          # `setup` opens no socket on this path.
-          WITHKEY="env ANTHROPIC_API_KEY=not-a-real-key"
+          # A hosted provider chosen and its key in the environment, because
+          # what remains outstanding then is exactly the optional half — which
+          # is the state this step is about. It reaches nothing: the selected
+          # provider is not `local`, so `setup` opens no socket on this path.
+          # Chosen, not defaulted — the default is a local model (F12) — and
+          # the no-key run below chooses it too, so both ask the same question.
+          WITHKEY="env MECHA_PROVIDER=anthropic ANTHROPIC_API_KEY=not-a-real-key"
+          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY MECHA_PROVIDER=anthropic"
 
           # A config file is created, never declined — only genuinely optional
           # things are declinable, so without this the assertion below would

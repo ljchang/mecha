@@ -84,7 +84,7 @@ enforced by the merge, not asked for in a comment. See
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `default_provider` | string | `"anthropic"` | Which `[providers.X]` entry to use when `--provider` is not given. |
+| `default_provider` | string | `"local"` | Which `[providers.X]` entry to use when `--provider` is not given. A model on this machine by default, never a hosted one. |
 
 ## `[providers.X]`
 
@@ -96,7 +96,7 @@ enforced by the merge, not asked for in a comment. See
 | `model` | string | `"claude-opus-5"` for the built-in `anthropic` entry | Model id sent to the backend. |
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` for the built-in entry | Environment variable holding the key. Preferred over `api_key`. |
 | `api_key` | string | unset | Inline key. Convenient, but it lands in a file on disk. |
-| `base_url` | string | unset | Endpoint override. Required for a local OpenAI-compatible server. |
+| `base_url` | string | `"http://127.0.0.1:8080"` for the built-in `local` entry, else unset | Endpoint override. Required for a local OpenAI-compatible server. |
 | `input_price_per_mtok` | float | unset | Input price per million tokens. |
 | `output_price_per_mtok` | float | unset | Output price per million tokens. |
 | `temperature` | float | unset | Sampling temperature, sent verbatim by backends that accept one. Rejected on `anthropic`. |
@@ -863,7 +863,7 @@ variables above are the finer instrument.
 # Layered: ~/.mecha/config.toml, then ./mecha.toml, then MECHA_* environment
 # variables, then CLI flags. Each layer overrides only the fields it names.
 
-default_provider = "anthropic"
+default_provider = "local"         # the default; "anthropic" sends runs to a hosted model
 
 # ---------------------------------------------------------------- providers --
 

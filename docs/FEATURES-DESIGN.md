@@ -1,5 +1,9 @@
 # Features — design
 
+> **Status (2026-10-10):** 7c-2 merged as #618; F12 (a local default) and F13
+> (`enable` never installs the chat model) are one PR, and F14 — the guided
+> setup, §11 — is the next. The status below is as of 2026-10-05.
+>
 > **Status (2026-09-30):** this design merged as #427; **step 0 shipped** —
 > the registry and a read-only `mecha features`, merged as #428 and deployed
 > the same day, with the store-location fixes it surfaced in `doctor`, Slack
@@ -1027,6 +1031,8 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F10** | Trusting an engine newer than the shipped pin | **Only for a tag the owner confirmed at a terminal.** `--to <tag>` names it; bare `--upgrade` prints the newest tag and asks for confirmation of that tag before downloading. For a confirmed tag the release API's sha256 over TLS is trusted (and, for a build, the commit GitHub names for the tag) — the one exception to item 1's reviewed-pin rule, and only on this path. Ruled by the owner 2026-10-02 (§10.3) |
 | **F11** | A fresh machine's door to a local chat model | **`mecha setup chat`** — a word `setup` reserves, as `engine` is, not a feature: chat is not optional, so it cannot be an `enable`. It shows the tier's recommended row or takes the owner's GGUF, installs, and writes the provider from what the router reports. `mecha setup`'s provider step names it first. Ruled by the owner 2026-10-05 |
 | **F12** | The provider a fresh install defaults to | **A local one, never Anthropic** — the owner: *"we definitely don't want to default to anthropic."* The starter config and `Config::default()` move in their own change after 7c-2. Ruled by the owner 2026-10-05 |
+| **F13** | Whether `features enable` installs the chat model | **Never.** The chat model's engine, model and router are `mecha setup chat`'s, where the model is chosen (the tier's row, another row, or a GGUF the owner brings); `enable` installs a feature's own sidecars only, and the engine only for a feature's embeddings or OCR server. Found writing F12: with a local default, `enable web` on a fresh machine offered the ~22 GiB recommended model and wrote nothing on a no. Ruled by the owner 2026-10-10 |
+| **F14** | What `mecha setup` is on a fresh machine | **One guided pass, never a detour.** The owner: *"I don't want to have to stop setup to run setup chat explicitly."* Chat first — the recommended model for this machine, another from a numbered list, a GGUF the owner has, a hosted provider, or skip — then each feature as a plain yes/no with what it does and what it downloads, sign-ins inline; every answer first, then one total and one yes, then the installs. `mecha setup chat` stays as the way to change the model later. §11. Ruled by the owner 2026-10-10 |
 
 ---
 
@@ -1664,3 +1670,52 @@ it guards against:
 - a run that tries to start mid-promotion waits for the switch and is
   answered by the winning engine, never by the old one through a link that
   already names the new.
+
+---
+
+## 11. The guided setup (F14)
+
+**2026-10-10.** The owner, on seeing that a fresh machine is sent from `mecha
+setup` to `mecha setup chat` and back: *"I want something very easy in the
+install process … I don't want to have to stop setup to run setup chat
+explicitly, that makes setup more confusing and less easy."* What exists is
+already most of it: setup's step loop runs a step's command in place, `setup
+chat` holds the model choice, `recommend.rs` holds every row with its size, and
+`enable` holds every feature's installer. What changes is the order and the
+wording.
+
+```
+Chat model
+  This machine has 128 GB. Recommended: Qwen3.6-35B-A3B (22 GiB download).
+  1) Use the recommended model
+  2) Choose another          (every row that fits this machine, numbered)
+  3) Use a GGUF I already have
+  4) Use a hosted model instead (Anthropic — needs an API key)
+  5) Skip for now
+
+Features — enable each?
+  Web app ................................ [Y/n]
+  Documents: PDF reading + OCR (1.2 GiB) .. [y/N]
+  Mail and calendar (signs in to Google) .. [y/N]
+  …
+
+Ready: 23.4 GiB to download. Start? [Y/n]
+```
+
+1. **Chat first**, because nothing below it can be tested without it. A server
+   already answering — mecha's or the owner's — is a done step, not a
+   question; `--write`'s read-back covers one the config does not name yet.
+2. **A feature is a question, not a command.** The same rows `mecha features`
+   reads, worded as what the feature does and what it costs; an account
+   feature's sign-in runs when the owner says yes, since it needs them there.
+3. **Every answer, then one download.** The total is shown before the one
+   yes that starts it — the reviewable object is the thing itself — and the
+   owner can walk away while it runs. An install that fails stops with what
+   was and was not done, and a second `mecha setup` resumes it.
+4. **What `enable` alone does is unchanged** (F13): a single feature never
+   pulls the chat model.
+
+Out of scope here, still: the web app's toggles and *Set up* button (§8),
+which this is the terminal half of; and the voice and image installers (7d–7f)
+— until they exist, those questions switch the feature on and name what is
+still to install.
