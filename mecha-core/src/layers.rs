@@ -70,7 +70,7 @@ pub fn not_layered(
     } else if !setting_words {
         Some("it has no setting in words to build the room from")
     } else if !placed {
-        Some("not everyone has a place of their own")
+        Some("the roles could not be split, so not everyone has a place")
     } else {
         None
     }
@@ -191,11 +191,11 @@ pub fn finish_prompt(style: Option<&str>) -> String {
 /// with their part, then what of the act is left (§15.3, step 3). Names
 /// never reach the prompt: each is replaced by its person's tag.
 pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
-    let tags: Vec<(String, String)> = people
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.shown.clone(), format!("the person from <image{}>", i + 2)))
-        .collect();
+    let Placing {
+        tags,
+        parts,
+        beside,
+    } = placing(people);
     // Everyone who must appear, named before any part (mecha-a3: the
     // person whose part acts on the other, placed second, was left out 6 of
     // 6 on one call).
@@ -209,30 +209,9 @@ pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
         ),
         [] => String::new(),
     };
-    let parts: Vec<String> = people
-        .iter()
-        .map(|p| {
-            untagged(&p.part, &tags)
-                .trim()
-                .trim_end_matches('.')
-                .to_string()
-        })
-        .collect();
-    // Whom each part acts on: the first other person it names.
-    let acts_on: Vec<Option<usize>> = parts
-        .iter()
-        .enumerate()
-        .map(|(i, part)| (0..tags.len()).find(|&j| j != i && part.contains(&tags[j].1)))
-        .collect();
     for (i, (p, (_, tag))) in people.iter().zip(&tags).enumerate() {
         let part = parts[i].as_str();
-        // A part that acts on someone is placed beside them, not on a side
-        // of the frame: "on the right" stood the actor apart and drew the act
-        // on his own body, 3 of 3 (mecha-a3, 2026-10-10). The person acted on
-        // keeps their side as the anchor; when two parts act on each other,
-        // the first does.
-        let relative = acts_on[i].filter(|&j| acts_on[j] != Some(i) || j < i);
-        let at = match relative {
+        let at = match beside[i] {
             Some(j) => format!(" beside {}", tags[j].1),
             None => p.at.as_deref().map(|a| format!(" {a}")).unwrap_or_default(),
         };
@@ -259,6 +238,69 @@ pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
          the room's light, with natural contact and shadows.",
     );
     s
+}
+
+/// How the placing pass names and places each person: their tag, their part
+/// with every name swapped for a tag, and whom they are placed beside.
+struct Placing {
+    tags: Vec<(String, String)>,
+    parts: Vec<String>,
+    beside: Vec<Option<usize>>,
+}
+
+fn placing(people: &[Person]) -> Placing {
+    let tags: Vec<(String, String)> = people
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.shown.clone(), format!("the person from <image{}>", i + 2)))
+        .collect();
+    let parts: Vec<String> = people
+        .iter()
+        .map(|p| {
+            untagged(&p.part, &tags)
+                .trim()
+                .trim_end_matches('.')
+                .to_string()
+        })
+        .collect();
+    // Whom each part acts on: the first other person it names.
+    let acts_on: Vec<Option<usize>> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| (0..tags.len()).find(|&j| j != i && part.contains(&tags[j].1)))
+        .collect();
+    // A part that acts on someone is placed beside them, not on a side of
+    // the frame: "on the right" stood the actor apart and drew the act on his
+    // own body, 3 of 3 (mecha-a3, 2026-10-10). The person acted on keeps
+    // their side as the anchor; when two parts act on each other, the first
+    // does.
+    let beside = (0..people.len())
+        .map(|i| acts_on[i].filter(|&j| acts_on[j] != Some(i) || j < i))
+        .collect();
+    Placing {
+        tags,
+        parts,
+        beside,
+    }
+}
+
+/// Whether two people the placing pass sets on a side of the frame share
+/// one. Someone placed beside another person has no side of their own, so
+/// two who act on each other may share a place: an embrace's split answers
+/// "centre" for both, about 9% of two-person splits, and that is right
+/// (mecha-a3). Two who do not would share one place tag (review of #624).
+pub fn shares_a_place(people: &[Person]) -> bool {
+    let beside = placing(people).beside;
+    let sides: Vec<&str> = people
+        .iter()
+        .zip(&beside)
+        .filter(|(_, b)| b.is_none())
+        .filter_map(|(p, _)| p.at.as_deref())
+        .collect();
+    sides
+        .iter()
+        .enumerate()
+        .any(|(i, a)| sides[..i].contains(a))
 }
 
 /// The finish: one keep-everything pass of light, depth of field and detail
@@ -470,6 +512,39 @@ mod tests {
             "{p}"
         );
         assert!(!p.contains("on the right"), "{p}");
+    }
+
+    /// People who act on each other may share a place, since only one of
+    /// them keeps a side; two who do not would share a side's tag.
+    #[test]
+    fn a_shared_place_matters_only_between_people_on_their_own_sides() {
+        let at = |mut p: Person, a: &str| {
+            p.at = Some(a.into());
+            p
+        };
+        let hug = [
+            at(person("Maya", "with her arms around John"), "in the centre"),
+            at(person("John", "holding Maya close"), "in the centre"),
+        ];
+        assert!(!shares_a_place(&hug));
+        let one_way = [
+            at(person("Maya", "reading"), "in the centre"),
+            at(
+                person("John", "reading over Maya's shoulder"),
+                "in the centre",
+            ),
+        ];
+        assert!(!shares_a_place(&one_way));
+        let apart = [
+            at(person("Maya", "reading"), "in the centre"),
+            at(person("John", "waving"), "in the centre"),
+        ];
+        assert!(shares_a_place(&apart));
+        let sides = [
+            at(person("Maya", "reading"), "on the left"),
+            at(person("John", "waving"), "on the right"),
+        ];
+        assert!(!shares_a_place(&sides));
     }
 
     #[test]

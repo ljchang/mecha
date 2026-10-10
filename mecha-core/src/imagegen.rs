@@ -3261,18 +3261,9 @@ impl Tool for ImageGenerate {
                         _ => None,
                     };
                     // A split that applied places everyone; one that fell
-                    // back leaves only the places the call gave. Places must
-                    // also differ: there are four and the split fills three,
-                    // so four or five people would give two the same tag
-                    // (review of #624).
-                    let places: Vec<_> = people.iter().map(|p| p.at).collect();
-                    let distinct = places
-                        .iter()
-                        .enumerate()
-                        .all(|(i, a)| a.is_none() || !places[..i].contains(a));
-                    let placed = distinct
-                        && (roles_said.as_deref() == Some("applied")
-                            || people.iter().all(|p| p.at.is_some()));
+                    // back leaves only the places the call gave.
+                    let placed = roles_said.as_deref() == Some("applied")
+                        || people.iter().all(|p| p.at.is_some());
                     match crate::layers::not_layered(
                         people.len(),
                         library,
@@ -3381,6 +3372,19 @@ impl Tool for ImageGenerate {
                                     .as_ref()
                                     .map_or(crate::scene::Origin::Untrusted, |f| f.origin),
                             });
+                            // Two people set on one side of the frame would
+                            // share a place tag (review of #624).
+                            if layers_plan
+                                .as_ref()
+                                .is_some_and(|lp| crate::layers::shares_a_place(&lp.people))
+                            {
+                                layers_plan = None;
+                                dropped.push(
+                                    "Drawn in one pass, not in layers: two people would share \
+                                     one place."
+                                        .into(),
+                                );
+                            }
                         }
                     }
                 }
@@ -7198,8 +7202,9 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
-    /// Two people given the same place would share a place tag in the
-    /// placing prompt: drawn in one pass, and said (review of #624).
+    /// Two people given the same side, neither acting on the other, would
+    /// share a place tag in the placing prompt: drawn in one pass, and said
+    /// (review of #624).
     #[tokio::test]
     async fn a_shared_place_is_one_render_and_says_why() {
         let (url, seen) = distinct(1).await;
@@ -7212,8 +7217,7 @@ mod tests {
         let out = t.call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content
-                .contains("not everyone has a place of their own"),
+            out.content.contains("two people would share one place"),
             "{}",
             out.content
         );
