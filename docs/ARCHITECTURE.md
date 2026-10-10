@@ -9885,9 +9885,11 @@ the full checklist this grows into as each build step lands.
    it (`provider_is_local`, `SearchBackendConfig::problem`).
 3. Any new fact it needs from the disk goes in `Facts::read`, found by the
    owning program's rule.
-4. If it has a switch: a line in `FEATURES_STARTER` (`commands/config.rs`,
-   where `the_global_starter_lists_every_switch_off` fails until it is
-   there), an `evidence` arm saying what an owner who set it up would lose,
+4. If it has a switch: a **commented** line in `FEATURES_STARTER`
+   (`commands/config.rs`) — `# <id> = false  # what it is` — since an
+   explicit `false` is the owner's no (`Declined`), and a feature shipped
+   answered-no is one `mecha setup` never offers (its starter test fails
+   until the line is there, and names an uncommented one), an `evidence` arm saying what an owner who set it up would lose,
    a `switchable_from_environment` arm, and an `onboarding::blurb` line —
    what `mecha setup` says it is for when it is off — all exhaustive, so the
    build asks. Its setup step then follows from the registry. Whether an environment may switch it on is decided by where its
