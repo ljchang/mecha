@@ -41,6 +41,9 @@ const LOCK: &str = include_str!("../locks/stt-requirements.txt");
 const PYTHON: &str = "3.12";
 /// What the tarball unpacks to, and what the server reads.
 const MODEL_DIR: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
+/// Written into the model's tree when it is unpacked: the sha256 of the
+/// tarball it came from, so a later install knows whose model it is.
+const PIN_STAMP: &str = ".mecha-pin";
 
 /// Where the unit is installed and what port it answers on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,9 +155,14 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     crate::install::uv_env(&mut c, &dir);
     crate::install::run(&mut c, "uv pip install")?;
 
-    // --- the model: fetched by its pin, unpacked beside, swapped in whole
-    if !model.join("tokens.txt").is_file() {
-        let (repo, tag, asset, sha256, bytes) = pin()?;
+    // --- the model: fetched by its pin, unpacked beside, swapped in whole.
+    // Kept only when it is this pin's: the tag is a rolling one, so a model
+    // that is merely present may be an older pin's (review of #638).
+    let (repo, tag, asset, sha256, bytes) = pin()?;
+    let stamp = model.join(PIN_STAMP);
+    let this_pin = model.join("tokens.txt").is_file()
+        && std::fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == sha256);
+    if !this_pin {
         say(&format!(
             "fetching the speech-to-text model ({:.0} MiB)",
             bytes as f64 / 1_048_576.0
@@ -190,6 +198,7 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
                 bail!("the model's tarball has no {MODEL_DIR}/{f}");
             }
         }
+        std::fs::write(unpacked.join(PIN_STAMP), sha256)?;
         let _ = std::fs::remove_dir_all(&model);
         std::fs::rename(&unpacked, &model)?;
         std::fs::remove_dir_all(&staging)?;
@@ -218,6 +227,13 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     Manifest::finish(home, ID)
 }
 
+/// Whether a `/health` answer says the model is in: `{"status": "ok"}`.
+async fn ready(r: reqwest::Response) -> bool {
+    r.json::<serde_json::Value>()
+        .await
+        .is_ok_and(|v| v["status"] == "ok")
+}
+
 /// The server answers `/health` and transcribes a clip: the model loads and
 /// runs, not only the process. Retried while it starts — uvicorn listens
 /// only once the model is loaded.
@@ -232,11 +248,21 @@ async fn check(port: u16) -> Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(120);
     loop {
         match client.get(format!("{base}/health")).send().await {
-            Ok(r) if r.status().is_success() => break,
-            Ok(r) if std::time::Instant::now() > deadline => bail!(
-                "the speech-to-text server on :{port} answered {} to /health",
-                r.status()
-            ),
+            // The body, not only the status: the server answers 200 with
+            // `"loading"` until its model is in (review of #638).
+            Ok(r) => {
+                let status = r.status();
+                if status.is_success() && ready(r).await {
+                    break;
+                }
+                if std::time::Instant::now() > deadline {
+                    bail!(
+                        "the speech-to-text server on :{port} answered {status} to /health, \
+                         not ready"
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
             Err(e) if std::time::Instant::now() > deadline => {
                 return Err(e).with_context(|| {
                     format!(
@@ -448,11 +474,14 @@ mod tests {
         m.mecha_home = root.join(".mecha");
         let mut said = Vec::new();
         let r = install(&m, &naming, &mut |s| said.push(s.to_string())).await;
+        // Read before the tree goes: the model says whose pin it is.
+        let stamped = std::fs::read_to_string(dir(&m.mecha_home).join(MODEL_DIR).join(PIN_STAMP));
         let cleaned = remove(&m, &naming);
         eprintln!("{said:#?}");
         let _ = std::fs::remove_dir_all(&root);
         r.unwrap();
         cleaned.unwrap();
+        assert_eq!(stamped.unwrap(), pin().unwrap().3);
         let man = Manifest::read(&m.mecha_home).unwrap_or_default();
         assert!(
             !man.entries.iter().any(|e| e.sidecar == ID),
