@@ -151,6 +151,7 @@ pub mod tool;
 pub mod trial_env;
 pub mod trigger;
 pub mod voice_direction;
+pub mod voice_worker_unit;
 pub mod work;
 pub mod workflow;
 
