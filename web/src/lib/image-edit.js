@@ -60,3 +60,67 @@ export function composeEditMessage(picturePath, maskPath, instruction) {
     ? `Edit ${picturePath} with mask ${maskPath}: ${words}`
     : `Edit ${picturePath}: ${words}`;
 }
+
+// Regions (IMAGE-REGION-EDIT-RESEARCH.md §7, M2): the colours a region may
+// be painted in, by name and exact value, mirroring `picture::REGION_COLOURS`
+// on the server. The page picks four, those least present in the picture,
+// since Qwen asks for a colour "that appears nowhere else in the frame".
+export const REGION_COLOURS = [
+  ['magenta', [255, 0, 255]],
+  ['cyan', [0, 255, 255]],
+  ['blue', [0, 64, 255]],
+  ['green', [0, 200, 0]],
+  ['orange', [255, 128, 0]],
+  ['yellow', [255, 230, 0]],
+  ['red', [230, 0, 0]],
+  ['purple', [128, 0, 255]],
+];
+
+/** The most regions one edit carries (`picture::MAX_REGIONS`). */
+export const MAX_REGIONS = 4;
+
+/** The four region colours least present in a picture's pixels (RGBA, as
+ *  `getImageData` gives them), in palette order among equals. */
+export function pickColours(data) {
+  const near = REGION_COLOURS.map(() => 0);
+  for (let i = 0; i < data.length; i += 4) {
+    REGION_COLOURS.forEach(([, [r, g, b]], k) => {
+      const d = Math.abs(data[i] - r) + Math.abs(data[i + 1] - g) + Math.abs(data[i + 2] - b);
+      if (d < 120) near[k] += 1;
+    });
+  }
+  return REGION_COLOURS.map((c, k) => [c, near[k], k])
+    .sort((a, b) => a[1] - b[1] || a[2] - b[2])
+    .slice(0, MAX_REGIONS)
+    .map(([c]) => ({ colour: c[0], rgb: c[1] }));
+}
+
+/** A region index's pixels (RGBA): black everywhere, and each region's own
+ *  colour exactly where its layer's alpha is over half. No smoothing, so the
+ *  server can read every pixel as one colour or none. `layers` are each
+ *  region's RGBA data at the picture's size, in region order; a later region
+ *  wins where two overlap. */
+export function indexPixels(width, height, layers, rgbs) {
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let i = 3; i < out.length; i += 4) out[i] = 255;
+  layers.forEach((layer, k) => {
+    const [r, g, b] = rgbs[k];
+    for (let i = 0; i < out.length; i += 4) {
+      if (layer[i + 3] > 127) {
+        out[i] = r;
+        out[i + 1] = g;
+        out[i + 2] = b;
+      }
+    }
+  });
+  return out;
+}
+
+/** The message a regions edit puts in the chat: the picture, the index, and
+ *  each region's colour and words. `null` when a painted region has none. */
+export function composeRegionsMessage(picturePath, indexPath, regions) {
+  if (!regions.length || regions.some((r) => !(r.words ?? '').trim())) return null;
+  const each = regions.map((r) => `${r.colour}: ${r.words.trim()}`).join('; ');
+  return `Edit ${picturePath} in regions ${indexPath}: ${each}`;
+}
+

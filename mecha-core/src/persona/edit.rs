@@ -793,6 +793,36 @@ impl Extracted {
 
 /// A painted area is a retouch by definition: the owner's words go to the
 /// tool as written, with the mask, and no extraction runs.
+/// One painted region from the edit panel: its colour and its words.
+#[derive(serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct PanelRegion {
+    pub colour: String,
+    pub words: String,
+}
+
+/// The edit panel's regions call (IMAGE-REGION-EDIT-RESEARCH.md §7, M2):
+/// the picture, the region index painted over it, and each region's words.
+/// The tool builds the legend; the panel sends values only.
+pub fn regions_call(picture: &str, index: &str, regions: &[PanelRegion]) -> serde_json::Value {
+    serde_json::json!({
+        "picture": picture,
+        "mask": index,
+        "regions": regions
+            .iter()
+            .map(|r| serde_json::json!({"colour": r.colour, "words": r.words}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// What a regions edit's fact says changed: each colour and its words.
+pub fn regions_change(regions: &[PanelRegion]) -> String {
+    let each: Vec<String> = regions
+        .iter()
+        .map(|r| format!("{}: {}", r.colour, r.words.trim()))
+        .collect();
+    format!("in the painted regions, {}", each.join("; "))
+}
+
 pub fn masked_call(picture: &str, mask: &str, words: &str) -> serde_json::Value {
     serde_json::json!({ "picture": picture, "retouch": words, "mask": mask })
 }
