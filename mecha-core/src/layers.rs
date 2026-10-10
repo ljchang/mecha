@@ -187,7 +187,19 @@ pub fn placing_prompt(people: &[Person], leftover: Option<&str>) -> String {
         .enumerate()
         .map(|(i, p)| (p.shown.clone(), format!("the person from <image{}>", i + 2)))
         .collect();
-    let mut s = String::new();
+    // Everyone who must appear, named before any part (mecha-a3: the
+    // person whose part acts on the other, placed second, was left out 6 of
+    // 6 on one call).
+    let all: Vec<&str> = tags.iter().map(|(_, t)| t.as_str()).collect();
+    let mut s = match all.as_slice() {
+        [one, two] => format!("Both people are in the picture: {one} and {two}. "),
+        [rest @ .., last] => format!(
+            "All {} people are in the picture: {} and {last}. ",
+            all.len(),
+            rest.join(", ")
+        ),
+        [] => String::new(),
+    };
     for (p, (_, tag)) in people.iter().zip(&tags) {
         let part = untagged(&p.part, &tags);
         let part = part.trim().trim_end_matches('.');
@@ -354,7 +366,8 @@ mod tests {
         let p = placing_prompt(&people, Some("They laugh, and maya's scarf slips"));
         assert!(
             p.starts_with(
-                "Place the person from <image2>, lifting the person from <image3> off the \
+                "Both people are in the picture: the person from <image2> and the person from \
+                 <image3>. Place the person from <image2>, lifting the person from <image3> off the \
                  ground. Place the person from <image3>, with his arms around the person from \
                  <image2>'s shoulders. They laugh, and the person from <image2>'s scarf slips."
             ),
@@ -369,7 +382,19 @@ mod tests {
         // A person with no part is still placed.
         let p = placing_prompt(&[person("Maya", ""), person("John", "")], None);
         assert!(
-            p.starts_with("Place the person from <image2> in the scene."),
+            p.contains("Place the person from <image2> in the scene."),
+            "{p}"
+        );
+        // Three people are all named before any part.
+        let p = placing_prompt(
+            &[person("Maya", ""), person("John", ""), person("Wren", "")],
+            None,
+        );
+        assert!(
+            p.starts_with(
+                "All 3 people are in the picture: the person from <image2>, the person from \
+                 <image3> and the person from <image4>."
+            ),
             "{p}"
         );
         // A place, when the split gave one, is said.
@@ -379,7 +404,7 @@ mod tests {
         right.at = Some("on the right".into());
         let p = placing_prompt(&[left, right], None);
         assert!(
-            p.starts_with(
+            p.contains(
                 "Place the person from <image2> on the left. Place the person from <image3> on \
                  the right, waving."
             ),
