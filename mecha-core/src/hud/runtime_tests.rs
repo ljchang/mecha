@@ -555,3 +555,12 @@ fn an_unrepresentable_column_name_is_shown_only_as_an_identifier() {
         .to_string();
     assert!(named.contains("\"raw\""), "{named}");
 }
+
+#[test]
+fn validate_refuses_an_id_install_would_refuse() {
+    let s = Scratch::new();
+    let (store, draft, _) = setup(&s);
+    let r = store.validate(&draft, "lab-week").unwrap().unwrap_err();
+    assert!(r.to_string().contains("board id"), "{r}");
+    assert!(store.validate(&draft, "lab_week").unwrap().is_ok());
+}

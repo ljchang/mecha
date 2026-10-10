@@ -1643,13 +1643,6 @@ fn cut_short(stats: &crate::session::RunStats) -> bool {
     stats.stop_cause.is_some_and(|c| c.cut_short())
 }
 
-/// A charter that fails to load degrades every run to un-chartered with
-/// nothing but a stderr line the TUI's alternate screen covers for the whole
-/// session (`setup.rs::prepare_tools`) — the same discovery gap `mecha
-/// skills` exists to close for a bad `SKILL.md`, with no `/charter` modal yet
-/// to close it here. `Charter::load` is read-only and creates nothing, so
-/// calling it directly is safe under doctor's own rule against healing what
-/// it is about to report.
 /// The HUD store: a board that does not load, a loader whose last refresh
 /// was refused or failed, a dataset gone stale, and a `sources.toml` that does
 /// not parse. A refused refresh keeps the previous dataset and says so only on
@@ -1763,6 +1756,13 @@ fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     out
 }
 
+/// A charter that fails to load degrades every run to un-chartered with
+/// nothing but a stderr line the TUI's alternate screen covers for the whole
+/// session (`setup.rs::prepare_tools`) — the same discovery gap `mecha
+/// skills` exists to close for a bad `SKILL.md`, with no `/charter` modal yet
+/// to close it here. `Charter::load` is read-only and creates nothing, so
+/// calling it directly is safe under doctor's own rule against healing what
+/// it is about to report.
 fn check_charter(path: &Path) -> Vec<Finding> {
     // `exists()`, not `is_file()`: the latter also reads false for a
     // directory sitting at this path or a broken symlink, which would
