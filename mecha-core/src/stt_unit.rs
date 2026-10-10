@@ -123,34 +123,10 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     }
 
     // --- the environment
-    let uv = crate::install::ensure_uv(m, say).await?;
-    let venv = dir.join("venv");
-    let python = venv.join("bin/python");
+    crate::install::locked_env(m, ID, &dir, PYTHON, LOCK, "sherpa-onnx and the server", say)
+        .await?;
     let model = dir.join(MODEL_DIR);
-    // Each piece on its own line in the record, so a partly deleted install
-    // reads incomplete rather than installed — the managed Python included,
-    // which the venv's interpreter links into (`install_layout`'s reason).
-    Manifest::record(home, ID, &venv)?;
-    Manifest::record(home, ID, &dir.join("python"))?;
     Manifest::record(home, ID, &model)?;
-    if !python.exists() {
-        say(&format!("building a Python {PYTHON} environment"));
-        let mut c = std::process::Command::new(&uv);
-        c.args(["venv", "--quiet", "--clear", "--python", PYTHON])
-            .arg(&venv);
-        crate::install::uv_env(&mut c, &dir);
-        crate::install::run(&mut c, "uv venv")?;
-    }
-    let lock = dir.join("requirements.txt");
-    write_owned(home, ID, &lock, LOCK, 0o644)?;
-    say("installing sherpa-onnx and the server, every file checked against the lock");
-    let mut c = std::process::Command::new(&uv);
-    c.args(["pip", "install", "--quiet", "--require-hashes", "--python"])
-        .arg(&python)
-        .arg("-r")
-        .arg(&lock);
-    crate::install::uv_env(&mut c, &dir);
-    crate::install::run(&mut c, "uv pip install")?;
 
     // --- the model: fetched by its pin, unpacked beside, swapped in whole
     if !model.join("tokens.txt").is_file() {

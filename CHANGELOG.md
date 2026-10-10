@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mecha-parakeet.service` started on `:8992`, all under
   `~/.mecha/sidecars/stt/`. The model's 465 MiB counts in the plan's total.
   A Parakeet you already run is left alone.
+- **The voice worker installs itself.** `mecha features enable voice` also
+  offers the Pipecat worker: its environment from a hash-pinned lock, the
+  worker run from a copy mecha writes, and `mecha-voice-worker.service`
+  started on `:7860` under `~/.mecha/sidecars/voice-worker/`. It takes calls
+  only through `mecha serve`'s relay, so no hostname needs setting.
 
 ### Changed
 

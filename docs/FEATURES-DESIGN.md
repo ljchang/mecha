@@ -74,9 +74,9 @@
 > GGUF), behind `mecha setup chat` (F11). 7d-1 — `stt_unit.rs`, the
 > speech-to-text server from nothing (its own uv environment from a hash
 > lock, the Parakeet tarball by its pin, the server script held equal to
-> `scripts/voice/`, one rendered unit) — is built. 7b-2 (the build
-> fallback), 7d-2 (the voice worker), 7e, 7f and step 8 are unbuilt (step 7
-> redesigned in §10). The
+> `scripts/voice/`, one rendered unit) — is built, and so is 7d-2, the voice
+> worker the same way. 7b-2 (the build fallback), 7e, 7f and step 8 are
+> unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1642,7 +1642,15 @@ Step 7 becomes these, each a PR that leaves every feature working:
   pinned tarball into `~/.mecha/sidecars/stt/`, and `mecha-parakeet.service`
   rendered with absolute paths and started; the real-machine test installs
   one beside the live server on a free port, transcribes a second of
-  silence, and removes it (measured 2026-10-10). **7d-2** the voice worker.
+  silence, and removes it (measured 2026-10-10). **7d-2** the voice worker —
+  pipecat's environment from its own lock (the `local-smart-turn` extra left
+  out: it pulls torch, and smart-turn v3 is onnx with its weights in the
+  wheel), `worker.py` and its three modules held equal to `scripts/voice/`,
+  and `mecha-voice-worker.service` whose `--allowed-origins` names an origin
+  no page has: `mecha serve` relays the offer with no `Origin`, which pipecat
+  lets through, while a page's direct request is refused — so the install
+  needs no hostname. Its real-machine test installs one beside the live
+  worker and checks a page's preflight is refused (measured 2026-10-10).
 - **7e.** ComfyUI, ComfyUI-GGUF and the image models.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
   default since 2026-10-03, built from a pinned commit with its model
