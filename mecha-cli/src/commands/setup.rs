@@ -340,7 +340,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // Somewhere to put the answers: the starter, as `config init` writes
         // it, never a question of its own.
         seed_config_file(&path)?;
-        let mut handled = super::setup_guided::run(
+        let guided = super::setup_guided::run(
             &cfg,
             &name,
             &steps,
@@ -349,14 +349,13 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
             &mut std::io::stdin().lock(),
         )
         .await?;
-        handled.push("config-file".into());
-        // What is still open is shown, chat included when it was skipped or
-        // did not install — but only what the pass did not ask is offered:
-        // the chat question was the offer, and a second one is noise (review
-        // of #631).
+        // What is still open is shown — chat when it was skipped or did not
+        // install, a feature whose yes did not end up on — but only what the
+        // pass did not ask is offered: its question was the offer, and a
+        // second one is noise (review of #631).
         let left: Vec<&Step> = outstanding
             .iter()
-            .filter(|s| !handled.contains(&s.id))
+            .filter(|s| s.id != "config-file" && !guided.settled.contains(&s.id))
             .copied()
             .collect();
         if !left.is_empty() {
@@ -364,7 +363,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
             render(&left.iter().map(|s| (*s).clone()).collect::<Vec<_>>());
             let unasked: Vec<&Step> = left
                 .iter()
-                .filter(|s| !super::setup_guided::CHAT_STEPS.contains(&s.id.as_str()))
+                .filter(|s| !guided.asked.contains(&s.id))
                 .copied()
                 .collect();
             offer(&unasked, &home, &mut std::io::stdin().lock())?;
