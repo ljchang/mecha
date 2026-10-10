@@ -382,7 +382,8 @@ mecha-a3's measurements are local (`QWEN-PROMPT-GUIDE-REVIEW.md`, the layers sec
 
 - **"Touching scenes: precise (slower)", per persona, off by default.**
   - It lives in the persona's `state.toml`, under an `[image]` table, as the first per-persona image setting.
-  - **Only the owner writes it**, from the persona settings page, as with the avatar framing. No tool may write it, `persona_propose` included, whose writes reach the owner-file set and never `state.toml`'s keys.
+  - **Only the owner sets it**, from the persona settings page's own route, as with the avatar framing. No tool sets it. Other writers of `state.toml` (`persona_propose`, the lock, a version) rewrite the file whole from the `State` they loaded, so each carries the switch through unchanged.
+  - **Read leniently**, as `frame` is: an unknown value is one pass, and a damaged `[image]` table reads as the defaults, never costing the persona its approval (a `state.toml` that does not parse loads as unapproved).
 - **Read fresh every turn,** and stamped on `ToolCtx` by the persona host as it stamps `role_split`. `image_generate` reads a value. The tool schema does not change, and nothing new enters the cached prefix.
 
 ### 15.2 When a picture is layered
@@ -398,14 +399,14 @@ Everything else draws as today.
 
 ### 15.3 The pipeline
 
-The steps run in one deferred job (`jobs.rs`), in order, with the run's cancellation checked between steps. Other pictures never interleave with a build. The queue line names the step: plate, cutout *i* of *n*, placing, finish. Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
+The steps run in one deferred job (`jobs.rs`), in order, with **the job's own cancellation** checked between steps: the job's token, which Stop fires, never the run's, which the owner's typing fires (`jobs.rs`: talking cancels the run, never the job). Other pictures never interleave with a build. The queue line names the step: plate, cutout *i* of *n*, placing, finish. Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
 
 1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small. A setting photo is the plate as it is, with no render.
 2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, drawn at **1024 × 1024** (the measured size; with no size the canvas would follow the portrait's own shape, which was not measured), in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
    - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. In the measured runs 2 of 4 cutouts came out in the wrong pose, and the placing pass staged all 4 correctly.
    - **A person with no `wearing`** takes the scene's (the chat copy's) clothes, else "clothes that suit the scene", as today. Left empty, the cutout would copy the portrait's outfit.
    - Every output arrives RGBA, so each cutout is **flattened on mid-grey (128) in code** before it is a reference. What the encoder does with a transparent reference is untested and not relied on.
-3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order. Each person is placed by tag with their part from the split, and the leftover `together` follows.
+3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order, every reference encoded at **1024²** (`EDIT_REFERENCE_SIZE`), by decision rather than through the unmasked edit's 512 rule. Each person is placed by tag at the split's place ("on the left") with their part from the split, and the leftover `together` follows. A placing prompt that named no places left one of two people out, 2 of 2 runs (mecha-a3).
    - **A split that fell back** (no parts, now including an answer of only names, #622): the placing pass carries the call's `together` as written, after the per-person tags.
    - A role noun goes beside a tag only where it is unambiguous ("the woman from `<image2>`" in a mixed pair), else "the person from `<image2>`" (mecha-a3's change 2). Names never appear inside the prompt.
    - It closes with: "Keep `<image1>`'s room, framing, camera angle and light unchanged. Take each person's face, hair, body and clothing from their own image; each appears exactly once. Lit by the room's light, with natural contact and shadows."
@@ -420,13 +421,13 @@ The steps run in one deferred job (`jobs.rs`), in order, with the run's cancella
 
 ### 15.4 What is kept
 
-The picture's scene record gets a `layers` entry:
+The picture's scene record gets a `layers` entry, written wherever the record is (the chat's copy, the persona's latest and the index entry, as any render lands), so a later chat that starts from the latest carries it too:
 
 - the plate's hash (photo or render);
 - per person: who, the cutout's hash (the RGBA PNG, kept in the workspace beside the picture), the part, and the seed;
 - the placing seed and the finish seed.
 
-Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on.
+Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on. The parts carry the `layers` entry's own origin, the scene's `together`'s, counted by `Scene::origin`. The cutout files live in the workspace, which `work::clean` reaps; a re-place that finds a cutout gone redraws it from the portrait, or says it cannot.
 
 ### 15.5 Failure is said, never silent
 
@@ -458,7 +459,7 @@ All of these were measured; none is built yet:
   - the plate's own framing;
   - the owner's preference on a contact sheet.
 - **Known weak spots to watch:**
-  - a clothing state lost in placing ("pulled down" 0 of 4 in one scene);
+  - a clothing state lost in placing (0 of 4 in one scene);
   - lower identity on profile faces (yaw 64–83°);
   - the cost.
 
