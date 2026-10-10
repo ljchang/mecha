@@ -231,6 +231,10 @@ pub(super) fn feature_questions(steps: &[Step]) -> Vec<Feature> {
 pub(super) struct Answers {
     pub yes: Vec<Feature>,
     pub never: Vec<Feature>,
+    /// How many questions were answered before the input ended: the rest
+    /// were never asked, so they are neither asked nor settled (review of
+    /// #631).
+    pub answered: usize,
 }
 
 /// What a yes to `f` switches on besides it — the same ids the install runs,
@@ -276,6 +280,7 @@ pub(super) fn ask_features(
             println!();
             break;
         };
+        answers.answered += 1;
         match answer.to_ascii_lowercase().as_str() {
             "y" | "yes" => answers.yes.push(q.feature),
             "never" | "n!" => answers.never.push(q.feature),
@@ -503,22 +508,33 @@ pub(super) async fn run(
                 .collect()
         })
     };
-    let Answers { yes: chosen, never } = if questions.is_empty() {
+    let Answers {
+        yes: chosen,
+        never,
+        answered,
+    } = if questions.is_empty() {
         Answers::default()
     } else {
         ask_features(read, &questions, cfg)?
     };
+    // Only what was put to the owner: a Ctrl-D part way down leaves the rest
+    // unasked, on the checklist and offered by the step loop.
+    let asked = &asked[..answered.min(asked.len())];
     guided
         .asked
         .extend(asked.iter().map(|f| f.id().to_string()));
     // A preference, not an install: recorded now, whatever Start says.
     for f in &never {
         match onboarding::decline(home, f.id()) {
-            Ok(_) => println!(
-                "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
-                f.id(),
-                f.id()
-            ),
+            Ok(wrote) => {
+                println!(
+                    "noted — `{}` will not be offered again (`mecha setup --undecline {}` \
+                     undoes it)",
+                    f.id(),
+                    f.id()
+                );
+                super::setup::report_salvage(wrote.salvaged);
+            }
             Err(e) => println!("could not record that for `{}`: {e}", f.id()),
         }
     }
@@ -527,17 +543,13 @@ pub(super) async fn run(
     let total = chat_bytes + features_total(&questions, &chosen, engine_for_chat > 0);
     let nothing = matches!(chat, ChatPick::Answering | ChatPick::Skip) && chosen.is_empty();
     if nothing {
-        guided
-            .settled
-            .extend(settled_features(&asked, &chosen, &[]));
+        guided.settled.extend(settled_features(asked, &chosen, &[]));
         return Ok(guided);
     }
     print!("{}", summary(&chat, chat_bytes, &chosen, total));
     if !ask_start(read)? {
         println!("Nothing was changed. `mecha setup` asks again.");
-        guided
-            .settled
-            .extend(settled_features(&asked, &chosen, &[]));
+        guided.settled.extend(settled_features(asked, &chosen, &[]));
         return Ok(guided);
     }
 
@@ -627,7 +639,7 @@ pub(super) async fn run(
     }
     guided
         .settled
-        .extend(settled_features(&asked, &chosen, &enabled));
+        .extend(settled_features(asked, &chosen, &enabled));
     Ok(guided)
 }
 
@@ -940,6 +952,7 @@ mod tests {
             Answers {
                 yes: vec![Feature::Web, Feature::Search],
                 never: vec![],
+                answered: 3,
             }
         );
         // `never` is kept apart from no (review of #631).
@@ -948,6 +961,7 @@ mod tests {
             Answers {
                 yes: vec![],
                 never: vec![Feature::Web],
+                answered: 2,
             }
         );
     }
@@ -1028,6 +1042,7 @@ mod tests {
             Answers {
                 yes: vec![Feature::Web],
                 never: vec![],
+                answered: 1,
             }
         );
     }

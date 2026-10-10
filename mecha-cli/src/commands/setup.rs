@@ -704,7 +704,7 @@ const NOT_RESTORED: &str = "the previous config could NOT be put back; it is at 
 /// whole path exists to avoid: somebody's recorded answers disappearing with
 /// no word. They are still on disk, and this is the only line that says
 /// where.
-fn report_salvage(salvaged: Option<std::path::PathBuf>) {
+pub(super) fn report_salvage(salvaged: Option<std::path::PathBuf>) {
     if let Some(path) = salvaged {
         println!(
             "  (the previous declined-steps file could not be read and was kept at {} \n\
@@ -1116,7 +1116,7 @@ fn seed_config_file(path: &std::path::Path) -> Result<()> {
     // `config init`'s file with every feature listed but unanswered: the list
     // of what exists is the same whichever door made it (review of #631,
     // pass 2), and a feature not answered yet is asked again (pass 5).
-    std::fs::write(path, super::config::unanswered_starter())
+    std::fs::write(path, super::config::global_starter())
         .with_context(|| format!("writing {}", path.display()))?;
     println!("created {}", path.display());
     Ok(())
@@ -1327,12 +1327,7 @@ mod tests {
             ("vision", "true".to_string()),
         ];
         // The file `setup` seeds, `[features]` after the providers.
-        let text = apply_text(
-            &super::super::config::unanswered_starter(),
-            "local",
-            &settings,
-        )
-        .unwrap();
+        let text = apply_text(&super::super::config::global_starter(), "local", &settings).unwrap();
         let cfg: toml::Value = toml::from_str(&text).unwrap();
         let local = &cfg["providers"]["local"];
         assert_eq!(local["model"].as_str(), Some("served-alias"));
@@ -1395,9 +1390,7 @@ mod tests {
     /// one the owner wrote, whatever its kind, is theirs (review of #627).
     #[test]
     fn only_the_starter_s_bare_local_table_is_filled_from_a_probe() {
-        assert!(starter_shaped_local(
-            &super::super::config::unanswered_starter()
-        ));
+        assert!(starter_shaped_local(&super::super::config::global_starter()));
         let own = "[providers.local]\nkind = \"openai-compatible\"\nbase_url = \"http://192.168.1.5:8080\"\n";
         assert!(!starter_shaped_local(own));
         let named = "[providers.local]\nkind = \"local\"\nbase_url = \"http://127.0.0.1:8080\"\nmodel = \"x\"\n";
