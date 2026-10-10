@@ -37,12 +37,53 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Ask the memory floor whether something needing `--need` of memory may
+    /// start now: the need plus `[system] memory_reserve_mb` must be
+    /// available, and memory pressure must be under its ceiling. Exits
+    /// non-zero when refused, so a build or an experiment can chain on it:
+    /// `mecha system admit --need 24G && cargo build ...`.
+    Admit {
+        /// What it will allocate: `24G`, `512M`, or a number of MB.
+        #[arg(long)]
+        need: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
     match args.cmd {
         Cmd::Sample { json } => sample(json),
         Cmd::Probe { name, json } => probe(name.as_deref(), json),
+        Cmd::Admit { need, json } => admit(&need, json),
+    }
+}
+
+fn admit(need: &str, json: bool) -> Result<()> {
+    use mecha_core::system::floor;
+    let Some(bytes) = floor::parse_size(need) else {
+        bail!("--need takes a size like 24G, 512M, or a number of MB; got {need:?}");
+    };
+    // `[system]` is global-file only, so no project layer is read.
+    let cfg = mecha_core::config::Config::load_global()?;
+    let db = system::db_path().ok();
+    let verdict = floor::admit_now(bytes, &cfg.system, db.as_deref());
+    if json {
+        println!("{}", serde_json::to_string_pretty(&verdict)?);
+    } else if let Some(why) = verdict.sentence("it") {
+        eprintln!("{why}");
+    } else if let floor::Admit::Yes { available, floor } = verdict {
+        println!(
+            "admitted: {:.1} GB available, floor {:.1} GB",
+            available as f64 / 1073741824.0,
+            floor as f64 / 1073741824.0
+        );
+    }
+    if verdict.admitted() {
+        Ok(())
+    } else {
+        // Refused: non-zero, so `admit && build` does not build.
+        crate::exit_with(1);
     }
 }
 

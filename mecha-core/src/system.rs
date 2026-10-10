@@ -55,6 +55,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, DurationRound, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
+pub mod floor;
 pub mod measure;
 pub mod source;
 
