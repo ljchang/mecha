@@ -110,6 +110,7 @@ something shipped.
 | [`REMOTE-CONTROL-DESIGN.md`](REMOTE-CONTROL-DESIGN.md) | One live TUI session and a named Slack thread as the same conversation |
 | [`REMOTE-SURFACE-DESIGN.md`](REMOTE-SURFACE-DESIGN.md) | How the tailnet web surface gets built, and what it replaces |
 | [`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md) | The scheduling instrument: booking, the admin door, the frontend |
+| [`SENSOR-DESIGN.md`](SENSOR-DESIGN.md) | One layer through which mecha reads the machine and its services — a closed registry of sensors, a probe that keeps unknown apart from zero, and a per-minute series with no names in it — read by the homeostat, the HUD, the doctor, the brief and the gates instead of each probing for itself; and why the charter's sensors are a different thing. §9 holds the rulings |
 | [`SLACK-ACTIONS-DESIGN.md`](SLACK-ACTIONS-DESIGN.md) | Executable actions from a phone: the closed `Action` enum and the tainted two-step |
 | [`SLACK-DESIGN.md`](SLACK-DESIGN.md) | How mecha is driven from Slack: the transport, the allowlist, the thread state machine |
 | [`SPOKEN-OVERRIDE-DESIGN.md`](SPOKEN-OVERRIDE-DESIGN.md) | Changing a harness-supplied parameter by ear: state the default, accept an override, read the result back |
