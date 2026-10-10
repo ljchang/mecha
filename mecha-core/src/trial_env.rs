@@ -327,6 +327,11 @@ impl Environment {
         cfg.rules = real.rules.clone();
         cfg.approval = real.approval.clone();
         cfg.search = real.search.clone();
+        // The memory floor is a machine fact: a trial allocates from the
+        // operator's one pool, and an out-of-memory mid-experiment destroys
+        // the comparison it ran for. An environment may not set it
+        // (`OPERATOR_ONLY_TABLES`), so it is handed the operator's own.
+        cfg.system = real.system.clone();
         if let Some(prompt) = &cfg.agent.system_prompt_file {
             if prompt.is_relative() {
                 cfg.agent.system_prompt_file = Some(base.join(prompt));
@@ -1064,6 +1069,7 @@ mod tests {
             },
         );
         real.security.trifecta = crate::config::TrifectaPolicy::Ask;
+        real.system.memory_reserve_mb = 1234;
         real.mcp.push(McpServerConfig {
             name: "graph".into(),
             command: "mecha-graph-mcp".into(),
@@ -1106,6 +1112,10 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         assert!(real.providers["local"].follow_loaded);
         assert!(cfg.providers.values().all(|p| !p.follow_loaded));
         assert_eq!(cfg.security.trifecta, real.security.trifecta);
+        assert_eq!(
+            cfg.system, real.system,
+            "the operator's floor, not R5's defaults"
+        );
 
         let mut bound = cfg.clone();
         bind_stores(&mut bound, Path::new("/h"));

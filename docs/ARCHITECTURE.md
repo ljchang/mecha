@@ -568,7 +568,11 @@ workspace**. Six decisions, each a bug if undone:
   image generation keeps working in a conversation holding mail. `[image]` is
   stripped from project layers, loudly, like `[web]`: a cloned repository must
   not choose where model-written prompts go.
-- **Refuse to start without memory headroom** (`min_available_mb`, 20 GB). On
+- **Refuse to start without memory headroom** (`min_available_mb`, 20 GB, **plus
+  the memory floor's reserve**). Since S6 the gate is `system::floor`
+  (§System state): the need below plus `[system] memory_reserve_mb` (8 GB) must
+  be available, and memory pressure above the ceiling refuses. That is 28 GB
+  cold and 20 GB warm at the defaults (`SYSTEM-STATE-DESIGN.md` §7.2). On
   the GB10 the GPU allocates from the one pool everything else uses; the first
   generation on this box, beside `llama-server` and a parallel link, was a
   global OOM that killed `llama-server` and took the machine down. An

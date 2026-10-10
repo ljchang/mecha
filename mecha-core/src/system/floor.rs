@@ -126,9 +126,11 @@ impl Admit {
                  {what} was not started.{}",
                 holding(holders)
             )),
+            // Either gauge: `why` names which (available memory, or
+            // `memory pressure: ...`).
             Admit::Unread { why } => Some(format!(
-                "Could not read this machine's available memory ({why}), so {what} was not \
-                 started: an unreadable gauge is not an empty tank."
+                "Could not read this machine's memory ({why}), so {what} was not started: \
+                 an unreadable gauge is not an empty tank."
             )),
         }
     }
