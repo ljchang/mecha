@@ -611,7 +611,15 @@ fn has_email_shape(s: &str) -> bool {
 fn normalise(s: &str) -> String {
     s.trim()
         .chars()
-        .filter(|c| !c.is_control())
+        // Zero-width characters go with the controls: a scheme split by one is
+        // still that scheme to a reader who cannot see it.
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    c,
+                    '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}' | '\u{ad}'
+                )
+        })
         .map(|c| c.to_ascii_lowercase())
         .collect()
 }

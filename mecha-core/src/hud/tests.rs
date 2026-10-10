@@ -343,6 +343,8 @@ fn a_dashboard_id_is_checked_before_it_is_joined() {
 #[test]
 fn a_scheme_split_by_a_control_is_still_an_address() {
     for s in [
+        "java\u{200b}script:alert(1)",
+        "data\u{feff}:text/html,hi",
         "java\tscript:alert(1)",
         "java\nscript:alert(1)",
         "da\rta:text/html,hi",
