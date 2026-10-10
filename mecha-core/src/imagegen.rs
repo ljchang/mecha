@@ -6398,9 +6398,6 @@ mod tests {
         assert!(none.contains("The green region is empty"), "{none}");
     }
 
-    /// A regions edit sends the clean picture as the canvas, the outlined
-    /// copy as `<image2>`, the union as the mask, and the legend as the
-    /// words; the rest of the picture comes back as it was.
     /// A regions edit whose index cannot be read draws nothing: there are no
     /// owner's words for a whole-picture edit to run on (review of #623).
     #[tokio::test]
@@ -6431,6 +6428,9 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// A regions edit sends the clean picture as the canvas, the outlined
+    /// copy as `<image2>`, the union as the mask, and the legend as the
+    /// words; the rest of the picture comes back as it was.
     #[tokio::test]
     async fn a_regions_edit_sends_the_outlines_as_the_second_picture() {
         let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
