@@ -97,10 +97,9 @@ pub fn stage_at(
             records.len()
         );
     };
-    let results = turn["content"]
-        .as_array()
-        .is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
-    if !(turn["record"] == "message" && turn["role"] == "user") || results {
+    // The owner's words at the tail, by the test `--list` and `--at` use: a
+    // user message, or a `rewrite` that folded the turn onto the tail.
+    if !crate::persona::replay::record_holds_owner_words(turn) {
         bail!("line {line} is not an owner message");
     }
     let before = &records[..line];
@@ -574,6 +573,37 @@ mod tests {
         assert_ne!(earlier, last);
         // A tool-result batch is not an owner message.
         let err = stage_at(&w.store, "wren", CHAT, 5, None, &w.root.join("scratch2")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not an owner message"),
+            "{err:#}"
+        );
+    }
+
+    /// A turn serve folded onto the tail with a `rewrite` (the owner's tail
+    /// was already theirs) is a turn here as it is to `--list` and `--at`:
+    /// listed by one and refused by the other was the bug (found by
+    /// mecha-a3). A rewrite ending on the model's reply is not one.
+    #[test]
+    fn a_turn_folded_by_a_rewrite_is_staged() {
+        let w = World::new("fold");
+        let last = w.picture("1-1.png", b"the picture before the fold");
+        w.index(&last, &scene(CHAT, &last));
+        let user = |t: &str| json!({"role": "user", "content": [{"type": "text", "text": t}]});
+        let mut lines = header(&w, "2026-01-01T09:00:00Z");
+        lines.extend([
+            owner("draw us"),
+            json!({"record": "late_result", "index": 3, "tool_use_id": "t1",
+                   "content": "image: images/1-1.png\nA new picture."}),
+            json!({"record": "notes", "notes": ["(a note)"]}),
+            json!({"record": "rewrite", "messages": [user("draw us\n\nand now in the rain")]}),
+            json!({"record": "rewrite", "messages": [
+                user("draw us"),
+                {"role": "assistant", "content": [{"type": "text", "text": "a reply"}]}]}),
+        ]);
+        w.transcript(&lines);
+        let staged = stage_at(&w.store, "wren", CHAT, 5, None, &w.root.join("scratch")).unwrap();
+        assert_eq!(staged.as_of, AsOf::ChatPicture { picture: last });
+        let err = stage_at(&w.store, "wren", CHAT, 6, None, &w.root.join("scratch2")).unwrap_err();
         assert!(
             format!("{err:#}").contains("not an owner message"),
             "{err:#}"

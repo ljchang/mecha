@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh due HUD datasets every minute
+
+[Timer]
+OnCalendar=*:*:00
+RandomizedDelaySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

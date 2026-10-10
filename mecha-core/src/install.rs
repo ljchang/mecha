@@ -92,23 +92,24 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
         .map(|(_, asset, sha, bytes)| (*asset, *sha, *bytes))
 }
 
-/// The sidecars mecha can install today — the rest name the step that brings
-/// their installer.
+/// The sidecars `features enable` can install today — the rest name the step
+/// that brings their installer. The router is not among them: the chat model
+/// is chosen and installed by `mecha setup chat` alone (ruling F13).
 pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "router" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
 
-/// Whether a sidecar's install brings the models it serves. Layout's, the
-/// on-demand servers' and the router's fetch theirs; the engine's does not —
-/// so a model gone from the hub is a reason to run their installs again,
-/// never the engine's.
+/// Whether a sidecar's install brings the models it serves. Layout's and the
+/// on-demand servers' fetch theirs; the engine's does not — so a model gone
+/// from the hub is a reason to run their installs again, never the engine's.
+/// (The router's model is `mecha setup chat`'s to fetch again, F13.)
 fn fetches_models(id: &str) -> bool {
-    matches!(id, "layout" | "embed-server" | "ocr-server" | "router")
+    matches!(id, "layout" | "embed-server" | "ocr-server")
 }
 
 /// Whether the chat model is served from this machine: the default provider
@@ -129,16 +130,22 @@ pub fn chat_runs_here(cfg: &crate::config::Config) -> bool {
     }
 }
 
-/// Why a sidecar is not needed for a feature on this machine, or `None` when
-/// it is. Only a shared sidecar can be unneeded — the engine and the router
-/// are in every plan because the chat model runs on them — so where chat runs
-/// elsewhere, one is needed only by a feature whose embeddings or OCR server
-/// it runs. The router serves chat alone, so it is never needed then. A
-/// function of the feature's slots, not of a plan, so `enable` can ask it
-/// before reading the machine.
+/// Why `enable` does not install a sidecar for a feature, or `None` when it
+/// does. The chat model is `mecha setup chat`'s (ruling F13, 2026-10-10): the
+/// model is chosen there — the recommended row or a GGUF the owner brings —
+/// and `enable web` on a fresh machine must not stand between the owner and
+/// a switch with a ~22 GiB download. So the router is never `enable`'s, and a
+/// shared sidecar (the engine) is needed only by a feature whose embeddings or
+/// OCR server it runs; `chat_here` chooses which reason is given. A function
+/// of the feature's slots, not of a plan, so `enable` can ask it before
+/// reading the machine.
 pub fn not_needed(id: &str, feature: Feature, chat_here: bool) -> Option<&'static str> {
-    if chat_here {
-        return None;
+    if id == crate::router_unit::ID {
+        return Some(if chat_here {
+            "the chat model's — `mecha setup chat` installs it, and the model is chosen there"
+        } else {
+            "not needed here — the chat model is served from elsewhere"
+        });
     }
     let s = crate::sidecar::SIDECARS.iter().find(|s| s.id == id)?;
     if !s.needed_by.is_empty() {
@@ -146,10 +153,13 @@ pub fn not_needed(id: &str, feature: Feature, chat_here: bool) -> Option<&'stati
     }
     let other_server = crate::sidecar::needed_slots(feature)
         .any(|slot| slot.id != "chat" && s.serves.contains(&slot.id));
-    (!other_server).then_some(
+    (!other_server).then_some(if chat_here {
+        "for the chat model, `mecha setup chat` installs it — this feature runs nothing else \
+         on it"
+    } else {
         "not needed here — the chat model is served from elsewhere, and this feature runs \
-         nothing else on it",
-    )
+         nothing else on it"
+    })
 }
 
 /// Whether `enable` could offer anything for a feature — asked before the
@@ -464,34 +474,12 @@ fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
 pub async fn install(
     id: &str,
     m: &Machinery,
-    cfg: &crate::config::Config,
     machine: &recommend::Machine,
     hub: &Path,
     say: Say<'_>,
 ) -> Result<()> {
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
-        // The router with what its presets already serve — a GGUF the owner
-        // brought through `mecha setup chat` is kept, never replaced by the
-        // recommended row — else the row recommended for this machine.
-        "router" => {
-            let naming = crate::router_unit::Naming::shipped();
-            let alias = crate::router_unit::install(
-                m,
-                cfg,
-                &crate::router_unit::installed_choice(&m.mecha_home)?
-                    .unwrap_or(crate::router_unit::Choice::Recommended),
-                &naming,
-                machine,
-                hub,
-                &mut *say,
-            )
-            .await?;
-            if let Some(lag) = crate::router_unit::provider_lags(cfg, &naming, &alias) {
-                say(&lag);
-            }
-            Ok(())
-        }
         "embed-server" | "ocr-server" => {
             let which = if id == "embed-server" {
                 crate::llama_units::Which::Embeddings
@@ -538,21 +526,28 @@ mod tests {
     #[test]
     fn the_engine_is_offered_only_where_it_runs_something() {
         let missing = || SidecarState::Missing { step: "7b" };
+        // Chat's engine is `setup chat`'s (F13): messages runs nothing
+        // else, so `enable messages` installs nothing, chat here or not.
         let messages = plan_of(Feature::Messages, missing());
-        assert_eq!(install_ids(&messages, true), vec!["llama"]);
+        assert!(install_ids(&messages, true).is_empty());
         assert!(install_ids(&messages, false).is_empty());
         assert!(not_needed("llama", Feature::Messages, false).is_some());
+        assert!(not_needed("llama", Feature::Messages, true).is_some());
         assert!(!may_offer(Feature::Messages, false));
-        assert!(may_offer(Feature::Messages, true));
+        assert!(!may_offer(Feature::Messages, true));
         // Documents runs an OCR server on the engine; graph an embeddings one.
         let documents = plan_of(Feature::Documents, missing());
         assert_eq!(install_ids(&documents, false), vec!["llama"]);
+        assert_eq!(install_ids(&documents, true), vec!["llama"]);
         assert!(not_needed("llama", Feature::Graph, false).is_none());
         assert!(may_offer(Feature::Graph, false));
-        // The router serves chat alone: never needed where chat is elsewhere,
-        // whatever else the feature runs. A feature's own sidecar always is.
+        // The router is never `enable`'s, chat here or not (F13); here it
+        // names the command that installs it. A feature's own sidecar
+        // always is `enable`'s.
         assert!(not_needed("router", Feature::Documents, false).is_some());
-        assert!(not_needed("router", Feature::Documents, true).is_none());
+        let here = not_needed("router", Feature::Documents, true).unwrap();
+        assert!(here.contains("mecha setup chat"), "{here}");
+        assert!(!installable("router"));
         assert!(not_needed("layout", Feature::Messages, false).is_none());
     }
 
@@ -570,7 +565,7 @@ mod tests {
             state: FileState::Download { bytes: 1 },
         });
         assert!(install_ids(&installed, true).is_empty());
-        let unfinished = plan_of(Feature::Messages, SidecarState::Incomplete);
+        let unfinished = plan_of(Feature::Documents, SidecarState::Incomplete);
         assert_eq!(install_ids(&unfinished, true), vec!["llama"]);
     }
 
@@ -701,7 +696,13 @@ mod tests {
         assert!(installable("layout"));
         assert!(installable("llama"));
         assert!(!installable("comfyui"));
+        assert!(!installable("router"), "the router is `setup chat`'s (F13)");
         for s in crate::sidecar::SIDECARS {
+            // The router's installer is built, and `setup chat` runs it —
+            // never `enable` (ruling F13).
+            if s.id == crate::router_unit::ID {
+                continue;
+            }
             assert_eq!(
                 installable(s.id),
                 built.contains(&s.installer),
