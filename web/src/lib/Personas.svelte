@@ -323,7 +323,7 @@
         body: JSON.stringify({ picture: path, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      const { line } = await res.json();
+      const { line, id } = await res.json();
       if (k !== key) return;
       if (!caller?.say(line)) {
         // Taken back, so a later turn that says those words is words
@@ -331,7 +331,7 @@
         fetch(chatUrl(k, '/call-regenerate'), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ picture: path, unlock: token ?? undefined, withdraw: true }),
+          body: JSON.stringify({ picture: path, unlock: token ?? undefined, withdraw: id }),
         }).catch(() => {});
         notice('The call is not connected, so the picture was not drawn again.');
         return;

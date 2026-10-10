@@ -112,8 +112,11 @@ pub struct PersonaChats {
     /// (`call_regenerate`): the call's turns reach the server as words
     /// through the voice worker, so the page registers the edit here and
     /// the spoken turn that says its line takes it. One per chat; a newer
-    /// press replaces it.
-    call_regenerates: StdMutex<HashMap<String, (PanelEdit, std::time::Instant)>>,
+    /// press replaces it. With when it was pressed, and its id, which a
+    /// withdraw names so it never takes a newer press (review of #642).
+    call_regenerates: StdMutex<HashMap<String, (PanelEdit, std::time::Instant, u64)>>,
+    /// The next registration's id.
+    next_regenerate: std::sync::atomic::AtomicU64,
     /// Every chat's background jobs (`docs/BACKGROUND-JOBS-DESIGN.md`): a
     /// picture drawn past the turn that asked for it, one in flight per chat
     /// key. A finished one comes back through `delivered`, drained by the
@@ -776,6 +779,7 @@ impl PersonaChats {
             calls: StdMutex::new(HashMap::new()),
             next_call: std::sync::atomic::AtomicU64::new(1),
             call_regenerates: StdMutex::new(HashMap::new()),
+            next_regenerate: std::sync::atomic::AtomicU64::new(1),
             jobs: Default::default(),
         }
     }
@@ -2830,14 +2834,15 @@ impl PersonaChats {
     /// §5.4; owner, 2026-10-10: a spoken call turn), and the line the page
     /// says into the call to take it. Through the same door as every turn,
     /// and only on a chat with a call placed: the registration is what
-    /// makes the turn a redraw, and the line only says which turn.
+    /// makes the turn a redraw, and the line only says which turn. With
+    /// the registration's id, for a withdraw.
     pub async fn call_regenerate(
         &self,
         library: &LibraryState,
         key: &str,
         token: Option<&str>,
         picture: &str,
-    ) -> Result<String, Refusal> {
+    ) -> Result<(String, u64), Refusal> {
         self.persona_of(library, key, token).await?;
         if !self
             .calls
@@ -2858,33 +2863,34 @@ impl PersonaChats {
             redraw: true,
             regions: Vec::new(),
         };
+        let id = self
+            .next_regenerate
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(key.to_string(), (edit, std::time::Instant::now()));
-        Ok(mecha_core::persona::edit::regenerate_line(picture))
+            .insert(key.to_string(), (edit, std::time::Instant::now(), id));
+        Ok((mecha_core::persona::edit::regenerate_line(picture), id))
     }
 
-    /// Withdraw a Regenerate registered on `key` for `picture` whose line
+    /// Withdraw the Regenerate registered on `key` as `id` whose line
     /// never reached the call — the page could not say it — so a later
     /// turn that happened to say those words is not taken as one (review
-    /// of #634). A newer press for another picture stays.
+    /// of #634). Only that press: a newer one, even for the same picture,
+    /// stays (review of #642).
     pub async fn withdraw_call_regenerate(
         &self,
         library: &LibraryState,
         key: &str,
         token: Option<&str>,
-        picture: &str,
+        id: u64,
     ) -> Result<(), Refusal> {
         self.persona_of(library, key, token).await?;
         let mut held = self
             .call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if held
-            .get(key)
-            .is_some_and(|(edit, _)| edit.picture == picture.trim())
-        {
+        if held.get(key).is_some_and(|(_, _, held_id)| *held_id == id) {
             held.remove(key);
         }
         Ok(())
@@ -2906,7 +2912,7 @@ impl PersonaChats {
             .call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (edit, at) = held.get(key)?;
+        let (edit, at, _) = held.get(key)?;
         if at.elapsed() > CALL_REGENERATE_WAIT {
             held.remove(key);
             return None;
@@ -2922,7 +2928,7 @@ impl PersonaChats {
             .call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if held.get(key).is_some_and(|(_, held_at)| *held_at == at) {
+        if held.get(key).is_some_and(|(_, held_at, _)| *held_at == at) {
             held.remove(key);
         }
     }
@@ -5398,10 +5404,10 @@ pub struct CallRegenerateBody {
     picture: String,
     #[serde(default)]
     unlock: Option<String>,
-    /// The page could not say the line: take the registration back
-    /// (`PersonaChats::withdraw_call_regenerate`).
+    /// The page could not say the line: take back the registration with
+    /// this id (`PersonaChats::withdraw_call_regenerate`).
     #[serde(default)]
-    withdraw: bool,
+    withdraw: Option<u64>,
 }
 
 /// POST /api/persona-chat/{key}/call-regenerate — a Regenerate pressed on
@@ -5416,10 +5422,10 @@ pub async fn call_regenerate(
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
-    if body.withdraw {
+    if let Some(id) = body.withdraw {
         return match chat
             .personas
-            .withdraw_call_regenerate(&state.library, &key, body.unlock.as_deref(), &body.picture)
+            .withdraw_call_regenerate(&state.library, &key, body.unlock.as_deref(), id)
             .await
         {
             Ok(()) => Json(serde_json::json!({ "withdrawn": true })).into_response(),
@@ -5431,7 +5437,7 @@ pub async fn call_regenerate(
         .call_regenerate(&state.library, &key, body.unlock.as_deref(), &body.picture)
         .await
     {
-        Ok(line) => Json(serde_json::json!({ "line": line })).into_response(),
+        Ok((line, id)) => Json(serde_json::json!({ "line": line, "id": id })).into_response(),
         Err(r) => r.into_response(),
     }
 }
@@ -6402,7 +6408,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(line, "Regenerate images/a.png");
         // Another turn first: the registration waits for its own line.
         spoken(&w, &key, "one moment").await;
@@ -6454,7 +6461,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let first = match w
             .personas()
             .speak(&w.chat, &w.library, &key, &line, false)
@@ -6483,14 +6491,9 @@ mod tests {
         assert_eq!(card["version_of"], "images/a.png", "{card}");
     }
 
-    /// A call's registration is spent only by a turn that starts with it
-    /// (review of #634): looked up as often as the worker says the line,
-    /// spent once, and never a newer press that replaced it. Before, the
-    /// lookup took it, so a turn refused as Busy lost the redraw and the
-    /// worker's retry reached the persona as bare words.
     /// A Regenerate whose line the page could not say is taken back, so a
-    /// later turn saying those words is words (review of #634). Only the
-    /// press for that picture: a newer press for another stays.
+    /// later turn saying those words is words (review of #634). Only that
+    /// press: a newer one, even for the same picture, stays (review of #642).
     #[tokio::test]
     async fn a_call_regenerate_never_said_is_withdrawn() {
         let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
@@ -6501,26 +6504,34 @@ mod tests {
             .await
             .unwrap();
         let chats = w.personas();
-        let line = chats
+        let (line, first) = chats
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
             .unwrap();
         chats
-            .withdraw_call_regenerate(&w.library, &key, None, "images/a.png")
+            .withdraw_call_regenerate(&w.library, &key, None, first)
             .await
             .unwrap();
         assert!(chats.call_regenerate_for(&key, &line).is_none());
-        let other = chats
-            .call_regenerate(&w.library, &key, None, "images/b.png")
+        // A second press of the same picture, then the first's withdraw
+        // arriving late: the second stands.
+        let (again, second) = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
             .unwrap();
+        assert_ne!(first, second);
         chats
-            .withdraw_call_regenerate(&w.library, &key, None, "images/a.png")
+            .withdraw_call_regenerate(&w.library, &key, None, first)
             .await
             .unwrap();
-        assert!(chats.call_regenerate_for(&key, &other).is_some());
+        assert!(chats.call_regenerate_for(&key, &again).is_some());
     }
 
+    /// A call's registration is spent only by a turn that starts with it
+    /// (review of #634): looked up as often as the worker says the line,
+    /// spent once, and never a newer press that replaced it. Before, the
+    /// lookup took it, so a turn refused as Busy lost the redraw and the
+    /// worker's retry reached the persona as bare words.
     #[tokio::test]
     async fn a_call_regenerate_is_spent_only_by_the_turn_that_starts_with_it() {
         let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
@@ -6534,7 +6545,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let chats = w.personas();
         let (_, first) = chats.call_regenerate_for(&key, &line).expect("found");
         let (_, again) = chats
@@ -6545,7 +6557,8 @@ mod tests {
         let newer = chats
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         chats.spend_call_regenerate(&key, first);
         let (_, held) = chats
             .call_regenerate_for(&key, &newer)
@@ -6599,7 +6612,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let first = match w
             .personas()
             .speak(&w.chat, &w.library, &key, &line, false)
@@ -6667,7 +6681,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let first = match w
             .personas()
             .speak(&w.chat, &w.library, &key, &line, false)
