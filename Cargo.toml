@@ -40,7 +40,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # persona plus `shared.db`, opened only by mecha core and never `graph.db`.
 # `bundled` compiles SQLite in (FTS5 included), so `forget` and keyword
 # search do not depend on whichever libsqlite3 the box happens to carry.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

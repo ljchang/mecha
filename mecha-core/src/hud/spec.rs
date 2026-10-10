@@ -611,7 +611,10 @@ fn has_email_shape(s: &str) -> bool {
 fn normalise(s: &str) -> String {
     s.trim()
         .chars()
-        .filter(|c| !c.is_control())
+        // Format characters go with the controls: a scheme split by one is
+        // still that scheme to a reader who cannot see it. The crate's one
+        // list of them, shared with titles and voice direction.
+        .filter(|c| !c.is_control() && !crate::title::is_format_char(*c))
         .map(|c| c.to_ascii_lowercase())
         .collect()
 }

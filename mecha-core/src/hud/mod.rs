@@ -37,7 +37,10 @@
 //! else may control.
 
 pub mod loader;
+pub mod runner;
+pub mod source;
 pub mod spec;
+pub mod store;
 mod vegalite;
 
 use std::collections::BTreeMap;
@@ -47,7 +50,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 pub use loader::{Column, ColumnType, Loader, ShapeRefusal};
+pub use source::{Source, Sources};
 pub use spec::{Panel, Spec};
+pub use store::{Dataset, Store};
 
 /// Proof that a value came out of its checks. Its field is private to this
 /// module, so a `Spec` or `Loader` — each of which carries one — cannot be
@@ -174,8 +179,17 @@ impl Installed {
                 format!("a dashboard id matches [a-z][a-z0-9_]* (got {id:?})"),
             )])));
         }
+        Self::load_dir(&boards.join(id), id)
+    }
+
+    /// [`Installed::load`] on a directory the caller has already located —
+    /// a draft being validated or installed, whose own name need not be the
+    /// id it will be installed under. The caller owns the path's containment.
+    pub(crate) fn load_dir(
+        dir: &Path,
+        id: &str,
+    ) -> Result<std::result::Result<Installed, Refusals>> {
         let id = id.to_string();
-        let dir = boards.join(&id);
         let mut refusals = Vec::new();
 
         let spec_path = dir.join("hud.json");
@@ -362,3 +376,6 @@ fn cross_check(spec: &Spec, loaders: &BTreeMap<String, Loader>) -> Vec<Refusal> 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod runtime_tests;

@@ -83,12 +83,12 @@ pub enum ColumnType {
 impl ColumnType {
     fn as_str(self) -> &'static str {
         match self {
-            ColumnType::String => "string",
-            ColumnType::Integer => "integer",
-            ColumnType::Float => "float",
-            ColumnType::Boolean => "boolean",
-            ColumnType::Date => "date (YYYY-MM-DD)",
-            ColumnType::Timestamp => "timestamp (RFC 3339, or YYYY-MM-DD HH:MM:SS in UTC)",
+            ColumnType::String => "a string",
+            ColumnType::Integer => "an integer",
+            ColumnType::Float => "a float",
+            ColumnType::Boolean => "a boolean",
+            ColumnType::Date => "a date (YYYY-MM-DD)",
+            ColumnType::Timestamp => "a timestamp (RFC 3339, or YYYY-MM-DD HH:MM:SS in UTC)",
         }
     }
 }
@@ -368,7 +368,7 @@ impl std::fmt::Display for ShapeRefusal {
                 expected,
             } => write!(
                 f,
-                "row {row}, column {column:?}: the value is not a {}",
+                "row {row}, column {column:?}: the value is not {}",
                 expected.as_str()
             ),
         }

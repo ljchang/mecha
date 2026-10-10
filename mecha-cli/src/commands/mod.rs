@@ -13,6 +13,7 @@ pub mod features;
 pub mod frontdoor;
 pub mod gossip;
 pub mod harness;
+pub mod hud;
 pub mod imagelib;
 pub mod kg;
 pub mod learn;
