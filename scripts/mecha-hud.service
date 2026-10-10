@@ -14,4 +14,8 @@ Type=oneshot
 # No GUI login on this machine means no ~/.local/bin or ~/.cargo/bin on PATH.
 Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.cargo/bin/mecha hud refresh --due
+# Each loader's query is bounded (runner::QUERY_TIMEOUT), but Type=oneshot has
+# no start timeout of its own, and a run still active holds the timer. Due-ness
+# is answered from the ledger, so a killed run costs nothing but its minute.
+TimeoutStartSec=5min
 Nice=10
