@@ -1841,18 +1841,29 @@ pub fn prepare_regions(
     let union = png_bytes(&image::DynamicImage::ImageLuma8(union).to_rgb8())?;
     let plan = prepare_mask(picture, &union, resolution)?;
     let (cw, ch) = plan.picture.dimensions();
-    // The index at the canvas's size, nearest so no colour is invented.
-    let at_canvas = image::imageops::resize(&index, cw, ch, image::imageops::FilterType::Nearest);
     let mut outlined = plan.picture.clone();
     // About 6 px on a 1024 canvas, as measured.
     let radius = (cw.max(ch) / 340).max(2) as i64;
+    // Each region's coverage at the canvas's size, averaged rather than
+    // sampled: on a photo larger than the canvas, a stroke narrower than the
+    // downscale's step fell between nearest samples and lost its outline
+    // while its words still went (review of #623). Shrinking, any coverage
+    // counts; growing, half does, which is where nearest put the edge.
+    let floor = if w > cw || h > ch { 1 } else { 128 };
     for r in regions {
+        let mut own = image::GrayImage::new(w, h);
+        for (x, y, p) in index.enumerate_pixels() {
+            if p.0 == r.rgb {
+                own.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let cover = image::imageops::resize(&own, cw, ch, image::imageops::FilterType::Triangle);
         let inside = |x: i64, y: i64| {
             x >= 0
                 && y >= 0
                 && (x as u32) < cw
                 && (y as u32) < ch
-                && at_canvas.get_pixel(x as u32, y as u32).0 == r.rgb
+                && cover.get_pixel(x as u32, y as u32).0[0] >= floor
         };
         for y in 0..ch as i64 {
             for x in 0..cw as i64 {
@@ -6396,6 +6407,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(none.contains("The green region is empty"), "{none}");
+    }
+
+    /// On a photo larger than the edit canvas, a region a few pixels wide
+    /// still gets its outline: sampled nearest, it fell between samples and
+    /// went as words with no place (review of #623).
+    #[test]
+    fn a_thin_region_on_a_large_photo_keeps_its_outline() {
+        let mut index = image::RgbImage::new(4032, 3024);
+        for y in 1000..2000 {
+            for x in 2001..2004 {
+                index.put_pixel(x, y, image::Rgb([255, 0, 255]));
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        index.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        // The picture at the index's size, so the canvas is a downscale.
+        let big = image::RgbImage::from_pixel(4032, 3024, image::Rgb([240, 220, 40]));
+        let mut big_bytes = std::io::Cursor::new(Vec::new());
+        big.write_to(&mut big_bytes, image::ImageFormat::Png)
+            .unwrap();
+        let (plan, outlined) = prepare_regions(
+            &big_bytes.into_inner(),
+            &bytes.into_inner(),
+            &[region("magenta", "a thin scarf")],
+            1024,
+        )
+        .unwrap();
+        assert!(plan.picture.width() < 4032, "the canvas is a downscale");
+        assert!(
+            outlined.pixels().any(|p| p.0 == [255, 0, 255]),
+            "the thin region is outlined"
+        );
     }
 
     /// A regions edit whose index cannot be read draws nothing: there are no
