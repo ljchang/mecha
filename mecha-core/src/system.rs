@@ -168,6 +168,10 @@ pub struct Sample {
 pub struct Counters {
     /// `/proc/vmstat` `oom_kill`, since boot.
     pub oom_kills: Result<u64, Reading>,
+    /// When the counter was read. The kernel-log window runs from the
+    /// previous sample's reading to this one, so the two count the same
+    /// kills however long the sample's other commands took.
+    pub oom_read_at: DateTime<Utc>,
     /// The kernel log's OOM kills since the previous sample, already folded:
     /// whether the machine ran out, and the victim's category. `None` when
     /// there was no previous sample to start the window at, or the log could
@@ -183,6 +187,7 @@ impl Default for Counters {
     fn default() -> Counters {
         Counters {
             oom_kills: Err(Reading::NotHere),
+            oom_read_at: DateTime::<Utc>::default(),
             oom_log: None,
             disk: Err(Reading::NotHere),
             uplink: Err(Reading::NotHere),
@@ -290,7 +295,7 @@ pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample
         disk: reader.disk(),
         by_category: fold(&units, gpu_apps.as_deref()),
         now,
-        counters: read_counters(&reader, at, since),
+        counters: read_counters(&reader, since),
     })
 }
 
@@ -302,7 +307,7 @@ fn why(r: &Reading) -> String {
     }
 }
 
-fn read_counters(reader: &Reader, at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Counters {
+fn read_counters(reader: &Reader, since: Option<DateTime<Utc>>) -> Counters {
     let text = |path: &str| -> Result<String, Reading> {
         std::fs::read_to_string(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Reading::NotHere,
@@ -315,6 +320,7 @@ fn read_counters(reader: &Reader, at: DateTime<Utc>, since: Option<DateTime<Utc>
     let oom_kills = text("/proc/vmstat").and_then(|t| {
         source::parse_vmstat_oom_kill(&t).ok_or_else(|| unread("/proc/vmstat has no oom_kill"))
     });
+    let oom_read_at = Utc::now();
     // The window starts at the previous sample, so each kill is counted
     // once; the first sample has no window, and nothing to compare with.
     let oom_log = since.and_then(|since| {
@@ -327,7 +333,7 @@ fn read_counters(reader: &Reader, at: DateTime<Utc>, since: Option<DateTime<Utc>
                 "-o",
                 "cat",
                 &format!("--since=@{}", since.timestamp()),
-                &format!("--until=@{}", at.timestamp()),
+                &format!("--until=@{}", oom_read_at.timestamp()),
             ],
             reader.budget(),
         );
@@ -363,6 +369,7 @@ fn read_counters(reader: &Reader, at: DateTime<Utc>, since: Option<DateTime<Utc>
         .map_or(Err(Reading::NotHere), |iface| net_counters(&iface));
     Counters {
         oom_kills,
+        oom_read_at,
         oom_log,
         disk,
         uplink,
@@ -875,7 +882,7 @@ fn record_readings(
             None
         }
         Ok(v) => {
-            let d = delta(tx, "vmstat.oom_kill", *v, 0, s.at)?.map(|(d, _)| d);
+            let d = delta(tx, "vmstat.oom_kill", *v, 0, c.oom_read_at)?.map(|(d, _)| d);
             put(M::MemoryOomKills, d.map(|d| d as f64))?;
             d
         }
@@ -1048,11 +1055,19 @@ fn latest(db: &Path, m: Measurement, now: DateTime<Utc>) -> Result<Probed> {
                 )
                 .optional()?,
             _ => {
+                // Named, never defaulted: a by-category measurement added
+                // without a column here must not read back as a neighbour's
+                // values under its own name. A test over every one fails.
                 let column = match m {
                     Measurement::CategoryMemory => "CAST(mem_bytes AS REAL)",
                     Measurement::CategoryCpu => "cpu_pct",
                     Measurement::CategoryTasks => "CAST(tasks AS REAL)",
-                    _ => "gpu_mib * 1048576.0",
+                    Measurement::CategoryGpuMemory => "gpu_mib * 1048576.0",
+                    _ => {
+                        return Ok(Probed::One(Reading::Unread {
+                            why: measure::NOT_WIRED.into(),
+                        }))
+                    }
                 };
                 conn.query_row(
                     &format!(

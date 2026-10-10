@@ -66,6 +66,10 @@ pub enum Cost {
 
 const UPLINK_KINDS: &[&str] = &["wired", "wireless"];
 
+/// What a measurement this build lists but does not read says. A test over
+/// the whole list fails on it, so a new variant cannot ship unwired.
+pub const NOT_WIRED: &str = "this build has no reader for this measurement";
+
 macro_rules! measurements {
     ($( $(#[$doc:meta])* $v:ident = $n:literal, $name:literal, $unit:expr, $cost:ident, $how:ident; )*) => {
         /// A measurement mecha can make of the machine. Numbers are fixed:
@@ -609,9 +613,14 @@ impl Reader {
                     }
                 })
                 .clone(),
-            _ => {
+            // Not a catch-all for `Now` measurements: one added without a
+            // reader here reads as NOT_WIRED, never as a NULL the series
+            // would hold forever, and a test over every `Now` measurement
+            // fails on it.
+            _ if m.how() != How::Now => {
                 Reading::unread("computed by the sampler from two samples; read it from the series")
             }
+            _ => Reading::unread(NOT_WIRED),
         }
     }
 }

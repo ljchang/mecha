@@ -188,10 +188,10 @@ now.
 | `disk.read_rate`, `disk.write_rate`, `disk.busy` | `/proc/diskstats` deltas on the disk holding `/` | bytes/s, % | File | yes | nothing |
 | `store.mecha.size`, `store.work.size`, `store.models.size` | directory walks of `~/.mecha`, `~/.mecha/work` and the model hub cache | bytes | Scan, **hourly** | yes | `mecha work` (work dir only) |
 | **Network** | | | | | |
-| `network.uplink.rx_rate`, `network.uplink.tx_rate` | `/proc/net/dev` deltas on the default-route interface (from `/proc/net/route`) | bytes/s | File | yes | nothing |
+| `network.uplink.rx_rate`, `network.uplink.tx_rate` | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` deltas on the default-route interface (from `/proc/net/route`), keyed by its `ifindex` so a switch of interface never makes a rate | bytes/s | File | yes | nothing |
 | `network.uplink.kind` | `wired` or `wireless`, from `/sys/class/net/<if>/wireless` | label | File | yes | nothing |
 | `network.wifi.signal`, `network.wifi.bitrate` | `iw dev <uplink> link`: signal level and the link's transmit rate; `NotHere` on a wired uplink. This driver reports nothing in `/proc/net/wireless` (§7.1) | dBm, Mbit/s | Fork | yes | nothing |
-| `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/proc/net/dev` deltas on the tailnet interface | bytes/s | File | yes | nothing |
+| `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` deltas on the tailnet interface, keyed by `ifindex` | bytes/s | File | yes | nothing |
 | `network.tailnet.up`, `network.tailnet.peers_online` | `tailscale status --json`: backend state, and a count of online peers, never their names | bool, count | Fork | yes | nothing |
 | **Work in flight** | | | | | |
 | `tasks.running` | `taskruns` markers, plus pid checks | count | Scan | yes | serve board |
@@ -610,7 +610,21 @@ read on this machine:
   by name.
 - **A slice with no memory accounting is refused.** If no user service
   reports `memory.current`, the sample is refused rather than recorded as
-  zeros. This was #630's last open minor.
+  zeros. This was #630's last open minor. It is a deploy-time change worth
+  watching: a machine whose user manager has no memory controller
+  delegated now records nothing, and the doctor's stopped-sampler finding
+  is what says so.
+- **One deadline per sample.** A sample runs seven commands, and a bound
+  on each did not add up to a bound on the sample (§4 rule 7).
+  `SAMPLE_BUDGET` is shared, and a test keeps it under the unit's
+  `TimeoutStartSec`. The OOM log window runs between the moments the
+  kernel counter was read, so a slow sample does not misalign the two.
+- **`system_minute` is now written twice over.** Memory, CPU, GPU and
+  disk figures land in both `system_minute` (which the host board's
+  loaders read) and `reading_minute`. They come from the same read, so
+  they cannot disagree. The duplicate ends when the host board's loaders
+  move onto `reading_minute`, which is part of S3. Until then, add no
+  third writer.
 
 `mecha system probe` (S3's diagnostic) shipped with S1 because it is how
 S1 was checked on this machine. `read`, over a range, is still S3.

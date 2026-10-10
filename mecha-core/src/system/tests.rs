@@ -887,8 +887,10 @@ fn a_reading_is_stored_as_a_value_a_null_or_no_row() {
 
 fn with_counters(min: u32, disk_read: u64, dev: u64, rx: u64, ifindex: u64, oom: u64) -> Sample {
     let mut s = sample(min, &[], 0, 0);
+    let at = s.at;
     s.counters = Counters {
         oom_kills: Ok(oom),
+        oom_read_at: at,
         oom_log: None,
         disk: Ok((
             dev,
@@ -1109,4 +1111,41 @@ fn meminfo_without_mem_available_is_unknown_not_empty() {
         None,
         "no MemAvailable is not a machine with nothing left"
     );
+}
+
+/// Every `Now` measurement has a reader in `Reader::now`: one listed but not
+/// wired reads `NOT_WIRED` here instead of a NULL the series would keep.
+#[test]
+fn every_now_measurement_is_wired_to_a_reader() {
+    // A spent budget: no command runs, and every reading still answers.
+    let reader = Reader::until(std::time::Instant::now());
+    for m in Measurement::ALL
+        .iter()
+        .filter(|m| m.how() == measure::How::Now)
+    {
+        if let Reading::Unread { why } = reader.now(*m) {
+            assert_ne!(why, measure::NOT_WIRED, "{} has no reader", m.name());
+        }
+    }
+}
+
+/// Every `ByCategory` measurement has a column or table in the series'
+/// read-back: one added without it must not come back as a neighbour's
+/// values under its own name.
+#[test]
+fn every_category_measurement_reads_back_its_own_column() {
+    let s = Scratch::new();
+    let db = s.0.join("series.sqlite");
+    record(&db, &with_counters(0, 0, 7, 0, 3, 0)).unwrap();
+    let then = Utc.with_ymd_and_hms(2031, 4, 17, 9, 1, 0).unwrap();
+    let reader = Reader::new();
+    for m in Measurement::ALL
+        .iter()
+        .filter(|m| m.how() == measure::How::ByCategory)
+    {
+        match probe(&reader, &db, *m, then) {
+            Probed::ByCategory(rows) => assert_eq!(rows.len(), Category::ALL.len()),
+            other => panic!("{} has no column: {other:?}", m.name()),
+        }
+    }
 }
