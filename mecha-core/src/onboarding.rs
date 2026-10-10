@@ -351,22 +351,20 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
                 // sends `gpt-4o-mini` to a router that selects by it, and
                 // never compacts (found on review of #627). Unset is not
                 // agreement.
-                let unset: Vec<&str> = [
-                    ("model", pcfg.model.is_none()),
-                    ("context_window", pcfg.context_window.is_none()),
-                ]
-                .into_iter()
-                .filter_map(|(k, missing)| missing.then_some(k))
-                .collect();
-                if !unset.is_empty() {
+                // Each key with its own consequence: one sentence for the
+                // set told a table naming its model that "a run names the
+                // wrong model" (found on review of #627).
+                if pcfg.model.is_none() {
                     mismatches.push(format!(
-                        "[providers.{provider_name}] sets no {} — the server reports what to \
-                         write, and unset, a run names the wrong model and never compacts.",
-                        unset
-                            .iter()
-                            .map(|k| format!("`{k}`"))
-                            .collect::<Vec<_>>()
-                            .join(" or ")
+                        "[providers.{provider_name}] sets no `model` — a run sends a model \
+                         name this server did not report, which a router selects by."
+                    ));
+                }
+                if pcfg.context_window.is_none() {
+                    mismatches.push(format!(
+                        "[providers.{provider_name}] sets no `context_window` — the compaction \
+                         threshold and the tool-output budget derive from it, and fall back \
+                         to guesses without it."
                     ));
                 }
                 if mismatches.is_empty() {
@@ -2351,10 +2349,20 @@ mod tests {
         let steps = plan(&cfg, "local", &facts(Some(props(262144, 4, false))));
         let s = step(&steps, "local-server");
         assert_eq!(s.status, Status::Wrong, "{}", s.detail);
+        assert!(s.detail.contains("sets no `model`"), "{}", s.detail);
         assert!(
-            s.detail.contains("`model` or `context_window`"),
+            s.detail.contains("sets no `context_window`"),
             "{}",
             s.detail
+        );
+        // Each key is told its own consequence, never the other's.
+        let mut named = cfg_with_local(262144, Some(true));
+        named.providers.get_mut("local").unwrap().context_window = None;
+        let steps = plan(&named, "local", &facts(Some(props(262144, 4, true))));
+        let d = &step(&steps, "local-server").detail;
+        assert!(
+            d.contains("sets no `context_window`") && !d.contains("sets no `model`"),
+            "{d}"
         );
         assert_eq!(
             s.remedy.as_ref().unwrap().argv,

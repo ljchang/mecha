@@ -262,6 +262,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             "Your config's local provider `{name}` names a server elsewhere, so it is left as it \
              is — the router here serves {alias} on {base}."
         );
+        default_lags(cfg, naming.port, &alias);
         return Ok(());
     }
     let found = mecha_core::onboarding::LocalServer {
@@ -269,24 +270,28 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         props,
     };
     if !super::setup::write_local_provider(&found)? {
-        // Declined, or no terminal to ask at: the default may still name
-        // this router — the starter's does, and so does the built-in entry
-        // with no file at all (ruling F12) — with no model, and a run would
-        // send a model name the router does not serve. Said here, not met
-        // as a bare 404 after the download (found on review of #627; the
-        // #618 incident, on the path F12 made the common one).
-        if let Some(p) = cfg.providers.get(&cfg.default_provider) {
-            if router_unit::names_this_router(p, naming.port) && p.model.as_deref() != Some(&alias)
-            {
-                println!(
-                    "The default provider `{}` names this router but not {alias}, so a run \
-                     through it fails until `mecha setup --write` writes it.",
-                    cfg.default_provider
-                );
-            }
-        }
+        default_lags(cfg, naming.port, &alias);
     }
     Ok(())
+}
+
+/// Say so when the default provider names this router but not the model it
+/// now serves — the starter's does, and so does the built-in entry with no
+/// file at all (ruling F12) — on every path that leaves it so: a declined
+/// write, or a provider of the owner's elsewhere while the default is the
+/// built-in. A run would send a model name the router does not serve; said
+/// here, not met as a bare 404 after the download (found on review of #627;
+/// the #618 incident, on the path F12 made the common one).
+fn default_lags(cfg: &mecha_core::config::Config, port: u16, alias: &str) {
+    if let Some(p) = cfg.providers.get(&cfg.default_provider) {
+        if router_unit::names_this_router(p, port) && p.model.as_deref() != Some(alias) {
+            println!(
+                "The default provider `{}` names this router but not {alias}, so a run through \
+                 it fails until `mecha setup --write` writes it.",
+                cfg.default_provider
+            );
+        }
+    }
 }
 
 /// The table the owner wrote that names the router on `port` — never the

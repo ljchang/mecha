@@ -841,7 +841,7 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
 pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bool> {
     let settings = onboarding::verified_settings(&found.props);
     println!(
-        "Found a server at {} and nothing in the config names it.\n",
+        "Found a server at {}, and no table in your config file describes it.\n",
         found.base_url
     );
     println!("    [providers.local]");
