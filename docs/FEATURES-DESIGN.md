@@ -71,8 +71,12 @@
 > drop-in, started once through their socket) — is built; so is 7c-2:
 > `router_unit.rs`, the resident router from nothing (its unit, launcher and
 > presets file, the presets from the tier's chat geometry or the owner's own
-> GGUF), behind `mecha setup chat` (F11). 7b-2 (the build fallback), 7d–7f
-> and step 8 are unbuilt (step 7 redesigned in §10). The
+> GGUF), behind `mecha setup chat` (F11). 7d-1 — `stt_unit.rs`, the
+> speech-to-text server from nothing (its own uv environment from a hash
+> lock, the Parakeet tarball by its pin, the server script held equal to
+> `scripts/voice/`, one rendered unit) — is built. 7b-2 (the build
+> fallback), 7d-2 (the voice worker), 7e, 7f and step 8 are unbuilt (step 7
+> redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1631,7 +1635,14 @@ Step 7 becomes these, each a PR that leaves every feature working:
   installs a router beside the live one on a free port, serving the
   embeddings GGUF as an owner's model, and removes it (measured
   2026-10-05).
-- **7d.** `uv` and the voice venv, Parakeet and the voice worker.
+- **7d.** `uv` and the voice venv, Parakeet and the voice worker. Built in
+  two PRs: **7d-1** the speech-to-text server — its own environment
+  (`locks/stt-requirements.txt`; `sherpa-onnx-core` named, since its wheels
+  need it where its metadata does not say so), the model unpacked from its
+  pinned tarball into `~/.mecha/sidecars/stt/`, and `mecha-parakeet.service`
+  rendered with absolute paths and started; the real-machine test installs
+  one beside the live server on a free port, transcribes a second of
+  silence, and removes it (measured 2026-10-10). **7d-2** the voice worker.
 - **7e.** ComfyUI, ComfyUI-GGUF and the image models.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
   default since 2026-10-03, built from a pinned commit with its model
