@@ -70,7 +70,7 @@ impl OpenAiCompatible {
                 .model
                 .clone()
                 .or_else(|| {
-                    (cfg.kind == "local")
+                    crate::provider::router::asks_its_server(cfg)
                         .then(|| {
                             cfg.base_url
                                 .as_deref()
