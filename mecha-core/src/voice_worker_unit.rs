@@ -108,7 +108,10 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         &dir,
         PYTHON,
         LOCK,
-        "pipecat and its WebRTC, VAD and turn models",
+        // Not in the plan's total (as layout's is not): said here instead.
+        // 256 MB of wheels on linux-aarch64 by the lock's own pins, read
+        // from PyPI 2026-10-10 (review of #639).
+        "pipecat and its WebRTC, VAD and turn models (about 250 MB)",
         say,
     )
     .await?;
@@ -126,11 +129,15 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         "starting it on :{} and checking the direct door is shut",
         naming.port
     ));
-    serves(naming.port).await?;
-    // Exposure is not liveness: a worker that would take a page's call is
-    // stopped before the install says so, never left listening behind the
-    // error (review of #639).
-    if let Err(e) = door_shut(naming.port).await {
+    // Either check failing stops the worker before the install says so: one
+    // that would take a page's call is never left listening behind the
+    // error, and one that never answered is not left enabled to restart
+    // forever at boot (review of #639).
+    let checked = match serves(naming.port).await {
+        Ok(()) => door_shut(naming.port).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = checked {
         let _ = crate::engine_gate::systemctl("disable", &["--now", &service]);
         return Err(e.context(format!("{service} was stopped and disabled")));
     }
@@ -195,35 +202,10 @@ async fn door_shut(port: u16) -> Result<()> {
              is not in force, so any page in a browser here could start a call"
         );
     }
-    // A page needs no preflight for a "simple" request, so the second half of
-    // the door is that one cannot carry an offer: a `text/plain` body is not
-    // read as one. (Pipecat's offer handler checks no origin itself — a
-    // page's JSON POST reaches it, measured 2026-10-10 — so a JSON offer is
-    // held off by the refused preflight above, and a simple one by this.)
-    let simple = client
-        .post(format!("{base}/api/offer"))
-        .header("Origin", "https://a-page.example")
-        .header("content-type", "text/plain")
-        .body("{}")
-        .send()
-        .await
-        .context("posting a page's simple request")?;
-    let status = simple.status();
-    let read_as_offer = simple
-        .text()
-        .await
-        .unwrap_or_default()
-        .contains("\"missing\"");
-    if status.is_success() || read_as_offer {
-        bail!(
-            "the voice worker on :{port} read a page's text/plain request as an offer ({status}) \
-             — a page could start a call without a preflight"
-        );
-    }
-    // And the relay's door open: an offer with no `Origin`, as `mecha serve`
+    // The relay's door open: an offer with no `Origin`, as `mecha serve`
     // sends one, reaches the handler — refused for its empty body, never for
     // where it came from. A pipecat that stopped letting it through would
-    // pass the half above and break every call (review of #639).
+    // pass the rest and break every call (review of #639).
     let relayed = client
         .post(format!("{base}/api/offer"))
         .header("content-type", "application/json")
@@ -231,15 +213,46 @@ async fn door_shut(port: u16) -> Result<()> {
         .send()
         .await
         .context("relaying an offer as mecha serve does")?;
+    let relayed_status = relayed.status();
     if matches!(
-        relayed.status(),
+        relayed_status,
         reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED
     ) {
         bail!(
-            "the voice worker on :{port} refused an offer with no Origin ({}) — `mecha serve`'s \
-             relay sends none, so no call could start",
-            relayed.status()
+            "the voice worker on :{port} refused an offer with no Origin ({relayed_status}) — \
+             `mecha serve`'s relay sends none, so no call could start"
         );
+    }
+    // What reading a body as an offer answers, measured rather than named:
+    // the same `{}` from a page must be answered otherwise.
+    let read_as_offer = (relayed_status, relayed.text().await.unwrap_or_default());
+    // A page needs no preflight for a "simple" request, so the second half of
+    // the direct door is that no simple body is read as an offer — each of
+    // the three content types a page may send without asking. (Pipecat's
+    // offer handler checks no origin itself — a page's JSON POST reaches it,
+    // measured 2026-10-10 — so a JSON offer is held off by the refused
+    // preflight above, and a simple one only by this.)
+    for kind in [
+        "text/plain",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data; boundary=mecha",
+    ] {
+        let simple = client
+            .post(format!("{base}/api/offer"))
+            .header("Origin", "https://a-page.example")
+            .header("content-type", kind)
+            .body("{}")
+            .send()
+            .await
+            .with_context(|| format!("posting a page's {kind} request"))?;
+        let status = simple.status();
+        let answer = (status, simple.text().await.unwrap_or_default());
+        if status.is_success() || answer == read_as_offer {
+            bail!(
+                "the voice worker on :{port} read a page's {kind} request as an offer \
+                 ({status}) — a page could start a call without a preflight"
+            );
+        }
     }
     Ok(())
 }
