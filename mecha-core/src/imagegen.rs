@@ -2132,9 +2132,12 @@ impl ImageGenerate {
 
     /// Build a touching scene in layers (IMAGE-DESIGN.md §15.3): the plate,
     /// one cutout per person flattened on grey, the placing pass and the
-    /// finish, in one job, with the run's Stop read between steps. The plate
-    /// and each cutout are kept beside the picture, and each pass is a line
-    /// of the prompt log.
+    /// finish, in one job, with the job's Stop read between steps and handed
+    /// to each render. The plate and each cutout are kept beside the
+    /// picture, and each pass is a line of the prompt log. `left` gathers
+    /// the image server's copies no pass could remove, and stays the
+    /// caller's on every exit, so a build that fails part-way still says
+    /// them beside its fallback (review of #626).
     async fn build_layers(
         &self,
         ctx: &ToolCtx,
@@ -2142,8 +2145,8 @@ impl ImageGenerate {
         base: &Request,
         timeout: Duration,
         stamp: &str,
+        left: &mut Vec<String>,
     ) -> std::result::Result<Built, LayersFailed> {
-        let mut left: Vec<String> = Vec::new();
         let mut steps: Vec<Value> = Vec::new();
         let stopped = || ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled());
         let joined = |left: &[String]| (!left.is_empty()).then(|| left.join("; "));
@@ -2154,8 +2157,12 @@ impl ImageGenerate {
         // fails then draws the single pass with a timeout of its own, so a
         // call can take up to twice it, and still delivers a picture.
         let deadline = Instant::now() + timeout;
-        let pass = |step: &str, req: Request| {
+        let pass = |step: &str, mut req: Request| {
             let step = step.to_string();
+            // Someone named but not in the picture reaches the image model
+            // as "the viewer", on every pass as on the single one (the
+            // owner's ruling, 2026-10-08; review of #626).
+            req.prompt = crate::picture::as_viewer(&req.prompt, &lp.offstage, &[]);
             async move {
                 let started = Instant::now();
                 let remaining = deadline.saturating_duration_since(started);
@@ -2228,8 +2235,7 @@ impl ImageGenerate {
             },
         )
         .await;
-        let mut plate =
-            run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+        let mut plate = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
         // The room must be empty: a face in it is a stranger the placing
         // pass would keep (mecha-a3, 2026-10-10). One more draw at a new
         // seed, then the single pass. A detector that cannot run is said in
@@ -2241,7 +2247,7 @@ impl ImageGenerate {
             Ok(n) => {
                 steps.push(json!({"step": "plate check", "faces": n}));
                 if stopped() {
-                    return Err(LayersFailed::Cancelled(joined(&left)));
+                    return Err(LayersFailed::Cancelled(joined(left)));
                 }
                 let (step, req, secs, out) = pass(
                     "plate again",
@@ -2257,8 +2263,7 @@ impl ImageGenerate {
                     },
                 )
                 .await;
-                plate =
-                    run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+                plate = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
                 match faces(&plate) {
                     Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
                     Ok(n) => {
@@ -2281,7 +2286,7 @@ impl ImageGenerate {
         let mut people: Vec<crate::scene::LayerPerson> = Vec::new();
         for (i, p) in lp.people.iter().enumerate() {
             if stopped() {
-                return Err(LayersFailed::Cancelled(joined(&left)));
+                return Err(LayersFailed::Cancelled(joined(left)));
             }
             let name = format!("cutout {} of {}", i + 1, lp.people.len());
             let (step, req, secs, out) = pass(
@@ -2309,8 +2314,7 @@ impl ImageGenerate {
             )
             .await;
             let seed = req.seed;
-            let cutout =
-                run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+            let cutout = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
             let flat = crate::layers::flatten_on_grey(&cutout)
                 .map_err(|why| LayersFailed::At(name.clone(), why))?;
             save_named(
@@ -2333,7 +2337,7 @@ impl ImageGenerate {
             });
         }
         if stopped() {
-            return Err(LayersFailed::Cancelled(joined(&left)));
+            return Err(LayersFailed::Cancelled(joined(left)));
         }
         // 3. The placing pass: the plate as the canvas, each person by tag.
         let mut references = vec![Reference {
@@ -2357,10 +2361,9 @@ impl ImageGenerate {
         )
         .await;
         let placing_seed = req.seed;
-        let placed =
-            run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+        let placed = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
         if stopped() {
-            return Err(LayersFailed::Cancelled(joined(&left)));
+            return Err(LayersFailed::Cancelled(joined(left)));
         }
         // 4. The finish: light, depth of field and detail, nothing else.
         let (step, req, secs, out) = pass(
@@ -2382,7 +2385,7 @@ impl ImageGenerate {
         )
         .await;
         let finish_seed = req.seed;
-        let bytes = run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+        let bytes = run(step, req, secs, out, left, &mut steps).map_err(|e| fail(e, left))?;
         Ok(Built {
             bytes,
             record: crate::scene::Layers {
@@ -2393,7 +2396,7 @@ impl ImageGenerate {
                 origin: lp.origin,
             },
             steps,
-            left: joined(&left),
+            left: joined(left),
         })
     }
 
@@ -3220,12 +3223,34 @@ impl Tool for ImageGenerate {
                                 doing: (!p.doing.trim().is_empty()).then(|| p.doing.clone()),
                             })
                             .collect();
+                        // A split for a picture that may be built in
+                        // layers is asked to name whom each part acts on
+                        // (`roles::NAME_WHOM`); one for a single pass is
+                        // asked as before, since there it emptied parts and
+                        // kept no more acts (mecha-a3, 2026-10-10). These
+                        // are the layering checks known before the split;
+                        // the rest (portraits, places, the setting's words)
+                        // follow it, and a picture they send to one pass
+                        // keeps the named split.
+                        let may_layer = ctx.layers
+                            && plan.route == "new"
+                            && as_called
+                            && people.len() == crate::layers::MEASURED_PEOPLE
+                            && people
+                                .iter()
+                                .all(|p| matches!(p.who, crate::scene::Who::Library(_)))
+                            && matches!(
+                                plan.next.setting.as_ref().map(|f| &f.value),
+                                Some(crate::scene::Setting::Words { .. })
+                            )
+                            && plan.also.is_none()
+                            && plan.next.text.as_ref().is_none_or(|t| t.value.is_empty());
                         // ~1-3 s on the router, 9 s once beside two live
                         // turns (mecha-a3): bounded, and a late split draws
                         // the call as sent.
                         let answer = tokio::time::timeout(
                             ROLE_SPLIT_TIMEOUT,
-                            splitter.split(&asked, &sentence.value),
+                            splitter.split(&asked, &sentence.value, may_layer),
                         )
                         .await
                         .unwrap_or_else(|_| Err("the splitter took too long".into()));
@@ -3403,9 +3428,12 @@ impl Tool for ImageGenerate {
                             // camera dwelling on someone drew a stranger
                             // into the empty room): framing words from a
                             // closed set, and light that names nobody.
+                            // The plate names no one at all: not the
+                            // people, and not anyone named offstage.
                             let names: Vec<String> = people
                                 .iter()
                                 .map(|p| crate::picture::shown(&p.who))
+                                .chain(plan.offstage.iter().cloned())
                                 .collect();
                             let room = setting
                                 .as_deref()
@@ -3461,7 +3489,11 @@ impl Tool for ImageGenerate {
                                     plate_framing.as_deref(),
                                 ),
                                 style: style_words,
-                                light: value(&plan.next.light)
+                                // The cutout is lit by light that names
+                                // nobody, as the plate is: a solo cutout
+                                // naming someone absent invites them in.
+                                light: plate_light
+                                    .clone()
                                     .unwrap_or_else(|| "soft, even light".into()),
                                 people: people
                                     .iter()
@@ -3497,10 +3529,30 @@ impl Tool for ImageGenerate {
                                 // (review of #624).
                                 origin: plan.next.origin(),
                                 words,
+                                offstage: plan.offstage.clone(),
                             });
+                            // Words the picture renders, or a retouch beside
+                            // the scene: the single pass draws them, and no
+                            // layered pass has been measured with them, so
+                            // the picture is one render rather than one that
+                            // quietly leaves them out (review of #626).
+                            let renders_words =
+                                plan.next.text.as_ref().is_some_and(|t| !t.value.is_empty());
+                            if renders_words || plan.also.is_some() {
+                                layers_plan = None;
+                                dropped.push(
+                                    if renders_words {
+                                        "Drawn in one pass, not in layers: the picture has words \
+                                         to render, which only the single pass draws."
+                                    } else {
+                                        "Drawn in one pass, not in layers: a retouch beside the \
+                                         scene is drawn only by the single pass."
+                                    }
+                                    .into(),
+                                );
                             // Every clause of the setting names someone, so
                             // the plate would have no room in words.
-                            if room.is_none() {
+                            } else if room.is_none() {
                                 layers_plan = None;
                                 dropped.push(
                                     "Drawn in one pass, not in layers: every word of the \
@@ -3940,8 +3992,12 @@ impl Tool for ImageGenerate {
             // fails draws the single pass and says so (§15.5).
             let mut layered: Option<(crate::scene::Layers, Vec<Value>)> = None;
             let mut layers_note: Option<String> = None;
+            let mut layer_left: Vec<String> = Vec::new();
             let Outcome { image, left } = match &layers_plan {
-                Some(lp) => match me.build_layers(ctx, lp, &req, timeout, &stamp).await {
+                Some(lp) => match me
+                    .build_layers(ctx, lp, &req, timeout, &stamp, &mut layer_left)
+                    .await
+                {
                     Ok(built) => {
                         layered = Some((built.record, built.steps));
                         Outcome {
@@ -3958,7 +4014,8 @@ impl Tool for ImageGenerate {
                         layers_note = Some(format!(
                             "Layers failed at {step}: {why}; drawn in one pass."
                         ));
-                        me.backend
+                        let mut out = me
+                            .backend
                             .generate(
                                 &me.cfg,
                                 &req,
@@ -3966,7 +4023,12 @@ impl Tool for ImageGenerate {
                                 timeout,
                                 ctx.image_trail.as_deref(),
                             )
-                            .await
+                            .await;
+                        // The failed build's own copies the server kept,
+                        // said beside the single pass's.
+                        layer_left.extend(out.left.take());
+                        out.left = (!layer_left.is_empty()).then(|| layer_left.join("; "));
+                        out
                     }
                 },
                 None => {
@@ -4131,8 +4193,9 @@ impl Tool for ImageGenerate {
             });
             // The prompt, for the owner only, outside the jail (the manifest
             // never carries it): a line that cannot be written costs the
-            // picture nothing.
-            if let Some(log) = &ctx.prompt_log {
+            // picture nothing. A layered picture's passes wrote their own
+            // lines; this compiled prompt was never sent (review of #626).
+            if let Some(log) = ctx.prompt_log.as_ref().filter(|_| layered.is_none()) {
                 let line = json!({
                     "created": manifest["created"],
                     "image": path,
@@ -7766,6 +7829,7 @@ mod tests {
         call["scene"]["setting"] =
             json!("a sunlit kitchen with a long oak table, Maya's scarf over a chair");
         call["scene"]["people"][1]["expression"] = json!("grinning");
+        call["scene"]["light"] = json!("lamplight falling on John's shoulders");
         let out = t.call(call, &cx).await.unwrap();
         assert!(out.content.contains("built in layers"), "{}", out.content);
         let seen = seen.lock().unwrap().clone();
@@ -7780,13 +7844,19 @@ mod tests {
             prompts[0]
         );
         assert!(prompts[3].contains("grinning"), "{}", prompts[3]);
+        // A cutout is lit by light that names nobody, as the plate is.
+        for cutout in &prompts[1..3] {
+            assert!(cutout.contains("soft, even light"), "{cutout}");
+            assert!(!cutout.contains("lamplight"), "{cutout}");
+        }
+        // One line per pass sent, and none for the single pass never sent.
         let text = std::fs::read_to_string(&log).unwrap();
         let lines: Vec<Value> = text
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
-            .filter(|l: &Value| l["route"] == "layered")
             .collect();
         assert_eq!(lines.len(), 5, "{text}");
+        assert!(lines.iter().all(|l| l["route"] == "layered"), "{text}");
         for line in &lines {
             let words: Vec<&str> = line["words"]
                 .as_array()
@@ -7799,6 +7869,125 @@ mod tests {
             }
             assert!(!words.iter().any(|w| w.contains("<image")), "{words:?}");
         }
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Someone named but not in the picture reaches every layered pass as
+    /// "the viewer", and the plate as nothing at all, as the single pass
+    /// reads them (the owner's ruling, 2026-10-08; review of #626).
+    #[tokio::test]
+    async fn a_layered_build_reads_someone_offstage_as_the_viewer() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (
+            tempdir(),
+            tempdir(),
+            library_with(&["maya", "john", "wren"]),
+        );
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["setting"] =
+            json!("a sunlit kitchen with a long oak table, Wren's bicycle by the door");
+        call["scene"]["together"] = json!("Maya lifts John off the ground while Wren laughs");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.content.contains("built in layers"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(prompts.len(), 5);
+        assert!(!prompts.iter().any(|p| p.contains("Wren")), "{prompts:?}");
+        assert!(!prompts[0].contains("bicycle"), "{}", prompts[0]);
+        assert!(prompts[3].contains("the viewer laughs"), "{}", prompts[3]);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Words the picture renders are drawn by the single pass only, so a
+    /// scene with them is one render and says why, rather than a layered
+    /// picture that quietly leaves them out (review of #626).
+    #[tokio::test]
+    async fn a_scene_with_words_to_render_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["text"] = json!([{"words": "OPEN LATE"}]);
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("words to render"), "{}", out.content);
+        let posts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(posts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A build that fails part-way still says the server copies its
+    /// finished passes left, beside the single pass it falls back to
+    /// (review of #626).
+    #[tokio::test]
+    async fn a_failed_build_says_the_copies_its_passes_left() {
+        let dir = tempdir();
+        let temp = dir.join("server-temp");
+        std::fs::create_dir_all(&temp).unwrap();
+        for f in ["cut_00001_.png", "one_00001_.png"] {
+            std::fs::write(temp.join(f), "x").unwrap();
+        }
+        let (url, _seen) = fake_with(Fake {
+            history: vec![
+                done_as("plate_00001_.png"),
+                done_as("cut_00001_.png"),
+                done_as("one_00001_.png"),
+            ],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(false),
+                picture(20, [200, 40, 40]),
+            ],
+            temp: Some(temp.clone()),
+            ..Fake::default()
+        })
+        .await;
+        let (store, lib) = (tempdir(), library_with(&["maya", "john"]));
+        let t = tool_in(&url, &temp).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(
+            out.content.contains("Layers failed at cutout 1 of 2"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("could not all be removed")
+                && out.content.contains("plate_00001_.png"),
+            "{}",
+            out.content
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
@@ -8663,9 +8852,56 @@ mod tests {
             &self,
             _people: &[crate::roles::Asked],
             _together: &str,
+            _layered: bool,
         ) -> std::result::Result<crate::roles::Split, String> {
             self.0.clone()
         }
+    }
+
+    /// A splitter that answers nothing and keeps whether each ask was for
+    /// a layered build.
+    #[derive(Debug, Default)]
+    struct AskedSplit(std::sync::Mutex<Vec<bool>>);
+
+    #[async_trait]
+    impl crate::roles::RoleSplit for AskedSplit {
+        async fn split(
+            &self,
+            _people: &[crate::roles::Asked],
+            _together: &str,
+            layered: bool,
+        ) -> std::result::Result<crate::roles::Split, String> {
+            self.0.lock().unwrap().push(layered);
+            Err("no answer".into())
+        }
+    }
+
+    /// The split asks for named parts only where the picture may be built in
+    /// layers: on the single pass the naming sentence emptied parts and kept
+    /// no more acts (mecha-a3, 2026-10-10; review of #626).
+    #[tokio::test]
+    async fn only_a_picture_that_may_layer_asks_for_named_parts() {
+        let (url, _seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let asked = Arc::new(AskedSplit::default());
+        cx.role_split = Some(asked.clone());
+        // No places given, so the failed split leaves the picture one pass.
+        let mut call = touching_call();
+        for p in call["scene"]["people"].as_array_mut().unwrap() {
+            p.as_object_mut().unwrap().remove("where");
+        }
+        cx.layers = true;
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        cx.layers = false;
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(*asked.0.lock().unwrap(), [true, false]);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     /// A call that puts the whole act in `together` and poses nobody is

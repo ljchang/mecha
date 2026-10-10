@@ -988,14 +988,14 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   route and read fresh each turn into `ToolCtx::layers`; the model never
   chooses it. Only a new picture of two library people (the measured
   count, `layers::MEASURED_PEOPLE`) sharing a `together`, with a setting in
-  words, qualifies (a library style's words go on the finish alone);
+  words and no words to render or retouch beside it, qualifies (a library style's words go on the finish alone);
   anything else draws as today and, with the switch on, says why. The build
   is one job: a plate of the room from the words that name nobody (the
   setting's clauses and the light by `names_no_one`, the camera from a
   closed set of framings), a cutout per person from their portrait in a
   neutral pose (flattened on grey in code, an empty one refused), a placing
   pass by tag with each person's part and expression (names never reach
-  the prompt), and a finish, with the job's Stop read between steps and
+  the prompt, and someone offstage reads as "the viewer" on every pass), and a finish, with the job's Stop read between steps and
   handed to each render. Any failed step draws
   the single pass and says where it failed; a picture never quietly becomes
   another kind. The plate and cutouts are kept beside the picture, and the
