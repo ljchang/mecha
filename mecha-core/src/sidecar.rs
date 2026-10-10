@@ -1081,7 +1081,8 @@ mod tests {
     /// that model: the chat row's pinned files are neither priced nor a
     /// reason to offer the router again — which would rewrite its presets
     /// with the recommended row (found on review of #568). The pinned row's
-    /// router, its files gone, is offered as before.
+    /// router, its files gone, is priced but not offered either: re-running
+    /// `mecha setup chat` fetches it (ruling F13).
     #[test]
     fn a_router_serving_a_brought_model_is_not_offered_the_row() {
         use crate::router_unit::{presets_path, presets_text, Preset, PINNED_ALIAS};
@@ -1134,13 +1135,11 @@ mod tests {
             .files
             .iter()
             .any(|f| f.slot == "chat" && matches!(f.state, FileState::Download { .. })));
-        assert!(
-            !cfg!(target_os = "linux")
-                || crate::install::offered(&pinned, true)
-                    .iter()
-                    .any(|s| s.id == "router"),
-            "the pinned row's router, its model gone, is offered again"
-        );
+        // Its model gone, the pinned row's router is still not `enable`'s
+        // to fetch again: `mecha setup chat` is (ruling F13).
+        assert!(!crate::install::offered(&pinned, true)
+            .iter()
+            .any(|s| s.id == "router"));
 
         std::fs::write(&presets, "version = 1\n").unwrap();
         let unread = plan(Feature::Messages, &m, &GB10, &root.join("hub"), false).unwrap();

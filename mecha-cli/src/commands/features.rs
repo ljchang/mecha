@@ -140,7 +140,6 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
         let read_nvidia = || *nvidia.get_or_init(mecha_core::engine::read_nvidia);
-        let mut router_passed = false;
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
@@ -155,23 +154,6 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 }
             }
             for s in install::offered(&p, chat_here) {
-                // The router is installed for a chat the config already
-                // sends to it, never beside a chat server it names elsewhere
-                // (found on review of #618): `mecha setup chat` is the door
-                // that moves the provider too.
-                if s.id == mecha_core::router_unit::ID
-                    && !mecha_core::router_unit::chat_is_the_routers(&cfg)
-                {
-                    if !router_passed {
-                        eprintln!(
-                            "mecha: the chat router is not offered here — the default provider \
-                             does not name it; `mecha setup chat` installs it and offers the \
-                             provider"
-                        );
-                        router_passed = true;
-                    }
-                    continue;
-                }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
@@ -230,7 +212,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
             for (id, label, ..) in &todo {
                 println!("Installing {label}…");
-                install::install(id, &m, &cfg, &machine, &hub, &mut |s| println!("  {s}"))
+                install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
                     .await
                     .with_context(|| {
                         format!(
@@ -422,8 +404,7 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
-        let router_offered = mecha_core::router_unit::chat_is_the_routers(&cfg);
-        print!("{}", render_plan(&p, chat_here, router_offered));
+        print!("{}", render_plan(&p, chat_here));
     }
     Ok(())
 }
@@ -438,21 +419,11 @@ fn bytes_text(b: u64) -> String {
 
 /// `mecha features plan`: each sidecar and each pinned file, what this
 /// machine already has, and what an install would fetch.
-///
-/// `router_offered` is `enable`'s own test for the router: chat served here
-/// by another server is a reason the plan names, never a command that would
-/// then decline (found on review of #618).
-fn render_plan(p: &sidecar::Plan, chat_here: bool, router_offered: bool) -> String {
+fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
     use sidecar::{FileState, SidecarState};
     let mut out = format!("What `{}` runs beside mecha:\n", p.feature.id());
     for s in &p.sidecars {
-        let not_needed = match mecha_core::install::not_needed(s.id, p.feature, chat_here) {
-            None if s.id == mecha_core::router_unit::ID && chat_here && !router_offered => Some(
-                "not offered here — the default provider does not name mecha's router; \
-                 `mecha setup chat` installs it and offers the provider",
-            ),
-            other => other,
-        };
+        let not_needed = mecha_core::install::not_needed(s.id, p.feature, chat_here);
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
             SidecarState::Installed => "installed by mecha".to_string(),
@@ -881,12 +852,11 @@ mod tests {
 
     /// The plan in words: every state a person can meet, each with what to
     /// do — and never "nothing to install" beside a gap.
-    /// The plan offers the router only where `enable` would: beside a chat
-    /// server the config names on another local port it says why not, and
-    /// names `setup chat` (found on review of #618).
-    #[cfg(target_os = "linux")]
+    /// The plan never names `enable` for the router: the chat model is
+    /// `mecha setup chat`'s (ruling F13), so where chat runs here the plan
+    /// names that command, and elsewhere says it is not needed.
     #[test]
-    fn the_plan_never_names_an_enable_that_declines_the_router() {
+    fn the_plan_names_setup_chat_for_the_router_never_enable() {
         use mecha_core::sidecar::{Plan, PlannedSidecar, SidecarState};
         let p = Plan {
             feature: Feature::Messages,
@@ -900,18 +870,12 @@ mod tests {
             download_bytes: 0,
             nothing_to_do: false,
         };
-        let elsewhere = render_plan(&p, true, false);
-        assert!(elsewhere.contains("not offered here"), "{elsewhere}");
-        assert!(elsewhere.contains("mecha setup chat"), "{elsewhere}");
-        assert!(
-            !elsewhere.contains("features enable messages` installs"),
-            "{elsewhere}"
-        );
-        let routers = render_plan(&p, true, true);
-        assert!(
-            routers.contains("`mecha features enable messages` installs it"),
-            "{routers}"
-        );
+        let here = render_plan(&p, true);
+        assert!(here.contains("mecha setup chat"), "{here}");
+        assert!(!here.contains("features enable"), "{here}");
+        let elsewhere = render_plan(&p, false);
+        assert!(elsewhere.contains("not needed here"), "{elsewhere}");
+        assert!(!elsewhere.contains("features enable"), "{elsewhere}");
     }
 
     #[test]
@@ -985,7 +949,7 @@ mod tests {
             download_bytes: 2 << 30,
             nothing_to_do: false,
         };
-        let text = render_plan(&p, true, true);
+        let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
             "not here — its installer arrives in step 7e",

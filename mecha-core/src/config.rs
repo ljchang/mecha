@@ -386,8 +386,21 @@ impl Default for Config {
                 follow_loaded: false,
             },
         );
+        // The default is a model on this machine, never a hosted one (ruling
+        // F12, 2026-10-05: "we definitely don't want to default to
+        // anthropic"). The router `mecha setup chat` installs answers here;
+        // its model, context window and vision are read off it by `mecha
+        // setup --write`, never guessed into a default.
+        providers.insert(
+            "local".to_string(),
+            ProviderConfig {
+                kind: "local".to_string(),
+                base_url: Some("http://127.0.0.1:8080".to_string()),
+                ..ProviderConfig::default()
+            },
+        );
         Config {
-            default_provider: "anthropic".to_string(),
+            default_provider: "local".to_string(),
             providers,
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
@@ -2533,7 +2546,8 @@ mod tests {
         assert_eq!(cfg.agent.max_turns, 5);
         // Untouched fields keep their defaults.
         assert_eq!(cfg.agent.max_tokens, 64_000);
-        assert_eq!(cfg.default_provider, "anthropic");
+        // Ruling F12: the default is a local model, never a hosted one.
+        assert_eq!(cfg.default_provider, "local");
     }
 
     #[test]
