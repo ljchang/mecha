@@ -613,8 +613,8 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
 **2026-09-30 — region-targeted edits: measured, C chosen by the owner,
 built in #429, merged and installed (04:31Z).** `IMAGE-REGION-EDIT-RESEARCH.md` is the authority: the
 Edit button opens a modal where the owner paints the area to change. C (a
-latent noise mask, composited in mecha) was exact, seamless on the
-textured scenes measured, and landed every local edit. In #429's live
+latent noise mask, composited in mecha) was exact, seamless on the one
+textured picture measured, and landed every local edit. In #429's live
 check it kept the outside identical to the byte in 4 of 4 real edits.
 Open:
 

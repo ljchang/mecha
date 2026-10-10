@@ -137,14 +137,15 @@ form. It was not re-run with the named subject.
   so a lower number there is evidence of failure, not of keeping anything.
   The red box never survived into a result (at most 0.5% of its outline
   stayed red).
-- **C is exact, and seamless on these textured scenes (not on a smooth
-  one, §7.7); on the pose it did no better than this run's weak
-  baseline.** Nothing outside
+- **C is exact, and seamless on this one textured picture (§7.7 later saw
+  a seam on a smooth one); on the pose it did no better than this run's
+  weak baseline.** Nothing outside
   the mask moved, and at the boundary the new pixels continue the old ones.
   In T2 the grass, the blanket and the man's arm run straight through.
-  *Seamless held on these textured scenes, not everywhere: §7.7 found a
-  faint rectangular seam where a removal's mask edge crossed a smooth
-  background, the feathered edge of the composite.* It
+  *Seamless held on this one picture, not everywhere: §7.7 found a faint
+  rectangular seam where a removal's mask edge crossed a smooth
+  background, the feathered edge of the composite, on one scene at
+  n = 4.* It
   landed every swap and every detail, but it stood the woman up less often
   than this run's plain edit did: 1 clear against 2, with the weaker wording
   above. The reference and the source latent still show her sitting.

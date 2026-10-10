@@ -945,10 +945,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   picture is resized to the encoder's own canvas (`edit_canvas`, the node's
   sizing with Python's round-half-even), and the mask is grown by about 21
   px and feathered by about 16 (`prepare_mask`; σ = 12 thresholded at 10,
-  then σ = 8), the setting a 60-image comparison found seamless on
-  textured scenes (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
-  found a faint rectangular seam where the edge crossed a smooth
-  background, open in HANDOFF. The graph samples on the
+  then σ = 8), the setting a 60-image comparison on one textured picture
+  found seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
+  saw a faint rectangular seam where the edge crossed a smooth background,
+  on one scene at n = 4, open in HANDOFF. The graph samples on the
   encoded picture under a `SetLatentNoiseMask`. The result is then laid over
   the original in mecha's code (`composite_masked`), not the server's, so
   every pixel beyond the grown, feathered edge (up to about 37 px outside
@@ -958,9 +958,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   already is, and the result says so. A dab too small to survive the grow
   step is refused rather than silently changing nothing. The near-copy check
   reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. Measured seamless on textured scenes,
-  and landing 8 of 8 local edits, in `IMAGE-REGION-EDIT-RESEARCH.md` §4,
-  with the smooth-background seam of §7.7 the exception. It under-edits a pose,
+  masked edit would look unchanged. Measured seamless on one textured
+  picture, and landing 8 of 8 local edits, in
+  `IMAGE-REGION-EDIT-RESEARCH.md` §4, with §7.7's one smooth-background
+  seam the exception seen so far. It under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
   nothing, or was painted over a picture of another shape, is refused before
   the GPU. A `size` beside a mask is set aside and said, never refused,
@@ -973,7 +974,11 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints
   up to four regions in colours chosen against the picture, and sends a
   colour-indexed picture of them as `mask` with `regions: [{colour, words}]`.
-  `prepare_regions` reads the index by exact colour before `prepare_mask`.
+  `prepare_regions` reads the index by exact colour before `prepare_mask`,
+  which is safe only because the page quantises it: each region's layer at
+  alpha > 127 into its exact colour, black otherwise (`indexPixels` in
+  `web/src/lib/image-edit.js`). A page that sent anti-aliased strokes
+  as they are would lose every rim pixel.
   That gives each region the identity its empty check and outline need, and
   masks only the colours the call names, where the luma threshold alone
   would mask any bright pixel. A region with no pixels is refused. The union is the mask, so the composite
