@@ -1685,9 +1685,10 @@ pub fn edit_canvas(w: u32, h: u32, resolution: u32) -> (u32, u32) {
 }
 
 /// Grow the painted area by about 21 px and feather its edge by about 16,
-/// at the canvas's scale — the setting measured seamless on textured scenes
-/// (`IMAGE-REGION-EDIT-RESEARCH.md` §4). Not on a smooth background: §7.7
-/// found a faint rectangular seam at this edge there, still open.
+/// at the canvas's scale — the setting measured seamless on one textured
+/// picture (`IMAGE-REGION-EDIT-RESEARCH.md` §4). §7.7 later saw a faint
+/// rectangular seam at this edge where it crossed a smooth background, on
+/// one scene at n = 4; still open.
 const MASK_GROW_SIGMA: f32 = 12.0;
 const MASK_FEATHER_SIGMA: f32 = 8.0;
 
