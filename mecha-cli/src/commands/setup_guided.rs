@@ -35,10 +35,21 @@ pub(super) enum ChatPick {
     /// environment.
     Hosted,
     /// A server answers but the config does not say what it serves: write
-    /// what it reports.
-    WriteServer,
+    /// what it reports, as the question named it.
+    WriteServer(ServerToWrite),
     /// Not now.
     Skip,
+}
+
+/// A server to write down, named before the yes that writes it: where it
+/// answers, what it serves, and what writing it changes — the reviewable
+/// object is the thing itself (review of #631).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ServerToWrite {
+    /// The address, and the model it says it serves.
+    pub at: String,
+    /// What the write does to the config.
+    pub then: String,
 }
 
 /// What the chat question may offer on this machine.
@@ -49,8 +60,8 @@ pub(super) struct ChatOptions {
     /// Whether `setup chat` can install a router here at all — Linux, and
     /// nobody else's server on the port.
     pub can_install: bool,
-    /// A server answers and the config disagrees with it.
-    pub server_disagrees: bool,
+    /// A server answers that the config does not describe.
+    pub server: Option<ServerToWrite>,
     /// `ANTHROPIC_API_KEY` is set.
     pub hosted_key: bool,
 }
@@ -91,17 +102,18 @@ fn expand_home(typed: &str) -> std::path::PathBuf {
 /// where none fits.
 pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatPick> {
     println!("\nChat model");
-    if o.server_disagrees {
+    if let Some(server) = &o.server {
         println!(
-            "  A server answers here, but the config does not say what it serves. Setup can \
-             write what the server reports about itself."
+            "  A server answers that the config does not describe:\n    {}\n  Setup can \
+             write what it reports about itself: {}.",
+            server.at, server.then
         );
         prompt("  Write it? [Y/n] ")?;
         // End of input is not Enter: nothing is written by a Ctrl-D (found
         // on review of #631).
         return Ok(
             match answer(read)?.map(|a| a.to_ascii_lowercase()).as_deref() {
-                Some("" | "y" | "yes") => ChatPick::WriteServer,
+                Some("" | "y" | "yes") => ChatPick::WriteServer(server.clone()),
                 None => {
                     println!();
                     ChatPick::Skip
@@ -130,9 +142,9 @@ pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatP
         ));
     } else {
         println!(
-            "  Nothing answers prompts yet, and setup cannot install a local model here — the \
-             line above says why, or the config's local provider names a server elsewhere. \
-             Start that server and run `mecha setup --write`, or use a hosted model."
+            "  Nothing answers prompts yet, and setup cannot install a local model here: that \
+             needs Linux and :8080 free, and a config whose local provider is this machine's \
+             router. Start your own server and run `mecha setup --write`, or use a hosted model."
         );
     }
     menu.push((
@@ -259,7 +271,12 @@ pub(super) fn ask_features(
             println!("    {blurb}");
         }
         prompt("    Enable? [y/N/never] ")?;
-        match line(read)?.to_ascii_lowercase().as_str() {
+        // End of input ends the questions: the rest are not asked to nobody.
+        let Some(answer) = answer(read)? else {
+            println!();
+            break;
+        };
+        match answer.to_ascii_lowercase().as_str() {
             "y" | "yes" => answers.yes.push(q.feature),
             "never" | "n!" => answers.never.push(q.feature),
             _ => {}
@@ -291,7 +308,7 @@ pub(super) fn summary(
             }
         )),
         ChatPick::Hosted => out.push_str("  Anthropic as the default provider\n"),
-        ChatPick::WriteServer => out.push_str("  the running server's settings into the config\n"),
+        ChatPick::WriteServer(s) => out.push_str(&format!("  {}: {}\n", s.at, s.then)),
         ChatPick::Answering | ChatPick::Skip => {}
     }
     for f in features {
@@ -322,7 +339,9 @@ pub(super) fn ask_start(read: &mut impl BufRead) -> Result<bool> {
     ))
 }
 
-/// The steps the chat question answers.
+/// The steps the chat question answers. Alternatives, not a pair:
+/// `onboarding::plan` emits `local-server` for a local default provider and
+/// `provider-credential` otherwise, never both.
 pub(super) const CHAT_STEPS: [&str; 2] = ["local-server", "provider-credential"];
 
 /// Whether something can already answer a prompt: neither of the steps that
@@ -333,8 +352,27 @@ fn chat_answering(steps: &[Step]) -> bool {
         .any(|s| CHAT_STEPS.contains(&s.id.as_str()) && s.status != Status::Done)
 }
 
-/// The guided pass. Returns the ids of the steps it dealt with, so `setup`'s
-/// own loop asks only about what is left.
+/// What the guided pass did with the steps: which it asked about, so
+/// `setup`'s own loop does not ask again, and which it settled — answered no
+/// or never, or done — so the checklist after it leaves them out. A yes that
+/// did not install is asked, not settled (review of #631).
+#[derive(Debug, Default)]
+pub(super) struct Guided {
+    pub asked: Vec<String>,
+    pub settled: Vec<String>,
+}
+
+/// The features a pass settled: every one asked, less a yes that did not
+/// end up on.
+fn settled_features(asked: &[Feature], chosen: &[Feature], enabled: &[Feature]) -> Vec<String> {
+    asked
+        .iter()
+        .filter(|f| !chosen.contains(f) || enabled.contains(f))
+        .map(|f| f.id().to_string())
+        .collect()
+}
+
+/// The guided pass.
 pub(super) async fn run(
     cfg: &mecha_core::config::Config,
     provider_name: &str,
@@ -342,13 +380,18 @@ pub(super) async fn run(
     facts: &Facts,
     home: &std::path::Path,
     read: &mut impl BufRead,
-) -> Result<Vec<String>> {
-    // The chat steps join `handled` only once the answer settled them, so a
+) -> Result<Guided> {
+    // The chat steps are settled only once the answer settled them, so a
     // skip, a "no" to Start, or a failed install leaves them on the
     // checklist `setup` prints after this (review of #631).
-    let mut handled: Vec<String> = Vec::new();
-    let settle_chat = |handled: &mut Vec<String>| {
-        handled.extend(CHAT_STEPS.iter().map(|s| s.to_string()));
+    let mut guided = Guided {
+        asked: CHAT_STEPS.iter().map(|s| s.to_string()).collect(),
+        settled: Vec::new(),
+    };
+    let settle_chat = |guided: &mut Guided| {
+        guided
+            .settled
+            .extend(CHAT_STEPS.iter().map(|s| s.to_string()));
     };
 
     // --- the chat question, and what answering it would cost
@@ -402,7 +445,31 @@ pub(super) async fn run(
                     .map(|row| (row.model.to_string(), r.row_bytes().unwrap_or(0)))
             }),
             can_install: ready.is_some(),
-            server_disagrees,
+            server: if let Some(found) = found {
+                Some(ServerToWrite {
+                    at: format!("{}{}", found.base_url, serving(&found.props)),
+                    then: if cfg.default_provider == "local" {
+                        "written as [providers.local]".into()
+                    } else {
+                        "written as [providers.local], and made the default provider".into()
+                    },
+                })
+            } else if server_disagrees {
+                let at = cfg
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.base_url.clone())
+                    .unwrap_or_default();
+                Some(ServerToWrite {
+                    at: format!(
+                        "{at}{}",
+                        facts.props.as_ref().map(serving).unwrap_or_default()
+                    ),
+                    then: format!("its settings written into [providers.{provider_name}]"),
+                })
+            } else {
+                None
+            },
             hosted_key: std::env::var_os("ANTHROPIC_API_KEY").is_some(),
         };
         ask_chat(read, &options)?
@@ -441,7 +508,9 @@ pub(super) async fn run(
     } else {
         ask_features(read, &questions, cfg)?
     };
-    handled.extend(asked.iter().map(|f| f.id().to_string()));
+    guided
+        .asked
+        .extend(asked.iter().map(|f| f.id().to_string()));
     // A preference, not an install: recorded now, whatever Start says.
     for f in &never {
         match onboarding::decline(home, f.id()) {
@@ -458,12 +527,18 @@ pub(super) async fn run(
     let total = chat_bytes + features_total(&questions, &chosen, engine_for_chat > 0);
     let nothing = matches!(chat, ChatPick::Answering | ChatPick::Skip) && chosen.is_empty();
     if nothing {
-        return Ok(handled);
+        guided
+            .settled
+            .extend(settled_features(&asked, &chosen, &[]));
+        return Ok(guided);
     }
     print!("{}", summary(&chat, chat_bytes, &chosen, total));
     if !ask_start(read)? {
         println!("Nothing was changed. `mecha setup` asks again.");
-        return Ok(handled);
+        guided
+            .settled
+            .extend(settled_features(&asked, &chosen, &[]));
+        return Ok(guided);
     }
 
     // --- the installs, in the order they were asked
@@ -479,7 +554,7 @@ pub(super) async fn run(
                 };
                 println!("\nInstalling the chat model…");
                 match super::setup_chat::install_choice(cfg, ready, &choice, true).await {
-                    Ok(()) => settle_chat(&mut handled),
+                    Ok(()) => settle_chat(&mut guided),
                     Err(e) => {
                         println!("the chat model was not installed: {e:#}");
                         println!("`mecha setup chat` tries it again on its own.");
@@ -488,7 +563,11 @@ pub(super) async fn run(
             }
         }
         ChatPick::Hosted => {
-            super::setup::offer_default("anthropic", &cfg.default_provider, true)?;
+            // Caught, as the install's failure is: one Start covered every
+            // answer, so one write that fails must not cost the features.
+            if let Err(e) = super::setup::offer_default("anthropic", &cfg.default_provider, true) {
+                println!("the default provider was not changed: {e:#}");
+            }
             // Settled only when the key resolves: a default with no key
             // answers nothing, and the checklist must still say so.
             let keyed = cfg
@@ -496,7 +575,7 @@ pub(super) async fn run(
                 .get("anthropic")
                 .is_some_and(|p| p.resolve_api_key().is_some());
             if keyed {
-                settle_chat(&mut handled);
+                settle_chat(&mut guided);
             }
             if std::env::var_os("ANTHROPIC_API_KEY").is_none() {
                 println!(
@@ -505,14 +584,16 @@ pub(super) async fn run(
                 );
             }
         }
-        ChatPick::WriteServer => {
+        ChatPick::WriteServer(_) => {
             let written = match (found, &facts.props) {
-                (Some(found), _) => super::setup::write_local_provider(found, true)?,
-                (None, Some(props)) => super::setup::offer_settings(provider_name, props, true)?,
-                (None, None) => false,
+                (Some(found), _) => super::setup::write_local_provider(found, true),
+                (None, Some(props)) => super::setup::offer_settings(provider_name, props, true),
+                (None, None) => Ok(false),
             };
-            if written {
-                settle_chat(&mut handled);
+            match written {
+                Ok(true) => settle_chat(&mut guided),
+                Ok(false) => {}
+                Err(e) => println!("the server's settings were not written: {e:#}"),
             }
         }
         ChatPick::Answering | ChatPick::Skip => {}
@@ -536,7 +617,19 @@ pub(super) async fn run(
     if !enabled.is_empty() {
         sign_ins(&enabled, home)?;
     }
-    Ok(handled)
+    guided
+        .settled
+        .extend(settled_features(&asked, &chosen, &enabled));
+    Ok(guided)
+}
+
+/// `, serving "<model>"` when the server names one.
+fn serving(props: &mecha_core::provider::preflight::Props) -> String {
+    props
+        .model_alias
+        .as_deref()
+        .map(|m| format!(", serving {m:?}"))
+        .unwrap_or_default()
 }
 
 /// The ids `feature::enable_command` names — the feature and every switch it
@@ -667,7 +760,7 @@ mod tests {
         ChatOptions {
             recommended: Some(("Qwen-x".into(), 22 << 30)),
             can_install: true,
-            server_disagrees: false,
+            server: None,
             hosted_key: false,
         }
     }
@@ -744,14 +837,22 @@ mod tests {
     /// writing what it reports.
     #[test]
     fn a_disagreeing_server_is_asked_to_be_written_down() {
+        let server = ServerToWrite {
+            at: "http://127.0.0.1:8080, serving \"model-x\"".into(),
+            then: "written as [providers.local], and made the default provider".into(),
+        };
         let o = ChatOptions {
-            server_disagrees: true,
+            server: Some(server.clone()),
             ..options()
         };
         assert_eq!(
             ask_chat(&mut reader("\n"), &o).unwrap(),
-            ChatPick::WriteServer
+            ChatPick::WriteServer(server.clone())
         );
+        // What the yes writes is named in the summary before Start.
+        let s = summary(&ChatPick::WriteServer(server), 0, &[], 0);
+        assert!(s.contains("127.0.0.1:8080") && s.contains("model-x"), "{s}");
+        assert!(s.contains("default provider"), "{s}");
         assert_eq!(ask_chat(&mut reader("n\n"), &o).unwrap(), ChatPick::Skip);
         // End of input writes nothing (review of #631).
         assert_eq!(ask_chat(&mut reader(""), &o).unwrap(), ChatPick::Skip);
@@ -858,6 +959,38 @@ mod tests {
         let mut on = cfg.clone();
         on.features.0.insert("web".into(), true);
         assert!(also_enables(&on, Feature::Incognito).is_empty());
+    }
+
+    /// A yes that did not install stays open; a no, a never, or a yes that
+    /// installed is settled (review of #631).
+    #[test]
+    fn only_what_was_answered_or_done_is_settled() {
+        let asked = [Feature::Web, Feature::Documents, Feature::Search];
+        let chosen = [Feature::Web, Feature::Documents];
+        assert_eq!(
+            settled_features(&asked, &chosen, &[Feature::Web]),
+            ["web", "search"]
+        );
+        assert_eq!(settled_features(&asked, &chosen, &[]), ["search"]);
+    }
+
+    /// End of input part way down the features stops asking.
+    #[test]
+    fn end_of_input_stops_the_feature_questions() {
+        let q = |f| Question {
+            feature: f,
+            bytes: None,
+            engine: 0,
+        };
+        let qs = [q(Feature::Web), q(Feature::Search), q(Feature::Documents)];
+        let cfg = mecha_core::config::Config::default();
+        assert_eq!(
+            ask_features(&mut reader("y\n"), &qs, &cfg).unwrap(),
+            Answers {
+                yes: vec![Feature::Web],
+                never: vec![],
+            }
+        );
     }
 
     /// The summary names what will happen and the one total.
