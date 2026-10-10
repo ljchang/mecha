@@ -12,4 +12,9 @@ Type=oneshot
 # nvidia-smi lives in /usr/bin.
 Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.cargo/bin/mecha hud sample
+# Type=oneshot has no start timeout by default, and `nvidia-smi` blocks for
+# good on a wedged driver; the timer never starts a run while one is active,
+# so a hung sample would stop sampling instead of failing a minute. A sample
+# takes well under a second.
+TimeoutStartSec=30s
 Nice=10
