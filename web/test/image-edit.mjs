@@ -42,4 +42,33 @@ assert.equal(
 assert.equal(composeEditMessage('images/a.png', null, 'make it dusk'), 'Edit images/a.png: make it dusk');
 assert.equal(composeEditMessage('images/a.png', 'inbox/m.png', '   '), null, 'no words, no request');
 
+// Regions: the least-present colours are picked, the index is exact, and a
+// region with no words makes no message.
+{
+  const { pickColours, indexPixels, composeRegionsMessage, REGION_COLOURS } = await import(
+    '../src/lib/image-edit.js'
+  );
+  // A picture that is all magenta: magenta is never offered.
+  const px = new Uint8ClampedArray(16 * 4);
+  for (let i = 0; i < px.length; i += 4) px.set([255, 0, 255, 255], i);
+  const picked = pickColours(px);
+  assert.equal(picked.length, 4);
+  assert.ok(!picked.some((c) => c.colour === 'magenta'));
+  assert.ok(picked.every((c) => REGION_COLOURS.some(([n]) => n === c.colour)));
+  // Two 2x1 layers: the first paints pixel 0, the second pixel 1; an
+  // anti-aliased rim at alpha 100 stays black.
+  const a = new Uint8ClampedArray([0, 0, 0, 255, 0, 0, 0, 0]);
+  const b = new Uint8ClampedArray([0, 0, 0, 100, 0, 0, 0, 255]);
+  const out = indexPixels(2, 1, [a, b], [[255, 0, 255], [0, 255, 255]]);
+  assert.deepEqual([...out], [255, 0, 255, 255, 0, 255, 255, 255]);
+  assert.equal(
+    composeRegionsMessage('images/a.png', 'inbox/r.png', [
+      { colour: 'magenta', words: 'make it red' },
+      { colour: 'cyan', words: ' remove the cup ' },
+    ]),
+    'Edit images/a.png in regions inbox/r.png: magenta: make it red; cyan: remove the cup',
+  );
+  assert.equal(composeRegionsMessage('images/a.png', 'inbox/r.png', [{ colour: 'cyan', words: ' ' }]), null);
+}
+
 console.log('image-edit ok');
