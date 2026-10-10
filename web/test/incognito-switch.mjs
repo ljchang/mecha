@@ -40,6 +40,7 @@ function page(start) {
      let queue = [{ call_id: 'c1' }];
      let affect = 1, valence = 1, sawAffectThisRun = true;
      let partialRun = true, liveFrom = 3;
+     let regenerated = 'chat-a0', chosenVersion = new Map([['images/a.png', 'images/a.png']]);
      const receivedInputs = new Set(), inputDelivery = new Map();
      const dropped = [];
      const dropRing = (k) => dropped.push(k);
@@ -49,7 +50,7 @@ function page(start) {
      let hungUp = 0;
      const endVoice = () => hungUp++;
      ${switchToSrc}
-     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), typed: () => vTyped, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote, queue }) };`,
+     return { switchTo, dropped, call: () => ({ hungUp, vEntries }), typed: () => vTyped, now: () => ({ key, draft, attachments, incognito, gone, todo, goneNote, partialRun, liveFrom, editing, pictureNote, queue, regenerated, chosen: [...chosenVersion.keys()] }) };`,
   )(start);
 }
 
@@ -106,6 +107,9 @@ function is(actual, expected, what) {
   // new key) would spend one redundant transcript read on the chat you are
   // in.
   is([s.partialRun, s.liveFrom], [false, 0], "and what the catch-up knew of the last chat's run is gone");
+  // A Regenerate's re-read and the card's version steps name the last
+  // chat's pictures (review of #634's persona half).
+  is([s.regenerated, s.chosen], [null, []], "and its owed re-read and version steps are gone");
   is(p.dropped, [], 'and keeps its call audio for a reconnect');
   is(p.call().hungUp, 0, 'and its call, which never crossed the incognito line');
   // But the edit modal is never portable: it holds a path in the chat it was
