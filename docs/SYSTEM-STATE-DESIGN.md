@@ -1,7 +1,7 @@
 # System state — design
 
-**2026-10-10. Proposed; R1, R2, R3 and R3b ruled the same day, R4 open
-(§9).** `mecha system` is one layer through which mecha reads the state of
+**2026-10-10. Proposed; R1, R2, R3 and R3b ruled the same day; R4, R5 and
+R5b open (§9).** `mecha system` is one layer through which mecha reads the state of
 the machine it runs on and the services it runs beside. Each measurement in
 it has its own specific name, drawn from one closed list. Every consumer
 reads the system through it, and none probes for itself:
@@ -356,6 +356,89 @@ names. It never prints an empty table.
 
 ### 3.6 The model (R3, ruled; §5)
 
+### 3.7 Preventing out-of-memory: the memory floor
+
+The owner's requirement (2026-10-10) is that **memory is measured so that
+out-of-memory can be prevented**, not merely recorded.
+
+Two facts of this machine shape what prevention can mean:
+- **The GPU and the system share one memory pool.** A model load, an image
+  generation and a compile all draw from the same bytes.
+- **The failure is a discrete event**: a second model, an oversized build, a
+  generation started beside a resident chat model. On 2026-10-03 two
+  uncapped workspace builds took the router down.
+
+`GOAL-SYSTEM-DESIGN.md` §4.5 already ruled the shape: memory is a floor,
+not a setpoint. A pressure term would be theatre, so **the decision is a
+refusal at admission**, made before the allocation and not after it.
+
+**The measurements that serve it**, in the order a decision reads them:
+1. **`memory.available` — headroom now.** This is the number the floor
+   compares against.
+2. **`pressure.memory` — the leading indicator.** Work stalls on reclaim
+   before anything is killed. A machine can show free bytes while it
+   thrashes, so pressure refuses even when the headroom looks sufficient.
+3. **`category.memory` — who holds it.** This is what a refusal names, so
+   the owner can see what to stop: "image generation holds 14 GiB", never
+   a process name.
+4. **`memory.oom_kills` and `category.oom_kills` — the outcome.** These are
+   read after the fact, by the doctor and by the appraiser. They are how
+   anyone knows the floor is set right.
+
+**One admission check, generalised from the one that exists.** The image
+tool already does this properly:
+- `imagegen::memory_verdict` refuses a generation that would not fit.
+- It **refuses** when it cannot read memory at all.
+- `memory_need_mb` credits a model that is already loaded.
+
+`system::admit(need) -> Admit` makes that rule shared:
+
+```rust
+pub enum Admit {
+    Yes,
+    /// Says what is available, what was needed, and the largest holders,
+    /// by category.
+    No { available: u64, need: u64, holders: Vec<(Category, u64)> },
+    /// The memory could not be read. Callers refuse, exactly as the image
+    /// tool does today: an unknown floor is never a pass.
+    Unread { why: String },
+}
+```
+
+`admit` is a pure function of a reading and a stated need. **The caller
+refuses**, which keeps §4 rule 8 true: this layer still decides nothing.
+
+**Who calls it:**
+
+| Caller | What it would allocate | Need from |
+|---|---|---|
+| Image generation | a render, and a model load when the model is cold | its own `memory_need_mb`, unchanged |
+| A model load or switch (`mecha model use`, and the router preset a run selects) | a resident model | `recommend.rs`'s measured figure for that preset, or a refusal to guess |
+| Background work admission (beside `permit.rs`) | a run that may load a model or start a generation | the largest need of what it may start |
+| Scripts: builds, experiments, the engine gate | a compile, an experiment arm | stated by the caller: `mecha system admit --need 24G` exits non-zero when refused |
+
+The script form closes the gap the 2026-10-03 incident left. Today the build
+cap is a habit, `CARGO_BUILD_JOBS=4` plus a manual `free -g`, written down
+in an operator's notes. As a command, a build wrapper can **chain on it**,
+the same way the live-call check became a chained gate rather than a line
+printed beside the build.
+
+**The floor is `need + reserve`.** The reserve is headroom the floor keeps
+back for what runs uninvited: the voice pipeline mid-call, the page cache,
+the next turn's KV growth. Its size is R5.
+
+**What it deliberately does not do:**
+- **It kills nothing, reclaims nothing, and never tunes swap.** A refusal
+  is reversible; a kill is not.
+- **It does not throttle a run that is already going.**
+- **It is not the kernel's job, and the kernel's job is not this.** The
+  complementary operational change would be `MemoryHigh=` on the heavy user
+  units (the router, ComfyUI). Then the kernel reclaims from and slows a
+  runaway inside its own cgroup, before the system-wide OOM killer picks
+  the router as its victim. That is a change to the units, not to mecha,
+  and it is the owner's call (R5b). With it, `category.oom_kills` and
+  `pressure.memory` per unit are where its effect shows.
+
 ## 4. Rules
 
 1. **Unknown is never zero.**
@@ -472,6 +555,7 @@ one by deleting a copy.
 | **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2 |
 | **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | R4; S3 |
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
+| **S6** | The memory floor (§3.7): `system::admit` and `mecha system admit --need`, with image generation, model loads, background admission and the build scripts all calling it. The image tool's `memory_verdict` becomes a caller of `admit`, not a second implementation. | R5; S1 (it needs `memory.available` and `pressure.memory`, nothing more) |
 
 S0 is small, and it is the only step that is cheaper now than later.
 
@@ -516,6 +600,18 @@ S0 is small, and it is the only step that is cheaper now than later.
   - It is not on persona tool lists.
 - **R3b. Private — ruled 2026-10-10:** `system_read` results carry
   `private_data: true`.
+- **R5. The memory floor's reserve — open.** This is the headroom
+  `admit` keeps back beyond a stated need (§3.7). Recommended: a fixed
+  figure in config, `[system] memory_reserve`, starting at 8 GiB. That is
+  about one voice pipeline plus margin on this box. A pressure ceiling
+  (`pressure.memory` avg10 above 10%) refuses regardless of headroom. Both
+  are tuned only from `memory.oom_kills` and `pressure.memory` once the
+  series has weeks in it.
+- **R5b. `MemoryHigh=` on the heavy units — open.** This is the operational
+  complement in §3.7: the router and ComfyUI get reclaimed and slowed
+  inside their own cgroups before the global OOM killer chooses a victim.
+  Recommended: yes, after S1 is recording, so that its effect is measured
+  rather than assumed.
 - **R4. The homeostat reads the series (S4) — open.** A run's record would
   carry the minutes it ran through, rather than a probe at its start.
   Recommended: yes.
