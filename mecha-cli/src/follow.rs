@@ -626,7 +626,13 @@ fn resolve_seen(
     if default.model.as_deref() == Some(resident) {
         return Some(name.clone());
     }
+    // An entry that names the resident model is followed to; failing one, a
+    // default that names no model stands, since it asks its server and so
+    // names the resident model too — `None` here would keep the surface on
+    // the model it last asked for, and its next request would load that
+    // back (review of #637).
     mecha_core::provider::router::followed(cfg, name, std::slice::from_ref(&seen))
+        .or_else(|| mecha_core::provider::router::asks_its_server(default).then(|| name.clone()))
 }
 
 /// One `setup::prepare`, finished by the surface. `provider` names the
@@ -742,6 +748,25 @@ mod tests {
             resident: resident.map(str::to_string),
             slots: Some(4),
         })
+    }
+
+    /// A followed default that names no model stands, whatever is loaded:
+    /// it asks its server, so the turn reads the name from its own probe —
+    /// a `None` here kept the surface on the model it last asked for, and
+    /// its next request loaded that back (review of #637).
+    #[test]
+    fn a_followed_default_that_asks_stands_and_asks() {
+        let mut c = cfg(true);
+        c.providers.get_mut("local").unwrap().model = None;
+        assert_eq!(
+            resolve_seen(&c, false, seen(Some("a-model-nobody-names"))).as_deref(),
+            Some("local")
+        );
+        // An entry naming the resident model still wins.
+        assert_eq!(
+            resolve_seen(&c, false, seen(Some("gemma-4-26b-a4b"))).as_deref(),
+            Some("gemma26")
+        );
     }
 
     /// The case the module exists for: the owner loaded another model from
