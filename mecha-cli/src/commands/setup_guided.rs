@@ -97,10 +97,18 @@ pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatP
              write what the server reports about itself."
         );
         prompt("  Write it? [Y/n] ")?;
-        return Ok(match line(read)?.to_ascii_lowercase().as_str() {
-            "" | "y" | "yes" => ChatPick::WriteServer,
-            _ => ChatPick::Skip,
-        });
+        // End of input is not Enter: nothing is written by a Ctrl-D (found
+        // on review of #631).
+        return Ok(
+            match answer(read)?.map(|a| a.to_ascii_lowercase()).as_deref() {
+                Some("" | "y" | "yes") => ChatPick::WriteServer,
+                None => {
+                    println!();
+                    ChatPick::Skip
+                }
+                _ => ChatPick::Skip,
+            },
+        );
     }
     let mut menu: Vec<(String, ChatPick)> = Vec::new();
     if o.can_install {
@@ -122,9 +130,9 @@ pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatP
         ));
     } else {
         println!(
-            "  Nothing answers prompts yet, and setup cannot install a local model here (it \
-             needs Linux, and :8080 free). Start a server of your own and run `mecha setup \
-             --write`, or use a hosted model."
+            "  Nothing answers prompts yet, and setup cannot install a local model here — the \
+             line above says why, or the config's local provider names a server elsewhere. \
+             Start that server and run `mecha setup --write`, or use a hosted model."
         );
     }
     menu.push((
@@ -214,7 +222,15 @@ pub(super) fn ask_features(read: &mut impl BufRead, qs: &[Question]) -> Result<V
             Some(b) if b > 0 => format!(" ({} download)", gib(b)),
             _ => String::new(),
         };
-        println!("  {}{cost}", q.feature.label());
+        // A yes switches on what the feature needs too, so it is said here
+        // rather than discovered (found on review of #631).
+        let needs: Vec<&str> = q.feature.requires().iter().map(|r| r.label()).collect();
+        let needs = if needs.is_empty() {
+            String::new()
+        } else {
+            format!(" — needs {} too", needs.join(", ").to_lowercase())
+        };
+        println!("  {}{cost}{needs}", q.feature.label());
         let blurb = onboarding::blurb(q.feature);
         if !blurb.is_empty() {
             println!("    {blurb}");
@@ -257,7 +273,10 @@ pub(super) fn summary(
         out.push_str(&format!("  {}\n", f.label()));
     }
     if total > 0 {
-        out.push_str(&format!("{} to download.\n", gib(total)));
+        out.push_str(&format!(
+            "{} to download, less whatever is already in the cache.\n",
+            gib(total)
+        ));
     }
     out
 }
@@ -266,8 +285,14 @@ pub(super) fn summary(
 /// it was already answered.
 pub(super) fn ask_start(read: &mut impl BufRead) -> Result<bool> {
     prompt("Start? [Y/n] ")?;
+    // End of input is not Enter: nothing is started by a Ctrl-D (found on
+    // review of #631) — a Ctrl-D at the one confirmation began the downloads.
+    let Some(answer) = answer(read)? else {
+        println!();
+        return Ok(false);
+    };
     Ok(matches!(
-        line(read)?.to_ascii_lowercase().as_str(),
+        answer.to_ascii_lowercase().as_str(),
         "" | "y" | "yes"
     ))
 }
@@ -352,10 +377,22 @@ pub(super) async fn run(
 
     // --- the features, each with what it would download here
     let asked = feature_questions(steps);
+    // A machine that could not be read prices nothing, and asks anyway:
+    // setup must not fail before its first question over a size.
     let questions = if asked.is_empty() {
         Vec::new()
     } else {
-        price(cfg, &asked)?
+        price(cfg, &asked).unwrap_or_else(|e| {
+            println!("\n(sizes unavailable: {e:#})");
+            asked
+                .iter()
+                .map(|f| Question {
+                    feature: *f,
+                    bytes: None,
+                    engine: 0,
+                })
+                .collect()
+        })
     };
     let chosen = if questions.is_empty() {
         Vec::new()
@@ -410,15 +447,37 @@ pub(super) async fn run(
         }
         ChatPick::Answering | ChatPick::Skip => {}
     }
-    if !chosen.is_empty() {
-        let ids: Vec<String> = chosen.iter().map(|f| f.id().to_string()).collect();
+    // One feature at a time, each with what it needs: a batch is
+    // all-or-nothing in `plan_enable`, so one yes whose requirement was
+    // answered no cost every other yes (found on review of #631).
+    let mut enabled = Vec::new();
+    for f in &chosen {
+        let now = mecha_core::config::Config::load_global()?;
+        let ids = enable_ids(&feature::enable_command(&now, *f));
+        if ids.is_empty() {
+            continue;
+        }
         println!("\nEnabling {}…", ids.join(", "));
         match super::features::enable(&ids, false, true).await {
-            Ok(()) => sign_ins(&chosen, home)?,
-            Err(e) => println!("not enabled: {e:#} — `mecha setup` asks again"),
+            Ok(()) => enabled.push(*f),
+            Err(e) => println!("`{}` not enabled: {e:#} — `mecha setup` asks again", f.id()),
         }
     }
+    if !enabled.is_empty() {
+        sign_ins(&enabled, home)?;
+    }
     Ok(handled)
+}
+
+/// The ids `feature::enable_command` names — the feature and every switch it
+/// hangs on that is not on yet, dependencies first.
+pub(super) fn enable_ids(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .skip_while(|w| *w != "enable")
+        .skip(1)
+        .map(str::to_string)
+        .collect()
 }
 
 /// What each chosen feature would download here — through `enable`'s own
@@ -596,14 +655,15 @@ mod tests {
         let gguf = dir.join("m.gguf");
         std::fs::write(&gguf, b"").unwrap();
         let answers = format!("2\n{}/missing.gguf\n{}\n\n", dir.display(), gguf.display());
+        let got = ask_chat(&mut reader(&answers), &options()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
-            ask_chat(&mut reader(&answers), &options()).unwrap(),
+            got,
             ChatPick::Own {
                 model: gguf.clone(),
                 mmproj: None
             }
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A server that answers but disagrees is one question, defaulting to
@@ -619,6 +679,8 @@ mod tests {
             ChatPick::WriteServer
         );
         assert_eq!(ask_chat(&mut reader("n\n"), &o).unwrap(), ChatPick::Skip);
+        // End of input writes nothing (review of #631).
+        assert_eq!(ask_chat(&mut reader(""), &o).unwrap(), ChatPick::Skip);
     }
 
     /// Only optional, unanswered features with a switch are asked about.
@@ -692,6 +754,21 @@ mod tests {
         assert_eq!(features_total(&qs, &[], false), 0);
     }
 
+    /// A yes enables the feature with what it needs, parsed from the same
+    /// command the step loop runs — so `incognito` brings `web` (review of
+    /// #631).
+    #[test]
+    fn a_yes_brings_what_the_feature_needs() {
+        let cfg = mecha_core::config::Config::default();
+        let ids = enable_ids(&feature::enable_command(&cfg, Feature::Incognito));
+        assert_eq!(ids, ["web", "incognito"]);
+        assert_eq!(
+            enable_ids(&feature::enable_command(&cfg, Feature::Search)),
+            ["search"]
+        );
+        assert!(enable_ids("nothing to run").is_empty());
+    }
+
     /// The summary names what will happen and the one total.
     #[test]
     fn the_summary_names_each_install_and_the_total() {
@@ -709,5 +786,7 @@ mod tests {
         assert!(s.contains("23.0 GiB to download"), "{s}");
         assert!(ask_start(&mut reader("\n")).unwrap());
         assert!(!ask_start(&mut reader("n\n")).unwrap());
+        // End of input starts nothing (review of #631).
+        assert!(!ask_start(&mut reader("")).unwrap());
     }
 }
