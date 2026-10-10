@@ -862,6 +862,9 @@
     imageEdit = null;
     pictureNote = null;
     attachments = [];
+    // A re-read owed to the last chat is not this one's (review of #634).
+    regenerated = null;
+    chosenVersion = new Map();
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
     // And its pictures in line (review of #607).
@@ -889,14 +892,15 @@
       scrollDown();
       if (ev.type === 'done') {
         doneSeq += 1;
+        const again = regenerated === k;
+        regenerated = null;
         // Only a run that finished is re-read: a failed one was rolled back
         // on the server, and the page's own record of it — the message and
         // why it failed — is the one worth keeping on screen.
         // And only when this page joined it midway: otherwise the stream
         // carried the whole turn (review of #415).
-        if (ev.ok && (partial || regenerated === k)) {
+        if (ev.ok && (partial || again)) {
           partial = false;
-          regenerated = null;
           reread(k).catch((e) => (error = String(e?.message ?? e)));
         }
         loadHistory();
@@ -1282,7 +1286,8 @@
   }
 
   // `text`: a turn the page composes itself (Regenerate), sent as it is,
-  // which leaves the owner's draft and files in the composer.
+  // which leaves the owner's draft and files in the composer. True when the
+  // server took the turn.
   async function send({ edit = null, text: fixed = null } = {}) {
     const own = fixed === null;
     const typed = own ? input.trim() : fixed;
@@ -1293,6 +1298,13 @@
       input = '';
       attachments = [];
     }
+    // A panel turn's card says which picture it is a version of
+    // (`version_of`), and only the transcript carries that, never the live
+    // stream: any panel edit can come back as a redraw, not only a
+    // Regenerate (review of #634), so the finished turn is read again. Set
+    // before the POST, so a turn that ends before its answer arrives is not
+    // missed.
+    if (edit) regenerated = key;
     try {
       const res = await fetch(chatUrl(key, '/send'), {
         method: 'POST',
@@ -1322,7 +1334,10 @@
         attachments = attached;
       }
       error = String(e?.message ?? e);
+      if (edit) regenerated = null;
+      return false;
     }
+    return true;
   }
 
   // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing, drawn again as
@@ -1330,14 +1345,17 @@
   // Not while a run is live: a message into a running turn steers it as text
   // alone, and the persona would read "Regenerate" as words to act on.
   // The card's `version_of` arrives only with the transcript, not on the
-  // live stream, so the finished turn is read again (`regenerated`).
+  // live stream, so the finished turn is read again (`regenerated`, set in
+  // `send`). The card goes back to the newest once the turn is taken, so the
+  // new version is what lands; a send that failed leaves it where it was.
   async function regenerate(root, picture) {
     if (!key || run.running) return;
-    chosenVersion.delete(root);
-    chosenVersion = new Map(chosenVersion);
-    regenerated = key;
-    await send({ text: composeRegenerateMessage(picture), edit: { picture, redraw: true } });
+    if (await send({ text: composeRegenerateMessage(picture), edit: { picture, redraw: true } })) {
+      chosenVersion.delete(root);
+      chosenVersion = new Map(chosenVersion);
+    }
   }
+  // The chat whose finished turn is read again for its `version_of`.
   let regenerated = null;
 
   function stepVersion(root, list, by) {
