@@ -573,7 +573,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature — web, Slack, mail, docs, the graph, search, PDF extraction, image
   generation, personas, voice, incognito, the front door and messages.
   `mecha features enable <id>` and `disable <id>` edit it in place, keeping
-  your comments; `mecha config init` writes it with everything off. An install
+  your comments; `mecha config init` writes it with every line commented —
+  listed and off, but not answered, so `mecha setup` asks about each. (A
+  config written by an earlier `config init`, with every line `= false`, reads
+  each as a no: comment out or delete the lines you want to be asked about.) An install
   from before the table has every switch unanswered, so `mecha features` marks
   what you have set up as "not enabled, but set up here", a session or service
   prints one line naming them when it starts, and `mecha setup` offers each.
