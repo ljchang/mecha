@@ -743,55 +743,20 @@ pub fn memory_verdict(available_mb: Option<u64>, min_mb: u64) -> std::result::Re
     }
 }
 
-/// Available memory in MB, from wherever this platform reports it. `None`
-/// where it cannot be read, which [`memory_verdict`] refuses on.
+/// Available memory in MB, through `mecha system` (`memory.available`),
+/// which reads `/proc/meminfo` here and `vm_stat` on macOS. `None` where it
+/// cannot be read, which [`memory_verdict`] refuses on.
 ///
 /// macOS has no `/proc`; it is also unified memory, the machine class the
 /// check exists for, so it gets a reader rather than a dead tool (found on
 /// review of #303 — every call refused there, and CI stayed green because
-/// the tests switch the check off).
-#[cfg(target_os = "macos")]
+/// the tests switch the check off). The reader now lives in
+/// `system::measure`, and its parser in `system::source::parse_vm_stat`.
 fn mem_available_mb() -> Option<u64> {
-    let out = std::process::Command::new("vm_stat").output().ok()?;
-    parse_vm_stat(&String::from_utf8_lossy(&out.stdout))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn mem_available_mb() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
-    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb / 1024)
-}
-
-/// `vm_stat`'s pages that can be handed to a new allocation without swapping
-/// — free, inactive, speculative and purgeable — times its page size, in MB.
-/// The closest macOS analogue of Linux's `MemAvailable`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn parse_vm_stat(text: &str) -> Option<u64> {
-    let page: u64 = text
-        .lines()
-        .next()?
-        .split("page size of ")
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    let pages = |key: &str| -> Option<u64> {
-        let line = text.lines().find(|l| l.starts_with(key))?;
-        line.rsplit(':')
-            .next()?
-            .trim()
-            .trim_end_matches('.')
-            .parse()
-            .ok()
-    };
-    let total = pages("Pages free")?
-        + pages("Pages inactive")?
-        + pages("Pages speculative").unwrap_or(0)
-        + pages("Pages purgeable").unwrap_or(0);
-    Some(total * page / (1024 * 1024))
+    crate::system::Reader::new()
+        .now(crate::system::Measurement::MemoryAvailable)
+        .value()
+        .map(|b| b as u64 / (1024 * 1024))
 }
 
 /// A picture's fresh seed: the next from the stream a replay stamped
@@ -4545,8 +4510,9 @@ mod tests {
             Pages wired down:                        200000.\n\
             Pages purgeable:                          16384.\n";
         // (65536 + 131072 + 32768 + 16384) pages × 16 KiB = 3840 MB.
-        assert_eq!(parse_vm_stat(sample), Some(3_840));
-        assert_eq!(parse_vm_stat("not vm_stat output"), None);
+        let parse = crate::system::source::parse_vm_stat;
+        assert_eq!(parse(sample), Some(3_840 * 1024 * 1024));
+        assert_eq!(parse("not vm_stat output"), None);
     }
 
     /// §5.2 moved the result's guidance into the description; these two

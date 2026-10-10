@@ -924,6 +924,8 @@ impl Sampler {
             scene: None,
             prompt_log: None,
             image_seeds: None,
+            // A replay's arm sets it when the layers are what it measures.
+            layers: false,
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,
