@@ -33,7 +33,7 @@ const readOut = (marker) => {
   if (start < 0) throw new Error(`Personas.svelte no longer defines ${marker.trim()}`);
   return src.slice(start, src.indexOf('\n  }\n', start) + 4);
 };
-const fns = ['  function editImage(path) {', '  function editInCall(path) {', '  function closeEdit() {', '  async function sendEdit({ text, mask }) {']
+const fns = ['  function editImage(path) {', '  function editInCall(path) {', '  function closeEdit() {', '  async function sendEdit({ text, mask, regions = [] }) {']
   .map(readOut)
   .join('\n');
 
@@ -51,6 +51,7 @@ function rig({ live = true } = {}) {
      const uploadUrl = () => '/upload';
      const maskName = (p) => p + '.mask.png';
      const composeEditMessage = (p, mask, text) => (text ? 'edit ' + p + ': ' + text : null);
+     const composeRegionsMessage = (p, idx, rs) => 'regions ' + p + ': ' + rs.map((r) => r.colour).join(',');
      const fetch = async () => ({ ok: true, json: async () => ({ path: 'inbox/mask.png' }) });
      const send = async (opts) => log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
      ${fns}
@@ -67,6 +68,28 @@ function rig({ live = true } = {}) {
   is(r.log, ['hold', 'say:edit images/a.png: make it night', 'release'], 'sent into the call as a typed line, then the mic is given back');
   is(r.state().imageEdit, null, 'the modal closes once the call has it');
   is(r.state().input, 'typed in the chat box', "the chat's own box and send are untouched");
+}
+
+{
+  // Coloured regions from the chat (not a call): the index is uploaded and
+  // each region's words go as fields beside it (M2).
+  const r = rig();
+  r.editImage('images/a.png');
+  await r.sendEdit({
+    text: '',
+    mask: new Blob(['x']),
+    regions: [
+      { colour: 'magenta', words: 'make it red' },
+      { colour: 'cyan', words: 'remove the cup' },
+    ],
+  });
+  const sent = r.log.find((l) => l.startsWith('chat-send:')) ?? '';
+  is(
+    sent.includes('"regions":[{"colour":"magenta","words":"make it red"},{"colour":"cyan","words":"remove the cup"}]'),
+    true,
+    'regions go to the chat send as fields',
+  );
+  is(sent.includes('"mask":"inbox/mask.png"'), true, 'with the uploaded index as the mask');
 }
 
 {

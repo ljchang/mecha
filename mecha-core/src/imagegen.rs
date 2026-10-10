@@ -1801,6 +1801,100 @@ pub fn prepare_mask(
     })
 }
 
+/// A region index (IMAGE-REGION-EDIT-RESEARCH.md §7.4, M2) read into the
+/// mask the composite keeps everything else by, and the picture the model
+/// reads as `<image2>`: the canvas with each region outlined in its colour.
+///
+/// The index is read per colour, by exact pixel value, before anything
+/// reaches `prepare_mask`. That gives each region its identity, which the
+/// empty check and the outline both need. It also masks only the colours
+/// the call names: `prepare_mask`'s luma threshold alone would mask any
+/// pixel brighter than near-black, a stray or a palette colour with no
+/// words among them. A region with no pixels is refused rather than sent as
+/// words with no place.
+pub fn prepare_regions(
+    picture: &[u8],
+    index: &[u8],
+    regions: &[crate::picture::Region],
+    resolution: u32,
+) -> std::result::Result<(MaskPlan, image::RgbImage), String> {
+    let index = crate::image::decode(index, "the regions")
+        .map_err(|e| format!("{e:#}"))?
+        .to_rgb8();
+    let (w, h) = index.dimensions();
+    let mut union = image::GrayImage::new(w, h);
+    for r in regions {
+        let mut any = false;
+        for (x, y, p) in index.enumerate_pixels() {
+            if p.0 == r.rgb {
+                union.put_pixel(x, y, image::Luma([255]));
+                any = true;
+            }
+        }
+        if !any {
+            return Err(format!(
+                "The {} region is empty: no pixel of the index is in that colour.",
+                r.colour
+            ));
+        }
+    }
+    let union = png_bytes(&image::DynamicImage::ImageLuma8(union).to_rgb8())?;
+    let plan = prepare_mask(picture, &union, resolution)?;
+    let (cw, ch) = plan.picture.dimensions();
+    let mut outlined = plan.picture.clone();
+    // About 6 px on a 1024 canvas, as measured.
+    let radius = (cw.max(ch) / 340).max(2) as i64;
+    // Each region's coverage at the canvas's size, averaged rather than
+    // sampled: on a photo larger than the canvas, a stroke narrower than the
+    // downscale's step fell between nearest samples and lost its outline
+    // while its words still went (review of #623). Shrinking, any coverage
+    // counts; growing, half does, which is where nearest put the edge.
+    let floor = if w > cw || h > ch { 1 } else { 128 };
+    for r in regions {
+        let mut own = image::GrayImage::new(w, h);
+        for (x, y, p) in index.enumerate_pixels() {
+            if p.0 == r.rgb {
+                own.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let cover = image::imageops::resize(&own, cw, ch, image::imageops::FilterType::Triangle);
+        let inside = |x: i64, y: i64| {
+            x >= 0
+                && y >= 0
+                && (x as u32) < cw
+                && (y as u32) < ch
+                && cover.get_pixel(x as u32, y as u32).0[0] >= floor
+        };
+        for y in 0..ch as i64 {
+            for x in 0..cw as i64 {
+                // On the region's rim: inside it, with a neighbour outside.
+                let edge = inside(x, y)
+                    && !(inside(x - 1, y)
+                        && inside(x + 1, y)
+                        && inside(x, y - 1)
+                        && inside(x, y + 1));
+                if !edge {
+                    continue;
+                }
+                for oy in -radius..=radius {
+                    for ox in -radius..=radius {
+                        let (px, py) = (x + ox, y + oy);
+                        if ox * ox + oy * oy <= radius * radius
+                            && px >= 0
+                            && py >= 0
+                            && (px as u32) < cw
+                            && (py as u32) < ch
+                        {
+                            outlined.put_pixel(px as u32, py as u32, image::Rgb(r.rgb));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok((plan, outlined))
+}
+
 /// A PNG of `image`, for an upload or the saved result.
 fn png_bytes<P, C>(image: &image::ImageBuffer<P, C>) -> std::result::Result<Vec<u8>, String>
 where
@@ -2492,6 +2586,16 @@ impl Tool for ImageGenerate {
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             });
             if missing {
+                // Regions mark places in the picture named, and their legend
+                // is already the retouch: drawn as a new picture they would
+                // describe outlines that are not there (review of #623).
+                if !call.regions.is_empty() {
+                    return Ok(refused(format!(
+                        "There is no picture `{p}` in this chat, and the painted regions mark \
+                         places in it. Name the picture as a result gave \
+                         it (images/…) or as the owner attached it (inbox/…)."
+                    )));
+                }
                 // Only a scene that describes a picture of its own (people or
                 // a setting) draws without it: a style, light or camera alone
                 // is a change to the picture named, and drawn from nothing it
@@ -2604,6 +2708,13 @@ impl Tool for ImageGenerate {
         let mut prose: Vec<&str> = Vec::new();
         collect_strings(&input["scene"], &mut prose);
         collect_strings(&input["retouch"], &mut prose);
+        // A region's words, not its colour: a character keyed `red` would
+        // otherwise refuse every edit painted red (review of #623).
+        if let Some(list) = input["regions"].as_array() {
+            for r in list {
+                collect_strings(&r["words"], &mut prose);
+            }
+        }
         if let Some(name) = prose
             .iter()
             .flat_map(|t| crate::imagelib::broken_named_in(&lib, t))
@@ -3045,19 +3156,38 @@ impl Tool for ImageGenerate {
                     },
                     None => None,
                 };
+                // Regions carry no words of the owner's own beside them, so
+                // there is no whole-picture edit to fall back to: a regions
+                // edit whose index is gone draws nothing and says so, never
+                // a redraw of the picture the owner painted (review of #623).
+                if mask_read.is_none() && !call.regions.is_empty() {
+                    return Ok(refused(
+                        "The painted regions could not be read, so nothing was drawn. Ask the \
+                         owner to paint them again.",
+                    ));
+                }
                 if let Some((raw, mask)) = mask_read {
                     let pic = req.references[0].bytes.clone();
                     let resolution = req.reference_size;
+                    let regions = call.regions.clone();
                     let prepared = tokio::task::spawn_blocking(move || {
-                        let plan = prepare_mask(&pic, &mask.bytes, resolution)?;
+                        // With regions the mask is their index, and their
+                        // outlines ride as `<image2>` (M2).
+                        let (plan, outlined) = if regions.is_empty() {
+                            (prepare_mask(&pic, &mask.bytes, resolution)?, None)
+                        } else {
+                            let (plan, outlined) =
+                                prepare_regions(&pic, &mask.bytes, &regions, resolution)?;
+                            (plan, Some(png_bytes(&outlined)?))
+                        };
                         let picture = png_bytes(&plan.picture)?;
                         let soft = png_bytes(
                             &image::DynamicImage::ImageLuma8(plan.soft.clone()).to_rgb8(),
                         )?;
-                        Ok::<_, String>((plan, picture, soft))
+                        Ok::<_, String>((plan, picture, soft, outlined))
                     })
                     .await;
-                    let (mp, pic, soft) = match prepared {
+                    let (mp, pic, soft, outlined) = match prepared {
                         Ok(Ok(p)) => p,
                         Ok(Err(why)) => return Ok(refused(why)),
                         Err(e) => {
@@ -3066,6 +3196,16 @@ impl Tool for ImageGenerate {
                     };
                     req.references[0].bytes = pic;
                     req.references[0].ext = "png";
+                    if let Some(bytes) = outlined {
+                        req.references.insert(
+                            1,
+                            Reference {
+                                path: "the regions, outlined".into(),
+                                bytes,
+                                ext: "png",
+                            },
+                        );
+                    }
                     req.mask = Some(Reference {
                         path: raw.clone(),
                         bytes: soft,
@@ -6189,6 +6329,228 @@ mod tests {
         assert_eq!(out.get_pixel(128, 576).0, [10, 200, 30]);
     }
 
+    /// A colour and the rectangle painted in it, `(x0, y0, x1, y1)`.
+    type Painted = ([u8; 3], (u32, u32, u32, u32));
+
+    /// A region index: black, with each `(rgb, rect)` painted in.
+    fn index_png(w: u32, h: u32, painted: &[Painted]) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            painted
+                .iter()
+                .find(|(_, (x0, y0, x1, y1))| (*x0..*x1).contains(&x) && (*y0..*y1).contains(&y))
+                .map_or(image::Rgb([0, 0, 0]), |(c, _)| image::Rgb(*c))
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        png.into_inner()
+    }
+
+    fn region(colour: &str, words: &str) -> crate::picture::Region {
+        let (name, rgb) = crate::picture::REGION_COLOURS
+            .iter()
+            .find(|(n, _)| *n == colour)
+            .unwrap();
+        crate::picture::Region {
+            colour: name.to_string(),
+            rgb: *rgb,
+            words: words.into(),
+        }
+    }
+
+    /// The index is read per colour: each named region is masked, and a
+    /// pixel in no named colour is not, which `prepare_mask`'s luma
+    /// threshold alone would mask. Each region is outlined in its own colour
+    /// on the canvas copy, and one with nothing painted is refused.
+    #[test]
+    fn regions_are_read_by_colour_and_outlined() {
+        let original = picture(8, [240, 220, 40]);
+        let regions = [
+            region("magenta", "make it red"),
+            region("blue", "remove it"),
+        ];
+        let index = index_png(
+            64,
+            64,
+            &[
+                ([255, 0, 255], (4, 4, 20, 20)),
+                ([0, 64, 255], (40, 40, 60, 60)),
+                // A stray grey and a palette colour with no words.
+                ([128, 128, 128], (40, 4, 56, 20)),
+                ([0, 255, 255], (4, 40, 20, 56)),
+            ],
+        );
+        let (plan, outlined) = prepare_regions(&original, &index, &regions, 1024).unwrap();
+        let (w, h) = plan.picture.dimensions();
+        // Both regions are in the mask, the blue one included.
+        let at = |fx: f32, fy: f32| ((w as f32 * fx) as u32, (h as f32 * fy) as u32);
+        let (bx, by) = at(50.0 / 64.0, 50.0 / 64.0);
+        assert_eq!(
+            plan.soft.get_pixel(bx, by).0[0],
+            255,
+            "the blue region is masked"
+        );
+        let (mx, my) = at(12.0 / 64.0, 12.0 / 64.0);
+        assert_eq!(plan.soft.get_pixel(mx, my).0[0], 255);
+        // Neither the stray grey nor the unnamed cyan is.
+        for (fx, fy) in [(48.0, 12.0), (12.0, 48.0)] {
+            let (x, y) = at(fx / 64.0, fy / 64.0);
+            assert_eq!(
+                plan.soft.get_pixel(x, y).0[0],
+                0,
+                "an unnamed colour is not masked"
+            );
+        }
+        // Outlined in each colour, the inside left as the picture.
+        let colours: std::collections::HashSet<[u8; 3]> = outlined.pixels().map(|p| p.0).collect();
+        assert!(colours.contains(&[255, 0, 255]) && colours.contains(&[0, 64, 255]));
+        assert_eq!(outlined.get_pixel(mx, my), plan.picture.get_pixel(mx, my));
+        // A region with nothing painted is refused by name.
+        let none = prepare_regions(
+            &original,
+            &index,
+            &[region("magenta", "a"), region("green", "b")],
+            1024,
+        )
+        .unwrap_err();
+        assert!(none.contains("The green region is empty"), "{none}");
+    }
+
+    /// On a photo larger than the edit canvas, a region a few pixels wide
+    /// still gets its outline: sampled nearest, it fell between samples and
+    /// went as words with no place (review of #623).
+    #[test]
+    fn a_thin_region_on_a_large_photo_keeps_its_outline() {
+        let mut index = image::RgbImage::new(4032, 3024);
+        for y in 1000..2000 {
+            for x in 2001..2004 {
+                index.put_pixel(x, y, image::Rgb([255, 0, 255]));
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        index.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        // The picture at the index's size, so the canvas is a downscale.
+        let big = image::RgbImage::from_pixel(4032, 3024, image::Rgb([240, 220, 40]));
+        let mut big_bytes = std::io::Cursor::new(Vec::new());
+        big.write_to(&mut big_bytes, image::ImageFormat::Png)
+            .unwrap();
+        let (plan, outlined) = prepare_regions(
+            &big_bytes.into_inner(),
+            &bytes.into_inner(),
+            &[region("magenta", "a thin scarf")],
+            1024,
+        )
+        .unwrap();
+        assert!(plan.picture.width() < 4032, "the canvas is a downscale");
+        assert!(
+            outlined.pixels().any(|p| p.0 == [255, 0, 255]),
+            "the thin region is outlined"
+        );
+    }
+
+    /// A regions edit whose index cannot be read draws nothing: there are no
+    /// owner's words for a whole-picture edit to run on (review of #623).
+    #[tokio::test]
+    async fn a_regions_edit_without_its_index_draws_nothing() {
+        let (url, seen) = distinct(1).await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/missing.png",
+                       "regions": [{"colour": "magenta", "words": "make it red"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("painted regions could not be read"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A regions edit sends the clean picture as the canvas, the outlined
+    /// copy as `<image2>`, the union as the mask, and the legend as the
+    /// words; the rest of the picture comes back as it was.
+    #[tokio::test]
+    async fn a_regions_edit_sends_the_outlines_as_the_second_picture() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let original = picture(8, [240, 220, 40]);
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(
+                64,
+                64,
+                &[
+                    ([255, 0, 255], (0, 16, 16, 56)),
+                    ([0, 255, 255], (40, 16, 56, 56)),
+                ],
+            ),
+        )
+        .unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "make her top red"},
+                                   {"colour": "cyan", "words": "make his shirt green"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 3, "the picture, its outlined copy, and the mask");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("images.image_2"), "{submitted}");
+        assert!(submitted.contains("SetLatentNoiseMask"), "{submitted}");
+        assert!(
+            submitted.contains("in the magenta outline, make her top red; in the cyan outline, make his shirt green"),
+            "{submitted}"
+        );
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let saved = image::load_from_memory(&std::fs::read(dir.join(png)).unwrap())
+            .unwrap()
+            .to_rgb8();
+        // Between the two regions, untouched.
+        let (w, h) = saved.dimensions();
+        let canvas = prepare_mask(&original, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
+        assert_eq!(
+            saved.get_pixel(w / 2, h / 20),
+            canvas.picture.get_pixel(w / 2, h / 20)
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[tokio::test]
     async fn a_masked_edit_uploads_the_mask_and_keeps_the_rest_of_the_picture() {
         let green = image::RgbImage::from_pixel(64, 64, image::Rgb([10, 200, 30]));
@@ -8081,6 +8443,65 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A region's words are read for a broken entry too: the panel sends
+    /// them as `regions`, not `retouch` (review of #623).
+    #[tokio::test]
+    async fn a_broken_entry_named_in_a_region_is_refused_before_the_gpu() {
+        let lib = library_with(&["maya", "john"]);
+        std::fs::write(lib.join("characters/john/entry.toml"), "not = [toml").unwrap();
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/a.png"), picture(20, [200, 30, 30])).unwrap();
+        let out = tool("http://127.0.0.1:1")
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                       "regions": [{"colour": "magenta", "words": "John in a red coat"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("John's library entry could not be read"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Regions on a picture that is not in the chat are refused even beside
+    /// a scene: left out, their legend would ride into a new picture's
+    /// prompt describing outlines that do not exist (review of #623).
+    #[tokio::test]
+    async fn regions_on_a_made_up_picture_draw_nothing() {
+        let (url, seen) = distinct(1).await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/nope.png", "mask": "inbox/r.png",
+                       "regions": [{"colour": "magenta", "words": "a red coat"}],
+                       "scene": {"people": [{"who": "a woman in a grey coat"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("painted regions mark places in it"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// The record keeps the seed that drew its room: an edit between a new
