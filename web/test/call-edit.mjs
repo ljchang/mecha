@@ -117,7 +117,7 @@ function rig({ live = true } = {}) {
 // The chat's own send puts `edit` on the wire only for the panel's turn, so
 // the harness draws the change there and nowhere else (`persona::edit`).
 {
-  const sendSrc = readOut('  async function send({ edit = null } = {}) {');
+  const sendSrc = readOut('  async function send({ edit = null, text: fixed = null } = {}) {');
   const run = new Function(
     `'use strict';
      const bodies = [];
@@ -136,6 +136,50 @@ function rig({ live = true } = {}) {
   const edit = { picture: 'images/a.png', words: 'add a hat' };
   is((await run('Edit images/a.png: add a hat', { edit })).edit, edit, "the panel's turn carries its fields");
   is('edit' in (await run('hello')), false, 'a typed turn sends no edit field');
+}
+
+// Regenerate (IMAGE-DESIGN.md §5.4): the picture showing goes out with
+// `redraw` and nothing else, never a mask or regions (the server refuses the
+// pair); the owner's draft and files stay in the composer; and nothing goes
+// while a run is live, where a message would steer it as bare text.
+{
+  const sendSrc = readOut('  async function send({ edit = null, text: fixed = null } = {}) {');
+  const regenSrc = readOut('  async function regenerate(root, picture) {');
+  const make = (running) =>
+    new Function(
+      'running',
+      `'use strict';
+       const bodies = [];
+       let input = 'half a thought', attachments = ['inbox/notes.pdf'], key = 'k1', token = null, error = null;
+       let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
+       let regenerated = null;
+       const run = { running };
+       const chosen = { display: 'Mara' };
+       const withAttachments = (typed, files) => [typed, ...files].join(' ');
+       const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
+       const notice = () => {};
+       const composeRegenerateMessage = (p) => 'Regenerate ' + p;
+       const fetch = async (url, opts) => {
+         bodies.push(JSON.parse(opts.body));
+         return { ok: true, json: async () => ({ started: true }) };
+       };
+       ${sendSrc}
+       ${regenSrc}
+       return async () => {
+         await regenerate('images/a.png', 'images/b.png');
+         return { bodies, input, attachments, chosen: [...chosenVersion.keys()], regenerated };
+       };`,
+    )(running);
+  const out = await make(false)();
+  is(out.bodies.length, 1, 'Regenerate sends one turn');
+  is(out.bodies[0].edit, { picture: 'images/b.png', redraw: true }, 'of the version showing, with redraw and no mask or regions');
+  is(out.bodies[0].text, 'Regenerate images/b.png', 'and the line the owner sees, with no files riding along');
+  is(out.bodies[0].attachments, [], 'the composer\'s files are not attached to it');
+  is([out.input, out.attachments], ['half a thought', ['inbox/notes.pdf']], "the owner's draft and files stay in the composer");
+  is(out.chosen, [], 'the card goes back to the newest, so the new version is what lands');
+  is(out.regenerated, 'k1', 'and the finished turn is read again for its version_of');
+  const busy = await make(true)();
+  is(busy.bodies.length, 0, 'nothing is sent while a run is live');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

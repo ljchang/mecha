@@ -191,3 +191,41 @@ export function dropAt(ids, id, slot) {
   if (to === at) return null;
   return moveTo(ids, id, to);
 }
+
+// Regenerate's versions (IMAGE-DESIGN.md §5.4). A card whose `version_of`
+// names a picture drawn higher up is that picture drawn again: it shows on
+// the first card of the chain, ‹ k/n ›, not as a card of its own. A
+// Regenerate of a version names the version, so the chain is followed back
+// to its first picture. A `version_of` naming a picture this transcript
+// does not show (compacted away) leaves the card standing alone, since a
+// version must never vanish into a card nobody can see.
+//
+// `groups`: each first picture → its versions in order, itself first.
+// `folded`: the entry indices whose picture shows on an earlier card, each
+// → `{ root, k }`, `k` counting from 1 as the card does.
+export function pictureVersions(entries) {
+  const rootOf = new Map();
+  const groups = new Map();
+  const folded = new Map();
+  entries.forEach((entry, i) => {
+    const picture = entry.kind === 'tool' ? pictureOf(entry) : null;
+    if (!picture || rootOf.has(picture)) return;
+    const root = entry.version_of ? rootOf.get(entry.version_of) : undefined;
+    if (root === undefined) {
+      rootOf.set(picture, picture);
+      groups.set(picture, [picture]);
+      return;
+    }
+    rootOf.set(picture, root);
+    const list = groups.get(root);
+    list.push(picture);
+    folded.set(i, { root, k: list.length });
+  });
+  return { groups, folded };
+}
+
+// The version a card shows: the one the owner stepped to, while it is still
+// among them, else the newest, so a Regenerate's result is what lands.
+export function shownVersion(list, chosen) {
+  return chosen && list.includes(chosen) ? chosen : list[list.length - 1];
+}
