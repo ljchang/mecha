@@ -562,7 +562,9 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
     if let Some((name, pcfg)) = cfg
         .providers
         .iter()
-        .find(|(name, p)| p.kind == "local" && *name != provider_name)
+        // One the owner wrote: the default's (ruling F12) is no evidence of
+        // a server anybody set up (found on review of #627).
+        .find(|(name, p)| p.configured_local() && *name != provider_name)
     {
         let where_it_points = pcfg
             .base_url
@@ -1265,6 +1267,7 @@ mod tests {
         p.api_key_env = None;
         p.context_window = Some(context_window);
         p.vision = vision;
+        p.built_in = false; // written by the owner, as a file's table is
         cfg.providers.insert("local".into(), p);
         cfg
     }
@@ -1700,6 +1703,26 @@ mod tests {
         );
     }
 
+    /// The default's own `local` entry (ruling F12) is not a provider the
+    /// owner configured: a hosted provider chosen without its key is told
+    /// the variable to export, never "you already have a local provider"
+    /// about a table nobody wrote (review of #627).
+    #[test]
+    fn the_default_local_entry_is_never_named_as_one_the_owner_configured() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+        f.local_probe = LocalProbe::NothingAnswered;
+        let detail = step(&plan(&cfg, "anthropic", &f), "provider-credential")
+            .detail
+            .clone();
+        assert!(detail.contains("ANTHROPIC_API_KEY"), "{detail}");
+        assert!(
+            !detail.contains("already have a local provider"),
+            "{detail}"
+        );
+    }
+
     /// A provider with no `api_key_env` cannot be fixed by exporting
     /// anything, and telling somebody to "set the variable it names" about a
     /// provider that names none sends them looking for a typo they did not
@@ -1776,6 +1799,7 @@ mod tests {
         local.kind = "local".into();
         local.base_url = Some("http://127.0.0.1:8080".into());
         local.api_key_env = None;
+        local.built_in = false; // written by the owner, as a file's table is
         cfg.providers.insert("local".into(), local);
 
         let mut f = facts(None);

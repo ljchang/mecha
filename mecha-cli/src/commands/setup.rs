@@ -188,7 +188,10 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // probing there would find whatever else is on 8080. The right answer
     // for a down server is the `local-server` step's own "start it", which
     // `plan` already gives.
-    let a_local_provider_is_configured = cfg.providers.values().any(|p| p.kind == "local");
+    // The owner's, not the default's: since ruling F12 `Config::default()`
+    // carries a `local` entry no file can remove, and counting it would
+    // switch the probe off for everybody (found on review of #627).
+    let a_local_provider_is_configured = cfg.providers.values().any(|p| p.configured_local());
     let local_probe = if !a_local_provider_is_configured && pcfg.resolve_api_key().is_none() {
         probe_for_a_local_server().await
     } else {
@@ -869,28 +872,28 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
 
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
-    // A new install may not have one yet, and `--write` is reachable without
-    // having run `mecha config init` first. Seeded from the same starter that
-    // command writes, so there is one commented file in the world rather than
-    // two that drift.
-    if !path.is_file() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, super::config::STARTER)
-            .with_context(|| format!("writing {}", path.display()))?;
-        println!("created {}", path.display());
-    }
+    seed_config_file(&path)?;
 
-    let mut table = vec![
-        String::new(),
-        "# Written by `mecha setup --write` from this server's own /props.".to_string(),
-        "[providers.local]".to_string(),
-        "kind = \"local\"".to_string(),
-        format!("base_url = {}", onboarding::toml_string(&found.base_url)),
-    ];
-    table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
-    append_table(&path, "local", &table)?;
+    // The starter carries a `[providers.local]` (ruling F12), so a file just
+    // seeded from it is filled in rather than given a second table.
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
+    if text.lines().any(|l| l.trim() == "[providers.local]") {
+        let mut all = vec![("base_url", onboarding::toml_string(&found.base_url))];
+        all.extend(settings.iter().cloned());
+        let filled = apply_text(&text, "local", &all)?;
+        backup(&path)?;
+        std::fs::write(&path, filled)?;
+    } else {
+        let mut table = vec![
+            String::new(),
+            "# Written by `mecha setup --write` from this server's own /props.".to_string(),
+            "[providers.local]".to_string(),
+            "kind = \"local\"".to_string(),
+            format!("base_url = {}", onboarding::toml_string(&found.base_url)),
+        ];
+        table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
+        append_table(&path, "local", &table)?;
+    }
     set_default_provider(&path, "local")?;
 
     // **Checked, not claimed.** `CharterEdit::SavedButInvalid` exists a few
@@ -1016,9 +1019,29 @@ fn backup(path: &std::path::Path) -> Result<()> {
 /// the file's comments — which in this project are most of it, and are how
 /// the next reader learns why a number is what it is. So this rewrites the
 /// lines it owns and touches nothing else.
+/// A new install may not have a config file yet, and `--write` and `setup
+/// chat` are reachable without `mecha config init` first — and with ruling
+/// F12's default `local` entry they reach a write before any file exists
+/// (found on review of #627). Seeded from the same starter that command
+/// writes, so there is one commented file in the world rather than two that
+/// drift.
+fn seed_config_file(path: &std::path::Path) -> Result<()> {
+    if path.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, super::config::STARTER)
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("created {}", path.display());
+    Ok(())
+}
+
 fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
+    seed_config_file(&path)?;
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
     let lines =
         apply_text(&text, provider, settings).with_context(|| format!("in {}", path.display()))?;
