@@ -367,3 +367,93 @@ The owner deferred decisions about how pictures may be used (2026-10-07). The fu
 - **Minors.** The library holds an entry described as 16. The proposed rule: a `minor` mark on library entries, set by the owner, and set automatically for any proposed entry with an age under 18. A marked entry is never drawn nude or sexually, under the same three checks, and possibly never in a persona chat whose chats are sexual. The image model here is local with no guard of its own. **Ruled 2026-10-07: that entry is left out of all tests.** mecha-7e and mecha-a3 also will not generate such content.
 - **Existing entries.** Which current library entries are real people or minors; the owner marks them.
 - **Old-shape calls in existing chats** (deferred 2026-10-08, §11 item 10). Chats from before the redesign hold `image_generate` calls in the retired shapes, and the model imitates its history. mecha-a3's measurement: edit turns 19 of 35 right before the planner absorbed over-filled fields, 33 of 35 after, against 35 of 35 in a fresh history. A send-time view that rewrites those calls into the new shape would close the rest; it is a compatibility layer, so it waits on a ruling.
+
+## 15. Layers for touching scenes (owner, 2026-10-10)
+
+Owner rulings, 2026-10-09 and 10:
+
+- **"Let's build the layer pipeline."** By eye, the owner found the layered composites "the best in terms of instruction following and generating a coherent scene with minimal distortions". The single pass was not enough.
+- **No older models.** No Qwen-Image-Layered: Qwen-Image 2.1 returns one flattened picture, and the layers are built here.
+- **A per-persona setting decides the route,** before generation, so the layers exist and are kept. The model never chooses the pipeline.
+
+mecha-a3's measurements are local (`QWEN-PROMPT-GUIDE-REVIEW.md`, the layers sections). Its design note is `LAYERS-PIPELINE-DESIGN.md`, and this section follows it with a3's two later changes (15.3).
+
+### 15.1 The switch
+
+- **"Touching scenes: precise (slower)", per persona, off by default.**
+  - It lives in the persona's `state.toml`, under an `[image]` table, as the first per-persona image setting.
+  - **Only the owner writes it**, from the persona settings page, as with the avatar framing. No tool may write it, `persona_propose` included, whose writes reach the owner-file set and never `state.toml`'s keys.
+- **Read fresh every turn,** and stamped on `ToolCtx` by the persona host as it stamps `role_split`. `image_generate` reads a value. The tool schema does not change, and nothing new enters the cached prefix.
+
+### 15.2 When a picture is layered
+
+A harness predicate, at plan time. All of these must hold:
+
+- the switch is on;
+- the route is `new`: a fresh picture, not an edit, restage, retouch or redraw;
+- the scene has two or more people;
+- the scene has a `together`. That is the splitter's own trigger, and its parts feed the placing pass.
+
+Everything else draws as today.
+
+### 15.3 The pipeline
+
+The steps run in one deferred job (`jobs.rs`), in order, with the run's cancellation checked between steps. Other pictures never interleave with a build. The queue line names the step: plate, cutout *i* of *n*, placing, finish. Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
+
+1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small. A setting photo is the plate as it is, with no render.
+2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
+   - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. The measured placing pass re-posed people anyway, placing 2 of 4 wrongly-posed cutouts correctly.
+   - Every output arrives RGBA, so each cutout is **flattened on mid-grey (128) in code** before it is a reference. What the encoder does with a transparent reference is untested and not relied on.
+3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order. Each person is placed by tag with their part from the split, and the leftover `together` follows.
+   - A role noun goes beside a tag only where it is unambiguous ("the woman from `<image2>`" in a mixed pair), else "the person from `<image2>`" (mecha-a3's change 2). Names never appear inside the prompt.
+   - It closes with: "Keep `<image1>`'s room, framing, camera angle and light unchanged. Take each person's face, hair, body and clothing from their own image; each appears exactly once. Lit by the room's light, with natural contact and shadows."
+4. **The finish (F1).** One keep-everything edit:
+   - relight the people with the room's light so their skin, highlights and shadows match;
+   - natural contact shadows;
+   - an 85 mm lens at f/1.8, the people sharp and the room softly out of focus;
+   - natural fine detail in skin, hair and fabric;
+   - "change nothing else".
+
+   It was staging-safe 8 of 8, and it fixes the lighting mismatch.
+
+### 15.4 What is kept
+
+The picture's scene record gets a `layers` entry:
+
+- the plate's hash (photo or render);
+- per person: who, the cutout's hash (the RGBA PNG, kept in the workspace beside the picture), the part, and the seed;
+- the placing seed and the finish seed.
+
+Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on.
+
+### 15.5 Failure is said, never silent
+
+- **A failed step.** A render error, an empty alpha or a missing portrait draws the picture by the single pass, and says "layers failed at {step}: {why}; drawn in one pass", in the result and the manifest.
+- **A Stop between steps.** It ends the job, discards the partial build from the record (its files may stay) and says so. A layered picture never quietly becomes another kind of picture.
+
+### 15.6 Not in this build
+
+All of these were measured; none is built yet:
+
+- **Reshaping a layered picture** (arm A): redraw one cutout and re-place it at the same placing seed. It landed 16 of 16.
+- **In-place per-person edits** (arm B): segmentation-backed. The segmentation service is the owner's open decision.
+- **Reframing the finished picture to the people, and a face pass.**
+  - The crop needs the people's boxes.
+  - The face pass must be gated on head turn under about 45°. At profile it pasted a frontal face 4 of 8.
+
+### 15.7 The gate (mecha-a3, before the switch is offered)
+
+- **Arms:** today's single pass against layers v1, with cutouts posed by the part against neutral cutouts (change 1's own test), on the recorded touching-scene calls, byte-identical, n = 3, paired seeds.
+- **Measured:**
+  - a person drawn twice;
+  - roles right and the act drawn (by eye);
+  - truly facing away when asked;
+  - identity, with head turn (yaw) and face size reported beside ArcFace;
+  - framing (face height in px);
+  - seconds per picture;
+  - the owner's preference on a contact sheet.
+- **Known weak spots to watch:**
+  - a clothing state lost in placing ("pulled down" 0 of 4 in one scene);
+  - lower identity on profile faces (yaw 64–83°);
+  - the cost.
+
