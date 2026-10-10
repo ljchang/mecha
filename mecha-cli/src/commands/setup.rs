@@ -188,7 +188,10 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // probing there would find whatever else is on 8080. The right answer
     // for a down server is the `local-server` step's own "start it", which
     // `plan` already gives.
-    let a_local_provider_is_configured = cfg.providers.values().any(|p| p.kind == "local");
+    // The owner's, not the default's: since ruling F12 `Config::default()`
+    // carries a `local` entry no file can remove, and counting it would
+    // switch the probe off for everybody (found on review of #627).
+    let a_local_provider_is_configured = cfg.providers.values().any(|p| p.configured_local());
     let local_probe = if !a_local_provider_is_configured && pcfg.resolve_api_key().is_none() {
         probe_for_a_local_server().await
     } else {
@@ -713,7 +716,7 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
     // as the one below — read the values off the wire, show them, ask — with
     // one addition, which is that the table does not exist yet.
     if let onboarding::LocalProbe::Found(found) = &facts.local_probe {
-        return write_local_provider(found);
+        return write_local_provider(found).map(|_| ());
     }
     let Some(props) = &facts.props else {
         // "Nothing answered" is a claim about a probe, and it is only true
@@ -832,10 +835,34 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
 /// It also moves `default_provider`, which is a bigger change than the three
 /// keys `--write` otherwise touches: it changes what answers. So it is
 /// printed in full and confirmed, and the previous file is kept.
-pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
+///
+/// `true` when written: `setup chat`, which has just installed what this
+/// would name, says what a decline leaves behind (found on review of #627).
+pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bool> {
     let settings = onboarding::verified_settings(&found.props);
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    // A `[providers.local]` the owner wrote — any kind, any address — is
+    // theirs: never rewritten from a probe after being told there is no
+    // table. Only the starter's bare one (`kind = "local"` and an address,
+    // nothing else) is filled in (found on review of #627: a table spelled
+    // `kind = "openai-compatible"` was probed past and rewritten; and the
+    // way out names `kind`, since `--write --provider local` led back here).
+    if path.is_file() {
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
+        if text.lines().any(|l| l.trim() == "[providers.local]") && !starter_shaped_local(&text) {
+            println!(
+                "Found a server at {}, but {} already has a `[providers.local]` of yours that \
+                 is not `kind = \"local\"`, so it is left as it is. Set its `kind = \"local\"` \
+                 and `mecha setup --write` fills it in from the server it names.",
+                found.base_url,
+                path.display()
+            );
+            return Ok(false);
+        }
+    }
     println!(
-        "Found a server at {} and nothing in the config names it.\n",
+        "Found a server at {}, and no table in your config file describes it.\n",
         found.base_url
     );
     println!("    [providers.local]");
@@ -856,7 +883,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
 
     if !std::io::stdin().is_terminal() {
         println!("\n(not a terminal, so nothing was written — copy the lines above)");
-        return Ok(());
+        return Ok(false);
     }
     print!("\nwrite this, and make it the default provider? [y/N] ");
     std::io::stdout().flush()?;
@@ -864,33 +891,37 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
     std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
     if !line.trim().eq_ignore_ascii_case("y") {
         println!("not written");
-        return Ok(());
+        return Ok(false);
     }
 
-    let path = mecha_core::config::Config::global_path()
-        .context("no global config path — is $HOME set?")?;
-    // A new install may not have one yet, and `--write` is reachable without
-    // having run `mecha config init` first. Seeded from the same starter that
-    // command writes, so there is one commented file in the world rather than
-    // two that drift.
-    if !path.is_file() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, super::config::STARTER)
-            .with_context(|| format!("writing {}", path.display()))?;
-        println!("created {}", path.display());
-    }
+    seed_config_file(&path)?;
 
-    let mut table = vec![
-        String::new(),
-        "# Written by `mecha setup --write` from this server's own /props.".to_string(),
-        "[providers.local]".to_string(),
-        "kind = \"local\"".to_string(),
-        format!("base_url = {}", onboarding::toml_string(&found.base_url)),
-    ];
-    table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
-    append_table(&path, "local", &table)?;
+    // The starter carries a `[providers.local]` (ruling F12), so a file just
+    // seeded from it is filled in rather than given a second table.
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
+    if text.lines().any(|l| l.trim() == "[providers.local]") {
+        // The lines the owner just approved, `kind` among them: a table
+        // spelled `openai-compatible` would otherwise keep that kind and
+        // read as not-local everywhere (found on review of #627).
+        let mut all = vec![
+            ("kind", onboarding::toml_string("local")),
+            ("base_url", onboarding::toml_string(&found.base_url)),
+        ];
+        all.extend(settings.iter().cloned());
+        let filled = apply_text(&text, "local", &all)?;
+        backup(&path)?;
+        std::fs::write(&path, filled)?;
+    } else {
+        let mut table = vec![
+            String::new(),
+            "# Written by `mecha setup --write` from this server's own /props.".to_string(),
+            "[providers.local]".to_string(),
+            "kind = \"local\"".to_string(),
+            format!("base_url = {}", onboarding::toml_string(&found.base_url)),
+        ];
+        table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
+        append_table(&path, "local", &table)?;
+    }
     set_default_provider(&path, "local")?;
 
     // **Checked, not claimed.** `CharterEdit::SavedButInvalid` exists a few
@@ -920,7 +951,7 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
         "written to {} — `mecha setup` again to check it agrees with the server",
         path.display()
     );
-    Ok(())
+    Ok(true)
 }
 
 /// Append a provider table, refusing to duplicate one that is already there.
@@ -1010,6 +1041,25 @@ fn backup(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// A new install may not have a config file yet, and `--write` and `setup
+/// chat` are reachable without `mecha config init` first — and with ruling
+/// F12's default `local` entry they reach a write before any file exists
+/// (found on review of #627). Seeded from the same starter that command
+/// writes, so there is one commented file in the world rather than two that
+/// drift.
+fn seed_config_file(path: &std::path::Path) -> Result<()> {
+    if path.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, super::config::STARTER)
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("created {}", path.display());
+    Ok(())
+}
+
 /// Edit the provider's table in place, preserving every comment.
 ///
 /// A parse-and-reserialise round trip would be shorter and would throw away
@@ -1019,39 +1069,139 @@ fn backup(path: &std::path::Path) -> Result<()> {
 fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;
+    seed_config_file(&path)?;
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
-    let header = format!("[providers.{provider}]");
-    let Some(start) = text.lines().position(|l| l.trim() == header) else {
-        anyhow::bail!("no {header} table in {}", path.display());
-    };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let end = lines
-        .iter()
-        .enumerate()
-        .skip(start + 1)
-        .find(|(_, l)| l.trim_start().starts_with('['))
-        .map(|(i, _)| i)
-        .unwrap_or(lines.len());
-
-    for (key, value) in settings {
-        let assignment = format!("{key} = {value}");
-        match lines[start + 1..end]
-            .iter()
-            .position(|l| l.split('=').next().map(str::trim) == Some(*key))
-        {
-            Some(rel) => lines[start + 1 + rel] = assignment,
-            None => lines.insert(end, assignment),
-        }
-    }
+    let entry = mecha_core::config::Config::load_global()?
+        .providers
+        .get(provider)
+        .cloned();
+    let lines = apply_or_add(&text, provider, entry.as_ref(), settings)
+        .with_context(|| format!("in {}", path.display()))?;
     let backup = path.with_extension("toml.bak");
     std::fs::copy(&path, &backup).ok();
-    std::fs::write(&path, lines.join("\n") + "\n")?;
+    std::fs::write(&path, lines)?;
+    // Checked, not claimed — the read-back `write_local_provider` makes, and
+    // the one this path lacked: a line edit can land somewhere TOML does not
+    // allow (found on review of #627).
+    if let Err(e) = mecha_core::config::Config::load_global() {
+        let restored = std::fs::copy(&backup, &path).is_ok();
+        eprintln!(
+            "what was written to {} does not parse: {e:#}",
+            path.display()
+        );
+        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
+        crate::exit_with(1);
+    }
     println!(
         "written to {} (previous copy at {})",
         path.display(),
         backup.display()
     );
     Ok(())
+}
+
+/// `apply_text`, or — for a provider the config has but no file names, the
+/// built-in `local` entry (ruling F12) — a new table written from that
+/// entry's kind and address with the settings beneath. `--write` is the
+/// remedy named for exactly that shape, and refusing it with "no table"
+/// after the owner said yes left them nowhere (found on review of #627).
+fn apply_or_add(
+    text: &str,
+    provider: &str,
+    entry: Option<&mecha_core::config::ProviderConfig>,
+    settings: &[(&'static str, String)],
+) -> Result<String> {
+    let header = format!("[providers.{provider}]");
+    if text.lines().any(|l| l.trim() == header) {
+        return apply_text(text, provider, settings);
+    }
+    let entry = entry.with_context(|| format!("no {header} in the config"))?;
+    let mut out = text.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "\n# Written by `mecha setup --write` from this server's own /props.\n{header}\nkind = {}\n",
+        onboarding::toml_string(&entry.kind)
+    ));
+    if let Some(url) = &entry.base_url {
+        out.push_str(&format!("base_url = {}\n", onboarding::toml_string(url)));
+    }
+    for (k, v) in settings {
+        out.push_str(&format!("{k} = {v}\n"));
+    }
+    Ok(out)
+}
+
+/// Whether the file's `[providers.local]` is the starter's bare one —
+/// `kind = "local"` and at most an address — so filling it in loses nothing
+/// the owner wrote. Unparseable reads as not: never rewritten on a guess.
+fn starter_shaped_local(text: &str) -> bool {
+    let Ok(v) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    let Some(t) = v
+        .get("providers")
+        .and_then(|p| p.get("local"))
+        .and_then(|l| l.as_table())
+    else {
+        return false;
+    };
+    t.get("kind").and_then(|k| k.as_str()) == Some("local")
+        && t.keys().all(|k| k == "kind" || k == "base_url")
+}
+
+/// The text of `apply`: each setting replaces its key in `[providers.<p>]`,
+/// or is added after the table's last assignment. Not before the next
+/// header — the comment block that introduces the next table sits above it,
+/// and a key put there reads as that table's (found writing F12, where the
+/// starter's `[providers.anthropic]` follows `[providers.local]`).
+fn apply_text(text: &str, provider: &str, settings: &[(&'static str, String)]) -> Result<String> {
+    let header = format!("[providers.{provider}]");
+    let Some(start) = text.lines().position(|l| l.trim() == header) else {
+        anyhow::bail!("no {header} table");
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, l)| l.trim_start().starts_with('['))
+        .map(|(i, _)| i)
+        .unwrap_or(lines.len());
+    // An assignment whose value closes on its own line: the opening line of
+    // a multi-line array (`fallbacks = [`) is not where the table's last
+    // value ends, and a key put after it lands inside the array (found on
+    // review of #627). With none, the key goes just after the header.
+    let assignment_line = |l: &str| {
+        let t = l.trim_start();
+        let Some((_, value)) = t.split_once('=') else {
+            return false;
+        };
+        let opens = |o: char, c: char| value.matches(o).count() > value.matches(c).count();
+        !t.starts_with('#') && !opens('[', ']') && !opens('{', '}') && !value.contains("\"\"\"")
+    };
+    let closes_a_value = |l: &str| {
+        let t = l.trim_start();
+        !t.starts_with('#') && (t.starts_with(']') || t.starts_with('}'))
+    };
+    let mut after = (start + 1..end)
+        .rev()
+        .find(|&i| assignment_line(&lines[i]) || closes_a_value(&lines[i]))
+        .map_or(start + 1, |i| i + 1);
+
+    for (key, value) in settings {
+        let assignment = format!("{key} = {value}");
+        match (start + 1..end).find(|&i| lines[i].split('=').next().map(str::trim) == Some(*key)) {
+            Some(i) => lines[i] = assignment,
+            None => {
+                lines.insert(after, assignment);
+                after += 1;
+                end += 1;
+            }
+        }
+    }
+    Ok(lines.join("\n") + "\n")
 }
 
 fn trigger_count(home: &std::path::Path) -> usize {
@@ -1103,6 +1253,84 @@ fn shell_words(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--write` and `setup chat` fill the starter's `[providers.local]`
+    /// (ruling F12) without landing under the next table's introduction,
+    /// and a key already set is replaced in place.
+    #[test]
+    fn settings_land_in_their_own_table_of_the_starter() {
+        let settings = [
+            ("model", "\"served-alias\"".to_string()),
+            ("context_window", "65536".to_string()),
+            ("vision", "true".to_string()),
+        ];
+        let text = apply_text(super::super::config::STARTER, "local", &settings).unwrap();
+        let cfg: toml::Value = toml::from_str(&text).unwrap();
+        let local = &cfg["providers"]["local"];
+        assert_eq!(local["model"].as_str(), Some("served-alias"));
+        assert_eq!(local["context_window"].as_integer(), Some(65536));
+        assert_eq!(local["vision"].as_bool(), Some(true));
+        assert_eq!(cfg["default_provider"].as_str(), Some("local"));
+        let pos = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        assert!(pos("vision = true") < pos("# A hosted model"), "{text}");
+        assert!(pos("base_url") < pos("model = \"served-alias\""), "{text}");
+
+        let again = apply_text(&text, "local", &[("model", "\"other\"".to_string())]).unwrap();
+        assert_eq!(
+            again.matches("model = \"").count(),
+            text.matches("model = \"").count()
+        );
+        assert!(again.contains("model = \"other\"") && !again.contains("served-alias"));
+        assert!(apply_text(&text, "nowhere", &settings).is_err());
+
+        // A file with no `[providers.local]`, for the built-in entry the
+        // config still has: the table is added from it, never refused
+        // (review of #627).
+        let builtin = mecha_core::config::Config::default().providers["local"].clone();
+        let only_agent = "[agent]\nmax_turns = 5\n";
+        let added = apply_or_add(only_agent, "local", Some(&builtin), &settings).unwrap();
+        let cfg: toml::Value = toml::from_str(&added).unwrap_or_else(|e| panic!("{e}\n{added}"));
+        assert_eq!(cfg["providers"]["local"]["kind"].as_str(), Some("local"));
+        assert_eq!(
+            cfg["providers"]["local"]["base_url"].as_str(),
+            Some("http://127.0.0.1:8080")
+        );
+        assert_eq!(
+            cfg["providers"]["local"]["model"].as_str(),
+            Some("served-alias")
+        );
+        assert_eq!(cfg["agent"]["max_turns"].as_integer(), Some(5));
+        assert!(apply_or_add(only_agent, "local", None, &settings).is_err());
+
+        // A table ending in a multi-line array: the key goes after its
+        // closing line, never inside it (review of #627).
+        let arrayed = "[providers.local]\nkind = \"local\"\nfallbacks = [\n  \"other\",\n]\n\n[agent]\nmax_turns = 5\n";
+        let text = apply_text(arrayed, "local", &settings).unwrap();
+        let cfg: toml::Value = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert_eq!(
+            cfg["providers"]["local"]["model"].as_str(),
+            Some("served-alias")
+        );
+        assert_eq!(
+            cfg["providers"]["local"]["fallbacks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// Only the starter's bare `[providers.local]` is filled from a probe;
+    /// one the owner wrote, whatever its kind, is theirs (review of #627).
+    #[test]
+    fn only_the_starter_s_bare_local_table_is_filled_from_a_probe() {
+        assert!(starter_shaped_local(super::super::config::STARTER));
+        let own = "[providers.local]\nkind = \"openai-compatible\"\nbase_url = \"http://192.168.1.5:8080\"\n";
+        assert!(!starter_shaped_local(own));
+        let named = "[providers.local]\nkind = \"local\"\nbase_url = \"http://127.0.0.1:8080\"\nmodel = \"x\"\n";
+        assert!(!starter_shaped_local(named));
+        assert!(!starter_shaped_local("not [toml"));
+    }
 
     /// `NotAttempted` has two causes, and `--write` must name the right one.
     /// A hosted provider with its key skipped the probe: say nothing was

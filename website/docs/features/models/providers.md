@@ -54,7 +54,7 @@ Two backends ship: `anthropic` speaks the Messages API over raw HTTP, and
 `/v1/chat/completions` client. Config picks between them with `kind`:
 
 ```toml
-default_provider = "anthropic"
+default_provider = "local"            # the default: a model on this machine
 
 [providers.anthropic]
 kind = "anthropic"
