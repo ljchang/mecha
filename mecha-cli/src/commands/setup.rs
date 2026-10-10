@@ -357,6 +357,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
             .iter()
             .filter(|s| s.id != "config-file" && !guided.settled.contains(&s.id))
             .copied()
+            .chain(guided.open.iter())
             .collect();
         if !left.is_empty() {
             println!("\nStill open:");
@@ -368,7 +369,13 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
                 .collect();
             offer(&unasked, &home, &mut std::io::stdin().lock())?;
         }
-        println!("\n`mecha setup` again picks up whatever is still open.");
+        // Said only when something is: a pass that settled everything
+        // closes as the plain checklist does (review of #631).
+        if left.is_empty() {
+            println!("\nNothing outstanding.");
+        } else {
+            println!("\n`mecha setup` again picks up whatever is still open.");
+        }
         finished_note(&steps);
         return Ok(());
     }
@@ -799,11 +806,6 @@ fn write_verified(provider: &str, hosted: bool, facts: &Facts) -> Result<()> {
     offer_settings(provider, props, false).map(|_| ())
 }
 
-/// Show what a server reports for an existing provider table, ask, and write
-/// it — `--write`'s step, shared with `mecha setup chat` when the model it
-/// installed replaces one the table already names. `true` when written: a
-/// caller that goes on to move `default_provider` must not point it at a
-/// table the owner declined to update (found on review of #618).
 /// Ask `question` at the terminal: `Some(answer)`, or `None` with no terminal
 /// to ask at. `yes` is an answer already given — the guided setup's one
 /// confirmation for everything it listed (ruling F14) — so it is not asked
@@ -822,6 +824,11 @@ fn confirm(question: &str, yes: bool) -> Result<Option<bool>> {
     Ok(Some(line.trim().eq_ignore_ascii_case("y")))
 }
 
+/// Show what a server reports for an existing provider table, ask, and write
+/// it — `--write`'s step, shared with `mecha setup chat` when the model it
+/// installed replaces one the table already names. `true` when written: a
+/// caller that goes on to move `default_provider` must not point it at a
+/// table the owner declined to update (found on review of #618).
 pub(super) fn offer_settings(
     provider: &str,
     props: &mecha_core::provider::preflight::Props,
