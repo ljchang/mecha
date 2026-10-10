@@ -99,6 +99,18 @@ pub struct SampleArgs {
     #[arg(long, requires = "persona")]
     pub layers: bool,
 
+    /// With `--layers`, cutouts posed in each person's part rather than
+    /// neutral: the arm IMAGE-DESIGN.md §15.7 measures against the shipped
+    /// one. Never a chat's.
+    #[arg(long, requires = "layers")]
+    pub layers_posed: bool,
+
+    /// Run the turn's recorded Nth tool call (1-based) verbatim through the
+    /// real tool, with the turn's stamps and no model turn: arms then differ
+    /// only in what they set, never in what the model wrote this time.
+    #[arg(long, value_name = "N", requires = "persona", conflicts_with_all = ["at_call", "no_render"])]
+    pub run_call: Option<usize>,
+
     /// Which tool text the request carries: `today` (this build's, the
     /// default: the binary is the arm) or `recorded` (the surface the turn
     /// was sent, from the surface store by its `tools_hash`), so a wording
@@ -636,6 +648,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "parsed_limit": (args.attempts > 1).then_some(args.parsed_limit),
             "readers_stamped": render && !args.no_readers,
             "layers": render && args.layers,
+            "layers_posed": render && args.layers_posed,
+            "run_call": args.run_call,
             "image_seed_base": render.then_some(args.image_seed_base),
             // The real picture tool runs on two paths, for different ends:
             // to draw, or (`--attempts`) only to refuse an unparsed call,
@@ -677,6 +691,17 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         render,
         readers: !args.no_readers,
         layers: args.layers,
+        layers_posed: args.layers_posed,
+        run_call: match args.run_call {
+            Some(n) => {
+                let (name, input) = pr::recorded_call(&path, &text, line, n)?;
+                if name != IMAGE_TOOL {
+                    bail!("call {n} is `{name}`, not {IMAGE_TOOL}: only a picture call is run");
+                }
+                Some((name, input))
+            }
+            None => None,
+        },
     };
     let mut samples = Vec::with_capacity(args.samples);
     for i in 0..args.samples {
@@ -759,6 +784,10 @@ pub struct Sampler {
     readers: bool,
     /// The touching-scenes switch, when rendering (`--layers`).
     layers: bool,
+    /// Posed cutouts, with `layers` (`--layers-posed`).
+    layers_posed: bool,
+    /// The recorded call run verbatim through the tool (`--run-call`).
+    run_call: Option<(String, serde_json::Value)>,
 }
 
 /// The one tool a sample runs, when it renders.
@@ -936,6 +965,7 @@ impl Sampler {
             image_seeds: None,
             // Set below for a rendering arm that asks (`--layers`).
             layers: false,
+            layers_posed: false,
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,
@@ -958,6 +988,7 @@ impl Sampler {
                 turn.readers = mecha_core::persona::turn::Readers::From(&judge);
             }
             turn.layers = self.layers;
+            turn.layers_posed = self.layers_posed;
         }
         let before = staged
             .as_ref()
@@ -966,7 +997,22 @@ impl Sampler {
         let cx = mecha_core::persona::turn::context(&agent, turn).with_cancel(cancel);
         let mut convo =
             mecha_core::agent::Conversation::resumed(branch.messages.clone(), branch.taint);
-        let ran = agent.run_in(&cx, &mut convo, None).await;
+        // The recorded call through the tool, or the model's own turn.
+        let mut dispatched: Option<pr::CallResult> = None;
+        let ran = match &self.run_call {
+            Some((name, input)) => {
+                let d = agent
+                    .dispatch_one(&cx, &mut convo, name, input.clone(), &None)
+                    .await;
+                dispatched = Some(pr::CallResult {
+                    name: name.clone(),
+                    is_error: d.is_error,
+                    content: d.content,
+                });
+                Ok(())
+            }
+            None => agent.run_in(&cx, &mut convo, None).await.map(|_| ()),
+        };
         drop(held);
         let error = ran
             .err()
@@ -1002,7 +1048,10 @@ impl Sampler {
                 missing: st.missing.clone(),
                 readers: self.readers,
                 image_seed,
-                results: pr::results_of(after, IMAGE_TOOL),
+                results: match &dispatched {
+                    Some(r) => vec![r.clone()],
+                    None => pr::results_of(after, IMAGE_TOOL),
+                },
                 pictures: new
                     .iter()
                     .filter(|p| p.extension().is_some_and(|x| x == "png"))
@@ -1019,7 +1068,8 @@ impl Sampler {
                     .unwrap_or_default(),
             });
         }
-        if log.is_empty() {
+        // A run call sends no request of the model's own.
+        if log.is_empty() && self.run_call.is_none() {
             bail!(
                 "sample {i} sent no request: {}",
                 sample.error.as_deref().unwrap_or("no error was given")

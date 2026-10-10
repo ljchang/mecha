@@ -382,6 +382,38 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
 /// the call deferred made the next request the closing one, which replay
 /// does not rebuild; and a run that rewrote its history (a compaction) has
 /// no recorded place for the call among the messages the turn began with.
+/// The turn at `line`'s `call`th tool call (1-based), as recorded: its tool
+/// and input, for a replay that runs that call verbatim through the tool
+/// (`mecha replay --run-call`), so arms differ only in what they measure and
+/// never in what the model happened to write this time.
+pub fn recorded_call(path: &Path, text: &str, line: usize, call: usize) -> Result<(String, Value)> {
+    if call == 0 {
+        bail!("calls count from 1");
+    }
+    let branch = branch_at(path, text, line)?;
+    let lines = non_empty(text);
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(line)
+        .find(|(j, _)| shape_at(&lines, *j) == Some(Shape::Turn))
+        .map_or(lines.len(), |(i, _)| i);
+    let run = Session::parse(path, &lines[..end].join("\n"))?;
+    let start = branch.messages.len();
+    let mut seen = 0;
+    for m in run.convo.messages.iter().skip(start) {
+        for b in &m.content {
+            if let Block::ToolUse { name, input, .. } = b {
+                seen += 1;
+                if seen == call {
+                    return Ok((name.clone(), input.clone()));
+                }
+            }
+        }
+    }
+    bail!("the run at line {line} made {seen} tool call(s), not {call}")
+}
+
 pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Result<Branch> {
     if call == 0 {
         bail!("calls count from 1");
@@ -1320,6 +1352,22 @@ mod tests {
         .map(|r| serde_json::to_string(r).unwrap())
         .collect::<Vec<_>>()
         .join("\n")
+    }
+
+    /// The recorded call is returned as written, by its place in the turn,
+    /// for a replay that runs it verbatim (`--run-call`).
+    #[test]
+    fn a_recorded_call_is_returned_as_written() {
+        let text = run_with_calls("second result");
+        let path = Path::new("t2.jsonl");
+        let (name, input) = recorded_call(path, &text, 3, 2).unwrap();
+        assert_eq!((name.as_str(), input), ("widget", json!({"n": 1})));
+        let err = recorded_call(path, &text, 3, 3).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("made 2 tool call(s)"),
+            "{err:#}"
+        );
+        assert!(recorded_call(path, &text, 3, 0).is_err());
     }
 
     #[test]
