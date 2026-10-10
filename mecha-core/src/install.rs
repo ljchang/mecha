@@ -186,6 +186,9 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
                 SidecarState::Missing { .. } | SidecarState::Incomplete
             )
             && installable(s.id)
+            // `offered`'s own predicate, so the plan never prices what
+            // `enable` would not install (review of #638).
+            && not_needed(s.id, feature, chat_here).is_none()
     }) {
         if let Some(bytes) = crate::stt_unit::download_bytes() {
             s.bytes = Some(bytes);
