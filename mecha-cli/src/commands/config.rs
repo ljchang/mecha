@@ -288,6 +288,17 @@ mod tests {
         let cfg: Config = toml::from_str(&text).expect("the starter loads");
         assert!(cfg.features.0.is_empty(), "{text}");
         assert!(!cfg.messages.on());
+        // Commented, every one: an uncommented line is an explicit `false`,
+        // the owner's no, and is named here rather than left to read as
+        // missing (review of #631).
+        for l in FEATURES_STARTER.lines() {
+            assert!(
+                !l.split_once(" = ").is_some_and(|(id, _)| {
+                    !id.starts_with('#') && id.chars().all(|c| c.is_ascii_lowercase())
+                }),
+                "`{l}` answers the switch — comment it: `# {l}`"
+            );
+        }
         let listed: Vec<&str> = FEATURES_STARTER
             .lines()
             .filter_map(|l| l.strip_prefix("# ")?.split_once(" = false"))

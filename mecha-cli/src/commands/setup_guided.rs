@@ -108,19 +108,21 @@ pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatP
              {}\n  Setup can write what it reports about itself: {}.",
             server.at, server.then
         );
-        prompt("  Write it? [Y/n] ")?;
-        // End of input is not Enter: nothing is written by a Ctrl-D (found
-        // on review of #631).
-        return Ok(
+        // End of input is not Enter: nothing is written by a Ctrl-D; and an
+        // answer it cannot read is asked again, never taken as no (review of
+        // #631).
+        loop {
+            prompt("  Write it? [Y/n] ")?;
             match answer(read)?.map(|a| a.to_ascii_lowercase()).as_deref() {
-                Some("" | "y" | "yes") => ChatPick::WriteServer(server.clone()),
+                Some("" | "y" | "yes") => return Ok(ChatPick::WriteServer(server.clone())),
+                Some("n" | "no") => return Ok(ChatPick::Skip),
                 None => {
                     println!();
-                    ChatPick::Skip
+                    return Ok(ChatPick::Skip);
                 }
-                _ => ChatPick::Skip,
-            },
-        );
+                Some(other) => println!("  `{other}` is not y or n"),
+            }
+        }
     }
     let mut menu: Vec<(String, ChatPick)> = Vec::new();
     if o.can_install {
@@ -649,7 +651,11 @@ pub(super) async fn run(
         }
     }
     if !enabled.is_empty() {
-        sign_ins(&enabled, home)?;
+        // Caught like the writes above: a sign-in that cannot be read must
+        // not cost the checklist after it.
+        if let Err(e) = sign_ins(&enabled, home) {
+            println!("the sign-ins could not be checked: {e:#} — `mecha setup` asks again");
+        }
     }
     guided
         .settled
@@ -904,10 +910,15 @@ mod tests {
             ChatPick::WriteServer(server.clone())
         );
         // What the yes writes is named in the summary before Start.
-        let s = summary(&ChatPick::WriteServer(server), 0, &[], 0);
+        let s = summary(&ChatPick::WriteServer(server.clone()), 0, &[], 0);
         assert!(s.contains("127.0.0.1:8080") && s.contains("model-x"), "{s}");
         assert!(s.contains("default provider"), "{s}");
         assert_eq!(ask_chat(&mut reader("n\n"), &o).unwrap(), ChatPick::Skip);
+        // A typo is asked again, never read as no (review of #631).
+        assert_eq!(
+            ask_chat(&mut reader("yse\n\n"), &o).unwrap(),
+            ChatPick::WriteServer(server.clone())
+        );
         // End of input writes nothing (review of #631).
         assert_eq!(ask_chat(&mut reader(""), &o).unwrap(), ChatPick::Skip);
     }
