@@ -148,11 +148,17 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
     let mut outcomes: Vec<Outcome> = Vec::new();
     let mut broken = 0usize;
     for id in ids {
-        match store.refresh(&id, now, which)? {
-            Ok(mut o) => outcomes.append(&mut o),
-            Err(r) => {
+        // One board's trouble — refused, or an error reading it — is counted
+        // and printed, and the boards after it still refresh.
+        match store.refresh(&id, now, which) {
+            Ok(Ok(mut o)) => outcomes.append(&mut o),
+            Ok(Err(r)) => {
                 broken += 1;
                 eprintln!("board {id} does not load:\n{r}");
+            }
+            Err(e) => {
+                broken += 1;
+                eprintln!("board {id} could not be refreshed: {e:#}");
             }
         }
     }

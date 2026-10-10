@@ -1709,6 +1709,19 @@ fn check_hud(dir: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             });
         }
         for loader in &board.loaders {
+            if let Some(why) = &loader.dataset_error {
+                out.push(Finding {
+                    component: "hud".into(),
+                    severity: Severity::Broken,
+                    summary: format!(
+                        "hud {}/{}: the dataset file cannot be read",
+                        board.id, loader.name
+                    ),
+                    detail: why.clone(),
+                    remedy: Some(refresh(&board.id)),
+                });
+                continue;
+            }
             let last = loader.last.as_ref().map(|e| &e.event);
             match last {
                 Some(Event::Refused { reason, .. }) | Some(Event::Failed { reason, .. }) => {
