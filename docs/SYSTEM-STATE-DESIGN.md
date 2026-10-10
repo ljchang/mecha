@@ -726,7 +726,10 @@ Two consequences:
 queues (assistant chats and persona chats), and each rewrites
 `~/.mecha/jobs/<pid>-<queue>.json` whenever its line changes, with only
 `{pid, running, waiting}`. A job in an incognito chat is a number like any
-other. A queue removes its file when dropped, and a dead pid is skipped.
+other. A queue removes its file when dropped, and a reader skips a dead
+pid. A killed or crashed host never runs its drop, so a host starting
+sweeps the markers dead hosts left; it owns the directory, and a reader
+never sweeps.
 Only the host opts in (`Jobs::marked`), so a test's queue writes nothing.
 `jobs.live` counts running jobs; the marker carries the waiting count, so
 a later measurement needs no change of format.
@@ -734,7 +737,9 @@ a later measurement needs no change of format.
 **`triggers.missed` walks the schedule, not just the ledger.** A scheduler
 that is down writes no rows, so a ledger count alone would read 0 exactly
 when the most is being missed. For each enabled trigger:
-- every slot in the last 24 h is due once `TICK_GRACE` has passed;
+- every slot in the last 24 h is due once `TICK_GRACE` has passed, walked
+  in the trigger's own zone or, without one, in `[agent] timezone`, as the
+  scheduler fires it (`Reader::configured`);
 - a slot is missed unless an `ok` or `error` row accounts for it, or a live
   run marker carries it;
 - a stale or overlapping skip is missed, and so is a slot a catch-up
@@ -745,8 +750,9 @@ at noon does not owe the morning's slots under the new expression. A
 trigger file that does not load cannot be walked, so the reading is
 unread and its reason gives the floor.
 
-**`messages.unread` follows `[messages] dir`.** The CLI passes it in, so a
-moved mailbox is not read as an empty one.
+**`messages.unread` follows `[messages] dir`.** The CLI loads the global
+config once and hands it to the reader (`Reader::configured`), so a moved
+mailbox is not read as an empty one.
 
 **`mail.drain.pending` is dropped.** §2 placed it at `~/.mecha/requests`,
 but that directory is the front door's request store, which

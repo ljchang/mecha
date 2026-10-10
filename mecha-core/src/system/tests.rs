@@ -803,8 +803,13 @@ fn measurement_numbers_and_names_are_pinned_and_unique() {
         (52, "network.uplink.kind"),
         (61, "services.failed"),
         (70, "runs.live"),
+        (71, "tasks.running"),
+        (72, "holds.live"),
+        (73, "permits.live"),
         (74, "jobs.live"),
         (75, "voice.live"),
+        (76, "triggers.missed"),
+        (77, "triggers.failed"),
         (78, "messages.unread"),
         (104, "category.oom_kills"),
     ];
@@ -1430,10 +1435,12 @@ fn messages_count_what_waits_unclaimed_in_the_mailbox_the_config_names() {
         .unwrap();
     // The default place is empty; the configured one holds the message.
     assert_eq!(scan(&s.0, Measurement::MessagesUnread), obs(0.0));
+    let mut cfg = crate::config::Config::default();
+    cfg.messages.dir = Some(elsewhere.clone());
     let configured = |home: &Path| {
         Reader::new()
             .with_home(home.to_path_buf())
-            .with_messages(Some(elsewhere.clone()))
+            .configured(Some(&cfg))
             .now(Measurement::MessagesUnread)
     };
     assert_eq!(configured(&s.0), obs(1.0));
@@ -1443,6 +1450,42 @@ fn messages_count_what_waits_unclaimed_in_the_mailbox_the_config_names() {
     std::fs::write(&torn, "{").unwrap();
     unread_saying(configured(&s.0), "at least 1");
     assert!(torn.exists(), "a measurement quarantined a message");
+}
+
+/// The reader walks a trigger with no zone of its own in `[agent]
+/// timezone`, as the scheduler fires it (review of #641): the slot that ran
+/// is the one it checks.
+#[test]
+fn the_tally_reaches_the_agents_timezone_through_the_config() {
+    let s = Scratch::new();
+    let new_york: chrono_tz::Tz = "America/New_York".parse().unwrap();
+    let now = Utc::now();
+    let store =
+        crate::trigger::TriggerStore::open(crate::trigger::TriggerStore::root_under(&s.0)).unwrap();
+    let mut t = crate::trigger::Trigger::new("brief", "0 9 * * *".parse().unwrap(), "brief me");
+    t.created_at = Some(now - chrono::Duration::hours(30));
+    store.save(&t).unwrap();
+    // Written 30 hours ago, so the whole day is owed.
+    let written: std::time::SystemTime = (now - chrono::Duration::hours(30)).into();
+    std::fs::File::options()
+        .write(true)
+        .open(store.path_of("brief"))
+        .unwrap()
+        .set_modified(written)
+        .unwrap();
+    // The slot that ran: 09:00 in New York, the last one past the grace.
+    let slot = t
+        .schedule
+        .prev_at_or_before(now - chrono::Duration::minutes(2), new_york)
+        .unwrap();
+    let mut ran = crate::trigger::RunRecord::started("brief", Some(slot), false);
+    ran.started_at = slot;
+    store.append_run(&ran).unwrap();
+
+    let mut cfg = crate::config::Config::default();
+    cfg.agent.timezone = Some("America/New_York".into());
+    let reader = Reader::new().with_home(s.0.clone()).configured(Some(&cfg));
+    assert_eq!(reader.now(Measurement::TriggersMissed), obs(0.0));
 }
 
 #[test]
