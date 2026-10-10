@@ -320,6 +320,14 @@ impl Store {
         draft: &Path,
         id: &str,
     ) -> Result<std::result::Result<Installed, Refusals>> {
+        // The question install will ask, asked first: an id install refuses
+        // must not validate.
+        if !is_identifier(id) {
+            return Ok(Err(Refusals(vec![Refusal::new(
+                "",
+                format!("a board id matches [a-z][a-z0-9_]* (got {id:?}); pass --id"),
+            )])));
+        }
         let installed = match Installed::load_dir(draft, id)? {
             Ok(installed) => installed,
             Err(r) => return Ok(Err(r)),

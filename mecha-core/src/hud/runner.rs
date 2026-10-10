@@ -77,6 +77,9 @@ pub enum RunError {
     TooLarge {
         max_bytes: usize,
     },
+    /// Ran past the wall-clock budget. Classified as a failure: a slow query
+    /// may be the loader's (accidentally quadratic) or the source's (grown,
+    /// locked), and the message cannot tell which.
     Timeout,
 }
 
