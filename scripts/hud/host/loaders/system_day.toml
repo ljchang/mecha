@@ -1,0 +1,20 @@
+# The GPU across the last 24 hours, at five-minute steps.
+source = "host"
+schedule = "*/5 * * * *"
+max_rows = 1000
+query = """
+SELECT at, gpu_util, gpu_temp
+FROM system_minute
+WHERE at >= datetime('now', '-24 hours') AND CAST(strftime('%M', at) AS INTEGER) % 5 = 0
+ORDER BY at
+"""
+
+[[column]]
+name = "at"
+type = "timestamp"
+[[column]]
+name = "gpu_util"
+type = "float"
+[[column]]
+name = "gpu_temp"
+type = "float"

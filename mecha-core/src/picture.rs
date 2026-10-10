@@ -24,6 +24,53 @@ pub struct SelfNames {
     pub names: Vec<String>,
 }
 
+/// The colours a region may be painted in, by name and exact pixel value.
+/// The page picks four, those least present in the picture, and paints them
+/// unsmoothed so every pixel of the index is one of these or black
+/// (IMAGE-REGION-EDIT-RESEARCH.md §7.4).
+pub const REGION_COLOURS: [(&str, [u8; 3]); 8] = [
+    ("magenta", [255, 0, 255]),
+    ("cyan", [0, 255, 255]),
+    ("blue", [0, 64, 255]),
+    ("green", [0, 200, 0]),
+    ("orange", [255, 128, 0]),
+    ("yellow", [255, 230, 0]),
+    ("red", [230, 0, 0]),
+    ("purple", [128, 0, 255]),
+];
+
+/// The most regions one edit carries.
+pub const MAX_REGIONS: usize = 4;
+
+/// One painted region: its colour and what changes inside it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Region {
+    pub colour: String,
+    pub rgb: [u8; 3],
+    pub words: String,
+}
+
+/// The legend the model reads for regions, in the measured M2 form: the
+/// outlines are in `<image2>`, the picture is `<image1>`, and each colour's
+/// words follow it (mecha-a3, 2026-10-09: 0 of 24 wrong targets).
+pub fn region_legend(regions: &[Region]) -> String {
+    let each: Vec<String> = regions
+        .iter()
+        .map(|r| {
+            format!(
+                "in the {} outline, {}",
+                r.colour,
+                r.words.trim().trim_end_matches('.')
+            )
+        })
+        .collect();
+    format!(
+        "The coloured outlines in <image2> mark where each change goes in <image1>: {}. Do \
+         not draw the outlines.",
+        each.join("; ")
+    )
+}
+
 /// One call, read and resolved.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Call {
@@ -34,6 +81,10 @@ pub struct Call {
     pub setting_photo: Option<String>,
     pub retouch: Option<String>,
     pub mask: Option<String>,
+    /// Coloured regions painted in `mask`, each with its own words (the
+    /// owner's edit panel; IMAGE-REGION-EDIT-RESEARCH.md §7, M2). With
+    /// them, `mask` is a region index and `retouch` is their legend.
+    pub regions: Vec<Region>,
     pub size: Option<crate::imagegen::Size>,
     /// A new picture's seed: only where `seeds` admits one (the CLI and
     /// evals, never a chat; IMAGE-DESIGN.md §5.1).
@@ -96,7 +147,7 @@ pub fn parse(
     let field = crate::imagelib::MAX_CAST_FIELD;
     let prose = crate::imagegen::PROMPT_CAP;
     let picture = text(obj.get("picture"), "picture", 200)?;
-    let retouch = text(obj.get("retouch"), "retouch", prose)?;
+    let mut retouch = text(obj.get("retouch"), "retouch", prose)?;
     let mut notes: Vec<String> = Vec::new();
     // A mask is a painted picture's path, from the owner's message. Anything
     // else in it (prose, a name, an object) is left out and said, never a
@@ -112,6 +163,55 @@ pub fn parse(
             None
         }
     };
+    // Regions are the edit panel's, never a model's: refused plainly when
+    // malformed, since nobody is left on that path to be told a part was
+    // dropped.
+    let mut regions: Vec<Region> = Vec::new();
+    match obj.get("regions") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(list)) => {
+            if list.len() > MAX_REGIONS {
+                return Err(format!("An edit carries at most {MAX_REGIONS} regions."));
+            }
+            for r in list {
+                let colour = r["colour"].as_str().map(str::trim).unwrap_or_default();
+                let Some((name, rgb)) = REGION_COLOURS.iter().find(|(n, _)| *n == colour) else {
+                    return Err("A region's `colour` is not one of the region colours.".into());
+                };
+                if regions.iter().any(|x| x.colour == *name) {
+                    return Err(format!("Two regions are painted {name}."));
+                }
+                let words = r["words"].as_str().map(str::trim).unwrap_or_default();
+                if words.is_empty() || crate::imagelib::blank(words) {
+                    return Err(format!("The {name} region says nothing to change."));
+                }
+                if words.chars().count() > field {
+                    return Err(format!(
+                        "The {name} region's words are past {field} characters."
+                    ));
+                }
+                regions.push(Region {
+                    colour: name.to_string(),
+                    rgb: *rgb,
+                    words: words.to_string(),
+                });
+            }
+        }
+        Some(_) => return Err("`regions` is a list of {colour, words}.".into()),
+    }
+    if !regions.is_empty() {
+        if mask.is_none() || picture.is_none() {
+            return Err(
+                "Regions go with the `mask` they were painted in and the `picture` it was \
+                 painted on."
+                    .into(),
+            );
+        }
+        if retouch.is_some() {
+            return Err("Regions carry their own words; no `retouch` goes beside them.".into());
+        }
+        retouch = Some(region_legend(&regions));
+    }
     let size = match text(obj.get("size"), "size", 20)? {
         None => None,
         Some(s) => Some(
@@ -299,6 +399,7 @@ pub fn parse(
         setting_photo,
         retouch,
         mask,
+        regions,
         size,
         seed,
         notes,
@@ -663,6 +764,17 @@ pub fn plan(
         .mask
         .clone()
         .filter(|_| delta.is_empty() && unknown_removes.is_empty());
+    // Regions are the owner's words for places in this picture, and their
+    // legend is already the retouch: with the mask dropped it would ride
+    // into a redrawn picture's prompt describing outlines that are not there
+    // (review of #623, pass 4).
+    if call.mask.is_some() && mask.is_none() && !call.regions.is_empty() {
+        return Err(
+            "The painted regions keep everything outside them, so they cannot carry a \
+                    scene change: ask for the scene change on its own."
+                .into(),
+        );
+    }
     if call.mask.is_some() && mask.is_none() {
         notes.push(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
@@ -734,7 +846,14 @@ pub fn plan(
             prose.push((k, f.value.clone()));
         }
     }
-    if let Some(r) = &call.retouch {
+    // With regions the retouch is the harness's legend, whose own words
+    // ("mark", a colour's name) would read as library names: what is checked
+    // is what the owner wrote in each region (review of #623, pass 12).
+    if !call.regions.is_empty() {
+        for r in &call.regions {
+            prose.push(("retouch", r.words.clone()));
+        }
+    } else if let Some(r) = &call.retouch {
         prose.push(("retouch", r.clone()));
     }
     if let Some(Setting::Words { text }) = next.setting.as_ref().map(|f| &f.value) {
@@ -1133,6 +1252,52 @@ mod tests {
         s
     }
 
+    /// Regions go with a mask and a picture, in palette colours, each with
+    /// words, at most four; their legend becomes the retouch.
+    #[test]
+    fn regions_are_read_strictly_and_become_the_legend() {
+        let c = call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "magenta", "words": "make it red."},
+                        {"colour": "blue", "words": "remove the cup"}]}));
+        assert_eq!(c.regions.len(), 2);
+        assert_eq!(c.regions[1].rgb, [0, 64, 255]);
+        assert_eq!(
+            c.retouch.as_deref(),
+            Some(
+                "The coloured outlines in <image2> mark where each change goes in <image1>: in \
+                 the magenta outline, make it red; in the blue outline, remove the cup. Do not \
+                 draw the outlines."
+            )
+        );
+        assert_eq!(c.mask.as_deref(), Some("inbox/r.png"));
+        let bad = |v: Value| parse(&v, &lib, &me(), false).unwrap_err();
+        assert!(bad(json!({"picture": "images/a.png",
+            "regions": [{"colour": "magenta", "words": "x"}]}))
+        .contains("go with the `mask`"));
+        assert!(bad(
+            json!({"picture": "images/a.png", "mask": "inbox/r.png", "retouch": "y",
+            "regions": [{"colour": "magenta", "words": "x"}]})
+        )
+        .contains("their own words"));
+        assert!(bad(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "teal", "words": "x"}]}))
+        .contains("not one of"));
+        assert!(bad(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "cyan", "words": "x"}, {"colour": "cyan", "words": "y"}]}))
+        .contains("Two regions are painted cyan"));
+        assert!(bad(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "cyan", "words": " "}]}))
+        .contains("says nothing"));
+        let five: Vec<Value> = ["magenta", "cyan", "blue", "green", "orange"]
+            .iter()
+            .map(|c| json!({"colour": c, "words": "x"}))
+            .collect();
+        assert!(
+            bad(json!({"picture": "images/a.png", "mask": "inbox/r.png", "regions": five}))
+                .contains("at most 4")
+        );
+    }
+
     /// The retired inputs are refused with what to do instead; nothing to
     /// draw is refused; a mask needs a retouch and a picture.
     #[test]
@@ -1344,6 +1509,82 @@ mod tests {
             c.change.people[0].doing.as_deref(),
             Some("waves at the sea")
         );
+    }
+
+    /// The names check reads each region's own words, never the legend the
+    /// harness wrote: a character keyed `mark` or `red` would otherwise be
+    /// offstage on every regions edit, and the measured legend rewritten to
+    /// "the viewer" (review of #623, pass 12).
+    #[test]
+    fn a_regions_legend_is_not_read_for_names() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a study", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "reading"}]}})),
+            None,
+        );
+        let base = landed(&first, 3);
+        let approved = |n: &str| n == "mark" || n == "red" || lib(n);
+        let named = |t: &str| {
+            let t = t.to_lowercase();
+            ["mark", "red", "maya", "wren"]
+                .into_iter()
+                .filter(|n| t.split(|c: char| !c.is_alphanumeric()).any(|w| w == *n))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        };
+        let regions = |words: &str| {
+            call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "red", "words": words}]}))
+        };
+        let p = plan(
+            &regions("a green scarf"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        // The owner's own words still are.
+        let p = plan(
+            &regions("Wren's green scarf"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(p.offstage, vec!["wren".to_string()]);
+    }
+
+    /// Regions beside a scene change are refused: the change drops the mask,
+    /// and the regions' legend would ride into a redrawn picture's prompt
+    /// describing outlines that are not there (review of #623, pass 4).
+    #[test]
+    fn regions_beside_a_scene_change_are_refused() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a study", "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "reading"}]}})),
+            None,
+        );
+        let base = landed(&first, 3);
+        let why = plan(
+            &call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "magenta", "words": "make it red"}],
+                "scene": {"camera": "from above"}})),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(why.contains("cannot carry a scene change"), "{why}");
     }
 
     /// A room photo as the setting with nobody to place is refused, never a

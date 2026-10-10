@@ -1,0 +1,31 @@
+# The latest minute, as the four headline figures.
+source = "host"
+schedule = "* * * * *"
+max_rows = 1
+query = """
+SELECT at,
+       round(100.0 * (mem_total - mem_available) / mem_total, 1) AS mem_used_pct,
+       round(cpu_pct, 1) AS cpu_pct,
+       gpu_util,
+       round(100.0 * disk_used / disk_total, 1) AS disk_used_pct
+FROM system_minute
+-- A stopped sampler must read as no figure, never as the machine now.
+WHERE at >= datetime('now', '-5 minutes')
+ORDER BY at DESC LIMIT 1
+"""
+
+[[column]]
+name = "at"
+type = "timestamp"
+[[column]]
+name = "mem_used_pct"
+type = "float"
+[[column]]
+name = "cpu_pct"
+type = "float"
+[[column]]
+name = "gpu_util"
+type = "float"
+[[column]]
+name = "disk_used_pct"
+type = "float"
