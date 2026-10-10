@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hash-pinned lock, the Parakeet model fetched by its pinned sha256, and
   `mecha-parakeet.service` started on `:8992`, all under
   `~/.mecha/sidecars/stt/`. The model's 465 MiB counts in the plan's total.
-  A Parakeet you already run is left alone.
+  A Parakeet you already run on `:8992` is left alone and used as it is.
 
 ### Changed
 
