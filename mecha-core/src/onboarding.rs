@@ -359,38 +359,24 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
                 });
             }
             Some(props) => {
-                let mut mismatches =
+                let mismatches =
                     crate::provider::preflight::disagreements(provider_name, pcfg, props);
-                // `disagreements` compares only what both sides name, so a
-                // table naming neither model nor window read as agreeing —
-                // the starter's own state since ruling F12, under which a run
-                // sends `gpt-4o-mini` to a router that selects by it, and
-                // never compacts (found on review of #627). Unset is not
-                // agreement.
-                // Each key with its own consequence: one sentence for the
-                // set told a table naming its model that "a run names the
-                // wrong model" (found on review of #627).
-                // Only where the server names one: `--write` writes what it
-                // reports, so a model it does not report is a finding `--write`
-                // could never clear (found on review of #627).
-                if pcfg.model.is_none() && props.model_alias.is_some() {
-                    mismatches.push(format!(
-                        "[providers.{provider_name}] sets no `model` — a run sends a model \
-                         name this server did not report, which a router selects by."
+                // Nothing to disagree with is not agreement: an answer that
+                // names neither a model nor a window is not shown as one —
+                // since ruling F12 anything answering JSON on :8080 reaches
+                // here on a default install (found on review of #627).
+                if mismatches.is_empty() && !answers_like_a_model_server(props) {
+                    steps.push(Step::new(
+                        "local-server",
+                        "The local server could not be identified",
+                        Status::Unknown,
+                        format!(
+                            "Something answers at {}, but it names neither a model nor a \
+                             context window, so nothing here can be checked against it.",
+                            pcfg.base_url.as_deref().unwrap_or("(no base_url)")
+                        ),
                     ));
-                }
-                // The same rule for the window: only where the server
-                // reports `n_ctx` can `--write` fill it in (review of #627).
-                if pcfg.context_window.is_none()
-                    && props.default_generation_settings.n_ctx.is_some()
-                {
-                    mismatches.push(format!(
-                        "[providers.{provider_name}] sets no `context_window` — the compaction \
-                         threshold and the tool-output budget derive from it, and fall back \
-                         to guesses without it."
-                    ));
-                }
-                if mismatches.is_empty() {
+                } else if mismatches.is_empty() {
                     steps.push(Step::new(
                         "local-server",
                         "The local server agrees with the config",
@@ -2357,6 +2343,17 @@ mod tests {
         } else {
             assert!(remedy.is_none(), "`setup chat` refuses off Linux");
         }
+    }
+
+    /// An answer naming neither a model nor a window is not agreement: since
+    /// ruling F12 anything answering JSON on :8080 reaches this step on a
+    /// default install (review of #627).
+    #[test]
+    fn a_server_that_names_nothing_is_unknown_not_agreeing() {
+        let cfg = cfg_with_local(262144, Some(false));
+        let nameless: Props = serde_json::from_str("{}").unwrap();
+        let steps = plan(&cfg, "local", &facts(Some(nameless)));
+        assert_eq!(step(&steps, "local-server").status, Status::Unknown);
     }
 
     /// A local table that names a server other than this router is not
