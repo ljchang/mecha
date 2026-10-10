@@ -467,10 +467,15 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             FileState::Cached => "in the cache, matching its pin".to_string(),
             // The chat model's download is `mecha setup chat`'s, never
             // `enable`'s (F13), and is not in the total below.
-            FileState::Download { bytes } if f.slot == "chat" => format!(
+            FileState::Download { bytes } if f.slot == "chat" && chat_here => format!(
                 "not here — `mecha setup chat` chooses and fetches the chat model ({})",
                 bytes_text(*bytes)
             ),
+            // Chat served from elsewhere: the plan says so of the router, and
+            // the same of its file (found on review of #627).
+            FileState::Download { .. } if f.slot == "chat" => {
+                "not needed here — the chat model is served from elsewhere".to_string()
+            }
             FileState::Download { bytes } => format!("to download, {}", bytes_text(*bytes)),
             FileState::Mismatch => {
                 "a different file is at its path — not replaced, and not used".to_string()
@@ -895,6 +900,7 @@ mod tests {
         let elsewhere = render_plan(&p, false);
         assert!(elsewhere.contains("not needed here"), "{elsewhere}");
         assert!(!elsewhere.contains("features enable"), "{elsewhere}");
+        assert!(!elsewhere.contains("setup chat"), "{elsewhere}");
     }
 
     #[test]

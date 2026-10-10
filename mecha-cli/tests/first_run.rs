@@ -282,6 +282,8 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
         // writing down what it serves is the way out. Never "done" — a table
         // naming nothing does not agree with a server (review of #627).
         "wrong" => assert_eq!(argv(local), ["mecha", "setup", "--write"]),
+        // Something answers on :8080 that names no model: not agreement.
+        "unknown" => assert!(argv(local).is_empty(), "{local:#}"),
         other => panic!("`local-server` is {other}: {local:#}"),
     }
     assert_ne!(local["status"], "declined");
