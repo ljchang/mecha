@@ -94,6 +94,17 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     let dir = dir(home);
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let unit = units.join(format!("{}.service", naming.unit));
+    // A worker on the port whose unit mecha did not write is someone's —
+    // the hand-built one under another name, or a terminal's. Nothing is
+    // installed beside it: it would pass the checks below while mecha's own
+    // restart-looped against the port (`stt_unit`'s refusal, #638).
+    if !wrote_unit(home, &unit)? && crate::router_unit::port_answers(naming.port) {
+        bail!(
+            "something already answers on :{} and mecha did not install it — nothing is \
+             installed over it; point `[voice] offer_target` at it instead",
+            naming.port
+        );
+    }
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -142,6 +153,14 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         return Err(e.context(format!("{service} was stopped and disabled")));
     }
     Manifest::finish(home, ID)
+}
+
+/// Whether the record names this unit's file (`stt_unit`'s twin).
+fn wrote_unit(home: &Path, unit: &Path) -> Result<bool> {
+    Ok(Manifest::read(home)?
+        .entries
+        .iter()
+        .any(|e| e.sidecar == ID && e.wrote.iter().any(|w| w == unit)))
 }
 
 /// The worker answers. Retried while it starts — pipecat imports for a few
@@ -403,6 +422,32 @@ mod tests {
         ));
         assert!(text.contains(&format!("--allowed-origins {NO_PAGE}")));
         assert!(!text.contains("Github") && !text.contains("ts.net"));
+    }
+
+    /// A worker mecha did not install on the port is refused before a byte
+    /// is written or recorded.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_strangers_worker_on_the_port_is_not_installed_over() {
+        let root = std::env::temp_dir().join(format!("mecha-7d2-port-{}", uuid::Uuid::new_v4()));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let naming = Naming {
+            unit: "mecha-test-worker-stranger".into(),
+            port: listener.local_addr().unwrap().port(),
+        };
+        let m = Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: Vec::new(),
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let r = install(&m, &naming, &mut |_| {}).await;
+        let wrote = root.join(".mecha").exists();
+        let _ = std::fs::remove_dir_all(&root);
+        let err = format!("{:#}", r.unwrap_err());
+        assert!(err.contains("mecha did not install it"), "{err}");
+        assert!(!wrote, "nothing written or recorded");
     }
 
     /// The real thing: build the environment, install a worker beside the
