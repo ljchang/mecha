@@ -9872,11 +9872,14 @@ the full checklist this grows into as each build step lands.
    sources — then `install::installable` names it, and `features enable`
    offers it (the engine's, larger, is `engine.rs`). A **shared** sidecar —
    empty `needed_by`, in every plan because chat runs on it — is offered only
-   where `install::not_needed` says it runs something: the chat model here,
-   or the feature's own embeddings or OCR server; a machine that chats
-   through a hosted provider is never handed the engine for `enable
-   messages`. And an install that does not fetch its models is never
-   re-offered because one is missing (`install::fetches_models`), or it
+   where `install::not_needed` says the feature runs something on it: its
+   own embeddings or OCR server. **The chat model is never `enable`'s**
+   (ruling F13): its engine, model and router are `mecha setup chat`'s —
+   and the guided `mecha setup`'s, which asks about chat first — so `enable
+   web` on a fresh machine is a switch write, not a 22 GiB question, and the
+   chat model's files stay out of a plan's download total. And an install
+   that does not fetch its models is never re-offered because one is missing
+   (`install::fetches_models`, which no longer names the router), or it
    would be offered, change nothing, and be offered again on every enable.
 
 ## Context, and knowing how much is left

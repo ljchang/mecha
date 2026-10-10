@@ -840,6 +840,26 @@ pub(super) fn offer_default(provider: &str, current: &str) -> Result<()> {
 /// would name, says what a decline leaves behind (found on review of #627).
 pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bool> {
     let settings = onboarding::verified_settings(&found.props);
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    // A `[providers.local]` the owner wrote — any kind, any address — is
+    // theirs: never rewritten from a probe after being told there is no
+    // table. Only the starter's bare one (`kind = "local"` and an address,
+    // nothing else) is filled in (found on review of #627: a table spelled
+    // `kind = "openai-compatible"` was probed past and rewritten).
+    if path.is_file() {
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
+        if text.lines().any(|l| l.trim() == "[providers.local]") && !starter_shaped_local(&text) {
+            println!(
+                "Found a server at {}, but {} already has a `[providers.local]` of yours, so it \
+                 is left as it is — `mecha setup --write --provider local` rewrites that table \
+                 from the server it names.",
+                found.base_url,
+                path.display()
+            );
+            return Ok(false);
+        }
+    }
     println!(
         "Found a server at {}, and no table in your config file describes it.\n",
         found.base_url
@@ -873,8 +893,6 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bo
         return Ok(false);
     }
 
-    let path = mecha_core::config::Config::global_path()
-        .context("no global config path — is $HOME set?")?;
     seed_config_file(&path)?;
 
     // The starter carries a `[providers.local]` (ruling F12), so a file just
@@ -1114,6 +1132,24 @@ fn apply_or_add(
     Ok(out)
 }
 
+/// Whether the file's `[providers.local]` is the starter's bare one —
+/// `kind = "local"` and at most an address — so filling it in loses nothing
+/// the owner wrote. Unparseable reads as not: never rewritten on a guess.
+fn starter_shaped_local(text: &str) -> bool {
+    let Ok(v) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    let Some(t) = v
+        .get("providers")
+        .and_then(|p| p.get("local"))
+        .and_then(|l| l.as_table())
+    else {
+        return false;
+    };
+    t.get("kind").and_then(|k| k.as_str()) == Some("local")
+        && t.keys().all(|k| k == "kind" || k == "base_url")
+}
+
 /// The text of `apply`: each setting replaces its key in `[providers.<p>]`,
 /// or is added after the table's last assignment. Not before the next
 /// header — the comment block that introduces the next table sits above it,
@@ -1281,6 +1317,18 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// Only the starter's bare `[providers.local]` is filled from a probe;
+    /// one the owner wrote, whatever its kind, is theirs (review of #627).
+    #[test]
+    fn only_the_starter_s_bare_local_table_is_filled_from_a_probe() {
+        assert!(starter_shaped_local(super::super::config::STARTER));
+        let own = "[providers.local]\nkind = \"openai-compatible\"\nbase_url = \"http://192.168.1.5:8080\"\n";
+        assert!(!starter_shaped_local(own));
+        let named = "[providers.local]\nkind = \"local\"\nbase_url = \"http://127.0.0.1:8080\"\nmodel = \"x\"\n";
+        assert!(!starter_shaped_local(named));
+        assert!(!starter_shaped_local("not [toml"));
     }
 
     /// `NotAttempted` has two causes, and `--write` must name the right one.
