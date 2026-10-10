@@ -160,15 +160,15 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
         }
         // A machine no pinned build fits is told so before it is asked
-        // anything: the answer is to fix the driver, not to say yes.
+        // anything: the answer is to fix the driver or install the toolchain
+        // a build here needs, not to say yes.
         if todo.iter().any(|(id, ..)| *id == "llama") {
-            mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())
-                .map_err(|why| {
-                    anyhow::anyhow!(
-                        "enabling {} needs the llama.cpp engine, and {why}",
-                        ids.join(" ")
-                    )
-                })?;
+            mecha_core::engine::choose_here().map_err(|why| {
+                anyhow::anyhow!(
+                    "enabling {} needs the llama.cpp engine, and {why}",
+                    ids.join(" ")
+                )
+            })?;
         }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
