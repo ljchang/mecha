@@ -386,6 +386,61 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
     })
 }
 
+/// The turn at `line`'s `call`th tool call (1-based), as recorded: its tool
+/// and input, for a replay that runs that call verbatim through the tool
+/// (`mecha replay --run-call`), so arms differ only in what they measure and
+/// never in what the model happened to write this time. Refused, as
+/// [`branch_at_call`] is, where the run rewrote its history: the call found
+/// past the turn's opening messages would be another call's (review of #626).
+pub fn recorded_call(path: &Path, text: &str, line: usize, call: usize) -> Result<(String, Value)> {
+    let (_, run, start) = run_at_call(path, text, line, call)?;
+    let mut seen = 0;
+    for m in &run.convo.messages[start..] {
+        for b in &m.content {
+            if let Block::ToolUse { name, input, .. } = b {
+                seen += 1;
+                if seen == call {
+                    return Ok((name.clone(), input.clone()));
+                }
+            }
+        }
+    }
+    bail!("the run at line {line} made {seen} tool call(s), not {call}")
+}
+
+/// The turn at `line` and its whole run as recorded: the branch the turn
+/// began with, the run parsed, and where the turn's own messages start
+/// among its messages. Refused where the run rewrote its history, since the turn's
+/// messages then have no place after the ones it began with.
+fn run_at_call(
+    path: &Path,
+    text: &str,
+    line: usize,
+    call: usize,
+) -> Result<(Branch, crate::session::Transcript, usize)> {
+    if call == 0 {
+        bail!("calls count from 1");
+    }
+    let branch = branch_at(path, text, line)?;
+    let lines = non_empty(text);
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(line)
+        .find(|(j, _)| shape_at(&lines, *j) == Some(Shape::Turn))
+        .map_or(lines.len(), |(i, _)| i);
+    let run = Session::parse(path, &lines[..end].join("\n"))?;
+    let start = branch.messages.len();
+    let messages = &run.convo.messages;
+    if messages.len() < start || messages[..start] != branch.messages[..] {
+        bail!(
+            "the run at line {line} rewrote its history, so call {call} has no place \
+             among the messages the turn began with"
+        );
+    }
+    Ok((branch, run, start))
+}
+
 /// The turn on record line `line`, branched inside its run: after the batch
 /// holding the run's `call`th tool call (1-based) and the results that
 /// answered it, as recorded. The run's notes are the turn's, as they were
@@ -396,26 +451,9 @@ pub fn branch_at(path: &Path, text: &str, line: usize) -> Result<Branch> {
 /// does not rebuild; and a run that rewrote its history (a compaction) has
 /// no recorded place for the call among the messages the turn began with.
 pub fn branch_at_call(path: &Path, text: &str, line: usize, call: usize) -> Result<Branch> {
-    if call == 0 {
-        bail!("calls count from 1");
-    }
-    let mut branch = branch_at(path, text, line)?;
+    let (mut branch, run, start) = run_at_call(path, text, line, call)?;
     let lines = non_empty(text);
-    let end = lines
-        .iter()
-        .enumerate()
-        .skip(line)
-        .find(|(j, _)| shape_at(&lines, *j) == Some(Shape::Turn))
-        .map_or(lines.len(), |(i, _)| i);
-    let run = Session::parse(path, &lines[..end].join("\n"))?;
-    let start = branch.messages.len();
-    let messages = run.convo.messages;
-    if messages.len() < start || messages[..start] != branch.messages[..] {
-        bail!(
-            "the run at line {line} rewrote its history, so call {call} has no place \
-             among the messages the turn began with"
-        );
-    }
+    let messages = &run.convo.messages;
     let mut seen = 0;
     let mut target = None;
     'find: for m in &messages[start..] {
@@ -1333,6 +1371,60 @@ mod tests {
         .map(|r| serde_json::to_string(r).unwrap())
         .collect::<Vec<_>>()
         .join("\n")
+    }
+
+    /// The recorded call is returned as written, by its place in the turn,
+    /// for a replay that runs it verbatim (`--run-call`).
+    #[test]
+    fn a_recorded_call_is_returned_as_written() {
+        let text = run_with_calls("second result");
+        let path = Path::new("t2.jsonl");
+        let (name, input) = recorded_call(path, &text, 3, 2).unwrap();
+        assert_eq!((name.as_str(), input), ("widget", json!({"n": 1})));
+        let err = recorded_call(path, &text, 3, 3).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("made 2 tool call(s)"),
+            "{err:#}"
+        );
+        assert!(recorded_call(path, &text, 3, 0).is_err());
+    }
+
+    /// A run that rewrote its history mid-turn has no recorded place for a
+    /// call among the messages the turn began with: both readers refuse it,
+    /// rather than counting calls across the rewritten messages and handing
+    /// `--run-call` another call's input (review of #626).
+    #[test]
+    fn a_call_after_a_mid_turn_rewrite_is_refused() {
+        let text = run_with_calls("second result");
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let rewrite = crate::session::Record::Rewrite {
+            messages: vec![
+                Message::user("a summary of the chat so far"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "c0".into(),
+                    name: "another".into(),
+                    input: json!({"n": 9}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "c0".into(),
+                    content: "its result".into(),
+                    is_error: false,
+                }]),
+            ],
+        };
+        lines.insert(5, serde_json::to_string(&rewrite).unwrap());
+        let text = lines.join("\n");
+        let path = Path::new("t2.jsonl");
+        let err = recorded_call(path, &text, 3, 1).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("rewrote its history"),
+            "{err:#}"
+        );
+        let err = branch_at_call(path, &text, 3, 1).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("rewrote its history"),
+            "{err:#}"
+        );
     }
 
     #[test]

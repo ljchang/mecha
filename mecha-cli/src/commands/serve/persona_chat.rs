@@ -3665,6 +3665,7 @@ impl PersonaChats {
                 // The owner's switch, read fresh this turn (§15.1).
                 layers: mecha_core::persona::touching(&self.store, &name)
                     == mecha_core::persona::Touching::Precise,
+                layers_posed: false,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
