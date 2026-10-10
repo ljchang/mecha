@@ -183,11 +183,11 @@
 
   function draw(ctx, op) {
     ctx.save();
+    ctx.globalCompositeOperation = op.erase ? 'destination-out' : 'source-over';
     if (op.kind === 'box') {
       ctx.fillStyle = '#fff';
       ctx.fillRect(op.x, op.y, op.w, op.h);
     } else {
-      ctx.globalCompositeOperation = op.erase ? 'destination-out' : 'source-over';
       ctx.strokeStyle = ctx.fillStyle = '#fff';
       ctx.lineWidth = op.size;
       ctx.lineCap = ctx.lineJoin = 'round';
@@ -206,9 +206,31 @@
     ctx.restore();
   }
 
+  // One operation onto the layers. A pixel belongs to one region: paint
+  // takes it from every other region, as the index the server reads lets a
+  // later region win, and the eraser clears it from all of them, so what is
+  // shown painted is what is sent (review of #623).
+  function apply(op) {
+    if (!multi) {
+      draw(layers[0].getContext('2d'), op);
+      return;
+    }
+    layers.forEach((l, k) =>
+      draw(l.getContext('2d'), op.erase || k === (op.region ?? 0) ? op : { ...op, erase: true }),
+    );
+  }
+
+  // An operation as it lands: single mode draws it onto `base` too, rather
+  // than recompositing the whole picture per pointer event (review of #429).
+  function commit(op) {
+    apply(op);
+    if (multi) composeBase();
+    else draw(base.getContext('2d'), op);
+  }
+
   function replay() {
     for (const l of layers) l.getContext('2d').clearRect(0, 0, l.width, l.height);
-    for (const op of ops) draw(layers[op.region ?? 0].getContext('2d'), op);
+    for (const op of ops) apply(op);
     composeBase();
   }
 
@@ -278,8 +300,7 @@
       live = { kind: 'box', region: active, ...boxFrom(start, start) };
     } else {
       live = { kind: 'stroke', region: active, erase: tool === 'erase', size, points: [start] };
-      draw(layers[active].getContext('2d'), live);
-      composeBase();
+      commit(live);
     }
     render();
   }
@@ -292,8 +313,7 @@
     } else {
       const last = live.points[live.points.length - 1];
       live.points.push(p);
-      draw(layers[live.region].getContext('2d'), { ...live, points: [last, p] });
-      composeBase();
+      commit({ ...live, points: [last, p] });
     }
     render();
   }
@@ -308,10 +328,7 @@
       return;
     }
     ops = [...ops, op];
-    if (op.kind === 'box') {
-      draw(layers[op.region].getContext('2d'), op);
-      composeBase();
-    }
+    if (op.kind === 'box') commit(op);
     repaint();
     render();
   }
