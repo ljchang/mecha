@@ -846,14 +846,15 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<bo
     // theirs: never rewritten from a probe after being told there is no
     // table. Only the starter's bare one (`kind = "local"` and an address,
     // nothing else) is filled in (found on review of #627: a table spelled
-    // `kind = "openai-compatible"` was probed past and rewritten).
+    // `kind = "openai-compatible"` was probed past and rewritten; and the
+    // way out names `kind`, since `--write --provider local` led back here).
     if path.is_file() {
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
         if text.lines().any(|l| l.trim() == "[providers.local]") && !starter_shaped_local(&text) {
             println!(
-                "Found a server at {}, but {} already has a `[providers.local]` of yours, so it \
-                 is left as it is — `mecha setup --write --provider local` rewrites that table \
-                 from the server it names.",
+                "Found a server at {}, but {} already has a `[providers.local]` of yours that \
+                 is not `kind = \"local\"`, so it is left as it is. Set its `kind = \"local\"` \
+                 and `mecha setup --write` fills it in from the server it names.",
                 found.base_url,
                 path.display()
             );
