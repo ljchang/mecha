@@ -176,6 +176,27 @@ async fn check(port: u16) -> Result<()> {
              is not in force, so any page in a browser here could start a call"
         );
     }
+    // And the relay's door open: an offer with no `Origin`, as `mecha serve`
+    // sends one, reaches the handler — refused for its empty body, never for
+    // where it came from. A pipecat that stopped letting it through would
+    // pass the half above and break every call (review of #639).
+    let relayed = client
+        .post(format!("{base}/api/offer"))
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .context("relaying an offer as mecha serve does")?;
+    if matches!(
+        relayed.status(),
+        reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED
+    ) {
+        bail!(
+            "the voice worker on :{port} refused an offer with no Origin ({}) — `mecha serve`'s \
+             relay sends none, so no call could start",
+            relayed.status()
+        );
+    }
     Ok(())
 }
 
@@ -293,6 +314,15 @@ mod tests {
         }
     }
 
+    /// The shipped port is the one `[voice] offer_target` names by default.
+    #[test]
+    fn the_shipped_port_is_the_offer_target_default() {
+        assert_eq!(
+            crate::config::VoiceConfig::DEFAULT_OFFER_TARGET,
+            format!("http://127.0.0.1:{}/api/offer", Naming::shipped().port)
+        );
+    }
+
     /// The unit names this home's tree and this port, runs the written copy,
     /// and shuts the direct door — nothing of a checkout or a hostname.
     #[test]
@@ -337,10 +367,14 @@ mod tests {
         let r = install(&m, &naming, &mut |s| said.push(s.to_string())).await;
         let cleaned = remove(&m, &naming);
         eprintln!("{said:#?}");
+        // Read before the scratch tree goes: the manifest lives inside it
+        // (`Manifest::path`), and an absent one reads as no entries — the
+        // assertion would hold whatever `remove` left (review of #639).
+        let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
         r.unwrap();
         cleaned.unwrap();
-        let man = Manifest::read(&m.mecha_home).unwrap_or_default();
+        let man = man.unwrap();
         assert!(
             !man.entries.iter().any(|e| e.sidecar == ID),
             "{:?}",
