@@ -401,10 +401,12 @@ Everything else draws as today.
 The steps run in one deferred job (`jobs.rs`), in order, with the run's cancellation checked between steps. Other pictures never interleave with a build. The queue line names the step: plate, cutout *i* of *n*, placing, finish. Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
 
 1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small. A setting photo is the plate as it is, with no render.
-2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
-   - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. The measured placing pass re-posed people anyway, placing 2 of 4 wrongly-posed cutouts correctly.
+2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, drawn at **1024 × 1024** (the measured size; with no size the canvas would follow the portrait's own shape, which was not measured), in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
+   - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. In the measured runs 2 of 4 cutouts came out in the wrong pose, and the placing pass staged all 4 correctly.
+   - **A person with no `wearing`** takes the scene's (the chat copy's) clothes, else "clothes that suit the scene", as today. Left empty, the cutout would copy the portrait's outfit.
    - Every output arrives RGBA, so each cutout is **flattened on mid-grey (128) in code** before it is a reference. What the encoder does with a transparent reference is untested and not relied on.
 3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order. Each person is placed by tag with their part from the split, and the leftover `together` follows.
+   - **A split that fell back** (no parts, now including an answer of only names, #622): the placing pass carries the call's `together` as written, after the per-person tags.
    - A role noun goes beside a tag only where it is unambiguous ("the woman from `<image2>`" in a mixed pair), else "the person from `<image2>`" (mecha-a3's change 2). Names never appear inside the prompt.
    - It closes with: "Keep `<image1>`'s room, framing, camera angle and light unchanged. Take each person's face, hair, body and clothing from their own image; each appears exactly once. Lit by the room's light, with natural contact and shadows."
 4. **The finish (F1).** One keep-everything edit:
@@ -414,7 +416,7 @@ The steps run in one deferred job (`jobs.rs`), in order, with the run's cancella
    - natural fine detail in skin, hair and fabric;
    - "change nothing else".
 
-   It was staging-safe 8 of 8, and it fixes the lighting mismatch.
+   It fixes the lighting mismatch. **This exact combination is untested:** staging-safe 8 of 8 was measured on F1 with the crop (crop, upscale, relight, depth of field and detail in one pass) and on relighting alone, uncropped. F1 without the crop is those two put together, and the gate covers it.
 
 ### 15.4 What is kept
 
@@ -443,7 +445,8 @@ All of these were measured; none is built yet:
 
 ### 15.7 The gate (mecha-a3, before the switch is offered)
 
-- **Arms:** today's single pass against layers v1, with cutouts posed by the part against neutral cutouts (change 1's own test), on the recorded touching-scene calls, byte-identical, n = 3, paired seeds.
+- **Arms:** three: today's single pass; layers with cutouts posed by the part; layers with neutral cutouts (change 1's own test).
+- **Calls:** the recorded touching-scene calls, byte-identical, n = 3, paired seeds. They include the facing-away call, where layers most clearly won.
 - **Measured:**
   - a person drawn twice;
   - roles right and the act drawn (by eye);
@@ -451,6 +454,8 @@ All of these were measured; none is built yet:
   - identity, with head turn (yaw) and face size reported beside ArcFace;
   - framing (face height in px);
   - seconds per picture;
+  - how often layers fell back or failed;
+  - the plate's own framing;
   - the owner's preference on a contact sheet.
 - **Known weak spots to watch:**
   - a clothing state lost in placing ("pulled down" 0 of 4 in one scene);
