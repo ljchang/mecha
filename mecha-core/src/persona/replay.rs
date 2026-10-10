@@ -184,9 +184,12 @@ fn holds_owner_words(line: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok_and(|v| record_holds_owner_words(&v))
 }
 
-/// [`holds_owner_words`] over a record already parsed: the one test of
-/// "an owner turn's record" that `scene::stage` shares with `--list` and
-/// `--at`, so a turn one of them lists the other stages. Two tests had
+/// [`holds_owner_words`] over a record already parsed: the test of "an
+/// owner turn's record" that `scene::stage` shares with [`shape_at`], which
+/// `--list` and `--at` gate on. `shape_at` is narrower — it also needs a run
+/// to have followed the record — so the stage alone would take a line `--at`
+/// refuses (a compaction `rewrite` straight after a `Compacted` turn); its
+/// one caller hands it a branch `shape_at` already cleared. Two tests had
 /// drifted: a turn folded onto the tail by a `rewrite` was listed and then
 /// refused by the stage as "not an owner message" (found by mecha-a3).
 pub(crate) fn record_holds_owner_words(v: &Value) -> bool {

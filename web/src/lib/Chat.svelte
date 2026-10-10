@@ -468,6 +468,9 @@
             id: ev.id ?? null,
             draft: ev.draft ?? null,
             args: ev.args ?? null,
+            // A Regenerate's card says live which picture it is a version
+            // of, as the transcript does (IMAGE-DESIGN.md §5.4).
+            version_of: ev.version_of ?? null,
             pending: true,
           });
           break;
@@ -596,15 +599,9 @@
           );
           // The conversation is back in the server's hands by now (it is
           // handed back before `done` is sent), so this read is the whole of it.
-          // A Regenerate's card says which picture it is a version of only in
-          // the transcript, never on the live stream: read it again too.
-          {
-            const again = regenerated === sessionKey;
-            regenerated = null;
-            if (partialRun || again) {
-              partialRun = false;
-              catchUp(sessionKey);
-            }
+          if (partialRun) {
+            partialRun = false;
+            catchUp(sessionKey);
           }
           break;
       }
@@ -712,8 +709,7 @@
     // its own start, and a read for the old key is dropped by its key check.
     partialRun = false;
     liveFrom = 0;
-    // A re-read owed to the last chat, and its version steps, are not this one's.
-    regenerated = null;
+    // The last chat's version steps are not this one's.
     chosenVersion = new Map();
     // Same rule as everywhere else this readout guards against staleness
     // (the TUI's `/clear`, voice's `Hosted::Unknown` fall-through): the
@@ -1318,9 +1314,6 @@
     if (!text) return false;
     if (own) draft = '';
     const sessionKey = key;
-    // Set before the POST, so a turn that ends before its answer arrives
-    // still owes the re-read.
-    if (regenerate) regenerated = sessionKey;
     try {
       // Tailnet HTTP pages may not expose the secure-context UUID method.
       // This id correlates UI events; it is not an authorization token.
@@ -1332,7 +1325,6 @@
         body: JSON.stringify({ text, request_id, attachments: attached, regenerate: regenerate ?? undefined }),
       });
       if (res.status === 410) {
-        if (regenerate && regenerated === sessionKey) regenerated = null;
         if (sessionKey === key) closeIncognito('closed');
         return false;
       }
@@ -1364,7 +1356,6 @@
       }
       return !!data.started;
     } catch (e) {
-      if (regenerate && regenerated === sessionKey) regenerated = null;
       if (sessionKey !== key) return false;
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
       return false;
@@ -1383,9 +1374,6 @@
       chosenVersion = new Map(chosenVersion);
     }
   }
-  // The chat whose finished turn is read again for its `version_of`.
-  let regenerated = null;
-
   // Phase 4's upload half: the file lands in the session jail's inbox/, its
   // path is named in the message, and send() lists it so the server puts a
   // picture on the turn as pixels (ARCHITECTURE.md §Images).

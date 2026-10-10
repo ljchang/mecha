@@ -140,8 +140,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Edit. It draws
   the same picture again at a new seed, with no words and no painted area,
   and the new one shows on the same card, with ‹ › to step between the
-  versions. Edit, Regenerate and Download act on the version showing.
-  Regenerate is off while the persona is answering. On a call, Regenerate
+  versions, as soon as it is drawn. Edit, Regenerate and Download act on
+  the version showing. Regenerate is off while the persona is answering. On a call, Regenerate
   is in the picture viewer: the persona answers aloud, and talking over the
   redraw does not stop it.
 
