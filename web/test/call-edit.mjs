@@ -122,6 +122,7 @@ function rig({ live = true } = {}) {
     `'use strict';
      const bodies = [];
      let input = '', attachments = [], key = 'k1', token = null, error = null;
+     let regenerated = null;
      const chosen = { display: 'Mara' };
      const withAttachments = (typed) => typed;
      const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
@@ -131,11 +132,17 @@ function rig({ live = true } = {}) {
        return { ok: true, json: async () => ({ started: true }) };
      };
      ${sendSrc}
-     return async (typed, opts) => { input = typed; await send(opts); return bodies.at(-1); };`,
+     return async (typed, opts) => { input = typed; regenerated = null; await send(opts); return { body: bodies.at(-1), regenerated }; };`,
   )();
   const edit = { picture: 'images/a.png', words: 'add a hat' };
-  is((await run('Edit images/a.png: add a hat', { edit })).edit, edit, "the panel's turn carries its fields");
-  is('edit' in (await run('hello')), false, 'a typed turn sends no edit field');
+  const panel = await run('Edit images/a.png: add a hat', { edit });
+  is(panel.body.edit, edit, "the panel's turn carries its fields");
+  // Any panel edit can come back a redraw, with a version_of only the
+  // transcript carries (review of #634).
+  is(panel.regenerated, 'k1', 'and the finished turn is read again for its version_of');
+  const typed = await run('hello');
+  is('edit' in typed.body, false, 'a typed turn sends no edit field');
+  is(typed.regenerated, null, 'and owes no re-read');
 }
 
 // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing goes out with
