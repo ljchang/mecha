@@ -122,10 +122,12 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
         &dir,
         PYTHON,
         LOCK,
-        // Not in the plan's total (as layout's is not): said here instead.
-        // 256 MB of wheels on linux-aarch64 by the lock's own pins, read
-        // from PyPI 2026-10-10 (review of #639).
-        "pipecat and its WebRTC, VAD and turn models (about 250 MB)",
+        // Not in the plan's total (as layout's is not): said here instead,
+        // both figures (review of #639) — 256 MB of wheels on linux-aarch64
+        // by the lock's own pins (PyPI, 2026-10-10), 781 MB in `venv/` once
+        // installed from this lock (measured the same day), plus the Python.
+        "pipecat and its WebRTC, VAD and turn models (about 250 MB to fetch, about 800 MB on \
+         disk)",
         say,
     )
     .await?;
@@ -138,17 +140,23 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     crate::engine_gate::systemctl("enable", &[&service])?;
     // A restart, not `enable --now`: a reinstall must reach a running worker
     // with the new files, or `check` passes against the old process.
-    crate::engine_gate::systemctl("restart", &[&service])?;
-    say(&format!(
-        "starting it on :{} and checking the direct door is shut",
-        naming.port
-    ));
-    // Either check failing stops the worker before the install says so: one
-    // that would take a page's call is never left listening behind the
-    // error, and one that never answered is not left enabled to restart
-    // forever at boot (review of #639).
-    let checked = match serves(naming.port).await {
-        Ok(()) => door_shut(naming.port).await,
+    // A failed restart, either check failing: each stops the worker before
+    // the install says so. One that would take a page's call is never left
+    // listening behind the error, and one that never started or answered is
+    // not left enabled to restart forever at boot — `Type=exec` makes a bad
+    // start fail the restart itself, so that is the likeliest way here
+    // (review of #639).
+    let checked = match crate::engine_gate::systemctl("restart", &[&service]) {
+        Ok(()) => {
+            say(&format!(
+                "starting it on :{} and checking the direct door is shut",
+                naming.port
+            ));
+            match serves(naming.port).await {
+                Ok(()) => door_shut(naming.port).await,
+                Err(e) => Err(e),
+            }
+        }
         Err(e) => Err(e),
     };
     if let Err(e) = checked {
@@ -401,6 +409,9 @@ mod tests {
             assert!(LOCK.contains(pkg), "{pkg}");
         }
         assert!(!LOCK.lines().any(|l| l.starts_with("torch==")));
+        // What keeps "nothing else is downloaded" true: with no hub client,
+        // smart-turn's weights can only be the ones inside the wheel.
+        assert!(!LOCK.lines().any(|l| l.starts_with("huggingface-hub==")));
         let mut lines = LOCK.lines().peekable();
         while let Some(l) = lines.next() {
             if l.contains("==") && !l.trim_start().starts_with('#') {
