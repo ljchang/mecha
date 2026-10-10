@@ -106,13 +106,12 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
     let engine_bytes = if mecha_core::llama_units::has_engine(&m) {
         None
     } else {
-        let target = mecha_core::engine::choose(
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            mecha_core::engine::read_nvidia(),
-        )
-        .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
-        Some(mecha_core::engine::download_bytes(target))
+        let target = mecha_core::engine::choose_here()
+            .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
+        Some((
+            mecha_core::engine::download_bytes(target),
+            target.is_built(),
+        ))
     };
 
     // The choice: the tier's row, or the owner's own GGUF.
@@ -188,7 +187,14 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
         match engine_bytes {
-            Some(b) => format!(
+            // A build here is said as one: its download is small, and the
+            // compile is the wait (7b-2).
+            Some((b, true)) => format!(
+                " llama.cpp (no release build fits this machine, so mecha's pinned version is \
+                 built here: {:.0} MiB of source, then a compile of minutes, longer for CUDA) and",
+                b as f64 / 1_048_576.0
+            ),
+            Some((b, false)) => format!(
                 " llama.cpp (mecha's pinned build, {:.0} MiB to download) and",
                 b as f64 / 1_048_576.0
             ),

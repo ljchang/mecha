@@ -317,6 +317,15 @@ async fn run_upgrade(
         mecha_core::engine::read_nvidia(),
     )
     .map_err(anyhow::Error::msg)?;
+    // An upgrade fetches a release's build, and no release fits a machine
+    // whose engine is built here: its engine moves with the pin (7b-2).
+    if target.is_built() {
+        anyhow::bail!(
+            "this machine's llama.cpp is built here ({}), since no release build fits it — \
+             `--upgrade` fetches release builds only; a newer engine comes with a newer mecha's pin",
+            target.label()
+        );
+    }
     let release = mecha_core::engine::resolve_release(to, target)
         .await
         .context("asking GitHub which llama.cpp release to fetch")?;
