@@ -297,7 +297,7 @@ pub fn unnamed_model(base_url: &str) -> Option<String> {
 
 /// Ask each model-less entry's server what it serves. Warnings for a router
 /// that cannot be answered for: several models, none loaded.
-async fn observe_unnamed(cfg: &Config) -> (Vec<(String, String)>, Vec<String>) {
+async fn observe_unnamed(cfg: &Config) -> (Vec<Named>, Vec<String>) {
     let mut named = Vec::new();
     let mut warnings = Vec::new();
     for b in unnamed_bases(cfg) {
@@ -311,6 +311,15 @@ async fn observe_unnamed(cfg: &Config) -> (Vec<(String, String)>, Vec<String>) {
                 };
                 match name_for(&list) {
                     Some(m) => named.push((b, m.to_string())),
+                    // Two states reach here, and the advice differs (review
+                    // of #637): several loaded is a server started otherwise.
+                    None if list.iter().filter(|m| m.is_resident()).count() > 1 => {
+                        warnings.push(format!(
+                            "a local provider at {b} names no `model`, and the router there has \
+                             more than one model loaded — so a run cannot know which to ask \
+                             for. Set `model` in its table, or unload all but one."
+                        ))
+                    }
                     None if readable(&list) => warnings.push(format!(
                         "a local provider at {b} names no `model`, and the router there serves \
                          several with none loaded — so a run cannot know which to ask for. Set \
@@ -362,6 +371,19 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
 /// newer one — a long-lived surface resolving from the global could then
 /// rebuild onto the superseded model (review of #347).
 pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen>) {
+    let (warnings, seen, _) = observe_all(cfg, follows).await;
+    (warnings, seen)
+}
+
+/// What one model-less entry's server said it serves: the normalised base and
+/// the name (see [`unnamed_model`]).
+pub type Named = (String, String);
+
+/// [`observe_seen`], also returning what each model-less entry resolved to in
+/// *this* call — for a long-lived surface, which must rebuild when that name
+/// changes and must read it from its own probe, never the global, for the
+/// reason `observe_seen` gives (review of #637).
+pub async fn observe_all(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen>, Vec<Named>) {
     let mut seen = Vec::new();
     let mut unreadable = Vec::new();
     for b in followed_bases(cfg) {
@@ -455,10 +477,10 @@ pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen
         *slot = Snapshot {
             seen: seen.clone(),
             follows,
-            unnamed,
+            unnamed: unnamed.clone(),
         };
     }
-    (warnings, seen)
+    (warnings, seen, unnamed)
 }
 
 /// How many background runs may hold the model at once, under this process's
