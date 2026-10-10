@@ -38,8 +38,8 @@ pub struct Plan {
     pub leftover: Option<String>,
     /// The parts are prose from the scene's `together`: its origin.
     pub origin: crate::scene::Origin,
-    /// A library style's own words, laid on the plate and the finish; the
-    /// cutouts and the placing pass stay photographic, as measured.
+    /// A library style's own words, laid on by the finish alone; the plate,
+    /// the cutouts and the placing pass stay photographic.
     pub style: Option<String>,
 }
 
@@ -135,13 +135,12 @@ pub fn names_no_one(text: &str, names: &[String]) -> bool {
 
 /// The plate: the room alone, in the scene's framing (§15.3, step 1).
 /// `light` and `camera` must already be free of people ([`names_no_one`],
-/// [`framing`]): the caller passes them through those.
-pub fn plate_prompt(
-    setting: &str,
-    light: Option<&str>,
-    camera: Option<&str>,
-    style: Option<&str>,
-) -> String {
+/// [`framing`]): the caller passes them through those. No style reaches the
+/// plate: a library style can be a portrait recipe (skin, pores, focus on
+/// the eyes), and on the plate it drew a person, so 22 of 63 layered
+/// renders fell back at the plate check (mecha-a3's gate v1). The style is
+/// laid on by the finish alone.
+pub fn plate_prompt(setting: &str, light: Option<&str>, camera: Option<&str>) -> String {
     let mut s = closed(setting);
     for part in [light, camera].into_iter().flatten() {
         if !part.trim().is_empty() {
@@ -150,10 +149,6 @@ pub fn plate_prompt(
         }
     }
     s.push_str(" No people.");
-    if let Some(style) = style.filter(|s| !s.trim().is_empty()) {
-        s.push(' ');
-        s.push_str(&closed(style));
-    }
     s
 }
 
@@ -483,14 +478,11 @@ mod tests {
             plate_prompt(
                 "a kitchen with a long oak table",
                 Some("late sun"),
-                Some("eye level"),
-                None
+                Some("eye level")
             ),
             "a kitchen with a long oak table. late sun. eye level. No people."
         );
-        // A style's words go on the plate and the finish, never the cutout.
-        assert!(plate_prompt("a pier", None, None, Some("ink and wash"))
-            .ends_with("No people. ink and wash."));
+        // A style's words go on the finish alone, never the plate.
         assert!(finish_prompt(Some("ink and wash")).ends_with("Change nothing else. ink and wash."));
         assert_eq!(finish_prompt(None), FINISH);
         let posed = cutout_prompt_posed("a coat", "lifting the other person", "dusk");

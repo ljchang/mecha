@@ -3339,7 +3339,6 @@ impl Tool for ImageGenerate {
                                     setting.as_deref().unwrap_or_default(),
                                     plate_light.as_deref(),
                                     plate_framing.as_deref(),
-                                    style_words.as_deref(),
                                 ),
                                 style: style_words,
                                 light: value(&plan.next.light)
@@ -7308,8 +7307,9 @@ mod tests {
     }
 
     /// A scene with a library style is layered too, the style's words on
-    /// the plate and the finish only (mecha-a3: 11 of 15 real touching calls
-    /// named one); a replay's posed arm puts each part into its cutout.
+    /// the finish only (mecha-a3: 11 of 15 real touching calls named one,
+    /// and a portrait-recipe style on the plate drew a person there); a
+    /// replay's posed arm puts each part into its cutout.
     #[tokio::test]
     async fn a_styled_scene_is_layered_and_the_posed_arm_poses_cutouts() {
         let (url, seen) = fake_with(Fake {
@@ -7353,8 +7353,8 @@ mod tests {
             .filter(|l| l.starts_with("POST /prompt"))
             .collect();
         assert!(
-            prompts[0].contains("loose ink and wash"),
-            "the plate: {}",
+            !prompts[0].contains("ink and wash"),
+            "never the plate: {}",
             prompts[0]
         );
         assert!(
