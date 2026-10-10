@@ -103,7 +103,7 @@ fn probe(name: Option<&str>, json: bool) -> Result<()> {
         }
     };
     let db = system::db_path()?;
-    let reader = Reader::new();
+    let reader = Reader::new().with_messages(messages_dir());
     let now = Utc::now();
     let rows: Vec<(Measurement, Probed)> = wanted
         .into_iter()
@@ -157,10 +157,18 @@ fn show(unit: Unit, r: &Reading) -> String {
     }
 }
 
+/// `[messages] dir`, so `messages.unread` counts the mailbox the agents
+/// use. A config that does not load leaves the default.
+fn messages_dir() -> Option<std::path::PathBuf> {
+    mecha_core::config::Config::load_global()
+        .ok()
+        .and_then(|c| c.messages.dir)
+}
+
 fn sample(json: bool) -> Result<()> {
     let db = system::db_path()?;
     let since = system::last_sample_at(&db);
-    let recorded = system::record(&db, &system::collect(Utc::now(), since)?)?;
+    let recorded = system::record(&db, &system::collect(Utc::now(), since, messages_dir())?)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&recorded)?);
     } else {

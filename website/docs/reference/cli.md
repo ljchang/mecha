@@ -1752,6 +1752,9 @@ mecha system sample [--json]
   (`gpu`, `pressure.memory`), or all of them when none is named. A rate
   (`disk.read_rate`, `cpu.busy`) comes from the newest recorded minute. A
   reading that cannot be had says so, and why; it is never shown as zero.
+  Work in flight is read the same way: `runs.live`, `holds.live`,
+  `jobs.live`, `triggers.missed` and the rest are counts, never names, and
+  `voice.live` says whether a call is live in any chat.
 - **`admit`** asks the memory floor whether something needing `SIZE`
   (`24G`, `512M`, or a number of MB) may start now: the need plus
   `[system] memory_reserve_mb` must be available, and memory pressure must

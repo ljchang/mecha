@@ -335,7 +335,7 @@ impl ChatState {
             personas: Arc::new(super::persona_chat::PersonaChats::new()?),
             stopping: Default::default(),
             runs: Default::default(),
-            jobs: Default::default(),
+            jobs: super::late::Jobs::marked("chat")?,
         })
     }
 }

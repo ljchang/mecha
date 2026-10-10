@@ -52,6 +52,18 @@ impl Default for Jobs {
 }
 
 impl Jobs {
+    /// The serving host's queue, saying how many jobs it runs where
+    /// `mecha system probe jobs.live` reads it (`JobQueue::set_marker`). A
+    /// test's queue is `default()`, and writes nothing.
+    pub(super) fn marked(name: &str) -> anyhow::Result<Self> {
+        let jobs = Jobs::default();
+        jobs.queue.set_marker(
+            &mecha_core::jobs::marker_dir_under(&mecha_core::work::mecha_home()?),
+            name,
+        );
+        Ok(jobs)
+    }
+
     /// Number the run about to start, for its sink and its `LateState`.
     pub(super) fn number(&self) -> usize {
         self.next_run

@@ -1,6 +1,6 @@
 # System state — design
 
-**2026-10-10. R1–R5b ruled the same day (§9). S0, S1 and S6 built (§7, §7.1, §7.2).** `mecha system` is one layer through which mecha reads the state of
+**2026-10-10. R1–R5b ruled the same day (§9). S0, S1, S6 and S2a built (§7, §7.1–§7.3).** `mecha system` is one layer through which mecha reads the state of
 the machine it runs on and the services it runs beside. Each measurement in
 it has its own specific name, drawn from one closed list. Every consumer
 reads the system through it, and none probes for itself:
@@ -169,10 +169,10 @@ now.
 | `category.gpu_memory` | `nvidia-smi --query-compute-apps`, per `Category` | bytes | Fork | yes | hud |
 | `model.slots.busy`, `model.slots.total` | `GET /slots?autoload=false` on :8080, local provider only | count | Loopback | yes | brief, `mecha model use`, model-idle.sh |
 | `model.resident` | `GET /models` on the router | a model id | Loopback | **no: a name** | router, `mecha model list` |
-| `runs.live` | `runmarker` dirs, plus pid checks | count | Scan | yes | brief, serve board |
-| `holds.live` | the `hold` dir, plus pid checks | count | Scan | yes | follow, `mecha model` |
+| `runs.live` | `runmarker` dirs (delegated tasks and trigger fires), plus pid checks | count | Scan | yes | brief, serve board |
+| `holds.live` | the `hold` dir, every router, plus pid checks; never swept | count | Scan | yes | follow, `mecha model` |
 | `permits.live` | the `permit` dir, plus pid checks | count | Scan | yes | brief |
-| `voice.live` | **one answer**, chosen in S2 (§6) | bool | File | yes | brief and replay_persona, which disagree |
+| `voice.live` | the speech engine's journal: a sentence synthesised in the last three minutes, for a call in any chat or a reply read aloud (§7.3) | bool | Fork | yes | replay_persona, the build gate |
 | `image.loaded` | ComfyUI `GET /system_stats` | bool | Loopback | yes | imagegen |
 | `services.failed` | `systemctl --user --failed` | count | Fork | yes | CLI doctor |
 | `backlog.outbox`, `backlog.questions`, `backlog.frontdoor`, `backlog.proposals`, `backlog.candidates` | `backlog::Backlog::survey`, one per field | count | Scan | yes | homeostat, charter readings |
@@ -194,12 +194,12 @@ now.
 | `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` deltas on the tailnet interface, keyed by `ifindex` | bytes/s | File | yes | nothing |
 | `network.tailnet.up`, `network.tailnet.peers_online` | `tailscale status --json`: backend state, and a count of online peers, never their names | bool, count | Fork | yes | nothing |
 | **Work in flight** | | | | | |
-| `tasks.running` | `taskruns` markers, plus pid checks | count | Scan | yes | serve board |
+| `tasks.running` | `taskruns` markers, plus pid checks (a subset of `runs.live`) | count | Scan | yes | serve board |
 | `tasks.open` | open board tasks, from the graph store read-only | count | Scan, **hourly** | yes | `kg_task_list` |
-| `jobs.live` | background jobs (`jobs.rs`); **not readable outside the serving process today** (§2.1) | count | File | yes | nothing |
+| `jobs.live` | background jobs running (`jobs.rs`), from each host queue's marker (§2.1, built in S2a) | count | Scan | yes | nothing |
 | `image.queue.running`, `image.queue.pending` | ComfyUI `GET /queue` | count | Loopback | yes | nothing |
-| `triggers.missed`, `triggers.failed` | the trigger ledger: slots past due with no run, and runs that failed, over 24 h | count | Scan | yes | doctor |
-| `mail.drain.pending` | `~/.mecha/requests`, not yet drained | count | Scan | yes | doctor |
+| `triggers.missed`, `triggers.failed` | the trigger files and ledger over 24 h: slots that did not run (skipped, collapsed by a catch-up, or never accounted), and runs that ended in error (§7.3) | count | Scan | yes | doctor |
+| ~~`mail.drain.pending`~~ | dropped in S2a: the queue it names is on the factory box (§7.3) | | | | |
 | `messages.unread` | the inter-agent mailbox (`mailbox.rs`) | count | Scan | yes | nothing |
 
 ### 2.1 Notes on the second pass
@@ -251,8 +251,8 @@ outside it can count them. The fix is the shape `runmarker.rs` already uses:
 - removed when it ends;
 - checked against a live pid.
 
-That marker is part of S2. Until it exists, `jobs.live` reads `Unread`,
-never 0.
+That marker is part of S2, and S2a built it: one file per host queue,
+holding counts and nothing else (§7.3).
 
 **Hourly is a cadence, not a tier.** A directory walk over the model cache
 or the graph store costs more than a minute deserves. So `store.*` and
@@ -539,13 +539,13 @@ one by deleting a copy.
 
 - **`nvidia-smi` with no timeout** in the host sampler goes through
   `recommend::nvidia_smi` instead, with its 10 s kill.
-- **Two "is a voice call live?" answers** become one: `voice.live` reads
-  the stamp file (`brief::VoicePresence`).
-  - The stamp is the better primitive. The voice worker writes it, and it
-    is checked against a live pid. The journal grep only infers liveness
-    from a log line.
-  - If the stamp misses a case the journal catches, the fix is to write the
-    stamp in that case, not to keep a second reader.
+- **Two "is a voice call live?" answers** turned out to be two questions
+  (§7.3), so they stay two, each with one reader:
+  - `voice.live` is the machine's: is the speech engine speaking, whichever
+    chat the call is in. The build gate and `replay_persona` read it.
+  - The brief's `VoicePresence` stamp is the owner's context, and it is
+    deliberately not written for an incognito chat (`INCOGNITO-DESIGN.md`
+    §6.4). So it cannot be the machine's answer.
   - The live-call build gate in the memory notes becomes
     `mecha system probe voice.live`.
 - **Four `/proc/meminfo` parsers** become one. `imagegen` and `recommend`
@@ -560,7 +560,8 @@ one by deleting a copy.
 |---|---|---|
 | **S0** | Move `hud::host` into `system`. The store becomes `~/.mecha/system/series.sqlite`, `mecha hud sample` becomes `mecha system sample`, and the unit becomes `mecha-system-sample`. The `host` board's source and the doctor check follow. **Before the dashboard's step 2b deploys** (R2), so nothing migrates. | #630 merged |
 | **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers, including pressure, OOM kills, temperatures, uptime, disk I/O and network throughput. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
-| **S2** | `model.*`, `runs.live`, `holds.live`, `permits.live`, `voice.live`, `image.*`, `tasks.*`, `triggers.*`, `mail.drain.pending`, `messages.unread`, and the job marker that makes `jobs.live` readable. The brief reads them through `system`, and they are recorded in the series, except `model.resident`. | S1 |
+| **S2a** | The `Scan` tier and the call: `runs.live`, `tasks.running`, `holds.live`, `permits.live`, `jobs.live` with its marker, `voice.live`, `triggers.*` and `messages.unread`, all recorded (§7.3). | S1 |
+| **S2b** | The `Loopback` tier and the hourly walks: `model.*`, `image.*`, `tasks.open`, `store.*`, and model loads gated by the memory floor (§7.2). | S2a |
 | **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2 |
 | **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | S3 |
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
@@ -661,6 +662,102 @@ S0 is small, and it is the only step that is cheaper now than later.
 **S0 is built**, in the same change as this document (the owner asked for
 the design to ship with the first implementation PR rather than be reviewed
 on its own).
+
+### 7.3 What S2a built, and where it differs from §2
+
+S2 is split in two. S2a reads mecha's own stores and the call, and S2b the
+local servers and the hourly walks, because the second half needs things the
+first does not: a preset's size for the model-load gate, and a cadence the
+sampler does not have yet.
+
+S2a is built:
+- `runs.live`, `tasks.running`, `holds.live`, `permits.live`, `jobs.live`,
+  `voice.live`, `triggers.missed`, `triggers.failed` and `messages.unread`,
+  numbered 70–78;
+- a `Scan` cost tier;
+- the job marker;
+- `Reader::with_home`, so a test scans a scratch home and never the
+  developer's own.
+
+They are recorded every minute, because the sampler records every `Now`
+measurement.
+
+**Every scan is read-only**, which three stores' own readers are not. A
+measurement may write nothing but the series (§4 rule 3):
+- `Holds::live` sweeps dead holds, so `holds.live` reads
+  `Holds::census`, which counts them the same way and removes nothing.
+- `MailboxStore::messages_for` quarantines a corrupt message, so
+  `messages.unread` reads `count_pending_at`.
+- `RunMarkers::running` clears a dead marker, so the trigger tally reads
+  `peek`.
+
+A test scans every store and checks that nothing was created or removed.
+
+**A file that does not parse makes the count unread, never one short.**
+A torn marker may be a live run, so the reading is `Unread`, and its reason
+gives the floor ("at least 2"). This is the brief's rule for seats and runs
+(`unreadable`), applied to a single number.
+
+**`voice.live` is the speech engine's journal, not the brief's stamp.**
+§6 planned the stamp, but an incognito chat writes no stamp. The stamp is
+copied into every run's brief, which is a transcript, and a call in an
+incognito chat must not reach another chat's transcript
+(`INCOGNITO-DESIGN.md` §6.4). So:
+- the stamp would miss exactly the calls a build must not stutter;
+- writing the stamp for them would break the incognito promise.
+
+The two answers are two questions. `voice.live` is the machine's, and
+reading it from the journal counts every call. It records no chat and no
+words. The engine logs `[Perf] Total … RTF 0.242` for every sentence it
+synthesises, so a reply read aloud in a chat counts too. That is what the
+gate wants: GPU work stutters either one. That a call happened is outside incognito's promise (§10 there:
+the worker's journal already says so).
+
+Two consequences:
+- **Between two turns, it reads 0** when the engine has said nothing for
+  three minutes. This is the window the build gate and `replay_persona`
+  used.
+- **S5's tool inherits a question.** The series now says, minute by minute,
+  when a call was live. A `system_read` result lands in a transcript, so
+  S5 must decide whether `voice.live` is readable there, or whether the
+  incognito rule keeps it out.
+
+**`jobs.live` counts a marker per host queue.** A serving process runs two
+queues (assistant chats and persona chats), and each rewrites
+`~/.mecha/jobs/<pid>-<queue>.json` whenever its line changes, with only
+`{pid, running, waiting}`. A job in an incognito chat is a number like any
+other. A queue removes its file when dropped, and a dead pid is skipped.
+Only the host opts in (`Jobs::marked`), so a test's queue writes nothing.
+`jobs.live` counts running jobs; the marker carries the waiting count, so
+a later measurement needs no change of format.
+
+**`triggers.missed` walks the schedule, not just the ledger.** A scheduler
+that is down writes no rows, so a ledger count alone would read 0 exactly
+when the most is being missed. For each enabled trigger:
+- every slot in the last 24 h is due once `TICK_GRACE` has passed;
+- a slot is missed unless an `ok` or `error` row accounts for it, or a live
+  run marker carries it;
+- a stale or overlapping skip is missed, and so is a slot a catch-up
+  collapsed into a later run.
+
+A trigger is charged only from its file's last change, so a schedule edited
+at noon does not owe the morning's slots under the new expression. A
+trigger file that does not load cannot be walked, so the reading is
+unread and its reason gives the floor.
+
+**`messages.unread` follows `[messages] dir`.** The CLI passes it in, so a
+moved mailbox is not read as an empty one.
+
+**`mail.drain.pending` is dropped.** §2 placed it at `~/.mecha/requests`,
+but that directory is the front door's request store, which
+`backlog.frontdoor` already counts. What "not yet drained" names is the
+factory box's queue, and reading it would be egress (§4 rule 3).
+
+**The brief does not read these through `system`.** §7 planned that it
+would, but the brief's readers carry names: which task, which trigger,
+who holds a seat. Rule 2 keeps names out of this layer. So the two layers
+share the store's own reader, which leaves one parser per store. They do
+not share the measurement.
 
 ## 8. Deliberately out of scope
 

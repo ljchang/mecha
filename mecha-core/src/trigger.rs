@@ -488,6 +488,15 @@ pub enum Due {
     Disabled,
 }
 
+/// [`TriggerStore::tally`]'s answer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tally {
+    pub missed: usize,
+    pub failed: usize,
+    /// Trigger files that do not load, whose slots could not be walked.
+    pub unloadable: usize,
+}
+
 /// What happened on one fire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -691,6 +700,21 @@ impl TriggerStore {
     /// #294).
     pub fn locks_dir_under(home: &Path) -> PathBuf {
         home.join(STORE_DIR).join(LOCKS_DIR)
+    }
+
+    /// Where the trigger store under a mecha home is rooted.
+    pub fn root_under(home: &Path) -> PathBuf {
+        home.join(STORE_DIR)
+    }
+
+    /// The store at `root` if it exists, for a reader that must not create
+    /// one ([`open_existing_default`](Self::open_existing_default) at any
+    /// root).
+    pub fn existing_at(root: &Path) -> Option<Self> {
+        root.is_dir().then(|| TriggerStore {
+            root: root.to_path_buf(),
+            charter: None,
+        })
     }
 
     /// Where a trigger store rooted at `root` keeps its run markers,
@@ -1036,6 +1060,80 @@ impl TriggerStore {
         Ok(out)
     }
 
+    /// What the schedule came to over the `window` before `now`
+    /// (`SYSTEM-STATE-DESIGN.md` §2, `triggers.*`). Read only.
+    ///
+    /// **Missed** is a slot that should have run and did not: one the ledger
+    /// skipped (stale or overlapping), one a catch-up collapsed into a later
+    /// run, and one nothing accounted for at all — a scheduler that is down
+    /// writes no rows, so the schedule is walked, not just the ledger read.
+    /// A slot is counted from when the trigger file last changed, so a new
+    /// schedule is not charged for the old one's slots, and only once
+    /// [`TICK_GRACE`] has passed; a slot whose run is in flight ran.
+    ///
+    /// **Failed** is a run that ended in error, manual runs included.
+    ///
+    /// A trigger file that does not load cannot be walked: it is counted in
+    /// `unloadable`, and the missed count is then a floor.
+    pub fn tally(&self, now: DateTime<Utc>, window: chrono::Duration) -> Result<Tally> {
+        let since = now - window;
+        let (triggers, problems) = self.list()?;
+        let mut ran: BTreeMap<String, std::collections::BTreeSet<DateTime<Utc>>> = BTreeMap::new();
+        let mut failed = 0;
+        // Rows are appended when a run ends, roughly in time order; one that
+        // started before the window cannot account for a slot inside it,
+        // and an hour covers runs ending out of order.
+        let stop = since - chrono::Duration::hours(1);
+        self.scan_runs_rev(|row| {
+            if row.started_at < stop {
+                return false;
+            }
+            if row.started_at >= since && row.status == RunStatus::Error {
+                failed += 1;
+            }
+            if let (Some(slot), RunStatus::Ok | RunStatus::Error) = (row.slot, row.status) {
+                ran.entry(row.trigger).or_default().insert(slot);
+            }
+            true
+        })?;
+        let mut missed = 0;
+        for t in triggers.iter().filter(|t| t.enabled) {
+            let changed = std::fs::metadata(self.path_of(&t.name))
+                .and_then(|m| m.modified())
+                .ok()
+                .map(DateTime::<Utc>::from);
+            let from = [Some(since), t.created_at, changed]
+                .into_iter()
+                .flatten()
+                .max()
+                .unwrap_or(since);
+            let in_flight = self.markers().peek(&t.name).and_then(|m| m.slot);
+            let tz = t.tz(None);
+            let mut at = from;
+            // A once-a-minute schedule has 1440 slots a day; the bound is
+            // against an expression this walk has not imagined.
+            for _ in 0..=window.num_minutes().max(0) {
+                let Some(slot) = t.schedule.next_after(at, tz) else {
+                    break;
+                };
+                if slot > now - TICK_GRACE {
+                    break;
+                }
+                let accounted =
+                    ran.get(&t.name).is_some_and(|s| s.contains(&slot)) || in_flight == Some(slot);
+                if !accounted {
+                    missed += 1;
+                }
+                at = slot;
+            }
+        }
+        Ok(Tally {
+            missed,
+            failed,
+            unloadable: problems.len(),
+        })
+    }
+
     /// Writer lock for the ledger.
     pub fn lock(&self) -> Result<StoreLock> {
         use std::os::unix::io::AsRawFd;
@@ -1209,6 +1307,117 @@ mod tests {
         t.timezone = Some("America/New_York".into());
         t.created_at = Some(utc("2026-08-01T00:00:00Z"));
         t
+    }
+
+    fn hourly(name: &str, created: &str) -> Trigger {
+        let mut t = Trigger::new(name, "0 * * * *".parse().unwrap(), "check the queue");
+        t.timezone = Some("UTC".into());
+        t.created_at = Some(utc(created));
+        t
+    }
+
+    fn row(trigger: &str, slot: Option<&str>, started: &str, status: RunStatus) -> RunRecord {
+        let mut r = RunRecord::started(trigger, slot.map(utc), slot.is_none());
+        r.started_at = utc(started);
+        r.status = status;
+        r
+    }
+
+    /// `triggers.missed` and `triggers.failed`: a skipped slot and a slot
+    /// nothing accounts for are both missed, a slot whose run is in flight
+    /// is not, and a failure counts once whether a slot or a hand started it.
+    #[test]
+    fn the_tally_counts_slots_that_did_not_run_and_runs_that_failed() {
+        let root = scratch("tally");
+        let store = TriggerStore::open(&root).unwrap();
+        store
+            .save(&hourly("queue", "2031-04-17T06:30:00Z"))
+            .unwrap();
+        let mut off = hourly("paused", "2031-04-17T06:30:00Z");
+        off.enabled = false;
+        store.save(&off).unwrap();
+        for r in [
+            // Outside the window: not counted.
+            row("queue", None, "2031-04-15T09:00:00Z", RunStatus::Error),
+            row(
+                "queue",
+                Some("2031-04-17T07:00:00Z"),
+                "2031-04-17T07:00:30Z",
+                RunStatus::Ok,
+            ),
+            row(
+                "queue",
+                Some("2031-04-17T08:00:00Z"),
+                "2031-04-17T08:00:30Z",
+                RunStatus::Error,
+            ),
+            row(
+                "queue",
+                Some("2031-04-17T09:00:00Z"),
+                "2031-04-17T09:40:00Z",
+                RunStatus::SkippedStale,
+            ),
+            row(
+                "queue",
+                Some("2031-04-17T10:00:00Z"),
+                "2031-04-17T10:00:30Z",
+                RunStatus::Ok,
+            ),
+            // 11:00 has no row at all: the scheduler was down.
+            row("queue", None, "2031-04-17T11:20:00Z", RunStatus::Error),
+        ] {
+            store.append_run(&r).unwrap();
+        }
+        // 12:00's run is in flight.
+        store
+            .mark_running("queue", Some(utc("2031-04-17T12:00:00Z")))
+            .unwrap();
+        let t = store
+            .tally(utc("2031-04-17T12:30:00Z"), chrono::Duration::hours(24))
+            .unwrap();
+        assert_eq!(
+            t,
+            Tally {
+                missed: 2,
+                failed: 2,
+                unloadable: 0
+            },
+            "09:00 skipped and 11:00 unaccounted; 08:00 and the manual run failed"
+        );
+        // The paused trigger's six unrun slots were never owed.
+
+        std::fs::write(root.join("broken.toml"), "schedule = [").unwrap();
+        let t = store
+            .tally(utc("2031-04-17T12:30:00Z"), chrono::Duration::hours(24))
+            .unwrap();
+        assert_eq!(t.unloadable, 1, "a file that does not load is said");
+    }
+
+    /// A trigger is charged only for slots since its file last changed: an
+    /// edited schedule did not owe the old one's slots.
+    #[test]
+    fn the_tally_charges_no_slot_from_before_the_trigger_last_changed() {
+        let root = scratch("tally-edited");
+        let store = TriggerStore::open(&root).unwrap();
+        store
+            .save(&hourly("queue", "2031-04-16T00:00:00Z"))
+            .unwrap();
+        let edited: std::time::SystemTime = utc("2031-04-17T10:30:00Z").into();
+        std::fs::File::options()
+            .write(true)
+            .open(store.path_of("queue"))
+            .unwrap()
+            .set_modified(edited)
+            .unwrap();
+        let t = store
+            .tally(utc("2031-04-17T12:30:00Z"), chrono::Duration::hours(24))
+            .unwrap();
+        assert_eq!(t.missed, 2, "11:00 and 12:00, nothing before the edit");
+        // The grace: a slot a minute old is not missed yet.
+        let t = store
+            .tally(utc("2031-04-17T12:01:00Z"), chrono::Duration::hours(24))
+            .unwrap();
+        assert_eq!(t.missed, 1, "only 11:00");
     }
 
     /// R34's trigger half: an enabled trigger is live, a disabled or removed

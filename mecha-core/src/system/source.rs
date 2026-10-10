@@ -470,6 +470,12 @@ pub fn parse_throttle(text: &str) -> Option<bool> {
     (!masks.is_empty()).then(|| masks.iter().any(|m| m & THROTTLING != 0))
 }
 
+/// Whether the speech engine's journal, over the window asked for, shows a
+/// sentence spoken: it logs one real-time factor (`RTF`) per sentence.
+pub fn spoke(journal: &str) -> bool {
+    journal.lines().any(|l| l.contains("RTF"))
+}
+
 /// `systemctl --user --failed --no-legend --plain`: one line per failed unit.
 pub fn parse_failed_units(text: &str) -> u64 {
     text.lines().filter(|l| !l.trim().is_empty()).count() as u64

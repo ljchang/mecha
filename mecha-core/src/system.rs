@@ -248,8 +248,12 @@ pub fn fold(
 /// draw an idle machine — `Other` is a remainder, so it would absorb the
 /// whole box — and nothing would say so. Refused, the sample unit fails, the
 /// `now` loader empties, and the doctor reports a sampler that stopped writing.
-pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample> {
-    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET);
+pub fn collect(
+    at: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
+    messages: Option<PathBuf>,
+) -> Result<Sample> {
+    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET).with_messages(messages);
     let mem = reader.meminfo().map_err(|r| {
         anyhow::anyhow!(
             "/proc/meminfo could not be read ({}); no sample recorded",

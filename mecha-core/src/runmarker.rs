@@ -224,6 +224,14 @@ impl RunMarkers {
             .collect()
     }
 
+    /// [`running`](Self::running) for a reader that is not the run's owner:
+    /// a dead marker is skipped, not cleared.
+    pub fn peek(&self, name: &str) -> Option<RunMarker> {
+        let text = std::fs::read_to_string(self.marker_path(name)).ok()?;
+        let marker: RunMarker = serde_json::from_str(&text).ok()?;
+        crate::process_alive(marker.pid).then_some(marker)
+    }
+
     /// The run in flight, if there is one.
     pub fn running(&self, name: &str) -> Option<RunMarker> {
         let text = std::fs::read_to_string(self.marker_path(name)).ok()?;

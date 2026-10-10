@@ -20,7 +20,7 @@
 //! A probe of the last two reads the series' newest minute (`super::latest`).
 
 use std::cell::OnceCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -56,12 +56,14 @@ pub enum How {
 }
 
 /// What reading it costs (§1.1). `Fork` reads are bounded by
-/// [`source::FORK_TIMEOUT`].
+/// [`source::FORK_TIMEOUT`]; `Scan` reads list a directory of mecha's own
+/// and read the small files in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cost {
     File,
     Fork,
+    Scan,
 }
 
 const UPLINK_KINDS: &[&str] = &["wired", "wireless"];
@@ -171,6 +173,30 @@ measurements! {
     /// Failed units in the user manager.
     ServicesFailed = 61, "services.failed", Unit::Count, Fork, Now;
 
+    /// Runs in flight that wrote a run marker: delegated tasks and trigger
+    /// fires. A web or TUI turn writes none; `holds.live` counts those.
+    RunsLive = 70, "runs.live", Unit::Count, Scan, Now;
+    /// Of those, the delegated tasks.
+    TasksRunning = 71, "tasks.running", Unit::Count, Scan, Now;
+    /// Runs holding a router's model, on every router: a model switch waits
+    /// for this to reach zero.
+    HoldsLive = 72, "holds.live", Unit::Count, Scan, Now;
+    /// Background seats taken on the model.
+    PermitsLive = 73, "permits.live", Unit::Count, Scan, Now;
+    /// Background jobs running past the turn that started them — a picture
+    /// being drawn. Queued ones are not counted.
+    JobsLive = 74, "jobs.live", Unit::Count, Scan, Now;
+    /// The speech engine spoke within the last three minutes: a call in any
+    /// chat, or a reply read aloud — either stutters when the GPU is taken.
+    /// Between two turns of a long silence it reads 0.
+    VoiceLive = 75, "voice.live", Unit::Flag, Fork, Now;
+    /// Scheduled trigger slots in the last day that did not run.
+    TriggersMissed = 76, "triggers.missed", Unit::Count, Scan, Now;
+    /// Trigger runs in the last day that ended in error.
+    TriggersFailed = 77, "triggers.failed", Unit::Count, Scan, Now;
+    /// Messages between sessions waiting unclaimed.
+    MessagesUnread = 78, "messages.unread", Unit::Count, Scan, Now;
+
     CategoryMemory = 100, "category.memory", Unit::Bytes, Fork, ByCategory;
     CategoryCpu = 101, "category.cpu", Unit::Percent, File, ByCategory;
     CategoryTasks = 102, "category.tasks", Unit::Count, File, ByCategory;
@@ -277,6 +303,32 @@ pub struct Reader {
     wifi: OnceCell<Result<WifiLink, Reading>>,
     tailnet: OnceCell<Result<Tailnet, Reading>>,
     failed: OnceCell<Reading>,
+    /// The mecha home every `Scan` reads; `None` is the real one.
+    home: Option<PathBuf>,
+    /// `[messages] dir`, when the config moves the mailbox.
+    messages: Option<PathBuf>,
+    /// Delegated-task markers, read once so `runs.live` and `tasks.running`
+    /// count the same moment: (live, unreadable).
+    tasks: OnceCell<Result<(usize, usize), Reading>>,
+    tally: OnceCell<Result<crate::trigger::Tally, Reading>>,
+    voice: OnceCell<Reading>,
+}
+
+/// The unit whose journal says the engine is speaking: it logs a real-time
+/// factor for every sentence it synthesises (`[Perf] Total … RTF 0.242`).
+const SPEECH_UNIT: &str = "mecha-breeze-tts.service";
+
+/// A count from a store whose files may not all parse. A file that does not
+/// may be one more, so the count is unread rather than a floor passed off as
+/// exact.
+fn counted(found: anyhow::Result<(usize, usize)>, what: &str) -> Reading {
+    match found {
+        Ok((live, 0)) => Reading::Observed { value: live as f64 },
+        Ok((live, bad)) => Reading::unread(format!(
+            "{bad} {what} could not be read, so the count is at least {live}"
+        )),
+        Err(e) => Reading::unread(format!("{e:#}")),
+    }
 }
 
 /// On Linux a missing `/proc` file is an incident; elsewhere there is no
@@ -311,6 +363,101 @@ impl Reader {
             deadline: Some(deadline),
             ..Reader::default()
         }
+    }
+
+    /// Scan the mecha home at `home` rather than the real one — a test's
+    /// scratch directory.
+    pub fn with_home(mut self, home: PathBuf) -> Reader {
+        self.home = Some(home);
+        self
+    }
+
+    /// Read the mailbox at `dir` (`[messages] dir`) rather than the default
+    /// one. `None` keeps the default.
+    pub fn with_messages(mut self, dir: Option<PathBuf>) -> Reader {
+        self.messages = dir;
+        self
+    }
+
+    fn home(&self) -> Result<PathBuf, Reading> {
+        match &self.home {
+            Some(home) => Ok(home.clone()),
+            None => crate::work::mecha_home()
+                .map_err(|e| Reading::unread(format!("the mecha home: {e:#}"))),
+        }
+    }
+
+    /// The trigger store's root: under the given home, or wherever the real
+    /// store says (it honours `MECHA_TRIGGERS_DIR`).
+    fn trigger_root(&self) -> Result<PathBuf, Reading> {
+        match &self.home {
+            Some(home) => Ok(crate::trigger::TriggerStore::root_under(home)),
+            None => crate::trigger::TriggerStore::default_root()
+                .map_err(|e| Reading::unread(format!("{e:#}"))),
+        }
+    }
+
+    fn tasks(&self) -> Result<(usize, usize), Reading> {
+        self.tasks
+            .get_or_init(|| {
+                let dir = crate::runmarker::task_dir_under(&self.home()?);
+                live_markers(dir)
+            })
+            .clone()
+    }
+
+    fn tally(&self) -> Result<crate::trigger::Tally, Reading> {
+        self.tally
+            .get_or_init(|| {
+                let root = self.trigger_root()?;
+                match crate::trigger::TriggerStore::existing_at(&root) {
+                    // No store is no triggers, which missed and failed nothing.
+                    None => Ok(crate::trigger::Tally::default()),
+                    Some(store) => store
+                        .tally(chrono::Utc::now(), chrono::Duration::hours(24))
+                        .map_err(|e| Reading::unread(format!("{e:#}"))),
+                }
+            })
+            .clone()
+    }
+
+    /// `systemctl` says whether the speech engine is installed here, and its
+    /// journal whether it spoke in the last three minutes — the gate builds
+    /// and replays already used, moved here so there is one.
+    fn voice(&self) -> Reading {
+        self.voice
+            .get_or_init(|| {
+                match source::run_bounded(
+                    "systemctl",
+                    &["--user", "show", "-p", "LoadState", "--value", SPEECH_UNIT],
+                    self.budget(),
+                ) {
+                    Ran::Out(t) if t.trim() == "loaded" => {}
+                    Ran::Out(_) => return Reading::NotHere,
+                    other => return ran_reading(&other, "systemctl"),
+                }
+                match source::run_bounded(
+                    "journalctl",
+                    &[
+                        "--user",
+                        "-u",
+                        SPEECH_UNIT,
+                        "--since",
+                        "-3 min",
+                        "--no-pager",
+                        "-q",
+                        "-o",
+                        "cat",
+                    ],
+                    self.budget(),
+                ) {
+                    Ran::Out(t) => Reading::Observed {
+                        value: if source::spoke(&t) { 1.0 } else { 0.0 },
+                    },
+                    other => ran_reading(&other, "journalctl"),
+                }
+            })
+            .clone()
     }
 
     /// How long the next command may take.
@@ -613,6 +760,83 @@ impl Reader {
                     }
                 })
                 .clone(),
+            RunsLive => {
+                let triggers = self.trigger_root().and_then(|root| {
+                    live_markers(crate::trigger::TriggerStore::locks_dir_at(&root))
+                });
+                match (self.tasks(), triggers) {
+                    (Ok((a, bad_a)), Ok((b, bad_b))) => {
+                        counted(Ok((a + b, bad_a + bad_b)), "run marker(s)")
+                    }
+                    (Err(r), _) | (_, Err(r)) => r,
+                }
+            }
+            TasksRunning => match self.tasks() {
+                Ok(found) => counted(Ok(found), "run marker(s)"),
+                Err(r) => r,
+            },
+            HoldsLive => match self.home() {
+                Ok(home) => counted(
+                    crate::hold::Holds::new(crate::hold::dir_under(&home))
+                        .census()
+                        .map(|c| (c.live, c.unreadable)),
+                    "hold file(s)",
+                ),
+                Err(r) => r,
+            },
+            PermitsLive => match self.home() {
+                Ok(home) => counted(
+                    crate::permit::Permits::new(
+                        crate::permit::dir_under(&home),
+                        crate::permit::DEFAULT_BACKGROUND_PERMITS,
+                    )
+                    .read_live()
+                    .map(|p| (p.live.len(), p.unreadable)),
+                    "permit file(s)",
+                ),
+                Err(r) => r,
+            },
+            JobsLive => match self.home() {
+                Ok(home) => counted(
+                    crate::jobs::count_live(&crate::jobs::marker_dir_under(&home))
+                        .map(|j| (j.running, j.unreadable)),
+                    "job marker(s)",
+                ),
+                Err(r) => r,
+            },
+            VoiceLive => self.voice(),
+            TriggersMissed => match self.tally() {
+                Ok(t) if t.unloadable > 0 => Reading::unread(format!(
+                    "{} trigger file(s) do not load, so at least {} slot(s) were missed",
+                    t.unloadable, t.missed
+                )),
+                Ok(t) => Reading::Observed {
+                    value: t.missed as f64,
+                },
+                Err(r) => r,
+            },
+            TriggersFailed => match self.tally() {
+                Ok(t) => Reading::Observed {
+                    value: t.failed as f64,
+                },
+                Err(r) => r,
+            },
+            MessagesUnread => {
+                let root = match (&self.messages, &self.home) {
+                    (Some(dir), _) => Ok(dir.clone()),
+                    (None, Some(home)) => Ok(home.join("messages")),
+                    (None, None) => crate::mailbox::MailboxStore::default_root()
+                        .map_err(|e| Reading::unread(format!("{e:#}"))),
+                };
+                match root {
+                    Ok(root) => counted(
+                        crate::mailbox::MailboxStore::count_pending_at(&root)
+                            .map(|c| (c.pending, c.unreadable)),
+                        "message(s)",
+                    ),
+                    Err(r) => r,
+                }
+            }
             // Not a catch-all for `Now` measurements: one added without a
             // reader here reads as NOT_WIRED, never as a NULL the series
             // would hold forever, and a test over every `Now` measurement
@@ -623,6 +847,14 @@ impl Reader {
             _ => Reading::unread(NOT_WIRED),
         }
     }
+}
+
+/// The live run markers in `dir`: (live, unreadable).
+fn live_markers(dir: PathBuf) -> Result<(usize, usize), Reading> {
+    crate::runmarker::RunMarkers::new(dir)
+        .live_names()
+        .map(|l| (l.names.len(), l.unreadable))
+        .map_err(|e| Reading::unread(format!("{e:#}")))
 }
 
 /// The hottest thermal zone. No zones at all is `NotHere`; zones that all
