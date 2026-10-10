@@ -2572,6 +2572,16 @@ impl Tool for ImageGenerate {
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             });
             if missing {
+                // Regions mark places in the picture named, and their legend
+                // is already the retouch: drawn as a new picture they would
+                // describe outlines that are not there (review of #623).
+                if !call.regions.is_empty() {
+                    return Ok(refused(format!(
+                        "There is no picture `{p}` in this chat, and the painted regions mark \
+                         places in it. Name the picture as a result gave \
+                         it (images/…) or as the owner attached it (inbox/…)."
+                    )));
+                }
                 // Only a scene that describes a picture of its own (people or
                 // a setting) draws without it: a style, light or camera alone
                 // is a change to the picture named, and drawn from nothing it
@@ -2684,6 +2694,7 @@ impl Tool for ImageGenerate {
         let mut prose: Vec<&str> = Vec::new();
         collect_strings(&input["scene"], &mut prose);
         collect_strings(&input["retouch"], &mut prose);
+        collect_strings(&input["regions"], &mut prose);
         if let Some(name) = prose
             .iter()
             .flat_map(|t| crate::imagelib::broken_named_in(&lib, t))
@@ -8368,6 +8379,65 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A region's words are read for a broken entry too: the panel sends
+    /// them as `regions`, not `retouch` (review of #623).
+    #[tokio::test]
+    async fn a_broken_entry_named_in_a_region_is_refused_before_the_gpu() {
+        let lib = library_with(&["maya", "john"]);
+        std::fs::write(lib.join("characters/john/entry.toml"), "not = [toml").unwrap();
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::write(dir.join("images/a.png"), picture(20, [200, 30, 30])).unwrap();
+        let out = tool("http://127.0.0.1:1")
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                       "regions": [{"colour": "magenta", "words": "John in a red coat"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("John's library entry could not be read"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Regions on a picture that is not in the chat are refused even beside
+    /// a scene: left out, their legend would ride into a new picture's
+    /// prompt describing outlines that do not exist (review of #623).
+    #[tokio::test]
+    async fn regions_on_a_made_up_picture_draw_nothing() {
+        let (url, seen) = distinct(1).await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/nope.png", "mask": "inbox/r.png",
+                       "regions": [{"colour": "magenta", "words": "a red coat"}],
+                       "scene": {"people": [{"who": "a woman in a grey coat"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("painted regions mark places in it"),
+            "{}",
+            out.content
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /prompt")));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// The record keeps the seed that drew its room: an edit between a new
