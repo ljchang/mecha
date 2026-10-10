@@ -104,8 +104,8 @@ pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatP
     println!("\nChat model");
     if let Some(server) = &o.server {
         println!(
-            "  A server answers that the config does not describe:\n    {}\n  Setup can \
-             write what it reports about itself: {}.",
+            "  A server answers here, and the config does not say what it serves:\n    \
+             {}\n  Setup can write what it reports about itself: {}.",
             server.at, server.then
         );
         prompt("  Write it? [Y/n] ")?;
@@ -211,7 +211,7 @@ pub(super) struct Question {
     pub bytes: Option<u64>,
     /// The part of `bytes` that is llama.cpp — shared by every plan that
     /// names it, so counted once in the total.
-    pub engine: u64,
+    pub pieces: Vec<(String, u64)>,
 }
 
 /// The features `setup` would offer one by one — the optional, unanswered
@@ -498,7 +498,7 @@ pub(super) async fn run(
                 .map(|f| Question {
                     feature: *f,
                     bytes: None,
-                    engine: 0,
+                    pieces: Vec::new(),
                 })
                 .collect()
         })
@@ -603,7 +603,15 @@ pub(super) async fn run(
     // answered no cost every other yes (found on review of #631).
     let mut enabled = Vec::new();
     for f in &chosen {
-        let now = mecha_core::config::Config::load_global()?;
+        // Caught like the writes above: one config that will not load must
+        // not cost the yeses after it and the checklist.
+        let now = match mecha_core::config::Config::load_global() {
+            Ok(c) => c,
+            Err(e) => {
+                println!("`{}` not enabled: {e:#} — `mecha setup` asks again", f.id());
+                continue;
+            }
+        };
         let ids = enable_ids(&feature::enable_command(&now, *f));
         if ids.is_empty() {
             continue;
@@ -657,7 +665,7 @@ fn price(cfg: &mecha_core::config::Config, features: &[Feature]) -> Result<Vec<Q
             .map(|f| Question {
                 feature: *f,
                 bytes: None,
-                engine: 0,
+                pieces: Vec::new(),
             })
             .collect());
     }
@@ -668,42 +676,62 @@ fn price(cfg: &mecha_core::config::Config, features: &[Feature]) -> Result<Vec<Q
     let read_nvidia = || *nvidia.get_or_init(mecha_core::engine::read_nvidia);
     let mut out = Vec::new();
     for f in features {
-        let (bytes, engine) = if mecha_core::install::may_offer(*f, chat_here) {
+        let (bytes, pieces) = if mecha_core::install::may_offer(*f, chat_here) {
             let mut p = mecha_core::sidecar::plan(*f, &m, &machine, &hub, false)?;
             mecha_core::install::price(&mut p, chat_here, read_nvidia);
-            let engine = p
-                .sidecars
-                .iter()
-                .find(|s| s.id == "llama")
-                .and_then(|s| s.bytes)
-                .unwrap_or(0);
-            (Some(p.download_bytes), engine)
+            (Some(p.download_bytes), pieces(&p))
         } else {
-            (None, 0)
+            (None, Vec::new())
         };
         out.push(Question {
             feature: *f,
             bytes,
-            engine,
+            pieces,
         });
     }
     Ok(out)
 }
 
-/// The chosen features' downloads, with llama.cpp counted once however many
-/// plans name it — and not at all when the chat install already brings it.
+/// The key the engine's piece goes by.
+const ENGINE: &str = "sidecar:llama";
+
+/// Every download a plan's `download_bytes` sums, by what it is: the
+/// sidecars it fetches and the pinned files outside the chat slot — so a
+/// piece two plans share (llama.cpp, the embeddings model) is known as one.
+fn pieces(p: &mecha_core::sidecar::Plan) -> Vec<(String, u64)> {
+    let sidecars = p
+        .sidecars
+        .iter()
+        .filter_map(|s| s.bytes.map(|b| (format!("sidecar:{}", s.id), b)));
+    let files = p
+        .files
+        .iter()
+        .filter(|f| f.slot != "chat")
+        .filter_map(|f| match f.state {
+            mecha_core::sidecar::FileState::Download { bytes } => {
+                Some((format!("file:{}/{}", f.repo.unwrap_or(""), f.path), bytes))
+            }
+            _ => None,
+        });
+    sidecars.chain(files).collect()
+}
+
+/// The chosen features' downloads, each piece counted once however many plans
+/// name it — llama.cpp and a shared model file alike (review of #631) — and
+/// the engine not at all when the chat install already brings it.
 pub(super) fn features_total(qs: &[Question], chosen: &[Feature], engine_counted: bool) -> u64 {
-    let picked = qs.iter().filter(|q| chosen.contains(&q.feature));
-    let own: u64 = picked
-        .clone()
-        .map(|q| q.bytes.unwrap_or(0).saturating_sub(q.engine))
-        .sum();
-    let engine = if engine_counted {
-        0
-    } else {
-        picked.map(|q| q.engine).max().unwrap_or(0)
-    };
-    own + engine
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0u64;
+    for q in qs.iter().filter(|q| chosen.contains(&q.feature)) {
+        total += q.bytes.unwrap_or(0);
+        for (key, bytes) in &q.pieces {
+            let again = !seen.insert(key.as_str());
+            if again || (engine_counted && key == ENGINE) {
+                total = total.saturating_sub(*bytes);
+            }
+        }
+    }
+    total
 }
 
 /// A feature switched on but not ready only for want of an account is signed
@@ -893,17 +921,17 @@ mod tests {
             Question {
                 feature: Feature::Web,
                 bytes: None,
-                engine: 0,
+                pieces: Vec::new(),
             },
             Question {
                 feature: Feature::Documents,
                 bytes: Some(1 << 30),
-                engine: 0,
+                pieces: Vec::new(),
             },
             Question {
                 feature: Feature::Search,
                 bytes: None,
-                engine: 0,
+                pieces: Vec::new(),
             },
         ];
         let cfg = mecha_core::config::Config::default();
@@ -931,7 +959,7 @@ mod tests {
         let q = |f, own: u64| Question {
             feature: f,
             bytes: Some(own + 700),
-            engine: 700,
+            pieces: vec![(ENGINE.into(), 700)],
         };
         let qs = [q(Feature::Documents, 100), q(Feature::Graph, 50)];
         let both = [Feature::Documents, Feature::Graph];
@@ -939,6 +967,17 @@ mod tests {
         assert_eq!(features_total(&qs, &both, true), 100 + 50);
         assert_eq!(features_total(&qs, &[Feature::Graph], false), 50 + 700);
         assert_eq!(features_total(&qs, &[], false), 0);
+
+        // A model file two plans share is fetched once, and counted once
+        // (review of #631): the embeddings GGUF in `graph` and `documents`.
+        let embed = ("file:org/embed.gguf".to_string(), 1000);
+        let with = |f, own: u64| Question {
+            feature: f,
+            bytes: Some(own + 1000),
+            pieces: vec![embed.clone()],
+        };
+        let qs = [with(Feature::Documents, 100), with(Feature::Graph, 50)];
+        assert_eq!(features_total(&qs, &both, false), 100 + 50 + 1000);
     }
 
     /// A yes enables the feature with what it needs, parsed from the same
@@ -980,7 +1019,7 @@ mod tests {
         let q = |f| Question {
             feature: f,
             bytes: None,
-            engine: 0,
+            pieces: Vec::new(),
         };
         let qs = [q(Feature::Web), q(Feature::Search), q(Feature::Documents)];
         let cfg = mecha_core::config::Config::default();
