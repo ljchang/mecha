@@ -46,8 +46,21 @@ assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
   assert.ok(used.has('/jobs/order'), [...used].join(' '));
   for (const suffix of used) assert.doesNotThrow(() => chatUrl('p-0123456789ab', suffix), suffix);
 }
+// The same for `personaUrl`: the touching switch's route was missing, so every
+// click threw inside its `try` and the setting never reached the server
+// (review of #625).
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../src/lib/', import.meta.url);
+  const used = new Set();
+  for (const f of readdirSync(dir).filter((f) => f.endsWith('.svelte') || f.endsWith('.js'))) {
+    for (const m of readFileSync(new URL(f, dir), 'utf8').matchAll(/personaUrl\([^,()]+,\s*'([^']*)'/g)) used.add(m[1]);
+  }
+  assert.ok(used.has('/image-touching') && used.has('/frame'), [...used].join(' '));
+  for (const suffix of used) assert.doesNotThrow(() => personaUrl('mara', suffix, null), suffix);
+}
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 27);
+assert.equal(ENDPOINTS.length, 28);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));

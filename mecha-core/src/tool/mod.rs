@@ -808,6 +808,14 @@ pub struct ToolCtx {
     /// set: a replay stamps one so its arms render at paired seeds. `None`
     /// draws at random, as every chat does. Never the model's.
     pub image_seeds: Option<std::sync::Arc<crate::sample::SeedStream>>,
+    /// Whether a new picture whose people touch is built in layers
+    /// (IMAGE-DESIGN.md §15): the persona's own switch, stamped by its host
+    /// each turn from the owner's setting. Never the model's.
+    pub layers: bool,
+    /// A replay arm's cutouts posed in each person's part rather than
+    /// neutral (`mecha replay --layers-posed`, mecha-a3's gate). Never set by
+    /// a chat.
+    pub layers_posed: bool,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -998,6 +1006,8 @@ impl Default for ToolCtx {
             scene_reader: None,
             prompt_log: None,
             image_seeds: None,
+            layers: false,
+            layers_posed: false,
         }
     }
 }
