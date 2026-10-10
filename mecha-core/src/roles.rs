@@ -113,7 +113,10 @@ pub struct Split {
 /// - **A person with no place.** They get a free place the same way. On a one-way act the receiver's part is
 ///   the one the splitter leaves empty (5 of 12 measured).
 ///
-/// Nobody given a part at all is still a failure. A pose the
+/// A part made only of the asked names (and "and") is read as no part
+/// before either repair (mecha-a3, 2026-10-09: an answer of only names was
+/// applied with no act in the prompt). Nobody given a part at all is still a
+/// failure. A pose the
 /// call already gave is kept as given, whatever the answer says: the model is
 /// not trusted to copy it (mecha-a3: it did, 3 of 3, but that is the
 /// model's habit, not a guarantee).
@@ -502,13 +505,16 @@ mod tests {
             &names(),
         )
         .is_err());
+        // A bare other name, which no earlier repair touches: the misfile
+        // move needs words after the name (review of #622).
         let one = read_split(
-            r#"{"people": [{"who": "Maya", "where": "left", "doing": "lifting John"},
-                {"who": "John", "where": "right", "doing": "Maya and John"}], "together": ""}"#,
+            r#"{"people": [{"who": "Maya", "where": "left", "doing": "John"},
+                {"who": "John", "where": "right", "doing": "lifting Maya off the ground"}], "together": ""}"#,
             &names(),
         )
         .unwrap();
-        assert_eq!(one.roles[1].doing, "together with the other person");
+        assert_eq!(one.roles[0].doing, "together with the other person");
+        assert_eq!(one.roles[1].doing, "lifting Maya off the ground");
         assert!(!names_only("Maya laughing", &["Maya".into()]));
         // A pair filed under each other swaps whole: neither part is lost.
         let crossed = read_split(
