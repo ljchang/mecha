@@ -878,7 +878,13 @@ pub(super) fn write_local_provider(found: &onboarding::LocalServer) -> Result<()
     // seeded from it is filled in rather than given a second table.
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
     if text.lines().any(|l| l.trim() == "[providers.local]") {
-        let mut all = vec![("base_url", onboarding::toml_string(&found.base_url))];
+        // The lines the owner just approved, `kind` among them: a table
+        // spelled `openai-compatible` would otherwise keep that kind and
+        // read as not-local everywhere (found on review of #627).
+        let mut all = vec![
+            ("kind", onboarding::toml_string("local")),
+            ("base_url", onboarding::toml_string(&found.base_url)),
+        ];
         all.extend(settings.iter().cloned());
         let filled = apply_text(&text, "local", &all)?;
         backup(&path)?;
@@ -1013,12 +1019,6 @@ fn backup(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Edit the provider's table in place, preserving every comment.
-///
-/// A parse-and-reserialise round trip would be shorter and would throw away
-/// the file's comments — which in this project are most of it, and are how
-/// the next reader learns why a number is what it is. So this rewrites the
-/// lines it owns and touches nothing else.
 /// A new install may not have a config file yet, and `--write` and `setup
 /// chat` are reachable without `mecha config init` first — and with ruling
 /// F12's default `local` entry they reach a write before any file exists
@@ -1038,6 +1038,12 @@ fn seed_config_file(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Edit the provider's table in place, preserving every comment.
+///
+/// A parse-and-reserialise round trip would be shorter and would throw away
+/// the file's comments — which in this project are most of it, and are how
+/// the next reader learns why a number is what it is. So this rewrites the
+/// lines it owns and touches nothing else.
 fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     let path = mecha_core::config::Config::global_path()
         .context("no global config path — is $HOME set?")?;

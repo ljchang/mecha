@@ -420,10 +420,15 @@ jobs:
           jq -e 'all(.[]; .id != "provider-credential")' steps.json
 
           # And the blocking step offers a way *out*, not a viewer. Nothing is
-          # serving on a CI runner, so its remedy is the command that installs
-          # a local model.
-          jq -e '.[] | select(.id == "local-server") | .remedy.argv
-                 == ["mecha", "setup", "chat"]' steps.json
+          # serving on a CI runner, so on Linux its remedy is the command that
+          # installs a local model; elsewhere `setup chat` cannot run, so it
+          # offers none rather than one that always fails.
+          if [ "$(uname)" = Linux ]; then
+            jq -e '.[] | select(.id == "local-server") | .remedy.argv
+                   == ["mecha", "setup", "chat"]' steps.json
+          else
+            jq -e '.[] | select(.id == "local-server") | .remedy == null' steps.json
+          fi
 
           # A hosted provider chosen without its key: the fix is a secret,
           # which no command may set on somebody's behalf, so the detail has
@@ -506,7 +511,6 @@ jobs:
         run: |
           set -eux
           cd "${{ runner.temp }}/fresh/work"
-          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
 
           # A hosted provider chosen and its key in the environment, because
           # what remains outstanding then is exactly the optional half — which

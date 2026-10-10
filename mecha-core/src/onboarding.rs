@@ -315,8 +315,8 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
             // default is a local provider on :8080): the remedy is the
             // command that installs a server, not only "start it" — which
             // presumes a server the machine may not have.
-            None => steps.push(
-                Step::new(
+            None => {
+                let step = Step::new(
                     "local-server",
                     "The local server is reachable",
                     Status::Missing,
@@ -328,16 +328,47 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
                          guessed.",
                         pcfg.base_url.as_deref().unwrap_or("(no base_url)")
                     ),
-                )
-                .with(
-                    "Install a local chat model and the router that serves it.",
-                    &["mecha", "setup", "chat"],
-                    true,
-                ),
-            ),
+                );
+                // Offered where it can run: `setup chat` installs systemd
+                // user units, and refuses elsewhere before asking anything
+                // (found on review of #627).
+                steps.push(if cfg!(target_os = "linux") {
+                    step.with(
+                        "Install a local chat model and the router that serves it.",
+                        &["mecha", "setup", "chat"],
+                        true,
+                    )
+                } else {
+                    step
+                });
+            }
             Some(props) => {
-                let mismatches =
+                let mut mismatches =
                     crate::provider::preflight::disagreements(provider_name, pcfg, props);
+                // `disagreements` compares only what both sides name, so a
+                // table naming neither model nor window read as agreeing —
+                // the starter's own state since ruling F12, under which a run
+                // sends `gpt-4o-mini` to a router that selects by it, and
+                // never compacts (found on review of #627). Unset is not
+                // agreement.
+                let unset: Vec<&str> = [
+                    ("model", pcfg.model.is_none()),
+                    ("context_window", pcfg.context_window.is_none()),
+                ]
+                .into_iter()
+                .filter_map(|(k, missing)| missing.then_some(k))
+                .collect();
+                if !unset.is_empty() {
+                    mismatches.push(format!(
+                        "[providers.{provider_name}] sets no {} — the server reports what to \
+                         write, and unset, a run names the wrong model and never compacts.",
+                        unset
+                            .iter()
+                            .map(|k| format!("`{k}`"))
+                            .collect::<Vec<_>>()
+                            .join(" or ")
+                    ));
+                }
                 if mismatches.is_empty() {
                     steps.push(Step::new(
                         "local-server",
@@ -2298,9 +2329,37 @@ mod tests {
         let steps = plan(&cfg, "local", &facts(None));
         assert_eq!(step(&steps, "local-server").status, Status::Missing);
         // Nothing answering is a fresh install's state since ruling F12, so
-        // the remedy is the command that installs a server.
-        let remedy = step(&steps, "local-server").remedy.as_ref().unwrap();
-        assert_eq!(remedy.argv, ["mecha", "setup", "chat"]);
+        // the remedy is the command that installs a server — where it runs.
+        let remedy = step(&steps, "local-server").remedy.as_ref();
+        if cfg!(target_os = "linux") {
+            assert_eq!(remedy.unwrap().argv, ["mecha", "setup", "chat"]);
+        } else {
+            assert!(remedy.is_none(), "`setup chat` refuses off Linux");
+        }
+    }
+
+    /// A table naming no model or window does not agree with a server just
+    /// because nothing contradicts it: the starter's own state since ruling
+    /// F12 (review of #627). Unset is wrong, with `--write` as the fix.
+    #[test]
+    fn a_local_table_naming_nothing_does_not_agree_with_its_server() {
+        let mut cfg = cfg_with_local(262144, Some(true));
+        let p = cfg.providers.get_mut("local").unwrap();
+        p.model = None;
+        p.context_window = None;
+        p.vision = None;
+        let steps = plan(&cfg, "local", &facts(Some(props(262144, 4, false))));
+        let s = step(&steps, "local-server");
+        assert_eq!(s.status, Status::Wrong, "{}", s.detail);
+        assert!(
+            s.detail.contains("`model` or `context_window`"),
+            "{}",
+            s.detail
+        );
+        assert_eq!(
+            s.remedy.as_ref().unwrap().argv,
+            ["mecha", "setup", "--write"]
+        );
     }
 
     /// "Cannot tell from here" is not "not done". A person told their mail is
