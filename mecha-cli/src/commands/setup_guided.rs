@@ -197,9 +197,20 @@ fn ask_own(read: &mut impl BufRead) -> Result<ChatPick> {
             println!("  {} is not a file", model.display());
             continue;
         }
-        prompt("  Its vision projector (mmproj), or Enter for none: ")?;
-        let typed = line(read)?;
-        let mmproj = (!typed.is_empty()).then(|| expand_home(&typed));
+        // Checked here as the model is, so a typo is caught before llama.cpp
+        // is fetched rather than after (review of #631).
+        let mmproj = loop {
+            prompt("  Its vision projector (mmproj), or Enter for none: ")?;
+            let typed = line(read)?;
+            if typed.is_empty() {
+                break None;
+            }
+            let path = expand_home(&typed);
+            if path.is_file() {
+                break Some(path);
+            }
+            println!("  {} is not a file", path.display());
+        };
         return Ok(ChatPick::Own { model, mmproj });
     }
 }
@@ -883,12 +894,27 @@ mod tests {
         std::fs::write(&gguf, b"").unwrap();
         let answers = format!("2\n{}/missing.gguf\n{}\n\n", dir.display(), gguf.display());
         let got = ask_chat(&mut reader(&answers), &options()).unwrap();
+        // The projector likewise: a typo asked again, not fetched past.
+        let proj = format!(
+            "2\n{}\n{}/missing.mmproj\n{}\n",
+            gguf.display(),
+            dir.display(),
+            gguf.display()
+        );
+        let with_proj = ask_chat(&mut reader(&proj), &options()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             got,
             ChatPick::Own {
                 model: gguf.clone(),
                 mmproj: None
+            }
+        );
+        assert_eq!(
+            with_proj,
+            ChatPick::Own {
+                model: gguf.clone(),
+                mmproj: Some(gguf.clone())
             }
         );
     }
