@@ -376,12 +376,12 @@ Owner rulings, 2026-10-09 and 10:
 - **No older models.** No Qwen-Image-Layered: Qwen-Image 2.1 returns one flattened picture, and the layers are built here.
 - **A per-persona setting decides the route,** before generation, so the layers exist and are kept. The model never chooses the pipeline.
 
-mecha-a3's measurements are local (`QWEN-PROMPT-GUIDE-REVIEW.md`, the layers sections). Its design note is `LAYERS-PIPELINE-DESIGN.md`, and this section follows it with a3's two later changes (15.3).
+mecha-a3's measurements are local (`QWEN-PROMPT-GUIDE-REVIEW.md`, the layers sections). Its design note is `LAYERS-PIPELINE-DESIGN.md`, also local, and this section follows it with a3's two later changes (15.3).
 
 ### 15.1 The switch
 
 - **"Touching scenes: precise (slower)", per persona, off by default.**
-  - It lives in the persona's `state.toml`, under an `[image]` table, as the first per-persona image setting.
+  - It lives in the persona's `state.toml`, under an `[image]` table, as the first per-persona image setting. The assistant chat has no persona settings, so it never layers.
   - **Only the owner sets it**, from the persona settings page's own route, as with the avatar framing. No tool sets it. Other writers of `state.toml` (`persona_propose`, the lock, a version) rewrite the file whole from the `State` they loaded, so each carries the switch through unchanged.
   - **Read leniently**, as `frame` is: an unknown value is one pass, and a damaged `[image]` table reads as the defaults, never costing the persona its approval (a `state.toml` that does not parse loads as unapproved).
 - **Read fresh every turn,** and stamped on `ToolCtx` by the persona host as it stamps `role_split`. `image_generate` reads a value. The tool schema does not change, and nothing new enters the cached prefix.
@@ -401,14 +401,14 @@ All of this is known at plan time, before the first render. Everything else draw
 
 ### 15.3 The pipeline
 
-The steps run in one deferred job (`jobs.rs`), in order, with **the job's own cancellation** checked between steps: the job's token, which Stop fires, never the run's, which the owner's typing fires (`jobs.rs`: talking cancels the run, never the job). Other pictures never interleave with a build. **The queue line keeps one label for the whole build in this build.** Naming the step (plate, cutout *i* of *n*, placing, finish) needs two changes to `jobs.rs`. First, the job needs a label that can be written more than once; today it is a write-once `OnceLock`, and a second `set` is dropped. Second, `JobQueue::running` must read that label, not the `String` it copied at submit time. Both are left for the queue's owner (15.6). Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
+The steps run in one deferred job (`jobs.rs`), in order, with **the job's own cancellation** checked between steps: the job's token, which Stop fires, never the run's, which the owner's typing fires (`jobs.rs`: talking cancels the run, never the job). Other pictures never interleave with a build. **The queue line keeps one label for the whole build in this build.** Naming the step (plate, cutout *i* of *n*, placing, finish) needs two changes to `jobs.rs`. First, the job needs a label that can be written more than once; today it is a write-once `OnceLock`, and a second `set` is dropped. Second, `JobQueue::list`, which builds the rows the queue panel shows, must read that live label, not `Running.label`, the `String` copied in `JobQueue::launch`. Both are left for the queue's owner (15.6). Two people cost *n* + 3 renders, about 3.5–4 min, against about 45 s for a single pass.
 
 1. **The plate.** A new picture of the setting with nobody in it. The prompt is the setting words, then light, then camera, ending "no people". It asks for the scene's camera framing, because measured plates came out wide and made faces small.
 2. **One cutout per person.** An edit with the person's library portrait as `<image1>`, drawn at **1024 × 1024** (the measured size; with no size the canvas would follow the portrait's own shape, which was not measured), in Qwen's RGBA form: "This is an RGBA image with transparency. A full-length realistic photograph of the {woman|man|person} in the image, {wearing}, standing, full length, arms relaxed, lit by {light}. The image has alpha channel and the background is transparent."
    - **A neutral pose, not the person's part** (mecha-a3's change 1). A part is relational ("…around his waist"), and in a solo cutout it names someone absent, which invites a second figure: the drawn-twice shape. The cutout carries identity and clothing only, and the act is carried by the placing pass. In the measured runs 2 of 4 cutouts came out in the wrong pose, and the placing pass staged all 4 correctly.
    - **A person with no `wearing`** takes the scene's (the chat copy's) clothes, else "clothes that suit the scene", as today. Left empty, the cutout would copy the portrait's outfit.
    - Every output arrives RGBA, so each cutout is **flattened on mid-grey (128) in code** before it is a reference. What the encoder does with a transparent reference is untested and not relied on.
-3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order, every reference encoded at **1024²** (`EDIT_REFERENCE_SIZE`), by decision rather than through the unmasked edit's 512 rule. Each person is placed by tag at the split's place ("on the left") with their part from the split, and the leftover `together` follows. A placing prompt that named no places left one of two people out, 2 of 2 runs (mecha-a3).
+3. **The placing pass.** An edit with the plate as canvas `<image1>` and the cutouts as `<image2>`… in order, every reference encoded at `EDIT_REFERENCE_SIZE`: a budget of about 1024² pixels over each reference's own shape, not a square like step 2's cutouts. That is by decision rather than through the unmasked edit's 512 rule. Each person is placed by tag at the split's place ("on the left") with their part from the split, and the leftover `together` follows. A placing prompt that named no places left one of two people out, 2 of 2 runs (mecha-a3).
    - **A split that fell back** (no parts, now including an answer of only names, #622): the placing pass carries the call's `together` as written, after the per-person tags.
    - A role noun goes beside a tag only where it is unambiguous ("the woman from `<image2>`" in a mixed pair), else "the person from `<image2>`" (mecha-a3's change 2). Names never appear inside the prompt.
    - It closes with: "Keep `<image1>`'s room, framing, camera angle and light unchanged. Take each person's face, hair, body and clothing from their own image; each appears exactly once. Lit by the room's light, with natural contact and shadows."
@@ -429,7 +429,7 @@ The picture's scene record gets a `layers` entry, written wherever the record is
 - per person: who, the cutout's hash (the RGBA PNG, kept in the workspace beside the picture), the part, and the seed;
 - the placing seed and the finish seed.
 
-Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on. The parts carry the `layers` entry's own origin, the scene's `together`'s, counted by `Scene::origin`. The cutout files live in the workspace, which `work::clean` reaps.
+Hashes are of the bytes saved. The manifest says `route: "layered"`, with each step's seed and seconds, and the prompt log gets one line per pass. This record is what a later reshaping edit (re-place one person, 15.6) is built on. It is also the first place the splitter's output is kept. `roles.rs` says a split feeds the prompt only and the record keeps the call as sent. A layered picture extends that rule: its parts ride the record into a later re-place's prompt, and the build updates `roles.rs`'s module doc to say so. The placing pass's references fit the edit budget: every person must have a library portrait, which caps them at `MAX_CAST` (5), so plate plus cutouts is at most `EDIT_REFERENCE_BUDGET` (6). The parts carry the `layers` entry's own origin, the scene's `together`'s, counted by `Scene::origin`. The cutout files live in the workspace, which `work::clean` reaps.
 
 **A hash is a check on reuse, not only a record of provenance.** The workspace is the jail a run can write, and §6's rule holds here: nothing is read back out of the workspace on trust. A re-place reads each cutout, hashes it, and treats a mismatch the way it treats a missing file: it redraws from the portrait, or says it cannot. The plate is handled the same way.
 
@@ -440,7 +440,8 @@ Hashes are of the bytes saved. The manifest says `route: "layered"`, with each s
 ### 15.5 Failure is said, never silent
 
 - **A failed step.** A render error, an empty alpha or a missing portrait draws the picture by the single pass, and says "layers failed at {step}: {why}; drawn in one pass", in the result and the manifest.
-- **A Stop between steps.** It ends the job, discards the partial build from the record (its files may stay) and says so. A layered picture never quietly becomes another kind of picture.
+- **Open: a failed finish.** The finish is the one step with a complete picture behind it, the placed composite, and the step 15.3 calls untested. As built, it falls back like the rest, discarding *n* + 2 renders and then spending another single pass. Delivering the placed composite with "layers stopped at the placing pass: {why}" would keep them. That is the owner's call, best made once the gate shows how often the finish fails.
+- **A Stop between steps.** It ends the job and says so. Nothing reaches the record: the `layers` entry rides the one `SceneSlot::land` of the finished picture, so no plate or cutout is ever keyed in the index, where `lookup` would later serve it as a recorded scene. The intermediates' files may stay in the jail. A layered picture never quietly becomes another kind of picture.
 
 ### 15.6 Not in this build
 
