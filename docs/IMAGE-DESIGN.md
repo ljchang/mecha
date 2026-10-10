@@ -278,7 +278,7 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 5. **The web:** versions on the card, and Edit and Regenerate on the version showing.
 6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` and `minor` marks and the default portrait. Usage rules are not part of this build (§14). **Ruled 2026-10-07: get it working first, with no restrictions; step 6 is not held for §14.**
 
-7. **Layers for touching scenes** (§15), behind a per-persona switch, offered once §15.7's gate passes.
+7. **Layers for touching scenes** (§15), behind a per-persona switch, offered once §15.7's gate passes. **The owner took the gate's result and offered the switch on 2026-10-10** (§15.7).
 
 Steps 1 and 2 are independent and can run in parallel lanes.
 
@@ -297,7 +297,7 @@ Steps 1 and 2 are independent and can run in parallel lanes.
 11. **A name the persona uses for the owner is also a library character** (mecha-a3's G1b: every refusal was the persona writing "…with Luke watching", and the library holds a `luke`)? **Ruled 2026-10-08: someone is drawn only when listed in `people`.** A library name in the other words is "the viewer" to the image model (§4). **Narrowed 2026-10-09:** a new picture that lists nobody draws the characters its words name (§4). The owner and the `luke` entry may be treated as the same person.
 12. **Queue a picture asked for while another is drawing, instead of refusing it** (mecha-a3)? **Ruled 2026-10-08: no;** it is refused, as §5.5 has it.
 13. **Layer restages too** (§15.2)? **Ruled 2026-10-10: no;** a restage draws in one pass. Restages were 2 of the 18 recorded touching calls, and layering one would give up the room its base seed keeps.
-14. **A failed finish delivers the placed composite** rather than redrawing in one pass (§15.5)? **Ruled 2026-10-10: no;** a failed finish falls back to the single pass like every other step. The finish failed 0 of 37 times across mecha-a3's layers runs (§15.7), so keeping the composite would serve a case not yet seen.
+14. **A failed finish delivers the placed composite** rather than redrawing in one pass (§15.5)? **Ruled 2026-10-10: no;** a failed finish falls back to the single pass like every other step. The finish failed in none of the 16 layered calls of the wide pass (0 of 37 finish passes across all of mecha-a3's runs, seeded repeats included; §15.7), so keeping the composite would serve a case not yet seen.
 
 ## 12. Review and how each point is met
 
@@ -441,14 +441,14 @@ Hashes are of the bytes saved. The manifest says `route: "layered"`, with each s
 
 **A layered build never runs in an incognito room.** Rooms belong to the assistant's web chat (`serve/chat.rs` stamps `image_trail` from the room), and the assistant chat has no persona settings, so it never layers (15.1). The persona chat, the only place the switch is stamped, has no rooms.
 
-**If layers ever reach a room, its close already stops them.** An incognito chat never defers a picture: it has no record for a late result to land in, so `begin_turn` gives its run no job sink and the picture is drawn inline, in the run. Closing the room (`close_incognito_locked`) cancels that run, and with it the render; the tool's own exit path deletes the server's copies, as it does on every exit (`INCOGNITO-DESIGN.md` §6.3). A layered build in a room would run inline the same way, with the run's cancellation read between steps and handed to each pass, and every pass would go through the same `generate` call with the run's `image_trail`.
+**If layers ever reach a room, its close already stops them.** An incognito chat never defers a picture: it has no record for a late result to land in, so `begin_turn` gives its run no job sink and the picture is drawn inline, in the run. Closing the room (`close_incognito_locked`) cancels that run, and with it the render; the tool's own exit path deletes the server's copies, as it does on every exit (`INCOGNITO-DESIGN.md` §6.3). A layered build in a room would run inline the same way, with the run's cancellation read between steps and handed to each pass (`jobs::run_inline` fires a job's token from the run's, so the "job's token, never the run's" rule of 15.3 holds for the ordinary, deferred case), and every pass would go through the same `generate` call with the run's `image_trail`.
 
 **The result names the picture, never the intermediates.** The model is told about the finished picture as a new picture, the way a single pass is described. It is never handed the plate's or the cutouts' paths, because a named intermediate invites an `image_view` of a picture the owner never asked for. That is a nudge, not a guard: a persona the owner allows `image_view` or a file tool could still find them by listing its jail. Low stakes, since it is the owner's own chat and workspace; if it ever needs to be structural, the lever is where the files land, not what the result names.
 
 ### 15.5 Failure is said, never silent
 
 - **A failed step.** A render error, an empty alpha or a missing portrait draws the picture by the single pass, and says "layers failed at {step}: {why}; drawn in one pass", in the result and the manifest.
-- **A failed finish falls back like the rest** (owner, 2026-10-10, §11 item 14). The finish is the one step with a complete picture behind it, the placed composite, so a failure there discards *n* + 2 renders and then spends another single pass. Delivering the composite with "layers stopped at the placing pass: {why}" would keep them, but the finish failed 0 of 37 times in the gate's runs, so the simpler rule stands until a failure is seen.
+- **A failed finish falls back like the rest** (owner, 2026-10-10, §11 item 14). The finish is the one step with a complete picture behind it, the placed composite, so a failure there discards *n* + 2 renders and then spends another single pass. Delivering the composite with "layers stopped at the placing pass: {why}" would keep them, but the finish failed in none of the wide pass's 16 layered calls, so the simpler rule stands until a failure is seen.
 - **A Stop between steps.** It ends the job and says so. Nothing reaches the record: the `layers` entry rides the one `SceneSlot::land` of the finished picture, so no plate or cutout is ever keyed in the index, where `lookup` would later serve it as a recorded scene. The intermediates' files may stay in the jail. A layered picture never quietly becomes another kind of picture.
 
 ### 15.6 Not in this build
@@ -479,7 +479,8 @@ Also not built, and not a measurement: **the queue line that names the step** (1
   - the owner's preference on a contact sheet.
 - **Result (mecha-a3, 2026-10-10).**
   - Against the single pass, on 1db43a922, seven calls at n = 3: layers won 4, tied 2 and lost 1, with fewer people drawn twice and fewer anatomy errors. Faces came out about half the size (75–128 px high against 146–229) with lower ArcFace similarity for both people, at 213–223 s a picture against about 45 s.
-  - By step, on 33e23a21c, every recorded touching call once: of 18, 16 were layered and 2 drew in one pass by the route rule (restages). None fell back at any step: plate 16 of 16, the plate's face check 16 of 16, cutouts 32 of 32, placing 16 of 16, finish 16 of 16, at about 215–232 s a picture. The finish failed 0 of 37 times across all of mecha-a3's layers runs.
+  - By step, on 33e23a21c, every recorded touching call once: of 18, 16 were layered and 2 drew in one pass by the route rule (restages). None fell back at any step: plate 16 of 16, the plate's face check 16 of 16, cutouts 32 of 32, placing 16 of 16, finish 16 of 16, at about 215–232 s a picture. By the section's own base (which step fails depends on the call more than the seed), the finish's denominator is those 16 calls; counting every finish pass in every run, seeded repeats included, it is 0 of 37.
+  - **The owner's verdict (2026-10-10):** the switch is offered, with the cost taken: faces about half the size, lower identity and about 3.5 min a picture, against fewer people drawn twice and the act drawn more often.
 - **Known weak spots to watch:**
   - a clothing state lost in placing (0 of 4 in one scene);
   - lower identity on profile faces (yaw 64–83°);
