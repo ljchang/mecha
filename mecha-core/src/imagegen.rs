@@ -2708,7 +2708,13 @@ impl Tool for ImageGenerate {
         let mut prose: Vec<&str> = Vec::new();
         collect_strings(&input["scene"], &mut prose);
         collect_strings(&input["retouch"], &mut prose);
-        collect_strings(&input["regions"], &mut prose);
+        // A region's words, not its colour: a character keyed `red` would
+        // otherwise refuse every edit painted red (review of #623).
+        if let Some(list) = input["regions"].as_array() {
+            for r in list {
+                collect_strings(&r["words"], &mut prose);
+            }
+        }
         if let Some(name) = prose
             .iter()
             .flat_map(|t| crate::imagelib::broken_named_in(&lib, t))
