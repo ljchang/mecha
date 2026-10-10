@@ -5910,20 +5910,38 @@ the owner's rulings; this section is the invariants a change to
   a failure (source missing, timeout) is the environment's. `mecha doctor`
   reports both as broken, with the refresh command; a stale dataset is
   attention. No refusal echoes a value from the data.
-- **The host sampler writes numbers and categories, nothing else**
-  (`host.rs`). Per-unit counters come from the user manager's cgroups and
-  GPU memory from `nvidia-smi`, folded into a closed `Category` whose numbers
-  are a wire format; a unit, process or model name never reaches
-  `host.sqlite`, and a test greps the file's bytes to prove it. On unified
-  memory (no GPU memory total) a category's GPU memory counts as its memory.
-  Unknown stays unknown: a sample it cannot read is refused (the doctor
-  reports a sampler silent for ten minutes), and on unified memory a minute
-  the per-process GPU query missed records memory as `NULL`, not the cgroup
-  figure alone.
+- **The host board reads `mecha system`'s series** through an ordinary
+  `sqlite` source; it samples nothing itself. The sampler's invariants are
+  §System state's.
 - **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
   joined, and an installed id is never overwritten.
+
+## System state
+
+`system.rs`, `mecha system`, `docs/SYSTEM-STATE-DESIGN.md`. One layer
+through which mecha reads the machine; S0 (built) is the per-minute sampler
+and its series, `~/.mecha/system/series.sqlite`, moved from the HUD before it
+was ever deployed.
+
+- **Numbers and categories, nothing else.** Per-unit counters come from the
+  user manager's cgroups and GPU memory from `nvidia-smi`, folded into a
+  closed `Category` whose numbers are a wire format; a unit, process or model
+  name never reaches the series, and a test greps the file's bytes — and its
+  `-journal`/`-wal` sidecars — to prove it.
+- **Unknown stays unknown.** A sample whose `/proc/meminfo` or cgroup tree
+  cannot be read is refused, not recorded as an idle machine (`Other` is a
+  remainder and would absorb the whole box); the doctor reports a sampler
+  silent for ten minutes. Whether memory is unified is remembered across
+  samples, and on unified memory a minute the per-process GPU query missed
+  records memory as `NULL`, not the cgroup figure alone.
+- **The machine's denominators, never the sampler's.** Per-category CPU
+  divides by the cores `/proc/stat` lists, never `available_parallelism()`,
+  which a `CPUQuota=` on the sampler's own unit would narrow.
+- **Both oneshots are bounded.** `Type=oneshot` has no start timeout and a
+  run still active holds its timer, so a wedged `nvidia-smi` would stop
+  sampling for good; the units set `TimeoutStartSec`.
 
 ## Session records and replay
 
