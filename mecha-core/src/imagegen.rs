@@ -2053,17 +2053,33 @@ impl ImageGenerate {
         let mut steps: Vec<Value> = Vec::new();
         let stopped = || ctx.cancel.as_ref().is_some_and(|c| c.is_cancelled());
         let joined = |left: &[String]| (!left.is_empty()).then(|| left.join("; "));
+        // `[image] timeout_secs` bounds the whole build, not each of its
+        // n + 3 passes: per pass, a wedged build could hold the chat's one
+        // job slot for close to an hour (review of #624). Each pass gets
+        // what is left, and none starts with nothing left.
+        let deadline = Instant::now() + timeout;
         let pass = |step: &str, req: Request| {
             let step = step.to_string();
             async move {
                 let started = Instant::now();
+                let remaining = deadline.saturating_duration_since(started);
+                if remaining.is_zero() {
+                    let out = Outcome {
+                        image: Err(Failure::Other(anyhow::anyhow!(
+                            "the build ran past its {} s",
+                            timeout.as_secs()
+                        ))),
+                        left: None,
+                    };
+                    return (step, req, 0, out);
+                }
                 let out = self
                     .backend
                     .generate(
                         &self.cfg,
                         &req,
                         ctx.cancel.as_ref(),
-                        timeout,
+                        remaining,
                         ctx.image_trail.as_deref(),
                     )
                     .await;
@@ -7083,6 +7099,46 @@ mod tests {
             "people": [{"who": "maya", "wearing": "a yellow raincoat", "where": "left"},
                        {"who": "john", "wearing": "a flannel shirt", "where": "right"}],
             "together": "Maya lifts John off the ground"}})
+    }
+
+    /// `[image] timeout_secs` bounds the whole layered build: a pass that
+    /// would start past it is never sent, rather than each of n + 3 passes
+    /// having the full time (review of #624).
+    #[tokio::test]
+    async fn a_layered_build_past_its_time_sends_no_more_passes() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 2],
+            views: vec![picture(20, [200, 40, 40])],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            timeout_secs: 0,
+            ..Default::default()
+        })
+        .unwrap()
+        .polling_every(Duration::from_millis(10))
+        .with_seeds()
+        .with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        // With no time at all the single pass it falls back to times out too.
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(out.content.contains("longer than 0 s"), "{}", out.content);
+        let plates = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt") && l.contains("No people."))
+            .count();
+        assert_eq!(plates, 0, "no pass is sent with no time left");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     /// A layered picture's `layers` entry describes that picture only: an
