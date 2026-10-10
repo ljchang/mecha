@@ -70,7 +70,7 @@ pub fn not_layered(
     } else if !setting_words {
         Some("it has no setting in words to build the room from")
     } else if !placed {
-        Some("the roles could not be split, so not everyone has a place")
+        Some("not everyone has a place of their own")
     } else {
         None
     }
