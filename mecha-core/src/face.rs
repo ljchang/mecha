@@ -203,6 +203,13 @@ pub enum Anchor {
 /// detector, which needs 89 MB of weights.
 pub trait FaceAnchors: Send + Sync {
     fn anchor(&self, library: &crate::imagelib::Library, entry: &crate::imagelib::Entry) -> Anchor;
+
+    /// How many faces a picture holds: a layered build's plate must hold
+    /// none (IMAGE-DESIGN.md §15.3). A source with no detector says so,
+    /// never "none" by default.
+    fn faces_in(&self, _png: &[u8]) -> std::result::Result<usize, String> {
+        Err("no face detector here".into())
+    }
 }
 
 /// The cache's generation. A crop depends on the weights, the thresholds,
@@ -227,6 +234,32 @@ pub fn cache_paths(library_dir: &Path, blob: &str) -> (PathBuf, PathBuf) {
 }
 
 impl FaceAnchors for CachedRetinaFace {
+    fn faces_in(&self, png: &[u8]) -> std::result::Result<usize, String> {
+        let weights = match weights() {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                return Err(format!(
+                    "the face detector is not installed ({INSTALL_HINT})"
+                ))
+            }
+            Err(e) => {
+                tracing::warn!("face detector weights: {e:#}");
+                return Err("the face detector's weights could not be checked".into());
+            }
+        };
+        let detector = Detector::load(&weights).map_err(|e| {
+            tracing::warn!("face detector: {e:#}");
+            "the face detector could not be loaded".to_string()
+        })?;
+        let img = image::load_from_memory(png)
+            .map_err(|e| format!("the picture did not read: {e}"))?
+            .to_rgb8();
+        detector
+            .detect(&img)
+            .map(|faces| faces.len())
+            .map_err(|e| format!("the face detector failed: {e:#}"))
+    }
+
     fn anchor(&self, library: &crate::imagelib::Library, entry: &crate::imagelib::Entry) -> Anchor {
         cached(library, entry, &|portrait| {
             // A short reason for the manifest, which the model can read; the
