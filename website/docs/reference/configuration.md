@@ -54,8 +54,8 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Eight tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]`, `[slack]`, `[web]`, `[system]`, `[harness]`, `[image]`, `[documents]` and `[approval]`.
+Eleven tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]`, `[system]`, `[harness]`, `[image]`, `[documents]`, `[voice]`, `[personas]`, `[features]` and `[approval]`.
 `[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
@@ -67,8 +67,10 @@ off the check standing between a picture and an out-of-memory;
 authority on which of this harness's protections are load-bearing — a repository
 able to set that could hand the diagnostician its own prose about what is safe to
 change; `[image]` names where model-written image prompts are sent, which is
-only safe while you chose it; and `[documents]` names where page images of your
-documents are sent and how the PDF parser is confined. The strip is loud rather than silent — a project file naming any of them
+only safe while you chose it; `[documents]` names where page images of your
+documents are sent and how the PDF parser is confined; `[voice]` names where your
+audio goes; `[personas]` holds a safety setting; and `[features]` turns on a
+feature's tools, servers and web surface. The strip is loud rather than silent — a project file naming any of them
 logs a warning saying the section is ignored, because an ignored section that
 looks applied is the silently-degrading-sandbox shape. A global one is kept, of
 course; there is a test on each side of that boundary.

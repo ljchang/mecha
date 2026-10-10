@@ -1992,8 +1992,11 @@ impl ImageGenerate {
         }
         let need_mb = memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb);
         let series = crate::system::db_path().ok();
-        let verdict =
-            crate::system::floor::admit_now(need_mb * 1024 * 1024, &self.floor, series.as_deref());
+        let verdict = crate::system::floor::admit_now(
+            need_mb.saturating_mul(1024 * 1024),
+            &self.floor,
+            series.as_deref(),
+        );
         match verdict.sentence("a generation") {
             None => Ok(()),
             Some(why) => Err(format!(

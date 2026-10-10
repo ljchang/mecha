@@ -277,6 +277,70 @@ pub struct QueueItem {
     pub elapsed_ms: Option<u64>,
 }
 
+/// A queue's marker ([`JobQueue::set_marker`]).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MarkerFile {
+    pid: u32,
+    running: usize,
+    waiting: usize,
+}
+
+impl Drop for JobQueue {
+    fn drop(&mut self) {
+        if let Some(path) = self.marker.get_mut().unwrap_or_else(|e| e.into_inner()) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Where a mecha home keeps the job markers.
+pub fn marker_dir_under(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("jobs")
+}
+
+/// Every live host's jobs, summed from the markers in `dir`
+/// ([`JobQueue::set_marker`]). Read only: a marker whose process is gone is
+/// skipped, not removed. One that cannot be read is counted in
+/// `unreadable` — it may be a host with jobs. A directory that does not
+/// exist is no jobs; one that cannot be read is an error.
+pub fn count_live(dir: &std::path::Path) -> anyhow::Result<JobCount> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(JobCount::default()),
+        Err(e) => {
+            return Err(anyhow::Error::new(e)
+                .context(format!("reading the job markers in {}", dir.display())))
+        }
+    };
+    let mut out = JobCount::default();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<MarkerFile>(&b).ok())
+        {
+            Some(m) if crate::process_alive(m.pid) => {
+                out.running += m.running;
+                out.waiting += m.waiting;
+            }
+            Some(_) => {}
+            None => out.unreadable += 1,
+        }
+    }
+    Ok(out)
+}
+
+/// [`count_live`]'s answer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct JobCount {
+    pub running: usize,
+    pub waiting: usize,
+    pub unreadable: usize,
+}
+
 type Watch = dyn Fn(&str) + Send + Sync;
 
 struct Running {
@@ -314,6 +378,10 @@ pub struct JobQueue {
     /// Each key's count of chat-wide Stops ([`JobSink::stops`]).
     stops: Mutex<HashMap<String, u64>>,
     deliver: Arc<Deliver>,
+    /// Where this queue says how many jobs it runs, for a reader in another
+    /// process ([`set_marker`](JobQueue::set_marker)). Locked before
+    /// `running`, and never while a queue lock is held.
+    marker: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl JobQueue {
@@ -329,7 +397,54 @@ impl JobQueue {
             watch: Mutex::new(None),
             stops: Mutex::new(HashMap::new()),
             deliver: Arc::new(deliver),
+            marker: Mutex::new(None),
         })
+    }
+
+    /// Say how many jobs run and wait in a file in `dir`, rewritten on every
+    /// change and removed when the queue is dropped — `jobs.live`'s source
+    /// (`SYSTEM-STATE-DESIGN.md` §2.1). A queue lives inside its host, so
+    /// nothing outside the process can count its jobs any other way.
+    /// Counts only: no key, no tool, no label, so a job in an incognito chat
+    /// is a number like any other. Opt-in, by the host: a queue a test
+    /// builds writes nothing. `name` tells this process's queues apart.
+    pub fn set_marker(&self, dir: &std::path::Path, name: &str) {
+        let path = dir.join(format!("{}-{name}.json", std::process::id()));
+        *self.marker.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+        self.write_marker();
+    }
+
+    /// Best effort: a marker that cannot be written leaves the last one, and
+    /// must never cost the job.
+    fn write_marker(&self) {
+        let marker = self.marker.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(path) = marker.as_ref() else {
+            return;
+        };
+        let running = self.running.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let waiting: usize = self
+            .waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|l| l.len())
+            .sum();
+        let count = MarkerFile {
+            pid: std::process::id(),
+            running,
+            waiting,
+        };
+        let written = path
+            .parent()
+            .map_or(Ok(()), crate::create_private_dir)
+            .and_then(|()| {
+                let tmp = path.with_extension("json.tmp");
+                std::fs::write(&tmp, serde_json::to_vec(&count)?)?;
+                std::fs::rename(&tmp, path)
+            });
+        if let Err(e) = written {
+            tracing::debug!("job marker {} not written: {e}", path.display());
+        }
     }
 
     /// Tell `watch` the key of every queue that changes ([`JobQueue::list`]
@@ -341,6 +456,7 @@ impl JobQueue {
     /// `key`'s line changed. Called with no queue lock held, so a watcher
     /// may read the line.
     fn touched(&self, key: &str) {
+        self.write_marker();
         let watch = self.watch.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(watch) = watch {
             watch(key);
@@ -856,6 +972,69 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("nothing was delivered");
+    }
+
+    /// `jobs.live`'s source: a host's queue says how many of its jobs run
+    /// and wait, for a reader in another process, and takes the file with it
+    /// when it goes. Counts only — no key, tool or label reaches the file.
+    #[tokio::test]
+    async fn a_marked_queue_says_how_many_jobs_run_and_wait() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-job-marker-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let (queue, got) = collecting();
+        queue.set_marker(&dir, "chat");
+        assert_eq!(count_live(&dir).unwrap(), JobCount::default());
+
+        let go = Arc::new(tokio::sync::Notify::new());
+        for (key, id) in [("chat-a", "c1"), ("chat-a", "c2"), ("chat-b", "c3")] {
+            let job = gated(Arc::clone(&go), CancellationToken::new());
+            queue.submit(key, 0, id, "draw", job).unwrap();
+        }
+        let count = count_live(&dir).unwrap();
+        assert_eq!((count.running, count.waiting), (2, 1));
+        let text =
+            std::fs::read_to_string(dir.join(format!("{}-chat.json", std::process::id()))).unwrap();
+        for name in ["chat-a", "chat-b", "draw", "c1"] {
+            assert!(!text.contains(name), "{name} reached the marker: {text}");
+        }
+
+        queue.cancel("chat-a");
+        queue.cancel("chat-b");
+        delivered(&got, 3).await;
+        for _ in 0..200 {
+            if count_live(&dir).unwrap() == JobCount::default() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(count_live(&dir).unwrap(), JobCount::default());
+
+        // Another host, gone without removing its marker: not counted.
+        std::fs::write(
+            dir.join("4294967295-chat.json"),
+            r#"{"pid":4294967295,"running":4,"waiting":0}"#,
+        )
+        .unwrap();
+        assert_eq!(count_live(&dir).unwrap().running, 0);
+        std::fs::write(dir.join("torn.json"), "{").unwrap();
+        assert_eq!(count_live(&dir).unwrap().unreadable, 1);
+
+        // The ended jobs' tasks let go of their clones of the queue.
+        for _ in 0..200 {
+            if Arc::strong_count(&queue) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(queue);
+        assert!(
+            !dir.join(format!("{}-chat.json", std::process::id()))
+                .exists(),
+            "a dropped queue leaves its marker"
+        );
     }
 
     #[tokio::test]
