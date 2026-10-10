@@ -434,7 +434,10 @@ jobs:
           # which no command may set on somebody's behalf, so the detail has
           # to name the exact variable and promise the key never lands in a
           # file.
-          MECHA_PROVIDER=anthropic $NOKEY mecha setup --json > hosted.json || true
+          if MECHA_PROVIDER=anthropic $NOKEY mecha setup --json > hosted.json; then
+            echo "a hosted provider with no key is outstanding work, so this must exit non-zero"
+            exit 1
+          fi
           jq -e '.[] | select(.id == "provider-credential") | .detail
                  | test("ANTHROPIC_API_KEY") and test("never the key itself")' hosted.json
 

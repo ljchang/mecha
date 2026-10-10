@@ -379,7 +379,11 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
                          name this server did not report, which a router selects by."
                     ));
                 }
-                if pcfg.context_window.is_none() {
+                // The same rule for the window: only where the server
+                // reports `n_ctx` can `--write` fill it in (review of #627).
+                if pcfg.context_window.is_none()
+                    && props.default_generation_settings.n_ctx.is_some()
+                {
                     mismatches.push(format!(
                         "[providers.{provider_name}] sets no `context_window` — the compaction \
                          threshold and the tool-output budget derive from it, and fall back \
