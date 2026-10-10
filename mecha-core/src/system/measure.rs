@@ -21,6 +21,7 @@
 
 use std::cell::OnceCell;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -253,7 +254,13 @@ fn file(path: &str) -> File {
 /// a moment.
 #[derive(Default)]
 pub struct Reader {
+    /// When every command this reader runs must have finished. A command
+    /// gets what is left of it, at most [`source::FORK_TIMEOUT`]; once it is
+    /// spent, a reading that needs a command is `Unread`.
+    deadline: Option<Instant>,
     meminfo: OnceCell<Result<MemInfo, Reading>>,
+    mac_total: OnceCell<Option<u64>>,
+    mac_available: OnceCell<Option<u64>>,
     stat: OnceCell<Result<String, Reading>>,
     loadavg: OnceCell<Result<(f64, u64), Reading>>,
     uptime: OnceCell<Reading>,
@@ -283,10 +290,7 @@ fn ran_reading(ran: &Ran, what: &str) -> Reading {
         Ran::Out(_) => Reading::unread(format!("{what} answered something this build cannot read")),
         Ran::Missing => Reading::NotHere,
         Ran::Failed => Reading::unread(format!("{what} failed")),
-        Ran::TimedOut => Reading::unread(format!(
-            "{what} did not answer within {} s",
-            source::FORK_TIMEOUT.as_secs()
-        )),
+        Ran::TimedOut => Reading::unread(format!("{what} did not answer in time")),
     }
 }
 
@@ -295,17 +299,67 @@ impl Reader {
         Reader::default()
     }
 
+    /// A reader whose commands, together, finish by `deadline` — the sampler
+    /// runs several in a row inside its unit's start timeout, and a bound
+    /// per command does not add up to a bound per sample.
+    pub fn until(deadline: Instant) -> Reader {
+        Reader {
+            deadline: Some(deadline),
+            ..Reader::default()
+        }
+    }
+
+    /// How long the next command may take.
+    pub fn budget(&self) -> Duration {
+        match self.deadline {
+            None => source::FORK_TIMEOUT,
+            Some(d) => d
+                .saturating_duration_since(Instant::now())
+                .min(source::FORK_TIMEOUT),
+        }
+    }
+
+    /// macOS's total, from `sysctl`, on its own: a `vm_stat` that cannot be
+    /// read must not cost the total.
+    fn mac_total(&self) -> Option<u64> {
+        *self.mac_total.get_or_init(|| {
+            match source::run_bounded("sysctl", &["-n", "hw.memsize"], self.budget()) {
+                Ran::Out(t) => t.trim().parse::<u64>().ok(),
+                _ => None,
+            }
+        })
+    }
+
+    fn mac_available(&self) -> Option<u64> {
+        *self.mac_available.get_or_init(|| {
+            match source::run_bounded("vm_stat", &[], self.budget()) {
+                Ran::Out(t) => source::parse_vm_stat(&t),
+                _ => None,
+            }
+        })
+    }
+
     /// `/proc/meminfo`, parsed once. On macOS the two figures that matter
     /// come from `sysctl` and `vm_stat` instead; swap is not read there.
     pub fn meminfo(&self) -> Result<MemInfo, Reading> {
         self.meminfo
             .get_or_init(|| {
                 if cfg!(target_os = "macos") {
-                    return macos_meminfo();
+                    return match (self.mac_total(), self.mac_available()) {
+                        (Some(total), Some(available)) => Ok(MemInfo {
+                            total,
+                            available,
+                            ..MemInfo::default()
+                        }),
+                        _ => Err(Reading::unread(
+                            "sysctl hw.memsize or vm_stat could not be read",
+                        )),
+                    };
                 }
                 match file("/proc/meminfo") {
-                    File::Text(t) => source::parse_meminfo(&t)
-                        .ok_or_else(|| Reading::unread("/proc/meminfo has no MemTotal")),
+                    File::Text(t) => source::parse_meminfo(&t).ok_or_else(|| {
+                        Reading::unread("/proc/meminfo lacks MemTotal or MemAvailable")
+                    }),
                     File::Absent => Err(core_missing("/proc/meminfo")),
                     File::Unreadable(why) => Err(Reading::unread(why)),
                 }
@@ -365,6 +419,7 @@ impl Reader {
             .get_or_init(|| {
                 let ran = source::nvidia_smi(
                     "--query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.total",
+                    self.budget(),
                 );
                 match &ran {
                     Ran::Out(t) => Ok(source::parse_gpu(t)),
@@ -394,7 +449,7 @@ impl Reader {
                 if !Path::new(&format!("/sys/class/net/{iface}/wireless")).exists() {
                     return Err(Reading::NotHere);
                 }
-                match source::run_bounded("iw", &["dev", &iface, "link"], source::FORK_TIMEOUT) {
+                match source::run_bounded("iw", &["dev", &iface, "link"], self.budget()) {
                     Ran::Out(t) => source::parse_iw_link(&t)
                         .ok_or_else(|| Reading::unread("the Wi-Fi link is not connected")),
                     other => Err(ran_reading(&other, "iw")),
@@ -406,8 +461,7 @@ impl Reader {
     fn tailnet(&self) -> Result<Tailnet, Reading> {
         self.tailnet
             .get_or_init(|| {
-                match source::run_bounded("tailscale", &["status", "--json"], source::FORK_TIMEOUT)
-                {
+                match source::run_bounded("tailscale", &["status", "--json"], self.budget()) {
                     Ran::Out(t) => source::parse_tailscale_status(&t)
                         .ok_or_else(|| Reading::unread("tailscale status did not parse")),
                     // `tailscale status` exits non-zero while logged out or
@@ -442,11 +496,19 @@ impl Reader {
             Err(r) => r,
         };
         match m {
+            // On macOS each figure fails on its own source alone.
+            MemoryTotal if cfg!(target_os = "macos") => Reading::of(
+                self.mac_total().map(|v| v as f64),
+                "sysctl hw.memsize could not be read",
+            ),
+            MemoryAvailable if cfg!(target_os = "macos") => Reading::of(
+                self.mac_available().map(|v| v as f64),
+                "vm_stat could not be read",
+            ),
             MemoryTotal => mem(|m| Some(m.total)),
             MemoryAvailable => mem(|m| Some(m.available)),
-            MemorySwapUsed => {
-                mem(|m| cfg!(target_os = "linux").then(|| m.swap_total.saturating_sub(m.swap_free)))
-            }
+            MemorySwapUsed if !cfg!(target_os = "linux") => Reading::NotHere,
+            MemorySwapUsed => mem(|m| Some(m.swap_total.saturating_sub(m.swap_free))),
             CpuCores => match self.stat() {
                 Ok(t) => Reading::of(
                     source::parse_cores(&t).map(|n| n as f64),
@@ -478,7 +540,10 @@ impl Reader {
             GpuThrottled => self
                 .throttle
                 .get_or_init(|| {
-                    match source::nvidia_smi("--query-gpu=clocks_throttle_reasons.active") {
+                    match source::nvidia_smi(
+                        "--query-gpu=clocks_throttle_reasons.active",
+                        self.budget(),
+                    ) {
                         Ran::Out(t) => match source::parse_throttle(&t) {
                             Some(b) => Reading::Observed {
                                 value: if b { 1.0 } else { 0.0 },
@@ -535,7 +600,7 @@ impl Reader {
                     match source::run_bounded(
                         "systemctl",
                         &["--user", "--failed", "--no-legend", "--plain"],
-                        source::FORK_TIMEOUT,
+                        self.budget(),
                     ) {
                         Ran::Out(t) => Reading::Observed {
                             value: source::parse_failed_units(&t) as f64,
@@ -576,31 +641,4 @@ fn read_thermal() -> Reading {
         (true, Some(value)) => Reading::Observed { value },
         (true, None) => Reading::unread("no thermal zone gave a plausible temperature"),
     }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_meminfo() -> Result<MemInfo, Reading> {
-    let total = match source::run_bounded("sysctl", &["-n", "hw.memsize"], source::FORK_TIMEOUT) {
-        Ran::Out(t) => t.trim().parse::<u64>().ok(),
-        _ => None,
-    };
-    let available = match source::run_bounded("vm_stat", &[], source::FORK_TIMEOUT) {
-        Ran::Out(t) => source::parse_vm_stat(&t),
-        _ => None,
-    };
-    match (total, available) {
-        (Some(total), Some(available)) => Ok(MemInfo {
-            total,
-            available,
-            ..MemInfo::default()
-        }),
-        _ => Err(Reading::unread(
-            "sysctl hw.memsize or vm_stat could not be read",
-        )),
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn macos_meminfo() -> Result<MemInfo, Reading> {
-    Err(Reading::NotHere)
 }

@@ -730,7 +730,8 @@ fn nvidia_total_mb() -> GpuRead {
 /// than waited on. The engine's driver read (`engine::read_nvidia`) shares
 /// it; the bounded runner is `mecha system`'s, so there is one.
 pub(crate) fn nvidia_smi(field: &str) -> Option<String> {
-    crate::system::source::nvidia_smi(&format!("--query-gpu={field}")).out()
+    use crate::system::source;
+    source::nvidia_smi(&format!("--query-gpu={field}"), source::FORK_TIMEOUT).out()
 }
 
 fn parse_nvidia_total(text: &str) -> GpuRead {

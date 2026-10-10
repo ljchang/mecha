@@ -1063,3 +1063,50 @@ fn a_rate_probe_reads_the_fresh_series_and_refuses_a_stale_one() {
         other => panic!("{other:?}"),
     }
 }
+
+/// The sample's commands share one deadline, and it sits inside the unit's
+/// start timeout with room left for the store write: a bound per command
+/// added up past the timeout, and systemd killed the sample before it wrote.
+#[test]
+fn the_sample_budget_fits_inside_the_units_start_timeout() {
+    let unit = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../scripts/mecha-system-sample.service");
+    let text = std::fs::read_to_string(&unit).unwrap();
+    let secs: u64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("TimeoutStartSec="))
+        .and_then(|v| v.trim().strip_suffix('s'))
+        .and_then(|v| v.parse().ok())
+        .expect("the unit states TimeoutStartSec in seconds");
+    assert!(
+        SAMPLE_BUDGET + std::time::Duration::from_secs(5) <= std::time::Duration::from_secs(secs),
+        "budget {SAMPLE_BUDGET:?} leaves under 5 s of the unit's {secs} s"
+    );
+}
+
+/// Once the budget is spent, a reading that needs a command is unknown, and
+/// the command is never started.
+#[test]
+fn a_spent_budget_runs_nothing_and_reads_as_unknown() {
+    let reader = Reader::until(std::time::Instant::now());
+    assert_eq!(reader.budget(), std::time::Duration::ZERO);
+    let started = std::time::Instant::now();
+    match reader.now(Measurement::ServicesFailed) {
+        Reading::Unread { why } => assert!(why.contains("in time"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    assert_eq!(
+        source::run_bounded("sleep", &["5"], std::time::Duration::ZERO),
+        source::Ran::TimedOut
+    );
+}
+
+#[test]
+fn meminfo_without_mem_available_is_unknown_not_empty() {
+    assert_eq!(
+        parse_meminfo("MemTotal: 1000 kB\nMemFree: 10 kB\n"),
+        None,
+        "no MemAvailable is not a machine with nothing left"
+    );
+}

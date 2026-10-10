@@ -5944,10 +5944,16 @@ was ever deployed.
   `Type=oneshot` has no start timeout, and a run that is still active holds
   its timer, so a wedged `nvidia-smi` would stop sampling for good. The
   units set `TimeoutStartSec`, and `source::run_bounded` kills any command
-  after `FORK_TIMEOUT`. It drains the output on a thread while the command
-  runs: waiting first and reading after fills a 64 KiB pipe and stalls the
-  child into the timeout, which is what the old shape did with a large
-  answer.
+  at its timeout. It drains the output on a thread while the command runs:
+  waiting first and reading after fills a 64 KiB pipe and stalls the child
+  into the timeout, which is what the old shape did with a large answer.
+  **A bound per command is not a bound per sample.** A sample runs seven
+  commands, and a wedged driver hangs all three `nvidia-smi` calls, so a
+  10 s bound each added up past the unit's 30 s, and systemd killed the
+  sample before it wrote anything. `collect` therefore gives its `Reader`
+  one deadline (`SAMPLE_BUDGET`). Each command gets what is left, the
+  readings after it is spent are `Unread`, and the minute is still written.
+  A test reads the unit's `TimeoutStartSec` and keeps the budget under it.
 - **One parser per source (S1).** `system::source` parses `/proc/meminfo`,
   `/proc/stat`, `nvidia-smi` and every other source exactly once. The
   homeostat, the image gate and `recommend` read through
