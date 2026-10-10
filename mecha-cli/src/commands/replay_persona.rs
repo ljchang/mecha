@@ -93,6 +93,12 @@ pub struct SampleArgs {
     #[arg(long, requires = "persona")]
     pub no_readers: bool,
 
+    /// Render with the touching-scenes switch on (IMAGE-DESIGN.md §15): a
+    /// qualifying picture is built in layers. Off by default, so an arm
+    /// measures one pass unless it asks.
+    #[arg(long, requires = "persona")]
+    pub layers: bool,
+
     /// Which tool text the request carries: `today` (this build's, the
     /// default: the binary is the arm) or `recorded` (the surface the turn
     /// was sent, from the surface store by its `tools_hash`), so a wording
@@ -629,6 +635,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "attempts": args.attempts,
             "parsed_limit": (args.attempts > 1).then_some(args.parsed_limit),
             "readers_stamped": render && !args.no_readers,
+            "layers": render && args.layers,
             "image_seed_base": render.then_some(args.image_seed_base),
             // The real picture tool runs on two paths, for different ends:
             // to draw, or (`--attempts`) only to refuse an unparsed call,
@@ -669,6 +676,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         render,
         readers: !args.no_readers,
+        layers: args.layers,
     };
     let mut samples = Vec::with_capacity(args.samples);
     for i in 0..args.samples {
@@ -749,6 +757,8 @@ pub struct Sampler {
     render: bool,
     /// Stamp the scene reader and role splitter when rendering.
     readers: bool,
+    /// The touching-scenes switch, when rendering (`--layers`).
+    layers: bool,
 }
 
 /// The one tool a sample runs, when it renders.
@@ -924,7 +934,7 @@ impl Sampler {
             scene: None,
             prompt_log: None,
             image_seeds: None,
-            // A replay's arm sets it when the layers are what it measures.
+            // Set below for a rendering arm that asks (`--layers`).
             layers: false,
             owner: &branch.owner,
             history: &branch.messages,
@@ -947,6 +957,7 @@ impl Sampler {
             if self.readers {
                 turn.readers = mecha_core::persona::turn::Readers::From(&judge);
             }
+            turn.layers = self.layers;
         }
         let before = staged
             .as_ref()

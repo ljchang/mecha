@@ -966,6 +966,23 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   without the mask: a whole-picture edit of a picture the owner had painted
   a region on.
 
+- **A touching scene is built in layers when the persona's switch says
+  so** (IMAGE-DESIGN.md §15; owner, 2026-10-10). The switch is
+  `state.toml`'s `[image] touching`, written only by the owner's settings
+  route and read fresh each turn into `ToolCtx::layers`; the model never
+  chooses it. Only a new picture of two or more library people sharing a
+  `together`, with a setting in words and no style, qualifies; anything else
+  draws as today and, with the switch on, says why. The build is one job:
+  a plate of the room, a cutout per person from their portrait in a neutral
+  pose (flattened on grey in code, an empty one refused), a placing pass by
+  tag with each person's part (names never reach the prompt), and a
+  finish, with the run's Stop read between steps. Any failed step draws
+  the single pass and says where it failed; a picture never quietly becomes
+  another kind. The plate and cutouts are kept beside the picture, and the
+  scene records `layers` (hashes, parts, seeds, its origin counted by
+  `Scene::origin`); a picture drawn in one pass carries none. Gated by
+  mecha-a3 before the switch is offered.
+
 The model sees what it made on request — `image_view` on the result's path
 (§Images) — and the result hands the seed back: revising is an edited prompt
 with the same seed. The web chat shows the picture under the call, reading the

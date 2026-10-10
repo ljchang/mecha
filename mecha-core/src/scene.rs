@@ -256,6 +256,35 @@ pub struct Scene {
     /// The chat whose render last advanced it.
     #[serde(default)]
     pub chat: Option<String>,
+    /// How a layered picture was built (IMAGE-DESIGN.md §15.4): what a
+    /// later reshaping edit re-places one person from. `None` for a picture
+    /// drawn in one pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<Layers>,
+}
+
+/// A layered picture's build: the plate, each person's cutout and part, and
+/// the placing and finish seeds. Hashes are of the bytes saved beside the
+/// picture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Layers {
+    pub plate: String,
+    pub people: Vec<LayerPerson>,
+    pub placing_seed: u64,
+    pub finish_seed: u64,
+    /// The parts are prose from the scene's `together`: they carry its
+    /// origin. Absent reads untrusted.
+    #[serde(default)]
+    pub origin: Origin,
+}
+
+/// One person in a layered build.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayerPerson {
+    pub who: String,
+    pub cutout: String,
+    pub part: String,
+    pub seed: u64,
 }
 
 /// What a call says about a scene: only the fields it sends.
@@ -351,8 +380,12 @@ impl Scene {
             picture: _,
             seed: _,
             chat: _,
+            layers,
         } = self;
         let mut o = Origin::Clean;
+        if let Some(l) = layers {
+            o = o.union(l.origin);
+        }
         for f in [light, camera, style, together].into_iter().flatten() {
             o = o.union(f.origin);
         }
