@@ -3244,11 +3244,16 @@ impl Tool for ImageGenerate {
                         Some(crate::scene::Setting::Words { text }) => Some(text.clone()),
                         _ => None,
                     };
+                    // A split that applied places everyone; one that fell
+                    // back leaves only the places the call gave.
+                    let placed = roles_said.as_deref() == Some("applied")
+                        || people.iter().all(|p| p.at.is_some());
                     match crate::layers::not_layered(
                         people.len(),
                         library,
                         portraits.iter().flatten().count(),
                         setting.is_some(),
+                        placed,
                     ) {
                         Some(why) => {
                             dropped.push(format!("Drawn in one pass, not in layers: {why}."))
@@ -7070,11 +7075,47 @@ mod tests {
         png.into_inner()
     }
 
+    /// The tests' context has no splitter, so the call gives the places a
+    /// split would have.
     fn touching_call() -> Value {
         json!({"scene": {"setting": "a sunlit kitchen with a long oak table",
-            "people": [{"who": "maya", "wearing": "a yellow raincoat"},
-                       {"who": "john", "wearing": "a flannel shirt"}],
+            "people": [{"who": "maya", "wearing": "a yellow raincoat", "where": "left"},
+                       {"who": "john", "wearing": "a flannel shirt", "where": "right"}],
             "together": "Maya lifts John off the ground"}})
+    }
+
+    /// A split that fell back leaves only the call's places, and a placing
+    /// pass with no places dropped a person 2 of 2 runs (mecha-a3): with
+    /// nobody placed, the switch draws one pass and says why (review of
+    /// #624).
+    #[tokio::test]
+    async fn an_unplaced_touching_scene_is_one_render_and_says_why() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        for p in call["scene"]["people"].as_array_mut().unwrap() {
+            p.as_object_mut().unwrap().remove("where");
+        }
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("not everyone has a place"),
+            "{}",
+            out.content
+        );
+        let prompts = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .count();
+        assert_eq!(prompts, 1);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     /// The persona's switch builds a touching scene in layers (IMAGE-DESIGN.md

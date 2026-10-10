@@ -45,11 +45,16 @@ pub struct Plan {
 
 /// Why a picture the switch would layer is drawn in one pass instead, or
 /// `None` when it qualifies. Only touching scenes are asked about at all.
+/// `placed` is whether everyone has a place: a split that applied always
+/// gives one, and a split that fell back leaves only the call's own. A
+/// placing pass with no places left one of two people out, 2 of 2 runs
+/// (mecha-a3), so that build is not attempted (review of #624).
 pub fn not_layered(
     people: usize,
     library_people: usize,
     with_portraits: usize,
     setting_words: bool,
+    placed: bool,
 ) -> Option<&'static str> {
     if library_people < people {
         Some("someone in it is described in words, not drawn from the library")
@@ -57,6 +62,8 @@ pub fn not_layered(
         Some("someone in it has no library portrait")
     } else if !setting_words {
         Some("it has no setting in words to build the room from")
+    } else if !placed {
+        Some("the roles could not be split, so not everyone has a place")
     } else {
         None
     }
@@ -348,10 +355,17 @@ mod tests {
 
     #[test]
     fn a_picture_is_layered_only_when_every_part_can_be_built() {
-        assert_eq!(not_layered(2, 2, 2, true), None);
-        assert!(not_layered(2, 1, 1, true).unwrap().contains("described"));
-        assert!(not_layered(2, 2, 1, true).unwrap().contains("portrait"));
-        assert!(not_layered(2, 2, 2, false).unwrap().contains("setting"));
+        assert_eq!(not_layered(2, 2, 2, true, true), None);
+        assert!(not_layered(2, 1, 1, true, true)
+            .unwrap()
+            .contains("described"));
+        assert!(not_layered(2, 2, 1, true, true)
+            .unwrap()
+            .contains("portrait"));
+        assert!(not_layered(2, 2, 2, false, true)
+            .unwrap()
+            .contains("setting"));
+        assert!(not_layered(2, 2, 2, true, false).unwrap().contains("place"));
     }
 
     /// Names never reach the placing prompt: each becomes its person's tag,
