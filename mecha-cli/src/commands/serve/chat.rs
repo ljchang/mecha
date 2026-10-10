@@ -1987,10 +1987,10 @@ pub async fn send(
     if text.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
     }
-    let regenerate = body.regenerate.clone();
+    let regenerate = body.regenerate.as_deref().map(|p| p.trim().to_string());
     if regenerate
         .as_deref()
-        .is_some_and(|p| p.trim().is_empty() || p.len() > 512 || p.contains('\n'))
+        .is_some_and(|p| p.is_empty() || p.len() > 512 || p.contains('\n'))
     {
         return (StatusCode::BAD_REQUEST, "not a picture path\n").into_response();
     }

@@ -423,14 +423,18 @@ async fn draw_panel_edit(
     // Waiting behind another picture is not drawing: that wait stays under
     // the run's token, so a barge-in or a hang-up ends it undrawn, rather
     // than holding the chat for as long as the line ahead takes (review of
-    // #634).
+    // #634). A picture Stop empties the line and so would let the wait
+    // resolve into a draw: the Stop count is read before and after, as
+    // `dispatch`'s own wait reads it (review of #606), and a Stop meanwhile
+    // ends it undrawn too.
     if spoken {
         if let (Some(sink), Some(stop)) = (&cx.jobs, &cx.cancel) {
+            let stops = sink.stops();
             let waited = tokio::select! {
                 () = sink.idle() => true,
                 () = stop.cancelled() => false,
             };
-            if !waited {
+            if !waited || sink.stops() != stops {
                 return (
                     edit::fact(
                         &edit.picture,
@@ -6458,6 +6462,57 @@ mod tests {
             "{card}"
         );
         ahead.cancel();
+    }
+
+    /// A picture Stop while a call's Regenerate waits in line ends it
+    /// undrawn (review of #634, pass 4; the #606 rule): the Stop empties the
+    /// line, and without the Stop count read around the wait, the emptied
+    /// line released the waiting redraw into a draw.
+    #[tokio::test]
+    async fn a_picture_stop_while_a_call_regenerate_waits_ends_it_undrawn() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let ahead = tokio_util::sync::CancellationToken::new();
+        let watched = ahead.clone();
+        let job = mecha_core::jobs::DeferredJob::new(
+            async move {
+                watched.cancelled().await;
+                mecha_core::tool::ToolOutput::err("stopped")
+            },
+            ahead.clone(),
+            "busy",
+        );
+        w.personas()
+            .jobs
+            .queue
+            .submit(&key, 0, "ahead", "image_generate", job)
+            .unwrap();
+        let line = w
+            .personas()
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        let first = match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, &line, false)
+            .await
+        {
+            crate::voice::Hosted::Started(turn) => turn,
+            _ => panic!("the Regenerate's turn did not start"),
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // The picture Stop: the chat's pictures, not the reply.
+        w.personas()
+            .cancel(&w.library, &key, None, true, None)
+            .await
+            .unwrap();
+        let _ = first.done.await;
+        assert!(w.drawn.lock().unwrap().is_empty(), "drawn after a Stop");
     }
 
     /// A typed Regenerate into a running turn is refused (review of #634): a
