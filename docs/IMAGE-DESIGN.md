@@ -466,7 +466,7 @@ Also not built, and not a measurement: **the queue line that names the step** (1
 ### 15.7 The gate (mecha-a3, before the switch is offered)
 
 - **Arms:** three: today's single pass; layers with cutouts posed by the part; layers with neutral cutouts (change 1's own test).
-- **Calls:** the recorded touching-scene calls, byte-identical, n = 3, paired seeds. They include the facing-away call, where layers most clearly won. **The by-step failure rates need a wider base:** which step fails depends on the call more than the seed, so seven calls at n = 3 give the finish a denominator of about seven, not 21. 11 and 15.5's open questions are read from every touching call on record (18 in the 2026-10-08/09 chats, §15.2) run once each, beside the gate's arms.
+- **Calls:** the recorded touching-scene calls, byte-identical, n = 3, paired seeds. They include the facing-away call, where layers most clearly won. **The by-step failure rates need a wider base:** which step fails depends on the call more than the seed, so seven calls at n = 3 give the finish a denominator of about seven, not 21. §11's items 13 and 14 are read from every touching call on record (18 in the 2026-10-08/09 chats, §15.2) run once each, beside the gate's arms.
 - **Measured:**
   - a person drawn twice;
   - roles right and the act drawn (by eye);
