@@ -1214,6 +1214,24 @@
     }
   }
 
+  // The touching-scenes switch, stored in state.toml by its own route.
+  async function setTouching(touching) {
+    busy = true;
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/image-touching', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ touching, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      await load();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function setLocked(locked) {
     busy = true;
     try {
@@ -1624,6 +1642,17 @@
             <!-- The settings form's own switch (form.css), so it looks and
                  focuses as the toggles below it do. -->
             <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" aria-describedby="lockhint" disabled={busy || lockWaitsNow} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
+          </div>
+          <!-- How a picture whose people touch is drawn (IMAGE-DESIGN.md §15):
+               in state.toml beside the lock, the owner's alone, so a switch
+               here and never a form field. Read from the listing, so a reload
+               shows what is stored. -->
+          <div class="lockrow">
+            <span class="locktext">
+              Touching scenes: precise (slower)
+              <span class="hint" id="touchhint">{chosen.touching === 'precise' ? 'a picture of people touching is built in layers: the room, each person, then placed together — about 3–4 minutes' : 'drawn in one pass, about 45 seconds; turn on for better staging when people touch'}</span>
+            </span>
+            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.touching === 'precise'} aria-label="Touching scenes: precise (slower)" aria-describedby="touchhint" disabled={busy} onclick={() => setTouching(chosen.touching === 'precise' ? 'single' : 'precise')}><span class="tf-knob"></span></button>
           </div>
         {/if}
         {#if asForm && current.form.form}

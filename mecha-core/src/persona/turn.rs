@@ -58,6 +58,9 @@ pub struct Turn<'a> {
     /// Where a picture's fresh seeds come from: `None` (random) on a served
     /// turn; a replay's stream, so its arms render at paired seeds.
     pub image_seeds: Option<Arc<crate::sample::SeedStream>>,
+    /// The persona's touching-scenes switch (IMAGE-DESIGN.md §15.1), read
+    /// by the host from the owner's setting.
+    pub layers: bool,
     /// The owner's words this turn, as typed — not the goal folded ahead of
     /// a first turn.
     pub owner: &'a str,
@@ -105,6 +108,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     // ("save them for now", 2026-10-08).
     tools.prompt_log = turn.prompt_log;
     tools.image_seeds = turn.image_seeds;
+    tools.layers = turn.layers;
     // `for_session` clones the agent's context, so each arm is set: `Off`
     // clears what the base might carry rather than inheriting it, since a
     // replay's header reports it as a fact (review of #612, pass 4).
