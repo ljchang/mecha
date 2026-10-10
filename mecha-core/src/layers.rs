@@ -58,7 +58,66 @@ pub fn not_layered(
     }
 }
 
+/// The framing words a plate may take from a scene's `camera`: shot size and
+/// angle, from a closed set. A camera field can describe a person, where
+/// the shot dwells on someone, and a plate given those words drew a stranger
+/// the placing pass then kept (mecha-a3, 2026-10-10); the closed set is what
+/// keeps every person word out.
+const FRAMING: [&str; 16] = [
+    "extreme close-up",
+    "medium close-up",
+    "close-up",
+    "medium shot",
+    "wide shot",
+    "full shot",
+    "long shot",
+    "establishing shot",
+    "eye level",
+    "eye-level",
+    "low angle",
+    "high angle",
+    "overhead",
+    "bird's-eye view",
+    "dutch angle",
+    "wide angle",
+];
+
+/// The framing in `camera`, from [`FRAMING`] only, longest match first.
+pub fn framing(camera: &str) -> Option<String> {
+    let lower = camera.to_lowercase();
+    let found: Vec<&str> = FRAMING
+        .iter()
+        .copied()
+        .filter(|f| lower.contains(f))
+        .collect();
+    let kept: Vec<&str> = found
+        .iter()
+        .copied()
+        .filter(|f| !found.iter().any(|g| g != f && g.contains(f)))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(", "))
+}
+
+/// Words that put a person in a sentence. A plate's light that holds one,
+/// or a cast member's name, is left out for neutral light.
+const PERSON_WORDS: [&str; 24] = [
+    "her", "his", "him", "she", "he", "they", "them", "their", "person", "people", "woman",
+    "women", "man", "men", "girl", "boy", "body", "skin", "face", "hair", "back", "backside",
+    "chest", "legs",
+];
+
+/// Whether `text` names nobody: no person word and none of `names`.
+pub fn names_no_one(text: &str, names: &[String]) -> bool {
+    text.to_lowercase()
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.trim_end_matches("'s"))
+        .all(|w| !PERSON_WORDS.contains(&w) && !names.iter().any(|n| n.to_lowercase() == w))
+}
+
 /// The plate: the room alone, in the scene's framing (§15.3, step 1).
+/// `light` and `camera` must already be free of people ([`names_no_one`],
+/// [`framing`]): the caller passes them through those.
 pub fn plate_prompt(
     setting: &str,
     light: Option<&str>,
@@ -240,6 +299,28 @@ mod tests {
             portrait: Vec::new(),
             ext: "png",
         }
+    }
+
+    /// A plate takes framing from a closed set and no person words: a camera
+    /// dwelling on someone drew a stranger into the empty room.
+    #[test]
+    fn the_plate_takes_framing_and_light_that_name_nobody() {
+        assert_eq!(
+            framing("Medium shot, low angle, lingering on Maya's scarf").as_deref(),
+            Some("medium shot, low angle")
+        );
+        assert_eq!(
+            framing("a medium close-up at eye level").as_deref(),
+            Some("medium close-up, eye level")
+        );
+        assert_eq!(framing("handheld, intimate"), None);
+        let names = ["Maya".to_string()];
+        assert!(names_no_one(
+            "warm lamplight, dusk outside the window",
+            &names
+        ));
+        assert!(!names_no_one("a lamp warming his collar", &names));
+        assert!(!names_no_one("a glow along Maya's sleeve", &names));
     }
 
     #[test]

@@ -2120,7 +2120,50 @@ impl ImageGenerate {
             },
         )
         .await;
-        let plate = run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+        let mut plate =
+            run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+        // The room must be empty: a face in it is a stranger the placing
+        // pass would keep (mecha-a3, 2026-10-10). One more draw at a new
+        // seed, then the single pass. A detector that cannot run is said in
+        // the manifest; it does not stop the build, since it guards the
+        // picture's quality, not the owner's data.
+        let faces = |png: &[u8]| self.faces.faces_in(png);
+        match faces(&plate) {
+            Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
+            Ok(n) => {
+                steps.push(json!({"step": "plate check", "faces": n}));
+                if stopped() {
+                    return Err(LayersFailed::Cancelled(joined(&left)));
+                }
+                let (step, req, secs, out) = pass(
+                    "plate again",
+                    Request {
+                        prompt: lp.plate.clone(),
+                        negative: base.negative.clone(),
+                        size: base.size,
+                        steps: base.steps,
+                        seed: draw_seed(ctx),
+                        references: Vec::new(),
+                        reference_size: base.reference_size,
+                        mask: None,
+                    },
+                )
+                .await;
+                plate =
+                    run(step, req, secs, out, &mut left, &mut steps).map_err(|e| fail(e, &left))?;
+                match faces(&plate) {
+                    Ok(0) => steps.push(json!({"step": "plate check", "faces": 0})),
+                    Ok(n) => {
+                        return Err(LayersFailed::At(
+                            "plate".into(),
+                            format!("the room came back with {n} face(s) in it, twice"),
+                        ))
+                    }
+                    Err(why) => steps.push(json!({"step": "plate check", "unchecked": why})),
+                }
+            }
+            Err(why) => steps.push(json!({"step": "plate check", "unchecked": why})),
+        }
         save_named(ctx, &format!("images/{stamp}-plate.png"), &plate)
             .await
             .map_err(|e| LayersFailed::At("plate".into(), format!("{e:#}")))?;
@@ -3225,11 +3268,42 @@ impl Tool for ImageGenerate {
                                     .filter(|e| e.status == crate::imagelib::Status::Approved)
                                     .map(|e| e.text.clone())
                             });
+                            // The plate never sees a person (mecha-a3: a
+                            // camera dwelling on someone drew a stranger
+                            // into the empty room): framing words from a
+                            // closed set, and light that names nobody.
+                            let names: Vec<String> = people
+                                .iter()
+                                .map(|p| crate::picture::shown(&p.who))
+                                .collect();
+                            let plate_light = value(&plan.next.light)
+                                .filter(|l| crate::layers::names_no_one(l, &names));
+                            let plate_framing = value(&plan.next.camera)
+                                .as_deref()
+                                .and_then(crate::layers::framing);
+                            // Each person's clothes, the fuller of the
+                            // call's and the chat's record (mecha-a3: the
+                            // shorter lost half an outfit).
+                            let recorded = ctx.scene.as_ref().and_then(|s| s.current());
+                            let fuller = |p: &crate::scene::Person| {
+                                let kept = recorded
+                                    .as_ref()
+                                    .and_then(|r| {
+                                        r.people.iter().find(|q| q.who.key() == p.who.key())
+                                    })
+                                    .map(|q| q.wearing.clone())
+                                    .unwrap_or_default();
+                                if kept.trim().chars().count() > p.wearing.trim().chars().count() {
+                                    kept
+                                } else {
+                                    p.wearing.clone()
+                                }
+                            };
                             layers_plan = Some(crate::layers::Plan {
                                 plate: crate::layers::plate_prompt(
                                     setting.as_deref().unwrap_or_default(),
-                                    value(&plan.next.light).as_deref(),
-                                    value(&plan.next.camera).as_deref(),
+                                    plate_light.as_deref(),
+                                    plate_framing.as_deref(),
                                     style_words.as_deref(),
                                 ),
                                 style: style_words,
@@ -3243,7 +3317,7 @@ impl Tool for ImageGenerate {
                                         Some(crate::layers::Person {
                                             key: p.who.key(),
                                             shown: crate::picture::shown(&p.who),
-                                            wearing: p.wearing.clone(),
+                                            wearing: fuller(p),
                                             part: p.doing.clone(),
                                             portrait: bytes,
                                             ext,
@@ -7041,7 +7115,13 @@ mod tests {
         assert!(prompts[4].contains("85 mm"), "{}", prompts[4]);
         let manifest = manifest_of(&dir, &out.content);
         assert_eq!(manifest["route"], "layered");
-        assert_eq!(manifest["layers"].as_array().unwrap().len(), 5);
+        let renders = manifest["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s.get("seed").is_some())
+            .count();
+        assert_eq!(renders, 5);
         let kept: Vec<String> = std::fs::read_dir(dir.join("images"))
             .unwrap()
             .flatten()
@@ -7135,6 +7215,80 @@ mod tests {
             prompts[1].contains("lifting"),
             "the posed cutout: {}",
             prompts[1]
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// Reports a face in every picture: the plate is never empty.
+    struct SeesFaces;
+
+    impl crate::face::FaceAnchors for SeesFaces {
+        fn anchor(
+            &self,
+            _library: &crate::imagelib::Library,
+            _entry: &crate::imagelib::Entry,
+        ) -> crate::face::Anchor {
+            crate::face::Anchor::NoFace
+        }
+        fn faces_in(&self, _png: &[u8]) -> std::result::Result<usize, String> {
+            Ok(1)
+        }
+    }
+
+    /// The plate must come back empty: a face in it is drawn once more at a
+    /// new seed, and twice is the single pass, said (mecha-a3's blocker: a
+    /// stranger in the plate was kept and one person never placed). The
+    /// plate prompt names nobody, whatever the camera said.
+    #[tokio::test]
+    async fn a_plate_with_someone_in_it_is_redrawn_then_given_up() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 3],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                picture(9, [91, 90, 90]),
+                picture(20, [200, 40, 40]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::new(SeesFaces));
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["camera"] = json!("Medium shot, low angle, lingering on Maya's scarf");
+        call["scene"]["light"] = json!("a lamp warming his collar");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(
+            out.content.contains(
+                "Layers failed at plate: the room came back with 1 face(s) in it, twice; drawn \
+                 in one pass."
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "the plate, once more, then the single pass"
+        );
+        let plate = prompts[0];
+        assert!(
+            plate.contains("medium shot") && plate.contains("No people."),
+            "{plate}"
+        );
+        assert!(
+            !plate.contains("Maya") && !plate.contains("behind") && !plate.contains("her skin"),
+            "{plate}"
         );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
