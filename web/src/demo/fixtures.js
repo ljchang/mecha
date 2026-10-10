@@ -1665,12 +1665,12 @@ export const learningReport = {
 
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     // Proposed from the main chat and waiting on the owner (the Waiting
     // section): the review below is what its page reads.
-    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
+    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
   unlocked: false,
   has_password: false,
