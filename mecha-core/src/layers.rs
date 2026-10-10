@@ -36,12 +36,19 @@ pub struct Plan {
     /// What of the act no part says: the split's leftover, or the call's
     /// `together` as written when the split fell back (§15.3).
     pub leftover: Option<String>,
-    /// The parts are prose from the scene's `together`: its origin.
+    /// The parts are prose from the scene's `together` and the people's own
+    /// words: the union of their origins.
     pub origin: crate::scene::Origin,
     /// A library style's own words, laid on by the finish alone; the plate,
     /// the cutouts and the placing pass stay photographic.
     pub style: Option<String>,
 }
+
+/// The most people a layered build has been measured with (mecha-a3's gate:
+/// every recorded touching call is two people). Three to five would be
+/// n + 3 renders in one time budget and a fuller placing pass, unmeasured,
+/// so they draw in one pass until a gate covers them (review of #624).
+pub const MEASURED_PEOPLE: usize = 2;
 
 /// Why a picture the switch would layer is drawn in one pass instead, or
 /// `None` when it qualifies. Only touching scenes are asked about at all.
@@ -63,6 +70,8 @@ pub fn not_layered(
 ) -> Option<&'static str> {
     if !fits {
         Some("it has more people than one edit can hold")
+    } else if people > MEASURED_PEOPLE {
+        Some("layers have been measured with two people, not more")
     } else if library_people < people {
         Some("someone in it is described in words, not drawn from the library")
     } else if with_portraits < people {
@@ -438,6 +447,9 @@ mod tests {
         assert!(not_layered(6, 6, 6, true, true, false)
             .unwrap()
             .contains("one edit"));
+        assert!(not_layered(3, 3, 3, true, true, true)
+            .unwrap()
+            .contains("two people"));
     }
 
     /// Names never reach the placing prompt: each becomes its person's tag,
