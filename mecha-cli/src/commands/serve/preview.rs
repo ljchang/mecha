@@ -293,7 +293,8 @@ fn answer(p: &Preview, item: &str, path: &str) -> Option<(Vec<u8>, &'static str,
         let declared: mecha_core::hud::publish::Declared = serde_json::from_str(&declared).ok()?;
         let declared = declared.datasets.get(name)?;
         let dataset = p.hud.dataset(board, name).ok()??;
-        if dataset.loader_digest != declared.loader_digest {
+        let installed = p.hud.load(board).ok()?.ok()?;
+        if !mecha_core::hud::publish::from_declared_loader(&installed, name, &dataset, declared) {
             return None;
         }
         return Some((
@@ -516,7 +517,8 @@ mod tests {
             )
             .unwrap();
         };
-        rows(&installed.loaders()["visits"].digest());
+        let staged_digest = installed.loaders()["visits"].digest();
+        rows(&staged_digest);
         std::fs::write(data.join("leftover.json"), r#"{}"#).unwrap();
         let outbox_root = root.join("outbox");
         let outbox = OutboxStore::open(&outbox_root).unwrap();
@@ -590,6 +592,19 @@ mod tests {
             status(format!("/p/{}/data/visits.json", staged.id), true).await,
             StatusCode::NOT_FOUND,
             "rows the release would never receive"
+        );
+        // Nor rows from the staged loader once the installed one is edited:
+        // the next refresh is `LoaderChanged`, so the release gets none.
+        rows(&staged_digest);
+        let loader = hud_root.join("boards/lab/loaders/visits.toml");
+        let edited = std::fs::read_to_string(&loader)
+            .unwrap()
+            .replace("max_rows = 100", "max_rows = 99");
+        std::fs::write(&loader, edited).unwrap();
+        assert_eq!(
+            status(format!("/p/{}/data/visits.json", staged.id), true).await,
+            StatusCode::NOT_FOUND,
+            "rows from a loader edited after staging"
         );
         assert_eq!(
             status(format!("/p/{}/..%2F..%2Fsecret.txt", staged.id), true).await,

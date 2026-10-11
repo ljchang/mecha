@@ -158,10 +158,9 @@ jobs:
       # bundle a published page vendors (`vite.hud.config.js`).
       - run: npm run build
         working-directory: web
-      # `mecha hud publish` vendors these two by path (`publish::RENDERER_DIR`
-      # and the `hud.js`/`hud.css` literals in `publish::assemble`). The vite
-      # config is the only other place that path exists, and a rename on
-      # either side builds and tests clean, so the contract is asserted here.
+      # `mecha hud publish` vendors these two by path. The Rust side is pinned
+      # to the vite config by `the_renderer_is_vendored_from_where_vite_writes_it`;
+      # this pins the config to what the build actually emits.
       - run: test -f dist/hud-renderer/hud.js && test -f dist/hud-renderer/hud.css
         working-directory: web
 
