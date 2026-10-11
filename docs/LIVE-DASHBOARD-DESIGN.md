@@ -890,7 +890,8 @@ In two repositories, split where the trust boundary is:
   is refused by the blunt script scan on Svelte's error-doc and Vega's issue
   links, which nothing fetches.
 - **Home** (this repository): `mecha hud publish <id> [--public]` assembles
-  the bundle (`hud::publish::assemble`) and stages `factory__bundle_publish`
+  the bundle (`hud::publish::assemble`) into `~/.mecha/hud/staged/`, outside
+  every run's workspace, so nothing but the owner can change it before release, and stages `factory__bundle_publish`
   in the outbox, authored by the harness. Each `mecha hud refresh` then
   pushes the published boards' datasets (`hud::publish::plan`) through
   `factory-publish dataset push`, reading what was released from the

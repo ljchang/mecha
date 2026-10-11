@@ -206,7 +206,13 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
             println!("nothing due");
         }
     }
-    let unpushed = push_published(store, &refreshed_ids, json)?;
+    let unpushed = push_published(
+        store,
+        &refreshed_ids,
+        json,
+        &mecha_core::work::bundles_root()?,
+        "factory-publish",
+    )?;
     if broken + failed + unpushed > 0 {
         bail!(
             "{} board(s) did not load, {failed} loader(s) did not refresh, \
@@ -245,7 +251,7 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
         Some(dir) => dir,
         None => mecha_core::work::mecha_home()?.join("web").join("dist"),
     };
-    let out = mecha_core::work::producer_dir("hud")?
+    let out = publish::staged_root(store.root())
         .join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S%3f")));
     publish::assemble(&installed, &assets.join(publish::RENDERER_DIR), &out)?;
     let bundle = publish::bundle_id(id);
@@ -280,9 +286,16 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
 /// How many could not be pushed — refused, or failed in a way worth retrying
 /// next tick. A board not yet released is skipped quietly: its outbox item is
 /// still waiting on the owner.
-fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
+/// `bundles` is the factory client's local store and `program` the client
+/// itself — parameters so a test can drive every outcome with a stub.
+fn push_published(
+    store: &Store,
+    ids: &[String],
+    json: bool,
+    bundles: &std::path::Path,
+    program: &str,
+) -> Result<usize> {
     use mecha_core::hud::publish::{self, Plan, Pushed};
-    let bundles = mecha_core::work::bundles_root()?;
     // `--json`'s stdout is the refresh outcomes and nothing else.
     let say = |line: String| {
         if json {
@@ -308,7 +321,7 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
                 continue;
             }
         };
-        let release = match publish::release_at(&bundles, &published.bundle) {
+        let release = match publish::release_at(bundles, &published.bundle) {
             Ok(Some(release)) => release,
             Ok(None) => continue,
             Err(e) => {
@@ -376,7 +389,7 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
                     continue;
                 }
             };
-            match push_one(&published.bundle, name, &body) {
+            match push_one(program, &published.bundle, name, &body) {
                 Ok(outcome) => match outcome["outcome"].as_str() {
                     Some("stored") | Some("unchanged") => {
                         pushed.record(release.version, name, dataset.generation);
@@ -423,15 +436,20 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
 
 /// One push, through the factory client: its outcome line, or an error worth
 /// retrying (the network, a 5xx, the client missing).
-fn push_one(bundle: &str, name: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+fn push_one(
+    program: &str,
+    bundle: &str,
+    name: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
     use std::io::Write;
-    let mut child = std::process::Command::new("factory-publish")
+    let mut child = std::process::Command::new(program)
         .args(["dataset", "push", bundle, name, "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("running factory-publish: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("running {program}: {e}"))?;
     // The rows are written from a thread while the output drains: a body over
     // a pipe's buffer must not deadlock against a child writing stderr, and a
     // child that exits before reading all of it (a bad key, an unknown
@@ -463,4 +481,158 @@ fn push_one(bundle: &str, name: &str, body: &serde_json::Value) -> Result<serde_
     let line = String::from_utf8_lossy(&out.stdout);
     serde_json::from_str(line.trim())
         .map_err(|e| anyhow::anyhow!("factory-publish answered {line:?}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::hud::publish;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A store with board `lab` installed and published, one dataset
+    /// `visits` produced (`rows` rows), and the factory client's local store
+    /// recording release 1 as declaring `declared` datasets.
+    fn published_lab(rows: usize, declared: bool) -> (Scratch, Store, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("mecha-hud-push-{}", uuid::Uuid::new_v4()));
+        let hud = root.join("hud");
+        let draft = root.join("draft").join("lab");
+        std::fs::create_dir_all(draft.join("loaders")).unwrap();
+        std::fs::create_dir_all(&hud).unwrap();
+        std::fs::write(
+            hud.join("sources.toml"),
+            format!(
+                "[source.lab]\nkind = \"sqlite\"\npath = \"{}\"\ncontent = \"owner\"\n",
+                root.join("lab.sqlite").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("hud.json"),
+            r#"{"version":1,"title":"Lab","datasets":["visits"],
+                "panels":[{"type":"kpi","title":"Visits","dataset":"visits",
+                           "value":{"op":"sum","field":"n"}}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("loaders").join("visits.toml"),
+            "source = \"lab\"\nschedule = \"0 * * * *\"\nmax_rows = 100000\n\
+             query = \"SELECT n FROM visits\"\n[[column]]\nname = \"n\"\ntype = \"integer\"\n",
+        )
+        .unwrap();
+        let store = Store::at(&hud);
+        let installed = store
+            .install(&draft, Some("lab"), Utc::now())
+            .unwrap()
+            .unwrap();
+        let data = hud.join("boards/lab/data");
+        std::fs::create_dir_all(&data).unwrap();
+        let body: Vec<serde_json::Value> = (0..rows).map(|i| serde_json::json!([i])).collect();
+        std::fs::write(
+            data.join("visits.json"),
+            serde_json::json!({
+                "name": "visits", "generated_at": "2031-04-17T09:00:00Z", "generation": 3,
+                "loader_digest": installed.loaders()["visits"].digest(),
+                "columns": [{"name": "n", "type": "integer"}], "rows": body, "external": false,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        publish::mark_published(&store.board_path("lab").unwrap(), "hud-lab").unwrap();
+        let bundles = root.join("bundles");
+        let release = bundles.join("hud-lab").join("1");
+        std::fs::create_dir_all(&release).unwrap();
+        let mut decl = publish::declared(&installed);
+        if !declared {
+            decl.datasets.clear();
+        }
+        std::fs::write(
+            release.join("datasets.json"),
+            serde_json::to_string(&decl).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            bundles.join("hud-lab").join("alias.json"),
+            r#"{"version":1}"#,
+        )
+        .unwrap();
+        (Scratch(root), store, bundles)
+    }
+
+    /// A stand-in for `factory-publish dataset push`: `script` is its body.
+    fn stub(dir: &std::path::Path, script: &str) -> String {
+        let path = dir.join("factory-publish-stub");
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+
+    fn push(store: &Store, bundles: &std::path::Path, program: &str) -> usize {
+        push_published(store, &["lab".to_string()], true, bundles, program).unwrap()
+    }
+
+    /// Every way a push can end is counted the way the timer must see it:
+    /// stored is recorded and not pushed again; stale and refused are not
+    /// pushed; a dataset the release did not declare is not pushed.
+    #[test]
+    fn each_push_outcome_counts_as_the_timer_must_see_it() {
+        let (s, store, bundles) = published_lab(2, true);
+        let stored = stub(&s.0, r#"cat >/dev/null; echo '{"outcome":"stored"}'"#);
+        assert_eq!(push(&store, &bundles, &stored), 0);
+        let board = store.board_path("lab").unwrap();
+        assert_eq!(
+            publish::Pushed::read(&board).unwrap().last(1, "visits"),
+            Some(3)
+        );
+        // Already pushed under this release: nothing is sent again.
+        let fails = stub(&s.0, "exit 9");
+        assert_eq!(push(&store, &bundles, &fails), 0);
+
+        std::fs::remove_file(board.join("pushed.json")).unwrap();
+        let stale = stub(
+            &s.0,
+            r#"cat >/dev/null; echo '{"outcome":"stale","message":"moved"}'"#,
+        );
+        assert_eq!(push(&store, &bundles, &stale), 1, "stale is not pushed");
+        let refused = stub(
+            &s.0,
+            r#"cat >/dev/null; echo '{"outcome":"refused","code":"shape","message":"no"}'"#,
+        );
+        assert_eq!(push(&store, &bundles, &refused), 1, "refused is not pushed");
+
+        let (s2, store2, bundles2) = published_lab(2, false);
+        let any = stub(&s2.0, r#"cat >/dev/null; echo '{"outcome":"stored"}'"#);
+        assert_eq!(
+            push(&store2, &bundles2, &any),
+            1,
+            "undeclared is not pushed"
+        );
+    }
+
+    /// A client that exits before reading the push reports its own reason —
+    /// never a broken pipe read as "retry" — and a large push cannot deadlock.
+    #[test]
+    fn a_client_that_quits_early_reports_its_own_reason() {
+        let (s, _store, _bundles) = published_lab(0, true);
+        let quits = stub(
+            &s.0,
+            "echo 'the box refused the data key (403)' >&2; exit 1",
+        );
+        let body = serde_json::json!({ "rows": "x".repeat(1_000_000) });
+        let err = push_one(&quits, "hud-lab", "visits", &body)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("refused the data key"), "{err}");
+        let ok = stub(&s.0, r#"cat >/dev/null; echo '{"outcome":"stored"}'"#);
+        assert_eq!(
+            push_one(&ok, "hud-lab", "visits", &body).unwrap()["outcome"],
+            "stored"
+        );
+    }
 }

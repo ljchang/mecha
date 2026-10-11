@@ -236,6 +236,9 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
     // (`preview.rs`, R17).
     if super::preview::is_dashboard_publish(&item) {
         body["loaders"] = dashboard_loaders(&item);
+        if let Some(why) = super::preview::problem() {
+            body["preview_unavailable"] = why.into();
+        }
     }
     if let Some(url) = super::preview::url_for(super::preview::origin(), &item) {
         body["preview"] = url.into();
@@ -254,13 +257,16 @@ fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value
     else {
         return serde_json::Value::Null;
     };
-    // The staged bundle, proved inside the work directory's `hud` producer
-    // as the preview proves it, before anything reads it.
-    let bundle = mecha_core::work::producer_dir("hud").ok().and_then(|root| {
-        item.args["bundle"]
-            .as_str()
-            .and_then(|b| super::preview::within(&root, std::path::Path::new(b)))
-    });
+    // The staged bundle, proved inside the HUD store's staging directory as
+    // the preview proves it, before anything reads it.
+    let bundle = mecha_core::hud::store::Store::open()
+        .ok()
+        .and_then(|store| {
+            let root = mecha_core::hud::publish::staged_root(store.root());
+            item.args["bundle"]
+                .as_str()
+                .and_then(|b| super::preview::within(&root, std::path::Path::new(b)))
+        });
     let staged: mecha_core::hud::publish::Declared = bundle
         .map(|b| b.join(mecha_core::hud::publish::DATASETS_FILE))
         .and_then(|p| std::fs::read_to_string(p).ok())

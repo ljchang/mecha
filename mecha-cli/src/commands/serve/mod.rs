@@ -326,6 +326,9 @@ pub async fn execute(args: Args) -> Result<()> {
                 "warning: [web] preview_origin {origin:?} is not https://host[:port] \
                  so there are no outbox previews"
             );
+            preview::set_problem(format!(
+                "[web] preview_origin {origin:?} is not https://host[:port]"
+            ));
             None
         }
         (Some(port), Some(origin)) => {
@@ -334,7 +337,7 @@ pub async fn execute(args: Args) -> Result<()> {
                 Ok(preview_listener) => {
                     match preview::router(
                         Arc::clone(&state.owner_login),
-                        outbox_root_for_preview(&config)?,
+                        state.review.outbox_root.clone(),
                         origin,
                     ) {
                         Ok(preview_app) => {
@@ -349,18 +352,25 @@ pub async fn execute(args: Args) -> Result<()> {
                         }
                         Err(e) => {
                             eprintln!("warning: outbox previews unavailable — {e:#}");
+                            preview::set_problem(format!("{e:#}"));
                             None
                         }
                     }
                 }
                 Err(e) => {
                     eprintln!("warning: the preview port could not be bound ({at}) — {e:#}");
+                    preview::set_problem(format!(
+                        "the preview port {port} could not be bound: {e}"
+                    ));
                     None
                 }
             }
         }
         (None, None) => None,
         _ => {
+            preview::set_problem(
+                "[web] preview_port and preview_origin go together, and only one is set".into(),
+            );
             eprintln!(
                 "warning: [web] preview_port and preview_origin go together; \
                  with only one set there are no outbox previews"
@@ -428,16 +438,6 @@ pub async fn execute(args: Args) -> Result<()> {
         },
     }
     Ok(())
-}
-
-/// The outbox the preview listener reads: the configured one, or the default.
-fn outbox_root_for_preview(
-    config: &mecha_core::config::Config,
-) -> anyhow::Result<std::path::PathBuf> {
-    match config.outbox.dir.clone() {
-        Some(dir) => Ok(dir),
-        None => mecha_core::outbox::OutboxStore::default_root(),
-    }
 }
 
 /// Where every CLI child this server spawns runs. The serve unit's working
