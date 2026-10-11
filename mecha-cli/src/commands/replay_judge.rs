@@ -20,7 +20,7 @@ use crate::GlobalOpts;
 use anyhow::{bail, Context, Result};
 use mecha_core::face::FaceAnchors;
 use mecha_core::persona::replay_judge::{self as rj, Judgement, Verdict};
-use mecha_core::quarantine::QuarantinedPass;
+use mecha_core::quarantine::{QuarantinedPass, Shown};
 use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -316,13 +316,10 @@ async fn ask(
 async fn ask_of(
     provider: &dyn mecha_core::provider::Provider,
     pass: &QuarantinedPass,
-    picture: &[u8],
+    picture: &Shown,
     question: &str,
 ) -> std::result::Result<String, String> {
-    match pass.ask_about(picture, question) {
-        Ok(request) => ask(provider, request).await,
-        Err(e) => Err(format!("the picture could not be shown: {e:#}")),
-    }
+    ask(provider, pass.ask_about(picture, question)).await
 }
 
 /// An answer read by `read`, or why there is no verdict: an answer it
@@ -403,29 +400,61 @@ async fn judge_one(
     if let Some(b) = &base_bytes {
         j.layout_similarity = mecha_core::imagegen::layout_similarity(b, &bytes);
     }
-    // The picture's own record, from the sample's staged store.
-    let record = scratch
-        .join("personas")
-        .join(persona)
-        .join("scene/index")
-        .join(format!("{}.json", mecha_core::scene::hash(&bytes)));
-    let scene = std::fs::read(&record)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<mecha_core::scene::Scene>(&b).ok());
-    let clauses = match &scene {
-        Some(s) => {
+    // The picture's own record, from the sample's staged store, through
+    // the slot that owns its layout; a record that does not read is said
+    // as that, not as none (review of #644).
+    let slot = mecha_core::scene::persona_slot(&scratch.join("personas"), persona, "");
+    let clauses = match slot.lookup_said(&bytes) {
+        Ok(Some(s)) => {
             j.people_recorded = s.people_known.then_some(s.people.len());
-            rj::clauses(s)
+            rj::clauses(&s)
         }
-        None => {
+        Ok(None) => {
             j.errors.push("the picture has no scene record".into());
             Vec::new()
         }
+        Err(e) => {
+            j.errors.push(e);
+            Vec::new()
+        }
     };
-    match mecha_core::face::CachedRetinaFace.faces_in(&bytes) {
+    // The detector and the picture's rendering for the model are CPU work:
+    // off the runtime, as `imagegen` keeps the detector, and each picture
+    // rendered once for all its questions.
+    let (faces, shown, shown_base) = {
+        let bytes = bytes.clone();
+        let base_bytes = base_bytes.clone();
+        tokio::task::spawn_blocking(move || {
+            (
+                mecha_core::face::CachedRetinaFace.faces_in(&bytes),
+                Shown::of(&bytes),
+                base_bytes.as_deref().map(Shown::of),
+            )
+        })
+        .await?
+    };
+    match faces {
         Ok(n) => j.faces = Some(n),
         Err(e) => j.errors.push(e),
     }
+    let shown = match shown {
+        Ok(s) => s,
+        Err(e) => {
+            j.errors
+                .push(format!("the picture could not be shown: {e:#}"));
+            return Ok(j);
+        }
+    };
+    let shown_base = match shown_base {
+        Some(Ok(s)) => Some(s),
+        Some(Err(e)) => {
+            j.errors.push(format!(
+                "the picture it started from could not be shown: {e:#}"
+            ));
+            None
+        }
+        None => None,
+    };
 
     super::replay_persona::wait_for_owner(router).await?;
     super::replay_persona::guard_load(router, pass.model(), false).await?;
@@ -435,21 +464,19 @@ async fn judge_one(
         })
         .await?;
     let provider = crate::setup::persona_provider(&bound, PersonaUse::Judge)?;
-    let shown: &[u8] = &bytes;
-    let shown_base = base_bytes.as_deref();
     j.people_asked = verdict(
-        ask_of(provider.as_ref(), pass, shown, rj::PEOPLE_QUESTION).await,
+        ask_of(provider.as_ref(), pass, &shown, rj::PEOPLE_QUESTION).await,
         rj::count,
         &mut j.errors,
     );
     for clause in clauses {
         let question = clause.question();
         let picture_says = verdict(
-            ask_of(provider.as_ref(), pass, shown, &question).await,
+            ask_of(provider.as_ref(), pass, &shown, &question).await,
             rj::yes_no,
             &mut j.errors,
         );
-        let base_says = match shown_base {
+        let base_says = match &shown_base {
             Some(b) => verdict(
                 ask_of(provider.as_ref(), pass, b, &question).await,
                 rj::yes_no,
