@@ -5989,9 +5989,23 @@ the owner's rulings; this section is the invariants a change to
   filter without naming it; rows reach Vega before compile through the
   view's `datasets`, which only the host fills.
 - **One component, two builds.** The app loads the renderer on `#hud` only
-  (Vega is a lazy chunk); `npm run build:hud` makes the standalone `hud.js`
-  + `hud.css` a page serves beside `hud.json` and `data/<name>.json`. The
-  page owns `html`/`body`, the component only itself.
+  (Vega is a lazy chunk); `npm run build` also makes the standalone `hud.js`
+  + `hud.css` (in `dist/hud-renderer/`), which a published bundle vendors.
+  The page finds its rows from its own path (`source.js`): beside the
+  versions on the factory, under the grant that opened it, or `./data/` in a
+  local preview. The page owns `html`/`body`, the component only itself.
+- **On the factory, what runs unattended is what the owner released**
+  (`hud::publish`, step 5). `mecha hud publish` assembles the page, the
+  vendored renderer, the checked spec and `datasets.json` (each loader's
+  columns and digest) and stages it in the outbox — the harness is the
+  author, the release is the review: the web outbox frames the page with
+  real numbers from a separate preview origin (`serve/preview.rs`, R17)
+  beside each loader's query, flagging one changed since staging. After it,
+  each refresh pushes a dataset
+  only to the release the factory client recorded, only if that release
+  declared it, and only while its loader's digest is the released one: a
+  changed loader is a new publish, never a quiet push. No row is ever inside
+  a version; the box keeps them beside it.
 - **The routes are read-only, and a URL segment reaches no path on its own
   say-so** (`serve/hud.rs`): `{id}` must be a board the store lists and
   `{name}` a dataset the loaded, checked spec declares. A spec edited by hand

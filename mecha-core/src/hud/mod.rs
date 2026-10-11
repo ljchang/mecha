@@ -37,6 +37,7 @@
 //! else may control.
 
 pub mod loader;
+pub mod publish;
 pub mod runner;
 pub mod source;
 pub mod spec;

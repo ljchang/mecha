@@ -54,9 +54,13 @@ mod mail;
 mod model;
 mod persona_chat;
 mod present;
+mod preview;
 mod proposals;
 mod questions;
 mod review;
+// The terminal review of a dashboard publish prints the same loader rows the
+// web outbox shows, from the same producer (review of #651).
+pub(crate) use review::dashboard_loaders;
 mod settings;
 
 #[derive(clap::Args, Debug)]
@@ -313,7 +317,74 @@ pub async fn execute(args: Args) -> Result<()> {
         _ => None,
     };
 
-    let app = router(state.clone(), assets.as_deref());
+    // The outbox's dashboard previews: a second listener, a separate origin
+    // (`preview.rs`). Both settings or neither — a port with no origin could
+    // not be framed, and an origin with no port would frame nothing.
+    let preview_origin = match (
+        config.web.preview_port,
+        config.web.preview_origin.as_deref(),
+    ) {
+        (Some(_), Some(origin)) if !preview::valid_origin(origin) => {
+            eprintln!(
+                "warning: [web] preview_origin {origin:?} is not https://host[:port] \
+                 so there are no outbox previews"
+            );
+            preview::set_problem(format!(
+                "[web] preview_origin {origin:?} is not https://host[:port]"
+            ));
+            None
+        }
+        (Some(port), Some(origin)) => {
+            let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            match tokio::net::TcpListener::bind(at).await {
+                Ok(preview_listener) => {
+                    match preview::router(
+                        Arc::clone(&state.owner_login),
+                        state.review.outbox_root.clone(),
+                        origin,
+                    ) {
+                        Ok(preview_app) => {
+                            preview::set_origin(origin);
+                            tokio::spawn(async move {
+                                let why = match axum::serve(preview_listener, preview_app).await {
+                                    Ok(()) => "the preview listener stopped".to_string(),
+                                    Err(e) => format!("the preview listener stopped: {e:#}"),
+                                };
+                                tracing::warn!("{why}");
+                                preview::stopped(why);
+                            });
+                            tracing::info!(%at, origin, "outbox previews up");
+                            Some(origin.to_string())
+                        }
+                        Err(e) => {
+                            eprintln!("warning: outbox previews unavailable — {e:#}");
+                            preview::set_problem(format!("{e:#}"));
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: the preview port could not be bound ({at}) — {e:#}");
+                    preview::set_problem(format!(
+                        "the preview port {port} could not be bound: {e}"
+                    ));
+                    None
+                }
+            }
+        }
+        (None, None) => None,
+        _ => {
+            preview::set_problem(
+                "[web] preview_port and preview_origin go together, and only one is set".into(),
+            );
+            eprintln!(
+                "warning: [web] preview_port and preview_origin go together; \
+                 with only one set there are no outbox previews"
+            );
+            None
+        }
+    };
+    let app = router_with_preview(state.clone(), assets.as_deref(), preview_origin.as_deref());
 
     match &assets {
         Some(dir) => tracing::info!(%addr, assets = %dir.display(), "mecha serve up"),
@@ -390,9 +461,29 @@ pub(super) fn child_cwd() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
+/// The app with no preview origin — what the tests drive.
+#[cfg(test)]
+fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
+    router_with_preview(state, assets, None)
+}
+
 /// The whole surface, auth included, as a value — which is what lets the
 /// guard be tested by driving the router directly instead of binding a port.
-fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
+/// The app's `frame-src` names the outbox's preview origin, when there is one.
+fn router_with_preview(
+    state: WebState,
+    assets: Option<&std::path::Path>,
+    preview_origin: Option<&str>,
+) -> Router {
+    // The app's policy, with `frame-src` naming exactly the preview origin
+    // when there is one (`preview.rs`) — and nothing broader.
+    let csp = HeaderValue::from_str(&format!(
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
+         media-src 'self' blob:; frame-ancestors 'none'{}",
+        preview::frame_src(preview_origin)
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'"));
     let (api, owners) = api().finish();
     let app = match assets {
         Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
@@ -406,7 +497,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         gate::guard,
     ))
     .layer(middleware::from_fn_with_state(state.clone(), owner_guard))
-    .layer(middleware::from_fn(security_headers))
+    .layer(middleware::from_fn_with_state(csp, security_headers))
     .layer(middleware::from_fn(cache_headers))
     .with_state(state)
 }
@@ -1147,17 +1238,14 @@ async fn owner_guard(
 /// writes style attributes; scripts stay `'self'` with no exceptions, and
 /// nothing may load from another origin (the page must work with no
 /// internet at all — the tailnet is not the internet).
-async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Response {
+async fn security_headers(
+    State(csp): State<HeaderValue>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(
-        "content-security-policy",
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
-             media-src 'self' blob:; frame-ancestors 'none'",
-        ),
-    );
+    headers.insert("content-security-policy", csp);
     headers.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
@@ -1847,6 +1935,26 @@ mod tests {
         )
     }
 
+    /// `test_router`'s state, for a test that builds its own router.
+    fn test_state() -> WebState {
+        WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: None,
+            offer_target: None,
+            voices_dir: None,
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
+            library: library::state_for_tests(
+                std::env::temp_dir().join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+            ),
+            features_at_start: Arc::default(),
+            gate: Arc::new(gate::Gate::default()),
+            review: Arc::new(review::ReviewState {
+                outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
+                sessions_dir: None,
+            }),
+        }
+    }
+
     /// Every route is added through `api()`'s `.at`, with its owner — none
     /// through a bare `.route`, which would add one with no owner and so no
     /// guard (FEATURES-DESIGN.md "every route belongs to exactly one feature
@@ -1862,7 +1970,8 @@ mod tests {
             &src[start..end]
         };
         let api_body = body("\nfn api() -> gate::Owned {");
-        let router_body = body("\nfn router(state: WebState");
+        // The router serve runs: `router` is the tests' delegation to it.
+        let router_body = body("\nfn router_with_preview(");
         assert!(
             !api_body.contains(".route(") && !router_body.contains(".route("),
             "a route added with `.route` has no owner — use `.at`"
@@ -2255,6 +2364,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// With a preview origin, the app's policy names exactly it in
+    /// `frame-src` and nothing else changes: still framed by nobody, still
+    /// `script-src 'self'` (review of #651).
+    #[tokio::test]
+    async fn a_preview_origin_is_named_in_frame_src_and_nowhere_else() {
+        let csp = |preview: Option<&str>| {
+            let app = router_with_preview(test_state(), None, preview);
+            async move {
+                let response = app
+                    .oneshot(request(Some("owner@example.com")))
+                    .await
+                    .unwrap();
+                response.headers()["content-security-policy"]
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            }
+        };
+        let plain = csp(None).await;
+        let framed = csp(Some("https://box.tail.ts.net:8444")).await;
+        assert_eq!(
+            framed,
+            format!("{plain}; frame-src https://box.tail.ts.net:8444")
+        );
+        assert!(framed.contains("frame-ancestors 'none'"));
+        assert_eq!(framed.matches("https:").count(), 1, "{framed}");
     }
 
     #[tokio::test]

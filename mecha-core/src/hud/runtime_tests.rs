@@ -605,3 +605,172 @@ fn pragma_table_valued_functions_are_refused_but_the_schema_is_readable() {
         1
     );
 }
+
+// ---- step 5: a board on the factory ----
+
+/// A renderer build, as `npm run build` leaves it.
+fn renderer(s: &Scratch) -> PathBuf {
+    let dir = s.path("web/dist/hud-renderer");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("hud.js"), "export {};").unwrap();
+    std::fs::write(dir.join("hud.css"), ".hud{}").unwrap();
+    dir
+}
+
+/// The release bundle is the page, the vendored renderer, the checked spec and
+/// what each loader releases — and no rows: those live beside a version.
+#[test]
+fn a_release_bundle_carries_the_page_renderer_spec_and_loaders_never_rows() {
+    use super::publish;
+    let s = Scratch::new();
+    let (store, draft, _) = setup(&s);
+    let installed = store.install(&draft, None, t(9, 0)).unwrap().unwrap();
+    store
+        .refresh("lab_week", t(9, 5), Which::All)
+        .unwrap()
+        .unwrap();
+    let out = s.path("bundle");
+    publish::assemble(&installed, &renderer(&s), &out).unwrap();
+
+    for file in [
+        "index.html",
+        "renderer/hud.js",
+        "renderer/hud.css",
+        "hud.json",
+        "datasets.json",
+        "render.json",
+    ] {
+        assert!(out.join(file).is_file(), "{file}");
+    }
+    assert!(!out.join("data").exists(), "rows are never in a version");
+    let page = std::fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(page.contains(r#"src="renderer/hud.js""#), "{page}");
+    let declared: publish::Declared =
+        serde_json::from_str(&std::fs::read_to_string(out.join("datasets.json")).unwrap()).unwrap();
+    let visits = &declared.datasets["visits_by_day"];
+    assert_eq!(
+        visits.loader_digest,
+        installed.loaders()["visits_by_day"].digest()
+    );
+    assert_eq!(visits.columns[0].name, "day");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join("render.json")).unwrap()).unwrap();
+    assert_eq!(record["class"], "interactive");
+    assert_eq!(record["template"], "hud");
+
+    // A bundle directory is never written over, and an unbuilt renderer is
+    // said, not shipped half.
+    assert!(publish::assemble(&installed, &renderer(&s), &out).is_err());
+    let err = publish::assemble(&installed, &s.path("nowhere"), &s.path("other"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not built"), "{err}");
+}
+
+/// A refreshed dataset is pushed only to the release the factory client
+/// recorded, only if that release declared it, and only while its loader is
+/// the one released.
+#[test]
+fn a_dataset_is_pushed_only_to_its_release_while_its_loader_is_the_released_one() {
+    use super::publish::{self, Plan, Pushed};
+    let s = Scratch::new();
+    let (store, draft, _) = setup(&s);
+    let installed = store.install(&draft, None, t(9, 0)).unwrap().unwrap();
+    store
+        .refresh("lab_week", t(9, 5), Which::All)
+        .unwrap()
+        .unwrap();
+    let dataset = store.dataset("lab_week", "visits_by_day").unwrap().unwrap();
+
+    // The factory client's local store, as bundle_publish leaves it.
+    let bundles = s.path("bundles");
+    let bundle = publish::bundle_id("lab_week");
+    assert_eq!(bundle, "hud-lab_week");
+    assert_eq!(
+        publish::release_at(&bundles, &bundle).unwrap(),
+        None,
+        "never released"
+    );
+    let version_dir = bundles.join(&bundle).join("2");
+    std::fs::create_dir_all(&version_dir).unwrap();
+    std::fs::write(
+        version_dir.join("datasets.json"),
+        serde_json::to_string(&publish::declared(&installed)).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        bundles.join(&bundle).join("alias.json"),
+        r#"{"version":2,"visibility":"private","updated_at":"2031-04-17T09:00:00Z"}"#,
+    )
+    .unwrap();
+    let release = publish::release_at(&bundles, &bundle).unwrap().unwrap();
+    assert_eq!(release.version, 2);
+
+    let Plan::Push(body) = publish::plan(&installed, "visits_by_day", &dataset, &release, None)
+    else {
+        panic!("a fresh dataset under its release is pushed");
+    };
+    assert_eq!(body["release"], 2);
+    assert_eq!(body["generation"], dataset.generation);
+    assert_eq!(body["rows"][0], json!(["2031-04-17", 3]));
+    assert_eq!(body["columns"][1]["type"], "integer");
+
+    assert_eq!(
+        publish::plan(
+            &installed,
+            "visits_by_day",
+            &dataset,
+            &release,
+            Some(dataset.generation)
+        ),
+        Plan::Pushed
+    );
+
+    // A loader edited since the release: a new publish, never a push.
+    let mut edited = release.clone();
+    edited
+        .declared
+        .datasets
+        .get_mut("visits_by_day")
+        .unwrap()
+        .loader_digest = "sha256:other".into();
+    assert_eq!(
+        publish::plan(&installed, "visits_by_day", &dataset, &edited, None),
+        Plan::LoaderChanged
+    );
+    let mut without = release.clone();
+    without.declared.datasets.clear();
+    assert_eq!(
+        publish::plan(&installed, "visits_by_day", &dataset, &without, None),
+        Plan::Undeclared
+    );
+
+    // Taken down: no release to push to.
+    std::fs::write(
+        bundles.join(&bundle).join("alias.json"),
+        r#"{"version":null,"visibility":"private","updated_at":"2031-04-17T10:00:00Z"}"#,
+    )
+    .unwrap();
+    assert_eq!(publish::release_at(&bundles, &bundle).unwrap(), None);
+
+    // What was pushed is kept per release; a new release starts over.
+    let board = store.board_path("lab_week").unwrap();
+    let mut pushed = Pushed::read(&board).unwrap();
+    pushed.record(2, "visits_by_day", 4);
+    pushed.write(&board).unwrap();
+    let back = Pushed::read(&board).unwrap();
+    std::fs::write(board.join("pushed.json"), "{").unwrap();
+    assert!(
+        Pushed::read(&board).is_err(),
+        "a torn record is said, never a fresh start"
+    );
+    assert_eq!(back.last(2, "visits_by_day"), Some(4));
+    assert_eq!(back.last(3, "visits_by_day"), None);
+    let mut moved = back.clone();
+    moved.record(3, "other", 1);
+    assert_eq!(
+        moved.last(3, "visits_by_day"),
+        None,
+        "a new release starts over"
+    );
+}
