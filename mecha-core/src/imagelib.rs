@@ -847,6 +847,9 @@ pub struct CastMember {
     pub name: String,
     pub wearing: String,
     pub doing: String,
+    /// The act already says what they have on, so the prompt states no
+    /// outfit beside it (`imagegen::clothes_in_act`): the record keeps it.
+    pub clothes_in_act: bool,
 }
 
 /// What an entry contributed to a generation — for the result text and the
@@ -1074,10 +1077,10 @@ pub fn compile(
         } else {
             format!("the person from <image{}>", i + 1)
         };
-        let mut line = format!(
-            "{who} ({}), wearing {wearing}",
-            entry.text.trim().trim_end_matches('.')
-        );
+        let mut line = format!("{who} ({})", entry.text.trim().trim_end_matches('.'));
+        if !member.clothes_in_act {
+            line.push_str(&format!(", wearing {wearing}"));
+        }
         if !doing.is_empty() {
             line.push_str(&format!(", {doing}"));
         }
@@ -1339,6 +1342,7 @@ mod tests {
             name: name.into(),
             wearing: "a yellow raincoat".into(),
             doing: "laughing".into(),
+            clothes_in_act: false,
         }
     }
 
@@ -1711,6 +1715,7 @@ mod tests {
             name: name.into(),
             wearing: "a grey coat".into(),
             doing: String::new(),
+            clothes_in_act: false,
         };
         let c = compile(
             &lib,
