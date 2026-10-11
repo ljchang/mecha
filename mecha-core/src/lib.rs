@@ -139,6 +139,7 @@ pub mod shell_registry;
 pub mod sidecar;
 pub mod situation;
 pub mod skill;
+pub mod speech_unit;
 pub mod step;
 pub mod stt_unit;
 pub mod subagent;

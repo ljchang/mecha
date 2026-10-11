@@ -195,6 +195,18 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 anyhow::anyhow!("enabling {} needs ComfyUI, and {why}", ids.join(" "))
             })?;
         }
+        // And one the speech engine cannot be built or run on.
+        if todo
+            .iter()
+            .any(|(id, ..)| *id == mecha_core::speech_unit::ID)
+        {
+            mecha_core::speech_unit::fits().map_err(|why| {
+                anyhow::anyhow!(
+                    "enabling {} needs the speech server, and {why}",
+                    ids.join(" ")
+                )
+            })?;
+        }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
@@ -970,9 +982,11 @@ mod tests {
                     bytes: None,
                 },
                 PlannedSidecar {
-                    id: "speech",
-                    label: "the speech server",
-                    state: SidecarState::Missing { step: "7f" },
+                    // Every real sidecar has an installer since 7f: one
+                    // that does not yet is a made-up id.
+                    id: "not-yet",
+                    label: "a later sidecar",
+                    state: SidecarState::Missing { step: "7z" },
                     bytes: None,
                 },
                 PlannedSidecar {
@@ -1029,7 +1043,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7f",
+            "not here — its installer arrives in step 7z",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",
