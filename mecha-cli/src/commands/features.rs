@@ -274,7 +274,11 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 false,
             )? == mecha_core::fetch::Cached::Verified;
             let linked = cached && comfy::turbo_linked(&m.mecha_home);
-            let wanted = comfy::turbo_wanted(&m.mecha_home, turbo);
+            let wanted = comfy::turbo_wanted(
+                &m.mecha_home,
+                turbo,
+                cfg.image.as_ref().map(|i| i.turbo_model.as_str()),
+            );
             // An installed server re-offered for turbo alone has not been
             // through the fit check above, and the install would fail on it
             // — writing no switch, which a machine that does not fit is

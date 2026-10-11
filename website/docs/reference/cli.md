@@ -1875,7 +1875,8 @@ names `--no-install`. A program that is already on the machine is left alone.
 `--turbo`, with `image`, also fetches the turbo model (6.8 GiB) into the image
 server mecha installs. Without it, the turbo model is fetched only once a
 persona's picture settings choose it, and then `enable image` offers it,
-reinstalling to link it into a server already installed.
+reinstalling to link it into a server already installed — so without a
+terminal, that `enable image` refuses as any install does.
 
 **`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
 comments, the order of the file and any key a newer build added are kept, and

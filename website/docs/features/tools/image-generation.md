@@ -66,10 +66,11 @@ same repository, `qwen_image_2.1_turbo_int8_convrot.safetensors`, also under
 `models/diffusion_models/` (`[image] turbo_model` names it). The install does
 not fetch it unless asked: `mecha features enable image --turbo` does, and so
 does `mecha features enable image` once a persona's picture settings choose
-turbo. A persona set to Turbo on a server without the file is refused with a
-message naming that command, and the setting stays until you change it. Switching between
-the two models unloads the one not in use, and the first picture after a
-switch pays the load.
+turbo, unless `[image] turbo_model` names a file of your own. A persona set
+to Turbo on a server without the file is refused with a message naming that
+command, and the setting stays until you change it. Switching between the
+two models unloads the one not in use, and the first picture after a switch
+pays the load.
 
 ## Using it
 
