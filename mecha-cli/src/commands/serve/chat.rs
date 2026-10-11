@@ -1256,6 +1256,12 @@ pub struct SendBody {
     /// alone, as before.
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// Regenerate (IMAGE-DESIGN.md §5.4; owner, 2026-10-10): this picture
+    /// drawn again as it is, at a new seed, by the harness before the
+    /// model replies. Only on a turn that starts a run: a steer carries
+    /// text alone, so a Regenerate into a running turn is refused.
+    #[serde(default)]
+    pub regenerate: Option<String>,
 }
 
 /// The pictures among an upload's paths, put on the turn as pixels — one
@@ -1380,6 +1386,7 @@ pub(super) async fn open_task_conversation(
                 unlogged: false,
                 tts_streams: false,
                 images: Vec::new(),
+                regenerate: None,
             },
         );
     }
@@ -1980,6 +1987,20 @@ pub async fn send(
     if text.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty message\n").into_response();
     }
+    let regenerate = body.regenerate.as_deref().map(|p| p.trim().to_string());
+    if regenerate
+        .as_deref()
+        .is_some_and(|p| p.is_empty() || p.len() > 512 || p.contains('\n'))
+    {
+        return (StatusCode::BAD_REQUEST, "not a picture path\n").into_response();
+    }
+    let busy = || {
+        (
+            StatusCode::CONFLICT,
+            "a reply is running; Regenerate waits for it to finish\n",
+        )
+            .into_response()
+    };
 
     // First look: a run in flight is steered — no hold, and no waiting on a
     // switch. Holding first swallowed a steer during a pending switch: it
@@ -1993,6 +2014,7 @@ pub async fn send(
             return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
         }
         match sessions.get(&key) {
+            Some(ws) if ws.live.is_some() && regenerate.is_some() => return busy(),
             Some(ws) if ws.live.is_some() => return steer(ws, text, request_id),
             Some(ws) => Some((ws.events.clone(), ws.workspace.clone())),
             None => None,
@@ -2067,6 +2089,9 @@ pub async fn send(
     };
     // A run that started while this one waited: steer it after all.
     if ws.live.is_some() {
+        if regenerate.is_some() {
+            return busy();
+        }
         return steer(ws, text, request_id);
     }
 
@@ -2084,6 +2109,7 @@ pub async fn send(
             tts_streams: false,
             request_id: Some(request_id),
             images,
+            regenerate,
         },
     ) {
         // How many pictures the text names and the model was not shown —
@@ -2174,6 +2200,9 @@ struct TurnOpts {
     /// reads any image off the messages at the run's start
     /// (`Taint::arm_for_content`) — captured, not composed.
     images: Vec<Block>,
+    /// A picture the harness draws again before the model replies
+    /// (`SendBody::regenerate`). Typed turns only.
+    regenerate: Option<String>,
 }
 
 /// Whether a spoken turn may enter this conversation.
@@ -2246,6 +2275,7 @@ mod narrowing_tests {
             unlogged: false,
             tts_streams: false,
             images: Vec::new(),
+            regenerate: None,
         }
     }
 
@@ -2275,6 +2305,7 @@ mod narrowing_tests {
             unlogged: false,
             tts_streams: false,
             images: Vec::new(),
+            regenerate: None,
         };
         assert!(narrow_for_echo(typed, Some(OFFER), "delete it").approve_all);
     }
@@ -2288,6 +2319,7 @@ mod narrowing_tests {
             unlogged: false,
             tts_streams: false,
             images: Vec::new(),
+            regenerate: None,
         };
         assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
     }
@@ -2438,6 +2470,7 @@ fn begin_turn(
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
     spoken_turn_may_enter(&opts, ws.session.room().is_some()).map_err(TurnError::Failed)?;
+    let regenerate = opts.regenerate.clone();
     // Incognito's gates, re-derived against the binding this turn runs on
     // (`incognito_gates`): `open_incognito` checked the one it opened on, and
     // a switch rebuilds from the config on disk.
@@ -2933,6 +2966,53 @@ fn begin_turn(
             })
         };
 
+        // Regenerate (IMAGE-DESIGN.md §5.4; owner, 2026-10-10: the
+        // assistant's chat too): the picture drawn again by the harness as
+        // the persona chat's panel turn draws it — through `dispatch_one`,
+        // every gate a model's call meets — and kept as one fact in the
+        // owner's turn, recorded at once, so a reply that fails after it
+        // keeps the picture's record. The model then replies in a sentence,
+        // under a run opened closing; the card is a version of the picture
+        // (`transcript_entries`).
+        let mut before = before;
+        if let Some(picture) = &regenerate {
+            use mecha_core::persona::edit;
+            let dispatched = agent
+                .dispatch_one(
+                    &cx,
+                    &mut conversation,
+                    "image_generate",
+                    edit::redraw_call(picture),
+                    &Some(tx.clone()),
+                )
+                .await;
+            let fact = edit::fact(picture, edit::REDRAWN, &dispatched.content);
+            mecha_core::agent::append_user_text(&mut conversation.messages, fact.clone());
+            if let Some(session) = session.kept() {
+                let index = conversation.messages.len() - 1;
+                if let Err(e) = session.append(&Record::Extend {
+                    index,
+                    blocks: vec![Block::text(fact)],
+                }) {
+                    tracing::warn!("a Regenerate's fact was not recorded: {e:#}");
+                }
+                if let Err(e) = session.append(&Record::Taint(conversation.taint)) {
+                    tracing::warn!("a Regenerate's taint was not recorded: {e:#}");
+                }
+            }
+            before = conversation.messages.clone().into();
+            cx.close_with = Some(if dispatched.is_error {
+                mecha_core::agent::Closing {
+                    line: edit::NOT_DRAWN,
+                    reply: edit::NOT_DRAWN_REPLY,
+                }
+            } else {
+                mecha_core::agent::Closing {
+                    line: edit::DONE,
+                    reply: edit::DONE_REPLY,
+                }
+            });
+        }
         let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
         let _ = forwarder.await;
         if let Some((store, id, _guard)) = &workflow {
@@ -3405,6 +3485,7 @@ impl crate::voice::SessionHost for VoiceHost {
                             unlogged,
                             tts_streams,
                             images: Vec::new(),
+                            regenerate: None,
                         },
                     ) {
                         Ok(started) => {
@@ -5710,6 +5791,7 @@ mod held_tests {
                 unlogged: false,
                 tts_streams: false,
                 images: Vec::new(),
+                regenerate: None,
             },
         );
         assert!(matches!(result, Err(TurnError::Held)));
@@ -5781,6 +5863,7 @@ mod held_tests {
                 unlogged: false,
                 tts_streams: true,
                 images: Vec::new(),
+                regenerate: None,
             },
         )
         .unwrap_or_else(|_| panic!("the turn did not start"));
@@ -5808,6 +5891,162 @@ mod held_tests {
             .find(|m| m.role == Role::User)
             .expect("the owner's turn was recorded");
         assert_eq!(first.text(), "what is on today", "{first:?}");
+    }
+
+    /// Regenerate in the assistant's chat (owner, 2026-10-10): the harness
+    /// draws the picture alone (`{"picture": …}`) before the model is asked,
+    /// the model's one request is a closing one, and the recorded card is a
+    /// version of the picture. Fails before this change, which had no
+    /// `regenerate` and sent the words to the model to act on.
+    #[tokio::test]
+    async fn a_regenerate_in_the_assistants_chat_is_drawn_by_the_harness() {
+        struct Draws(Arc<StdMutex<Vec<serde_json::Value>>>);
+        #[async_trait::async_trait]
+        impl mecha_core::tool::Tool for Draws {
+            fn name(&self) -> &str {
+                "image_generate"
+            }
+            fn description(&self) -> &str {
+                "stub"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(
+                &self,
+                input: serde_json::Value,
+                _: &ToolCtx,
+            ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+                self.0.lock().unwrap().push(input);
+                Ok(mecha_core::tool::ToolOutput::ok(
+                    "image: images/b.png\nA new picture.",
+                ))
+            }
+        }
+        struct Sees(Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>);
+        #[async_trait::async_trait]
+        impl mecha_core::provider::Provider for Sees {
+            fn id(&self) -> &str {
+                "local"
+            }
+            fn default_model(&self) -> &str {
+                "test"
+            }
+            async fn complete(
+                &self,
+                req: &mecha_core::message::CompletionRequest,
+                sink: Option<&mecha_core::provider::StreamSink>,
+            ) -> Result<mecha_core::message::CompletionResponse> {
+                self.0.lock().unwrap().push(req.clone());
+                Answers("Here it is again.").complete(req, sink).await
+            }
+        }
+        let home = crate::testenv::HomeGuard::new("assistant-regenerate");
+        let drawn = Arc::new(StdMutex::new(Vec::new()));
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let mut registry = mecha_core::tool::Registry::new();
+        registry.insert(Arc::new(Draws(Arc::clone(&drawn))));
+        let chat = super::test_chat_from(
+            Box::new(Sees(Arc::clone(&seen))),
+            registry,
+            super::answering_config(true),
+        );
+        let workspace = home.dir.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session = Arc::new(
+            Session::create(
+                &workspace,
+                SessionMeta {
+                    id: "assistant-regenerate".into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "test".into(),
+                    model: "test".into(),
+                    workspace: workspace.clone(),
+                    title: None,
+                    kind: Some(mecha_core::session::SessionKind::Test),
+                },
+            )
+            .unwrap(),
+        );
+        let (events, _) = broadcast::channel(16);
+        let mut sessions = HashMap::from([(
+            "k".to_string(),
+            WebSession {
+                late: Default::default(),
+                listen: None,
+                conversation: Some(mecha_core::agent::Conversation::new()),
+                session: Recording::Kept(Arc::clone(&session)),
+                workspace,
+                live: None,
+                events,
+                last_usage: Arc::default(),
+                withheld: Arc::from([]),
+                task: None,
+                mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
+                questions: Default::default(),
+                titled_at: 0,
+                recorded_generation: 0,
+            },
+        )]);
+        begin_turn(
+            &chat,
+            &chat.follower.current(),
+            &mut None,
+            &mut sessions,
+            "k",
+            "Regenerate images/a.png",
+            TurnOpts {
+                request_id: None,
+                spoken: false,
+                approve_all: false,
+                unlogged: false,
+                tts_streams: false,
+                images: Vec::new(),
+                regenerate: Some("images/a.png".into()),
+            },
+        )
+        .unwrap_or_else(|_| panic!("the turn did not start"));
+        drop(sessions);
+        // The run ends on the model's reply; read the record once it is in.
+        let messages = 'done: {
+            for _ in 0..200 {
+                if let Ok((_, convo)) = Session::load(&session.path) {
+                    if convo
+                        .messages
+                        .last()
+                        .is_some_and(|m| m.role == Role::Assistant)
+                    {
+                        break 'done convo.messages;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("the turn never finished");
+        };
+        assert_eq!(
+            drawn.lock().unwrap().clone(),
+            vec![serde_json::json!({"picture": "images/a.png"})],
+            "the harness drew the picture alone"
+        );
+        let asked = seen.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "one request: the closing reply");
+        assert_eq!(
+            asked[0].tool_choice,
+            mecha_core::message::ToolChoice::None,
+            "the reply is a closing one"
+        );
+        let entries = serde_json::to_value(transcript_entries(&messages)).unwrap();
+        let card = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool" && e["name"] == "image_generate")
+            .expect("a card")
+            .clone();
+        assert_eq!(card["version_of"], "images/a.png", "{card}");
     }
 
     /// An unvouched call is refused before anything else `speak` does — the
@@ -5883,6 +6122,7 @@ mod held_tests {
                     unlogged,
                     tts_streams: false,
                     images: Vec::new(),
+                    regenerate: None,
                 },
             )
         };
@@ -6007,6 +6247,7 @@ mod workflow_recording_tests {
                     unlogged: false,
                     tts_streams: false,
                     images: Vec::new(),
+                    regenerate: None,
                 },
             );
             let Err(TurnError::Failed(error)) = result else {

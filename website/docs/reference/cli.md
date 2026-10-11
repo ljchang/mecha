@@ -1738,6 +1738,30 @@ one quietly failing a third of its tool calls, and one whose most recent run
 succeeded having made none at all. See
 [Run quality](/docs/features/learning/run-quality).
 
+## `system`
+
+The state of the machine mecha runs on, read in one place. No model runs here.
+
+```
+mecha system probe [NAME | GROUP] [--json]
+mecha system admit --need SIZE [--json]
+mecha system sample [--json]
+```
+
+- **`probe`** reads named measurements: one (`memory.available`), a group
+  (`gpu`, `pressure.memory`), or all of them when none is named. A rate
+  (`disk.read_rate`, `cpu.busy`) comes from the newest recorded minute. A
+  reading that cannot be had says so, and why; it is never shown as zero.
+- **`admit`** asks the memory floor whether something needing `SIZE`
+  (`24G`, `512M`, or a number of MB) may start now: the need plus
+  `[system] memory_reserve_mb` must be available, and memory pressure must
+  be under its ceiling. It exits non-zero when refused, so a build can chain
+  on it: `mecha system admit --need 24G && cargo build --release`.
+- **`sample`** records one minute of the machine into
+  `~/.mecha/system/series.sqlite`: numbers and kinds of work only, never a
+  process, unit or model name. The `mecha-system-sample.timer` runs it every
+  minute.
+
 ## `features`
 
 Which optional parts of mecha are on, the way to turn on each of the rest, and
@@ -1803,7 +1827,12 @@ layout's environment — a pinned `uv`, a Python 3.12 it builds, the hash-locked
 packages and the pinned model, all under `~/.mecha/sidecars/layout/` — and the
 llama.cpp engine: the official release for this machine (CUDA by the NVIDIA
 driver's version, Metal on Apple silicon, else the CPU build), checked by
-sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. The
+sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. Where
+no release build fits — an NVIDIA driver older than the release's CUDA needs,
+or a Linux architecture no release covers — the same pinned version is built
+on the machine from its commit, which needs git, cmake, a C++ compiler and,
+for CUDA, the toolkit's `nvcc`; what is missing is named before anything is
+asked. The
 engine is offered only where the feature runs something on it — an embeddings
 or OCR server. **The chat model is never `enable`'s**: its engine, model and
 router are `mecha setup chat`'s, where the model is chosen, so switching on the

@@ -251,7 +251,8 @@ sidecar.rs   what a feature runs beside mecha, whether this machine already has
 install.rs   the installers `features enable` offers: a pinned uv, layout first;
              the record leads the bytes, one tree per install
 engine.rs    llama.cpp from a pinned release, side by side behind a `current`
-             link: the build chosen from the driver, checked self-contained
+             link: the build chosen from the driver, checked self-contained;
+             built here from the pin's commit when no release fits
 engine_gate.rs measure before promote: each unit's own launcher on a private
              port, both engines in turn under a held switch; the ledger, --adopt
 llama_units.rs the on-demand embeddings and OCR servers from nothing: units and
@@ -492,10 +493,10 @@ images ·
 the security model in full · the front door · web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
-triggers · the HUD · the run-quality corpus (the gate, diagnosis, harness rumination) ·
+triggers · the HUD · system state · the run-quality corpus (the gate, diagnosis, harness rumination) ·
 the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
 features ·
-the experiment store · system state ·
+the experiment store ·
 context accounting · timezones · compaction · the eval rig.
 
 Read the section before changing the subsystem — nearly every paragraph in it

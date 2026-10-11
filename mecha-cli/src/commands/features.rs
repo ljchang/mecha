@@ -167,16 +167,20 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
         }
         // A machine no pinned build fits is told so before it is asked
-        // anything: the answer is to fix the driver, not to say yes.
-        if todo.iter().any(|(id, ..)| *id == "llama") {
-            mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())
+        // anything: the answer is to fix the driver or install the toolchain
+        // a build here needs, not to say yes.
+        let built_here = if todo.iter().any(|(id, ..)| *id == "llama") {
+            mecha_core::engine::choose_here()
                 .map_err(|why| {
                     anyhow::anyhow!(
                         "enabling {} needs the llama.cpp engine, and {why}",
                         ids.join(" ")
                     )
-                })?;
-        }
+                })?
+                .is_built()
+        } else {
+            false
+        };
         // Likewise a machine the image server's pinned torch cannot run on.
         if todo
             .iter()
@@ -206,10 +210,18 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                  server, its systemd user units, started once to check them:",
                 ids.join(" ")
             );
-            for (_, label, _, bytes) in &todo {
+            for (id, label, _, bytes) in &todo {
+                // A build here is said as one: its download is the source,
+                // and the compile is the wait (review of #643).
+                let built = if *id == "llama" && built_here {
+                    ", then built here — no release fits this machine; minutes for the CPU, \
+                     longer for CUDA"
+                } else {
+                    ""
+                };
                 match bytes {
-                    Some(b) => println!("  {label} — {}", bytes_text(*b)),
-                    None => println!("  {label}"),
+                    Some(b) => println!("  {label} — {}{built}", bytes_text(*b)),
+                    None => println!("  {label}{built}"),
                 }
             }
             let mut plans: Vec<&str> = todo.iter().map(|(_, _, f, _)| f.id()).collect();
@@ -421,11 +433,30 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     )?;
     let cfg = Config::load_global()?;
     let chat_here = mecha_core::install::chat_runs_here(&cfg);
-    mecha_core::install::price(&mut p, chat_here, mecha_core::engine::read_nvidia);
+    // Kept, so the note below can say whether the engine is built here —
+    // and still read only if `price` reads it (review of #643).
+    let mut nvidia = None;
+    mecha_core::install::price(&mut p, chat_here, || {
+        *nvidia.insert(mecha_core::engine::read_nvidia())
+    });
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
         print!("{}", render_plan(&p, chat_here));
+        // The plan prices a build here by its source; the compile is said.
+        let builds = nvidia.is_some_and(|n| {
+            p.sidecars
+                .iter()
+                .any(|s| s.id == "llama" && s.bytes.is_some())
+                && mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, n)
+                    .is_ok_and(|t| t.is_built())
+        });
+        if builds {
+            println!(
+                "No llama.cpp release fits this machine, so its download is the source, built \
+                 here: minutes for the CPU, longer for CUDA."
+            );
+        }
     }
     Ok(())
 }

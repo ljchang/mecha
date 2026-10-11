@@ -171,10 +171,13 @@ versions of them) it used.
 - **Starting without memory to spare.** On machines where the GPU shares
   system memory, a generation competes with everything else running, and
   running out takes more than the image down. Before each picture the tool
-  asks the image server whether it already holds the model. If it does,
-  12 GB free is enough at the default, since most of the cost is already paid; if it
-  doesn't, the tool needs `min_available_mb` (19 GB). Below that it declines
-  and says why; try again once a large build or another model has finished.
+  asks the image server whether it already holds the model. If it does, a
+  picture needs 12 GB at the default, since most of the cost is already paid; if
+  it doesn't, it needs `min_available_mb` (20 GB). On top of that it keeps
+  the [memory floor's](/docs/reference/configuration#system) reserve free
+  (8 GB by default) and declines while the machine is already stalling on
+  memory. When it declines it says why, and which kinds of work hold the most
+  memory; try again once a large build or another model has finished.
   After fifteen idle minutes it asks the server to unload its models. On a
   machine running the `mecha-comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
   the server is also restarted after fifteen idle minutes, which returns nearly

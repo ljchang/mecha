@@ -159,6 +159,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **llama.cpp is built on your machine when no release build fits it.** An
+  NVIDIA driver too old for the release's CUDA build, or a Linux
+  architecture no release covers, used to get no engine at all; now `mecha
+  features enable` and `mecha setup chat` build the same pinned version from
+  its commit, checked the way a release is. It needs git, cmake, a C++
+  compiler and, for CUDA, the toolkit's `nvcc` — anything missing is named
+  before you are asked. `mecha setup engine --upgrade` still fetches release
+  builds only, so a built engine moves with mecha's pin.
+- **Regenerate a picture, and step through its versions.** A picture in
+  the assistant's chat or a persona chat has a Regenerate button beside
+  Edit. It draws
+  the same picture again at a new seed, with no words and no painted area,
+  and the new one shows on the same card, with ‹ › to step between the
+  versions. Edit, Regenerate and Download act on the version showing.
+  Regenerate is off while the persona is answering. On a call, Regenerate
+  is in the picture viewer: the persona answers aloud, and talking over the
+  redraw does not stop it.
+
 - **`mecha replay --persona` samples a persona chat's turn.** It branches at
   one of the chat's turns (`--list` shows them) and sends that turn's first
   request again, `--samples` times with a different seed each, as the chat
