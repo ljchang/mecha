@@ -1100,6 +1100,17 @@ impl TriggerStore {
     ) -> Result<Tally> {
         let since = now - window;
         let (triggers, problems) = self.list()?;
+        // The runs in flight first, then the ledger: a run that finishes
+        // while the ledger is read was seen by its marker. A fire clears its
+        // marker and then appends its row, so the instant between those two
+        // is the only window in which a slot that ran can read as missed.
+        let in_flight: BTreeMap<String, DateTime<Utc>> = triggers
+            .iter()
+            .filter_map(|t| {
+                let slot = self.markers().peek(&t.name)?.slot?;
+                Some((t.name.clone(), slot))
+            })
+            .collect();
         let mut ran: BTreeMap<String, std::collections::BTreeSet<DateTime<Utc>>> = BTreeMap::new();
         let mut failed = 0;
         // Rows are appended when a run ends, roughly in time order; one that
@@ -1129,7 +1140,6 @@ impl TriggerStore {
                 .flatten()
                 .max()
                 .unwrap_or(since);
-            let in_flight = self.markers().peek(&t.name).and_then(|m| m.slot);
             let tz = t.tz(fallback_tz);
             let mut at = from;
             // A once-a-minute schedule has 1440 slots a day; the bound is
@@ -1141,8 +1151,8 @@ impl TriggerStore {
                 if slot > now - TICK_GRACE {
                     break;
                 }
-                let accounted =
-                    ran.get(&t.name).is_some_and(|s| s.contains(&slot)) || in_flight == Some(slot);
+                let accounted = ran.get(&t.name).is_some_and(|s| s.contains(&slot))
+                    || in_flight.get(&t.name) == Some(&slot);
                 if !accounted {
                     missed += 1;
                 }

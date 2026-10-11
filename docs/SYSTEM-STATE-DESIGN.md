@@ -718,6 +718,15 @@ synthesises, so a reply read aloud in a chat counts too. That is what the
 gate wants: GPU work stutters either one. That a call happened is outside incognito's promise (§10 there:
 the worker's journal already says so).
 
+Whether the engine can be speaking at all comes from systemd's *active*
+state, never its unit file. A unit that is masked, or whose file broke or
+vanished after a daemon-reload, keeps running. So:
+- active (or starting, stopping, reloading) reads the journal;
+- inactive or failed reads 0;
+- not found and inactive is `NotHere`;
+- anything this build cannot read is `Unread`, because the gate reading
+  it goes ahead on a no.
+
 Two consequences:
 - **Between two turns, it reads 0** when the engine has said nothing for
   three minutes. This is the window the build gate and `replay_persona`

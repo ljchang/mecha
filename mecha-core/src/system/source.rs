@@ -470,6 +470,42 @@ pub fn parse_throttle(text: &str) -> Option<bool> {
     (!masks.is_empty()).then(|| masks.iter().any(|m| m & THROTTLING != 0))
 }
 
+/// What systemd says of a unit, as far as "can it be speaking?" goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitRun {
+    /// No such unit, and nothing running under its name.
+    Absent,
+    /// Installed and not running: inactive or failed.
+    Stopped,
+    /// Running, starting, stopping or reloading.
+    Running,
+}
+
+/// `systemctl show -p LoadState -p ActiveState`. Running is decided by the
+/// active state alone: a unit masked, or whose file broke or vanished after
+/// a daemon-reload, keeps running, so no load state proves it silent. Only
+/// `not-found` *and* inactive is absent. Anything else — a state this build
+/// does not know, a missing line — is `None`, never a guess.
+pub fn parse_unit_run(text: &str) -> Option<UnitRun> {
+    let mut load = None;
+    let mut active = None;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("LoadState=") {
+            load = Some(v.trim());
+        } else if let Some(v) = line.strip_prefix("ActiveState=") {
+            active = Some(v.trim());
+        }
+    }
+    match (load?, active?) {
+        (_, "active" | "activating" | "deactivating" | "reloading" | "refreshing") => {
+            Some(UnitRun::Running)
+        }
+        ("not-found", "inactive") => Some(UnitRun::Absent),
+        (_, "inactive" | "failed") => Some(UnitRun::Stopped),
+        _ => None,
+    }
+}
+
 /// Whether the speech engine's journal, over the window asked for, shows a
 /// sentence spoken: it logs one real-time factor (`RTF`) per sentence.
 pub fn spoke(journal: &str) -> bool {

@@ -438,13 +438,28 @@ impl Reader {
     fn voice(&self) -> Reading {
         self.voice
             .get_or_init(|| {
+                // Whether the engine can be speaking at all. An answer this
+                // build cannot read is unread, never "no call": the gate
+                // reading this goes ahead on a no (review of #641).
                 match source::run_bounded(
                     "systemctl",
-                    &["--user", "show", "-p", "LoadState", "--value", SPEECH_UNIT],
+                    &[
+                        "--user",
+                        "show",
+                        "-p",
+                        "LoadState",
+                        "-p",
+                        "ActiveState",
+                        SPEECH_UNIT,
+                    ],
                     self.budget(),
                 ) {
-                    Ran::Out(t) if t.trim() == "loaded" => {}
-                    Ran::Out(_) => return Reading::NotHere,
+                    Ran::Out(t) => match source::parse_unit_run(&t) {
+                        Some(source::UnitRun::Running) => {}
+                        Some(source::UnitRun::Stopped) => return Reading::Observed { value: 0.0 },
+                        Some(source::UnitRun::Absent) => return Reading::NotHere,
+                        None => return ran_reading(&Ran::Out(t), "systemctl"),
+                    },
                     other => return ran_reading(&other, "systemctl"),
                 }
                 match source::run_bounded(
