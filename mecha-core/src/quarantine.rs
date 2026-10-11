@@ -159,16 +159,20 @@ impl QuarantinedPass {
 
     /// [`ask`](Self::ask) with a picture before the question, in the one
     /// user turn: a judge reading what a picture shows (`persona::
-    /// replay_judge`). Still no tools and no history; the picture is a
-    /// block the caller built at the door (`image::rendered_block`).
+    /// replay_judge`). Still no tools and no history. It takes the
+    /// picture's bytes and builds the block itself, through the door's cap
+    /// (`image::rendered_block`), so a picture is the only block a caller
+    /// can put before the question (review of #644). Bytes that are not a
+    /// picture are an error.
     pub fn ask_about(
         &self,
-        picture: crate::message::Block,
+        picture: &[u8],
         user: impl Into<String>,
-    ) -> CompletionRequest {
+    ) -> anyhow::Result<CompletionRequest> {
+        let block = crate::image::rendered_block(picture, None)?;
         let mut request = self.ask(user);
-        request.messages[0].content.insert(0, picture);
-        request
+        request.messages[0].content.insert(0, block);
+        Ok(request)
     }
 
     /// A second question on the same pass: [`ask`](Self::ask)`(asked)`'s
@@ -205,13 +209,22 @@ mod tests {
     /// A picture rides in the one user turn, before the question.
     #[test]
     fn a_question_about_a_picture_is_still_one_turn_with_no_tools() {
-        let picture = crate::message::Block::text("stand-in for a picture");
-        let req = QuarantinedPass::new("m", 8).ask_about(picture.clone(), "how many?");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 3)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let pass = QuarantinedPass::new("m", 8);
+        let req = pass.ask_about(&png, "how many?").unwrap();
         assert!(req.tools.is_empty());
         assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].content[0], picture);
+        assert!(matches!(
+            req.messages[0].content[0],
+            crate::message::Block::Image { .. }
+        ));
         assert_eq!(req.messages[0].content.len(), 2);
         assert!(req.messages[0].text().ends_with("how many?"));
+        // Only a picture goes before the question.
+        assert!(pass.ask_about(b"not a picture", "how many?").is_err());
     }
 
     #[test]
