@@ -99,7 +99,9 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "stt" | "voice-worker" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" => {
+            cfg!(target_os = "linux")
+        }
         _ => false,
     }
 }
@@ -109,7 +111,7 @@ pub fn installable(id: &str) -> bool {
 /// from the hub is a reason to run their installs again, never the engine's.
 /// (The router's model is `mecha setup chat`'s to fetch again, F13.)
 fn fetches_models(id: &str) -> bool {
-    matches!(id, "layout" | "embed-server" | "ocr-server")
+    matches!(id, "layout" | "embed-server" | "ocr-server" | "comfyui")
 }
 
 /// Whether the chat model is served from this machine: the default provider
@@ -195,6 +197,36 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
             plan.download_bytes += bytes;
         }
     }
+    // The driver, read at most once and only when something here needs it:
+    // the engine's build, or whether ComfyUI's torch can run.
+    let mut read = Some(nvidia);
+    let mut seen = None;
+    let mut nvidia = move || -> crate::engine::Nvidia {
+        *seen.get_or_insert_with(|| read.take().map_or(crate::engine::Nvidia::None, |f| f()))
+    };
+    // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB,
+    // too much to leave out of the total the way the voice worker's 250 MB
+    // is. The models are the image slot's files, priced by the plan already.
+    // A machine `comfyui_unit::fits` refuses is priced at nothing, as one
+    // `engine::choose` refuses is (review of #645).
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == crate::comfyui_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && installable(s.id)
+            && not_needed(s.id, feature, chat_here).is_none()
+    }) {
+        let fits =
+            crate::comfyui_unit::fits(std::env::consts::OS, std::env::consts::ARCH, nvidia());
+        if let (Ok(()), Some(bytes)) =
+            (fits, crate::comfyui_unit::env_bytes(std::env::consts::ARCH))
+        {
+            s.bytes = Some(bytes);
+            plan.download_bytes += bytes;
+        }
+    }
     let Some(s) = plan.sidecars.iter_mut().find(|s| {
         s.id == "llama"
             && matches!(
@@ -226,6 +258,10 @@ pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
         crate::voice_worker_unit::ID => {
             let naming = crate::voice_worker_unit::Naming::shipped();
             crate::voice_worker_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::comfyui_unit::ID => {
+            let naming = crate::comfyui_unit::Naming::shipped();
+            crate::comfyui_unit::someone_elses(m, &naming)?.then_some(naming.port)
         }
         _ => None,
     };
@@ -591,6 +627,60 @@ pub async fn install(
             ));
             Ok(())
         }
+        "comfyui" => {
+            let naming = crate::comfyui_unit::Naming::shipped();
+            crate::comfyui_unit::install(m, &naming, machine, hub, say).await?;
+            say(&format!(
+                "ComfyUI answers on :{} — `[image] url`'s default",
+                naming.port
+            ));
+            // This install's home, never the process's: a caller with a
+            // scratch home must not read or edit the operator's config
+            // (review of #645).
+            let path = m.mecha_home.join("config.toml");
+            // ComfyUI-GGUF is not installed (the int8 default needs only the
+            // core loader), so a configured `.gguf` would fail at the first
+            // picture — said now rather than then.
+            let configured = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+                .and_then(|v| {
+                    v.get("image")?
+                        .get("diffusion_model")?
+                        .as_str()
+                        .map(str::to_string)
+                });
+            if let Some(model) = configured.filter(|m| m.ends_with(".gguf")) {
+                say(&format!(
+                    "[image] diffusion_model is {model} — a GGUF, which needs the ComfyUI-GGUF \
+                     node this install does not bring; remove the line to use the installed \
+                     int8 model"
+                ));
+            }
+            // The switch alone reads off with no `[image]` table; one naming
+            // the temp dir is written where there is none, and an owner's
+            // own table is told the line rather than edited.
+            let temp = crate::comfyui_unit::server_temp_dir(&m.mecha_home);
+            // Said, never fatal: the server is installed and checked, and a
+            // config that will not take the table is the owner's to fix.
+            match crate::comfyui_unit::write_image_table(&path, Some(&temp)) {
+                Ok(true) => say(&format!(
+                    "wrote [image] server_temp_dir = \"{}\" into {}",
+                    temp.display(),
+                    path.display()
+                )),
+                Ok(false) => say(&format!(
+                    "your [image] table is left as it is — for each job's uploads to be deleted, \
+                     it needs server_temp_dir = \"{}\"",
+                    temp.display()
+                )),
+                Err(e) => say(&format!(
+                    "[image] was not written ({e:#}) — add it with server_temp_dir = \"{}\"",
+                    temp.display()
+                )),
+            }
+            Ok(())
+        }
         "voice-worker" => {
             let naming = crate::voice_worker_unit::Naming::shipped();
             crate::voice_worker_unit::install(m, &naming, say).await?;
@@ -740,6 +830,45 @@ mod tests {
         assert_eq!(provided.sidecars[0].bytes, None);
     }
 
+    /// ComfyUI's environment is priced only where its torch can run — a
+    /// machine `comfyui_unit::fits` refuses is priced at nothing, as one the
+    /// engine refuses is (review of #645) — and the driver is read once.
+    #[test]
+    fn the_image_environment_is_priced_only_where_it_fits() {
+        let comfy = || Plan {
+            feature: Feature::Image,
+            sidecars: vec![PlannedSidecar {
+                id: crate::comfyui_unit::ID,
+                label: "ComfyUI",
+                state: SidecarState::Missing { step: "7e" },
+                bytes: None,
+            }],
+            files: vec![],
+            download_bytes: 5,
+            nothing_to_do: false,
+        };
+        let mut no_gpu = comfy();
+        price(&mut no_gpu, true, || crate::engine::Nvidia::None);
+        assert_eq!((no_gpu.sidecars[0].bytes, no_gpu.download_bytes), (None, 5));
+        let mut old = comfy();
+        price(&mut old, true, || crate::engine::Nvidia::Driver(570, 1));
+        assert_eq!(old.download_bytes, 5);
+        let mut reads = 0;
+        let mut fits = comfy();
+        price(&mut fits, true, || {
+            reads += 1;
+            crate::engine::Nvidia::Driver(580, 95)
+        });
+        assert!(reads <= 1);
+        match crate::comfyui_unit::env_bytes(std::env::consts::ARCH) {
+            Some(b) if installable(crate::comfyui_unit::ID) => {
+                assert_eq!(fits.sidecars[0].bytes, Some(b));
+                assert_eq!(fits.download_bytes, 5 + b);
+            }
+            _ => assert_eq!(fits.download_bytes, 5, "not offered here, not priced"),
+        }
+    }
+
     fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
         offered(p, chat_here).iter().map(|s| s.id).collect()
     }
@@ -832,13 +961,14 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e"]
         } else {
             &["7a-3", "7b"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
-        assert!(!installable("comfyui"));
+        assert_eq!(installable("comfyui"), cfg!(target_os = "linux"));
+        assert!(!installable("speech"), "7f is not built");
         assert!(!installable("router"), "the router is `setup chat`'s (F13)");
         for s in crate::sidecar::SIDECARS {
             // The router's installer is built, and `setup chat` runs it —
