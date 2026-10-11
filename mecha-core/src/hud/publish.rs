@@ -255,12 +255,25 @@ pub fn mark_published(board_dir: &Path, bundle: &str) -> Result<()> {
     )
 }
 
-/// The generation last pushed per dataset, under one release. A new release
-/// starts it over.
+/// The generation last pushed per dataset, under one release, and the one
+/// the factory last refused. A new release starts both over.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Pushed {
     pub release: u32,
     pub generations: BTreeMap<String, u64>,
+    /// A refusal is the box's verdict on those rows, so the same generation
+    /// is never sent again — only a new one, or a new release, is. Without
+    /// it every tick re-sent the whole payload to a refusal only the owner
+    /// can clear (review of #651).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, Refused>,
+}
+
+/// A push the factory refused: which generation, and its code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Refused {
+    pub generation: u64,
+    pub code: String,
 }
 
 impl Pushed {
@@ -285,12 +298,37 @@ impl Pushed {
             .flatten()
     }
 
+    /// The refusal standing against `generation` of `name` under `release`.
+    pub fn refusal(&self, release: u32, name: &str, generation: u64) -> Option<&Refused> {
+        (self.release == release)
+            .then(|| self.refused.get(name))
+            .flatten()
+            .filter(|r| r.generation == generation)
+    }
+
     pub fn record(&mut self, release: u32, name: &str, generation: u64) {
+        self.under(release);
+        self.refused.remove(name);
+        self.generations.insert(name.to_string(), generation);
+    }
+
+    pub fn refuse(&mut self, release: u32, name: &str, generation: u64, code: &str) {
+        self.under(release);
+        self.refused.insert(
+            name.to_string(),
+            Refused {
+                generation,
+                code: code.to_string(),
+            },
+        );
+    }
+
+    fn under(&mut self, release: u32) {
         if self.release != release {
             self.release = release;
             self.generations.clear();
+            self.refused.clear();
         }
-        self.generations.insert(name.to_string(), generation);
     }
 
     pub fn write(&self, board_dir: &Path) -> Result<()> {

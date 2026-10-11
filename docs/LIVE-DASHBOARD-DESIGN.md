@@ -836,7 +836,7 @@ refresh. The registry is a wire format; the id, once shipped, is `hud`.
 Built together, as the MVP the owner asked for ("the schema and svelte
 builder and database integration is the core"): the renderer
 (`web/src/lib/hud/`: `Dashboard`, `Chart`, `Table`, `Text`, `Filters`, the
-pure `hud.js` and `theme.js`), the standalone build (`npm run build:hud`,
+pure `hud.js` and `theme.js`), the standalone build (`npm run build` runs it after the app,
 `vite.hud.config.js`), the three read-only routes (`serve/hud.rs`) and
 `#hud` / `#hud/<id>` in the app.
 

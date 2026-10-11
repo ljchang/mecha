@@ -28,8 +28,9 @@
   // large and need no deep reactivity.
   let data = $state.raw({});
   let chosen = $state({});
-  // A grant that ended under an open page (R16): said once, at the top.
-  let signIn = $state(null);
+  // A grant that ended under an open page (R16): said once, at the top, for
+  // as long as some dataset is still refused — a later good read clears it.
+  const signIn = $derived(Object.values(data).find((d) => d?.signIn)?.error ?? null);
 
   let prefersLight = $state(false);
   $effect(() => {
@@ -52,10 +53,9 @@
     try {
       const got = await source.dataset(name, prev?.etag ?? null);
       if (got) data = { ...data, [name]: { dataset: got.dataset, etag: got.etag ?? null, error: null } };
-      else if (prev?.error) data = { ...data, [name]: { ...prev, error: null } };
+      else if (prev?.error) data = { ...data, [name]: { ...prev, error: null, signIn: false } };
     } catch (e) {
-      if (e?.signIn) signIn = e.message;
-      data = { ...data, [name]: { ...(prev ?? {}), error: String(e?.message ?? e) } };
+      data = { ...data, [name]: { ...(prev ?? {}), error: String(e?.message ?? e), signIn: !!e?.signIn } };
     }
   }
 
