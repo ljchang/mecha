@@ -145,6 +145,15 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
     if turbo && no_install {
         anyhow::bail!("`--turbo` fetches a model and `--no-install` installs nothing; drop one");
     }
+    // Refused rather than ignored: past here, a platform with no installer
+    // never reaches the block that would say so (review of #650).
+    if turbo && !install::installable(comfy::ID) {
+        anyhow::bail!(
+            "`--turbo` fetches into the image server mecha installs, and mecha installs none on \
+             this platform; put {} in your ComfyUI's models/diffusion_models/",
+            mecha_core::sampling::TURBO_MODEL
+        );
+    }
     // The machine is read only when some sidecar these features need is one
     // mecha installs and this machine would run: `enable messages` beside a
     // hosted provider stays a switch write, with no GPU probe to wait on.
@@ -251,13 +260,28 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
         if features.contains(&Feature::Image) {
             let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
             let linked = comfy::turbo_linked(&m.mecha_home);
-            match (comfy::turbo_wanted(&m.mecha_home, turbo), &comfy_found) {
+            let wanted = comfy::turbo_wanted(&m.mecha_home, turbo);
+            // An installed server re-offered for turbo alone has not been
+            // through the fit check above, and the install would fail on it
+            // — writing no switch, which a machine that does not fit is
+            // never refused (#645; review of #650).
+            let unfit = match (&wanted, &comfy_found) {
+                (Some(_), Some((_, SidecarState::Installed))) if !installing && !linked => {
+                    comfy::fits(std::env::consts::OS, std::env::consts::ARCH, read_nvidia()).err()
+                }
+                _ => None,
+            };
+            match (wanted, &comfy_found) {
                 (None, _) => {}
                 (Some(_), Some((_, SidecarState::Installed))) if linked && !installing => {
                     if turbo {
                         println!("The turbo model is installed already.");
                     }
                 }
+                (Some(why), _) if unfit.is_some() => println!(
+                    "The turbo model is not fetched ({why}): {}.",
+                    unfit.as_deref().unwrap_or_default()
+                ),
                 (Some(why), Some((label, state)))
                     if installing || matches!(state, SidecarState::Installed) =>
                 {
@@ -282,7 +306,12 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     } else {
                         match todo.iter_mut().find(|(id, ..)| *id == comfy::ID) {
                             Some((.., bytes)) => *bytes = bytes.map(|b| b + download),
-                            None => todo.push((comfy::ID, label, Feature::Image, Some(download))),
+                            None => todo.push((
+                                comfy::ID,
+                                label,
+                                Feature::Image,
+                                (download > 0).then_some(download),
+                            )),
                         }
                         fetch_turbo = Some(why);
                     }
