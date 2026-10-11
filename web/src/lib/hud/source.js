@@ -30,7 +30,7 @@ export function filesSource(base, { granted = false } = {}) {
         // has ended, the data that was readable a minute ago answers 404.
         // The page keeps the numbers it has, marked stale, and says how to
         // get current ones (R16) — never an empty dashboard.
-        if (granted && seen.has(name) && (res.status === 404 || res.status === 410)) {
+        if (granted && seen.has(name) && [401, 403, 404, 410].includes(res.status)) {
           const e = new Error('your viewing access has ended — sign in again for current numbers');
           e.signIn = true;
           throw e;
