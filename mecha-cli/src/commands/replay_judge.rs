@@ -597,34 +597,48 @@ async fn judge_one(
             base: base_says,
         });
     }
-    // Each identified person's own clauses on their own crop, and their
-    // doing and wearing on everyone else's: drawn on the wrong person.
+    // Each person's own clauses on their own crop, when they were
+    // identified, and their doing and wearing on every other identified
+    // person's crop, whether or not they were: drawn on the wrong person.
+    // An unidentified subject has no crop of their own, and needs none for
+    // the others' (review of #655).
     for clause in clauses.iter().cloned() {
         let Some(person) = clause.person else {
             continue;
         };
-        let Some((_, own_crop)) = crops.iter().find(|(p, _)| *p == person) else {
-            continue;
+        let own_crop = crops.iter().find(|(p, _)| *p == person).map(|(_, c)| c);
+        let others: Vec<&(usize, Shown)> = if clause.bleeds() {
+            // Not of someone the record gives the same words: a yes there
+            // is the record's own, not a bleed (review of #655).
+            crops
+                .iter()
+                .filter(|(p, _)| {
+                    *p != person && !scene.as_ref().is_some_and(|s| rj::shared(s, &clause, *p))
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
+        if own_crop.is_none() && others.is_empty() {
+            continue;
+        }
         let question = clause.crop_question();
-        let own = verdict(
-            ask_of(provider.as_ref(), pass, own_crop, &question).await,
-            rj::yes_no,
-            &mut j,
-        );
+        let own = match own_crop {
+            Some(c) => verdict(
+                ask_of(provider.as_ref(), pass, c, &question).await,
+                rj::yes_no,
+                &mut j,
+            ),
+            None => None,
+        };
         let mut elsewhere = Vec::new();
-        if clause.bleeds() {
-            // Not of someone the record gives the same words: a yes there is
-            // the record's own, not a bleed (review of #655).
-            for (_, other) in crops.iter().filter(|(p, _)| {
-                *p != person && !scene.as_ref().is_some_and(|s| rj::shared(s, &clause, *p))
-            }) {
-                elsewhere.push(verdict(
-                    ask_of(provider.as_ref(), pass, other, &question).await,
-                    rj::yes_no,
-                    &mut j,
-                ));
-            }
+        for (p, other) in others {
+            let shows = verdict(
+                ask_of(provider.as_ref(), pass, other, &question).await,
+                rj::yes_no,
+                &mut j,
+            );
+            elsewhere.push(rj::Elsewhere { person: *p, shows });
         }
         j.person_clauses.push(rj::PersonVerdict {
             clause,

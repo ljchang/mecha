@@ -370,7 +370,11 @@ fn decode(loc: &[[f32; 4]], conf: &[f32], landm: &[[f32; 10]], w: usize, h: usiz
     // read three levels each (`Net::load`), and `all_claimed` refuses a
     // file holding fewer.
     debug_assert_eq!(landm.len(), loc.len(), "a landmark set per anchor");
-    for (i, p) in pri.iter().enumerate().take(loc.len().min(conf.len())) {
+    for (i, p) in pri
+        .iter()
+        .enumerate()
+        .take(loc.len().min(conf.len()).min(landm.len()))
+    {
         let score = conf[i];
         if score <= 0.02 {
             continue;
