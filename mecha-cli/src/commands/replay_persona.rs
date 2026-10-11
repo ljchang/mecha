@@ -14,7 +14,10 @@
 //!   turn was sent, or the header says it could not be matched;
 //! - tools are described as today's build describes them and never run: the
 //!   first call stops the run, so each sample is one model request;
-//! - the turn's one-shot readers are not stamped, since no picture is drawn.
+//! - a picture call runs the real tool against the chat's scene staged as of
+//!   the turn, and the turn's one-shot readers (scene reader, role splitter)
+//!   are sent the sample's image seed (`--no-render` sends the request
+//!   only, and stamps neither).
 //!
 //! The output file holds what the model wrote, so it goes in the private
 //! research store (0600). Standard output carries counts only.
@@ -675,6 +678,12 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             },
         }
     });
+    // Set here, not in the literal: `json!` has run out of recursion. What
+    // the readers are seeded with, so a header says whether two arms'
+    // readers were paired.
+    let mut header = header;
+    header["header"]["readers_seed"] =
+        serde_json::json!((render && !args.no_readers).then_some("image_seed_base + i"));
     writeln!(file, "{header}")?;
     drop(probe);
 
@@ -971,7 +980,12 @@ impl Sampler {
             bail!("the replay's tools do not describe themselves as the real ones do");
         }
         *agent.registry_mut() = tools;
-        let judge = || crate::setup::persona_provider(&bound, PersonaUse::Judge);
+        // The scene reader and role splitter at the sample's image seed:
+        // sample i of two arms run at one `--image-seed-base` then reads with
+        // the same seed as it draws, so a reader's difference is the arm's,
+        // not the sampler's. The config's own seed, or none, left them paired
+        // by accident or not at all (review of #615).
+        let judge = || crate::setup::persona_provider_seeded(&bound, PersonaUse::Judge, image_seed);
         let mut turn = mecha_core::persona::turn::Turn {
             workspace: self.work.clone(),
             scene: None,
