@@ -1,8 +1,9 @@
 // The edit modal's logic, apart from the canvas so it can be tested in node.
 //
 // The owner paints (or boxes) the part of a picture to change; the page turns
-// that into a black-and-white mask at the picture's own size and uploads it
-// into the chat's jail. The mask is named in the message and never attached:
+// that into a black-and-white mask at the size it paints at (`workSize`: the
+// picture's own, capped at `WORK_EDGE` on the long side) and uploads it into
+// the chat's jail. The mask is named in the message and never attached:
 // attachments ride on the turn as pixels (REMOTE-SURFACE-DESIGN D6), and a
 // mask is for `image_generate`, not for the model to look at — attaching one
 // would spend context and mark the chat as holding a picture for nothing
@@ -105,7 +106,8 @@ export function pickColours(data) {
 /** A region index's pixels (RGBA): black everywhere, and each region's own
  *  colour exactly where its layer's alpha is over half. No smoothing, so the
  *  server can read every pixel as one colour or none. `layers` are each
- *  region's RGBA data at the picture's size, in region order. The modal
+ *  region's RGBA data at the size the modal paints at (`workSize`), in region
+ *  order. The modal
  *  keeps regions apart (paint takes a pixel from the others), so a later
  *  region winning is only a tie-break on anti-aliased rims. */
 export function indexPixels(width, height, layers, rgbs) {

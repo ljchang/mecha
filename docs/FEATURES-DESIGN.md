@@ -1,8 +1,8 @@
 # Features — design
 
 > **Status (2026-10-10):** 7c-2 merged as #618; F12 (a local default) and F13
-> (`enable` never installs the chat model) are one PR, and F14 — the guided
-> setup, §11 — is the next. The status below is as of 2026-10-05.
+> (`enable` never installs the chat model) are one PR (#627), and F14 — the
+> guided setup, §11 — is built on it. The status below is as of 2026-10-05.
 >
 > **Status (2026-09-30):** this design merged as #427; **step 0 shipped** —
 > the registry and a read-only `mecha features`, merged as #428 and deployed
@@ -71,12 +71,16 @@
 > drop-in, started once through their socket) — is built; so is 7c-2:
 > `router_unit.rs`, the resident router from nothing (its unit, launcher and
 > presets file, the presets from the tier's chat geometry or the owner's own
-> GGUF), behind `mecha setup chat` (F11). 7b-2 — the build fallback: the
-> pin's commit fetched blobless by git and built here with the release's own
-> `$ORIGIN` flags, for a driver too old for any CUDA release or an
-> architecture none covers, after a toolchain check that names every missing
-> piece — is built (CPU and CUDA builds measured on the GB10, 2026-10-10).
-> 7d–7f and step 8 are unbuilt (step 7 redesigned in §10). The
+> GGUF), behind `mecha setup chat` (F11). 7d-1 — `stt_unit.rs`, the
+> speech-to-text server from nothing (its own uv environment from a hash
+> lock, the Parakeet tarball by its pin, the server script held equal to
+> `scripts/voice/`, one rendered unit) — is built, and so is 7d-2, the voice
+> worker the same way. 7b-2 — the build fallback: the pin's commit fetched
+> blobless by git and built here with the release's own `$ORIGIN` flags, for
+> a driver too old for any CUDA release or an architecture none covers,
+> after a toolchain check that names every missing piece — is built (CPU and
+> CUDA builds measured on the GB10, 2026-10-10). 7e, 7f and step 8 are
+> unbuilt (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -641,8 +645,10 @@ table that turns a feature on by existing is invisible until you already
 know its name, and a list of toggles is its own documentation.
 
 ```toml
-# ~/.mecha/config.toml — written in full by `mecha config init`, every
-# feature listed, every one off; `mecha features enable <id>` flips one.
+# ~/.mecha/config.toml as this section first specified it. Since F14 (§11)
+# `mecha config init` and `mecha setup` write every line commented: listed
+# and off, but not answered — an explicit `false` reads as Declined, and
+# `mecha setup` would ask about none of them (review of #631).
 [features]
 web = false        # the web app (`mecha serve`)
 slack = false      # Slack remote control
@@ -1642,7 +1648,22 @@ Step 7 becomes these, each a PR that leaves every feature working:
   installs a router beside the live one on a free port, serving the
   embeddings GGUF as an owner's model, and removes it (measured
   2026-10-05).
-- **7d.** `uv` and the voice venv, Parakeet and the voice worker.
+- **7d.** `uv` and the voice venv, Parakeet and the voice worker. Built in
+  two PRs: **7d-1** the speech-to-text server — its own environment
+  (`locks/stt-requirements.txt`; `sherpa-onnx-core` named, since its wheels
+  need it where its metadata does not say so), the model unpacked from its
+  pinned tarball into `~/.mecha/sidecars/stt/`, and `mecha-parakeet.service`
+  rendered with absolute paths and started; the real-machine test installs
+  one beside the live server on a free port, transcribes a second of
+  silence, and removes it (measured 2026-10-10). **7d-2** the voice worker —
+  pipecat's environment from its own lock (the `local-smart-turn` extra left
+  out: it pulls torch, and smart-turn v3 is onnx with its weights in the
+  wheel), `worker.py` and its three modules held equal to `scripts/voice/`,
+  and `mecha-voice-worker.service` whose `--allowed-origins` names an origin
+  no page has: `mecha serve` relays the offer with no `Origin`, which pipecat
+  lets through, while a page's direct request is refused — so the install
+  needs no hostname. Its real-machine test installs one beside the live
+  worker and checks a page's preflight is refused (measured 2026-10-10).
 - **7e.** ComfyUI, ComfyUI-GGUF and the image models.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
   default since 2026-10-03, built from a pinned commit with its model
@@ -1725,6 +1746,13 @@ Ready: 23.4 GiB to download. Start? [Y/n]
    was and was not done, and a second `mecha setup` resumes it.
 4. **What `enable` alone does is unchanged** (F13): a single feature never
    pulls the chat model.
+
+**What was built differs in one place.** *Choose another* is not in the
+menu: the registry pins one chat model — Qwen3.6-35B-A3B, served at each
+tier's geometry — so there is nothing else to list. The option belongs to the
+day a second model is pinned, with its evidence (§6, F5); the menu is built
+from what this machine can do, so it already leaves out an install where none
+can run (off Linux, or `:8080` someone else's).
 
 Out of scope here, still: the web app's toggles and *Set up* button (§8),
 which this is the terminal half of; and the voice and image installers (7d–7f)

@@ -64,7 +64,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             let text = if project {
                 STARTER.to_string()
             } else {
-                format!("{STARTER}{FEATURES_STARTER}")
+                global_starter()
             };
             std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
             println!("wrote {}", path.display());
@@ -74,28 +74,40 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Every optional feature, listed and off — the light install, and the list
-/// a new user reads to learn what exists (FEATURES-DESIGN.md §5, ruling F1).
-/// `mecha features enable <id>` flips one in place; `mecha features` says
-/// what each needs besides its switch.
+/// What a new global config holds — `config init`'s file and what `mecha
+/// setup` seeds alike: the starter, and every feature listed but not
+/// answered.
+pub fn global_starter() -> String {
+    format!("{STARTER}{FEATURES_STARTER}")
+}
+
+/// Every optional feature, listed and off — the list a new user reads to
+/// learn what exists (FEATURES-DESIGN.md §5, ruling F1) — **commented out**,
+/// so none is answered. An explicit `false` is the owner's answer
+/// (`Declined`): written here, `mecha setup` would read every feature as
+/// declined and ask about none (review of #631). `mecha features enable
+/// <id>` writes a switch in place; `mecha features` says what each needs
+/// besides it.
 pub const FEATURES_STARTER: &str = r#"
-# Optional features. Every one is off until switched on here or with
-# `mecha features enable <id>`; `mecha features` shows what each still needs.
+# Optional features, none answered yet: each is off until it is true here.
+# `mecha setup` asks about each; `mecha features enable <id>` switches one on;
+# a line set to false is a no that `mecha setup` keeps. `mecha features`
+# shows what each still needs.
 # Global file only: a project's mecha.toml cannot switch a feature on.
 [features]
-web = false        # the web app (`mecha serve`)
-slack = false      # Slack remote control
-mail = false       # mail and calendar
-docs = false       # Google Docs, Sheets and Slides
-graph = false      # the knowledge graph and the task board
-search = false     # web search and open
-documents = false  # PDF extraction (OCR and layout are [documents] settings)
-image = false      # image generation and the character library
-personas = false   # characters you write and talk to
-voice = false      # dictation and voice calls
-incognito = false  # a web chat that leaves no trace
-frontdoor = false  # inbound requests, polls and publishing
-messages = false   # messages between sessions on this machine
+# web = false        # the web app (`mecha serve`)
+# slack = false      # Slack remote control
+# mail = false       # mail and calendar
+# docs = false       # Google Docs, Sheets and Slides
+# graph = false      # the knowledge graph and the task board
+# search = false     # web search and open
+# documents = false  # PDF extraction (OCR and layout are [documents] settings)
+# image = false      # image generation and the character library
+# personas = false   # characters you write and talk to
+# voice = false      # dictation and voice calls
+# incognito = false  # a web chat that leaves no trace
+# frontdoor = false  # inbound requests, polls and publishing
+# messages = false   # messages between sessions on this machine
 "#;
 
 /// A commented starting point rather than a dump of defaults — the point of the
@@ -265,22 +277,32 @@ mod tests {
     use super::*;
     use mecha_core::feature::Feature;
 
-    /// The starter lists every feature with a switch, all off, and nothing
-    /// else — so a new feature does not ship missing from the list a new user
-    /// reads to learn what exists, and the file still loads.
+    /// The starter lists every feature with a switch and answers none: each
+    /// is a commented line, so `mecha setup` asks about it rather than
+    /// reading it as declined (review of #631) — and a new feature does not
+    /// ship missing from the list a new user reads. `features enable` then
+    /// writes its switch into that table.
     #[test]
-    fn the_global_starter_lists_every_switch_off() {
-        let text = format!("{STARTER}{FEATURES_STARTER}");
+    fn the_global_starter_lists_every_switch_and_answers_none() {
+        let text = global_starter();
         let cfg: Config = toml::from_str(&text).expect("the starter loads");
-        let table: toml::Table = toml::from_str(&text).unwrap();
-        let listed: Vec<&str> = table["features"]
-            .as_table()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| {
-                assert_eq!(v.as_bool(), Some(false), "`{k}` ships off");
-                k.as_str()
-            })
+        assert!(cfg.features.0.is_empty(), "{text}");
+        assert!(!cfg.messages.on());
+        // Commented, every one: an uncommented line is an explicit `false`,
+        // the owner's no, and is named here rather than left to read as
+        // missing (review of #631).
+        for l in FEATURES_STARTER.lines() {
+            assert!(
+                !l.split_once(" = ").is_some_and(|(id, _)| {
+                    !id.starts_with('#') && id.chars().all(|c| c.is_ascii_lowercase())
+                }),
+                "`{l}` answers the switch — comment it: `# {l}`"
+            );
+        }
+        let listed: Vec<&str> = FEATURES_STARTER
+            .lines()
+            .filter_map(|l| l.strip_prefix("# ")?.split_once(" = false"))
+            .map(|(id, _)| id)
             .collect();
         let mut switches: Vec<&str> = Feature::ALL
             .iter()
@@ -291,7 +313,16 @@ mod tests {
         listed_sorted.sort();
         switches.sort();
         assert_eq!(listed_sorted, switches);
-        assert!(!cfg.messages.on());
-        assert!(cfg.features.0.values().all(|on| !on));
+
+        let dir = std::env::temp_dir().join(format!("mecha-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, &text).unwrap();
+        mecha_core::feature::write_switches(&path, &[(Feature::Web, true)]).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg: Config = toml::from_str(&after).unwrap();
+        assert_eq!(cfg.features.get("web"), Some(true), "{after}");
+        assert_eq!(cfg.features.0.len(), 1, "{after}");
     }
 }

@@ -50,7 +50,8 @@
   let encoding = $state(false);
   let encodeError = $state(null);
 
-  // What is painted, at the picture's own size: white where it will change,
+  // What is painted, at the size the modal paints at (`workSize`: the
+  // picture's own, capped at `WORK_EDGE`): white where it will change,
   // transparent elsewhere. `base` holds the committed operations; a stroke
   // draws into it as it goes, a box only when it is let go.
   let base = null;
@@ -358,7 +359,7 @@
     render();
   }
 
-  // The mask the server reads: the picture's own size, white where painted,
+  // The mask the server reads: the size the modal paints at, white where painted,
   // black everywhere else.
   function maskBlob() {
     const out = document.createElement('canvas');
@@ -372,7 +373,7 @@
   }
 
   // The regions the server reads: black everywhere, each painted region in
-  // its exact colour, at the picture's own size, no smoothing.
+  // its exact colour, at the size the modal paints at, no smoothing.
   function indexBlob(ks) {
     const w = base.width;
     const h = base.height;

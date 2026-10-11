@@ -240,6 +240,21 @@ pub fn fold(
     out
 }
 
+/// The `Now` measurements in the order a sample reads them: every one that
+/// runs no command first, the forks last. The forks share the sample's
+/// deadline, and one that wedges spends it; read first, it would leave the
+/// cheapest readings — the scans, in number order after the forks — unread
+/// for time they never used (review of #641).
+fn reading_order() -> Vec<Measurement> {
+    let mut order: Vec<Measurement> = Measurement::ALL
+        .iter()
+        .copied()
+        .filter(|m| m.how() == measure::How::Now)
+        .collect();
+    order.sort_by_key(|m| m.cost() == measure::Cost::Fork);
+    order
+}
+
 /// Read the machine now. The one function here that touches the system.
 ///
 /// **Refuses** rather than records when the two readings everything else is
@@ -248,8 +263,12 @@ pub fn fold(
 /// draw an idle machine — `Other` is a remainder, so it would absorb the
 /// whole box — and nothing would say so. Refused, the sample unit fails, the
 /// `now` loader empties, and the doctor reports a sampler that stopped writing.
-pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample> {
-    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET);
+pub fn collect(
+    at: DateTime<Utc>,
+    since: Option<DateTime<Utc>>,
+    cfg: Option<&crate::config::Config>,
+) -> Result<Sample> {
+    let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET).configured(cfg);
     let mem = reader.meminfo().map_err(|r| {
         anyhow::anyhow!(
             "/proc/meminfo could not be read ({}); no sample recorded",
@@ -260,6 +279,17 @@ pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample
     let cpu_jiffies = parse_proc_stat(&stat);
     let cores = parse_cores(&stat);
     let (load1, tasks_total) = reader.loadavg().ok().unzip();
+
+    // The named readings before any fork this function makes: in
+    // `reading_order`, everything that runs no command comes first, and a
+    // fork below that wedges must not spend the deadline those readings
+    // share (review of #641). The GPU query this starts is the one the
+    // per-category fold reuses.
+    let mut now: Vec<(Measurement, Reading)> = reading_order()
+        .into_iter()
+        .map(|m| (m, reader.now(m)))
+        .collect();
+    now.sort_by_key(|(m, _)| *m);
 
     let units = unit_counters(&user_app_slice())?;
     let gpu = reader.gpu().unwrap_or_default();
@@ -278,12 +308,6 @@ pub fn collect(at: DateTime<Utc>, since: Option<DateTime<Utc>>) -> Result<Sample
                 })
                 .collect::<Vec<_>>()
         });
-
-    let now = Measurement::ALL
-        .iter()
-        .filter(|m| m.how() == measure::How::Now)
-        .map(|&m| (m, reader.now(m)))
-        .collect();
 
     Ok(Sample {
         at,
