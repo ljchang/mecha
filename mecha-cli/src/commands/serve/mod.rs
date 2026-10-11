@@ -343,9 +343,12 @@ pub async fn execute(args: Args) -> Result<()> {
                         Ok(preview_app) => {
                             preview::set_origin(origin);
                             tokio::spawn(async move {
-                                if let Err(e) = axum::serve(preview_listener, preview_app).await {
-                                    tracing::warn!("the preview listener stopped: {e:#}");
-                                }
+                                let why = match axum::serve(preview_listener, preview_app).await {
+                                    Ok(()) => "the preview listener stopped".to_string(),
+                                    Err(e) => format!("the preview listener stopped: {e:#}"),
+                                };
+                                tracing::warn!("{why}");
+                                preview::stopped(why);
                             });
                             tracing::info!(%at, origin, "outbox previews up");
                             Some(origin.to_string())

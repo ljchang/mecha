@@ -251,6 +251,18 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
 /// checked against what the staged bundle declared, so a loader edited since
 /// staging is said rather than shown as what was staged.
 fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value {
+    match mecha_core::hud::store::Store::open() {
+        Ok(store) => dashboard_loaders_in(&store, item),
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
+/// [`dashboard_loaders`] against `store` — a parameter, so the mark the
+/// review rests on (TRIFECTA.md, "Scheduled pushes") is tested, not asserted.
+fn dashboard_loaders_in(
+    store: &mecha_core::hud::store::Store,
+    item: &mecha_core::outbox::OutboxItem,
+) -> serde_json::Value {
     let Some(board) = item.args["id"]
         .as_str()
         .and_then(|i| i.strip_prefix("hud-"))
@@ -259,22 +271,14 @@ fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value
     };
     // The staged bundle, proved inside the HUD store's staging directory as
     // the preview proves it, before anything reads it.
-    let bundle = mecha_core::hud::store::Store::open()
-        .ok()
-        .and_then(|store| {
-            let root = mecha_core::hud::publish::staged_root(store.root());
-            item.args["bundle"]
-                .as_str()
-                .and_then(|b| super::preview::within(&root, std::path::Path::new(b)))
-        });
-    let staged: mecha_core::hud::publish::Declared = bundle
+    let root = mecha_core::hud::publish::staged_root(store.root());
+    let staged: mecha_core::hud::publish::Declared = item.args["bundle"]
+        .as_str()
+        .and_then(|b| super::preview::within(&root, std::path::Path::new(b)))
         .map(|b| b.join(mecha_core::hud::publish::DATASETS_FILE))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
-    let Ok(store) = mecha_core::hud::store::Store::open() else {
-        return serde_json::Value::Null;
-    };
     let Ok(Ok(installed)) = store.load(board) else {
         return serde_json::Value::Null;
     };
@@ -1630,5 +1634,88 @@ mod tests {
             detail_json(&item, &[], None)["error"],
             "no default account is set"
         );
+    }
+
+    /// The mark the review rests on: a loader whose source's content is
+    /// third-party — or unset — is marked, an owner's is not; and a loader
+    /// edited since the bundle was staged says so.
+    #[test]
+    fn a_dashboard_publish_marks_third_party_loaders_and_ones_changed_since_staging() {
+        use mecha_core::hud::publish;
+        let root = std::env::temp_dir().join(format!("mecha-review-hud-{}", uuid::Uuid::new_v4()));
+        let hud = root.join("hud");
+        let draft = root.join("draft").join("lab");
+        std::fs::create_dir_all(draft.join("loaders")).unwrap();
+        std::fs::create_dir_all(&hud).unwrap();
+        std::fs::write(
+            hud.join("sources.toml"),
+            format!(
+                "[source.mine]\nkind = \"sqlite\"\npath = \"{0}\"\ncontent = \"owner\"\n\
+                 [source.theirs]\nkind = \"sqlite\"\npath = \"{0}\"\n",
+                root.join("x.sqlite").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("hud.json"),
+            r#"{"version":1,"title":"Lab","datasets":["notes","posts"],
+                "panels":[{"type":"table","title":"Notes","dataset":"notes","columns":["n"]},
+                          {"type":"table","title":"Posts","dataset":"posts","columns":["n"]}]}"#,
+        )
+        .unwrap();
+        for (name, source) in [("notes", "mine"), ("posts", "theirs")] {
+            std::fs::write(
+                draft.join("loaders").join(format!("{name}.toml")),
+                format!(
+                    "source = \"{source}\"\nschedule = \"0 * * * *\"\nmax_rows = 10\n\
+                     query = \"SELECT n FROM t\"\n[[column]]\nname = \"n\"\ntype = \"integer\"\n"
+                ),
+            )
+            .unwrap();
+        }
+        let store = mecha_core::hud::store::Store::at(&hud);
+        let installed = store
+            .install(&draft, Some("lab"), chrono::Utc::now())
+            .unwrap()
+            .unwrap();
+        // The staged bundle declares `notes` as installed and `posts` from a
+        // different loader: edited since staging.
+        let bundle = publish::staged_root(&hud).join("lab-1");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let mut declared = publish::declared(&installed);
+        declared.datasets.get_mut("posts").unwrap().loader_digest = "sha256:other".into();
+        std::fs::write(
+            bundle.join(publish::DATASETS_FILE),
+            serde_json::to_string(&declared).unwrap(),
+        )
+        .unwrap();
+        let outbox = OutboxStore::open(root.join("outbox")).unwrap();
+        let item = outbox
+            .stage_publish_by_harness(
+                "factory__bundle_publish",
+                serde_json::json!({"id": "hud-lab", "bundle": bundle.display().to_string()}),
+            )
+            .unwrap();
+
+        let loaders = dashboard_loaders_in(&store, &item);
+        let by = |n: &str| {
+            loaders
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["name"] == n)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(by("notes")["external"], false, "the owner's own content");
+        assert_eq!(
+            by("posts")["external"],
+            true,
+            "content unset is third-party"
+        );
+        assert_eq!(by("notes")["changed_since_staged"], false);
+        assert_eq!(by("posts")["changed_since_staged"], true);
+        assert_eq!(by("posts")["query"], "SELECT n FROM t");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
