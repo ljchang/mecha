@@ -922,7 +922,9 @@ advances it.
 - `clothes_in_act`: whose outfit the prompt left out because their act
   already says what they have on (their own words, or a shared act naming
   them or nobody). The record keeps the clothes. A second outfit beside
-  "wearing jeans pulled down" drew two people (`imagegen::clothes_in_act`);
+  "wearing jeans pulled down" drew two people (`imagegen::clothes_in_act`).
+  One-pass pictures only: a layered picture's cutouts keep the outfit, and
+  its manifest never claims this;
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Each picture's compiled prompt is saved for the owner, never in the
