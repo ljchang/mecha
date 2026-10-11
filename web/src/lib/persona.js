@@ -435,7 +435,11 @@ export function applyEvent(state, ev) {
       // `started` is the page's clock, for the "drawing a picture… 1:24"
       // line: a local model can take minutes on an image. (A re-read takes
       // it from the server's `working.since` instead — `withWorking`.)
-      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() }] };
+      // `version_of`: the harness's Regenerate says live which picture this
+      // one is a version of, as the transcript does (IMAGE-DESIGN.md §5.4).
+      const entry = { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() };
+      if (ev.version_of) entry.version_of = ev.version_of;
+      return { ...s, entries: [...s.entries, entry] };
     }
     // The preview is kept: its first line names the picture a finished
     // `image_generate` drew, which the page shows under the row (`picture.js`).

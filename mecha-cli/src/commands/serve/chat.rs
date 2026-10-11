@@ -865,6 +865,17 @@ pub enum WireEvent {
         draft: Option<WireDraft>,
         #[serde(skip_serializing_if = "Option::is_none")]
         args: Option<String>,
+        /// The picture this call draws again, when the harness made it as a
+        /// Regenerate: the card its picture lands on is a version of that
+        /// one, said live as the transcript says it (`Entry::Tool`), so the
+        /// page need not read the turn again to show it (IMAGE-DESIGN.md
+        /// §5.4). `None` for every other call, and for any a model made.
+        /// It is the call's intent, sent before the result: a version is
+        /// still only a picture that landed, which the page's fold checks
+        /// (`pictureVersions` takes no card without a picture), as the
+        /// transcript's mark does.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version_of: Option<String>,
     },
     ToolResult {
         name: String,
@@ -1001,6 +1012,10 @@ pub(super) fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Opt
             id: id.clone(),
             draft: WireDraft::of(input),
             args: Some(clip_args(input)),
+            version_of: (name == "image_generate" && mecha_core::agent::is_harness_call(id))
+                .then(|| mecha_core::persona::edit::redraw_of_call(input))
+                .flatten()
+                .map(str::to_string),
         }),
         AgentEvent::ToolResult {
             id,
@@ -3003,12 +3018,12 @@ fn begin_turn(
             before = conversation.messages.clone().into();
             cx.close_with = Some(if dispatched.is_error {
                 mecha_core::agent::Closing {
-                    line: edit::NOT_DRAWN,
+                    line: edit::REDRAW_NOT_DRAWN,
                     reply: edit::NOT_DRAWN_REPLY,
                 }
             } else {
                 mecha_core::agent::Closing {
-                    line: edit::DONE,
+                    line: edit::REDRAW_DONE,
                     reply: edit::DONE_REPLY,
                 }
             });
@@ -4622,6 +4637,34 @@ mod wire_tests {
         }
     }
 
+    /// A Regenerate's card says live which picture it is a version of, as
+    /// the transcript does — only for the harness's own redraw, never for a
+    /// model's call of the same shape or a harness call that changes
+    /// something.
+    #[test]
+    fn a_harness_redraw_is_a_version_on_the_live_stream() {
+        let version = |id: &str, input: serde_json::Value| match wire_event(
+            &AgentEvent::ToolCall {
+                id: id.into(),
+                name: "image_generate".into(),
+                input,
+            },
+            None,
+        ) {
+            Some(WireEvent::Tool { version_of, .. }) => version_of,
+            other => panic!("{other:?}"),
+        };
+        let harness = format!("{}abc", mecha_core::agent::HARNESS_CALL);
+        let redraw = mecha_core::persona::edit::redraw_call("images/a.png");
+        assert_eq!(
+            version(&harness, redraw.clone()).as_deref(),
+            Some("images/a.png")
+        );
+        assert_eq!(version("toolu_1", redraw), None);
+        let changed = serde_json::json!({"picture": "images/a.png", "setting": "a beach"});
+        assert_eq!(version(&harness, changed), None);
+    }
+
     #[test]
     fn a_tool_chip_carries_the_call_and_not_only_its_name() {
         // Two writes in one turn are one chip repeated until the arguments
@@ -4642,7 +4685,9 @@ mod wire_tests {
                 id,
                 draft,
                 args,
+                version_of,
             } => {
+                assert_eq!(version_of, None);
                 assert_eq!(name, "fs_write");
                 assert_eq!(id, "t1", "a result pairs on this, never on the name");
                 let draft = draft.expect("a write has a shape");
@@ -5971,7 +6016,7 @@ mod held_tests {
             )
             .unwrap(),
         );
-        let (events, _) = broadcast::channel(16);
+        let (events, mut live) = broadcast::channel(64);
         let mut sessions = HashMap::from([(
             "k".to_string(),
             WebSession {
@@ -6038,6 +6083,29 @@ mod held_tests {
             mecha_core::message::ToolChoice::None,
             "the reply is a closing one"
         );
+        // In the assistant's chat's terms: it has no edit panel.
+        let closing = asked[0].messages.last().unwrap().text();
+        assert!(
+            closing.ends_with(mecha_core::persona::edit::REDRAW_DONE),
+            "{closing}"
+        );
+        // The card says live which picture it is a version of, so the page
+        // need not read the turn again (review of #634).
+        let mut live_version = None;
+        loop {
+            match live.try_recv() {
+                Ok(WireEvent::Tool { version_of, .. }) => live_version = version_of,
+                Ok(_) => {}
+                // Read to the end: none left, or the turn is over and its
+                // sender gone.
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
+                // A lagged channel dropped events: the check would be vacuous.
+                Err(e) => panic!("the live events were not all read: {e:?}"),
+            }
+        }
+        assert_eq!(live_version.as_deref(), Some("images/a.png"));
         let entries = serde_json::to_value(transcript_entries(&messages)).unwrap();
         let card = entries
             .as_array()
