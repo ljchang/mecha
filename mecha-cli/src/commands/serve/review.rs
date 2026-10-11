@@ -272,6 +272,10 @@ fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value
     let Ok(Ok(installed)) = store.load(board) else {
         return serde_json::Value::Null;
     };
+    // Whether each source's rows are someone else's text: what a release
+    // would publish under the owner's name with no second look. Unknown —
+    // a source that does not load — is third-party (TRIFECTA.md).
+    let sources = store.sources().ok().and_then(Result::ok);
     installed
         .loaders()
         .iter()
@@ -282,6 +286,10 @@ fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value
                 "source": l.source(),
                 "schedule": l.schedule().to_string(),
                 "query": l.query(),
+                "external": sources
+                    .as_ref()
+                    .and_then(|s| s.get(l.source()))
+                    .is_none_or(|s| s.external()),
                 "columns": l.columns(),
                 "changed_since_staged": declared.is_none_or(|d| d.loader_digest != l.digest()),
             })
