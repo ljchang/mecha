@@ -159,7 +159,6 @@ pub async fn execute(
     // judge's models are image generation's own: off, nothing is fetched or
     // judged (owner, 2026-10-11).
     super::features::require(mecha_core::feature::Feature::Image)?;
-    let faces = load_faces().await?;
     let follower = Follower::start(global.clone(), Box::new(|_| {})).await?;
     let router = follower.router_base();
     let model = follower.current().model.clone();
@@ -167,6 +166,9 @@ pub async fn execute(
     if !crate::setup::persona_provider(&follower.current(), PersonaUse::Judge)?.vision() {
         bail!("{model} cannot see pictures, so it cannot judge them; name one that can (-m)");
     }
+    // ArcFace is fetched only once the run can go ahead: never for a model
+    // that is refused (review of #655).
+    let faces = load_faces().await?;
     // Made once every refusal that needs no question has passed (the load
     // guard, the vision check), and before the first question: a folder it
     // cannot be written in stops the run then, not after every question

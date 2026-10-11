@@ -238,12 +238,41 @@ impl IdentityJudge {
         })
     }
 
-    /// Every face in `img`, with its embedding.
+    /// Every face in `img`, with its embedding, found on a copy no longer
+    /// than the detector's bound on its long side (`face::DETECT_SIDE`), as
+    /// a portrait's crop is, so a large photo costs no more than a
+    /// picture; each face's box and points are carried back to `img`.
     fn found(&self, img: &image::RgbImage) -> anyhow::Result<Vec<(crate::face::Face, Vec<f32>)>> {
+        let long = img.width().max(img.height()).max(1);
+        let scale = (crate::face::DETECT_SIDE as f32 / long as f32).min(1.0);
+        let small;
+        let looked = if scale < 1.0 {
+            small = image::imageops::resize(
+                img,
+                ((img.width() as f32 * scale).round() as u32).max(1),
+                ((img.height() as f32 * scale).round() as u32).max(1),
+                image::imageops::FilterType::Triangle,
+            );
+            &small
+        } else {
+            img
+        };
         self.detector
-            .detect(img)?
+            .detect(looked)?
             .into_iter()
-            .map(|f| Ok((f, self.embedder.embed(img, &f)?)))
+            .map(|f| {
+                let embedding = self.embedder.embed(looked, &f)?;
+                let back = |v: f32| v / scale;
+                let face = crate::face::Face {
+                    x0: back(f.x0),
+                    y0: back(f.y0),
+                    x1: back(f.x1),
+                    y1: back(f.y1),
+                    score: f.score,
+                    points: f.points.map(|[x, y]| [back(x), back(y)]),
+                };
+                Ok((face, embedding))
+            })
             .collect()
     }
 
@@ -516,8 +545,9 @@ pub struct Identity {
     pub who: String,
     /// The detector's face, by index, best match first assigned.
     pub face: Option<usize>,
-    /// ArcFace similarity to their portrait; `None` when no face was left
-    /// for them.
+    /// ArcFace similarity to their portrait; `None` when no face was
+    /// assigned to them: none was left, or every face left would have
+    /// lowered the total (`assign`).
     pub similarity: Option<f32>,
 }
 

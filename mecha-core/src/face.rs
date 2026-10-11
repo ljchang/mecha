@@ -40,7 +40,7 @@ pub const INSTALL_HINT: &str = "mecha imagelib install-face-detector";
 /// The longest side a picture is detected at. A portrait is read once, so
 /// this bounds the time a large photo costs, not the accuracy a face the
 /// size of a portrait's needs.
-const DETECT_SIDE: u32 = 1024;
+pub(crate) const DETECT_SIDE: u32 = 1024;
 
 /// The crop's side over the face box's larger side. The experiments cropped
 /// 1.05 times InsightFace's box; RetinaFace draws a tighter box, and 1.12
