@@ -145,6 +145,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is in the picture viewer: the persona answers aloud, and talking over the
   redraw does not stop it.
 
+- **`mecha replay --judge` scores a persona replay's pictures.** For each
+  picture a replay drew, it counts faces and people against the scene's
+  record, and asks a vision model whether each thing the record says is
+  in the picture (and, for an edit, whether it was already in the picture
+  it started from). It writes the verdicts beside the samples and a
+  contact sheet with one row per file, so two arms can be compared by eye
+  and by count.
+
 - **`mecha replay --persona` samples a persona chat's turn.** It branches at
   one of the chat's turns (`--list` shows them) and sends that turn's first
   request again, `--samples` times with a different seed each, as the chat

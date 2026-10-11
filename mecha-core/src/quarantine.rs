@@ -157,6 +157,20 @@ impl QuarantinedPass {
         }
     }
 
+    /// [`ask`](Self::ask) with a picture before the question, in the one
+    /// user turn: a judge reading what a picture shows (`persona::
+    /// replay_judge`). Still no tools and no history; the picture is a
+    /// block the caller built at the door (`image::rendered_block`).
+    pub fn ask_about(
+        &self,
+        picture: crate::message::Block,
+        user: impl Into<String>,
+    ) -> CompletionRequest {
+        let mut request = self.ask(user);
+        request.messages[0].content.insert(0, picture);
+        request
+    }
+
     /// A second question on the same pass: [`ask`](Self::ask)`(asked)`'s
     /// request, its answer appended verbatim, and one more user turn.
     ///
@@ -187,6 +201,18 @@ impl QuarantinedPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture rides in the one user turn, before the question.
+    #[test]
+    fn a_question_about_a_picture_is_still_one_turn_with_no_tools() {
+        let picture = crate::message::Block::text("stand-in for a picture");
+        let req = QuarantinedPass::new("m", 8).ask_about(picture.clone(), "how many?");
+        assert!(req.tools.is_empty());
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].content[0], picture);
+        assert_eq!(req.messages[0].content.len(), 2);
+        assert!(req.messages[0].text().ends_with("how many?"));
+    }
 
     #[test]
     fn a_quarantined_request_carries_no_tools_and_exactly_one_user_turn() {
