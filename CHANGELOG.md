@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Picture settings for chat.** Settings → Images sets how pictures are
+  drawn in every chat: model, steps, guidance, sampler, scheduler and the
+  negative prompt. A persona's picture settings now fall back to these
+  field by field and override any of them; a persona on a different model
+  takes that model's own numbers. A persona's unset model or negative is
+  now inherited rather than standard/off, so a persona with nothing set
+  draws as the chat does.
+
 - **Speech to text installs itself.** On Linux, `mecha features enable voice`
   now offers the speech-to-text server: an environment built from a
   hash-pinned lock, the Parakeet model fetched by its pinned sha256, and

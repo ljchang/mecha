@@ -1664,16 +1664,30 @@ export const learningReport = {
 // (`persona_chat.rs`). Fiction twice over: invented people, playing parts.
 
 // A persona's picture settings as the list carries them
-// (`PersonaChats::image_view`): what the owner set, what each field resolves
-// to, and the estimate.
+// (`persona_chat::picture_view`): what the owner set, what each unset field
+// falls to — the chat's settings, here untuned — and the estimate.
+const imageDefaults = { model: 'standard', steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: false };
 const imageDefault = {
-  set: {}, defaults: { steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple' },
+  set: {}, inherits: 'chat', defaults: imageDefaults,
   model: 'standard', steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: false, estimate_secs: 37,
 };
 const imageGuided = {
-  set: { cfg: 3, steps: 30, sampler: 'res_multistep', scheduler: 'beta', negative: true },
-  defaults: { steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple' },
+  set: { model: 'standard', cfg: 3, steps: 30, sampler: 'res_multistep', scheduler: 'beta', negative: true },
+  inherits: 'chat', defaults: imageDefaults,
   model: 'standard', steps: 30, cfg: 3, sampler: 'res_multistep', scheduler: 'beta', negative: true, estimate_secs: 53,
+};
+const imageOptions = {
+  samplers: ['euler', 'euler_ancestral', 'heun', 'dpmpp_2m', 'dpmpp_2m_sde', 'res_multistep', 'uni_pc'],
+  schedulers: ['simple', 'sgm_uniform', 'karras', 'exponential', 'beta', 'normal'],
+  cfg: [1, 5, 0.5],
+  steps: [4, 60],
+};
+
+// The chat's picture settings (Settings → Images): untuned, so every field
+// is the model's own.
+export const chatImages = {
+  image: { ...imageDefault, inherits: 'default' },
+  image_options: imageOptions,
 };
 
 export const personas = {
@@ -1685,12 +1699,7 @@ export const personas = {
     { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
     { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
-  image_options: {
-    samplers: ['euler', 'euler_ancestral', 'heun', 'dpmpp_2m', 'dpmpp_2m_sde', 'res_multistep', 'uni_pc'],
-    schedulers: ['simple', 'sgm_uniform', 'karras', 'exponential', 'beta', 'normal'],
-    cfg: [1, 5, 0.5],
-    steps: [4, 60],
-  },
+  image_options: imageOptions,
   unlocked: false,
   has_password: false,
 };

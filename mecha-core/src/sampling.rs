@@ -1,5 +1,5 @@
-//! How a picture is sampled: the owner's choice per persona, and what each
-//! choice left unset resolves to.
+//! How a picture is sampled: the owner's choice for chat and per persona,
+//! and what each choice left unset resolves to.
 //!
 //! The graph stays fixed in code (`imagegen::comfy_graph`); what the owner
 //! may tune are the sampler's numbers and names, each from a closed range or
@@ -7,16 +7,24 @@
 //! of it: the tool's schema has no such field, and the host stamps the
 //! persona's settings onto the turn as it stamps the layers switch.
 //!
-//! The defaults are the reference setting every picture used before this
-//! existed (cfg 1, euler, simple, the configured steps, no negative), so a
-//! persona nobody tuned draws byte-for-byte as before.
+//! Two layers (the owner, 2026-10-11): the chat's settings, in
+//! `picture-settings.toml` under the mecha home, and a persona's, in its
+//! `state.toml`. A field the persona leaves unset is the chat's
+//! ([`Tuning::over`]), and one the chat leaves unset is the reference
+//! setting every picture used before this existed (cfg 1, euler, simple,
+//! the configured steps, no negative) — so with neither tuned, a picture
+//! draws byte-for-byte as before.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 /// Which diffusion model draws: the configured one, or its turbo
-/// distillation. A value this build does not know reads as standard: a
-/// closed enum written to a store is a wire format.
+/// distillation. A closed enum written to a store is a wire format, and a
+/// stored name this build does not know reads as **unset** — the layer
+/// below, the chat's — never as a standard override: the stores are read
+/// through [`Model::named`] (`Tuning::lenient`), and the settings routes
+/// refuse an unknown name. `#[serde(other)]` serves only the derived
+/// `Deserialize`, which no store reads (mecha-7e, 2026-10-11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Model {
@@ -27,8 +35,14 @@ pub enum Model {
 }
 
 impl Model {
-    fn is_standard(&self) -> bool {
-        *self == Model::Standard
+    /// The closed set by name, and nothing else: a stored line this build
+    /// does not know is unset — inherited — not a standard override.
+    fn named(s: &str) -> Option<Model> {
+        match s {
+            "standard" => Some(Model::Standard),
+            "turbo" => Some(Model::Turbo),
+            _ => None,
+        }
     }
 }
 
@@ -124,12 +138,14 @@ pub const NEGATIVE: &str = "Low resolution, poor image quality, distorted limbs,
     smooth skin, AI-generated look, chaotic composition, blurry text, duplicate person, \
     extra people, extra limbs";
 
-/// What the owner chose for a persona's pictures. Every unset field is the
-/// model's own default ([`Tuning::resolve`]).
+/// What the owner chose for the chat's pictures or a persona's. Every field
+/// is optional, and only an unset one is left out of the file: a persona's
+/// explicit `standard` or `negative = false` overrides a chat that chose
+/// otherwise, so it must be written (mecha-7e, 2026-10-11).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tuning {
-    #[serde(default, skip_serializing_if = "Model::is_standard")]
-    pub model: Model,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<Model>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cfg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,8 +154,8 @@ pub struct Tuning {
     pub sampler: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub negative: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negative: Option<bool>,
 }
 
 /// How one picture is sampled, every field decided: what the graph is
@@ -199,21 +215,43 @@ impl Tuning {
         Ok(self)
     }
 
+    /// This persona's choices over `base`, the chat's: each field this one
+    /// leaves unset is the chat's. A persona that picks a model other than
+    /// the chat's takes none of the chat's numbers, which were chosen for
+    /// the other model — turbo inheriting 30 guided steps would undo it.
+    pub fn over(&self, base: &Tuning) -> Tuning {
+        if self
+            .model
+            .is_some_and(|m| m != base.model.unwrap_or_default())
+        {
+            return self.clone();
+        }
+        Tuning {
+            model: self.model.or(base.model),
+            cfg: self.cfg.or(base.cfg),
+            steps: self.steps.or(base.steps),
+            sampler: self.sampler.clone().or_else(|| base.sampler.clone()),
+            scheduler: self.scheduler.clone().or_else(|| base.scheduler.clone()),
+            negative: self.negative.or(base.negative),
+        }
+    }
+
     /// Every field decided: the turbo model's own steps where the owner set
     /// none, the configured steps for the standard one, and the reference
     /// setting for the rest.
     pub fn resolve(&self, configured_steps: u32) -> Sampling {
-        let base = Sampling::reference(match self.model {
+        let model = self.model.unwrap_or_default();
+        let base = Sampling::reference(match model {
             Model::Standard => configured_steps,
             Model::Turbo => TURBO_STEPS,
         });
         Sampling {
-            model: self.model,
+            model,
             steps: self.steps.unwrap_or(base.steps),
             cfg: self.cfg.unwrap_or(base.cfg),
             sampler: self.sampler.clone().unwrap_or(base.sampler),
             scheduler: self.scheduler.clone().unwrap_or(base.scheduler),
-            negative: if self.negative {
+            negative: if self.negative == Some(true) {
                 NEGATIVE.to_string()
             } else {
                 String::new()
@@ -223,15 +261,16 @@ impl Tuning {
 
     /// The fields of a stored table one at a time, each that does not read
     /// left unset: a bad line costs that line, never the persona's other
-    /// settings.
+    /// settings — and an unset line inherits, so a damaged `model` is the
+    /// chat's model, never a standard override (mecha-7e, 2026-10-11).
     pub fn lenient(table: &toml::Table) -> Tuning {
         let one = Tuning::default();
         let pick = |t: Tuning| t.checked().ok();
         Tuning {
             model: table
                 .get("model")
-                .and_then(|v| v.clone().try_into::<Model>().ok())
-                .unwrap_or_default(),
+                .and_then(toml::Value::as_str)
+                .and_then(Model::named),
             cfg: table
                 .get("cfg")
                 .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
@@ -273,12 +312,52 @@ impl Tuning {
                     })
                 })
                 .and_then(|t| t.scheduler),
-            negative: table
-                .get("negative")
-                .and_then(toml::Value::as_bool)
-                .unwrap_or(false),
+            negative: table.get("negative").and_then(toml::Value::as_bool),
         }
     }
+}
+
+/// The chat's picture settings: one file under the mecha home, written by
+/// the owner's settings page and nothing else — no tool, no model.
+pub fn chat_path(mecha_home: &std::path::Path) -> std::path::PathBuf {
+    mecha_home.join("picture-settings.toml")
+}
+
+/// The chat's settings, read the way a persona's are: a missing file is
+/// nothing chosen, a bad line costs that line. A file that cannot be read
+/// at all is said, never taken for nothing chosen in silence.
+pub fn chat(path: &std::path::Path) -> Tuning {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Tuning::default(),
+        Err(e) => {
+            tracing::warn!(
+                "{} could not be read ({e}); pictures use the reference settings",
+                path.display()
+            );
+            return Tuning::default();
+        }
+    };
+    match toml::from_str::<toml::Table>(&text) {
+        Ok(table) => Tuning::lenient(&table),
+        Err(e) => {
+            tracing::warn!(
+                "{} is not TOML ({e}); pictures use the reference settings",
+                path.display()
+            );
+            Tuning::default()
+        }
+    }
+}
+
+/// Write the chat's settings, held to their ranges and lists first.
+pub fn set_chat(path: &std::path::Path, tuning: Tuning) -> Result<Tuning> {
+    let tuning = tuning.checked()?;
+    let text = toml::to_string(&tuning)?;
+    let tmp = path.with_extension("toml.part");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(tuning)
 }
 
 /// Roughly how long a picture takes on this machine, in seconds: a fixed
@@ -309,7 +388,7 @@ mod tests {
     #[test]
     fn turbo_takes_its_own_steps_unless_the_owner_set_some() {
         let turbo = Tuning {
-            model: Model::Turbo,
+            model: Some(Model::Turbo),
             ..Tuning::default()
         };
         assert_eq!(turbo.resolve(40).steps, TURBO_STEPS);
@@ -323,10 +402,110 @@ mod tests {
     #[test]
     fn the_negative_is_the_fixed_text_or_nothing() {
         let on = Tuning {
-            negative: true,
+            negative: Some(true),
             ..Tuning::default()
         };
         assert_eq!(on.resolve(40).negative, NEGATIVE);
+    }
+
+    /// A persona's unset field is the chat's, its own wins, an explicit
+    /// standard or no-negative overrides a chat that chose otherwise, and a
+    /// persona on another model takes none of the chat's numbers (the
+    /// owner, 2026-10-11).
+    #[test]
+    fn a_persona_inherits_the_chat_and_overrides_it() {
+        let chat = Tuning {
+            cfg: Some(3.0),
+            steps: Some(30),
+            sampler: Some("res_multistep".into()),
+            negative: Some(true),
+            ..Tuning::default()
+        };
+        assert_eq!(
+            Tuning::default().over(&chat),
+            chat,
+            "nothing set: the chat's"
+        );
+        let own = Tuning {
+            cfg: Some(2.0),
+            negative: Some(false),
+            ..Tuning::default()
+        };
+        let both = own.over(&chat);
+        assert_eq!(
+            (both.cfg, both.steps, both.negative),
+            (Some(2.0), Some(30), Some(false))
+        );
+        assert!(both.resolve(40).negative.is_empty(), "an explicit off wins");
+        let turbo = Tuning {
+            model: Some(Model::Turbo),
+            ..Tuning::default()
+        };
+        let t = turbo.over(&chat).resolve(40);
+        assert_eq!((t.steps, t.cfg), (TURBO_STEPS, 1.0), "turbo's own numbers");
+        // An explicit standard under a turbo chat is standard.
+        let turbo_chat = Tuning {
+            model: Some(Model::Turbo),
+            ..Tuning::default()
+        };
+        let standard = Tuning {
+            model: Some(Model::Standard),
+            ..Tuning::default()
+        };
+        assert_eq!(
+            standard.over(&turbo_chat).resolve(40).model,
+            Model::Standard
+        );
+        assert_eq!(
+            Tuning::default().over(&turbo_chat).resolve(40).model,
+            Model::Turbo
+        );
+    }
+
+    /// An explicit default is written, so it survives the round trip as an
+    /// override rather than reading back as inherit (mecha-7e, 2026-10-11).
+    #[test]
+    fn an_explicit_default_is_written() {
+        let t = Tuning {
+            model: Some(Model::Standard),
+            negative: Some(false),
+            ..Tuning::default()
+        };
+        let text = toml::to_string(&t).unwrap();
+        let back = Tuning::lenient(&toml::from_str(&text).unwrap());
+        assert_eq!(back, t, "{text}");
+        assert_eq!(toml::to_string(&Tuning::default()).unwrap().trim(), "");
+    }
+
+    /// The chat's file: missing is nothing chosen, a write is read back, and
+    /// the door holds there too.
+    #[test]
+    fn the_chat_settings_round_trip() {
+        let dir = std::env::temp_dir().join(format!("mecha-chatpic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = chat_path(&dir);
+        let missing = chat(&path);
+        let g = Tuning {
+            cfg: Some(3.0),
+            negative: Some(true),
+            ..Tuning::default()
+        };
+        let wrote = set_chat(&path, g.clone());
+        let read = chat(&path);
+        let refused = set_chat(
+            &path,
+            Tuning {
+                cfg: Some(9.0),
+                ..Tuning::default()
+            },
+        );
+        let after = chat(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(missing, Tuning::default());
+        assert_eq!(wrote.unwrap(), g);
+        assert_eq!(read, g);
+        assert!(refused.is_err());
+        assert_eq!(after, g, "a refused write leaves the file");
     }
 
     #[test]
@@ -356,17 +535,17 @@ mod tests {
         )
         .unwrap();
         let t = Tuning::lenient(&table);
-        assert_eq!(t.model, Model::Turbo);
+        assert_eq!(t.model, Some(Model::Turbo));
         assert_eq!(t.cfg, None, "out of range");
         assert_eq!(t.steps, Some(30));
         assert_eq!(t.sampler, None, "not in the list");
         assert_eq!(t.scheduler.as_deref(), Some("beta"));
-        assert!(t.negative);
+        assert_eq!(t.negative, Some(true));
         // An integer cfg reads as its float, and a model this build does not
-        // know reads as standard.
+        // know is unset — inherited, never a standard override.
         let table: toml::Table = toml::from_str("model = \"hyper\"\ncfg = 3").unwrap();
         let t = Tuning::lenient(&table);
-        assert_eq!((t.model, t.cfg), (Model::Standard, Some(3.0)));
+        assert_eq!((t.model, t.cfg), (None, Some(3.0)));
     }
 
     #[test]
@@ -378,13 +557,13 @@ mod tests {
             steps: Some(30),
             sampler: Some("res_multistep".into()),
             scheduler: Some("beta".into()),
-            negative: true,
+            negative: Some(true),
             ..Tuning::default()
         };
         assert_eq!(at(g3), 53);
         assert_eq!(
             at(Tuning {
-                model: Model::Turbo,
+                model: Some(Model::Turbo),
                 ..Tuning::default()
             }),
             11

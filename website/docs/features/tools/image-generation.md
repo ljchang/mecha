@@ -59,14 +59,25 @@ twice as fast — about 28 seconds a picture against 64 for the Q4 GGUF, and 37
 against about 80 for an edit — with the same pictures for the same seed and
 about 1 GB more memory at its peak.
 
-A persona's page can switch its pictures to the turbo model. It draws in
+**Settings → Images** sets how pictures are drawn in chat: the model,
+steps, guidance, sampler, scheduler and whether the fixed negative prompt is
+sent, with presets for the reference setting, a guided one and turbo. A
+persona's page has the same settings, and each one it leaves at "chat"
+follows Settings → Images, so you tune once and override per persona. A
+persona that picks a different model from the chat's takes that model's own
+numbers rather than the chat's. The settings are kept in
+`~/.mecha/picture-settings.toml` and a persona's `state.toml`, written only
+by those pages, and read on every picture, so a change is the next
+picture's.
+
+Either page can switch pictures to the turbo model. It draws in
 about 8 steps instead of 40, so a picture takes 10 to 15 seconds, but it is
 weaker on two people acting together. Turbo needs one more file from the
 same repository, `qwen_image_2.1_turbo_int8_convrot.safetensors`, also under
 `models/diffusion_models/` (`[image] turbo_model` names it). The install does
 not fetch it unless asked: `mecha features enable image --turbo` does, and so
-does `mecha features enable image` once a persona's picture settings choose
-turbo, unless `[image] turbo_model` names a file of your own. A persona set
+does `mecha features enable image` once the chat's or a persona's picture
+settings choose turbo, unless `[image] turbo_model` names a file of your own. A persona set
 to Turbo on a server without the file is refused with a message naming that
 command, and the setting stays until you change it. Switching between the
 two models unloads the one not in use, and the first picture after a switch

@@ -672,6 +672,11 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::image_settings),
         )
         .at(
+            "/api/settings/images",
+            Owner::Of(Feature::Image),
+            get(persona_chat::chat_image_settings).post(persona_chat::chat_image_settings_save),
+        )
+        .at(
             "/api/personas/{name}/memory",
             Owner::Of(Feature::Personas),
             get(persona_chat::memory).post(persona_chat::memory_act),
@@ -2487,6 +2492,8 @@ mod tests {
             ("POST", "/api/outbox/test/reconcile"),
             ("GET", "/api/settings/charter"),
             ("POST", "/api/settings/charter"),
+            ("GET", "/api/settings/images"),
+            ("POST", "/api/settings/images"),
             ("GET", "/api/settings/rules"),
             ("POST", "/api/settings/rules/retire"),
             ("POST", "/api/settings/rules/restore"),

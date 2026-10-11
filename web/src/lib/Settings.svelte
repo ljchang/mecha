@@ -5,6 +5,7 @@
   import SettingsVoice from './SettingsVoice.svelte';
   import SettingsFeatures from './SettingsFeatures.svelte';
   import SettingsLock from './SettingsLock.svelte';
+  import SettingsImages from './SettingsImages.svelte';
   import { autolockLine } from './autolock.js';
   import { features } from './features.svelte.js';
   import { isShown, summary } from './features.js';
@@ -16,12 +17,19 @@
   // two-tap save and the voice pane's live microphone have no business
   // sharing a scope.
   let { initial = null, navigate, backTo } = $props();
-  const PANES = ['charter', 'learning', 'voice', 'lock', 'features'];
+  const PANES = ['charter', 'learning', 'voice', 'images', 'lock', 'features'];
   // Derived, never copied into state: App re-renders this with a new
   // `initial` on back/forward, and a `$state` snapshot would ignore it.
   const pane = $derived(PANES.includes(initial) ? initial : null);
 
-  const TITLE = { charter: 'Charter', learning: 'Learning', voice: 'Voice', lock: 'Lock', features: 'Features' };
+  const TITLE = {
+    charter: 'Charter',
+    learning: 'Learning',
+    voice: 'Voice',
+    images: 'Images',
+    lock: 'Lock',
+    features: 'Features',
+  };
 
   // Each pane reads its own data when opened. These are only the one-line
   // summaries the index rows show, re-read on every return so an edit made
@@ -31,6 +39,7 @@
   let rules = $state(null);
   let rulesErr = $state(null);
   let voice = $state(null);
+  let images = $state(null);
   let lock = $state(null);
 
   async function loadSummary() {
@@ -58,6 +67,12 @@
       voice = res.ok ? await res.json() : null;
     } catch {
       voice = null;
+    }
+    try {
+      const res = await fetch('/api/settings/images');
+      images = res.ok ? await res.json() : null;
+    } catch {
+      images = null;
     }
     try {
       const res = await fetch('/api/settings/lock');
@@ -112,6 +127,14 @@
     };
   });
 
+  // What a chat picture is drawn with, in a few words.
+  const imagesLine = $derived.by(() => {
+    const img = images?.image;
+    if (!img) return { text: '—' };
+    const model = img.model === 'turbo' ? 'Turbo' : 'Standard';
+    return { text: `${model} · ${img.steps} steps · guidance ${img.cfg} · about ${img.estimate_secs} s` };
+  });
+
   const lockLine = $derived.by(() => {
     if (lock === null) return { text: '—' };
     if (lock.error) return { text: 'autolock unreadable — nothing unlocks', bad: true };
@@ -125,6 +148,8 @@
     learning: 'M9.5 18h5M10.5 21h3M12 3a6 6 0 00-3.5 10.9V16h7v-2.1A6 6 0 0012 3z',
     // A waveform.
     voice: 'M4 10v4M8 6.5v11M12 9v6M16 4.5v15M20 10v4',
+    // A framed picture: a sun over a hill.
+    images: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
     // A padlock: the library's, which Personas share.
     lock: 'M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z',
     // Switches.
@@ -144,6 +169,7 @@
       { pane: 'charter', name: 'Charter', line: charterLine },
       { pane: 'learning', name: 'Learning', line: learningLine },
       isShown(features.rows, 'voice') && { pane: 'voice', name: 'Voice', line: voiceLine },
+      isShown(features.rows, 'image') && { pane: 'images', name: 'Images', line: imagesLine },
       // The lock guards two tabs; with both off it guards nothing to see.
       (isShown(features.rows, 'personas') || isShown(features.rows, 'library')) && {
         pane: 'lock',
@@ -218,6 +244,8 @@
       <SettingsFeatures />
     {:else if pane === 'lock'}
       <SettingsLock />
+    {:else if pane === 'images'}
+      <SettingsImages />
     {:else}
       <SettingsVoice />
     {/if}

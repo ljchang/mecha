@@ -334,7 +334,10 @@ impl ChatState {
             sessions: Mutex::new(HashMap::new()),
             personas: Arc::new(
                 super::persona_chat::PersonaChats::new()?
-                    .with_image_steps(config.image.as_ref().map(|i| i.steps)),
+                    .with_image_steps(config.image.as_ref().map(|i| i.steps))
+                    .with_chat_settings(mecha_core::sampling::chat_path(
+                        &mecha_core::work::mecha_home()?,
+                    )),
             ),
             stopping: Default::default(),
             runs: Default::default(),
