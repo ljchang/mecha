@@ -340,7 +340,11 @@ async fn observe_unnamed(cfg: &Config, line: CommandLine<'_>) -> Unnamed {
                 let Some(list) = list_on(&http, &b).await else {
                     continue;
                 };
-                match name_for(&list) {
+                // The followed routers' rule, on this side too: a list this
+                // cannot read supports no conclusion about what is resident,
+                // and naming its apparent resident could evict the owner's
+                // pick (review of #637).
+                match readable(&list).then(|| name_for(&list)).flatten() {
                     Some(m) => {
                         // R4 for an entry that asks: its temperature reaches
                         // this model. A followed router's resident model is
@@ -1498,6 +1502,18 @@ mod tests {
         let w = observe_for(&model_less(&url), false, named).await;
         server.await.unwrap();
         assert!(!w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
+
+        // A list with a status this build cannot read names nothing, even
+        // where one model reads resident: the unknown one may be resident too.
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"swapping"}}]}"#,
+        ])
+        .await;
+        let w = observe(&model_less(&url), true).await;
+        server.await.unwrap();
+        assert_eq!(unnamed_model(&url), None);
+        assert!(w.iter().any(|w| w.contains("cannot read")), "{w:?}");
 
         // R4 is never held back: a model-less entry's temperature reaches
         // the one model it asks for, followed or not (review of #637).
