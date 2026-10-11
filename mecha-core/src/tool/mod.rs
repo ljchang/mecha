@@ -816,6 +816,10 @@ pub struct ToolCtx {
     /// neutral (`mecha replay --layers-posed`, mecha-a3's gate). Never set by
     /// a chat.
     pub layers_posed: bool,
+    /// How this persona's pictures are sampled (`sampling::Tuning`): the
+    /// owner's settings, stamped by the host each turn like `layers`, and the
+    /// reference setting everywhere else. Never the model's.
+    pub image_tuning: crate::sampling::Tuning,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1008,6 +1012,7 @@ impl Default for ToolCtx {
             image_seeds: None,
             layers: false,
             layers_posed: false,
+            image_tuning: crate::sampling::Tuning::default(),
         }
     }
 }

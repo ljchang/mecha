@@ -569,9 +569,8 @@ mod tests {
         use crate::imagegen::{comfy_graph, ImageConfig, Request, EDIT_REFERENCE_SIZE};
         let req = Request {
             prompt: "a lighthouse".into(),
-            negative: String::new(),
             size: Some((1024, 1024)),
-            steps: 4,
+            sampling: crate::sampling::Sampling::reference(4),
             seed: 1,
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,

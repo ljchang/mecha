@@ -59,6 +59,16 @@ twice as fast — about 28 seconds a picture against 64 for the Q4 GGUF, and 37
 against about 80 for an edit — with the same pictures for the same seed and
 about 1 GB more memory at its peak.
 
+A persona's page can switch its pictures to the turbo model. It draws in
+about 8 steps instead of 40, so a picture takes 10 to 15 seconds, but it is
+weaker on two people acting together. Turbo needs one more file from the
+same repository, `qwen_image_2.1_turbo_int8_convrot.safetensors`, also under
+`models/diffusion_models/` (`[image] turbo_model` names it). A persona set
+to Turbo on a server without the file is refused with a message that names
+the setting, and the setting stays until you change it. Switching between
+the two models unloads the one not in use, and the first picture after a
+switch pays the load.
+
 ## Using it
 
 Ask in plain words. The model chooses the prompt, a size — `square`

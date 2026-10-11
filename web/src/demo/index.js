@@ -212,6 +212,7 @@ export const ROUTES = [
   ['POST', /^\/api\/personas\/[^/]+\/lock$/, () => new Response('the demo does not lock', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/frame$/, () => new Response('the demo does not keep framing', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/image-touching$/, () => new Response('the demo does not keep image settings', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/image-settings$/, () => new Response('the demo does not keep image settings', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
   ['GET', /^\/api\/personas\/[^/]+\/memory$/, () => fx.personaMemory],
   ['POST', /^\/api\/personas\/[^/]+\/memory$/, () => new Response('the demo does not change memories', { status: 501 })],

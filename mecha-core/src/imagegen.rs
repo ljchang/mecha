@@ -85,6 +85,10 @@ pub struct ImageConfig {
     /// `.gguf` diffusion model loads through the ComfyUI-GGUF custom node,
     /// anything else through ComfyUI's own `UNETLoader` ([`unet_loader`]).
     pub diffusion_model: String,
+    /// The turbo distillation a persona's owner may choose instead
+    /// (`sampling::Model::Turbo`): fewer steps, no guidance, the same text
+    /// encoder and VAE.
+    pub turbo_model: String,
     pub text_encoder: String,
     pub vae: String,
     /// Denoising steps. The reference setting for Qwen-Image 2.1 is 40.
@@ -118,6 +122,16 @@ pub struct ImageConfig {
     pub server_temp_dir: Option<std::path::PathBuf>,
 }
 
+impl ImageConfig {
+    /// The diffusion model file a picture sampled as `model` loads.
+    pub fn model_file(&self, model: crate::sampling::Model) -> &str {
+        match model {
+            crate::sampling::Model::Standard => &self.diffusion_model,
+            crate::sampling::Model::Turbo => &self.turbo_model,
+        }
+    }
+}
+
 impl Default for ImageConfig {
     fn default() -> Self {
         ImageConfig {
@@ -130,6 +144,7 @@ impl Default for ImageConfig {
             // re-quantises every weight on every step; the ConvRot file
             // runs on native int8 kernels.
             diffusion_model: "qwen_image_2.1_int8_convrot.safetensors".into(),
+            turbo_model: crate::sampling::TURBO_MODEL.into(),
             text_encoder: "qwen3vl_8b_w4a8.safetensors".into(),
             vae: "qwen_image_2.1_vae_bf16.safetensors".into(),
             steps: 40,
@@ -243,11 +258,12 @@ impl Size {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     pub prompt: String,
-    pub negative: String,
     /// Width and height, or `None` to follow the first reference's shape —
     /// which is only ever `None` when there is a reference to follow.
     pub size: Option<(u32, u32)>,
-    pub steps: u32,
+    /// How the sampler runs: the model, steps, guidance, sampler and
+    /// scheduler, and the negative prompt (`sampling::Tuning::resolve`).
+    pub sampling: crate::sampling::Sampling,
     pub seed: u64,
     /// Images to edit or draw from, in order: `<image1>` is the first.
     pub references: Vec<Reference>,
@@ -624,10 +640,11 @@ pub fn comfy_graph(
     mask: Option<&str>,
 ) -> Value {
     let mut encode = json!({
-        "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.negative,
+        "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.sampling.negative,
         "resolution": req.reference_size});
-    let (loader, mut unet) = unet_loader(&cfg.diffusion_model);
-    unet["unet_name"] = json!(cfg.diffusion_model);
+    let model = cfg.model_file(req.sampling.model);
+    let (loader, mut unet) = unet_loader(model);
+    unet["unet_name"] = json!(model);
     let mut graph = json!({
         "unet": {"class_type": loader, "inputs": unet},
         "clip": {"class_type": "CLIPLoader", "inputs": {
@@ -667,9 +684,12 @@ pub fn comfy_graph(
     graph["encode"] = json!({"class_type": "TextEncodeQwenImage21", "inputs": encode});
     graph["sample"] = json!({"class_type": "KSampler", "inputs": {
         "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
-        "latent_image": canvas, "seed": req.seed, "steps": req.steps,
-        // Guidance off: the reference setting. Above 1 doubles every step.
-        "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}});
+        "latent_image": canvas, "seed": req.seed, "steps": req.sampling.steps,
+        // Guidance off (cfg 1) is the reference setting; above 1 doubles
+        // every step. Each value is from a closed range or list
+        // (`sampling::Tuning::checked`), never the model's.
+        "cfg": req.sampling.cfg, "sampler_name": req.sampling.sampler,
+        "scheduler": req.sampling.scheduler, "denoise": 1.0}});
     graph
 }
 
@@ -752,6 +772,12 @@ struct ComfyUi {
     /// only [`UNSEEN_WAIT`] - enough for a restart already under way, not a
     /// minute and a half of every picture against a stopped service.
     answered: std::sync::atomic::AtomicBool,
+    /// Where the model each server holds is written for every process that
+    /// draws (`ImageGenerate::with_model_record`): a serve restarted after a
+    /// turbo picture, or a replay beside serve, otherwise read an unused
+    /// server as holding the standard model and loaded it beside turbo
+    /// (mecha-a3's gate of #648). Unset (tests), this process's memory alone.
+    model_record: std::sync::OnceLock<std::path::PathBuf>,
 }
 
 /// Why a generation did not produce an image.
@@ -820,7 +846,115 @@ struct Outcome {
     left: Option<String>,
 }
 
+/// The diffusion model file this process last sent each server, by its
+/// address: a picture that needs the other one unloads it first (the owner's
+/// ruling, 2026-10-11: "switching to turbo mode should unload the standard
+/// model"), since ComfyUI otherwise keeps both resident, ~7 GB more against
+/// the memory floor. Process-wide, because each persona's form has its own
+/// client and one server draws for them all. Another process's pictures are
+/// unseen here, so a server this process has not used is read as holding the
+/// standard model: the common case pays no extra unload.
+static LAST_MODEL: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The shared held-model record, by server address; unreadable reads empty,
+/// so a server reads as holding the standard model, as an unused one does.
+fn read_held(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Written whole beside itself and renamed over, so a reader never sees half.
+fn write_held(
+    path: &std::path::Path,
+    held: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Unique per write: two chats in one serve can draw at once (review of
+    // #648, pass 3).
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, serde_json::to_vec(held)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// How long a job waits after asking the server to unload, so the unload
+/// runs before the job: ComfyUI's worker wakes for the flag and acts on it
+/// only once its queue is empty, and a prompt that lands first is drawn
+/// with both models resident.
+#[cfg(not(test))]
+const UNLOAD_SETTLE: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const UNLOAD_SETTLE: Duration = Duration::from_millis(10);
+
 impl ComfyUi {
+    /// Whether a picture drawn with `file` changes the model the server
+    /// holds (`LAST_MODEL`); `standard` is what an unused server is read as.
+    fn switching(&self, file: &str, standard: &str) -> bool {
+        match self.held().as_deref() {
+            // Released since its last picture: it holds nothing to unload.
+            Some("") => false,
+            Some(held) => held != file,
+            None => standard != file,
+        }
+    }
+
+    /// Note that this server now holds no model: an idle release unloaded
+    /// it, so the next picture switches nothing, whichever model it asks for
+    /// (review of #648).
+    fn released(&self) {
+        self.drew_with("");
+    }
+
+    /// The model this server last drew with, as the shared record says when
+    /// there is one, else as this process saw it. `""` is a released server.
+    fn held(&self) -> Option<String> {
+        match self.model_record.get() {
+            // The record wins where it names this server: another process may
+            // have drawn since. Where it cannot be read or has no entry (a
+            // write that failed), what this process sent last, never the
+            // standard model by default (review of #648, pass 5).
+            Some(path) => read_held(path)
+                .remove(self.base.as_str())
+                .or_else(|| self.held_here()),
+            None => self.held_here(),
+        }
+    }
+
+    /// What this process last sent this server, or released it to.
+    fn held_here(&self) -> Option<String> {
+        LAST_MODEL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(self.base.as_str())
+            .cloned()
+    }
+
+    /// Note `file` as the model this server now draws with. A record that
+    /// cannot be written costs only the next switch's unload.
+    fn drew_with(&self, file: &str) {
+        LAST_MODEL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.base.to_string(), file.to_string());
+        if let Some(path) = self.model_record.get() {
+            let mut held = read_held(path);
+            held.insert(self.base.to_string(), file.to_string());
+            if let Err(e) = write_held(path, &held) {
+                tracing::warn!("image_generate: the held-model record: {e:#}");
+            }
+        }
+    }
+
     /// The client for `cfg`'s server, refusing one not on this machine — and
     /// a `server_temp_dir` that is not absolute, which would delete the
     /// server's file names relative to whatever directory this process runs
@@ -856,6 +990,7 @@ impl ComfyUi {
             http,
             poll: Duration::from_secs(1),
             answered: std::sync::atomic::AtomicBool::new(false),
+            model_record: std::sync::OnceLock::new(),
         })
     }
 
@@ -938,18 +1073,37 @@ impl ComfyUi {
     /// Every file the graph names is one the server can load, checked before
     /// submitting: a missing file otherwise fails deep in a run as a node
     /// validation error the model cannot act on.
-    async fn preflight(&self, cfg: &ImageConfig) -> Result<()> {
-        let checks = [
-            (
-                unet_loader(&cfg.diffusion_model).0,
-                "unet_name",
-                &cfg.diffusion_model,
-            ),
-            ("CLIPLoader", "clip_name", &cfg.text_encoder),
-            ("VAELoader", "vae_name", &cfg.vae),
+    ///
+    /// A persona's picture settings are checked the same way, and a value the
+    /// server lacks is refused naming the setting, since it stays chosen until
+    /// the owner changes it (review of #648): the turbo file, and a sampler
+    /// or scheduler other than the reference ones, which every ComfyUI has.
+    async fn preflight(&self, cfg: &ImageConfig, s: &crate::sampling::Sampling) -> Result<()> {
+        let model = cfg.model_file(s.model).to_string();
+        let reference = crate::sampling::Sampling::reference(s.steps);
+        let turbo = s.model == crate::sampling::Model::Turbo;
+        let mut checks = vec![
+            (unet_loader(&model).0, "unet_name", model.clone(), turbo),
+            ("CLIPLoader", "clip_name", cfg.text_encoder.clone(), false),
+            ("VAELoader", "vae_name", cfg.vae.clone(), false),
         ];
-        for (node, input, want) in checks {
-            let info = self.get_json(&format!("object_info/{node}")).await?;
+        if s.sampler != reference.sampler {
+            checks.push(("KSampler", "sampler_name", s.sampler.clone(), true));
+        }
+        if s.scheduler != reference.scheduler {
+            checks.push(("KSampler", "scheduler", s.scheduler.clone(), true));
+        }
+        // One request per node: the guided preset checks two KSampler inputs.
+        let mut fetched: std::collections::BTreeMap<&str, Value> = Default::default();
+        for (node, input, want, chosen) in checks {
+            let info = match fetched.get(node) {
+                Some(info) => info.clone(),
+                None => {
+                    let info = self.get_json(&format!("object_info/{node}")).await?;
+                    fetched.insert(node, info.clone());
+                    info
+                }
+            };
             let Some(choices) = info
                 .pointer(&format!("/{node}/input/required/{input}/0"))
                 .and_then(Value::as_array)
@@ -965,6 +1119,13 @@ impl ComfyUi {
                 bail!("the image server has no `{node}` node; update ComfyUI");
             };
             if !choices.iter().any(|c| c.as_str() == Some(want.as_str())) {
+                if chosen {
+                    bail!(
+                        "the image server has no `{want}` for {node}, which this persona's \
+                         picture settings choose; change them on the persona's page, or add it \
+                         to the image server"
+                    );
+                }
                 let have: Vec<&str> = choices.iter().filter_map(Value::as_str).collect();
                 bail!(
                     "the image server has no `{want}` for {node} (it has: {})",
@@ -1165,7 +1326,26 @@ impl ComfyUi {
             })
         };
         self.await_server(cancel, SERVER_WAIT).await?;
-        self.preflight(cfg).await?;
+        let model = cfg.model_file(req.sampling.model);
+        self.preflight(cfg, &req.sampling).await?;
+        // The other model out first, so the two are never resident at once.
+        // Recorded before the unload, so a picture starting meanwhile sees the
+        // switch too and unloads rather than loading beside it (review of
+        // #648, pass 3). Best effort: ComfyUI acts on /free only once its
+        // queue is empty, so pictures already queued can still overlap.
+        let switching = self.switching(model, &cfg.diffusion_model);
+        self.drew_with(model);
+        if switching {
+            let _ = self.release().await;
+            let settle = tokio::time::sleep(UNLOAD_SETTLE);
+            match cancel {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => return Err(Failure::Cancelled),
+                    _ = settle => {}
+                },
+                None => settle.await,
+            }
+        }
         // `comfy_graph`'s masked arm needs the picture it masks; without one
         // the mask would drop out of the graph and the whole frame be redrawn.
         // `request` refuses the pair, and this stops it here too, since
@@ -1405,10 +1585,23 @@ impl ComfyUi {
     }
 
     /// Ask the server to drop its models and free the memory they held.
-    async fn release(&self) {
-        let _ = self
-            .post_json("free", &json!({"unload_models": true, "free_memory": true}))
-            .await;
+    /// Whether the server took it: an answer that is not a success is no
+    /// unload, and must not be recorded as one (review of #648, pass 5).
+    async fn release(&self) -> bool {
+        matches!(
+            self.post_json("free", &json!({"unload_models": true, "free_memory": true}))
+                .await,
+            Ok((status, _)) if status.is_success()
+        )
+    }
+
+    /// An idle release: the server is marked empty only when it took the
+    /// unload, so a swallowed failure never tells every process that reads
+    /// the record that the next switch has nothing to unload.
+    async fn release_idle(&self) {
+        if self.release().await {
+            self.released();
+        }
     }
 }
 
@@ -1986,11 +2179,20 @@ impl ImageGenerate {
     /// need below plus the reserve, refused under memory pressure, and
     /// refused when the gauge cannot be read. Only the operator's own
     /// `min_available_mb = 0` switches it off.
-    async fn memory_guard(&self) -> std::result::Result<(), String> {
+    async fn memory_guard(&self, model: crate::sampling::Model) -> std::result::Result<(), String> {
         if self.cfg.min_available_mb == 0 {
             return Ok(());
         }
-        let need_mb = memory_need_mb(self.backend.loaded().await, self.cfg.min_available_mb);
+        // A switch of model unloads the one held and loads the other: cold.
+        let loaded = if self
+            .backend
+            .switching(self.cfg.model_file(model), &self.cfg.diffusion_model)
+        {
+            Some(false)
+        } else {
+            self.backend.loaded().await
+        };
+        let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb);
         let series = crate::system::db_path().ok();
         let verdict = crate::system::floor::admit_now(
             need_mb.saturating_mul(1024 * 1024),
@@ -2009,6 +2211,13 @@ impl ImageGenerate {
     /// Admit generations against the operator's `[system]` floor.
     pub fn with_floor(mut self, floor: crate::system::floor::SystemConfig) -> Self {
         self.floor = floor;
+        self
+    }
+
+    /// Share which model each server holds with every other process that
+    /// draws, through the file at `path` (`ComfyUi::model_record`).
+    pub fn with_model_record(self, path: std::path::PathBuf) -> Self {
+        let _ = self.backend.model_record.set(path);
         self
     }
 
@@ -2180,9 +2389,8 @@ impl ImageGenerate {
             "plate",
             Request {
                 prompt: lp.plate.clone(),
-                negative: base.negative.clone(),
+                sampling: base.sampling.clone(),
                 size: base.size,
-                steps: base.steps,
                 seed: base.seed,
                 references: Vec::new(),
                 reference_size: base.reference_size,
@@ -2221,9 +2429,8 @@ impl ImageGenerate {
                     "plate again",
                     Request {
                         prompt: lp.plate.clone(),
-                        negative: base.negative.clone(),
+                        sampling: base.sampling.clone(),
                         size: base.size,
-                        steps: base.steps,
                         seed: draw_seed(ctx),
                         references: Vec::new(),
                         reference_size: base.reference_size,
@@ -2284,9 +2491,8 @@ impl ImageGenerate {
                             &lp.light,
                         )
                     },
-                    negative: base.negative.clone(),
+                    sampling: base.sampling.clone(),
                     size: Some((1024, 1024)),
-                    steps: base.steps,
                     seed: draw_seed(ctx),
                     references: vec![Reference {
                         path: format!("library:{}", p.key),
@@ -2335,9 +2541,8 @@ impl ImageGenerate {
             "placing",
             Request {
                 prompt: crate::layers::placing_prompt(&lp.people, lp.leftover.as_deref()),
-                negative: base.negative.clone(),
+                sampling: base.sampling.clone(),
                 size: None,
-                steps: base.steps,
                 seed: draw_seed(ctx),
                 references,
                 reference_size: EDIT_REFERENCE_SIZE,
@@ -2355,9 +2560,8 @@ impl ImageGenerate {
             "finish",
             Request {
                 prompt: crate::layers::finish_prompt(lp.style.as_deref()),
-                negative: base.negative.clone(),
+                sampling: base.sampling.clone(),
                 size: None,
-                steps: base.steps,
                 seed: draw_seed(ctx),
                 references: vec![Reference {
                     path: "layers:placed".into(),
@@ -2396,7 +2600,7 @@ impl ImageGenerate {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(after)).await;
             if generation.load(Ordering::SeqCst) == armed {
-                backend.release().await;
+                backend.release_idle().await;
             }
         });
     }
@@ -2983,7 +3187,7 @@ impl Tool for ImageGenerate {
         }
         // Before reading anything: references are a cost on the pool this
         // guards.
-        if let Err(why) = self.memory_guard().await {
+        if let Err(why) = self.memory_guard(ctx.image_tuning.model).await {
             return Ok(refused(why));
         }
         // The picture being changed, read once: its bytes key its record and
@@ -3129,9 +3333,8 @@ impl Tool for ImageGenerate {
         };
         let mut req = Request {
             prompt: String::new(),
-            negative: String::new(),
             size: None,
-            steps: self.cfg.steps,
+            sampling: ctx.image_tuning.resolve(self.cfg.steps),
             seed: match plan.seed {
                 crate::picture::Seed::Fresh => draw_seed(ctx),
                 crate::picture::Seed::Base(s) | crate::picture::Seed::Given(s) => s,
@@ -4155,7 +4358,7 @@ impl Tool for ImageGenerate {
                 "picture": picture_path,
                 "mask": plan.mask,
                 "seed": req.seed,
-                "steps": req.steps,
+                "steps": req.sampling.steps,
                 "size": req.size,
                 // Who was drawn, by name and entry version: what save-to-library
                 // reads. Never the scene itself, which lives outside the jail.
@@ -4171,9 +4374,18 @@ impl Tool for ImageGenerate {
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
                 "model": {
                     "backend": "comfyui",
-                    "diffusion_model": me.cfg.diffusion_model,
+                    "diffusion_model": me.cfg.model_file(req.sampling.model),
                     "text_encoder": me.cfg.text_encoder,
                     "vae": me.cfg.vae,
+                },
+                // How it was sampled, beside the steps above: the owner's
+                // persona settings, resolved. Whether the negative was sent,
+                // never its text, which is fixed in code.
+                "sampling": {
+                    "cfg": req.sampling.cfg,
+                    "sampler": req.sampling.sampler,
+                    "scheduler": req.sampling.scheduler,
+                    "negative": !req.sampling.negative.is_empty(),
                 },
             });
             // The prompt, for the owner only, outside the jail (the manifest
@@ -4186,6 +4398,7 @@ impl Tool for ImageGenerate {
                     "image": path,
                     "route": plan.route,
                     "seed": req.seed,
+                    "sampling": manifest["sampling"],
                     "roles": manifest["roles"],
                     "reader": manifest["reader"],
                     "prompt": req.prompt,
@@ -4234,7 +4447,10 @@ impl Tool for ImageGenerate {
             // result lives once, in the description. The new picture's
             // status comes first, so "it" never reads as the original
             // (review of #581).
-            let drawn = format!("drawn in {secs} s (seed {}, {} steps)", req.seed, req.steps);
+            let drawn = format!(
+                "drawn in {secs} s (seed {}, {} steps)",
+                req.seed, req.sampling.steps
+            );
             let mut text = match &canvas_path {
                 None => {
                     let mut t = format!(
@@ -4851,10 +5067,15 @@ mod tests {
                     let out = if let Some(node) = path.strip_prefix("/object_info/") {
                         let files = |input: &str, name: &str| json!({node: {"input": {"required": {input: [[name], {}]}}}});
                         json_reply(match node {
-                            "UNETLoader" => {
-                                files("unet_name", "qwen_image_2.1_int8_convrot.safetensors")
-                            }
+                            "UNETLoader" => json!({node: {"input": {"required": {"unet_name": [[
+                                "qwen_image_2.1_int8_convrot.safetensors",
+                                crate::sampling::TURBO_MODEL,
+                            ], {}]}}}}),
                             "UnetLoaderGGUF" => files("unet_name", "Qwen-Image-2.1-Q4.gguf"),
+                            // A server with only some of KSampler's names.
+                            "KSampler" => json!({node: {"input": {"required": {
+                                "sampler_name": [["euler", "res_multistep"], {}],
+                                "scheduler": [["simple", "beta"], {}]}}}}),
                             "CLIPLoader" => files("clip_name", "qwen3vl_8b_w4a8.safetensors"),
                             "VAELoader" => files("vae_name", "qwen_image_2.1_vae_bf16.safetensors"),
                             _ => json!({node: {"input": {}}}),
@@ -5037,9 +5258,8 @@ mod tests {
         let hostile = r#"", "class_type": "SaveImage", "evil": {"#;
         let req = Request {
             prompt: hostile.into(),
-            negative: String::new(),
+            sampling: crate::sampling::Sampling::reference(40),
             size: Some((1024, 1024)),
-            steps: 40,
             seed: 7,
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
@@ -5071,6 +5291,59 @@ mod tests {
         assert_eq!(g["sample"]["inputs"]["cfg"], 1.0);
         assert_eq!(g["unet"]["inputs"]["unet_name"], cfg.diffusion_model);
         assert_eq!(g["unet"]["inputs"]["weight_dtype"], "default");
+        assert_eq!(g["sample"]["inputs"]["sampler_name"], "euler");
+        assert_eq!(g["sample"]["inputs"]["scheduler"], "simple");
+        assert_eq!(g["encode"]["inputs"]["negative_prompt"], "");
+    }
+
+    /// A persona's picture settings reach the sampler, the negative and the
+    /// loader, and nothing else of the graph moves.
+    #[test]
+    fn the_owners_settings_reach_the_sampler_and_the_loader() {
+        let cfg = ImageConfig::default();
+        let guided = crate::sampling::Tuning {
+            cfg: Some(3.0),
+            steps: Some(30),
+            sampler: Some("res_multistep".into()),
+            scheduler: Some("beta".into()),
+            negative: true,
+            ..Default::default()
+        };
+        let req = |sampling| Request {
+            prompt: "a lighthouse at dusk".into(),
+            sampling,
+            size: Some((1024, 1024)),
+            seed: 7,
+            references: Vec::new(),
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+        };
+        let g = comfy_graph(&cfg, &req(guided.resolve(cfg.steps)), &[], None);
+        let k = &g["sample"]["inputs"];
+        assert_eq!(
+            (k["cfg"].as_f64(), k["steps"].as_u64()),
+            (Some(3.0), Some(30))
+        );
+        assert_eq!(
+            (k["sampler_name"].as_str(), k["scheduler"].as_str()),
+            (Some("res_multistep"), Some("beta"))
+        );
+        assert_eq!(
+            g["encode"]["inputs"]["negative_prompt"],
+            crate::sampling::NEGATIVE
+        );
+        assert_eq!(g["unet"]["inputs"]["unet_name"], cfg.diffusion_model);
+        let turbo = crate::sampling::Tuning {
+            model: crate::sampling::Model::Turbo,
+            ..Default::default()
+        };
+        let g = comfy_graph(&cfg, &req(turbo.resolve(cfg.steps)), &[], None);
+        assert_eq!(
+            g["unet"]["inputs"]["unet_name"],
+            crate::sampling::TURBO_MODEL
+        );
+        assert_eq!(g["unet"]["class_type"], "UNETLoader");
+        assert_eq!(g["sample"]["inputs"]["steps"], crate::sampling::TURBO_STEPS);
     }
 
     /// The loader follows the file: a GGUF still loads through the custom
@@ -5092,9 +5365,8 @@ mod tests {
             };
             let req = Request {
                 prompt: "a lighthouse".into(),
-                negative: String::new(),
+                sampling: crate::sampling::Sampling::reference(40),
                 size: Some((1024, 1024)),
-                steps: 40,
                 seed: 7,
                 references: Vec::new(),
                 reference_size: EDIT_REFERENCE_SIZE,
@@ -5165,9 +5437,8 @@ mod tests {
         let cfg = ImageConfig::default();
         let req = Request {
             prompt: "Keep <image1> unchanged except the jacket".into(),
-            negative: String::new(),
+            sampling: crate::sampling::Sampling::reference(40),
             size: None,
-            steps: 40,
             seed: 9,
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
@@ -6863,9 +7134,8 @@ mod tests {
         let cfg = ImageConfig::default();
         let req = Request {
             prompt: "Make the dress green.".into(),
-            negative: String::new(),
+            sampling: crate::sampling::Sampling::reference(40),
             size: None,
-            steps: 40,
             seed: 9,
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
@@ -8666,6 +8936,186 @@ mod tests {
         merge_read(&mut change, read.as_object().unwrap());
         assert!(change.people[0].doing.is_none(), "too long to merge");
         assert!(change.people[0].wearing.is_none(), "too long to merge");
+    }
+
+    /// Switching to the turbo model unloads the standard one before the job
+    /// is sent, and switching back unloads turbo; a picture on the model
+    /// already held unloads nothing (the owner's ruling, 2026-10-11). Each
+    /// picture's manifest says how it was sampled.
+    #[tokio::test]
+    async fn a_switch_of_model_unloads_the_other_first() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store) = (tempdir(), tempdir());
+        let t = tool(&url);
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        let sent = |seen: &Arc<Mutex<Vec<String>>>| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /free") || l.starts_with("POST /prompt"))
+                .map(|l| {
+                    if l.starts_with("POST /free") {
+                        "free"
+                    } else {
+                        "prompt"
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        cx.image_tuning = crate::sampling::Tuning {
+            model: crate::sampling::Model::Turbo,
+            ..Default::default()
+        };
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(sent(&seen), ["free", "prompt"]);
+        assert!(last_prompt(&seen).contains(crate::sampling::TURBO_MODEL));
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(m["model"]["diffusion_model"], crate::sampling::TURBO_MODEL);
+        assert_eq!(m["steps"], crate::sampling::TURBO_STEPS);
+        assert_eq!(m["sampling"]["negative"], false);
+        // Back to standard: turbo out first.
+        cx.image_tuning = Default::default();
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(sent(&seen), ["free", "prompt", "free", "prompt"]);
+        // The same model again: nothing unloaded.
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(sent(&seen), ["free", "prompt", "free", "prompt", "prompt"]);
+    }
+
+    /// A sampler the persona's settings choose and the server lacks is
+    /// refused before anything is sent, naming the setting: it stays chosen
+    /// until the owner changes it, so a bare node error would recur on every
+    /// picture (review of #648). One the server has draws.
+    #[tokio::test]
+    async fn a_chosen_sampler_the_server_lacks_is_refused_naming_the_setting() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store) = (tempdir(), tempdir());
+        let t = tool(&url);
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        cx.image_tuning = crate::sampling::Tuning {
+            sampler: Some("dpmpp_2m".into()),
+            ..Default::default()
+        };
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("picture settings"), "{}", out.content);
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /prompt")),
+            "nothing was sent"
+        );
+        cx.image_tuning.sampler = Some("res_multistep".into());
+        cx.image_tuning.scheduler = Some("beta".into());
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        // Both inputs read from one request (review of #648, pass 3): one
+        // for the refused picture, one for this.
+        let asked = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("GET /object_info/KSampler"))
+            .count();
+        assert_eq!(asked, 2);
+    }
+
+    /// After an idle release the server holds nothing, so the next picture
+    /// unloads nothing, whichever model it asks for (review of #648); a
+    /// server this process never used reads as holding the standard model.
+    #[test]
+    fn a_released_server_has_nothing_to_unload() {
+        let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let server = server_at(addr);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        assert!(!server.switching(standard, standard));
+        assert!(
+            server.switching(turbo, standard),
+            "unused reads as standard"
+        );
+        server.drew_with(turbo);
+        assert!(server.switching(standard, standard));
+        server.released();
+        assert!(!server.switching(standard, standard));
+        assert!(!server.switching(turbo, standard));
+    }
+
+    /// A fresh process reads which model the server holds from the shared
+    /// record: after another drew with turbo, a standard picture unloads it
+    /// (mecha-a3's gate of #648). Fails where each process assumed standard.
+    #[test]
+    fn a_fresh_process_reads_the_held_model_from_the_record() {
+        let record = tempdir().join("held-model.json");
+        let addr: std::net::SocketAddr = "127.0.0.1:11".parse().unwrap();
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let earlier = server_at(addr);
+        earlier.model_record.set(record.clone()).unwrap();
+        earlier.drew_with(turbo);
+        // Another process: its own client, the same record.
+        let fresh = server_at(addr);
+        fresh.model_record.set(record.clone()).unwrap();
+        assert!(fresh.switching(standard, standard), "turbo is held");
+        fresh.released();
+        assert!(
+            !earlier.switching(standard, standard),
+            "released, as the record says"
+        );
+        // An unreadable record falls back to what this process last did:
+        // here, released (review of #648, pass 5).
+        std::fs::write(&record, "not json").unwrap();
+        assert!(!fresh.switching(standard, standard));
+        assert!(!fresh.switching(turbo, standard));
+    }
+
+    /// A record that cannot be written never reads as the standard model:
+    /// this process's own last picture stands, so the next switch still
+    /// unloads (review of #648, pass 5). Fails where an unwritten record
+    /// read as an unused server.
+    #[test]
+    fn an_unwritten_record_falls_back_to_what_this_process_drew() {
+        let addr: std::net::SocketAddr = "127.0.0.1:13".parse().unwrap();
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let server = server_at(addr);
+        server
+            .model_record
+            .set(std::path::PathBuf::from(
+                "/proc/mecha-no-such-dir/held-model.json",
+            ))
+            .unwrap();
+        server.drew_with(turbo);
+        assert!(
+            server.switching(standard, standard),
+            "turbo is what it sent"
+        );
+    }
+
+    /// An idle unload the server did not take is not recorded as one: the
+    /// record keeps the model it holds, so the next switch still unloads it
+    /// (review of #648, pass 5).
+    #[tokio::test]
+    async fn an_idle_unload_the_server_refused_leaves_the_record() {
+        let record = tempdir().join("held-model.json");
+        // Nothing listens on port 1: the /free fails.
+        let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let server = server_at(addr);
+        server.model_record.set(record.clone()).unwrap();
+        server.drew_with(turbo);
+        server.release_idle().await;
+        assert!(server.switching(standard, standard), "still turbo");
+        assert_eq!(
+            read_held(&record)
+                .get(server.base.as_str())
+                .map(String::as_str),
+            Some(turbo)
+        );
     }
 
     /// A reader that answers as told, standing in for the persona host's.
