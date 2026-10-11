@@ -42,9 +42,20 @@ pub enum Cmd {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Stage a board's release on the factory in the outbox: the page, the
+    /// renderer, the checked spec and each loader's columns and digest. The
+    /// owner's release is the review (`mecha outbox show`, then `send`);
+    /// after it, every refresh pushes the board's datasets.
+    Publish {
+        id: String,
+        /// Readable by anyone with the link. Without it the dashboard is
+        /// private: the owner, and whoever they share it with.
+        #[arg(long)]
+        public: bool,
+    },
     /// Refresh datasets: every loader of one board (or of all), now — or,
     /// with --due, only the loaders whose schedule says so, which is what the
-    /// timer runs.
+    /// timer runs. A published board's datasets are then pushed.
     Refresh {
         id: Option<String>,
         #[arg(long)]
@@ -85,6 +96,7 @@ pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
             }
             Err(r) => refused(&r),
         },
+        Cmd::Publish { id, public } => publish(&store, &id, public),
         Cmd::Refresh { id, due, json } => refresh(&store, id, due, json),
     }
 }
@@ -144,6 +156,7 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
         Some(id) => vec![id],
         None => store.board_ids()?,
     };
+    let refreshed_ids = ids.clone();
     let now = Utc::now();
     let mut outcomes: Vec<Outcome> = Vec::new();
     let mut broken = 0usize;
@@ -193,11 +206,196 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
             println!("nothing due");
         }
     }
-    if broken + failed > 0 {
+    let unpushed = push_published(store, &refreshed_ids)?;
+    if broken + failed + unpushed > 0 {
         bail!(
-            "{} board(s) did not load, {failed} loader(s) did not refresh",
+            "{} board(s) did not load, {failed} loader(s) did not refresh, \
+             {unpushed} dataset(s) could not be pushed",
             broken
         );
     }
     Ok(())
+}
+
+/// The outbox tool that publishes a bundle: the factory's `bundle_publish`,
+/// as `[outbox] publish_tools` routes it. Never a guess at a server's name.
+fn publish_tool(cfg: &mecha_core::config::Config) -> Result<String> {
+    cfg.outbox
+        .publish_tools
+        .iter()
+        .find(|t| t.ends_with("__bundle_publish"))
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no factory `bundle_publish` is routed through the outbox — \
+                 `[outbox] publish_tools` must name it (e.g. \"factory__bundle_publish\")"
+            )
+        })
+}
+
+fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
+    use mecha_core::hud::publish;
+    let installed = match store.load(id)? {
+        Ok(installed) => installed,
+        Err(r) => return refused(&r),
+    };
+    let cfg = mecha_core::config::Config::load_global()?;
+    let tool = publish_tool(&cfg)?;
+    let assets = match cfg.web.assets.clone() {
+        Some(dir) => dir,
+        None => mecha_core::work::mecha_home()?.join("web").join("dist"),
+    };
+    let out = mecha_core::work::producer_dir("hud")?
+        .join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S")));
+    publish::assemble(&installed, &assets.join(publish::RENDERER_DIR), &out)?;
+    let bundle = publish::bundle_id(id);
+    let outbox = match cfg.outbox.dir.clone() {
+        Some(dir) => mecha_core::outbox::OutboxStore::open(dir)?,
+        None => {
+            mecha_core::outbox::OutboxStore::open(mecha_core::outbox::OutboxStore::default_root()?)?
+        }
+    };
+    let item = outbox.stage_publish_by_harness(
+        &tool,
+        serde_json::json!({
+            "id": bundle,
+            "bundle": out.display().to_string(),
+            "title": installed.spec().title(),
+            "visibility": if public { "public" } else { "private" },
+        }),
+    )?;
+    publish::mark_published(&store.board_path(id)?, &bundle)?;
+    println!(
+        "staged {:?} for the factory as `{bundle}` ({}) — outbox item {}
+         review it: mecha outbox show {}
+         release it: mecha outbox send {}
+         after the release, every refresh pushes its datasets",
+        installed.spec().title(),
+        if public { "public" } else { "private" },
+        item.id,
+        item.id,
+        item.id
+    );
+    Ok(())
+}
+
+/// Push every published board's datasets that changed since the last push.
+/// How many could not be pushed — refused, or failed in a way worth retrying
+/// next tick. A board not yet released is skipped quietly: its outbox item is
+/// still waiting on the owner.
+fn push_published(store: &Store, ids: &[String]) -> Result<usize> {
+    use mecha_core::hud::publish::{self, Plan, Pushed};
+    let bundles = publish::bundles_root()?;
+    let mut unpushed = 0usize;
+    for id in ids {
+        let Ok(dir) = store.board_path(id) else {
+            continue;
+        };
+        let Some(published) = publish::published(&dir)? else {
+            continue;
+        };
+        let release = match publish::release_at(&bundles, &published.bundle) {
+            Ok(Some(release)) => release,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("{id}: what was released could not be read: {e:#}");
+                unpushed += 1;
+                continue;
+            }
+        };
+        let installed = match store.load(id)? {
+            Ok(installed) => installed,
+            Err(_) => continue,
+        };
+        let mut pushed = Pushed::read(&dir);
+        for name in installed.loaders().keys() {
+            let Some(dataset) = store.dataset(id, name)? else {
+                continue;
+            };
+            let body = match publish::plan(
+                &installed,
+                name,
+                &dataset,
+                &release,
+                pushed.last(release.version, name),
+            ) {
+                Plan::Push(body) => body,
+                Plan::Pushed => continue,
+                Plan::Undeclared => {
+                    eprintln!(
+                        "{id}/{name}: not in release {} — publish the board again to add it",
+                        release.version
+                    );
+                    continue;
+                }
+                Plan::LoaderChanged => {
+                    eprintln!(
+                        "{id}/{name}: its loader changed since release {} and is not pushed \
+                         — publish the board again (`mecha hud publish {id}`)",
+                        release.version
+                    );
+                    unpushed += 1;
+                    continue;
+                }
+            };
+            match push_one(&published.bundle, name, &body) {
+                Ok(outcome) => match outcome["outcome"].as_str() {
+                    Some("stored") | Some("unchanged") => {
+                        pushed.record(release.version, name, dataset.generation);
+                        println!("{id}/{name}: pushed, generation {}", dataset.generation);
+                    }
+                    // The alias moved past this release: what home recorded
+                    // is behind. Dropped, never retried.
+                    Some("stale") => eprintln!(
+                        "{id}/{name}: release {} is no longer current on the factory: {}",
+                        release.version,
+                        outcome["message"].as_str().unwrap_or_default()
+                    ),
+                    _ => {
+                        eprintln!(
+                            "{id}/{name}: the factory refused the push ({}): {}",
+                            outcome["code"].as_str().unwrap_or("?"),
+                            outcome["message"].as_str().unwrap_or_default()
+                        );
+                        unpushed += 1;
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{id}/{name}: not pushed, retried next refresh: {e:#}");
+                    unpushed += 1;
+                }
+            }
+        }
+        pushed.write(&dir)?;
+    }
+    Ok(unpushed)
+}
+
+/// One push, through the factory client: its outcome line, or an error worth
+/// retrying (the network, a 5xx, the client missing).
+fn push_one(bundle: &str, name: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("factory-publish")
+        .args(["dataset", "push", bundle, name, "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("running factory-publish: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no stdin to factory-publish"))?
+        .write_all(body.to_string().as_bytes())?;
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "factory-publish exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let line = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str(line.trim())
+        .map_err(|e| anyhow::anyhow!("factory-publish answered {line:?}: {e}"))
 }

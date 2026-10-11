@@ -26,6 +26,7 @@ import {
   tooltipLines,
 } from '../src/lib/hud/hud.js';
 import { vegaConfig, scheme } from '../src/lib/hud/theme.js';
+import { dataBase } from '../src/lib/hud/source.js';
 
 const visits = {
   columns: [
@@ -160,6 +161,15 @@ assert.equal(vegaConfig('dark').background, null);
 assert.equal(vegaConfig('dark', true).legend.columns, 3);
 assert.equal(vegaConfig('dark').legend.columns, undefined);
 assert.notDeepEqual(vegaConfig('light').range.category, vegaConfig('dark').range.category);
+
+// Where a published page's rows are (§6.2): beside the versions, never in
+// one; under the grant that opened the page; or beside a local preview.
+assert.equal(dataBase('/b/hud-lab/v/3/'), '/b/hud-lab/data/');
+assert.equal(dataBase('/b/hud-lab/v/3/index.html'), '/b/hud-lab/data/');
+assert.equal(dataBase('/g/0a1b2c/'), '/g/0a1b2c/data/');
+assert.equal(dataBase('/g/0a1b2c/index.html'), '/g/0a1b2c/data/');
+assert.equal(dataBase('/preview/index.html'), './data/');
+assert.equal(dataBase('/b/hud-lab/'), './data/', 'the share URL redirects to a version first');
 
 // The gates (§4.1): the renderer's source carries no `{@html}`, no
 // `innerHTML`, and no inline style — a dynamic value goes through the CSSOM.

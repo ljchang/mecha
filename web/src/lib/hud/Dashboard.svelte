@@ -28,6 +28,8 @@
   // large and need no deep reactivity.
   let data = $state.raw({});
   let chosen = $state({});
+  // A grant that ended under an open page (R16): said once, at the top.
+  let signIn = $state(null);
 
   let prefersLight = $state(false);
   $effect(() => {
@@ -52,6 +54,7 @@
       if (got) data = { ...data, [name]: { dataset: got.dataset, etag: got.etag ?? null, error: null } };
       else if (prev?.error) data = { ...data, [name]: { ...prev, error: null } };
     } catch (e) {
+      if (e?.signIn) signIn = e.message;
       data = { ...data, [name]: { ...(prev ?? {}), error: String(e?.message ?? e) } };
     }
   }
@@ -121,11 +124,13 @@
     <Filters filters={spec?.filters ?? []} optionsFor={(f) => filterOptions(all[f.dataset] ?? [], f.field)} bind:chosen />
   </header>
 
+  {#if signIn}<p class="signin">{signIn}</p>{/if}
+
   <div class="grid">
     {#each spec?.panels ?? [] as panel, i (i)}
       {@const st = stateOf(panel)}
       {@const fresh = freshness(panel)}
-      <section class="panel span-{spanOf(panel)}" class:text-panel={panel.type === 'text'}>
+      <section class="panel span-{spanOf(panel)}" class:text-panel={panel.type === 'text'} class:kpi-panel={panel.type === 'kpi'}>
         {#if panel.title}<h2>{panel.title}</h2>{/if}
         {#if panel.type === 'text'}
           <Text markdown={panel.markdown} />
@@ -199,6 +204,8 @@
     min-width: 0;
   }
   .text-panel { background: transparent; border-style: dashed; }
+  /* A figure is a line tall: it does not stretch to the chart beside it. */
+  .kpi-panel { align-self: start; }
   .span-1 { grid-column: span 1; }
   .span-2 { grid-column: span 2; }
   .span-3 { grid-column: span 3; }
@@ -206,6 +213,7 @@
   h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--hud-muted); }
   .figure { margin: 0; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .note { margin: 0; font-size: 13px; color: var(--hud-muted); }
+  .signin { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--hud-warn); color: var(--hud-warn); font-size: 13px; }
   .bad { color: var(--hud-bad); }
   footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; font-size: 11px; color: var(--hud-muted); }
   .badge { color: var(--hud-warn); }

@@ -7,29 +7,21 @@
 //   <div id="hud"></div>
 //   <script type="module" src="hud.js"></script>
 //
-// with `hud.json` and `data/<name>.json` in the same directory. Nothing here
-// names another origin: every fetch is relative to the page.
+// with `hud.json` beside it. Nothing here names another origin: every fetch
+// is on the page's own.
+//
+// **Where the data is** depends on how the page was reached (§6.2): a
+// dashboard's rows live beside its versions, never inside one, so on the
+// factory a page at `/b/<id>/v/<n>/` reads `/b/<id>/data/`, and one opened
+// under a viewing grant at `/g/<cap>/…` reads `/g/<cap>/data/`. Anywhere else
+// (a local preview) the data sits beside the page, in `./data/`.
 import { mount } from 'svelte';
 import Dashboard from './lib/hud/Dashboard.svelte';
 import './hud-page.css';
+import { dataBase, filesSource } from './lib/hud/source.js';
 
 // No web font is bundled: a published page carries no font bytes, so the
 // stack falls back to `system-ui` where the app has Inter loaded.
-
-/** Datasets as files beside the page, revalidated by ETag. */
-export function filesSource(base) {
-  return {
-    async dataset(name, etag) {
-      const res = await fetch(`${base}data/${encodeURIComponent(name)}.json`, {
-        cache: 'no-cache',
-        headers: etag ? { 'If-None-Match': etag } : {},
-      });
-      if (res.status === 304) return null;
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return { dataset: await res.json(), etag: res.headers.get('ETag') };
-    },
-  };
-}
 
 async function boot() {
   const target = document.getElementById('hud');
@@ -40,7 +32,9 @@ async function boot() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const spec = await res.json();
     if (typeof spec.title === 'string') document.title = spec.title;
-    mount(Dashboard, { target, props: { spec, source: filesSource(base), mode: 'auto' } });
+    const data = dataBase(location.pathname);
+    const source = filesSource(data, { granted: data.startsWith('/g/') });
+    mount(Dashboard, { target, props: { spec, source, mode: 'auto' } });
   } catch (e) {
     target.textContent = `This dashboard could not be loaded: ${e?.message ?? e}`;
   }
