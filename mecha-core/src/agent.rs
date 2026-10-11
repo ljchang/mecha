@@ -522,6 +522,77 @@ fn clip_cut_off_calls(message: &mut Message, hit_limit: bool) {
     }
 }
 
+/// What [`rerecord`] changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Rerecorded {
+    /// Calls cut off mid-value, shortened as the loop now records them.
+    pub calls_clipped: usize,
+    /// Results of calls that could not be read, said as the loop now says
+    /// them.
+    pub results_reanswered: usize,
+}
+
+/// A recorded history as this build would have recorded it: each call cut
+/// off mid-value shortened to its head and a `__cut_off` note
+/// ([`clip_cut_off_calls`]), and each unreadable call's result said as
+/// `dispatch` now says it ([`unreadable_call`]), never the tool's own
+/// answer to arguments it could not read. For a replay of a turn recorded
+/// before #611 (`mecha replay --persona --rerecord`): its history still
+/// holds a 32 KB loop and "Nothing to draw", which no request this build
+/// makes would carry.
+///
+/// Whether a reply hit the output limit is not in the record, so only a
+/// call that ends mid-value is clipped, and its note says it ended rather
+/// than that it hit the limit. A reply holding any call already clipped is
+/// left as it is: a clipped head ends mid-value too, and would be clipped
+/// again. The loop clips a whole reply at once, so a recorded reply is
+/// clipped in full or not at all (review of #653).
+pub fn rerecord(messages: &mut [Message]) -> Rerecorded {
+    let mut done = Rerecorded::default();
+    let mut answers = std::collections::HashMap::new();
+    for message in messages.iter_mut() {
+        if message.role != Role::Assistant {
+            continue;
+        }
+        let clipped = |m: &Message| {
+            m.content
+                .iter()
+                .filter(|b| matches!(b, Block::ToolUse { input, .. } if input.get("__cut_off").is_some()))
+                .count()
+        };
+        if clipped(message) == 0 {
+            clip_cut_off_calls(message, false);
+            done.calls_clipped += clipped(message);
+        }
+        for block in &message.content {
+            if let Block::ToolUse { id, input, .. } = block {
+                if input.get("__malformed_arguments").is_some() {
+                    answers.insert(id.clone(), unreadable_call(input));
+                }
+            }
+        }
+    }
+    for message in messages.iter_mut() {
+        for block in &mut message.content {
+            if let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            {
+                if let Some(answer) = answers.get(tool_use_id.as_str()) {
+                    if content != answer || !*is_error {
+                        *content = answer.clone();
+                        *is_error = true;
+                        done.results_reanswered += 1;
+                    }
+                }
+            }
+        }
+    }
+    done
+}
+
 /// Arguments that stop before their JSON does: serde's end-of-input error,
 /// which a value that merely is wrong never raises.
 fn ends_mid_value(raw: &str) -> bool {
@@ -6334,6 +6405,92 @@ mod tests {
         assert_eq!(head.chars().count(), CUT_OFF_KEPT_CHARS + 1, "{head}");
         assert!(raw.starts_with(head.trim_end_matches('…')));
         assert_eq!(kept["__cut_off"]["chars"], json!(chars));
+    }
+
+    /// A history recorded before #611 is rewritten as this build records
+    /// it: the loop clipped to its head with a `__cut_off` note, the tool's
+    /// answer to arguments it could not read replaced by the loop's own, a
+    /// call that merely failed to parse kept as written but answered the
+    /// same way, and a second pass changing nothing.
+    #[test]
+    fn a_history_recorded_before_the_clip_is_rerecorded_as_this_build_would() {
+        let raw = format!("{{\"value\": \"{}", "the tide comes in slowly. ".repeat(60));
+        let bad = "{\"value\": \"one\" \"two\"}";
+        let mut messages = vec![
+            Message::user("draw it"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    Block::ToolUse {
+                        id: "a".into(),
+                        name: "image_generate".into(),
+                        input: json!({ "__malformed_arguments": raw }),
+                    },
+                    Block::ToolUse {
+                        id: "b".into(),
+                        name: "image_generate".into(),
+                        input: json!({ "__malformed_arguments": bad }),
+                    },
+                ],
+                ..Message::user("")
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::ToolResult {
+                        tool_use_id: "a".into(),
+                        content: "Nothing to draw: give a scene.".into(),
+                        is_error: true,
+                    },
+                    Block::ToolResult {
+                        tool_use_id: "b".into(),
+                        content: "Nothing to draw: give a scene.".into(),
+                        is_error: true,
+                    },
+                ],
+                ..Message::user("")
+            },
+        ];
+        let done = rerecord(&mut messages);
+        assert_eq!(
+            done,
+            Rerecorded {
+                calls_clipped: 1,
+                results_reanswered: 2
+            }
+        );
+        let Block::ToolUse { input: a, .. } = &messages[1].content[0] else {
+            panic!()
+        };
+        assert_eq!(
+            a["__malformed_arguments"].as_str().unwrap().chars().count(),
+            CUT_OFF_KEPT_CHARS + 1
+        );
+        assert_eq!(a["__cut_off"]["chars"], json!(raw.chars().count()));
+        assert_eq!(
+            a["__cut_off"]["limit"],
+            json!(false),
+            "the record does not say"
+        );
+        let Block::ToolUse { input: b, .. } = &messages[1].content[1] else {
+            panic!()
+        };
+        assert_eq!(b, &json!({ "__malformed_arguments": bad }));
+        let Block::ToolResult { content, .. } = &messages[2].content[0] else {
+            panic!()
+        };
+        assert_eq!(content, &unreadable_call(a));
+        assert!(
+            content.starts_with("Not run: this call ended after"),
+            "{content}"
+        );
+        let Block::ToolResult { content, .. } = &messages[2].content[1] else {
+            panic!()
+        };
+        assert!(content.starts_with("Not run: the arguments were not valid JSON"));
+        let again = messages.clone();
+        assert_eq!(rerecord(&mut messages), Rerecorded::default());
+        assert_eq!(messages, again, "a rerecorded history is left as it is");
     }
 
     /// Arguments that merely failed to parse are not run either, and are

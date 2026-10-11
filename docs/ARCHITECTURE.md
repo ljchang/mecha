@@ -6180,6 +6180,18 @@ was ever deployed.
   that calls the picture tool beside another tool loses its render: the
   other tool's stand-in cancels the run, and the cancel reaches the inline
   job. `stage_at` counts non-blank record lines, as `--at` does.
+- **`--rerecord` sends the history as this build would have recorded it**
+  (`agent::rerecord`). A turn recorded before #611 still holds each looping
+  call whole and the tool's answer to arguments it could not read, which no
+  request this build makes would carry. So a call cut off mid-value becomes
+  its head and a `__cut_off` note (`clip_cut_off_calls`), and every
+  unreadable call's result becomes the loop's own refusal
+  (`unreadable_call`). Whether the reply hit the limit is not in the record,
+  so the note says the call ended rather than that it hit the limit, and a
+  reply already clipped is left alone (a clipped head ends mid-value too,
+  and the loop clips a whole reply at once). The
+  header counts both. On the 2026-10-08 runaway turn it clipped the five
+  looping calls and re-answered their five results.
 - **`--surface recorded` sends the tool text the turn was sent**, from the
   surface store by its `tools_hash`. A wording experiment on an older chat
   then starts from what the model saw, not today's text. The stand-ins are
