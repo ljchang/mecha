@@ -670,7 +670,7 @@ pub async fn install(
             let temp = crate::comfyui_unit::server_temp_dir(&m.mecha_home);
             // Said, never fatal: the server is installed and checked, and a
             // config that will not take the table is the owner's to fix.
-            match crate::comfyui_unit::write_image_table(&path, &m.mecha_home) {
+            match crate::comfyui_unit::write_image_table(&path, Some(&temp)) {
                 Ok(true) => say(&format!(
                     "wrote [image] server_temp_dir = \"{}\" into {}",
                     temp.display(),
