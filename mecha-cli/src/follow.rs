@@ -304,8 +304,21 @@ impl Follower {
         };
         let (seen, named) =
             observe(&cfg, self.pinned, command_line(&self.opts), &self.warned).await;
-        let Some(want) = resolve(&cfg, self.pinned, &seen) else {
-            return Ok(self.current());
+        let want = match resolve(&cfg, self.pinned, &seen) {
+            Some(want) => want,
+            // `--provider` on an entry that names no model pins the entry,
+            // not a model: its name is the server's, asked each turn as
+            // `start` asked it, so a `mecha model use` is followed rather
+            // than loaded back. `--model` alone freezes the name (review of
+            // #637).
+            None => {
+                let cur = self.current().provider_name.clone();
+                let asks = asked_name(&cfg, &cur, &named).is_some();
+                if !pinned_entry_asks(&self.opts, asks) {
+                    return Ok(self.current());
+                }
+                cur
+            }
         };
         // A default that names no model asks for what its server serves, as
         // this probe read it: a surface that outlives a `mecha model use`
@@ -560,6 +573,13 @@ async fn observe(
     (seen, named)
 }
 
+/// Whether a pinned surface still asks its server each turn: `--provider` on
+/// an entry that names no model pins the entry, not a model, so its name is
+/// the server's; `--model` freezes it (review of #637).
+fn pinned_entry_asks(opts: &GlobalOpts, entry_asks: bool) -> bool {
+    opts.model.is_none() && opts.provider.is_some() && entry_asks
+}
+
 /// What the surface's own `--provider`/`--model` named, for the probe.
 fn command_line(opts: &GlobalOpts) -> mecha_core::provider::router::CommandLine<'_> {
     mecha_core::provider::router::CommandLine {
@@ -790,6 +810,25 @@ mod tests {
             resolve_seen(&c, false, seen(Some("gemma-4-26b-a4b"))).as_deref(),
             Some("gemma26")
         );
+    }
+
+    #[test]
+    fn a_provider_pin_on_an_asking_entry_still_asks() {
+        let with = |provider: Option<&str>, model: Option<&str>| GlobalOpts {
+            provider: provider.map(str::to_string),
+            model: model.map(str::to_string),
+            ..GlobalOpts::default()
+        };
+        assert!(pinned_entry_asks(&with(Some("local"), None), true));
+        assert!(
+            !pinned_entry_asks(&with(Some("local"), None), false),
+            "names its own"
+        );
+        assert!(
+            !pinned_entry_asks(&with(Some("local"), Some("qwen")), true),
+            "--model"
+        );
+        assert!(!pinned_entry_asks(&with(None, Some("qwen")), true));
     }
 
     /// A surface stays only on the entry it should be on and, for an entry
