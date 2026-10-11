@@ -7,8 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Speech to text installs itself.** On Linux, `mecha features enable voice`
+  now offers the speech-to-text server: an environment built from a
+  hash-pinned lock, the Parakeet model fetched by its pinned sha256, and
+  `mecha-parakeet.service` started on `:8992`, all under
+  `~/.mecha/sidecars/stt/`. The model's 465 MiB counts in the plan's total.
+  A Parakeet you already run on `:8992` is left alone and used as it is.
+- **The speech server installs itself.** On Linux with an NVIDIA GPU and
+  the CUDA toolkit, `mecha features enable voice` now also offers Breeze TTS
+  2:
+  - its engine, built from a pinned commit of the published qwentts.cpp port;
+  - its converted weights and a default voice, fetched by sha256 from
+    `mecha-factory/mecha-speech-gguf` and counted in the plan's total;
+  - the adapter, from a hash-pinned lock;
+  - `mecha-breeze-tts.service` on `:8886` and `mecha-breeze-adapter.service`
+    on `:8887`, checked by speaking a sentence.
+
+  The weights are licensed for research and non-commercial use only, which
+  the install says before fetching them. A speech server you already run is
+  left alone and used.
+- **The image server installs itself.** On Linux with an NVIDIA driver
+  580 or newer, `mecha features enable image` now offers ComfyUI: the pinned
+  release fetched by its commit, torch for CUDA 13 and ComfyUI's
+  requirements from a hash-pinned lock (about 3.6 GiB, counted in the plan's
+  total), the three Qwen-Image 2.1 files by their pinned sha256, and
+  `mecha-comfyui.service` on `:8188`, all under `~/.mecha/sidecars/comfyui/`.
+  With no `[image]` table in your config it writes one naming the server's
+  temp directory; one you wrote is left alone. A ComfyUI you already run on
+  `:8188` is left alone and used as it is.
+- **The voice worker installs itself.** `mecha features enable voice` also
+  offers the Pipecat worker: its environment from a hash-pinned lock, the
+  worker run from a copy mecha writes, and `mecha-voice-worker.service`
+  started on `:7860` under `~/.mecha/sidecars/voice-worker/`. It takes calls
+  only through `mecha serve`'s relay, so no hostname needs setting. A worker
+  you already run on `:7860` is left alone and used as it is.
+
 ### Changed
 
+- **A local provider with no `model` asks for what its server serves.** A
+  `[providers.local]` on this machine that names no `model` used to send
+  `gpt-4o-mini` — which a llama-server router does not serve, and which
+  every session record then named as the model that answered. It now asks
+  for the router's loaded model, or its only one, or a plain server's alias,
+  read once when the command starts; a router with several and none loaded
+  is reported rather than guessed at. The same holds with no config file at
+  all, where the built-in local provider is the default.
+
+- **`mecha setup` is one guided pass.** At a terminal it asks about the chat
+  model first — the one recommended for your machine, a GGUF you have, or a
+  hosted model — then each feature as a yes or no with what it downloads, then
+  shows everything and the total and asks once before installing it all. No
+  more stopping to run `mecha setup chat` and coming back.
 - **A new install uses a model on your machine, not Anthropic.** `mecha
   config init` now makes the local provider (`127.0.0.1:8080`) the default,
   with Anthropic kept beside it for `-p anthropic`; `mecha setup` names `mecha
@@ -143,6 +194,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tuned draws exactly as before. Switching models unloads the other one
   first, and the turbo model needs one more file (`[image] turbo_model`).
   `mecha replay --persona` takes the same settings as flags.
+- **llama.cpp is built on your machine when no release build fits it.** An
+  NVIDIA driver too old for the release's CUDA build, or a Linux
+  architecture no release covers, used to get no engine at all; now `mecha
+  features enable` and `mecha setup chat` build the same pinned version from
+  its commit, checked the way a release is. It needs git, cmake, a C++
+  compiler and, for CUDA, the toolkit's `nvcc` — anything missing is named
+  before you are asked. `mecha setup engine --upgrade` still fetches release
+  builds only, so a built engine moves with mecha's pin.
 - **Regenerate a picture, and step through its versions.** A picture in
   the assistant's chat or a persona chat has a Regenerate button beside
   Edit. It draws the same picture again at a new seed, with no words and no
@@ -593,7 +652,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature — web, Slack, mail, docs, the graph, search, PDF extraction, image
   generation, personas, voice, incognito, the front door and messages.
   `mecha features enable <id>` and `disable <id>` edit it in place, keeping
-  your comments; `mecha config init` writes it with everything off. An install
+  your comments; `mecha config init` writes it with every line commented —
+  listed and off, but not answered, so `mecha setup` asks about each. (A
+  config written by an earlier `config init`, with every line `= false`, reads
+  each as a no: comment out or delete the lines you want to be asked about.) An install
   from before the table has every switch unanswered, so `mecha features` marks
   what you have set up as "not enabled, but set up here", a session or service
   prints one line naming them when it starts, and `mecha setup` offers each.

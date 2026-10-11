@@ -191,7 +191,15 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
                 providers: router::namers(cfg, base, &m.id)
                     .map(str::to_string)
                     .collect(),
-                sampling_mismatches: router::sampling_mismatches(cfg, base, m),
+                // A model-less entry asks for one row only — the loaded
+                // model, else the only one — and none from a list this build
+                // cannot read, as the probe has it (review of #637).
+                sampling_mismatches: router::sampling_mismatches_listed(
+                    cfg,
+                    base,
+                    m,
+                    readable && router::name_for(list) == Some(m.id.as_str()),
+                ),
                 // The rule in the tense that is true of the row: the loaded
                 // model *is* loaded (found on review, pass 3).
                 would_not_follow: if resident == Some(m.id.as_str()) {

@@ -1,8 +1,8 @@
 # Features — design
 
 > **Status (2026-10-10):** 7c-2 merged as #618; F12 (a local default) and F13
-> (`enable` never installs the chat model) are one PR, and F14 — the guided
-> setup, §11 — is the next. The status below is as of 2026-10-05.
+> (`enable` never installs the chat model) are one PR (#627), and F14 — the
+> guided setup, §11 — is built on it. The status below is as of 2026-10-05.
 >
 > **Status (2026-09-30):** this design merged as #427; **step 0 shipped** —
 > the registry and a read-only `mecha features`, merged as #428 and deployed
@@ -71,8 +71,25 @@
 > drop-in, started once through their socket) — is built; so is 7c-2:
 > `router_unit.rs`, the resident router from nothing (its unit, launcher and
 > presets file, the presets from the tier's chat geometry or the owner's own
-> GGUF), behind `mecha setup chat` (F11). 7b-2 (the build fallback), 7d–7f
-> and step 8 are unbuilt (step 7 redesigned in §10). The
+> GGUF), behind `mecha setup chat` (F11). 7d-1 — `stt_unit.rs`, the
+> speech-to-text server from nothing (its own uv environment from a hash
+> lock, the Parakeet tarball by its pin, the server script held equal to
+> `scripts/voice/`, one rendered unit) — is built, and so is 7d-2, the voice
+> worker the same way. 7e — `comfyui_unit.rs`, the image server from
+> nothing (ComfyUI fetched by its commit, torch for CUDA 13 from one hash
+> lock per architecture with torch by direct URL, the image slot's three
+> pinned models fetched into the hub and linked, one rendered unit, checked
+> by asking `/object_info` for every node and model mecha sends) — is built.
+> 7b-2 — the build fallback: the pin's commit fetched blobless by git and
+> built here with the release's own `$ORIGIN` flags, for a driver too old
+> for any CUDA release or an architecture none covers, after a toolchain
+> check that names every missing piece — is built (CPU and CUDA builds
+> measured on the GB10, 2026-10-10). 7f — `speech_unit.rs`, the speech
+> server from nothing (Breeze's qwentts.cpp port built from its pinned
+> commit, the converted weights and a default voice fetched by sha256 from
+> their published repository, the adapter from a hash lock, two rendered
+> units, checked by speaking a sentence) — is built. Step 8 is unbuilt
+> (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -637,8 +654,10 @@ table that turns a feature on by existing is invisible until you already
 know its name, and a list of toggles is its own documentation.
 
 ```toml
-# ~/.mecha/config.toml — written in full by `mecha config init`, every
-# feature listed, every one off; `mecha features enable <id>` flips one.
+# ~/.mecha/config.toml as this section first specified it. Since F14 (§11)
+# `mecha config init` and `mecha setup` write every line commented: listed
+# and off, but not answered — an explicit `false` reads as Declined, and
+# `mecha setup` would ask about none of them (review of #631).
 [features]
 web = false        # the web app (`mecha serve`)
 slack = false      # Slack remote control
@@ -1245,7 +1264,7 @@ model, not mecha's own, that a feature needs running.
 | embeddings server | `graph`, persona file search | the always-on unit is box only; `install-embed.sh` converts it to on demand and refuses to run without it | the launcher and the on-demand units |
 | OCR server | `ocr` | `scripts/llama/install.sh` | **yes** — units, launcher, `--remove`; the model is a comment, unpinned |
 | layout | `layout` | `scripts/layout/install.sh` | **yes** — hash-pinned requirements, model pinned by revision and sha256 |
-| ComfyUI, ComfyUI-GGUF, three model files | `image` | `git clone` at `88ab4a06` and `6ea2651`, a venv with torch cu130; downloads in a box-local `dl-logs/download.sh` | file names only; no unit, no requirements, no URLs |
+| ComfyUI, three model files (ComfyUI-GGUF only for an owner's `.gguf`) | `image` | `git clone` at `88ab4a06` (and ComfyUI-GGUF at `6ea2651`), a venv with torch cu130; downloads in a box-local `dl-logs/download.sh` | file names only; no unit, no requirements, no URLs — since 7e, `comfyui_unit.rs` pins the commit, `locks/comfyui-cu130-*.txt` the environment, and the image slot the three int8-default files |
 | voice venv (pipecat, sherpa-onnx) and Parakeet | `voice`, `dictate`, `calls` | `python3 -m venv`, unpinned; the Parakeet tarball by hand | the servers' source; units that name `/home/ljchang` |
 | Chatterbox | `calls`, read-aloud | a Docker image built by hand from `nvcr.io/nvidia/pytorch`, recipe in prose (`VOICE-RESEARCH.md`), mounting the live checkout | the server's source only |
 
@@ -1400,11 +1419,18 @@ pin that sits:
 - **Self-contained, so a link can move it.** A build from source bakes the
   build tree's absolute path into the binary's RUNPATH (§10.1's stub, and
   `-next` after it), so copying `build/bin` somewhere and swapping a link
-  would change nothing that runs. The build fallback therefore installs
-  with `cmake --install` into the engine's directory with an
-  `$ORIGIN`-relative RUNPATH, and 7b asserts it with the `readelf -d` check
+  would change nothing that runs. The build fallback therefore builds as the
+  release does — `CMAKE_INSTALL_RPATH=$ORIGIN` with
+  `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`, so the build tree's binaries already
+  carry the relative RUNPATH — and copies `build/bin` flat, the release's own
+  packaging (`cmake --install` would split libraries from binaries, which
+  the flat check refuses). 7b asserts it with the `readelf -d` check
   `LLAMA-SERVER.md` prescribes; a release asset is checked the same way
-  rather than assumed.
+  rather than assumed. The source is fetched `--filter=blob:none`, never
+  shallow: `--version`'s build number is the commit count, which a shallow
+  clone reports as `1`, and the check reads it. A CUDA build copies the
+  toolkit's `libcudart`/`libcublas`/`libcublasLt` beside it, as the
+  release's `cudart-` archive carries them.
 - **Side by side:** each engine lives in `~/.mecha/sidecars/llama/<tag>/`,
   with the **resolved commit sha** recorded in the manifest and the ledger
   (a tag is a label; a rollback and an audit need the build), and the units
@@ -1631,12 +1657,69 @@ Step 7 becomes these, each a PR that leaves every feature working:
   installs a router beside the live one on a free port, serving the
   embeddings GGUF as an owner's model, and removes it (measured
   2026-10-05).
-- **7d.** `uv` and the voice venv, Parakeet and the voice worker.
-- **7e.** ComfyUI, ComfyUI-GGUF and the image models.
+- **7d.** `uv` and the voice venv, Parakeet and the voice worker. Built in
+  two PRs: **7d-1** the speech-to-text server — its own environment
+  (`locks/stt-requirements.txt`; `sherpa-onnx-core` named, since its wheels
+  need it where its metadata does not say so), the model unpacked from its
+  pinned tarball into `~/.mecha/sidecars/stt/`, and `mecha-parakeet.service`
+  rendered with absolute paths and started; the real-machine test installs
+  one beside the live server on a free port, transcribes a second of
+  silence, and removes it (measured 2026-10-10). **7d-2** the voice worker —
+  pipecat's environment from its own lock (the `local-smart-turn` extra left
+  out: it pulls torch, and smart-turn v3 is onnx with its weights in the
+  wheel), `worker.py` and its three modules held equal to `scripts/voice/`,
+  and `mecha-voice-worker.service` whose `--allowed-origins` names an origin
+  no page has: `mecha serve` relays the offer with no `Origin`, which pipecat
+  lets through, while a page's direct request is refused — so the install
+  needs no hostname. Its real-machine test installs one beside the live
+  worker and checks a page's preflight is refused (measured 2026-10-10).
+- **7e.** ComfyUI and the image models, built (`comfyui_unit.rs`): the
+  pinned commit fetched by git and checked, its `.git` dropped; torch
+  2.14.0+cu130 and ComfyUI's requirements from one lock per architecture,
+  torch and torchvision as direct URLs to one wheel each so no second index
+  is consulted for anything else (uv's dependency-confusion rule); the image
+  slot's three files fetched into the hub and linked into ComfyUI's
+  `models/`, the plan reading an installed ComfyUI's models from the hub so
+  a cleared cache is offered again (a hand-built one still holds its own); `mecha-comfyui.service` with its temp
+  directory under the install's tree, so `enable` can write `[image]
+  server_temp_dir` where there is no `[image]` table. The check asks
+  `/object_info` for every node type `imagegen.rs` sends (a test holds the
+  two lists equal) and for the three files by name — no picture, which would
+  load ~19 GiB of the pool the chat model shares. CUDA 13 machines only (a
+  580 driver); ComfyUI-GGUF is not installed, since the default is int8 through
+  the core loader (#560). The environment's ~3.6 GiB is priced in the plan.
+  The real-machine test installs one beside the live server on a free port,
+  its hub seeded with hard links to the live models, and removes it
+  (measured 2026-10-11, 324 s). Owed: the idle reset
+  (`scripts/comfyui/comfyui-idle-reset` and its timer) for the installed
+  unit, as 7e-2.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
-  default since 2026-10-03, built from a pinned commit with its model
-  converted at install. (This step was Chatterbox, with a venv lock and a
-  Docker recipe written down as a file, until Breeze replaced it.)
+  default since 2026-10-03 — built (`speech_unit.rs`). The owner ruled on
+  2026-10-11 to publish both halves, so neither is converted at install:
+  - **The engine:** the port on `github.com/ljchang/qwentts.cpp` (branch
+    `breeze`), built from its pinned commit with 7b-2's helpers. That is
+    the toolchain check, `$ORIGIN` RUNPATH, the toolkit's runtime copied
+    beside it, and a check that the build reports its commit and is
+    self-contained.
+  - **The weights:** Q6_K (the owner's default, and what the live server
+    runs; Q5_K_M is published beside it as the fallback) and the 12 Hz codec
+    on `mecha-factory/mecha-speech-gguf`, the `tts` slot's sources.
+    They're fetched into the hub by sha256 and linked, with a default VCTK
+    voice beside them.
+  - **The licence notice:** Breeze's weights are research and
+    non-commercial only; the install says so before fetching (the owner's
+    ruling: fetch, with notices). The repository carries the licence, the
+    NOTICE and the model card the licence requires.
+  - **The adapter:** `breeze_server.py` and its two modules ship in the
+    binary, held equal to `scripts/voice/`, from a hash lock.
+  - **The units:** `mecha-breeze-tts` on `:8886` and
+    `mecha-breeze-adapter` on `:8887`, the worker's `MECHA_VOICE_TTS`
+    default.
+  - **The check:** a sentence spoken through both and read back as a WAV
+    of plausible length.
+  - **Not covered:** Chatterbox, which is left as a provided alternative.
+  (This step was Chatterbox, with a venv lock and a Docker recipe written
+  down as a file, until Breeze replaced it.)
 
 **How to know it works:** a clean container (no `~/.mecha`, no `scripts/`)
 runs `cargo install` then `mecha features enable documents`, answers yes to
@@ -1714,6 +1797,13 @@ Ready: 23.4 GiB to download. Start? [Y/n]
    was and was not done, and a second `mecha setup` resumes it.
 4. **What `enable` alone does is unchanged** (F13): a single feature never
    pulls the chat model.
+
+**What was built differs in one place.** *Choose another* is not in the
+menu: the registry pins one chat model — Qwen3.6-35B-A3B, served at each
+tier's geometry — so there is nothing else to list. The option belongs to the
+day a second model is pinned, with its evidence (§6, F5); the menu is built
+from what this machine can do, so it already leaves out an install where none
+can run (off Linux, or `:8080` someone else's).
 
 Out of scope here, still: the web app's toggles and *Set up* button (§8),
 which this is the terminal half of; and the voice and image installers (7d–7f)

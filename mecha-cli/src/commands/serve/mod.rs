@@ -45,6 +45,7 @@ mod features;
 mod files;
 mod frontdoor;
 mod gate;
+mod hud;
 pub(crate) mod incognito;
 mod late;
 mod library;
@@ -678,6 +679,12 @@ fn api() -> gate::Owned {
         // hide by (FEATURES-DESIGN.md §9 step 2): an inventory of the
         // install, so behind the owner guard like everything here.
         .at("/api/features", Owner::Core, get(features::list))
+        // Installed dashboards, read-only (LIVE-DASHBOARD-DESIGN.md §5.1).
+        // Core until the registry has a `hud` entry (§8.2): with nothing
+        // installed they answer an empty list.
+        .at("/api/hud", Owner::Core, get(hud::list))
+        .at("/api/hud/{id}", Owner::Core, get(hud::board))
+        .at("/api/hud/{id}/data/{name}", Owner::Core, get(hud::data))
         .at("/api/model", Owner::Core, get(model::state))
         .at(
             "/api/model/use",
@@ -2362,6 +2369,10 @@ mod tests {
             // an inventory of the install, which a probe without the
             // header must not learn (FEATURES-DESIGN.md §4.2 item 4).
             ("GET", "/api/features"),
+            // What this machine records, by board and dataset.
+            ("GET", "/api/hud"),
+            ("GET", "/api/hud/host"),
+            ("GET", "/api/hud/host/data/now"),
         ] {
             let response = test_router()
                 .oneshot(

@@ -959,7 +959,15 @@ async fn run_agent(
     // The daemon's own `--model`/`--provider`, if it was given one, still
     // pins every fire; a trigger's own fields pin through `prepare_tools`.
     let follows = global.model.is_none() && global.provider.is_none();
-    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+    // The fire's own fields name what it runs, as they do for the hold
+    // above and the run's opts below: a trigger pinned to a model-less entry
+    // is asked for it, and one naming its model is not advised (review of
+    // #637).
+    let line = mecha_core::provider::router::CommandLine {
+        provider,
+        model: t.model.is_some() || global.model.is_some(),
+    };
+    for warning in mecha_core::provider::router::observe_for(&cfg, follows, line).await {
         eprintln!("mecha: {warning}");
     }
     check_cost_cap(t)?;
