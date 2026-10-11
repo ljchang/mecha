@@ -578,8 +578,8 @@ impl Command {
             // A persona replay holds per sample (`Follower::enter`), and
             // before each it waits out every other process's hold: held for
             // its whole life, two of them would each wait on the other's
-            // hold forever.
-            Command::Replay(a) => a.persona.is_none(),
+            // hold forever. Its judges hold per picture, the same way.
+            Command::Replay(a) => a.persona.is_none() && a.judge.is_empty(),
             // **Per subcommand where only some run a model** (review of D13):
             // held per command, `tasks stop` — the documented way to stop a
             // detached `tasks work` — waited behind a switch that was waiting
@@ -1099,6 +1099,12 @@ mod tests {
         let persona = cmd(&["mecha", "replay", "--persona", "a-chat", "--at", "4"]);
         assert!(persona.runs_a_model());
         assert!(!persona.is_one_run());
+        // Its judges hold per picture the same way, and take no session.
+        let judge = cmd(&["mecha", "replay", "--judge", "a.jsonl", "b.jsonl"]);
+        assert!(judge.runs_a_model());
+        assert!(!judge.is_one_run());
+        assert!(Cli::try_parse_from(["mecha", "replay", "s", "--judge", "a.jsonl"]).is_err());
+        assert!(Cli::try_parse_from(["mecha", "replay", "--sheet", "x.html"]).is_err());
     }
 
     /// `--force` overrides a measurement, and a rollback measures nothing:
