@@ -731,11 +731,13 @@ fn reader_cache(cached: bool) -> Option<mecha_core::document::Cache> {
 
 impl PersonaChats {
     pub fn new() -> Result<Self> {
-        Ok(Self::with(
+        let mut chats = Self::with(
             Store::default_dir()?,
             mecha_core::work::producer_dir("persona")?,
             Arc::new(crate::setup::persona_provider),
-        ))
+        );
+        chats.jobs = super::late::Jobs::marked("persona")?;
+        Ok(chats)
     }
 
     fn with(store: PathBuf, work: PathBuf, provider: ProviderFactory) -> Self {
