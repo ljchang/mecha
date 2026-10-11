@@ -99,7 +99,7 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" => {
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" | "speech" => {
             cfg!(target_os = "linux")
         }
         _ => false,
@@ -111,7 +111,10 @@ pub fn installable(id: &str) -> bool {
 /// from the hub is a reason to run their installs again, never the engine's.
 /// (The router's model is `mecha setup chat`'s to fetch again, F13.)
 fn fetches_models(id: &str) -> bool {
-    matches!(id, "layout" | "embed-server" | "ocr-server" | "comfyui")
+    matches!(
+        id,
+        "layout" | "embed-server" | "ocr-server" | "comfyui" | "speech"
+    )
 }
 
 /// Whether the chat model is served from this machine: the default provider
@@ -262,6 +265,10 @@ pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
         crate::comfyui_unit::ID => {
             let naming = crate::comfyui_unit::Naming::shipped();
             crate::comfyui_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::speech_unit::ID => {
+            let naming = crate::speech_unit::Naming::shipped();
+            crate::speech_unit::someone_elses(m, &naming)?.then_some(naming.adapter_port)
         }
         _ => None,
     };
@@ -681,6 +688,15 @@ pub async fn install(
             }
             Ok(())
         }
+        "speech" => {
+            let naming = crate::speech_unit::Naming::shipped();
+            crate::speech_unit::install(m, &naming, machine, hub, say).await?;
+            say(&format!(
+                "the speech server answers on :{} — the voice worker's default",
+                naming.adapter_port
+            ));
+            Ok(())
+        }
         "voice-worker" => {
             let naming = crate::voice_worker_unit::Naming::shipped();
             crate::voice_worker_unit::install(m, &naming, say).await?;
@@ -961,14 +977,14 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"]
         } else {
             &["7a-3", "7b"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
         assert_eq!(installable("comfyui"), cfg!(target_os = "linux"));
-        assert!(!installable("speech"), "7f is not built");
+        assert_eq!(installable("speech"), cfg!(target_os = "linux"));
         assert!(!installable("router"), "the router is `setup chat`'s (F13)");
         for s in crate::sidecar::SIDECARS {
             // The router's installer is built, and `setup chat` runs it —

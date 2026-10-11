@@ -305,6 +305,25 @@ const OCR_SOURCES: &[Source] = &[Source::HuggingFace {
 }];
 
 /// The registry. Order is the page's row order.
+/// The speech slot's published files: the converted model and the codec
+/// (`speech_unit`, step 7f).
+const TTS_SOURCES: &[Source] = &[Source::HuggingFace {
+    repo: crate::speech_unit::WEIGHTS_REPO,
+    revision: crate::speech_unit::WEIGHTS_REVISION,
+    files: &[
+        HubFile {
+            path: "breeze-tts2-Q5_K_M.gguf",
+            sha256: "1f0370d978c8ddc36a89d3504fb07e4848eca3ee064ba92cf5ae1cf09872a67e",
+            bytes: 2_557_512_960,
+        },
+        HubFile {
+            path: "qwen-tokenizer-12hz-BF16.gguf",
+            sha256: "cc04d7352ff4cb339435cdccf59cf38e6e92f3cf789bc94a6a1b467093bafa18",
+            bytes: 358_980_384,
+        },
+    ],
+}];
+
 pub const SLOTS: &[Slot] = &[
     Slot {
         id: "chat",
@@ -553,12 +572,13 @@ pub const SLOTS: &[Slot] = &[
                     // it is 4,062. Chatterbox, the default before, was 8,018.
                     peak: Peak::Measured { mb: 4_185, machine: GB10, date: "2026-10-03" },
                 },
-                model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
-                counts: "peak while speaking: GPU memory and the server's and adapter's process memory",
+                model: "Breeze TTS 2 Q5_K_M, in qwentts.cpp",
+                counts: "peak while speaking: GPU memory and the server's and adapter's process memory (measured with Q6_K, the larger)",
                 // Converted from BreezeBlue/Breeze-TTS-2 (non-commercial
-                // weights) into qwentts.cpp's GGUF: no published file to pin;
-                // its installer builds it (step 7f).
-                sources: &[],
+                // weights) into qwentts.cpp's GGUF and published for the
+                // installer (step 7f, 2026-10-11). Q5_K_M is what the live
+                // server runs: RTF 0.40 against Q6_K's 0.44, depth KL 0.011.
+                sources: TTS_SOURCES,
                 excludes: None,
             },
             // The GB10's readings, kept apart for a card: arithmetic there.
@@ -568,9 +588,9 @@ pub const SLOTS: &[Slot] = &[
                     gpu: Peak::Arithmetic { mb: 3_994 },
                     host: Peak::Arithmetic { mb: 191 },
                 },
-                model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
+                model: "Breeze TTS 2 Q5_K_M, in qwentts.cpp",
                 counts: "the GB10's GPU and process readings, carried to a card",
-                sources: &[],
+                sources: TTS_SOURCES,
                 excludes: None,
             },
         ],

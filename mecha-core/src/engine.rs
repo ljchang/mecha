@@ -694,7 +694,7 @@ fn find_program(name: &str) -> Option<PathBuf> {
 /// memory left after a reserve holds at a few GiB each — a CUDA compile
 /// takes that much, and a build that pushes the chat model out of memory
 /// is the failure the memory floor exists for.
-fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
+pub(crate) fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
     const PER_JOB: u64 = 4 << 30;
     const RESERVE: u64 = 8 << 30;
     let by_memory = available.map_or(2, |a| (a.saturating_sub(RESERVE) / PER_JOB) as usize);
@@ -703,7 +703,7 @@ fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
 
 /// Run one step of a build; a failure carries the end of its output, which
 /// is where a compiler or CMake says what went wrong.
-fn step(mut c: std::process::Command, what: &str) -> Result<String> {
+pub(crate) fn step(mut c: std::process::Command, what: &str) -> Result<String> {
     let out = c.output().with_context(|| format!("starting {what}"))?;
     let text = format!(
         "{}{}",
@@ -878,7 +878,7 @@ fn copy_flat(from: &Path, to: &Path) -> Result<()> {
 /// read for its own (review of #643). What the toolkit does not provide —
 /// the driver's `libcuda`, the C and C++ runtimes — is the system's, as it
 /// is for a release.
-fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
+pub(crate) fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
     let mut todo: Vec<PathBuf> = std::fs::read_dir(part)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -914,7 +914,7 @@ fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
 /// `/usr/local/cuda` layout under `nvcc`'s parent. The first covers a
 /// distro-packaged toolkit — `nvcc` in `/usr/bin`, the runtime under
 /// `/usr/lib/<triple>/` — which the second cannot reach (review of #643).
-fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
+pub(crate) fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_to_string(build.join("CMakeCache.txt"))
         .unwrap_or_default()
         .lines()
