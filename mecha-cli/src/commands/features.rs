@@ -546,6 +546,10 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             SidecarState::Missing { .. } if not_needed.is_some() => {
                 not_needed.unwrap_or_default().to_string()
             }
+            SidecarState::Missing { .. } if s.not_offered.is_some() => format!(
+                "not offered here — {}",
+                s.not_offered.as_deref().unwrap_or_default()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -984,6 +988,7 @@ mod tests {
                 label: "the chat router",
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
+                not_offered: None,
             }],
             // The chat model's files are named but not counted: the plan's
             // total is what `enable` fetches (review of #627).
@@ -1024,6 +1029,7 @@ mod tests {
                         by: "x on PATH".into(),
                     },
                     bytes: None,
+                    not_offered: None,
                 },
                 PlannedSidecar {
                     // Every real sidecar has an installer since 7f: one
@@ -1032,6 +1038,7 @@ mod tests {
                     label: "a later sidecar",
                     state: SidecarState::Missing { step: "7z" },
                     bytes: None,
+                    not_offered: None,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -1040,6 +1047,7 @@ mod tests {
                         why: "denied".into(),
                     },
                     bytes: None,
+                    not_offered: None,
                 },
             ],
             files: vec![
