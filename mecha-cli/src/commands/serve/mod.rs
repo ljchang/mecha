@@ -2492,6 +2492,8 @@ mod tests {
             ("POST", "/api/outbox/test/reconcile"),
             ("GET", "/api/settings/charter"),
             ("POST", "/api/settings/charter"),
+            ("GET", "/api/settings/images"),
+            ("POST", "/api/settings/images"),
             ("GET", "/api/settings/rules"),
             ("POST", "/api/settings/rules/retire"),
             ("POST", "/api/settings/rules/restore"),

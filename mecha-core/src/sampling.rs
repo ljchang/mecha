@@ -19,8 +19,12 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 /// Which diffusion model draws: the configured one, or its turbo
-/// distillation. A value this build does not know reads as standard: a
-/// closed enum written to a store is a wire format.
+/// distillation. A closed enum written to a store is a wire format, and a
+/// stored name this build does not know reads as **unset** — the layer
+/// below, the chat's — never as a standard override: the stores are read
+/// through [`Model::named`] (`Tuning::lenient`), and the settings routes
+/// refuse an unknown name. `#[serde(other)]` serves only the derived
+/// `Deserialize`, which no store reads (mecha-7e, 2026-10-11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Model {
