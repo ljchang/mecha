@@ -220,7 +220,7 @@ fn voice_live() -> Result<bool> {
 /// Wait while the owner is using the model: a call, or a turn in flight on
 /// the router (a hold some other process took). Checked before every
 /// sample, because a long run outlasts the moment it started in.
-async fn wait_for_owner(router: Option<&str>) -> Result<()> {
+pub(super) async fn wait_for_owner(router: Option<&str>) -> Result<()> {
     let me = std::process::id();
     let mut said = false;
     loop {
@@ -252,7 +252,7 @@ async fn wait_for_owner(router: Option<&str>) -> Result<()> {
     }
 }
 
-fn private_file(path: &Path) -> Result<std::fs::File> {
+pub(super) fn private_file(path: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     // Narrowed to 0700 only when this call makes it: a folder the owner
     // named (`--out ~/c1.jsonl`) is not the harness's to narrow. The file
@@ -313,7 +313,7 @@ fn refuse_load(
 /// one, or did not list its models, is unknown, and unknown refuses: this
 /// process names its provider and never follows, so its first request
 /// really can load a model over the owner's.
-async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()> {
+pub(super) async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()> {
     use mecha_core::provider::router::{is_router, models};
     let Some(base) = router else {
         return Ok(());
