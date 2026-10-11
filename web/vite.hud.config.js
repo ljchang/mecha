@@ -13,8 +13,11 @@ export default defineConfig({
   publicDir: false,
   build: {
     minify: true,
-    outDir: 'dist-hud',
-    emptyOutDir: true,
+    // Inside the app's dist, after the app's own build (`npm run build` runs
+    // both), so the one rsync of dist that deploys the app deploys the
+    // renderer `mecha hud publish` vendors too.
+    outDir: 'dist/hud-renderer',
+    emptyOutDir: false,
     lib: {
       entry: 'src/hud-standalone.js',
       formats: ['es'],

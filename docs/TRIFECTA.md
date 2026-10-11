@@ -180,6 +180,34 @@ mismatch comes back marked untrusted with a note saying why. There is
 deliberately no bounded-string shape — "ignore previous instructions" fits in
 very few characters, so a length cap vouches for nothing.
 
+## Scheduled pushes — a way out with no model in it
+
+Two timers send private data off the machine on a schedule, with no review
+of each push: `mecha-slots` (your free time, as bookable slots, to the
+factory's booking page) and the dashboard refresh (`mecha hud refresh`, a
+released board's datasets, to its page on the factory). Neither is a channel
+an injection can steer, because no model is in either path: a timer runs a
+query the owner already released and sends its rows to one fixed host.
+
+**Owned by: the release review, the key's scope, and the box's checks.**
+- *The review, once.* What runs unattended is exactly what a human released
+  (`LIVE-DASHBOARD-DESIGN.md` §6.3): a dashboard's publish shows the page with
+  real numbers beside each loader's query and declared shape, and releasing
+  it approves both. A changed loader, query or shape is a new publish, back
+  through the outbox, and home refuses to push a dataset whose loader digest
+  differs from the released one.
+- *The key.* Each timer holds a key of its own narrow scope (`slots`,
+  `data`), which can do that one thing and cannot publish, release or read.
+- *The box.* A dataset push is refused unless its columns and loader digest
+  equal what the release's `datasets.json` declared.
+
+**What this does not close.** A loader over a source whose content is
+third-party publishes that text under your name without a second look —
+the review shows that it is such a loader, and that is the whole control.
+And the push is unreviewed per push by design: a stolen `data` key can
+misstate a released dashboard's numbers, in the released shape, until it is
+revoked.
+
 ## The switches, and what each one costs
 
 | Switch | Default | What it changes |

@@ -231,6 +231,12 @@ impl Store {
         self.root.join("boards")
     }
 
+    /// A board's directory, for a caller beside the store (the publish
+    /// markers): the id is proved an identifier before the join.
+    pub fn board_path(&self, id: &str) -> Result<PathBuf> {
+        self.board(id)
+    }
+
     /// A board's directory — for an id already proved an identifier.
     /// Containment is proved at the join, here, for every public entry point
     /// that takes an id from its caller: a request path or a model may supply

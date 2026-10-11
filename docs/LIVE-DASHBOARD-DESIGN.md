@@ -37,6 +37,8 @@ Not to be re-asked.
 | R13 | **The first dashboard is the host's load** — RAM, storage, GPU, processes — **with no detail about any process beyond a generic category** such as voice, imagegen or OCR (§11). |
 | R14 | **The host dashboard may be made public — later.** For now it is private, with invites (R6); publishing it is an owner act at a time of the owner's choosing, and when it happens its factory datasets are coarsened as §11.4 says. (Ruled 2026-10-09.) |
 | R15 | **The name is `hud`.** `mecha serve` already calls its whole web surface "the dashboard", so every identifier this feature owns is `hud`: the CLI (`mecha hud …`), the route (`#hud/<id>`, `/api/hud`), the store (`~/.mecha/hud/`), the module (`mecha_core::hud`), the tool (`hud_preview`), the spec file (`hud.json`) and the factory template (`hud/`). "Dashboard" stays the plain-English noun in prose. (Ruled 2026-10-09.) |
+| R16 | **A private page that outlives its grant asks for sign-in again.** The factory's view grant covers `/b/{id}/data/` as well as the version the page loaded; when it expires the page keeps the last numbers, marks them stale and says "sign in again". No refresh path and no new token type: a shared link never outlives its 60 minutes (§6.4, §10 item 2). (Ruled 2026-10-11.) |
+| R17 | **The web outbox previews a dashboard publish in this arc** — §6.5's separate preview origin and sandboxed frame are built with step 5, not deferred, so a release can be reviewed from the phone. (Ruled 2026-10-11.) |
 
 ---
 
@@ -871,6 +873,37 @@ board with a filter, each in light and dark, at desktop and phone widths.
   under the 30 s floor); reading each loader's schedule waits for a route
   that carries it.
 
+### 8.4 Step 5: what was built (2026-10-11)
+
+In two repositories, split where the trust boundary is:
+
+- **The box** (mecha-factory, its PR #24): `PUT /v1/bundles/{id}/datasets/
+  {name}` behind a new `data` key scope, with §6.2's rules. A push names
+  its release or is `stale`. Its columns and loader digest must equal the
+  release's `datasets.json`. Generations order pushes within a release, an
+  equal one with the same bytes is an idempotent success, and the rest are
+  refused by code (`order`, `forked`, `loader`, `shape`, `undeclared`,
+  `size`, `budget`). It is read at `/b/{id}/data/{name}.json`, and at
+  `/g/{cap}/data/{name}.json` under the grant that opened the page (R16),
+  with an `ETag`. The client gained `factory-publish dataset push|reset`, and
+  an interactive bundle's `renderer/` is pinned by digest. The real renderer
+  is refused by the blunt script scan on Svelte's error-doc and Vega's issue
+  links, which nothing fetches.
+- **Home** (this repository): `mecha hud publish <id> [--public]` assembles
+  the bundle (`hud::publish::assemble`) and stages `factory__bundle_publish`
+  in the outbox, authored by the harness. Each `mecha hud refresh` then
+  pushes the published boards' datasets (`hud::publish::plan`) through
+  `factory-publish dataset push`, reading what was released from the
+  factory client's local store and never asking the box. The standalone page
+  finds its data from its own path, and a page outliving its grant keeps its
+  numbers and says to sign in again (R16). `npm run build` now builds the
+  renderer into `dist/hud-renderer/`, so the one rsync that deploys the app
+  deploys what a publish vendors.
+
+**Still owed for step 5:** the outbox's preview origin (R17, §6.5, the next
+PR), and §6.1's runtime gate run against the box's real policy on the first
+real publish.
+
 ## 9. Deliberately not in scope
 
 - Model-authored script, Svelte components included. If it ever comes, it comes
@@ -900,7 +933,7 @@ board with a filter, each in light and dark, at desktop and phone widths.
 
 1. ~~**Whether the host dashboard may ever be public** (§11.4).~~ **Ruled
    (R14):** it may, later; private for now.
-2. **Grant lifetime against polling** (§6.4) — whether the factory's private
+2. ~~**Grant lifetime against polling**~~ **Ruled (R16): re-sign-in, and the grant covers the data path.** (§6.4) — whether the factory's private
    grant gains a refresh path for a long-open page, or the page simply asks for
    sign-in — and the grant's scope, which must cover `/b/{id}/data/` as well
    as the version the page loaded from (§6.2). A factory-side decision; it does
