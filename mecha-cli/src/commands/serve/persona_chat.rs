@@ -112,13 +112,19 @@ pub struct PersonaChats {
     /// (`call_regenerate`): the call's turns reach the server as words
     /// through the voice worker, so the page registers the edit here and
     /// the spoken turn that says its line takes it. One per chat; a newer
-    /// press replaces it.
-    call_regenerates: StdMutex<HashMap<String, (PanelEdit, std::time::Instant)>>,
+    /// press replaces it. With when it was pressed, and its id, which a
+    /// withdraw names so it never takes a newer press (review of #642).
+    call_regenerates: StdMutex<HashMap<String, (PanelEdit, std::time::Instant, u64)>>,
+    /// The next registration's id.
+    next_regenerate: std::sync::atomic::AtomicU64,
     /// Every chat's background jobs (`docs/BACKGROUND-JOBS-DESIGN.md`): a
     /// picture drawn past the turn that asked for it, one in flight per chat
     /// key. A finished one comes back through `delivered`, drained by the
     /// task the first turn starts (`start_delivery`).
     jobs: super::late::Jobs,
+    /// `[image] steps`: what a standard picture with no steps of its own
+    /// takes, for the settings page's estimate.
+    image_steps: u32,
 }
 
 /// A spoken turn's other end (§11): the voice facade's tap on the run's
@@ -275,6 +281,17 @@ struct PanelNames {
     persona: String,
 }
 
+/// Which turn a panel edit rides, for how its drawing may be stopped
+/// ([`draw_panel_edit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelTurn {
+    /// Typed: Stop ends the drawing with the turn.
+    Typed,
+    /// A call's: talking barges in by cancelling the run, so the drawing
+    /// runs under no run token and only its wait for the line can be ended.
+    Spoken,
+}
+
 /// The edit panel's change, drawn by the harness (IMAGE-DESIGN.md §5.3):
 /// the owner's words and the picture's record through a one-shot extraction
 /// (a painted area skips it: that is a retouch), then the typed call through
@@ -290,14 +307,13 @@ async fn draw_panel_edit(
     extractor: &Result<(Box<dyn mecha_core::provider::Provider>, String), String>,
     names: &PanelNames,
     events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
-    spoken: bool,
+    turn: PanelTurn,
 ) -> (String, bool) {
     use mecha_core::persona::edit;
     let fail = |why: String| {
-        (
-            edit::fact(&edit.picture, "not understood", &edit::not_understood(&why)),
-            false,
-        )
+        let result = edit::not_understood(&why);
+        undrawn_card(events, &result);
+        (edit::fact(&edit.picture, "not understood", &result), false)
     };
     // A Regenerate never quietly discards what was painted (mecha-05, on
     // #616's note): the pair is refused by name.
@@ -427,7 +443,7 @@ async fn draw_panel_edit(
     // resolve into a draw: the Stop count is read before and after, as
     // `dispatch`'s own wait reads it (review of #606), and a Stop meanwhile
     // ends it undrawn too.
-    if spoken {
+    if turn == PanelTurn::Spoken {
         if let (Some(sink), Some(stop)) = (&cx.jobs, &cx.cancel) {
             let stops = sink.stops();
             let waited = tokio::select! {
@@ -435,19 +451,15 @@ async fn draw_panel_edit(
                 () = stop.cancelled() => false,
             };
             if !waited || sink.stops() != stops {
-                return (
-                    edit::fact(
-                        &edit.picture,
-                        &change,
-                        "Nothing was drawn: stopped while it waited for the picture before it.",
-                    ),
-                    false,
-                );
+                let result =
+                    "Nothing was drawn: stopped while it waited for the picture before it.";
+                undrawn_card(events, result);
+                return (edit::fact(&edit.picture, &change, result), false);
             }
         }
     }
     let detached;
-    let cx = if spoken {
+    let cx = if turn == PanelTurn::Spoken {
         let mut free = cx.clone();
         free.cancel = None;
         detached = free;
@@ -462,6 +474,30 @@ async fn draw_panel_edit(
         edit::fact(&edit.picture, &change, &dispatched.content),
         !dispatched.is_error,
     )
+}
+
+/// A panel edit that ended before the harness's call, said on the live
+/// stream as a refused call is: its fact reaches the transcript, but no
+/// `ToolCall` reaches the page, which would show the persona saying it
+/// wasn't drawn with no card saying why until a reload (review of #642).
+fn undrawn_card(events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>, result: &str) {
+    let Some(tx) = events else { return };
+    let id = format!(
+        "{}{}",
+        mecha_core::agent::HARNESS_CALL,
+        uuid::Uuid::new_v4().simple()
+    );
+    let _ = tx.send(AgentEvent::ToolCall {
+        id: id.clone(),
+        name: "image_generate".into(),
+        input: serde_json::json!({}),
+    });
+    let _ = tx.send(AgentEvent::ToolResult {
+        id,
+        name: "image_generate".into(),
+        is_error: true,
+        content: result.into(),
+    });
 }
 
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
@@ -488,10 +524,6 @@ const REGENERATE_WAITS: &str = "a reply is running; Regenerate waits for it to f
 /// answer still finds it.
 const CALL_REGENERATE_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
 
-/// How many tokens a persona may reason for on a spoken turn (owner,
-/// 2026-10-03: "start with call turns first"). A typed turn keeps the
-/// server's `--reasoning-budget` (4096).
-///
 /// Why a door refused, as the route will say it.
 #[derive(Debug)]
 pub enum Refusal {
@@ -752,8 +784,42 @@ impl PersonaChats {
             calls: StdMutex::new(HashMap::new()),
             next_call: std::sync::atomic::AtomicU64::new(1),
             call_regenerates: StdMutex::new(HashMap::new()),
+            next_regenerate: std::sync::atomic::AtomicU64::new(1),
             jobs: Default::default(),
+            image_steps: mecha_core::imagegen::ImageConfig::default().steps,
         }
+    }
+
+    /// The configured `[image] steps`, when there is an `[image]`.
+    pub fn with_image_steps(mut self, steps: Option<u32>) -> Self {
+        if let Some(steps) = steps {
+            self.image_steps = steps;
+        }
+        self
+    }
+
+    /// A persona's picture settings as the page shows them: what the owner
+    /// set, what each unset field resolves to, and about how long a picture
+    /// takes.
+    fn image_view(&self, tuning: &mecha_core::sampling::Tuning) -> serde_json::Value {
+        let s = tuning.resolve(self.image_steps);
+        // What each field is when left unset, for this model.
+        let d = mecha_core::sampling::Tuning {
+            model: tuning.model,
+            ..Default::default()
+        }
+        .resolve(self.image_steps);
+        serde_json::json!({
+            "set": tuning,
+            "defaults": {"steps": d.steps, "cfg": d.cfg, "sampler": d.sampler, "scheduler": d.scheduler},
+            "model": s.model,
+            "steps": s.steps,
+            "cfg": s.cfg,
+            "sampler": s.sampler,
+            "scheduler": s.scheduler,
+            "negative": !s.negative.is_empty(),
+            "estimate_secs": mecha_core::sampling::estimate_secs(&s),
+        })
     }
 
     /// For the assistant's chat tests, which build a `ChatState` but never
@@ -1375,6 +1441,27 @@ impl PersonaChats {
         Ok(serde_json::json!({ "touching": state.image.touching }))
     }
 
+    /// Set how this persona's pictures are sampled: the owner's settings,
+    /// each field held to its range or list (`sampling::Tuning::checked`),
+    /// written to `state.toml` and nowhere else.
+    pub fn image_settings(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        tuning: mecha_core::sampling::Tuning,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let tuning = tuning
+            .checked()
+            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        let state =
+            mecha_core::persona::set_tuning(&self.store, &p.name, tuning).map_err(failed)?;
+        Ok(serde_json::json!({ "image": self.image_view(&state.image.tuning) }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
     /// `Config::timezone` documents — not UTC (review of #418).
@@ -1424,6 +1511,7 @@ impl PersonaChats {
                     // page's default framing.
                     "frame": p.state.frame,
                     "touching": p.state.image.touching,
+                    "image": self.image_view(&p.state.image.tuning),
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     // Waiting on the owner — the page's Waiting section —
@@ -1457,6 +1545,15 @@ impl PersonaChats {
         // itself. A locked page reads exactly like one with nothing locked.
         serde_json::json!({
             "personas": rows,
+            // What the picture settings may be set to, from the one list the
+            // door checks against.
+            "image_options": {
+                "samplers": mecha_core::sampling::SAMPLERS,
+                "schedulers": mecha_core::sampling::SCHEDULERS,
+                "cfg": [mecha_core::sampling::CFG_MIN, mecha_core::sampling::CFG_MAX,
+                        mecha_core::sampling::CFG_STEP],
+                "steps": [mecha_core::sampling::STEPS_MIN, mecha_core::sampling::STEPS_MAX],
+            },
             "unlocked": unlocked,
             "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
         })
@@ -2806,14 +2903,15 @@ impl PersonaChats {
     /// §5.4; owner, 2026-10-10: a spoken call turn), and the line the page
     /// says into the call to take it. Through the same door as every turn,
     /// and only on a chat with a call placed: the registration is what
-    /// makes the turn a redraw, and the line only says which turn.
+    /// makes the turn a redraw, and the line only says which turn. With
+    /// the registration's id, for a withdraw.
     pub async fn call_regenerate(
         &self,
         library: &LibraryState,
         key: &str,
         token: Option<&str>,
         picture: &str,
-    ) -> Result<String, Refusal> {
+    ) -> Result<(String, u64), Refusal> {
         self.persona_of(library, key, token).await?;
         if !self
             .calls
@@ -2834,11 +2932,37 @@ impl PersonaChats {
             redraw: true,
             regions: Vec::new(),
         };
+        let id = self
+            .next_regenerate
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(key.to_string(), (edit, std::time::Instant::now()));
-        Ok(mecha_core::persona::edit::regenerate_line(picture))
+            .insert(key.to_string(), (edit, std::time::Instant::now(), id));
+        Ok((mecha_core::persona::edit::regenerate_line(picture), id))
+    }
+
+    /// Withdraw the Regenerate registered on `key` as `id` whose line
+    /// never reached the call — the page could not say it — so a later
+    /// turn that happened to say those words is not taken as one (review
+    /// of #634). Only that press: a newer one, even for the same picture,
+    /// stays (review of #642).
+    pub async fn withdraw_call_regenerate(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+        id: u64,
+    ) -> Result<(), Refusal> {
+        self.persona_of(library, key, token).await?;
+        let mut held = self
+            .call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if held.get(key).is_some_and(|(_, _, held_id)| *held_id == id) {
+            held.remove(key);
+        }
+        Ok(())
     }
 
     /// The Regenerate a spoken turn on `key` carries: the registered one,
@@ -2857,7 +2981,7 @@ impl PersonaChats {
             .call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (edit, at) = held.get(key)?;
+        let (edit, at, _) = held.get(key)?;
         if at.elapsed() > CALL_REGENERATE_WAIT {
             held.remove(key);
             return None;
@@ -2873,7 +2997,7 @@ impl PersonaChats {
             .call_regenerates
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if held.get(key).is_some_and(|(_, held_at)| *held_at == at) {
+        if held.get(key).is_some_and(|(_, held_at, _)| *held_at == at) {
             held.remove(key);
         }
     }
@@ -3825,6 +3949,8 @@ impl PersonaChats {
                 layers: mecha_core::persona::touching(&self.store, &name)
                     == mecha_core::persona::Touching::Precise,
                 layers_posed: false,
+                // The owner's picture settings, read fresh this turn.
+                image_tuning: mecha_core::persona::tuning(&self.store, &name),
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -3915,7 +4041,11 @@ impl PersonaChats {
                             extractor,
                             &names,
                             &Some(tx.clone()),
-                            spoken_turn,
+                            if spoken_turn {
+                                PanelTurn::Spoken
+                            } else {
+                                PanelTurn::Typed
+                            },
                         )
                         .await;
                         mecha_core::agent::append_user_text(
@@ -4699,6 +4829,61 @@ pub async fn image_touching(
     )
 }
 
+/// The picture settings: a model from the closed set (an unknown one is a
+/// 400 here, where the stored table reads it as standard), and the rest
+/// held to their ranges by `image_settings`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSettingsBody {
+    model: ModelValue,
+    #[serde(default)]
+    cfg: Option<f64>,
+    #[serde(default)]
+    steps: Option<u32>,
+    #[serde(default)]
+    sampler: Option<String>,
+    #[serde(default)]
+    scheduler: Option<String>,
+    #[serde(default)]
+    negative: bool,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ModelValue {
+    Standard,
+    Turbo,
+}
+
+/// POST /api/personas/{name}/image-settings
+pub async fn image_settings(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ImageSettingsBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let tuning = mecha_core::sampling::Tuning {
+        model: match body.model {
+            ModelValue::Standard => mecha_core::sampling::Model::Standard,
+            ModelValue::Turbo => mecha_core::sampling::Model::Turbo,
+        },
+        cfg: body.cfg,
+        steps: body.steps,
+        sampler: body.sampler,
+        scheduler: body.scheduler,
+        negative: body.negative,
+    };
+    respond(
+        chat.personas
+            .image_settings(&state.library, &name, tuning, body.unlock.as_deref()),
+    )
+}
+
 /// POST /api/personas/{name}/frame
 pub async fn frame(
     State(state): Web,
@@ -5345,6 +5530,10 @@ pub struct CallRegenerateBody {
     picture: String,
     #[serde(default)]
     unlock: Option<String>,
+    /// The page could not say the line: take back the registration with
+    /// this id (`PersonaChats::withdraw_call_regenerate`).
+    #[serde(default)]
+    withdraw: Option<u64>,
 }
 
 /// POST /api/persona-chat/{key}/call-regenerate — a Regenerate pressed on
@@ -5359,12 +5548,22 @@ pub async fn call_regenerate(
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
+    if let Some(id) = body.withdraw {
+        return match chat
+            .personas
+            .withdraw_call_regenerate(&state.library, &key, body.unlock.as_deref(), id)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({ "withdrawn": true })).into_response(),
+            Err(r) => r.into_response(),
+        };
+    }
     match chat
         .personas
         .call_regenerate(&state.library, &key, body.unlock.as_deref(), &body.picture)
         .await
     {
-        Ok(line) => Json(serde_json::json!({ "line": line })).into_response(),
+        Ok((line, id)) => Json(serde_json::json!({ "line": line, "id": id })).into_response(),
         Err(r) => r.into_response(),
     }
 }
@@ -5923,18 +6122,29 @@ mod tests {
 
     /// `turn`, sent from the picture edit panel when `edit`.
     async fn turn_as(w: &World, key: &str, text: &str, edit: Option<PanelEdit>) {
+        turn_events(w, key, text, edit).await;
+    }
+
+    /// `turn_as`, and every event the page was sent for it, `Done` last.
+    async fn turn_events(
+        w: &World,
+        key: &str,
+        text: &str,
+        edit: Option<PanelEdit>,
+    ) -> Vec<WireEvent> {
         let (mut rx, _) = w.personas().subscribe(&w.library, key, None).await.unwrap();
         w.personas()
             .send_with(&w.chat, &w.library, key, text, None, None, Vec::new(), edit)
             .await
             .unwrap();
+        let mut seen = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
                 Ok(Ok(WireEvent::Done { ok, error, .. })) => {
                     assert!(ok, "{error:?}");
-                    return;
+                    return seen;
                 }
-                Ok(Ok(_)) => continue,
+                Ok(Ok(event)) => seen.push(event),
                 other => panic!("no Done event: {other:?}"),
             }
         }
@@ -6324,7 +6534,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(line, "Regenerate images/a.png");
         // Another turn first: the registration waits for its own line.
         spoken(&w, &key, "one moment").await;
@@ -6376,7 +6587,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let first = match w
             .personas()
             .speak(&w.chat, &w.library, &key, &line, false)
@@ -6405,6 +6617,42 @@ mod tests {
         assert_eq!(card["version_of"], "images/a.png", "{card}");
     }
 
+    /// A Regenerate whose line the page could not say is taken back, so a
+    /// later turn saying those words is words (review of #634). Only that
+    /// press: a newer one, even for the same picture, stays (review of #642).
+    #[tokio::test]
+    async fn a_call_regenerate_never_said_is_withdrawn() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let chats = w.personas();
+        let (line, first) = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        chats
+            .withdraw_call_regenerate(&w.library, &key, None, first)
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &line).is_none());
+        // A second press of the same picture, then the first's withdraw
+        // arriving late: the second stands.
+        let (again, second) = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        assert_ne!(first, second);
+        chats
+            .withdraw_call_regenerate(&w.library, &key, None, first)
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &again).is_some());
+    }
+
     /// A call's registration is spent only by a turn that starts with it
     /// (review of #634): looked up as often as the worker says the line,
     /// spent once, and never a newer press that replaced it. Before, the
@@ -6423,7 +6671,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let chats = w.personas();
         let (_, first) = chats.call_regenerate_for(&key, &line).expect("found");
         let (_, again) = chats
@@ -6434,7 +6683,8 @@ mod tests {
         let newer = chats
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         chats.spend_call_regenerate(&key, first);
         let (_, held) = chats
             .call_regenerate_for(&key, &newer)
@@ -6488,7 +6738,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let first = match w
             .personas()
             .speak(&w.chat, &w.library, &key, &line, false)
@@ -6556,7 +6807,8 @@ mod tests {
             .personas()
             .call_regenerate(&w.library, &key, None, "images/a.png")
             .await
-            .unwrap();
+            .unwrap()
+            .0;
         let first = match w
             .personas()
             .speak(&w.chat, &w.library, &key, &line, false)
@@ -6793,7 +7045,7 @@ mod tests {
             redraw: false,
             regions: Vec::new(),
         };
-        turn_as(
+        let live = turn_events(
             &w,
             &key,
             "Edit images/a.png with mask inbox/mask-a.png",
@@ -6801,6 +7053,15 @@ mod tests {
         )
         .await;
         assert_eq!(w.drawn.lock().unwrap().len(), 2, "nothing more drawn");
+        // Its card is said live, as a refused call: no re-read is needed to
+        // see why nothing was drawn (review of #642).
+        assert!(
+            live.iter().any(|e| matches!(e,
+                WireEvent::ToolResult { name, is_error: true, preview, .. }
+                    if name == "image_generate"
+                        && preview.contains("nothing was said for the painted area"))),
+            "{live:?}"
+        );
         let reply = w.seen.lock().unwrap().last().unwrap().clone();
         let owner = reply.messages.last().unwrap().text();
         assert!(
@@ -7986,6 +8247,106 @@ mod tests {
             .touching(&w.library, "mara", Touching::Single, Some(&token))
             .unwrap();
         assert_eq!(row(Some(&token))["touching"], "single");
+    }
+
+    /// The picture settings: set from the page and carried by the list with
+    /// what each unset field resolves to and the estimate, read by the host
+    /// each turn, refused out of range or off the lists, behind the lock like
+    /// every write, and an unknown model or field refused at the door
+    /// (IMAGE-DESIGN.md §16).
+    #[tokio::test]
+    async fn the_picture_settings_are_set_listed_read_and_locked() {
+        use mecha_core::sampling::{Model, Tuning};
+        let w = world();
+        let listed =
+            |token: Option<&str>| w.personas().list(&w.library, token, Some(chrono_tz::UTC));
+        let row = |token: Option<&str>| listed(token)["personas"][0]["image"].clone();
+        let image = row(None);
+        assert_eq!(
+            image["set"],
+            serde_json::json!({}),
+            "nothing set until the owner sets it"
+        );
+        assert_eq!(
+            (image["cfg"].as_f64(), image["sampler"].as_str()),
+            (Some(1.0), Some("euler"))
+        );
+        assert_eq!(image["defaults"]["steps"], 40);
+        assert!(listed(None)["image_options"]["samplers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "res_multistep"));
+        let guided = Tuning {
+            cfg: Some(3.0),
+            steps: Some(30),
+            sampler: Some("res_multistep".into()),
+            scheduler: Some("beta".into()),
+            negative: true,
+            ..Tuning::default()
+        };
+        let set = w
+            .personas()
+            .image_settings(&w.library, "mara", guided.clone(), None)
+            .unwrap();
+        assert_eq!(set["image"]["steps"], 30);
+        assert_eq!(set["image"]["negative"], true);
+        assert_eq!(row(None)["set"]["sampler"], "res_multistep");
+        assert_eq!(mecha_core::persona::tuning(&w.store(), "mara"), guided);
+        // Turbo's own steps where none are set.
+        let turbo = Tuning {
+            model: Model::Turbo,
+            ..Tuning::default()
+        };
+        let set = w
+            .personas()
+            .image_settings(&w.library, "mara", turbo, None)
+            .unwrap();
+        assert_eq!(set["image"]["steps"], mecha_core::sampling::TURBO_STEPS);
+        assert_eq!(
+            set["image"]["defaults"]["steps"],
+            mecha_core::sampling::TURBO_STEPS
+        );
+        // Out of range, off the list: refused, and nothing written.
+        for bad in [
+            Tuning {
+                cfg: Some(7.0),
+                ..Tuning::default()
+            },
+            Tuning {
+                sampler: Some("made_up".into()),
+                ..Tuning::default()
+            },
+        ] {
+            assert!(matches!(
+                w.personas().image_settings(&w.library, "mara", bad, None),
+                Err(Refusal::Bad(_))
+            ));
+        }
+        assert_eq!(
+            mecha_core::persona::tuning(&w.store(), "mara").model,
+            Model::Turbo
+        );
+        for body in [
+            serde_json::json!({"model": "hyper"}),
+            serde_json::json!({"model": "standard", "seed": 4}),
+        ] {
+            assert!(
+                serde_json::from_value::<ImageSettingsBody>(body.clone()).is_err(),
+                "{body}"
+            );
+        }
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas()
+                .image_settings(&w.library, "mara", Tuning::default(), None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        w.personas()
+            .image_settings(&w.library, "mara", Tuning::default(), Some(&token))
+            .unwrap();
+        assert_eq!(row(Some(&token))["set"], serde_json::json!({}));
     }
 
     /// A proposal from the main chat, read and approved where personas live

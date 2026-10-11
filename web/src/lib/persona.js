@@ -32,7 +32,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -43,6 +43,38 @@ export const ENDPOINTS = [
   ...PERSONA_SUFFIXES.map((s) => `/api/personas/X${s}`),
   ...CHAT_SUFFIXES.map((s) => `/api/persona-chat/X${s}`),
 ];
+
+// The picture-settings presets: the reference setting every picture used
+// before tuning, mecha-a3's guided setting (G3: cfg 3, 30 steps,
+// res_multistep/beta, the fixed negative; 2026-10-11), and the turbo model at
+// its own defaults. A preset sets every field, so nothing of the last one is
+// left behind.
+export const IMAGE_PRESETS = {
+  default: { model: 'standard' },
+  guided: { model: 'standard', cfg: 3, steps: 30, sampler: 'res_multistep', scheduler: 'beta', negative: true },
+  turbo: { model: 'turbo' },
+};
+
+// The body the image-settings route takes: what the owner set, with `patch`
+// laid over it; a field patched to null goes back to the model's default.
+export function imageSettingsBody(set, patch, token) {
+  const next = { ...(set ?? {}), ...patch };
+  const field = (k) => (next[k] === null || next[k] === undefined || next[k] === '' ? undefined : next[k]);
+  return {
+    model: next.model === 'turbo' ? 'turbo' : 'standard',
+    cfg: field('cfg') === undefined ? undefined : Number(next.cfg),
+    steps: field('steps') === undefined ? undefined : Number(next.steps),
+    sampler: field('sampler'),
+    scheduler: field('scheduler'),
+    negative: !!next.negative,
+    unlock: token ?? undefined,
+  };
+}
+
+// A preset's body: every field from the preset alone.
+export function presetBody(name, token) {
+  return imageSettingsBody({}, IMAGE_PRESETS[name], token);
+}
 
 export function listUrl(token) {
   return withUnlock('/api/personas', token);
@@ -435,7 +467,11 @@ export function applyEvent(state, ev) {
       // `started` is the page's clock, for the "drawing a picture… 1:24"
       // line: a local model can take minutes on an image. (A re-read takes
       // it from the server's `working.since` instead — `withWorking`.)
-      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() }] };
+      // `version_of`: the harness's Regenerate says live which picture this
+      // one is a version of, as the transcript does (IMAGE-DESIGN.md §5.4).
+      const entry = { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() };
+      if (ev.version_of) entry.version_of = ev.version_of;
+      return { ...s, entries: [...s.entries, entry] };
     }
     // The preview is kept: its first line names the picture a finished
     // `image_generate` drew, which the page shows under the row (`picture.js`).

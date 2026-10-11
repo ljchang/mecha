@@ -10,13 +10,14 @@
   import Personas from './lib/Personas.svelte';
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
+  import Hud from './lib/Hud.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
   import { featureOf, isShown, banner, hiddenLine, bounceFor } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
   // view's component interprets; the router only splits it.
-  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'personas', 'library', 'settings'];
+  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'personas', 'library', 'settings', 'hud'];
   const fromHash = () => {
     let [h, s] = location.hash.slice(1).split('/');
     // The notes tab folded into graph (NOTES-GRAPH-DESIGN.md D1); the old
@@ -177,6 +178,8 @@
       <Library initial={route.sub} {navigate} />
     {:else if view === 'settings'}
       <Settings initial={route.sub} {navigate} {backTo} />
+    {:else if view === 'hud'}
+      <Hud initial={route.sub} {navigate} />
     {:else}
       <Home {navigate} />
     {/if}

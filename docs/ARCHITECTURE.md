@@ -225,6 +225,21 @@ The parts that bite hardest:
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A model-less local entry takes its name from its server, once per
+  process** (`router::asks_its_server`, the one predicate the probe, the
+  provider and the preflight warning read: `kind = "local"`, loopback, no
+  `model`). Asked are the entries the owner configured and the default
+  provider's, built-in or not — a machine with no config file runs on the
+  built-in `local` — so a hosted-only machine sends nothing to `:8080`. The
+  name is the router's loaded model, else its only one, else nothing — two
+  unloaded models get a warning, never a guess — or a plain server's
+  `model_alias`; it is read from the process snapshot, so a run, its record
+  and an eval's arm all name the same model, and the preflight says "runs
+  ask for that" only where the probe did name it. A long-lived surface
+  reads it from its own probe and rebuilds when it moves (`follow.rs`, the
+  #347 rule); a followed default that asks counts as naming whatever is
+  loaded. `exp run` refuses a model-less default, because a trial's
+  condition hash would record `(default)`, not the model.
 - **A process that outlives a switch follows it per turn**
   (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
   the Slack connector). An agent resolved at startup names the model loaded
@@ -961,8 +976,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   then σ = 8), the setting a 60-image comparison on one textured picture
   found seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
   saw a faint rectangular seam where the edge crossed a smooth background,
-  on one scene at n = 4, open in HANDOFF. The graph samples on the
-  encoded picture under a `SetLatentNoiseMask`. The result is then laid over
+  on one scene at n = 4. The graph samples on the encoded picture under a `SetLatentNoiseMask`. The result is then laid over
   the original in mecha's code (`composite_masked`), not the server's, so
   every pixel beyond the grown, feathered edge (up to about 37 px outside
   what was painted) is the original, byte for byte, at the edit canvas. For
@@ -971,10 +985,9 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   already is, and the result says so. A dab too small to survive the grow
   step is refused rather than silently changing nothing. The near-copy check
   reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. Measured seamless on one textured
-  picture, and landing 8 of 8 local edits, in
-  `IMAGE-REGION-EDIT-RESEARCH.md` §4, with §7.7's one smooth-background
-  seam the exception seen so far. It under-edits a pose,
+  masked edit would look unchanged. It landed 8 of 8 local edits in
+  `IMAGE-REGION-EDIT-RESEARCH.md` §4 (the seam caveat is above). It
+  under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
   nothing, or was painted over a picture of another shape, is refused before
   the GPU. A `size` beside a mask is set aside and said, never refused,
@@ -5961,6 +5974,26 @@ the owner's rulings; this section is the invariants a change to
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
   joined, and an installed id is never overwritten.
+- **The renderer is ours, and nothing agent-authored executes in it**
+  (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
+  inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
+  Dataset values reach the DOM as text only, tooltips included (our handler
+  writes text nodes; vega-tooltip's assigns HTML). Text panels go through
+  `mail-markdown.js` with a link rendered as its words. `vega-embed` always
+  runs with `actions: false` (its menu posts the spec, rows included, to
+  another site) and `ast: true` (the interpreter, never `Function`).
+- **Filters narrow rows in the host** (`applyFilters`), so a chart obeys a
+  filter without naming it; rows reach Vega before compile through the
+  view's `datasets`, which only the host fills.
+- **One component, two builds.** The app loads the renderer on `#hud` only
+  (Vega is a lazy chunk); `npm run build:hud` makes the standalone `hud.js`
+  + `hud.css` a page serves beside `hud.json` and `data/<name>.json`. The
+  page owns `html`/`body`, the component only itself.
+- **The routes are read-only, and a URL segment reaches no path on its own
+  say-so** (`serve/hud.rs`): `{id}` must be a board the store lists and
+  `{name}` a dataset the loaded, checked spec declares. A spec edited by hand
+  into a refusal is a 422, never drawn. A dataset carries an `ETag` of its
+  generation and `generated_at`, so a poll costs a 304.
 
 ## System state
 
@@ -6141,6 +6174,31 @@ was ever deployed.
   `scene` means no drawing), and a parsed call ends the sample unrun.
   `attempts_to_parsed` is the first request whose call parsed within
   `--parsed-limit` bytes.
+- **`mecha replay --judge <FILE>...` reads renders a replay already drew;
+  it never draws** (`persona::replay_judge`, `commands/replay_judge.rs`).
+  Per picture it records the detector's faces (`FaceAnchors::faces_in`),
+  the vision model's count of people, and the record's own count (the
+  record is found by the picture's hash in the sample's staged store). Each
+  thing the record says (`clauses`: setting, style, together, the words
+  it renders, and each person's doing, wearing and expression) is asked
+  as a yes/no, of the
+  picture and, for an edit, of the picture it started from, so a clause
+  the base already showed is not credited to the edit. It also records
+  `layout_similarity` against that base and the manifest's `roles` and
+  `reader`. A clause names no one, because the vision model cannot tell the
+  cast apart by name; identity is a face-embedding judge, not built yet.
+  Answers are read strictly (`yes_no`, `count`: the first word or nothing),
+  and a question that got no readable answer is in no denominator but is
+  counted (`unanswered`), so a rate says what it stands on. The
+  judges are versioned (`JUDGES`), and the verdict file is named by the
+  version, so a changed judge is its own arm and re-judges old renders
+  rather than mixing with them. Questions go to the persona's judge binding
+  (seeded) as quarantined one-shots with the picture in the one user turn
+  (`QuarantinedPass::ask_about`), under a hold per picture after waiting
+  out the owner as a sample does. Verdicts and the contact sheet (one row
+  per file, each picture at one height and its own width) hold the scene's
+  words, so they are 0600 beside the samples; standard output carries
+  counts.
 
 ### Archive and forget
 
@@ -10019,9 +10077,11 @@ the full checklist this grows into as each build step lands.
    it (`provider_is_local`, `SearchBackendConfig::problem`).
 3. Any new fact it needs from the disk goes in `Facts::read`, found by the
    owning program's rule.
-4. If it has a switch: a line in `FEATURES_STARTER` (`commands/config.rs`,
-   where `the_global_starter_lists_every_switch_off` fails until it is
-   there), an `evidence` arm saying what an owner who set it up would lose,
+4. If it has a switch: a **commented** line in `FEATURES_STARTER`
+   (`commands/config.rs`) — `# <id> = false  # what it is` — since an
+   explicit `false` is the owner's no (`Declined`), and a feature shipped
+   answered-no is one `mecha setup` never offers (its starter test fails
+   until the line is there, and names an uncommented one), an `evidence` arm saying what an owner who set it up would lose,
    a `switchable_from_environment` arm, and an `onboarding::blurb` line —
    what `mecha setup` says it is for when it is off — all exhaustive, so the
    build asks. Its setup step then follows from the registry. Whether an environment may switch it on is decided by where its

@@ -99,7 +99,9 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" | "speech" => {
+            cfg!(target_os = "linux")
+        }
         _ => false,
     }
 }
@@ -109,7 +111,10 @@ pub fn installable(id: &str) -> bool {
 /// from the hub is a reason to run their installs again, never the engine's.
 /// (The router's model is `mecha setup chat`'s to fetch again, F13.)
 fn fetches_models(id: &str) -> bool {
-    matches!(id, "layout" | "embed-server" | "ocr-server")
+    matches!(
+        id,
+        "layout" | "embed-server" | "ocr-server" | "comfyui" | "speech"
+    )
 }
 
 /// Whether the chat model is served from this machine: the default provider
@@ -171,12 +176,94 @@ pub fn may_offer(feature: Feature, chat_here: bool) -> bool {
 }
 
 /// Price what a plan would install whose size is known before installing:
-/// the engine's pinned archives for this machine, on its line and in the
-/// total. `nvidia` is read only when the engine is to be installed, so a plan
-/// with nothing to fetch probes no driver. A machine `engine::choose` refuses
-/// is priced at nothing, and its install says why.
+/// the engine's pinned archives for this machine, and the speech-to-text
+/// model's pinned tarball (its own tree, so the plan's file rows leave it
+/// out), each on its line and in the total. `nvidia` is read only when the
+/// engine is to be installed, so a plan with nothing to fetch probes no
+/// driver. A machine `engine::choose` refuses is priced at nothing, and its
+/// install says why.
 pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::engine::Nvidia) {
     let feature = plan.feature;
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == crate::stt_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && installable(s.id)
+            // `offered`'s own predicate, so the plan never prices what
+            // `enable` would not install (review of #638).
+            && not_needed(s.id, feature, chat_here).is_none()
+    }) {
+        if let Some(bytes) = crate::stt_unit::download_bytes() {
+            s.bytes = Some(bytes);
+            plan.download_bytes += bytes;
+        }
+    }
+    // The driver, read at most once and only when something here needs it:
+    // the engine's build, or whether ComfyUI's torch can run.
+    let mut read = Some(nvidia);
+    let mut seen = None;
+    let mut nvidia = move || -> crate::engine::Nvidia {
+        *seen.get_or_insert_with(|| read.take().map_or(crate::engine::Nvidia::None, |f| f()))
+    };
+    // Missing here and needed — installable or not: a machine its installer
+    // does not run on (macOS) is not offered it either, and its `fits` says
+    // why, so what it would fetch is unpriced there too (review of #649).
+    let wanted = |plan: &Plan, id: &str| {
+        plan.sidecars.iter().any(|s| {
+            s.id == id
+                && matches!(
+                    s.state,
+                    SidecarState::Missing { .. } | SidecarState::Incomplete
+                )
+                && not_needed(s.id, feature, chat_here).is_none()
+        })
+    };
+    // The speech server's default voice is fetched beside the slot's model
+    // and codec, which the plan prices already; the clip is priced here so
+    // nothing it fetches goes uncounted (review of #649). A machine
+    // `speech_unit::fits` refuses is not offered the server, so neither the
+    // clip nor the slot's model is its plan's (review of #649).
+    if wanted(plan, crate::speech_unit::ID) {
+        match crate::speech_unit::fits(std::env::consts::OS, nvidia()) {
+            Ok(_) => {
+                let bytes: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+                if let Some(s) = plan
+                    .sidecars
+                    .iter_mut()
+                    .find(|s| s.id == crate::speech_unit::ID)
+                {
+                    s.bytes = Some(bytes);
+                }
+                plan.download_bytes += bytes;
+            }
+            Err(why) => not_offered(plan, crate::speech_unit::ID, &why),
+        }
+    }
+    // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB,
+    // too much to leave out of the total the way the voice worker's 250 MB
+    // is. The models are the image slot's files, priced by the plan already.
+    // A machine `comfyui_unit::fits` refuses is priced at nothing, as one
+    // `engine::choose` refuses is (review of #645) — its models included.
+    if wanted(plan, crate::comfyui_unit::ID) {
+        let fits =
+            crate::comfyui_unit::fits(std::env::consts::OS, std::env::consts::ARCH, nvidia());
+        match (fits, crate::comfyui_unit::env_bytes(std::env::consts::ARCH)) {
+            (Ok(()), Some(bytes)) => {
+                if let Some(s) = plan
+                    .sidecars
+                    .iter_mut()
+                    .find(|s| s.id == crate::comfyui_unit::ID)
+                {
+                    s.bytes = Some(bytes);
+                }
+                plan.download_bytes += bytes;
+            }
+            (Ok(()), None) => {}
+            (Err(why), _) => not_offered(plan, crate::comfyui_unit::ID, &why),
+        }
+    }
     let Some(s) = plan.sidecars.iter_mut().find(|s| {
         s.id == "llama"
             && matches!(
@@ -193,6 +280,64 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
         let bytes = crate::engine::download_bytes(target);
         s.bytes = Some(bytes);
         plan.download_bytes += bytes;
+    }
+}
+
+/// Why an offered sidecar is left out after all, when it is: a server already
+/// answering where its install would put one, which mecha did not install.
+/// Asked by `features enable` after [`offered`], which reads no socket.
+pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
+    let port = match id {
+        crate::stt_unit::ID => {
+            let naming = crate::stt_unit::Naming::shipped();
+            crate::stt_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::voice_worker_unit::ID => {
+            let naming = crate::voice_worker_unit::Naming::shipped();
+            crate::voice_worker_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::comfyui_unit::ID => {
+            let naming = crate::comfyui_unit::Naming::shipped();
+            crate::comfyui_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::speech_unit::ID => {
+            let naming = crate::speech_unit::Naming::shipped();
+            crate::speech_unit::someone_elses(m, &naming)?.then_some(naming.adapter_port)
+        }
+        _ => None,
+    };
+    Ok(port.map(|port| {
+        format!(
+            "a server already answers on :{port} that mecha did not install — left alone, and \
+             used as it is"
+        )
+    }))
+}
+
+/// Unprice what a sidecar would fetch for its slots: its install is not
+/// offered on this machine, so those files are not this plan's download
+/// (review of #649). Said, with why, rather than dropped.
+fn not_offered(plan: &mut Plan, id: &str, why: &str) {
+    let serves = crate::sidecar::SIDECARS
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.serves)
+        .unwrap_or(&[]);
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| s.id == id) {
+        s.not_offered = Some(why.to_string());
+    }
+    let Plan {
+        files,
+        download_bytes,
+        ..
+    } = plan;
+    for f in files.iter_mut().filter(|f| serves.contains(&f.slot)) {
+        if let FileState::Download { bytes } = f.state {
+            *download_bytes = download_bytes.saturating_sub(bytes);
+            f.state = FileState::NotOffered {
+                why: why.to_string(),
+            };
+        }
     }
 }
 
@@ -383,15 +528,7 @@ pub async fn install_layout(
     // `document::layout_tree` does, so they would disagree with no way out.
     Manifest::record(home, id, &dir.join("python"))?;
     Manifest::record(home, id, &link)?;
-    let uv_env = |c: &mut std::process::Command| {
-        c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
-            .env("UV_CACHE_DIR", dir.join(".uv-cache"))
-            .env("UV_PYTHON_PREFERENCE", "only-managed")
-            .env("UV_NO_CONFIG", "1")
-            // `only-managed` needs the download; an operator's `never` would
-            // turn the install into a confusing failure.
-            .env("UV_PYTHON_DOWNLOADS", "automatic");
-    };
+    let uv_env = |c: &mut std::process::Command| uv_env(c, &dir);
     if !python.exists() {
         say(&format!("building a Python {LAYOUT_PYTHON} environment"));
         // `--clear`: a venv whose interpreter dangles (its managed Python
@@ -457,8 +594,69 @@ pub async fn install_layout(
     Ok(())
 }
 
+/// A Python environment at `dir/venv` from a lock with every file pinned by
+/// hash, for the sidecar `id` — the venv, its managed Python and the lock
+/// each recorded before they are written (§10.2 item 2), and the install run
+/// every time, since it is idempotent and a half-finished one is resumed by
+/// it. Its download cache is dropped after: the wheels are in the venv, and
+/// the cache would keep their size again for nothing.
+pub(crate) async fn locked_env(
+    m: &Machinery,
+    id: &str,
+    dir: &Path,
+    python_version: &str,
+    lock: &str,
+    what: &str,
+    say: Say<'_>,
+) -> Result<()> {
+    let home = &m.mecha_home;
+    let uv = ensure_uv(m, say).await?;
+    let venv = dir.join("venv");
+    let python = venv.join("bin/python");
+    // Each on its own line in the record, so a partly deleted install reads
+    // incomplete rather than installed — the managed Python included, which
+    // the venv's interpreter links into (`install_layout`'s reason).
+    Manifest::record(home, id, &venv)?;
+    Manifest::record(home, id, &dir.join("python"))?;
+    if !python.exists() {
+        say(&format!("building a Python {python_version} environment"));
+        let mut c = std::process::Command::new(&uv);
+        c.args(["venv", "--quiet", "--clear", "--python", python_version])
+            .arg(&venv);
+        uv_env(&mut c, dir);
+        run(&mut c, "uv venv")?;
+    }
+    let lock_file = dir.join("requirements.txt");
+    crate::llama_units::write_owned(home, id, &lock_file, lock, 0o644)?;
+    say(&format!(
+        "installing {what}, every file checked against the lock"
+    ));
+    let mut c = std::process::Command::new(&uv);
+    c.args(["pip", "install", "--quiet", "--require-hashes", "--python"])
+        .arg(&python)
+        .arg("-r")
+        .arg(&lock_file);
+    uv_env(&mut c, dir);
+    run(&mut c, "uv pip install")?;
+    let _ = std::fs::remove_dir_all(dir.join(".uv-cache"));
+    Ok(())
+}
+
+/// `uv`'s environment for an install whose tree is `dir`: its Python, its
+/// cache and nothing of the operator's uv configuration — one tree per
+/// install, removable whole.
+pub(crate) fn uv_env(c: &mut std::process::Command, dir: &Path) {
+    c.env("UV_PYTHON_INSTALL_DIR", dir.join("python"))
+        .env("UV_CACHE_DIR", dir.join(".uv-cache"))
+        .env("UV_PYTHON_PREFERENCE", "only-managed")
+        .env("UV_NO_CONFIG", "1")
+        // `only-managed` needs the download; an operator's `never` would
+        // turn the install into a confusing failure.
+        .env("UV_PYTHON_DOWNLOADS", "automatic");
+}
+
 /// Run a step; a failure is an error carrying its own output.
-fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
+pub(crate) fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
     let out = c.output().with_context(|| format!("starting {what}"))?;
     if !out.status.success() {
         bail!(
@@ -488,6 +686,87 @@ pub async fn install(
             };
             crate::llama_units::install(m, which, &which.shipped(), machine, hub, say).await
         }
+        "stt" => {
+            let naming = crate::stt_unit::Naming::shipped();
+            crate::stt_unit::install(m, &naming, say).await?;
+            say(&format!(
+                "speech to text answers on :{} — `[voice] stt_url`'s default",
+                naming.port
+            ));
+            Ok(())
+        }
+        "comfyui" => {
+            let naming = crate::comfyui_unit::Naming::shipped();
+            crate::comfyui_unit::install(m, &naming, machine, hub, say).await?;
+            say(&format!(
+                "ComfyUI answers on :{} — `[image] url`'s default",
+                naming.port
+            ));
+            // This install's home, never the process's: a caller with a
+            // scratch home must not read or edit the operator's config
+            // (review of #645).
+            let path = m.mecha_home.join("config.toml");
+            // ComfyUI-GGUF is not installed (the int8 default needs only the
+            // core loader), so a configured `.gguf` would fail at the first
+            // picture — said now rather than then.
+            let configured = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
+                .and_then(|v| {
+                    v.get("image")?
+                        .get("diffusion_model")?
+                        .as_str()
+                        .map(str::to_string)
+                });
+            if let Some(model) = configured.filter(|m| m.ends_with(".gguf")) {
+                say(&format!(
+                    "[image] diffusion_model is {model} — a GGUF, which needs the ComfyUI-GGUF \
+                     node this install does not bring; remove the line to use the installed \
+                     int8 model"
+                ));
+            }
+            // The switch alone reads off with no `[image]` table; one naming
+            // the temp dir is written where there is none, and an owner's
+            // own table is told the line rather than edited.
+            let temp = crate::comfyui_unit::server_temp_dir(&m.mecha_home);
+            // Said, never fatal: the server is installed and checked, and a
+            // config that will not take the table is the owner's to fix.
+            match crate::comfyui_unit::write_image_table(&path, Some(&temp)) {
+                Ok(true) => say(&format!(
+                    "wrote [image] server_temp_dir = \"{}\" into {}",
+                    temp.display(),
+                    path.display()
+                )),
+                Ok(false) => say(&format!(
+                    "your [image] table is left as it is — for each job's uploads to be deleted, \
+                     it needs server_temp_dir = \"{}\"",
+                    temp.display()
+                )),
+                Err(e) => say(&format!(
+                    "[image] was not written ({e:#}) — add it with server_temp_dir = \"{}\"",
+                    temp.display()
+                )),
+            }
+            Ok(())
+        }
+        "speech" => {
+            let naming = crate::speech_unit::Naming::shipped();
+            crate::speech_unit::install(m, &naming, machine, hub, say).await?;
+            say(&format!(
+                "the speech server answers on :{} — the voice worker's default",
+                naming.adapter_port
+            ));
+            Ok(())
+        }
+        "voice-worker" => {
+            let naming = crate::voice_worker_unit::Naming::shipped();
+            crate::voice_worker_unit::install(m, &naming, say).await?;
+            say(&format!(
+                "the voice worker answers on :{} — `[voice] offer_target`'s default",
+                naming.port
+            ));
+            Ok(())
+        }
         "llama" => {
             let server = crate::engine::install_engine(m, say).await?;
             say(&format!(
@@ -512,6 +791,7 @@ mod tests {
                 label: "llama.cpp (llama-server)",
                 state: llama,
                 bytes: None,
+                not_offered: None,
             }],
             files: vec![],
             download_bytes: 0,
@@ -595,6 +875,121 @@ mod tests {
             panic!("probed for an unneeded engine")
         });
         assert_eq!(unneeded.download_bytes, 0);
+    }
+
+    /// The speech-to-text model's tarball is in a plan that installs the
+    /// server, and in nothing else's (review of #638).
+    #[test]
+    fn the_speech_to_text_download_is_in_the_plan() {
+        let stt = |state| Plan {
+            feature: Feature::Voice,
+            sidecars: vec![PlannedSidecar {
+                id: crate::stt_unit::ID,
+                label: "the speech-to-text server",
+                state,
+                bytes: None,
+                not_offered: None,
+            }],
+            files: vec![],
+            download_bytes: 5,
+            nothing_to_do: false,
+        };
+        let mut p = stt(SidecarState::Missing { step: "7d-1" });
+        price(&mut p, true, || crate::engine::Nvidia::None);
+        let b = crate::stt_unit::download_bytes().expect("pinned");
+        if installable(crate::stt_unit::ID) {
+            assert_eq!(p.sidecars[0].bytes, Some(b));
+            assert_eq!(p.download_bytes, 5 + b);
+        } else {
+            assert_eq!(p.download_bytes, 5, "not offered here, not priced");
+        }
+        let mut provided = stt(SidecarState::Provided { by: "x".into() });
+        price(&mut provided, true, || crate::engine::Nvidia::None);
+        assert_eq!(provided.download_bytes, 5);
+        assert_eq!(provided.sidecars[0].bytes, None);
+    }
+
+    /// ComfyUI's environment is priced only where its torch can run — a
+    /// machine `comfyui_unit::fits` refuses is priced at nothing, as one the
+    /// engine refuses is (review of #645) — and the driver is read once.
+    #[test]
+    fn the_image_environment_is_priced_only_where_it_fits() {
+        let comfy = || Plan {
+            feature: Feature::Image,
+            sidecars: vec![PlannedSidecar {
+                id: crate::comfyui_unit::ID,
+                label: "ComfyUI",
+                state: SidecarState::Missing { step: "7e" },
+                bytes: None,
+                not_offered: None,
+            }],
+            files: vec![],
+            download_bytes: 5,
+            nothing_to_do: false,
+        };
+        let mut no_gpu = comfy();
+        price(&mut no_gpu, true, || crate::engine::Nvidia::None);
+        assert_eq!((no_gpu.sidecars[0].bytes, no_gpu.download_bytes), (None, 5));
+        let mut old = comfy();
+        price(&mut old, true, || crate::engine::Nvidia::Driver(570, 1));
+        assert_eq!(old.download_bytes, 5);
+        let mut reads = 0;
+        let mut fits = comfy();
+        price(&mut fits, true, || {
+            reads += 1;
+            crate::engine::Nvidia::Driver(580, 95)
+        });
+        assert!(reads <= 1);
+        match crate::comfyui_unit::env_bytes(std::env::consts::ARCH) {
+            Some(b) if installable(crate::comfyui_unit::ID) => {
+                assert_eq!(fits.sidecars[0].bytes, Some(b));
+                assert_eq!(fits.download_bytes, 5 + b);
+            }
+            _ => assert_eq!(fits.download_bytes, 5, "not offered here, not priced"),
+        }
+    }
+
+    /// A machine the speech server is not offered on prices none of what it
+    /// would fetch — the voice clip, nor the slot's model, which reads as
+    /// not fetched here, with why (review of #649).
+    #[test]
+    fn a_speech_server_not_offered_here_is_not_priced() {
+        let mut p = Plan {
+            feature: Feature::Voice,
+            sidecars: vec![PlannedSidecar {
+                id: crate::speech_unit::ID,
+                label: "the speech server",
+                state: SidecarState::Missing { step: "7f" },
+                bytes: None,
+                not_offered: None,
+            }],
+            files: vec![crate::sidecar::PlannedFile {
+                slot: "tts",
+                model: "a speech model",
+                repo: Some("org/r"),
+                path: "m.gguf",
+                state: FileState::Download { bytes: 100 },
+            }],
+            download_bytes: 105,
+            nothing_to_do: false,
+        };
+        // `fits` refuses on either platform — no NVIDIA device on Linux, no
+        // systemd on macOS — so the row is unpriced either way, with why.
+        price(&mut p, true, || crate::engine::Nvidia::None);
+        assert_eq!(p.sidecars[0].bytes, None);
+        assert_eq!(p.download_bytes, 5);
+        // The sidecar's own row says so too, never "enable installs it".
+        assert!(p.sidecars[0].not_offered.is_some());
+        let why_says = if cfg!(target_os = "linux") {
+            "NVIDIA"
+        } else {
+            "launchd"
+        };
+        assert!(
+            matches!(&p.files[0].state, FileState::NotOffered { why } if why.contains(why_says)),
+            "{:?}",
+            p.files[0].state
+        );
     }
 
     fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
@@ -689,13 +1084,14 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"]
         } else {
             &["7a-3", "7b"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
-        assert!(!installable("comfyui"));
+        assert_eq!(installable("comfyui"), cfg!(target_os = "linux"));
+        assert_eq!(installable("speech"), cfg!(target_os = "linux"));
         assert!(!installable("router"), "the router is `setup chat`'s (F13)");
         for s in crate::sidecar::SIDECARS {
             // The router's installer is built, and `setup chat` runs it —

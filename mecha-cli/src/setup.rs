@@ -1476,6 +1476,14 @@ async fn prepare_tools_carrying(
                 Ok(tool) => {
                     // The operator's `[system]` floor, not the defaults.
                     let tool = tool.with_floor(cfg.system.clone());
+                    // Which model the image server holds, shared with every
+                    // other process that draws (IMAGE-DESIGN.md §16.2).
+                    let tool = match mecha_core::work::mecha_home() {
+                        Ok(home) => {
+                            tool.with_model_record(home.join("image").join("held-model.json"))
+                        }
+                        Err(_) => tool,
+                    };
                     // A new picture's seed is the CLI's and the evals' only:
                     // `mecha run`, and the one-shot callers that name no
                     // surface (eval, batch). Never a chat (IMAGE-DESIGN.md §5.1).

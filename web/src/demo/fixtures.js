@@ -1663,15 +1663,34 @@ export const learningReport = {
 // Characters the owner writes and talks to, apart from the assistant
 // (`persona_chat.rs`). Fiction twice over: invented people, playing parts.
 
+// A persona's picture settings as the list carries them
+// (`PersonaChats::image_view`): what the owner set, what each field resolves
+// to, and the estimate.
+const imageDefault = {
+  set: {}, defaults: { steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple' },
+  model: 'standard', steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: false, estimate_secs: 37,
+};
+const imageGuided = {
+  set: { cfg: 3, steps: 30, sampler: 'res_multistep', scheduler: 'beta', negative: true },
+  defaults: { steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple' },
+  model: 'standard', steps: 30, cfg: 3, sampler: 'res_multistep', scheduler: 'beta', negative: true, estimate_secs: 53,
+};
+
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     // Proposed from the main chat and waiting on the owner (the Waiting
     // section): the review below is what its page reads.
-    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
+    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
+  image_options: {
+    samplers: ['euler', 'euler_ancestral', 'heun', 'dpmpp_2m', 'dpmpp_2m_sde', 'res_multistep', 'uni_pc'],
+    schedulers: ['simple', 'sgm_uniform', 'karras', 'exponential', 'beta', 'normal'],
+    cfg: [1, 5, 0.5],
+    steps: [4, 60],
+  },
   unlocked: false,
   has_password: false,
 };
@@ -1864,4 +1883,93 @@ export const features = {
     },
   ],
   unknown_switches: [],
+};
+
+// `/api/hud…`: one installed dashboard, made up, shaped as `serve/hud.rs`
+// serves it — the board list (`BoardStatus`), the checked spec, and each
+// dataset as the store writes it (`columns` + `rows`).
+const HUD_AT = '2031-04-20T18:05:00Z';
+const hudSites = ['North', 'South', 'Annex'];
+const hudVisits = [];
+for (let d = 0; d < 7; d++) {
+  hudSites.forEach((site, i) => {
+    hudVisits.push([`2031-04-${String(14 + d).padStart(2, '0')}`, site, ((d * 7 + i * 5) % 23) + 4]);
+  });
+}
+export const hudBoards = {
+  boards: [
+    {
+      id: 'lab_week',
+      title: 'Lab week',
+      refusals: [],
+      unreadable_ledger_lines: 0,
+      loaders: [
+        { name: 'visits_by_day', source: 'lab', last: null, generated_at: HUD_AT, stale: false, dataset_error: null },
+        { name: 'instruments', source: 'lab', last: null, generated_at: HUD_AT, stale: false, dataset_error: null },
+      ],
+    },
+  ],
+};
+export const hudBoard = {
+  id: 'lab_week',
+  spec: {
+    version: 1,
+    title: 'Lab week',
+    theme: 'default',
+    datasets: ['visits_by_day', 'instruments'],
+    filters: [{ id: 'site', label: 'Site', dataset: 'visits_by_day', field: 'site' }],
+    panels: [
+      { type: 'kpi', title: 'Visits this week', dataset: 'visits_by_day', value: { op: 'sum', field: 'visits' } },
+      { type: 'kpi', title: 'Busiest day', dataset: 'visits_by_day', value: { op: 'max', field: 'visits' } },
+      { type: 'kpi', title: 'Instruments', dataset: 'instruments', value: { op: 'count' } },
+      { type: 'kpi', title: 'Instrument hours', dataset: 'instruments', value: { op: 'sum', field: 'hours' } },
+      {
+        type: 'chart',
+        title: 'Visits per day',
+        span: 2,
+        vegalite: {
+          data: { name: 'visits_by_day' },
+          mark: 'bar',
+          encoding: {
+            x: { field: 'day', type: 'temporal', timeUnit: 'yearmonthdate', title: null },
+            y: { field: 'visits', type: 'quantitative', aggregate: 'sum', title: 'visits' },
+            color: { field: 'site', type: 'nominal', title: null },
+          },
+        },
+      },
+      { type: 'table', title: 'Instrument hours', span: 2, dataset: 'instruments', columns: ['instrument', 'hours'] },
+      { type: 'text', span: 4, markdown: 'Pilot sessions are **excluded**.' },
+    ],
+  },
+};
+export const hudData = {
+  visits_by_day: {
+    name: 'visits_by_day',
+    generated_at: HUD_AT,
+    generation: 3,
+    loader_digest: 'demo',
+    columns: [
+      { name: 'day', type: 'date' },
+      { name: 'site', type: 'string' },
+      { name: 'visits', type: 'integer' },
+    ],
+    rows: hudVisits,
+    external: false,
+  },
+  instruments: {
+    name: 'instruments',
+    generated_at: HUD_AT,
+    generation: 3,
+    loader_digest: 'demo',
+    columns: [
+      { name: 'instrument', type: 'string' },
+      { name: 'hours', type: 'float' },
+    ],
+    rows: [
+      ['Scanner A', 31.5],
+      ['Scanner B', 12.25],
+      ['Eye tracker', 7.0],
+    ],
+    external: false,
+  },
 };
