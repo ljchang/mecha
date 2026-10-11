@@ -6174,7 +6174,8 @@ was ever deployed.
   unreadable call's result becomes the loop's own refusal
   (`unreadable_call`). Whether the reply hit the limit is not in the record,
   so the note says the call ended rather than that it hit the limit, and a
-  call already clipped is left alone (its head ends mid-value too). The
+  reply already clipped is left alone (a clipped head ends mid-value too,
+  and the loop clips a whole reply at once). The
   header counts both. On the 2026-10-08 runaway turn it clipped the five
   looping calls and re-answered their five results.
 - **`--surface recorded` sends the tool text the turn was sent**, from the

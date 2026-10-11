@@ -543,8 +543,10 @@ pub struct Rerecorded {
 ///
 /// Whether a reply hit the output limit is not in the record, so only a
 /// call that ends mid-value is clipped, and its note says it ended rather
-/// than that it hit the limit. A call already clipped is left as it is:
-/// its head ends mid-value too, and would be clipped again.
+/// than that it hit the limit. A reply holding any call already clipped is
+/// left as it is: a clipped head ends mid-value too, and would be clipped
+/// again. The loop clips a whole reply at once, so a recorded reply is
+/// clipped in full or not at all (review of #653).
 pub fn rerecord(messages: &mut [Message]) -> Rerecorded {
     let mut done = Rerecorded::default();
     let mut answers = std::collections::HashMap::new();
