@@ -1081,6 +1081,20 @@ impl OutboxStore {
         )
     }
 
+    /// [`stage_by_harness`](Self::stage_by_harness) for a publication: a
+    /// bundle the harness assembled from the owner's own files (a dashboard's
+    /// release), reviewed as the rendered page it is.
+    pub fn stage_publish_by_harness(&self, tool: &str, args: Value) -> Result<OutboxItem> {
+        self.stage_as(
+            Author::Harness,
+            tool,
+            OutboxKind::Publish,
+            args,
+            Taint::default(),
+            Provenance::default(),
+        )
+    }
+
     /// Every item, oldest first. A file that fails to parse is skipped with
     /// a `tracing::warn!` rather than failing the whole read — right for a
     /// listing, which should show what it can. See [`Self::items_strict`]
