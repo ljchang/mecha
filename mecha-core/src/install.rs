@@ -323,6 +323,9 @@ fn not_offered(plan: &mut Plan, id: &str, why: &str) {
         .find(|s| s.id == id)
         .map(|s| s.serves)
         .unwrap_or(&[]);
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| s.id == id) {
+        s.not_offered = Some(why.to_string());
+    }
     let Plan {
         files,
         download_bytes,
@@ -788,6 +791,7 @@ mod tests {
                 label: "llama.cpp (llama-server)",
                 state: llama,
                 bytes: None,
+                not_offered: None,
             }],
             files: vec![],
             download_bytes: 0,
@@ -884,6 +888,7 @@ mod tests {
                 label: "the speech-to-text server",
                 state,
                 bytes: None,
+                not_offered: None,
             }],
             files: vec![],
             download_bytes: 5,
@@ -916,6 +921,7 @@ mod tests {
                 label: "ComfyUI",
                 state: SidecarState::Missing { step: "7e" },
                 bytes: None,
+                not_offered: None,
             }],
             files: vec![],
             download_bytes: 5,
@@ -955,6 +961,7 @@ mod tests {
                 label: "the speech server",
                 state: SidecarState::Missing { step: "7f" },
                 bytes: None,
+                not_offered: None,
             }],
             files: vec![crate::sidecar::PlannedFile {
                 slot: "tts",
@@ -971,6 +978,8 @@ mod tests {
         price(&mut p, true, || crate::engine::Nvidia::None);
         assert_eq!(p.sidecars[0].bytes, None);
         assert_eq!(p.download_bytes, 5);
+        // The sidecar's own row says so too, never "enable installs it".
+        assert!(p.sidecars[0].not_offered.is_some());
         let why_says = if cfg!(target_os = "linux") {
             "NVIDIA"
         } else {

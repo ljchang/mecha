@@ -522,6 +522,11 @@ pub struct PlannedSidecar {
     /// (`install::price`): the engine's pinned archives for this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
+    /// Why `enable` will not offer its install on this machine, though it
+    /// is missing (`install::price`): said on its row as on its files', so
+    /// one plan does not contradict itself (review of #649).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_offered: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -666,6 +671,7 @@ pub fn plan(
             label: s.label,
             state,
             bytes: None,
+            not_offered: None,
         });
     }
 
