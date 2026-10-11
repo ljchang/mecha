@@ -6,7 +6,9 @@
   // KB, and the rest of a phone-first app should not carry it.
   //
   // Installing, refreshing and validating stay in the CLI.
-  import { apiFetch } from './api.js';
+  // Aliased as `fetch`, as every component does: `check-demo` finds the
+  // endpoints a page reaches by its `fetch(` calls.
+  import { apiFetch as fetch } from './api.js';
 
   let { initial = null, navigate } = $props();
 
@@ -27,7 +29,7 @@
 
   async function loadList() {
     try {
-      const res = await apiFetch('/api/hud');
+      const res = await fetch('/api/hud');
       if (!res.ok) throw new Error((await text(res)) || `HTTP ${res.status}`);
       boards = (await res.json()).boards ?? [];
       listError = null;
@@ -44,7 +46,7 @@
     board = null;
     boardError = null;
     try {
-      const res = await apiFetch(`/api/hud/${encodeURIComponent(id)}`);
+      const res = await fetch(`/api/hud/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error((await text(res)) || `HTTP ${res.status}`);
       const got = await res.json();
       if (mine === loading) board = got;
@@ -57,7 +59,7 @@
   function apiSource(id) {
     return {
       async dataset(name, etag) {
-        const res = await apiFetch(`/api/hud/${encodeURIComponent(id)}/data/${encodeURIComponent(name)}`, {
+        const res = await fetch(`/api/hud/${encodeURIComponent(id)}/data/${encodeURIComponent(name)}`, {
           cache: 'no-cache',
           headers: etag ? { 'If-None-Match': etag } : {},
         });
