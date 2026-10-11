@@ -542,10 +542,14 @@ The turbo model is the Comfy-Org turbo int8 file (`[image] turbo_model`). It
 shares the text encoder and VAE with the standard model.
 
 - **A switch unloads the other model.** When a picture needs a different
-  diffusion model from the one this process last sent the server, the job
-  POSTs `/free` first and waits for the unload to run (`UNLOAD_SETTLE`).
-  ComfyUI would otherwise keep both resident, about 7 GB more against the
-  memory floor.
+  diffusion model from the one the server last drew with, the job notes
+  the switch, POSTs `/free` and waits for the unload to run
+  (`UNLOAD_SETTLE`). ComfyUI would otherwise keep both resident, about 7 GB
+  more against the memory floor.
+- **It is best effort when pictures overlap.** ComfyUI acts on `/free` only
+  once its queue is empty, so two pictures already queued on different
+  models can still both load. The switch is noted before the unload, so a
+  picture starting meanwhile sees it and is asked for a cold load.
 - **The memory floor asks for a cold load on a switch.**
 - **The record is shared, keyed by server address.** It lives in
   `~/.mecha/image/held-model.json`, written whole and renamed over

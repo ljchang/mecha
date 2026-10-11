@@ -874,7 +874,14 @@ fn write_held(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    // Unique per write: two chats in one serve can draw at once (review of
+    // #648, pass 3).
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, serde_json::to_vec(held)?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -1075,8 +1082,17 @@ impl ComfyUi {
         if s.scheduler != reference.scheduler {
             checks.push(("KSampler", "scheduler", s.scheduler.clone(), true));
         }
+        // One request per node: the guided preset checks two KSampler inputs.
+        let mut fetched: std::collections::BTreeMap<&str, Value> = Default::default();
         for (node, input, want, chosen) in checks {
-            let info = self.get_json(&format!("object_info/{node}")).await?;
+            let info = match fetched.get(node) {
+                Some(info) => info.clone(),
+                None => {
+                    let info = self.get_json(&format!("object_info/{node}")).await?;
+                    fetched.insert(node, info.clone());
+                    info
+                }
+            };
             let Some(choices) = info
                 .pointer(&format!("/{node}/input/required/{input}/0"))
                 .and_then(Value::as_array)
@@ -1302,7 +1318,13 @@ impl ComfyUi {
         let model = cfg.model_file(req.sampling.model);
         self.preflight(cfg, &req.sampling).await?;
         // The other model out first, so the two are never resident at once.
-        if self.switching(model, &cfg.diffusion_model) {
+        // Recorded before the unload, so a picture starting meanwhile sees the
+        // switch too and unloads rather than loading beside it (review of
+        // #648, pass 3). Best effort: ComfyUI acts on /free only once its
+        // queue is empty, so pictures already queued can still overlap.
+        let switching = self.switching(model, &cfg.diffusion_model);
+        self.drew_with(model);
+        if switching {
             self.release().await;
             let settle = tokio::time::sleep(UNLOAD_SETTLE);
             match cancel {
@@ -1313,7 +1335,6 @@ impl ComfyUi {
                 None => settle.await,
             }
         }
-        self.drew_with(model);
         // `comfy_graph`'s masked arm needs the picture it masks; without one
         // the mask would drop out of the graph and the whole frame be redrawn.
         // `request` refuses the pair, and this stops it here too, since
@@ -8972,6 +8993,15 @@ mod tests {
         cx.image_tuning.scheduler = Some("beta".into());
         let out = t.call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
+        // Both inputs read from one request (review of #648, pass 3): one
+        // for the refused picture, one for this.
+        let asked = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("GET /object_info/KSampler"))
+            .count();
+        assert_eq!(asked, 2);
     }
 
     /// After an idle release the server holds nothing, so the next picture
