@@ -919,13 +919,24 @@ impl ComfyUi {
     /// there is one, else as this process saw it. `""` is a released server.
     fn held(&self) -> Option<String> {
         match self.model_record.get() {
-            Some(path) => read_held(path).remove(self.base.as_str()),
-            None => LAST_MODEL
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(self.base.as_str())
-                .cloned(),
+            // The record wins where it names this server: another process may
+            // have drawn since. Where it cannot be read or has no entry (a
+            // write that failed), what this process sent last, never the
+            // standard model by default (review of #648, pass 5).
+            Some(path) => read_held(path)
+                .remove(self.base.as_str())
+                .or_else(|| self.held_here()),
+            None => self.held_here(),
         }
+    }
+
+    /// What this process last sent this server, or released it to.
+    fn held_here(&self) -> Option<String> {
+        LAST_MODEL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(self.base.as_str())
+            .cloned()
     }
 
     /// Note `file` as the model this server now draws with. A record that
@@ -1325,7 +1336,7 @@ impl ComfyUi {
         let switching = self.switching(model, &cfg.diffusion_model);
         self.drew_with(model);
         if switching {
-            self.release().await;
+            let _ = self.release().await;
             let settle = tokio::time::sleep(UNLOAD_SETTLE);
             match cancel {
                 Some(token) => tokio::select! {
@@ -1574,10 +1585,23 @@ impl ComfyUi {
     }
 
     /// Ask the server to drop its models and free the memory they held.
-    async fn release(&self) {
-        let _ = self
-            .post_json("free", &json!({"unload_models": true, "free_memory": true}))
-            .await;
+    /// Whether the server took it: an answer that is not a success is no
+    /// unload, and must not be recorded as one (review of #648, pass 5).
+    async fn release(&self) -> bool {
+        matches!(
+            self.post_json("free", &json!({"unload_models": true, "free_memory": true}))
+                .await,
+            Ok((status, _)) if status.is_success()
+        )
+    }
+
+    /// An idle release: the server is marked empty only when it took the
+    /// unload, so a swallowed failure never tells every process that reads
+    /// the record that the next switch has nothing to unload.
+    async fn release_idle(&self) {
+        if self.release().await {
+            self.released();
+        }
     }
 }
 
@@ -2576,8 +2600,7 @@ impl ImageGenerate {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(after)).await;
             if generation.load(Ordering::SeqCst) == armed {
-                backend.release().await;
-                backend.released();
+                backend.release_idle().await;
             }
         });
     }
@@ -9044,10 +9067,55 @@ mod tests {
             !earlier.switching(standard, standard),
             "released, as the record says"
         );
-        // An unreadable record reads as an unused server.
+        // An unreadable record falls back to what this process last did:
+        // here, released (review of #648, pass 5).
         std::fs::write(&record, "not json").unwrap();
         assert!(!fresh.switching(standard, standard));
-        assert!(fresh.switching(turbo, standard));
+        assert!(!fresh.switching(turbo, standard));
+    }
+
+    /// A record that cannot be written never reads as the standard model:
+    /// this process's own last picture stands, so the next switch still
+    /// unloads (review of #648, pass 5). Fails where an unwritten record
+    /// read as an unused server.
+    #[test]
+    fn an_unwritten_record_falls_back_to_what_this_process_drew() {
+        let addr: std::net::SocketAddr = "127.0.0.1:13".parse().unwrap();
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let server = server_at(addr);
+        server
+            .model_record
+            .set(std::path::PathBuf::from(
+                "/proc/mecha-no-such-dir/held-model.json",
+            ))
+            .unwrap();
+        server.drew_with(turbo);
+        assert!(
+            server.switching(standard, standard),
+            "turbo is what it sent"
+        );
+    }
+
+    /// An idle unload the server did not take is not recorded as one: the
+    /// record keeps the model it holds, so the next switch still unloads it
+    /// (review of #648, pass 5).
+    #[tokio::test]
+    async fn an_idle_unload_the_server_refused_leaves_the_record() {
+        let record = tempdir().join("held-model.json");
+        // Nothing listens on port 1: the /free fails.
+        let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let server = server_at(addr);
+        server.model_record.set(record.clone()).unwrap();
+        server.drew_with(turbo);
+        server.release_idle().await;
+        assert!(server.switching(standard, standard), "still turbo");
+        assert_eq!(
+            read_held(&record)
+                .get(server.base.as_str())
+                .map(String::as_str),
+            Some(turbo)
+        );
     }
 
     /// A reader that answers as told, standing in for the persona host's.
