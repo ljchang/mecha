@@ -124,7 +124,11 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "ComfyUI",
         needed_by: &[Feature::Image],
         serves: &["image"],
+        // Its own unit first, as `stt`'s and the worker's name theirs: with
+        // the record lost, mecha's server must not read as missing (review
+        // of #645).
         evidence: &[
+            Evidence::UserUnit("mecha-comfyui.service"),
             Evidence::UserUnit("comfyui.service"),
             Evidence::Home("ComfyUI"),
         ],
@@ -728,7 +732,13 @@ pub fn plan(
             // cleared cache reads as a download, and `offered` offers the
             // install again — a dangling link alone would read as present
             // (`exists` is an lstat; review of #645).
-            Some((sc, SidecarState::Installed)) if sc.id == crate::comfyui_unit::ID => None,
+            // An interrupted install too: it resumes by fetching what the
+            // hub lacks, so that is what it is priced at (review of #645).
+            Some((sc, SidecarState::Installed | SidecarState::Incomplete))
+                if sc.id == crate::comfyui_unit::ID =>
+            {
+                None
+            }
             Some((sc, SidecarState::Provided { .. } | SidecarState::Installed)) => {
                 Some(FileState::HeldBy { sidecar: sc.label })
             }
@@ -1398,9 +1408,17 @@ mod tests {
 
     /// A ComfyUI mecha installed links its models from the hub, so they are
     /// read there: an empty hub reads as a download, never as held — which is
-    /// what makes a cleared cache visible and the install offered again.
+    /// what makes a cleared cache visible and the install offered again. An
+    /// interrupted install the same: it resumes by fetching what the hub
+    /// lacks, so that is its price (review of #645).
     #[test]
     fn an_installed_comfyui_reads_its_models_from_the_hub() {
+        for incomplete in [false, true] {
+            installed_comfyui_reads_the_hub(incomplete);
+        }
+    }
+
+    fn installed_comfyui_reads_the_hub(incomplete: bool) {
         let root = scratch();
         let m = machinery(&root);
         let tree = root.join("home/.mecha/sidecars/comfyui");
@@ -1408,7 +1426,7 @@ mod tests {
         let manifest = Manifest {
             entries: vec![Entry {
                 sidecar: "comfyui".into(),
-                incomplete: false,
+                incomplete,
                 wrote: vec![tree],
                 builds: vec![],
             }],
@@ -1421,7 +1439,7 @@ mod tests {
         .unwrap();
         let p = plan(Feature::Image, &m, &GB10, &root.join("hub"), false).unwrap();
         let image: Vec<_> = p.files.iter().filter(|f| f.slot == "image").collect();
-        assert_eq!(image.len(), 3, "{image:#?}");
+        assert_eq!(image.len(), 3, "incomplete={incomplete}: {image:#?}");
         assert!(
             image
                 .iter()

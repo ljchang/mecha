@@ -184,31 +184,40 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
         } else {
             false
         };
-        // Likewise a machine the image server's pinned torch cannot run on.
+        // A machine the image server's pinned torch cannot run on is not
+        // offered it — and not refused the switch either: images may come
+        // from a ComfyUI the owner runs, stopped right now, and the switch
+        // is what turned them on before ComfyUI had an installer (review of
+        // #645).
         if todo
             .iter()
             .any(|(id, ..)| *id == mecha_core::comfyui_unit::ID)
         {
-            mecha_core::comfyui_unit::fits(
+            if let Err(why) = mecha_core::comfyui_unit::fits(
                 std::env::consts::OS,
                 std::env::consts::ARCH,
                 read_nvidia(),
-            )
-            .map_err(|why| {
-                anyhow::anyhow!("enabling {} needs ComfyUI, and {why}", ids.join(" "))
-            })?;
+            ) {
+                println!(
+                    "ComfyUI is not installed: {why}. Images switch on for one you run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
+            }
         }
-        // And one the speech engine cannot be built or run on.
+        // Likewise the speech server: voice may be spoken by a server the
+        // owner runs — Chatterbox, or Breeze by hand — so a machine that
+        // cannot build the engine is not offered it, and keeps the switch.
         if todo
             .iter()
             .any(|(id, ..)| *id == mecha_core::speech_unit::ID)
         {
-            mecha_core::speech_unit::fits().map_err(|why| {
-                anyhow::anyhow!(
-                    "enabling {} needs the speech server, and {why}",
-                    ids.join(" ")
-                )
-            })?;
+            if let Err(why) = mecha_core::speech_unit::fits() {
+                println!(
+                    "The speech server is not installed: {why}. Voice switches on for one you \
+                     run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::speech_unit::ID);
+            }
         }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
@@ -275,7 +284,27 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
             }
         }
     }
-    set(ids, true)
+    set(ids, true)?;
+    if features.contains(&Feature::Image) {
+        image_table()?;
+    }
+    Ok(())
+}
+
+/// `image` reads off with no `[image]` table, whatever the switch says, and
+/// only an install writes one — so a server used as it is (`--no-install`,
+/// or one already on `:8188` that was left alone) would leave images off.
+/// Written here on its defaults where there is none (review of #645).
+fn image_table() -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    if mecha_core::comfyui_unit::write_image_table(&path, None)? {
+        println!(
+            "Wrote an [image] table into {} on its defaults — ComfyUI at 127.0.0.1:8188. An \
+             incognito chat also needs its server_temp_dir.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn set(ids: &[String], on: bool) -> Result<()> {
