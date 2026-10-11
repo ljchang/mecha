@@ -824,7 +824,11 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
     step(c, "building llama.cpp")?;
     copy_flat(&build.join("bin"), part)?;
     if let Some((nvcc, _)) = &tc.cuda {
-        copy_cuda_runtime(nvcc, part)?;
+        let copied = copy_cuda_runtime(nvcc, part)?;
+        say(&format!(
+            "copied the CUDA toolkit's {} beside it",
+            copied.join(", ")
+        ));
     }
     Ok(())
 }
@@ -847,29 +851,16 @@ fn copy_flat(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The CUDA libraries the build links and does not ship — the runtime and
-/// cuBLAS — copied from the toolkit beside it as plain files, as the
-/// release's `cudart-` archive carries them: the engine then runs on the
-/// runtime it was built with, whatever the toolkit becomes.
-fn copy_cuda_runtime(nvcc: &Path, part: &Path) -> Result<()> {
-    let names: std::collections::BTreeSet<String> = std::fs::read_dir(part)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    let mut wanted = std::collections::BTreeSet::new();
-    for name in &names {
-        let path = part.join(name);
-        if !std::fs::symlink_metadata(&path)?.is_file() {
-            continue;
-        }
-        if let Some(d) = elf_dynamic_in(&mut FileAt(std::fs::File::open(&path)?))? {
-            wanted.extend(
-                d.needed
-                    .into_iter()
-                    .filter(|n| cuda_runtime_lib(n) && !names.contains(n)),
-            );
-        }
-    }
+/// Every library the build needs that the CUDA toolkit provides, copied
+/// beside it as a plain file, as the release's `cudart-` archive carries
+/// them — so the engine runs on the toolkit it was built with, whatever the
+/// toolkit becomes. Not a list of names: a build here links whatever this
+/// toolkit and ggml ask for, so each ELF's NEEDED entries are resolved
+/// against the toolkit's library directories, and a library copied in is
+/// read for its own (review of #643). What the toolkit does not provide —
+/// the driver's `libcuda`, the C and C++ runtimes — is the system's, as it
+/// is for a release.
+fn copy_cuda_runtime(nvcc: &Path, part: &Path) -> Result<Vec<String>> {
     let home = nvcc
         .parent()
         .and_then(Path::parent)
@@ -878,29 +869,41 @@ fn copy_cuda_runtime(nvcc: &Path, part: &Path) -> Result<()> {
     if let Ok(targets) = std::fs::read_dir(home.join("targets")) {
         dirs.extend(targets.filter_map(|e| e.ok()).map(|e| e.path().join("lib")));
     }
-    for lib in wanted {
-        let from = dirs
-            .iter()
-            .map(|d| d.join(&lib))
-            .find(|p| p.exists())
-            .with_context(|| {
-                format!(
-                    "the build needs {lib}, and the CUDA toolkit at {} has none",
-                    home.display()
-                )
-            })?;
-        // `copy` follows the link: the soname becomes a plain file.
-        std::fs::copy(&from, part.join(&lib))
-            .with_context(|| format!("copying {}", from.display()))?;
+    let mut todo: Vec<PathBuf> = std::fs::read_dir(part)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    let mut copied = Vec::new();
+    while let Some(path) = todo.pop() {
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            continue;
+        }
+        let Some(d) = elf_dynamic_in(&mut FileAt(std::fs::File::open(&path)?))? else {
+            continue;
+        };
+        for lib in d.needed {
+            let dest = part.join(&lib);
+            if dest.exists() {
+                continue;
+            }
+            let Some(from) = toolkit_lib(&dirs, &lib) else {
+                continue;
+            };
+            // `copy` follows the link: the soname becomes a plain file.
+            std::fs::copy(&from, &dest).with_context(|| format!("copying {}", from.display()))?;
+            copied.push(lib);
+            todo.push(dest);
+        }
     }
-    Ok(())
+    copied.sort();
+    Ok(copied)
 }
 
-/// The toolkit libraries the release's `cudart-` archive carries.
-fn cuda_runtime_lib(name: &str) -> bool {
-    ["libcudart.so", "libcublas.so", "libcublasLt.so"]
-        .iter()
-        .any(|p| name.starts_with(p))
+/// Where the toolkit keeps `lib`, if it does: its library directories'
+/// top level only — never `stubs/`, whose `libcuda.so` is a link-time stand
+/// in for the driver and must never be shipped.
+fn toolkit_lib(dirs: &[PathBuf], lib: &str) -> Option<PathBuf> {
+    dirs.iter().map(|d| d.join(lib)).find(|p| p.exists())
 }
 
 /// A llama.cpp release as the release API describes it — the source F10
@@ -1752,14 +1755,27 @@ mod tests {
         assert!(!nested);
     }
 
+    /// A library is the toolkit's when its library directories hold it at
+    /// their top level; the driver stub under `stubs/` never is, so it is
+    /// never shipped in the driver's place.
     #[test]
-    fn the_cuda_runtime_is_the_releases_three() {
-        for n in ["libcudart.so.13", "libcublas.so.13", "libcublasLt.so.13"] {
-            assert!(cuda_runtime_lib(n), "{n}");
-        }
-        for n in ["libcuda.so.1", "libggml-cuda.so", "libstdc++.so.6"] {
-            assert!(!cuda_runtime_lib(n), "{n}");
-        }
+    fn a_toolkit_library_is_found_and_the_driver_stub_is_not() {
+        let root = std::env::temp_dir().join(format!("mecha-tk-{}", uuid::Uuid::new_v4()));
+        let lib64 = root.join("lib64");
+        std::fs::create_dir_all(lib64.join("stubs")).unwrap();
+        std::fs::write(lib64.join("libcudart.so.13"), b"").unwrap();
+        std::fs::write(lib64.join("libnvJitLink.so.13"), b"").unwrap();
+        std::fs::write(lib64.join("stubs/libcuda.so.1"), b"").unwrap();
+        let dirs = vec![lib64.clone(), root.join("lib")];
+        let found = |l: &str| toolkit_lib(&dirs, l).is_some();
+        let got = (
+            found("libcudart.so.13"),
+            found("libnvJitLink.so.13"),
+            found("libcuda.so.1"),
+            found("libstdc++.so.6"),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got, (true, true, false, false));
     }
 
     /// A GPU that cannot be read is never answered with the CPU build.
