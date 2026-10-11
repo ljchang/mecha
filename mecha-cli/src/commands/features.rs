@@ -177,6 +177,20 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                     )
                 })?;
         }
+        // Likewise a machine the image server's pinned torch cannot run on.
+        if todo
+            .iter()
+            .any(|(id, ..)| *id == mecha_core::comfyui_unit::ID)
+        {
+            mecha_core::comfyui_unit::fits(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                read_nvidia(),
+            )
+            .map_err(|why| {
+                anyhow::anyhow!("enabling {} needs ComfyUI, and {why}", ids.join(" "))
+            })?;
+        }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
@@ -925,9 +939,9 @@ mod tests {
                     bytes: None,
                 },
                 PlannedSidecar {
-                    id: "comfyui",
-                    label: "ComfyUI",
-                    state: SidecarState::Missing { step: "7e" },
+                    id: "speech",
+                    label: "the speech server",
+                    state: SidecarState::Missing { step: "7f" },
                     bytes: None,
                 },
                 PlannedSidecar {
@@ -984,7 +998,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7e",
+            "not here — its installer arrives in step 7f",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",

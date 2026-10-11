@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mecha-parakeet.service` started on `:8992`, all under
   `~/.mecha/sidecars/stt/`. The model's 465 MiB counts in the plan's total.
   A Parakeet you already run on `:8992` is left alone and used as it is.
+- **The image server installs itself.** On Linux with an NVIDIA driver
+  580 or newer, `mecha features enable image` now offers ComfyUI: the pinned
+  release fetched by its commit, torch for CUDA 13 and ComfyUI's
+  requirements from a hash-pinned lock (about 3.6 GiB, counted in the plan's
+  total), the three Qwen-Image 2.1 files by their pinned sha256, and
+  `mecha-comfyui.service` on `:8188`, all under `~/.mecha/sidecars/comfyui/`.
+  With no `[image]` table in your config it writes one naming the server's
+  temp directory; one you wrote is left alone. A ComfyUI you already run on
+  `:8188` is left alone and used as it is.
 - **The voice worker installs itself.** `mecha features enable voice` also
   offers the Pipecat worker: its environment from a hash-pinned lock, the
   worker run from a copy mecha writes, and `mecha-voice-worker.service`

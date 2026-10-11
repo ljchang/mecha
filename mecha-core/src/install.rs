@@ -99,7 +99,9 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "stt" | "voice-worker" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" => {
+            cfg!(target_os = "linux")
+        }
         _ => false,
     }
 }
@@ -195,6 +197,23 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
             plan.download_bytes += bytes;
         }
     }
+    // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB,
+    // too much to leave out of the total the way the voice worker's 250 MB
+    // is. The models are the image slot's files, priced by the plan already.
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == crate::comfyui_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && installable(s.id)
+            && not_needed(s.id, feature, chat_here).is_none()
+    }) {
+        if let Some(bytes) = crate::comfyui_unit::env_bytes(std::env::consts::ARCH) {
+            s.bytes = Some(bytes);
+            plan.download_bytes += bytes;
+        }
+    }
     let Some(s) = plan.sidecars.iter_mut().find(|s| {
         s.id == "llama"
             && matches!(
@@ -226,6 +245,10 @@ pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
         crate::voice_worker_unit::ID => {
             let naming = crate::voice_worker_unit::Naming::shipped();
             crate::voice_worker_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        crate::comfyui_unit::ID => {
+            let naming = crate::comfyui_unit::Naming::shipped();
+            crate::comfyui_unit::someone_elses(m, &naming)?.then_some(naming.port)
         }
         _ => None,
     };
@@ -591,6 +614,39 @@ pub async fn install(
             ));
             Ok(())
         }
+        "comfyui" => {
+            let naming = crate::comfyui_unit::Naming::shipped();
+            crate::comfyui_unit::install(m, &naming, machine, hub, say).await?;
+            say(&format!(
+                "ComfyUI answers on :{} — `[image] url`'s default",
+                naming.port
+            ));
+            // The switch alone reads off with no `[image]` table; one naming
+            // the temp dir is written where there is none, and an owner's
+            // own table is told the line rather than edited.
+            let temp = crate::comfyui_unit::server_temp_dir(&m.mecha_home);
+            let path = crate::config::Config::global_path()
+                .context("no global config path to write [image] into")?;
+            // Said, never fatal: the server is installed and checked, and a
+            // config that will not take the table is the owner's to fix.
+            match crate::comfyui_unit::write_image_table(&path, &m.mecha_home) {
+                Ok(true) => say(&format!(
+                    "wrote [image] server_temp_dir = \"{}\" into {}",
+                    temp.display(),
+                    path.display()
+                )),
+                Ok(false) => say(&format!(
+                    "your [image] table is left as it is — for each job's uploads to be deleted, \
+                     it needs server_temp_dir = \"{}\"",
+                    temp.display()
+                )),
+                Err(e) => say(&format!(
+                    "[image] was not written ({e:#}) — add it with server_temp_dir = \"{}\"",
+                    temp.display()
+                )),
+            }
+            Ok(())
+        }
         "voice-worker" => {
             let naming = crate::voice_worker_unit::Naming::shipped();
             crate::voice_worker_unit::install(m, &naming, say).await?;
@@ -832,13 +888,14 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e"]
         } else {
             &["7a-3", "7b"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
-        assert!(!installable("comfyui"));
+        assert_eq!(installable("comfyui"), cfg!(target_os = "linux"));
+        assert!(!installable("speech"), "7f is not built");
         assert!(!installable("router"), "the router is `setup chat`'s (F13)");
         for s in crate::sidecar::SIDECARS {
             // The router's installer is built, and `setup chat` runs it —
