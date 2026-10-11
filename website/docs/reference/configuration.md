@@ -97,7 +97,7 @@ enforced by the merge, not asked for in a comment. See
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | — | `anthropic`, `openai`, `openai-compatible`, or `local`. |
-| `model` | string | `"claude-opus-5"` for the built-in `anthropic` entry | Model id sent to the backend. |
+| `model` | string | `"claude-opus-5"` for the built-in `anthropic` entry | Model id sent to the backend. Unset on a `kind = "local"` entry at a loopback address — one you configured, or the built-in `local` when it is the default provider, as it is with no config file — it is what the server says it serves when the command starts: a router's loaded model, or its only one, or a plain llama-server's alias. A router with several models and none loaded can't be answered for, and says so; set it then (`mecha setup --write` writes it from the server). |
 | `api_key_env` | string | `"ANTHROPIC_API_KEY"` for the built-in entry | Environment variable holding the key. Preferred over `api_key`. |
 | `api_key` | string | unset | Inline key. Convenient, but it lands in a file on disk. |
 | `base_url` | string | `"http://127.0.0.1:8080"` for the built-in `local` entry, else unset | Endpoint override. Required for a local OpenAI-compatible server. |
@@ -423,25 +423,27 @@ file and carries none by default.
 
 Which optional parts of mecha are switched on: one `true` or `false` per
 feature. **Global file only** — a project's `mecha.toml` is stripped of it, so a
-cloned repository can never turn a feature on. `mecha config init` writes the
-table in full with every feature off, and `mecha features enable <id>` edits it
-in place.
+cloned repository can never turn a feature on. `mecha config init` (and `mecha
+setup`, when there is no file yet) writes the table with every feature listed
+and none answered: each line is commented, so the feature is off and `mecha
+setup` asks about it. `mecha features enable <id>` writes `true` in place; a
+`false` is a no that `mecha setup` keeps rather than asks about again.
 
 ```toml
 [features]
-web = false        # the web app (`mecha serve`)
-slack = false      # Slack remote control
-mail = false       # mail and calendar
-docs = false       # Google Docs, Sheets and Slides
-graph = false      # the knowledge graph and the task board
-search = false     # web search and open
-documents = false  # PDF extraction (OCR and layout are [documents] settings)
-image = false      # image generation and the character library
-personas = false   # characters you write and talk to
-voice = false      # dictation and voice calls
-incognito = false  # a web chat that leaves no trace
-frontdoor = false  # inbound requests, polls and publishing
-messages = false   # messages between sessions on this machine
+# web = false        # the web app (`mecha serve`)
+# slack = false      # Slack remote control
+# mail = false       # mail and calendar
+# docs = false       # Google Docs, Sheets and Slides
+# graph = false      # the knowledge graph and the task board
+# search = false     # web search and open
+# documents = false  # PDF extraction (OCR and layout are [documents] settings)
+# image = false      # image generation and the character library
+# personas = false   # characters you write and talk to
+# voice = false      # dictation and voice calls
+# incognito = false  # a web chat that leaves no trace
+# frontdoor = false  # inbound requests, polls and publishing
+# messages = false   # messages between sessions on this machine
 ```
 
 The switch is the only switch; a settings table such as `[image]` or

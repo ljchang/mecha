@@ -77,7 +77,7 @@ pub async fn execute(args: Args) -> Result<()> {
         anyhow::bail!("`--probe` reads the machine; it does not go with `enable` or `disable`");
     }
     match args.cmd {
-        Some(Cmd::Enable { ids, no_install }) => return enable(&ids, no_install).await,
+        Some(Cmd::Enable { ids, no_install }) => return enable(&ids, no_install, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         None => {}
@@ -117,7 +117,10 @@ pub async fn execute(args: Args) -> Result<()> {
 /// writes nothing. Without a terminal, an enable that would install refuses,
 /// naming `--no-install`; one with nothing to install writes the switch as
 /// before.
-async fn enable(ids: &[String], no_install: bool) -> Result<()> {
+/// `yes` is an answer already given: the guided `mecha setup` lists every
+/// install with its size and asks once (ruling F14), so this neither asks
+/// again nor refuses for want of a terminal to ask at.
+pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Result<()> {
     use mecha_core::install;
     use mecha_core::sidecar::SidecarState;
     use std::io::IsTerminal;
@@ -154,26 +157,72 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 }
             }
             for s in install::offered(&p, chat_here) {
+                // Someone's own server where the install would put one is
+                // used, not installed over — never offered, so the switch
+                // is still written (review of #638).
+                if let Some(why) = install::left_alone(s.id, &m)? {
+                    println!("{}: {why}", s.label);
+                    continue;
+                }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
             }
         }
         // A machine no pinned build fits is told so before it is asked
-        // anything: the answer is to fix the driver, not to say yes.
-        if todo.iter().any(|(id, ..)| *id == "llama") {
-            mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())
+        // anything: the answer is to fix the driver or install the toolchain
+        // a build here needs, not to say yes.
+        let built_here = if todo.iter().any(|(id, ..)| *id == "llama") {
+            mecha_core::engine::choose_here()
                 .map_err(|why| {
                     anyhow::anyhow!(
                         "enabling {} needs the llama.cpp engine, and {why}",
                         ids.join(" ")
                     )
-                })?;
+                })?
+                .is_built()
+        } else {
+            false
+        };
+        // A machine the image server's pinned torch cannot run on is not
+        // offered it — and not refused the switch either: images may come
+        // from a ComfyUI the owner runs, stopped right now, and the switch
+        // is what turned them on before ComfyUI had an installer (review of
+        // #645).
+        if todo
+            .iter()
+            .any(|(id, ..)| *id == mecha_core::comfyui_unit::ID)
+        {
+            if let Err(why) = mecha_core::comfyui_unit::fits(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                read_nvidia(),
+            ) {
+                println!(
+                    "ComfyUI is not installed: {why}. Images switch on for one you run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
+            }
+        }
+        // Likewise the speech server: voice may be spoken by a server the
+        // owner runs — Chatterbox, or Breeze by hand — so a machine that
+        // cannot build the engine is not offered it, and keeps the switch.
+        if todo
+            .iter()
+            .any(|(id, ..)| *id == mecha_core::speech_unit::ID)
+        {
+            if let Err(why) = mecha_core::speech_unit::fits(std::env::consts::OS, read_nvidia()) {
+                println!(
+                    "The speech server is not installed: {why}. Voice switches on for one you \
+                     run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::speech_unit::ID);
+            }
         }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
-            if !std::io::stdin().is_terminal() {
+            if !yes && !std::io::stdin().is_terminal() {
                 anyhow::bail!(
                     "enabling {} would install {list}; run it at a terminal to answer, or pass \
                      --no-install to write the switch only",
@@ -185,10 +234,24 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                  server, its systemd user units, started once to check them:",
                 ids.join(" ")
             );
-            for (_, label, _, bytes) in &todo {
+            for (id, label, _, bytes) in &todo {
+                // A build here is said as one: its download is the source,
+                // and the compile is the wait (review of #643).
+                let built = if *id == "llama" && built_here {
+                    ", then built here — no release fits this machine; minutes for the CPU, \
+                     longer for CUDA"
+                } else if *id == mecha_core::speech_unit::ID {
+                    // Always a build, and the weights' licence is said
+                    // before the yes, not only at the fetch (review of #649).
+                    ", built here from its pinned commit (about seven minutes on a GB10), then \
+                     its model; Breeze TTS 2's weights are licensed for research and \
+                     non-commercial use only"
+                } else {
+                    ""
+                };
                 match bytes {
-                    Some(b) => println!("  {label} — {}", bytes_text(*b)),
-                    None => println!("  {label}"),
+                    Some(b) => println!("  {label} — {}{built}", bytes_text(*b)),
+                    None => println!("  {label}{built}"),
                 }
             }
             let mut plans: Vec<&str> = todo.iter().map(|(_, _, f, _)| f.id()).collect();
@@ -198,11 +261,16 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 "(`mecha features plan {}` shows each piece, and the models and engine to download.)",
                 plans.join("` / `mecha features plan ")
             );
-            print!("Install now? [y/N] ");
-            use std::io::Write;
-            std::io::stdout().flush()?;
-            let mut answer = String::new();
-            std::io::stdin().read_line(&mut answer)?;
+            let answer = if yes {
+                "y".to_string()
+            } else {
+                print!("Install now? [y/N] ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                answer
+            };
             if !matches!(answer.trim(), "y" | "Y" | "yes") {
                 println!(
                     "Nothing written. `mecha features enable {} --no-install` writes the switch without installing.",
@@ -222,7 +290,27 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
         }
     }
-    set(ids, true)
+    set(ids, true)?;
+    if features.contains(&Feature::Image) {
+        image_table()?;
+    }
+    Ok(())
+}
+
+/// `image` reads off with no `[image]` table, whatever the switch says, and
+/// only an install writes one — so a server used as it is (`--no-install`,
+/// or one already on `:8188` that was left alone) would leave images off.
+/// Written here on its defaults where there is none (review of #645).
+fn image_table() -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    if mecha_core::comfyui_unit::write_image_table(&path, None)? {
+        println!(
+            "Wrote an [image] table into {} on its defaults — ComfyUI at 127.0.0.1:8188. An \
+             incognito chat also needs its server_temp_dir.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn set(ids: &[String], on: bool) -> Result<()> {
@@ -400,11 +488,30 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     )?;
     let cfg = Config::load_global()?;
     let chat_here = mecha_core::install::chat_runs_here(&cfg);
-    mecha_core::install::price(&mut p, chat_here, mecha_core::engine::read_nvidia);
+    // Kept, so the note below can say whether the engine is built here —
+    // and still read only if `price` reads it (review of #643).
+    let mut nvidia = None;
+    mecha_core::install::price(&mut p, chat_here, || {
+        *nvidia.insert(mecha_core::engine::read_nvidia())
+    });
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
         print!("{}", render_plan(&p, chat_here));
+        // The plan prices a build here by its source; the compile is said.
+        let builds = nvidia.is_some_and(|n| {
+            p.sidecars
+                .iter()
+                .any(|s| s.id == "llama" && s.bytes.is_some())
+                && mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, n)
+                    .is_ok_and(|t| t.is_built())
+        });
+        if builds {
+            println!(
+                "No llama.cpp release fits this machine, so its download is the source, built \
+                 here: minutes for the CPU, longer for CUDA."
+            );
+        }
     }
     Ok(())
 }
@@ -439,6 +546,10 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             SidecarState::Missing { .. } if not_needed.is_some() => {
                 not_needed.unwrap_or_default().to_string()
             }
+            SidecarState::Missing { .. } if s.not_offered.is_some() => format!(
+                "not offered here — {}",
+                s.not_offered.as_deref().unwrap_or_default()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -481,6 +592,7 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                 "a different file is at its path — not replaced, and not used".to_string()
             }
             FileState::WithSidecar => "comes with its sidecar's install".to_string(),
+            FileState::NotOffered { why } => format!("not fetched here — {why}"),
             FileState::HeldBy { sidecar } => format!("kept by the provided {sidecar}; not read"),
             FileState::Unverified => {
                 "a file of the pinned size, placed by hand — not hashed by the plan".to_string()
@@ -876,6 +988,7 @@ mod tests {
                 label: "the chat router",
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
+                not_offered: None,
             }],
             // The chat model's files are named but not counted: the plan's
             // total is what `enable` fetches (review of #627).
@@ -916,12 +1029,16 @@ mod tests {
                         by: "x on PATH".into(),
                     },
                     bytes: None,
+                    not_offered: None,
                 },
                 PlannedSidecar {
-                    id: "comfyui",
-                    label: "ComfyUI",
-                    state: SidecarState::Missing { step: "7e" },
+                    // Every real sidecar has an installer since 7f: one
+                    // that does not yet is a made-up id.
+                    id: "not-yet",
+                    label: "a later sidecar",
+                    state: SidecarState::Missing { step: "7z" },
                     bytes: None,
+                    not_offered: None,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -930,6 +1047,7 @@ mod tests {
                         why: "denied".into(),
                     },
                     bytes: None,
+                    not_offered: None,
                 },
             ],
             files: vec![
@@ -977,7 +1095,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7e",
+            "not here — its installer arrives in step 7z",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",

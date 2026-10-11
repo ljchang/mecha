@@ -251,13 +251,20 @@ sidecar.rs   what a feature runs beside mecha, whether this machine already has
 install.rs   the installers `features enable` offers: a pinned uv, layout first;
              the record leads the bytes, one tree per install
 engine.rs    llama.cpp from a pinned release, side by side behind a `current`
-             link: the build chosen from the driver, checked self-contained
+             link: the build chosen from the driver, checked self-contained;
+             built here from the pin's commit when no release fits
 engine_gate.rs measure before promote: each unit's own launcher on a private
              port, both engines in turn under a held switch; the ledger, --adopt
 llama_units.rs the on-demand embeddings and OCR servers from nothing: units and
              launchers shipped in the binary, rendered, started through their socket
 router_unit.rs the resident router from nothing: its unit, launcher and presets
              from the tier's chat geometry or the owner's GGUF; `mecha setup chat`
+stt_unit.rs  speech to text from nothing: a hash-locked environment, the model by
+             its pin, one rendered unit; a server mecha did not write is left alone
+comfyui_unit.rs the image server from nothing: ComfyUI by its commit, torch from a
+             lock per arch, the slot's models linked from the hub, checked by node
+speech_unit.rs the speech server from nothing: Breeze's engine built from the published
+             fork's commit, its weights by pin, the adapter; checked by a sentence
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,

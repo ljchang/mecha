@@ -225,6 +225,21 @@ The parts that bite hardest:
   (`provider::router`), every probe must name its model with
   `autoload=false` or it loads it, and a bare `/props` is a placeholder
   (`model_alias: "llama-server"`, `n_ctx: 0`).
+- **A model-less local entry takes its name from its server, once per
+  process** (`router::asks_its_server`, the one predicate the probe, the
+  provider and the preflight warning read: `kind = "local"`, loopback, no
+  `model`). Asked are the entries the owner configured and the default
+  provider's, built-in or not — a machine with no config file runs on the
+  built-in `local` — so a hosted-only machine sends nothing to `:8080`. The
+  name is the router's loaded model, else its only one, else nothing — two
+  unloaded models get a warning, never a guess — or a plain server's
+  `model_alias`; it is read from the process snapshot, so a run, its record
+  and an eval's arm all name the same model, and the preflight says "runs
+  ask for that" only where the probe did name it. A long-lived surface
+  reads it from its own probe and rebuilds when it moves (`follow.rs`, the
+  #347 rule); a followed default that asks counts as naming whatever is
+  loaded. `exp run` refuses a model-less default, because a trial's
+  condition hash would record `(default)`, not the model.
 - **A process that outlives a switch follows it per turn**
   (`mecha-cli/src/follow.rs`: `mecha serve`, its voice facade, `voice-serve`,
   the Slack connector). An agent resolved at startup names the model loaded
@@ -5950,6 +5965,26 @@ the owner's rulings; this section is the invariants a change to
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
   joined, and an installed id is never overwritten.
+- **The renderer is ours, and nothing agent-authored executes in it**
+  (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
+  inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
+  Dataset values reach the DOM as text only, tooltips included (our handler
+  writes text nodes; vega-tooltip's assigns HTML). Text panels go through
+  `mail-markdown.js` with a link rendered as its words. `vega-embed` always
+  runs with `actions: false` (its menu posts the spec, rows included, to
+  another site) and `ast: true` (the interpreter, never `Function`).
+- **Filters narrow rows in the host** (`applyFilters`), so a chart obeys a
+  filter without naming it; rows reach Vega before compile through the
+  view's `datasets`, which only the host fills.
+- **One component, two builds.** The app loads the renderer on `#hud` only
+  (Vega is a lazy chunk); `npm run build:hud` makes the standalone `hud.js`
+  + `hud.css` a page serves beside `hud.json` and `data/<name>.json`. The
+  page owns `html`/`body`, the component only itself.
+- **The routes are read-only, and a URL segment reaches no path on its own
+  say-so** (`serve/hud.rs`): `{id}` must be a board the store lists and
+  `{name}` a dataset the loaded, checked spec declares. A spec edited by hand
+  into a refusal is a 422, never drawn. A dataset carries an `ETag` of its
+  generation and `generated_at`, so a poll costs a 304.
 
 ## System state
 
@@ -10033,9 +10068,11 @@ the full checklist this grows into as each build step lands.
    it (`provider_is_local`, `SearchBackendConfig::problem`).
 3. Any new fact it needs from the disk goes in `Facts::read`, found by the
    owning program's rule.
-4. If it has a switch: a line in `FEATURES_STARTER` (`commands/config.rs`,
-   where `the_global_starter_lists_every_switch_off` fails until it is
-   there), an `evidence` arm saying what an owner who set it up would lose,
+4. If it has a switch: a **commented** line in `FEATURES_STARTER`
+   (`commands/config.rs`) — `# <id> = false  # what it is` — since an
+   explicit `false` is the owner's no (`Declined`), and a feature shipped
+   answered-no is one `mecha setup` never offers (its starter test fails
+   until the line is there, and names an uncommented one), an `evidence` arm saying what an owner who set it up would lose,
    a `switchable_from_environment` arm, and an `onboarding::blurb` line —
    what `mecha setup` says it is for when it is off — all exhaustive, so the
    build asks. Its setup step then follows from the registry. Whether an environment may switch it on is decided by where its
