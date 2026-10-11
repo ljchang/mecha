@@ -668,12 +668,16 @@ pub(crate) fn run(c: &mut std::process::Command, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// Install one sidecar by id — the installers built so far.
+/// Install one sidecar by id — the installers built so far. `turbo`:
+/// ComfyUI's install also fetches and links the turbo model. The caller
+/// decides ([`crate::comfyui_unit::turbo_wanted`]), because the caller is
+/// the one that said what the install would download before its yes.
 pub async fn install(
     id: &str,
     m: &Machinery,
     machine: &recommend::Machine,
     hub: &Path,
+    turbo: bool,
     say: Say<'_>,
 ) -> Result<()> {
     match id {
@@ -697,7 +701,7 @@ pub async fn install(
         }
         "comfyui" => {
             let naming = crate::comfyui_unit::Naming::shipped();
-            crate::comfyui_unit::install(m, &naming, machine, hub, say).await?;
+            crate::comfyui_unit::install(m, &naming, machine, hub, turbo, say).await?;
             say(&format!(
                 "ComfyUI answers on :{} — `[image] url`'s default",
                 naming.port
