@@ -859,7 +859,7 @@
             <!-- A dashboard publish with no preview origin: the page is not
                  shown here, and the review says so rather than releasing on
                  the queries alone without a word. -->
-            <div class="card pad"><span class="warn">The page itself is not previewed here: set <code>[web] preview_port</code> and <code>preview_origin</code> to see it with real numbers, or open the staged bundle with <code>mecha outbox show {detail.id}</code>.</span></div>
+            <div class="card pad"><span class="warn">The page itself is not previewed here{#if detail.preview_unavailable}: {detail.preview_unavailable}{:else}: set <code>[web] preview_port</code> and <code>preview_origin</code> to see it with real numbers{/if}. The staged bundle opens with <code>mecha outbox show {detail.id}</code>.</span></div>
           {/if}
           {#if detail.loaders === null}
             <div class="card pad"><span class="warn">The queries this releases could not be read — check the board with <code>mecha hud list</code> before releasing.</span></div>

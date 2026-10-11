@@ -12,8 +12,9 @@
 //!   page shows private data.
 //! - **Only a pending dashboard publish, and only its own bytes.** `/p/<item>/`
 //!   serves an outbox item that is pending, a publish, and a `hud-…` bundle
-//!   assembled under the work directory's `hud` producer — never a path an
-//!   item names elsewhere — and every file is proved inside that bundle.
+//!   staged under the HUD store (`publish::staged_root`, outside every run's
+//!   workspace) — never a path an item names elsewhere — and every file is
+//!   proved inside that bundle.
 //! - **The board's rows now**, at `/p/<item>/data/<name>.json`: what release
 //!   would put in front of a reader on its first refresh.
 //! - **The factory's policy.** The interactive class's CSP, so a preview that
@@ -41,6 +42,19 @@ pub(super) fn set_origin(origin: &str) {
 
 pub(super) fn origin() -> Option<&'static str> {
     ORIGIN.get().map(String::as_str)
+}
+
+/// Why previews are off when they were configured (a port that would not
+/// bind, an origin refused) — said where a dashboard is reviewed, not only
+/// in serve's journal (review of #651).
+static PROBLEM: OnceLock<String> = OnceLock::new();
+
+pub(super) fn set_problem(why: String) {
+    let _ = PROBLEM.set(why);
+}
+
+pub(super) fn problem() -> Option<&'static str> {
+    PROBLEM.get().map(String::as_str)
 }
 
 /// The preview URL for an outbox item, or `None` when it is not a pending
@@ -131,8 +145,10 @@ pub(super) fn router(
     router_at(
         owner_login,
         outbox_root,
-        mecha_core::work::producer_dir("hud")?,
-        mecha_core::hud::store::Store::open()?,
+        {
+            let store = mecha_core::hud::store::Store::open()?;
+            (mecha_core::hud::publish::staged_root(store.root()), store)
+        },
         origin,
     )
 }
@@ -140,8 +156,7 @@ pub(super) fn router(
 fn router_at(
     owner_login: Arc<String>,
     outbox_root: PathBuf,
-    bundles_root: PathBuf,
-    hud: mecha_core::hud::store::Store,
+    (bundles_root, hud): (PathBuf, mecha_core::hud::store::Store),
     origin: &str,
 ) -> anyhow::Result<Router> {
     anyhow::ensure!(
@@ -484,8 +499,7 @@ mod tests {
         let app = router_at(
             Arc::new("owner@example.com".into()),
             outbox_root,
-            bundles,
-            hud,
+            (bundles, hud),
             "https://box.tail.ts.net:8444",
         )
         .unwrap();

@@ -40,6 +40,15 @@ const PUBLISHED_FILE: &str = "published.json";
 /// release, so a minute's tick pushes only what changed.
 const PUSHED_FILE: &str = "pushed.json";
 
+/// Where release bundles wait for review: the HUD store's own directory,
+/// never `~/.mecha/work/` — a run's workspace is a producer directory there
+/// (a trigger named `hud` would be jailed over `work/hud`), and a pending
+/// review object must not be writable by a run, nor swept by `work clean`
+/// (review of #651).
+pub fn staged_root(store_root: &Path) -> std::path::PathBuf {
+    store_root.join("staged")
+}
+
 /// The bundle id a board is published as. A board id is already an
 /// identifier, and the prefix keeps dashboards apart from every other bundle
 /// on the box.
