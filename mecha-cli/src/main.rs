@@ -529,6 +529,11 @@ impl Command {
     /// loaded model. Not `mecha eval`: a scorecard grades the model it names,
     /// and two taken a week apart must not be different models under one
     /// condition. It is still observed, for its permit seats (found on review).
+    /// A model-less entry is still asked what its server serves, so an eval
+    /// on one grades what is loaded when it starts — and says which: its arm
+    /// records the asked name (`eval::measurement_arm`), and the condition
+    /// hash includes the model, so two loaded models are two conditions,
+    /// never one (review of #637).
     fn may_follow(&self) -> bool {
         !matches!(self, Command::Eval(_))
     }
@@ -863,7 +868,11 @@ async fn follow_the_loaded_model(global: &GlobalOpts, may_follow: bool) {
     // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
     // is still observed: its permit pool is sized to what is loaded.
     let follows = may_follow && global.model.is_none() && global.provider.is_none();
-    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+    let line = mecha_core::provider::router::CommandLine {
+        provider: global.provider.as_deref(),
+        model: global.model.is_some(),
+    };
+    for warning in mecha_core::provider::router::observe_for(&cfg, follows, line).await {
         tracing::warn!("{warning}");
     }
 }
