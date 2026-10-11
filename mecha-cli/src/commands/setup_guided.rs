@@ -711,7 +711,7 @@ pub(super) async fn run(
             continue;
         }
         println!("\nEnabling {}…", ids.join(", "));
-        match super::features::enable(&ids, false, true).await {
+        match super::features::enable(&ids, false, false, true).await {
             Ok(()) => enabled.push(*f),
             Err(e) => println!("`{}` not enabled: {e:#} — `mecha setup` asks again", f.id()),
         }

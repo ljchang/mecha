@@ -1690,7 +1690,15 @@ Step 7 becomes these, each a PR that leaves every feature working:
   the core loader (#560). The environment's ~3.6 GiB is priced in the plan.
   The real-machine test installs one beside the live server on a free port,
   its hub seeded with hard links to the live models, and removes it
-  (measured 2026-10-11, 324 s). Owed: the idle reset
+  (measured 2026-10-11, 324 s). **The turbo model is on demand** (the
+  owner, 2026-10-11: until it has been tested more): not in the image slot,
+  pinned beside the installer (`comfyui_unit::TURBO_FILE`, at a later
+  revision than the slot's, the first to carry it) and fetched for
+  `--turbo`, for an install that already links it, or for a persona whose
+  picture settings choose it (`turbo_wanted`); `[image] turbo_model` is
+  never a reason, since it has a default. The guided setup never downloads
+  it, nor reinstalls a server to link it, because its one yes was to what
+  it listed (F14). Owed: the idle reset
   (`scripts/comfyui/comfyui-idle-reset` and its timer) for the installed
   unit, as 7e-2.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the

@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The weights are licensed for research and non-commercial use only, which
   the install says before fetching them. A speech server you already run is
   left alone and used.
+- **The turbo image model is fetched on demand.** `mecha features enable
+  image --turbo` fetches it (6.8 GiB, by its pinned sha256) into the image
+  server mecha installs, and `mecha features enable image` offers it unasked
+  once a persona's picture settings choose turbo. A turbo picture refused for
+  want of the file names that command.
 - **The image server installs itself.** On Linux with an NVIDIA driver
   580 or newer, `mecha features enable image` now offers ComfyUI: the pinned
   release fetched by its commit, torch for CUDA 13 and ComfyUI's
