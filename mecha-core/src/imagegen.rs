@@ -2696,9 +2696,8 @@ fn doing_words(p: &crate::scene::Person, together: bool) -> String {
     parts.join(", ")
 }
 
-/// Words that say what someone has on, or has not. Matched as whole words,
-/// so a clothesline is not one; "clothes rack" is, which errs toward stating
-/// no outfit, the cheaper mistake.
+/// Words that say what someone has on, or has not, in their own act ("dressed
+/// in a parka"). Matched as whole words, so a clothesline is not one.
 const DRESSING_WORDS: &[&str] = &[
     "wearing",
     "wears",
@@ -2718,10 +2717,28 @@ const DRESSING_WORDS: &[&str] = &[
     "outfit",
 ];
 
-fn dresses(text: &str) -> bool {
+/// The narrower set a shared act must carry: a clothing state, never
+/// "dressed for the gala" or "soaked through their clothes", which beside a
+/// red dress is one outfit, not two (review of #647, pass 3). A shared act
+/// can reach the whole cast, so it is held to what is unambiguous.
+const STATE_WORDS: &[&str] = &[
+    "wearing",
+    "wears",
+    "wore",
+    "worn",
+    "undressed",
+    "naked",
+    "nude",
+    "topless",
+    "shirtless",
+    "bottomless",
+    "unclothed",
+];
+
+fn says_any(text: &str, words: &[&str]) -> bool {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .any(|w| DRESSING_WORDS.contains(&w))
+        .any(|w| words.contains(&w))
 }
 
 /// Whether a person's act already says what they have on: their own words
@@ -2732,20 +2749,29 @@ fn dresses(text: &str) -> bool {
 /// is a dressed and an undressed person in one sentence, which the image
 /// model drew as two (mecha-a3, 2026-10-11, on a94a0a076). The record keeps
 /// the clothes; only the prompt leaves them out.
+///
+/// Except an outfit the call itself gave this turn (`asked`): the call's
+/// own words are kept, so only a field refilled by the reader, the record
+/// or a default yields to the act (review of #647, pass 3).
 fn clothes_in_act(
     p: &crate::scene::Person,
     doing: &str,
     together: Option<&str>,
     everyone: &[&crate::scene::Person],
+    asked: &std::collections::BTreeSet<String>,
 ) -> bool {
+    if asked.contains(&p.who.key()) {
+        return false;
+    }
     let named = |t: &str, q: &crate::scene::Person| {
         [q.who.key(), crate::picture::shown(&q.who)]
             .iter()
             .any(|n| !crate::layers::word_spans(t, n).is_empty())
     };
-    dresses(doing)
-        || together
-            .is_some_and(|t| dresses(t) && (named(t, p) || everyone.iter().all(|q| !named(t, q))))
+    says_any(doing, DRESSING_WORDS)
+        || together.is_some_and(|t| {
+            says_any(t, STATE_WORDS) && (named(t, p) || everyone.iter().all(|q| !named(t, q)))
+        })
 }
 
 /// A person as an edit prompt states them: name, library description,
@@ -3106,6 +3132,16 @@ impl Tool for ImageGenerate {
                 call.notes.push(note);
             }
         }
+        // Whose outfit the call itself gave this turn, before the reader
+        // fills any: those are never left out of the prompt
+        // (`clothes_in_act`).
+        let asked_wearing: std::collections::BTreeSet<String> = call
+            .change
+            .people
+            .iter()
+            .filter(|c| c.wearing.as_deref().is_some_and(|w| !w.trim().is_empty()))
+            .map(|c| c.who.key())
+            .collect();
         let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
             (Some(reader), false) => {
                 let record = base
@@ -3348,9 +3384,12 @@ impl Tool for ImageGenerate {
                     let shared = words.together.as_ref().map(|f| f.value.as_str());
                     for p in people {
                         let doing = doing_words(p, together);
-                        let kept = clothes_in_act(p, &doing, shared, &everyone);
-                        if kept {
-                            in_act.push(crate::picture::shown(&p.who));
+                        let kept = clothes_in_act(p, &doing, shared, &everyone, &asked_wearing);
+                        // Library people only: a described person's name is
+                        // their description, and the manifest never carries
+                        // scene words (review of #647, pass 3).
+                        if let (true, crate::scene::Who::Library(n)) = (kept, &p.who) {
+                            in_act.push(capitalized(n));
                         }
                         match &p.who {
                             crate::scene::Who::Library(n) => {
@@ -3829,6 +3868,7 @@ impl Tool for ImageGenerate {
                 });
                 let mut said = String::new();
                 let mut crops = 0usize;
+                let everyone: Vec<&crate::scene::Person> = plan.people.iter().collect();
                 for ((p, entry), anchor) in described.iter().zip(&entries).zip(anchors) {
                     let name = crate::picture::shown(&p.who);
                     let text = entry
@@ -3839,10 +3879,11 @@ impl Tool for ImageGenerate {
                         p,
                         &doing_words(p, together),
                         plan.next.together.as_ref().map(|f| f.value.as_str()),
-                        &plan.people.iter().collect::<Vec<_>>(),
+                        &everyone,
+                        &asked_wearing,
                     );
-                    if in_act {
-                        clothes_said.push(name.clone());
+                    if let (true, crate::scene::Who::Library(n)) = (in_act, &p.who) {
+                        clothes_said.push(capitalized(n));
                     }
                     said.push_str(&edit_person(&name, &text, p, together, in_act));
                     match anchor {
@@ -7665,13 +7706,14 @@ mod tests {
     #[tokio::test]
     async fn a_layered_picture_never_claims_its_clothes_were_left_out() {
         let (url, _) = fake_with(Fake {
-            history: vec![done(); 5],
+            history: vec![done(); 6],
             views: vec![
                 picture(8, [90, 90, 90]),
                 cutout_png(true),
                 cutout_png(true),
                 picture(20, [200, 40, 40]),
                 picture(22, [210, 50, 50]),
+                picture(24, [60, 160, 60]),
             ],
             ..Fake::default()
         })
@@ -7680,14 +7722,28 @@ mod tests {
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = scene_ctx(&dir, &store, "chat-a");
         cx.layers = true;
+        // Her outfit left to the default, and a shared act that undresses
+        // her: the one-pass prompt would leave it out.
         let mut call = touching_call();
-        call["scene"]["together"] =
-            json!("Maya, soaked through her clothes, lifts John off the ground");
-        let out = t.call(call, &cx).await.unwrap();
+        call["scene"]["people"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("wearing");
+        call["scene"]["together"] = json!("Maya, wearing only a towel, lifts John off the ground");
+        let out = t.call(call.clone(), &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         let manifest = manifest_of(&dir, &out.content);
         assert_eq!(manifest["route"], "layered", "{}", out.content);
         assert!(manifest["clothes_in_act"].is_null(), "{manifest}");
+        // The same call in one pass does claim it, so the null above is the
+        // gate's and not a rule that never fired.
+        cx.layers = false;
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["clothes_in_act"],
+            json!(["Maya"])
+        );
     }
 
     /// `[image] timeout_secs` bounds the whole layered build: a pass that
@@ -8801,31 +8857,39 @@ mod tests {
         };
         let (maya, john) = (person("maya"), person("john"));
         let both = [&maya, &john];
-        assert!(clothes_in_act(
+        let none = std::collections::BTreeSet::new();
+        let act = |p, doing, together| clothes_in_act(p, doing, together, &both, &none);
+        assert!(act(&maya, "wearing her raincoat unbuttoned", None));
+        assert!(
+            act(&maya, "dressed in a parka, waving", None),
+            "her own act"
+        );
+        assert!(!act(&maya, "pegging towels on the clothesline", None));
+        assert!(!act(&maya, "holding the door", None));
+        let named = Some("Maya, wearing only a towel, waves to John");
+        assert!(act(&maya, "", named));
+        assert!(act(&john, "", named), "John is named too");
+        let hers = Some("Maya, wearing only a towel, waves");
+        assert!(!act(&john, "", hers), "not his act");
+        let nobody = Some("both of them naked under the blanket, laughing");
+        assert!(act(&john, "", nobody));
+        assert!(!act(&john, "", Some("Maya waves to John")));
+        // A shared act holds to clothing states: "dressed for the gala"
+        // beside a red dress is one outfit, not two (review of #647, pass 3).
+        assert!(!act(
+            &maya,
+            "",
+            Some("they are dressed for the gala, dancing")
+        ));
+        assert!(!act(&maya, "", Some("both soaked through their clothes")));
+        // An outfit the call itself gave this turn is never left out.
+        let asked = std::collections::BTreeSet::from(["maya".to_string()]);
+        assert!(!clothes_in_act(
             &maya,
             "wearing her raincoat unbuttoned",
             None,
-            &both
-        ));
-        assert!(!clothes_in_act(
-            &maya,
-            "pegging towels on the clothesline",
-            None,
-            &both
-        ));
-        assert!(!clothes_in_act(&maya, "holding the door", None, &both));
-        let named = Some("Maya, dressed for the storm, waves to John");
-        assert!(clothes_in_act(&maya, "", named, &both));
-        assert!(clothes_in_act(&john, "", named, &both), "John is named too");
-        let hers = Some("Maya, dressed for the storm, waves");
-        assert!(!clothes_in_act(&john, "", hers, &both), "not his act");
-        let nobody = Some("both of them soaked through their clothes, laughing");
-        assert!(clothes_in_act(&john, "", nobody, &both));
-        assert!(!clothes_in_act(
-            &john,
-            "",
-            Some("Maya waves to John"),
-            &both
+            &both,
+            &asked
         ));
     }
 
@@ -8836,7 +8900,7 @@ mod tests {
     /// `wearing` whatever the act said (review of #647).
     #[tokio::test]
     async fn an_act_that_dresses_its_person_draws_one_outfit_and_says_so() {
-        let (url, seen) = distinct(3).await;
+        let (url, seen) = distinct(4).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -8905,6 +8969,24 @@ mod tests {
             landed.people[0].wearing, "a yellow raincoat",
             "the record keeps it"
         );
+
+        // A described person's outfit is left out the same way, but their
+        // description never reaches the manifest, which carries no scene
+        // words (review of #647, pass 3).
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a bus shelter", "people": [
+                    {"who": "a tall stranger with a scar across one cheek",
+                     "doing": "wearing a soaked overcoat, shivering"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("soaked overcoat"), "{prompt}");
+        assert!(!prompt.contains("clothes that suit the scene"), "{prompt}");
+        assert!(manifest_of(&dir, &out.content)["clothes_in_act"].is_null());
     }
 
     /// A reader that answers as told, standing in for the persona host's.
