@@ -296,12 +296,14 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     false,
                 )
                 .is_ok_and(|c| c == mecha_core::fetch::Cached::Verified);
+            let here = comfy::turbo_here(&m.mecha_home);
             let facts = TurboFacts {
                 wanted,
                 found: comfy_found.as_ref().map(|(_, state)| state),
                 installing,
                 cached,
-                linked_here: comfy::turbo_linked(&m.mecha_home),
+                linked_here: here == comfy::TurboHere::Linked,
+                placed_here: here == comfy::TurboHere::Placed,
                 left_alone: comfy_left_alone,
                 asked: turbo,
                 yes,
@@ -460,6 +462,8 @@ struct TurboFacts<'a> {
     cached: bool,
     /// The install links it (perhaps to a blob gone from the hub).
     linked_here: bool,
+    /// A file is there that mecha did not link: the owner's.
+    placed_here: bool,
     /// A server on ComfyUI's port was left alone as someone else's.
     left_alone: bool,
     /// `--turbo`.
@@ -504,6 +508,19 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
              — it needs {file} in its models/diffusion_models/.",
             mecha_core::comfyui_unit::Naming::shipped().port
         ));
+    }
+    // A file put there by hand is the owner's, never replaced or fetched
+    // again (review of #650).
+    if f.placed_here {
+        return if f.asked {
+            TurboStep::Say(
+                "The turbo model is in mecha's image server already, put there by hand; it is \
+                 left as it is."
+                    .into(),
+            )
+        } else {
+            TurboStep::Nothing
+        };
     }
     // Linked to a blob still in the hub: a link whose blob is gone is
     // re-offered, or the refusal naming this command would name a command
@@ -1119,6 +1136,7 @@ mod tests {
             installing: false,
             cached: false,
             linked_here: false,
+            placed_here: false,
             left_alone: false,
             asked: true,
             yes: false,
@@ -1143,6 +1161,18 @@ mod tests {
             ..base(Some(&missing))
         };
         said(turbo_step(f, never), "not mecha's");
+        // A file the owner put there: said when asked, never fetched over.
+        let f = TurboFacts {
+            placed_here: true,
+            ..base(Some(&installed))
+        };
+        said(turbo_step(f, never), "by hand");
+        let f = TurboFacts {
+            placed_here: true,
+            asked: false,
+            ..base(Some(&installed))
+        };
+        assert_eq!(turbo_step(f, never), TurboStep::Nothing);
         // Installed and linked to a verified blob: said only when asked.
         let linked = TurboFacts {
             cached: true,
@@ -1154,7 +1184,7 @@ mod tests {
             cached: true,
             linked_here: true,
             asked: false,
-            wanted: Some("this install has it already".into()),
+            wanted: Some("this install linked it before".into()),
             ..base(Some(&installed))
         };
         assert_eq!(turbo_step(f, never), TurboStep::Nothing);
