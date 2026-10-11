@@ -38,10 +38,24 @@ static ORIGIN: OnceLock<String> = OnceLock::new();
 
 pub(super) fn set_origin(origin: &str) {
     let _ = ORIGIN.set(origin.trim_end_matches('/').to_string());
+    SERVING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether the listener is still serving: one that stopped after startup
+/// frames nothing, so the review must say so rather than show a dead frame.
+static SERVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub(super) fn origin() -> Option<&'static str> {
+    if !SERVING.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
     ORIGIN.get().map(String::as_str)
+}
+
+/// The listener stopped serving, and why.
+pub(super) fn stopped(why: String) {
+    SERVING.store(false, std::sync::atomic::Ordering::Relaxed);
+    set_problem(why);
 }
 
 /// Why previews are off when they were configured (a port that would not
