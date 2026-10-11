@@ -25,9 +25,6 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The most an answer may run: a number or a yes.
-const ANSWER_TOKENS: u32 = 16;
-
 /// One samples file: its arm, its persona, and its samples.
 struct Arm {
     file: PathBuf,
@@ -79,6 +76,42 @@ fn read_arm(file: &Path) -> Result<Arm> {
     })
 }
 
+/// Every arm under its own label, since the summary is keyed by it: two
+/// files of one name in different folders (two runs of one overlay) are
+/// told apart by their paths, and one file named twice is refused (review
+/// of #644).
+fn distinct_labels(arms: &mut [Arm]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for a in arms.iter() {
+        let path = std::path::absolute(&a.file)?;
+        if !seen.insert(path.clone()) {
+            bail!("{} is named twice", path.display());
+        }
+    }
+    let labels: Vec<String> = arms.iter().map(|a| a.label.clone()).collect();
+    for a in arms.iter_mut() {
+        if labels.iter().filter(|l| **l == a.label).count() > 1 {
+            a.label = format!("{} ({})", a.label, a.file.display());
+        }
+    }
+    Ok(())
+}
+
+/// Every output refused before any question is asked if it is there
+/// already: a verdict file is one judges' reading, never two mixed.
+fn refuse_existing(outputs: &[PathBuf]) -> Result<()> {
+    for out in outputs {
+        if out.exists() {
+            bail!(
+                "{} exists: these judges already wrote it, or a run of them stopped part way \
+                 (remove it to judge again)",
+                out.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Where an arm's verdicts go: beside its samples, named by the judges, so
 /// a later version never writes over an earlier one's.
 fn judged_path(samples: &Path) -> PathBuf {
@@ -91,10 +124,11 @@ pub async fn execute(
     sheet: Option<&Path>,
     json: bool,
 ) -> Result<()> {
-    let arms = files
+    let mut arms = files
         .iter()
         .map(|f| read_arm(f))
         .collect::<Result<Vec<_>>>()?;
+    distinct_labels(&mut arms)?;
     let Some(first) = arms.first() else {
         bail!("name the samples to judge: --judge <FILE>...");
     };
@@ -103,20 +137,13 @@ pub async fn execute(
             .file
             .with_extension(format!("{}.sheet.html", rj::JUDGES))
     });
-    // Every output is refused before any question is asked if it is there
-    // already: a verdict file is one judges' reading, never two mixed.
-    for out in arms
-        .iter()
-        .map(|a| judged_path(&a.file))
-        .chain([sheet.clone()])
-    {
-        if out.exists() {
-            bail!(
-                "{} exists: these judges already wrote it (remove it to judge again)",
-                out.display()
-            );
-        }
-    }
+    refuse_existing(
+        &arms
+            .iter()
+            .map(|a| judged_path(&a.file))
+            .chain([sheet.clone()])
+            .collect::<Vec<_>>(),
+    )?;
 
     let follower = Follower::start(global.clone(), Box::new(|_| {})).await?;
     let router = follower.router_base();
@@ -125,7 +152,12 @@ pub async fn execute(
     if !crate::setup::persona_provider(&follower.current(), PersonaUse::Judge)?.vision() {
         bail!("{model} cannot see pictures, so it cannot judge them; name one that can (-m)");
     }
-    let pass = QuarantinedPass::new(model.clone(), ANSWER_TOKENS)
+    // The local allowance, not an answer's length: `no_thinking` is only a
+    // request a template may ignore, and a reasoning model below
+    // `--reasoning-budget` answers HTTP 200 with nothing in it (CLAUDE.md;
+    // `voice_direction::pass` is the same one-shot). An empty answer is
+    // then said by name (`ask`), never counted as no verdict.
+    let pass = QuarantinedPass::new(model.clone(), mecha_core::provider::LOCAL_MAX_TOKENS)
         .system(rj::SYSTEM)
         .no_thinking();
 
@@ -238,7 +270,36 @@ async fn ask(
     if response.stop_reason == mecha_core::message::StopReason::Refusal {
         return Err("the judge refused".into());
     }
-    Ok(response.message.text())
+    let text = response.message.text();
+    if text.trim().is_empty() {
+        return Err(
+            "the judge's answer was empty (its thinking may have taken the allowance)".into(),
+        );
+    }
+    Ok(text)
+}
+
+/// An answer read by `read`, or why there is no verdict: an answer it
+/// could not read is said too, so "nothing answered" never reads as
+/// "nothing to count".
+fn verdict<T>(
+    answer: std::result::Result<String, String>,
+    read: fn(&str) -> Option<T>,
+    errors: &mut Vec<String>,
+) -> Option<T> {
+    match answer {
+        Ok(a) => {
+            let v = read(&a);
+            if v.is_none() {
+                errors.push("an answer could not be read".into());
+            }
+            v
+        }
+        Err(e) => {
+            errors.push(e);
+            None
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -271,8 +332,15 @@ async fn judge_one(
     j.reader = manifest.and_then(|m| m.get("reader").cloned());
     j.prompt = prompt_of(render, picture);
     // The picture an edit started from, as the sample's workspace holds it.
+    // Only a plain path inside the workspace: the manifest is the tool's
+    // own, but nothing is read from beyond the sample's folder on its word.
     let base = manifest
         .and_then(|m| m["picture"].as_str())
+        .filter(|p| {
+            Path::new(p)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        })
         .map(|p| scratch.join("work").join(p))
         .filter(|p| p.is_file());
     let base_bytes = base.as_ref().and_then(|p| std::fs::read(p).ok());
@@ -317,35 +385,23 @@ async fn judge_one(
         .as_deref()
         .map(|b| mecha_core::image::rendered_block(b, None))
         .transpose()?;
-    match ask(
-        provider.as_ref(),
-        pass.ask_about(shown.clone(), rj::PEOPLE_QUESTION),
-    )
-    .await
-    {
-        Ok(a) => j.people_asked = rj::count(&a),
-        Err(e) => j.errors.push(e),
-    }
+    j.people_asked = verdict(
+        ask(
+            provider.as_ref(),
+            pass.ask_about(shown.clone(), rj::PEOPLE_QUESTION),
+        )
+        .await,
+        rj::count,
+        &mut j.errors,
+    );
     for clause in clauses {
         let question = clause.question();
         let on = |block: &mecha_core::message::Block| {
             ask(provider.as_ref(), pass.ask_about(block.clone(), &question))
         };
-        let picture_says = match on(&shown).await {
-            Ok(a) => rj::yes_no(&a),
-            Err(e) => {
-                j.errors.push(e);
-                None
-            }
-        };
+        let picture_says = verdict(on(&shown).await, rj::yes_no, &mut j.errors);
         let base_says = match &shown_base {
-            Some(b) => match on(b).await {
-                Ok(a) => rj::yes_no(&a),
-                Err(e) => {
-                    j.errors.push(e);
-                    None
-                }
-            },
+            Some(b) => verdict(on(b).await, rj::yes_no, &mut j.errors),
             None => None,
         };
         j.clauses.push(Verdict {
@@ -402,6 +458,45 @@ mod tests {
         std::fs::write(&f, "{\"sample\":0}\n").unwrap();
         assert!(read_arm(&f).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Outputs already there refuse the run before any question, and two
+    /// arms of one name are told apart rather than merged (review of #644).
+    #[test]
+    fn outputs_and_labels_are_settled_before_any_question() {
+        let dir = std::env::temp_dir().join(format!("mecha-rj-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        let there = dir.join("a").join("v.jsonl");
+        std::fs::write(&there, "").unwrap();
+        let err = refuse_existing(&[dir.join("none"), there.clone()]).unwrap_err();
+        assert!(format!("{err:#}").contains("stopped part way"), "{err:#}");
+        assert!(refuse_existing(&[dir.join("none")]).is_ok());
+        let arm = |f: PathBuf| Arm {
+            file: f,
+            label: "x (c.jsonl)".into(),
+            persona: "p".into(),
+            samples: Vec::new(),
+        };
+        let mut arms = vec![arm(dir.join("a/c.jsonl")), arm(dir.join("b/c.jsonl"))];
+        distinct_labels(&mut arms).unwrap();
+        assert_ne!(arms[0].label, arms[1].label);
+        let mut twice = vec![arm(dir.join("a/c.jsonl")), arm(dir.join("a/c.jsonl"))];
+        assert!(distinct_labels(&mut twice).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty or unreadable answer is said, never only counted as none.
+    #[test]
+    fn an_answer_with_no_verdict_is_said() {
+        let mut errors = Vec::new();
+        assert_eq!(
+            verdict(Ok("Yes".into()), rj::yes_no, &mut errors),
+            Some(true)
+        );
+        assert!(errors.is_empty());
+        assert_eq!(verdict(Ok("maybe".into()), rj::yes_no, &mut errors), None);
+        assert_eq!(verdict(Err("empty".into()), rj::count, &mut errors), None);
+        assert_eq!(errors.len(), 2);
     }
 
     #[test]
