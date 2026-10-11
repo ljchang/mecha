@@ -173,6 +173,9 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
         // The image server as the plan found it: whether a turbo fetch has
         // an install of mecha's to land in.
         let mut comfy_found: Option<(&'static str, SidecarState)> = None;
+        // A server on ComfyUI's port that no evidence names reads as
+        // missing, and is left alone here: someone else's all the same.
+        let mut comfy_left_alone = false;
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
@@ -195,6 +198,7 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 // is still written (review of #638).
                 if let Some(why) = install::left_alone(s.id, &m)? {
                     println!("{}: {why}", s.label);
+                    comfy_left_alone |= s.id == comfy::ID;
                     continue;
                 }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
@@ -259,7 +263,17 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
         let mut fetch_turbo: Option<String> = None;
         if features.contains(&Feature::Image) {
             let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
-            let linked = comfy::turbo_linked(&m.mecha_home);
+            // Linked to a blob still in the hub: a link whose blob is gone
+            // is re-offered, or the refusal naming this command would name
+            // a command that does nothing (review of #650).
+            let cached = mecha_core::fetch::cached(
+                &hub,
+                comfy::TURBO_REPO,
+                comfy::TURBO_REVISION,
+                &comfy::TURBO_FILE,
+                false,
+            )? == mecha_core::fetch::Cached::Verified;
+            let linked = cached && comfy::turbo_linked(&m.mecha_home);
             let wanted = comfy::turbo_wanted(&m.mecha_home, turbo);
             // An installed server re-offered for turbo alone has not been
             // through the fit check above, and the install would fail on it
@@ -285,16 +299,7 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 (Some(why), Some((label, state)))
                     if installing || matches!(state, SidecarState::Installed) =>
                 {
-                    let download = match mecha_core::fetch::cached(
-                        &hub,
-                        comfy::TURBO_REPO,
-                        comfy::TURBO_REVISION,
-                        &comfy::TURBO_FILE,
-                        false,
-                    )? {
-                        mecha_core::fetch::Cached::Verified => 0,
-                        _ => comfy::TURBO_FILE.bytes,
-                    };
+                    let download = if cached { 0 } else { comfy::TURBO_FILE.bytes };
                     // The guided setup listed its downloads before its one
                     // yes (ruling F14): nothing it did not list is fetched.
                     if yes && !turbo && download > 0 {
@@ -319,6 +324,12 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 (Some(why), Some((_, SidecarState::Provided { by }))) => println!(
                     "The turbo model is not fetched ({why}): the image server here is {by}, not \
                      mecha's — it needs {} in its models/diffusion_models/.",
+                    mecha_core::sampling::TURBO_MODEL
+                ),
+                (Some(why), _) if comfy_left_alone => println!(
+                    "The turbo model is not fetched ({why}): the image server on :{} is not \
+                     mecha's — it needs {} in its models/diffusion_models/.",
+                    comfy::Naming::shipped().port,
                     mecha_core::sampling::TURBO_MODEL
                 ),
                 (Some(why), _) if turbo => {
@@ -947,6 +958,27 @@ mod tests {
     /// The #445 leftover: a graph tool missing from a run's surface names the
     /// switch when that is why, and the `[[mcp]]` entry only when it is not —
     /// read from the global file, as every refusal is.
+    /// `--turbo` is the image model's, and fetches: both refusals come
+    /// before the machine is read, and write nothing (review of #650).
+    #[test]
+    fn turbo_is_refused_without_image_or_with_no_install() {
+        let home = crate::testenv::HomeGuard::new("features-turbo");
+        let path = home.dir.join("config.toml");
+        std::fs::write(&path, "# mine\n").unwrap();
+        // A runtime of its own, so the home's lock is never held across an
+        // await.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(enable(&["graph".into()], false, true, false))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("image model's"), "{err:#}");
+        let err = rt
+            .block_on(enable(&["image".into()], true, true, false))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("--no-install"), "{err:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
+    }
+
     #[test]
     fn a_missing_graph_tool_names_the_switch_when_that_is_the_cause() {
         let home = crate::testenv::HomeGuard::new("features-graph-absent");
