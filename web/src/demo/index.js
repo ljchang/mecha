@@ -194,6 +194,7 @@ export const ROUTES = [
   ['GET', /^\/api\/personas\/[^/]+\/sources\/text$/, () => ({ file: 'field-guide.md', text: 'document: field-guide.md · text\n\nA field guide to the kelp forest.' })],
   ['POST', /^\/api\/personas\/[^/]+\/lock$/, () => new Response('the demo does not lock', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/frame$/, () => new Response('the demo does not keep framing', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/image-touching$/, () => new Response('the demo does not keep image settings', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
   ['GET', /^\/api\/personas\/[^/]+\/memory$/, () => fx.personaMemory],
   ['POST', /^\/api\/personas\/[^/]+\/memory$/, () => new Response('the demo does not change memories', { status: 501 })],
@@ -221,6 +222,7 @@ export const ROUTES = [
   ],
   ['POST', /^\/api\/persona-chat\/[^/]+\/cancel$/, () => ({ cancelled: false })],
   ['POST', /^\/api\/persona-chat\/[^/]+\/call$/, () => ({ counted: true })],
+  ['POST', /^\/api\/persona-chat\/[^/]+\/call-regenerate$/, () => new Response('the demo has no calls', { status: 501 })],
   // The demo's persona draws nothing, so there is no picture to show or edit.
   ['GET', /^\/api\/persona-chat\/[^/]+\/file$/, () => new Response('no such file', { status: 404 })],
   // Nor does its assistant chat: a picture's Download (`downloadPicture`, a

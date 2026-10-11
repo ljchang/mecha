@@ -421,6 +421,48 @@ pub struct State {
     /// is theirs, and a chat cannot write over their edits (review of #493).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed: Option<String>,
+    /// The persona's picture settings (IMAGE-DESIGN.md §15.1), the owner's
+    /// alone: written by the settings page's own route, never by a tool,
+    /// and read fresh each turn. A damaged table reads as the defaults, so
+    /// it can never cost the rest of this file.
+    #[serde(
+        default,
+        deserialize_with = "lenient_image",
+        skip_serializing_if = "ImageSettings::is_default"
+    )]
+    pub image: ImageSettings,
+}
+
+/// A persona's picture settings, `state.toml`'s `[image]` table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageSettings {
+    #[serde(default)]
+    pub touching: Touching,
+}
+
+impl ImageSettings {
+    fn is_default(&self) -> bool {
+        *self == ImageSettings::default()
+    }
+}
+
+/// How a scene whose people touch is drawn (IMAGE-DESIGN.md §15): in one
+/// pass, or built in layers, slower. A value this build does not know reads
+/// as one pass: a closed enum written to a store is a wire format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Touching {
+    Precise,
+    #[default]
+    #[serde(other)]
+    Single,
+}
+
+fn lenient_image<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ImageSettings, D::Error> {
+    let raw = Option::<toml::Value>::deserialize(d)?;
+    Ok(raw
+        .and_then(|v| v.try_into::<ImageSettings>().ok())
+        .unwrap_or_default())
 }
 
 /// Where a portrait sits in its circle, as the page draws it: `x` and `y`
@@ -473,6 +515,7 @@ impl Default for State {
             updated: String::new(),
             frame: None,
             proposed: None,
+            image: ImageSettings::default(),
         }
     }
 }
@@ -1512,6 +1555,7 @@ fn create_with(
             updated: at,
             frame: None,
             proposed: None,
+            image: ImageSettings::default(),
         },
     )?;
     let state = snapshot(dir, &new.name)?;
@@ -1879,6 +1923,30 @@ pub fn set_frame(dir: &Path, name: &str, frame: Option<Frame>) -> Result<State> 
     let (_, p) = current(dir, name)?;
     let mut state = p.state;
     state.frame = frame;
+    state.updated = now();
+    write_state(&dir.join(name), &state)?;
+    Ok(state)
+}
+
+/// How this persona's touching scenes are drawn now, read from its
+/// `state.toml` alone through the load's own door, so a host can read it
+/// fresh each turn. Anything unreadable is one pass.
+pub fn touching(dir: &Path, name: &str) -> Touching {
+    if validate_name(name).is_err() {
+        return Touching::Single;
+    }
+    read_prose(&dir.join(name).join("state.toml"))
+        .and_then(|s| parse_toml::<State>(&s))
+        .map(|s| s.image.touching)
+        .unwrap_or_default()
+}
+
+/// How this persona's touching scenes are drawn (IMAGE-DESIGN.md §15.1).
+/// The owner's settings route is the one caller: no tool writes it.
+pub fn set_touching(dir: &Path, name: &str, touching: Touching) -> Result<State> {
+    let (_, p) = current(dir, name)?;
+    let mut state = p.state;
+    state.image.touching = touching;
     state.updated = now();
     write_state(&dir.join(name), &state)?;
     Ok(state)
@@ -2966,6 +3034,46 @@ mod tests {
         assert_eq!(names(false), vec!["priya".to_string()]);
         assert_eq!(names(true), vec!["mara".to_string(), "priya".to_string()]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The touching-scenes switch round-trips through `state.toml` under
+    /// `[image]`, an unknown value reads as one pass, a damaged table costs
+    /// nothing else in the file, and the default writes no table.
+    #[test]
+    fn the_touching_switch_is_stored_and_read_leniently() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let state = set_touching(&dir, "mara", Touching::Precise).unwrap();
+        assert_eq!(state.image.touching, Touching::Precise);
+        let (_, p) = current(&dir, "mara").unwrap();
+        assert_eq!(p.state.image.touching, Touching::Precise);
+        let file = dir.join("mara").join("state.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            text.contains("[image]") && text.contains("touching = \"precise\""),
+            "{text}"
+        );
+        // An unknown value, and a damaged table, read as one pass and keep
+        // the rest of the state.
+        for bad in [
+            "[image]\ntouching = \"sideways\"\n",
+            "[image]\ntouching = 5\n",
+        ] {
+            let kept = text.split("[image]").next().unwrap().to_string();
+            std::fs::write(&file, format!("{kept}{bad}")).unwrap();
+            let (_, p) = current(&dir, "mara").unwrap();
+            assert_eq!(p.state.image.touching, Touching::Single, "{bad}");
+            assert_eq!(
+                p.state.status, state.status,
+                "the rest of the state survives"
+            );
+        }
+        set_touching(&dir, "mara", Touching::Single).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            !text.contains("[image]"),
+            "the default writes no table: {text}"
+        );
     }
 
     /// A frame belongs to the picture it was measured against: a settings

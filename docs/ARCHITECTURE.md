@@ -568,7 +568,11 @@ workspace**. Six decisions, each a bug if undone:
   image generation keeps working in a conversation holding mail. `[image]` is
   stripped from project layers, loudly, like `[web]`: a cloned repository must
   not choose where model-written prompts go.
-- **Refuse to start without memory headroom** (`min_available_mb`, 20 GB). On
+- **Refuse to start without memory headroom** (`min_available_mb`, 20 GB, **plus
+  the memory floor's reserve**). Since S6 the gate is `system::floor`
+  (§System state): the need below plus `[system] memory_reserve_mb` (8 GB) must
+  be available, and memory pressure above the ceiling refuses. That is 28 GB
+  cold and 20 GB warm at the defaults (`SYSTEM-STATE-DESIGN.md` §7.2). On
   the GB10 the GPU allocates from the one pool everything else uses; the first
   generation on this box, beside `llama-server` and a parallel link, was a
   global OOM that killed `llama-server` and took the machine down. An
@@ -945,8 +949,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   picture is resized to the encoder's own canvas (`edit_canvas`, the node's
   sizing with Python's round-half-even), and the mask is grown by about 21
   px and feathered by about 16 (`prepare_mask`; σ = 12 thresholded at 10,
-  then σ = 8), the setting a 60-image comparison found seamless
-  (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424). The graph samples on the
+  then σ = 8), the setting a 60-image comparison on one textured picture
+  found seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
+  saw a faint rectangular seam where the edge crossed a smooth background,
+  on one scene at n = 4, open in HANDOFF. The graph samples on the
   encoded picture under a `SetLatentNoiseMask`. The result is then laid over
   the original in mecha's code (`composite_masked`), not the server's, so
   every pixel beyond the grown, feathered edge (up to about 37 px outside
@@ -956,8 +962,10 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   already is, and the result says so. A dab too small to survive the grow
   step is refused rather than silently changing nothing. The near-copy check
   reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. Measured seamless, and landing 8 of 8
-  local edits, in `IMAGE-REGION-EDIT-RESEARCH.md` §4. It under-edits a pose,
+  masked edit would look unchanged. Measured seamless on one textured
+  picture, and landing 8 of 8 local edits, in
+  `IMAGE-REGION-EDIT-RESEARCH.md` §4, with §7.7's one smooth-background
+  seam the exception seen so far. It under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
   nothing, or was painted over a picture of another shape, is refused before
   the GPU. A `size` beside a mask is set aside and said, never refused,
@@ -970,7 +978,11 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints
   up to four regions in colours chosen against the picture, and sends a
   colour-indexed picture of them as `mask` with `regions: [{colour, words}]`.
-  `prepare_regions` reads the index by exact colour before `prepare_mask`.
+  `prepare_regions` reads the index by exact colour before `prepare_mask`,
+  which is safe only because the page quantises it: each region's layer at
+  alpha > 127 into its exact colour, black otherwise (`indexPixels` in
+  `web/src/lib/image-edit.js`). A page that sent anti-aliased strokes
+  as they are would lose every rim pixel.
   That gives each region the identity its empty check and outline need, and
   masks only the colours the call names, where the luma threshold alone
   would mask any bright pixel. A region with no pixels is refused. The union is the mask, so the composite
@@ -981,6 +993,28 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   Measured on same-class targets: the wrong target changed 0 of 12, against
   2 of 12 for one painted area with words, for about 15 s more than a plain
   masked edit. A Regenerate sent with a painted area is refused by name.
+
+- **A touching scene is built in layers when the persona's switch says
+  so** (IMAGE-DESIGN.md §15; owner, 2026-10-10). The switch is
+  `state.toml`'s `[image] touching`, written only by the owner's settings
+  route and read fresh each turn into `ToolCtx::layers`; the model never
+  chooses it. Only a new picture of two library people (the measured
+  count, `layers::MEASURED_PEOPLE`) sharing a `together`, with a setting in
+  words and no words to render or retouch beside it, qualifies (a library style's words go on the finish alone);
+  anything else draws as today and, with the switch on, says why. The build
+  is one job: a plate of the room from the words that name nobody (the
+  setting's clauses and the light by `names_no_one`, the camera from a
+  closed set of framings), a cutout per person from their portrait in a
+  neutral pose (flattened on grey in code, an empty one refused), a placing
+  pass by tag with each person's part and expression (names never reach
+  the prompt, and someone offstage reads as "the viewer" on every pass), and a finish, with the job's Stop read between steps and
+  handed to each render. Any failed step draws
+  the single pass and says where it failed; a picture never quietly becomes
+  another kind. The plate and cutouts are kept beside the picture, and the
+  scene records `layers` (hashes, parts, seeds, its origin counted by
+  `Scene::origin`); a picture drawn in one pass carries none. Gated by
+  mecha-a3 before the switch was offered: 16 of 18 recorded touching calls
+  layered, none fell back at any step.
 
 The model sees what it made on request — `image_view` on the result's path
 (§Images) — and the result hands the seed back: revising is an edited prompt
@@ -5940,9 +5974,43 @@ was ever deployed.
 - **The machine's denominators, never the sampler's.** Per-category CPU
   divides by the cores `/proc/stat` lists, never `available_parallelism()`,
   which a `CPUQuota=` on the sampler's own unit would narrow.
-- **Both oneshots are bounded.** `Type=oneshot` has no start timeout and a
-  run still active holds its timer, so a wedged `nvidia-smi` would stop
-  sampling for good; the units set `TimeoutStartSec`.
+- **Both oneshots are bounded, and so is every command inside them.**
+  `Type=oneshot` has no start timeout, and a run that is still active holds
+  its timer, so a wedged `nvidia-smi` would stop sampling for good. The
+  units set `TimeoutStartSec`, and `source::run_bounded` kills any command
+  at its timeout. It drains the output on a thread while the command runs:
+  waiting first and reading after fills a 64 KiB pipe and stalls the child
+  into the timeout, which is what the old shape did with a large answer.
+  **A bound per command is not a bound per sample.** A sample runs seven
+  commands, and a wedged driver hangs all three `nvidia-smi` calls, so a
+  10 s bound each added up past the unit's 30 s, and systemd killed the
+  sample before it wrote anything. `collect` therefore gives its `Reader`
+  one deadline (`SAMPLE_BUDGET`). Each command gets what is left, the
+  readings after it is spent are `Unread`, and the minute is still written.
+  A test reads the unit's `TimeoutStartSec` and keeps the budget under it.
+- **One parser per source (S1).** `system::source` parses `/proc/meminfo`,
+  `/proc/stat`, `nvidia-smi` and every other source exactly once. The
+  homeostat, the image gate and `recommend` read through
+  `system::Reader`. A second parser of any of them is the duplication the
+  layer exists to end.
+- **A reading is one of three things**, `Observed`, `Unread { why }` or
+  `NotHere`, and the series keeps them apart: a value, a NULL, or no row.
+- **A rate never spans a reset or a switch.** `delta` returns `None` when
+  a counter fell or its `ident` (device number, interface index) changed.
+  Interfaces are keyed by index, so a name never enters the series.
+- **The memory floor refuses before allocating (S6).** `system::floor::admit`
+  is a pure function of two readings and a stated need. The floor is the
+  need plus `[system] memory_reserve_mb`, and the pressure ceiling refuses
+  regardless of headroom. An unreadable gauge refuses. The caller refuses;
+  the floor kills nothing. `[system]` is stripped from project layers,
+  because a cloned repository must not lower a safety floor. The image
+  tool's persona form carries the operator's floor, not R5's defaults, and a
+  test pins it, since that form is where most pictures are made.
+- **The OOM split reconciles or is unknown.** The vmstat counter says how
+  many kills there were. The kernel log says which kind and whose, and is
+  believed only when it accounts for exactly that many. Do not read
+  `category.oom_kills` from `memory.events`: a restarted service gets a
+  fresh cgroup, and the counter resets on exactly the kill that mattered.
 
 ## Session records and replay
 

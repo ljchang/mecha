@@ -68,6 +68,10 @@ pub struct Config {
     /// through the door. (Replaces the opaque `toml::Value` bridge main
     /// carried while this arc was in flight.)
     pub web: WebConfig,
+    /// `[system]`: the memory floor's reserve and pressure ceiling
+    /// (`docs/SYSTEM-STATE-DESIGN.md` §3.7, R5). Global-file only — a project
+    /// layer must not lower a safety floor; `merge_file` strips it.
+    pub system: crate::system::floor::SystemConfig,
     /// Talking to mecha: the voice parts' addresses and the cloning
     /// references. Global-file only; see [`VoiceConfig`].
     pub voice: VoiceConfig,
@@ -424,6 +428,7 @@ impl Default for Config {
             slack: SlackConfig::default(),
             messages: MessagesConfig::default(),
             web: WebConfig::default(),
+            system: crate::system::floor::SystemConfig::default(),
             voice: VoiceConfig::default(),
             personas: PersonasConfig::default(),
         }
@@ -1458,6 +1463,16 @@ impl Config {
         // `[web]` for the `[slack]` reason, in its web costume: the section
         // names the remote control's door — a listening port and the one
         // identity allowed through it.
+        // `[system]` because it is a safety floor: a cloned repository that
+        // set `memory_reserve_mb = 0` would turn off the one check standing
+        // between a picture and an out-of-memory.
+        if trust == LayerTrust::Project && layer.system.take().is_some() {
+            tracing::warn!(
+                "[system] in {} is ignored — the memory floor loads from the \
+                 global config only",
+                path.display()
+            );
+        }
         if trust == LayerTrust::Project && layer.web.take().is_some() {
             tracing::warn!(
                 "[web] in {} is ignored — the web surface loads from the \
@@ -1795,6 +1810,13 @@ impl Default for WebConfig {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SystemLayer {
+    memory_reserve_mb: Option<u64>,
+    memory_pressure_ceiling: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WebLayer {
     port: Option<u16>,
     owner_login: Option<String>,
@@ -1978,6 +2000,7 @@ struct ConfigLayer {
     messages: Option<MessagesLayer>,
     skills: Option<SkillsLayer>,
     web: Option<WebLayer>,
+    system: Option<SystemLayer>,
     voice: Option<VoiceLayer>,
     personas: Option<PersonasLayer>,
     harness: Option<HarnessLayer>,
@@ -2442,6 +2465,15 @@ impl ConfigLayer {
                 }
             }
         }
+        // Global layer only: `merge_file` strips a project file's `[system]`.
+        if let Some(x) = self.system {
+            if let Some(v) = x.memory_reserve_mb {
+                cfg.system.memory_reserve_mb = v;
+            }
+            if let Some(v) = x.memory_pressure_ceiling {
+                cfg.system.memory_pressure_ceiling = v;
+            }
+        }
         // Only ever reached from the global layer, like `[messages]` and
         // `[slack]`: `merge_file` strips a project file's `[web]` first.
         if let Some(x) = self.web {
@@ -2836,6 +2868,35 @@ mod tests {
             !from_environment.mcp[0].trust_result_claims,
             "an experiment environment must not vouch for a server"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_cannot_lower_the_memory_floor() {
+        // A safety floor: a mecha.toml arriving with a cloned repository that
+        // set the reserve to zero would switch off the check standing between
+        // a picture and an out-of-memory.
+        let dir = std::env::temp_dir().join(format!("mecha-system-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[system]\nmemory_reserve_mb = 0\nmemory_pressure_ceiling = 100.0\n",
+        )
+        .unwrap();
+        let default = crate::system::floor::SystemConfig::default();
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(
+            from_project.system, default,
+            "a project file must not move the floor"
+        );
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(from_global.system.memory_reserve_mb, 0);
+        assert_eq!(from_global.system.memory_pressure_ceiling, 100.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
