@@ -124,7 +124,11 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "ComfyUI",
         needed_by: &[Feature::Image],
         serves: &["image"],
+        // Its own unit first, as `stt`'s and the worker's name theirs: with
+        // the record lost, mecha's server must not read as missing (review
+        // of #645).
         evidence: &[
+            Evidence::UserUnit("mecha-comfyui.service"),
             Evidence::UserUnit("comfyui.service"),
             Evidence::Home("ComfyUI"),
         ],
