@@ -158,7 +158,23 @@ fn router_at(
         .with_state(state))
 }
 
-async fn redirect(UrlPath(item): UrlPath<String>) -> Response {
+async fn redirect(
+    State(p): State<Preview>,
+    UrlPath(item): UrlPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let presented = headers
+        .get(super::TAILSCALE_LOGIN)
+        .and_then(|v| v.to_str().ok());
+    if presented != Some(p.owner_login.as_str()) {
+        return (StatusCode::FORBIDDEN, "not the owner\n").into_response();
+    }
+    if !item
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return missing();
+    }
     (
         StatusCode::FOUND,
         [(header::LOCATION, format!("/p/{item}/"))],
@@ -230,6 +246,12 @@ fn answer(p: &Preview, item: &str, path: &str) -> Option<(Vec<u8>, &'static str,
     if let Some(file) = path.strip_prefix("data/") {
         let board = item.args["id"].as_str()?.strip_prefix("hud-")?;
         let name = file.strip_suffix(".json")?;
+        // Only a dataset the board's spec declares: a removed loader's
+        // leftover file is not "the board's rows now".
+        let installed = p.hud.load(board).ok()?.ok()?;
+        if !installed.spec().datasets().iter().any(|d| d == name) {
+            return None;
+        }
         let dataset = p.hud.dataset(board, name).ok()??;
         return Some((
             serde_json::to_vec(&dataset).ok()?,
@@ -398,7 +420,37 @@ mod tests {
         std::fs::create_dir_all(bundle.join("renderer")).unwrap();
         std::fs::write(bundle.join("index.html"), "<div id=hud></div>").unwrap();
         std::fs::write(root.join("secret.txt"), "no").unwrap();
+        // An installed board, so the preview can check its spec declares
+        // the dataset it is asked for.
         let hud_root = root.join("hud");
+        let draft = root.join("draft").join("lab");
+        std::fs::create_dir_all(draft.join("loaders")).unwrap();
+        std::fs::create_dir_all(&hud_root).unwrap();
+        std::fs::write(
+            hud_root.join("sources.toml"),
+            format!(
+                "[source.lab]\nkind = \"sqlite\"\npath = \"{}\"\ncontent = \"owner\"\n",
+                root.join("lab.sqlite").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("hud.json"),
+            r#"{"version":1,"title":"Lab","datasets":["visits"],
+                "panels":[{"type":"kpi","title":"Visits","dataset":"visits",
+                           "value":{"op":"sum","field":"n"}}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            draft.join("loaders").join("visits.toml"),
+            "source = \"lab\"\nschedule = \"0 * * * *\"\nmax_rows = 100\n\
+             query = \"SELECT n FROM visits\"\n[[column]]\nname = \"n\"\ntype = \"integer\"\n",
+        )
+        .unwrap();
+        let hud = mecha_core::hud::store::Store::at(&hud_root);
+        hud.install(&draft, Some("lab"), chrono::Utc::now())
+            .unwrap()
+            .unwrap_or_else(|r| panic!("the fixture does not install: {r}"));
         let data = hud_root.join("boards/lab/data");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(
@@ -407,6 +459,7 @@ mod tests {
                 "loader_digest":"d","columns":[{"name":"n","type":"integer"}],"rows":[[3]],"external":false}"#,
         )
         .unwrap();
+        std::fs::write(data.join("leftover.json"), r#"{}"#).unwrap();
         let outbox_root = root.join("outbox");
         let outbox = OutboxStore::open(&outbox_root).unwrap();
         let args = serde_json::json!({"id": "hud-lab", "bundle": bundle.display().to_string()});
@@ -426,7 +479,7 @@ mod tests {
             Arc::new("owner@example.com".into()),
             outbox_root,
             bundles,
-            mecha_core::hud::store::Store::at(&hud_root),
+            hud,
             "https://box.tail.ts.net:8444",
         )
         .unwrap();
@@ -467,6 +520,11 @@ mod tests {
         assert_eq!(
             status(format!("/p/{}/", by_model.id), true).await,
             StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(format!("/p/{}/data/leftover.json", staged.id), true).await,
+            StatusCode::NOT_FOUND,
+            "a dataset the spec does not declare"
         );
         assert_eq!(
             status(format!("/p/{}/..%2F..%2Fsecret.txt", staged.id), true).await,
