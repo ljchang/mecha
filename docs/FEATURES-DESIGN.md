@@ -1701,7 +1701,8 @@ Step 7 becomes these, each a PR that leaves every feature working:
     the toolchain check, `$ORIGIN` RUNPATH, the toolkit's runtime copied
     beside it, and a check that the build reports its commit and is
     self-contained.
-  - **The weights:** Q5_K_M (what the live server runs) and the 12 Hz codec
+  - **The weights:** Q6_K (the owner's default, and what the live server
+    runs; Q5_K_M is published beside it as the fallback) and the 12 Hz codec
     on `mecha-factory/mecha-speech-gguf`, the `tts` slot's sources.
     They're fetched into the hub by sha256 and linked, with a default VCTK
     voice beside them.
