@@ -1798,7 +1798,7 @@ network, so a server that starts on demand is never woken to be asked.
 mecha features [--json]
 mecha features --probe [--json]
 mecha features plan <id> [--verify] [--json]
-mecha features enable <id>... [--no-install]
+mecha features enable <id>... [--no-install] [--turbo]
 mecha features disable <id>...
 ```
 
@@ -1872,6 +1872,12 @@ not write is never replaced. (On macOS these start by hand, for now.)
 Answering no writes nothing. `--no-install` writes the switch without
 installing. Without a terminal, an `enable` that would install refuses and
 names `--no-install`. A program that is already on the machine is left alone.
+`--turbo`, with `image`, also fetches the turbo model (6.8 GiB) into the image
+server mecha installs. Without it, the turbo model is fetched only once a
+persona's picture settings choose it, and then `enable image` offers it,
+restarting a server already installed to link it. The turbo model never costs
+the switch: without a terminal that restart is skipped, and answering no to it
+alone still switches images on.
 
 **`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
 comments, the order of the file and any key a newer build added are kept, and
