@@ -216,7 +216,7 @@ pub enum Nvidia {
 
 /// CUDA 13's minimum driver on Linux, and CUDA 12's (minor-version
 /// compatibility: a 12.x runtime runs on any 525+ driver).
-const CUDA13_DRIVER: (u32, u32) = (580, 0);
+pub(crate) const CUDA13_DRIVER: (u32, u32) = (580, 0);
 const CUDA12_DRIVER: (u32, u32) = (525, 60);
 
 /// The build for a machine, or why there is none. A pure function of what was
