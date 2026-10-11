@@ -750,8 +750,8 @@ after the factory path is proven.
 | 0 ✓ | **Measure the grammar, and the bundle.** — *done 2026-10-09, §8.1* — ~20 dashboard requests on the served model, Vega-Lite vs ECharts option JSON: valid / renders / looks right (judged from the screenshot). And the bundle-level questions §4.2 and §6.1 send here: build the real vendored bundles, scan them for runtime code construction, load them under the real `interactive` policy, and check that `vega-embed` passes `ast`/`expr` through | a scratch harness, results in this doc | a number per grammar; the CSP-violation count per bundle; the passthrough answer; **R2 confirmed or reversed** |
 | 1 ⧗ | Spec types, the subset walker, loader TOML, shape check | `mecha-core/src/hud/` | unit tests refuse each forbidden field by name — proposed in #621 |
 | 2 ⧗ | **Split in two PRs.** **2a** (built): `sources.toml`, the confined SQLite runner, the dataset store and ledger, `mecha hud {list, validate, install, refresh}`, `scripts/mecha-hud.timer`, the `doctor` finding. **2b** (built): the host sampler (`hud/host.rs`, `mecha hud sample`, `scripts/mecha-hud-sample.timer` — since moved to `system.rs`, `mecha system sample` and `scripts/mecha-system-sample.timer` by S0 of `SYSTEM-STATE-DESIGN.md`) and the host board (`scripts/hud/host/`, validated and run against sampler-written data in a test). The `doctor` finding also owes, once step 5 publishes, a **push the factory refused** (stale release, forked bytes, an error): home records each push's outcome, because after such a refusal the local refresh *succeeded* and a refresh-only check reads green while the published page is frozen. | core + cli | host samples accumulate; a dataset refreshes on schedule; a drifted query is refused |
-| 3 | The renderer, both builds (web app and standalone) | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
-| 4 | Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
+| 3 ⧗ | The renderer, both builds (web app and standalone) — *built, §8.3* | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
+| 4 ⧗ | *Routes and `#hud` built with step 3 (§8.3); the proposals store waits for authoring.* Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
 | 6 | `hud_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `hud_preview` never reaches it |
@@ -828,6 +828,48 @@ already gates a store this way. The pinned DuckDB binary (step 7) is a
 sidecar the registry knows about, so `features --probe` and onboarding report
 whether it is present instead of a loader discovering its absence at
 refresh. The registry is a wire format; the id, once shipped, is `hud`.
+
+### 8.3 Steps 3 and 4: what was built, and what waits (2026-10-11)
+
+Built together, as the MVP the owner asked for ("the schema and svelte
+builder and database integration is the core"): the renderer
+(`web/src/lib/hud/`: `Dashboard`, `Chart`, `Table`, `Text`, `Filters`, the
+pure `hud.js` and `theme.js`), the standalone build (`npm run build:hud`,
+`vite.hud.config.js`), the three read-only routes (`serve/hud.rs`) and
+`#hud` / `#hud/<id>` in the app.
+
+**Measured, headless Chromium, 2026-10-11.** Both builds were rendered under
+the factory's strict policy (`script-src 'self'; style-src 'self';
+connect-src 'self'`): the host board over its live datasets and a made-up
+board with a filter, each in light and dark, at desktop and phone widths.
+- Zero CSP violations and zero console errors in all eight renders.
+- Every chart drew, no anchor reached the page (a text panel's markdown
+  link rendered as its words), and choosing a filter value moved the bound
+  KPI (250 → 108) and redrew the chart.
+- **Step 0's one `style-src-elem` violation did not recur.** That run
+  injected a `<style>` even with `defaultStyle: false`; with
+  `actions: false` as well there is no menu to style, and nothing was
+  injected. Step 5's probe still counts it, against the real template.
+- On a phone a legend wraps into columns and a time axis asks for fewer
+  ticks; both came from the screenshots.
+
+**What waits, and why:**
+- **Owner-written themes** (§4.4). One built-in `default`, light and dark,
+  draws every spec for now; the theme store and the refusal of an unknown
+  name come with the authoring loop.
+- **The registry entry** (§8.2). The routes are `Owner::Core` until `hud` is
+  a feature; with nothing installed they answer an empty list.
+- **The proposals pane's store** (step 4's second half). A pending
+  dashboard exists only once a model drafts one (step 6); viewing an
+  installed board needs none of it.
+- **The standalone build trusts the spec beside it.** It reads `hud.json` off
+  the page's own origin, so there `chartRefusal` is the only check in the
+  browser, not the second behind `vegalite.rs`. No producer ships that path
+  yet; whatever does (step 5's publish) must write only a spec that passed
+  the server's walker.
+- **Polling period from the loader.** The page polls every minute (never
+  under the 30 s floor); reading each loader's schedule waits for a route
+  that carries it.
 
 ## 9. Deliberately not in scope
 

@@ -93,6 +93,24 @@ pub struct SampleArgs {
     #[arg(long, requires = "persona")]
     pub no_readers: bool,
 
+    /// Render with the touching-scenes switch on (IMAGE-DESIGN.md §15): a
+    /// qualifying picture is built in layers. Off by default, so an arm
+    /// measures one pass unless it asks.
+    #[arg(long, requires = "persona")]
+    pub layers: bool,
+
+    /// With `--layers`, cutouts posed in each person's part rather than
+    /// neutral: the arm IMAGE-DESIGN.md §15.7 measures against the shipped
+    /// one. Never a chat's.
+    #[arg(long, requires = "layers")]
+    pub layers_posed: bool,
+
+    /// Run the turn's recorded Nth tool call (1-based) verbatim through the
+    /// real tool, with the turn's stamps and no model turn: arms then differ
+    /// only in what they set, never in what the model wrote this time.
+    #[arg(long, value_name = "N", requires = "persona", conflicts_with_all = ["at_call", "no_render"])]
+    pub run_call: Option<usize>,
+
     /// Which tool text the request carries: `today` (this build's, the
     /// default: the binary is the arm) or `recorded` (the surface the turn
     /// was sent, from the surface store by its `tools_hash`), so a wording
@@ -184,51 +202,25 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
     Ok((path, persona, id))
 }
 
-/// Whether a call is live now. The speech engine logs a real-time
-/// factor per sentence it speaks, and a hold shows only a turn in flight,
-/// not a call between turns. Not installed is no call; installed and
-/// unreadable is a refusal, since unknown is not clear. A `systemctl` that
-/// cannot be run at all reads as not installed: on a machine without a user
-/// systemd there is no speech engine unit to be on a call through.
+/// Whether a call is live now, as `mecha system probe voice.live` reads it:
+/// a hold shows only a turn in flight, not a call between turns. No speech
+/// engine here is no call; one whose journal cannot be read is a refusal,
+/// since unknown is not clear.
 fn voice_live() -> Result<bool> {
-    const UNIT: &str = "mecha-breeze-tts.service";
-    let installed = std::process::Command::new("systemctl")
-        .args(["--user", "cat", UNIT])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if !installed {
-        return Ok(false);
+    use mecha_core::system::{Measurement, Reader, Reading};
+    match Reader::new().now(Measurement::VoiceLive) {
+        Reading::Observed { value } => Ok(value != 0.0),
+        Reading::NotHere => Ok(false),
+        Reading::Unread { why } => {
+            bail!("a live call cannot be ruled out: {why}")
+        }
     }
-    let out = std::process::Command::new("journalctl")
-        .args([
-            "--user",
-            "-u",
-            UNIT,
-            "--since",
-            "-3 min",
-            "--no-pager",
-            "-o",
-            "cat",
-        ])
-        .output()
-        .context("reading the speech engine's journal for a live call")?;
-    if !out.status.success() {
-        bail!(
-            "the speech engine's journal did not read, so a live call cannot be ruled out: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|l| l.contains("RTF")))
 }
 
 /// Wait while the owner is using the model: a call, or a turn in flight on
 /// the router (a hold some other process took). Checked before every
 /// sample, because a long run outlasts the moment it started in.
-async fn wait_for_owner(router: Option<&str>) -> Result<()> {
+pub(super) async fn wait_for_owner(router: Option<&str>) -> Result<()> {
     let me = std::process::id();
     let mut said = false;
     loop {
@@ -260,7 +252,7 @@ async fn wait_for_owner(router: Option<&str>) -> Result<()> {
     }
 }
 
-fn private_file(path: &Path) -> Result<std::fs::File> {
+pub(super) fn private_file(path: &Path) -> Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     // Narrowed to 0700 only when this call makes it: a folder the owner
     // named (`--out ~/c1.jsonl`) is not the harness's to narrow. The file
@@ -321,7 +313,7 @@ fn refuse_load(
 /// one, or did not list its models, is unknown, and unknown refuses: this
 /// process names its provider and never follows, so its first request
 /// really can load a model over the owner's.
-async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()> {
+pub(super) async fn guard_load(router: Option<&str>, model: &str, allow: bool) -> Result<()> {
     use mecha_core::provider::router::{is_router, models};
     let Some(base) = router else {
         return Ok(());
@@ -629,6 +621,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "attempts": args.attempts,
             "parsed_limit": (args.attempts > 1).then_some(args.parsed_limit),
             "readers_stamped": render && !args.no_readers,
+            "layers": render && args.layers,
+            "layers_posed": render && args.layers_posed,
+            "run_call": args.run_call,
             "image_seed_base": render.then_some(args.image_seed_base),
             // The real picture tool runs on two paths, for different ends:
             // to draw, or (`--attempts`) only to refuse an unparsed call,
@@ -669,6 +664,18 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         render,
         readers: !args.no_readers,
+        layers: args.layers,
+        layers_posed: args.layers_posed,
+        run_call: match args.run_call {
+            Some(n) => {
+                let (name, input) = pr::recorded_call(&path, &text, line, n)?;
+                if name != IMAGE_TOOL {
+                    bail!("call {n} is `{name}`, not {IMAGE_TOOL}: only a picture call is run");
+                }
+                Some((name, input))
+            }
+            None => None,
+        },
     };
     let mut samples = Vec::with_capacity(args.samples);
     for i in 0..args.samples {
@@ -749,6 +756,12 @@ pub struct Sampler {
     render: bool,
     /// Stamp the scene reader and role splitter when rendering.
     readers: bool,
+    /// The touching-scenes switch, when rendering (`--layers`).
+    layers: bool,
+    /// Posed cutouts, with `layers` (`--layers-posed`).
+    layers_posed: bool,
+    /// The recorded call run verbatim through the tool (`--run-call`).
+    run_call: Option<(String, serde_json::Value)>,
 }
 
 /// The one tool a sample runs, when it renders.
@@ -924,6 +937,9 @@ impl Sampler {
             scene: None,
             prompt_log: None,
             image_seeds: None,
+            // Set below for a rendering arm that asks (`--layers`).
+            layers: false,
+            layers_posed: false,
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,
@@ -945,6 +961,8 @@ impl Sampler {
             if self.readers {
                 turn.readers = mecha_core::persona::turn::Readers::From(&judge);
             }
+            turn.layers = self.layers;
+            turn.layers_posed = self.layers_posed;
         }
         let before = staged
             .as_ref()
@@ -953,7 +971,22 @@ impl Sampler {
         let cx = mecha_core::persona::turn::context(&agent, turn).with_cancel(cancel);
         let mut convo =
             mecha_core::agent::Conversation::resumed(branch.messages.clone(), branch.taint);
-        let ran = agent.run_in(&cx, &mut convo, None).await;
+        // The recorded call through the tool, or the model's own turn.
+        let mut dispatched: Option<pr::CallResult> = None;
+        let ran = match &self.run_call {
+            Some((name, input)) => {
+                let d = agent
+                    .dispatch_one(&cx, &mut convo, name, input.clone(), &None)
+                    .await;
+                dispatched = Some(pr::CallResult {
+                    name: name.clone(),
+                    is_error: d.is_error,
+                    content: d.content,
+                });
+                Ok(())
+            }
+            None => agent.run_in(&cx, &mut convo, None).await.map(|_| ()),
+        };
         drop(held);
         let error = ran
             .err()
@@ -989,7 +1022,10 @@ impl Sampler {
                 missing: st.missing.clone(),
                 readers: self.readers,
                 image_seed,
-                results: pr::results_of(after, IMAGE_TOOL),
+                results: match &dispatched {
+                    Some(r) => vec![r.clone()],
+                    None => pr::results_of(after, IMAGE_TOOL),
+                },
                 pictures: new
                     .iter()
                     .filter(|p| p.extension().is_some_and(|x| x == "png"))
@@ -1006,7 +1042,8 @@ impl Sampler {
                     .unwrap_or_default(),
             });
         }
-        if log.is_empty() {
+        // A run call sends no request of the model's own.
+        if log.is_empty() && self.run_call.is_none() {
             bail!(
                 "sample {i} sent no request: {}",
                 sample.error.as_deref().unwrap_or("no error was given")

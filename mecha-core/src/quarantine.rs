@@ -63,6 +63,20 @@
 
 use crate::message::{CompletionRequest, Effort, Message};
 
+/// A picture ready to go before a quarantined question
+/// ([`QuarantinedPass::ask_about`]): made only from a picture's bytes,
+/// through the door's cap (`image::rendered_block`), so no other block can
+/// stand in for it. Made once and asked about many times.
+#[derive(Debug, Clone)]
+pub struct Shown(crate::message::Block);
+
+impl Shown {
+    /// Bytes that are not a picture are an error.
+    pub fn of(bytes: &[u8]) -> anyhow::Result<Self> {
+        Ok(Shown(crate::image::rendered_block(bytes, None)?))
+    }
+}
+
 /// The shape of a quarantined call: a model, an optional frame, and budgets.
 ///
 /// Build one, then [`ask`](QuarantinedPass::ask) it a question. The request
@@ -157,6 +171,16 @@ impl QuarantinedPass {
         }
     }
 
+    /// [`ask`](Self::ask) with a picture before the question, in the one
+    /// user turn: a judge reading what a picture shows (`persona::
+    /// replay_judge`). Still no tools and no history, and a [`Shown`] is
+    /// the only thing that can go before the question (review of #644).
+    pub fn ask_about(&self, picture: &Shown, user: impl Into<String>) -> CompletionRequest {
+        let mut request = self.ask(user);
+        request.messages[0].content.insert(0, picture.0.clone());
+        request
+    }
+
     /// A second question on the same pass: [`ask`](Self::ask)`(asked)`'s
     /// request, its answer appended verbatim, and one more user turn.
     ///
@@ -187,6 +211,27 @@ impl QuarantinedPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture rides in the one user turn, before the question.
+    #[test]
+    fn a_question_about_a_picture_is_still_one_turn_with_no_tools() {
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 3)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let pass = QuarantinedPass::new("m", 8);
+        let req = pass.ask_about(&Shown::of(&png).unwrap(), "how many?");
+        assert!(req.tools.is_empty());
+        assert_eq!(req.messages.len(), 1);
+        assert!(matches!(
+            req.messages[0].content[0],
+            crate::message::Block::Image { .. }
+        ));
+        assert_eq!(req.messages[0].content.len(), 2);
+        assert!(req.messages[0].text().ends_with("how many?"));
+        // Only a picture goes before the question.
+        assert!(Shown::of(b"not a picture").is_err());
+    }
 
     #[test]
     fn a_quarantined_request_carries_no_tools_and_exactly_one_user_turn() {

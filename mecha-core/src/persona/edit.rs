@@ -88,6 +88,27 @@ pub fn redraw_call(picture: &str) -> serde_json::Value {
     serde_json::json!({ "picture": picture })
 }
 
+/// The picture a harness call redraws, when `input` is a Regenerate's call
+/// ([`redraw_call`]) and nothing else: what the live stream marks a card a
+/// version by, as [`fact_redraw_of`] marks it in the transcript. A change
+/// the panel's reader read as none is this call too, and its fact says
+/// [`REDRAWN`], so the two agree.
+pub fn redraw_of_call(input: &serde_json::Value) -> Option<&str> {
+    let fields = input.as_object()?;
+    (fields.len() == 1).then_some(())?;
+    fields.get("picture")?.as_str()
+}
+
+/// The line a Regenerate says in a call, which the owner hears the call
+/// take as typed: the page says it, and the server matches it to the
+/// Regenerate the page registered (`persona_chat::call_regenerate`). The
+/// words bind the turn and grant nothing: a spoken turn that says them with
+/// no registration is words. The page's own `composeRegenerateMessage`
+/// writes the same line for a typed Regenerate.
+pub fn regenerate_line(picture: &str) -> String {
+    format!("Regenerate {picture}")
+}
+
 /// The picture a Regenerate's fact drew again, so the page shows the new one
 /// as a version on that picture's card (§5.4). `None` for any other fact.
 pub fn fact_redraw_of(text: &str) -> Option<&str> {
@@ -118,6 +139,17 @@ owner in a sentence, in your own voice.)";
 /// What the owner sees in place of a reply to [`NOT_DRAWN`] that was empty
 /// or only a tool call written as text.
 pub const NOT_DRAWN_REPLY: &str = "That change didn't go through.";
+
+/// The closing line after a Regenerate in the assistant's chat, which has
+/// no edit panel and no persona: [`DONE`] in its terms.
+pub const REDRAW_DONE: &str = "(From the harness: the picture the owner asked to have drawn \
+again is drawn and on their screen; you have not seen it. No tool is needed now; tell the owner \
+in a sentence.)";
+
+/// [`NOT_DRAWN`] in the assistant's chat's terms: the fact above it says why.
+pub const REDRAW_NOT_DRAWN: &str = "(From the harness: the picture the owner asked to have \
+drawn again was not drawn; the reason is in their turn above. No tool is needed now; tell the \
+owner in a sentence.)";
 
 /// Why an extraction was not understood, as the fact's result says it.
 pub fn not_understood(why: &str) -> String {
@@ -846,6 +878,23 @@ mod tests {
         assert_eq!(fact_redraw_of("plain words"), None);
     }
 
+    /// The live stream's mark: the Regenerate call alone, never a call
+    /// that changes something.
+    #[test]
+    fn only_the_regenerate_call_names_a_picture_drawn_again() {
+        assert_eq!(
+            redraw_of_call(&redraw_call("images/a.png")),
+            Some("images/a.png")
+        );
+        let changed = serde_json::json!({"picture": "images/a.png", "setting": "a beach"});
+        assert_eq!(redraw_of_call(&changed), None);
+        assert_eq!(
+            redraw_of_call(&serde_json::json!({"prompt": "a cat"})),
+            None
+        );
+        assert_eq!(redraw_of_call(&serde_json::json!({"picture": 3})), None);
+    }
+
     #[test]
     fn the_fact_is_the_harness_speaking_never_the_owner() {
         let fact = fact(
@@ -867,6 +916,8 @@ mod tests {
         );
         assert!(crate::agent::is_harness_voice(DONE));
         assert!(crate::agent::is_harness_voice(NOT_DRAWN));
+        assert!(crate::agent::is_harness_voice(REDRAW_DONE));
+        assert!(crate::agent::is_harness_voice(REDRAW_NOT_DRAWN));
     }
 
     #[test]

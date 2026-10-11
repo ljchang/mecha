@@ -12,8 +12,8 @@
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
-  import { composeEditMessage, composeRegionsMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince } from './picture.js';
+  import { composeEditMessage, composeRegenerateMessage, composeRegionsMessage, maskName } from './image-edit.js';
+  import { pictureOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion } from './picture.js';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -153,6 +153,12 @@
   // into the browser's history, which outlives the unlock. An open persona's
   // needs neither, so its URL is safe to open full size.
   const repeats = $derived(repeatedPictures(run.entries));
+  // A Regenerate's picture shows on the card it was drawn again from,
+  // ‹ k/n ›, and Edit, Regenerate and Download act on the version showing
+  // (IMAGE-DESIGN.md §5.4). The version stepped to, per first picture; none
+  // means the newest.
+  const versions = $derived(pictureVersions(run.entries));
+  let chosenVersion = $state(new Map());
   const noPicture = $derived(turnsWithoutPicture(run.entries, run.running));
   // Pictures waiting behind the one drawing (`waitingPictures`).
   const queuedPictures = $derived(waitingPictures(run.entries, queue));
@@ -300,6 +306,45 @@
   function editInCall(path) {
     imageEdit = { path, src: pictureUrl(path), initial: '', busy: false, error: null, call: true };
     caller?.holdMic(true);
+  }
+  // Regenerate from the call screen (owner, 2026-10-10: a spoken call turn).
+  // A call's turns reach the server as words through the voice worker, so
+  // the redraw is registered first, through this chat's own door, and the
+  // line the server hands back is said into the call: the turn that says it
+  // takes the registration, the harness draws, and the persona answers
+  // aloud. The words alone grant nothing (`persona::edit::regenerate_line`).
+  async function regenerateInCall(path) {
+    const k = key;
+    if (!k) return;
+    try {
+      const res = await fetch(chatUrl(k, '/call-regenerate'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ picture: path, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const { line, id } = await res.json();
+      // A line never said is taken back, so a later turn that says those
+      // words is words (reviews of #634, #642): the chat changed under the
+      // press, or the call has no live line.
+      const withdraw = () =>
+        fetch(chatUrl(k, '/call-regenerate'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ picture: path, unlock: token ?? undefined, withdraw: id }),
+        }).catch(() => {});
+      if (k !== key) {
+        withdraw();
+        return;
+      }
+      if (!caller?.say(line)) {
+        withdraw();
+        notice('The call is not connected, so the picture was not drawn again.');
+        return;
+      }
+    } catch (err) {
+      if (k === key) notice(`The picture could not be drawn again: ${err?.message ?? err}.`);
+    }
   }
   function closeEdit() {
     if (imageEdit?.call) caller?.holdMic(false);
@@ -856,6 +901,7 @@
     imageEdit = null;
     pictureNote = null;
     attachments = [];
+    chosenVersion = new Map();
     // Or the previous chat's resources show for a round trip (review of #418).
     safety = null;
     // And its pictures in line (review of #607).
@@ -1214,6 +1260,24 @@
     }
   }
 
+  // The touching-scenes switch, stored in state.toml by its own route.
+  async function setTouching(touching) {
+    busy = true;
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/image-touching', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ touching, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      await load();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function setLocked(locked) {
     busy = true;
     try {
@@ -1274,13 +1338,19 @@
     }
   }
 
-  async function send({ edit = null } = {}) {
-    const typed = input.trim();
-    const attached = [...attachments];
+  // `text`: a turn the page composes itself (Regenerate), sent as it is,
+  // which leaves the owner's draft and files in the composer. True when the
+  // server took the turn.
+  async function send({ edit = null, text: fixed = null } = {}) {
+    const own = fixed === null;
+    const typed = own ? input.trim() : fixed;
+    const attached = own ? [...attachments] : [];
     const text = withAttachments(typed, attached);
     if (!text || !key) return;
-    input = '';
-    attachments = [];
+    if (own) {
+      input = '';
+      attachments = [];
+    }
     try {
       const res = await fetch(chatUrl(key, '/send'), {
         method: 'POST',
@@ -1305,10 +1375,43 @@
       }
     } catch (e) {
       // Nothing was sent: the words and the files come back to the composer.
-      input = typed;
-      attachments = attached;
+      if (own) {
+        input = typed;
+        attachments = attached;
+      }
       error = String(e?.message ?? e);
+      return false;
     }
+    return true;
+  }
+
+  // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing, drawn again as
+  // it is at a new seed by the harness, with no words and no painted area.
+  // Not while a run is live: a message into a running turn steers it as text
+  // alone, and the persona would read "Regenerate" as words to act on.
+  // The card's `version_of` arrives with the harness's call on the live
+  // stream (`applyEvent`). The card goes back to the newest once the turn is
+  // taken, so the new version is what lands; a send that failed leaves it
+  // where it was.
+  async function regenerate(root, picture) {
+    if (!key || run.running) return;
+    if (await send({ text: composeRegenerateMessage(picture), edit: { picture, redraw: true } })) {
+      chosenVersion.delete(root);
+      chosenVersion = new Map(chosenVersion);
+    }
+  }
+
+  function stepVersion(root, list, by) {
+    const at = list.indexOf(shownVersion(list, chosenVersion.get(root)));
+    const next = list[Math.min(list.length - 1, Math.max(0, at + by))];
+    chosenVersion = new Map(chosenVersion).set(root, next);
+  }
+
+  // From a version's own place in the chat, to the card that shows it.
+  function showVersion(root, picture) {
+    chosenVersion = new Map(chosenVersion).set(root, picture);
+    const card = [...(scroller?.querySelectorAll('[data-versions]') ?? [])].find((el) => el.dataset.versions === root);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   async function stop() {
@@ -1625,6 +1728,17 @@
                  focuses as the toggles below it do. -->
             <button type="button" role="switch" class="tf-switch" aria-checked={chosen.locked} aria-label="Hide behind the library lock" aria-describedby="lockhint" disabled={busy || lockWaitsNow} onclick={() => setLocked(!chosen.locked)}><span class="tf-knob"></span></button>
           </div>
+          <!-- How a picture whose people touch is drawn (IMAGE-DESIGN.md §15):
+               in state.toml beside the lock, the owner's alone, so a switch
+               here and never a form field. Read from the listing, so a reload
+               shows what is stored. -->
+          <div class="lockrow">
+            <span class="locktext">
+              Touching scenes: precise (slower)
+              <span class="hint" id="touchhint">{chosen.touching === 'precise' ? 'a picture of people touching is built in layers: the room, each person, then placed together — about 3–4 minutes' : 'drawn in one pass, about 45 seconds; turn on for better staging when people touch'}</span>
+            </span>
+            <button type="button" role="switch" class="tf-switch" aria-checked={chosen.touching === 'precise'} aria-label="Touching scenes: precise (slower)" aria-describedby="touchhint" disabled={busy} onclick={() => setTouching(chosen.touching === 'precise' ? 'single' : 'precise')}><span class="tf-knob"></span></button>
+          </div>
         {/if}
         {#if asForm && current.form.form}
           {#key current.digest}
@@ -1874,6 +1988,7 @@
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}
+            {@const fold = versions.folded.get(i)}
             {@const tr = toolRun(run.entries, i, (e) => !pictureOf(e), (e) => e.is_error === true)}
             {#if tr.first}
               <div class="tool" class:err={status === 'failed'}>
@@ -1882,17 +1997,33 @@
             {/if}
             <!-- The picture is the answer, not a detail of the call: drawn
                  once, from this chat's own workspace (`persona_chat::download`). -->
-            {#if picture && !repeats.has(i)}
+            {#if picture && !repeats.has(i) && !fold}
+              {@const list = versions.groups.get(picture) ?? [picture]}
+              {@const shown = shownVersion(list, chosenVersion.get(picture))}
+              {@const at = list.indexOf(shown)}
               {#if chosen.locked}
-                <span class="genimg"><img src={pictureUrl(picture)} alt="generated" loading="lazy" /></span>
+                <span class="genimg" data-versions={picture}><img src={pictureUrl(shown)} alt="generated" loading="lazy" /></span>
               {:else}
-                <a class="genimg" href={pictureUrl(picture)} target="_blank" rel="noopener">
-                  <img src={pictureUrl(picture)} alt="generated" loading="lazy" />
+                <a class="genimg" data-versions={picture} href={pictureUrl(shown)} target="_blank" rel="noopener">
+                  <img src={pictureUrl(shown)} alt="generated" loading="lazy" />
                 </a>
               {/if}
-              <button class="genedit" onclick={() => editImage(picture)}>Edit</button>
-              <button class="genedit" onclick={() => savePicture(picture)}>Download</button>
-              {#if pictureNote?.path === picture}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
+              {#if list.length > 1}
+                <span class="versions">
+                  <button class="vstep" aria-label="Previous version" disabled={at === 0} onclick={() => stepVersion(picture, list, -1)}>‹</button>
+                  <span aria-live="polite">{at + 1}/{list.length}</span>
+                  <button class="vstep" aria-label="Next version" disabled={at === list.length - 1} onclick={() => stepVersion(picture, list, 1)}>›</button>
+                </span>
+              {/if}
+              <button class="genedit" onclick={() => editImage(shown)}>Edit</button>
+              <button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>
+              <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
+              {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
+            {:else if picture && fold}
+              <!-- Drawn again: the picture shows on the card it is a version
+                   of, which may be far above, so its place here says so. -->
+              <span class="genwait">drawn again: version {fold.k} of {versions.groups.get(fold.root).length}, on the picture above</span>
+              <button class="genedit" onclick={() => showVersion(fold.root, picture)}>Show</button>
             {/if}
             <!-- Still being drawn past the turn that asked for it (§5.4): it
                  lands here when done. Its Stop ends the picture alone, never
@@ -2124,6 +2255,7 @@
       onstoppicture={() => stopPicture()}
       ondownload={savePicture}
       onedit={editInCall}
+      onregenerate={regenerateInCall}
     />
   {/if}
 </div>
@@ -2229,6 +2361,17 @@
     font-family: var(--mono); font-size: 12px; color: var(--accent-400);
     background: none; border: 1px solid var(--accent-400); border-radius: 999px; cursor: pointer;
   }
+  .genedit:disabled { opacity: 0.4; cursor: default; }
+  .versions {
+    display: inline-flex; align-items: center; gap: 4px; margin-top: -4px;
+    font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  }
+  /* 44px targets: the stepper is the one control a thumb aims at on a phone. */
+  .vstep {
+    min-width: 44px; min-height: 44px; padding: 0; font-size: 18px;
+    color: var(--accent-400); background: none; border: none; cursor: pointer;
+  }
+  .vstep:disabled { opacity: 0.3; cursor: default; }
   .notice { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
   /* As the assistant's chat attaches: chips above the composer, an overlay
      while a file is dragged over the page. */

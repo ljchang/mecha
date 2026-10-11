@@ -42,6 +42,10 @@
     // the edit as a line typed into the call: `say`). Null hides the button.
     ondownload = null,
     onedit = null,
+    // The chat's Regenerate for a call (`path` → the chat registers the
+    // redraw and says its line into the call, so the persona answers
+    // aloud; owner, 2026-10-10). Null hides the button.
+    onregenerate = null,
     // The chat's own transcript (`call-lines.js` `historyLines`), which the
     // call's turns join as they happen, and the reply streaming in: the
     // conversation as the chat shows it (the owner's ask, 2026-10-05).
@@ -143,6 +147,11 @@
     const path = viewing;
     viewing = null;
     onedit?.(path);
+  }
+  function regenerate() {
+    const path = viewing;
+    viewing = null;
+    onregenerate?.(path);
   }
   // When the line first carried the call: what the meter counts from, so a
   // call that never connected is no minutes at all.
@@ -464,6 +473,7 @@
           <!-- An edit is a call turn: offered only while there is a line to
                carry it, as the call's own typing box is (review of #552). -->
           {#if onedit}<button class="viewbtn" onclick={edit} disabled={!linked}>Edit</button>{/if}
+          {#if onregenerate}<button class="viewbtn" onclick={regenerate} disabled={!linked}>Regenerate</button>{/if}
           {#if ondownload}<button class="viewbtn" onclick={download}>Download</button>{/if}
           <button class="viewbtn" bind:this={backButton} onclick={() => (viewing = null)}>Back to the call</button>
           <!-- The hang-up stays one tap away while a picture is open. -->

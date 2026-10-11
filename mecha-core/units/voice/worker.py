@@ -1,0 +1,3348 @@
+#!/usr/bin/env python3
+"""The mecha voice worker: the Pipecat pipeline between a browser and the
+facade. Deliberately dumb - pipeline config and transport, no judgment;
+everything with judgment lives behind `mecha voice-serve` (D2).
+
+Run inside the voice-worker venv via the pipecat runner:
+    python worker.py --host 127.0.0.1 --port 7860
+then publish it inside the tailnet with `tailscale serve` (D1) - the
+browser needs HTTPS before it will open a microphone.
+
+The three legs are env-configurable base URLs (D6):
+    MECHA_VOICE_LLM   the facade        (default http://127.0.0.1:8990/v1)
+    MECHA_VOICE_STT   Parakeet          (default http://127.0.0.1:8992/v1)
+    MECHA_VOICE_TTS   Breeze TTS 2      (default http://127.0.0.1:8887/v1, the
+                      adapter in breeze_server.py; Chatterbox at :8881 is
+                      the rollback, docs/VOICE-BREEZE-DESIGN.md)
+    MECHA_VOICE_TTS_VOICE  voice name for the TTS leg (start value; the
+                      page can change it per session)
+    MECHA_VOICE_TTS_SPEED  speaking rate, 0.5-2.0 (start value, likewise)
+    MECHA_VOICE_TTS_EXAGGERATION  emotion intensity, 0.0-2.0
+    MECHA_VOICE_TTS_CFG_WEIGHT    guidance weight, 0.0-1.0 (lower = more
+                      expressive pacing; it moves *against* exaggeration)
+                      Both are sent only when the TTS lists them as
+                      honoured: the original Chatterbox does, Turbo (the
+                      default live model) drops them, and then they do
+                      nothing (see `TTS_EXAGGERATION`).
+"""
+
+import asyncio
+import collections
+import contextlib
+import json
+import os
+import sys
+import threading
+import time
+import traceback
+import uuid
+from dataclasses import dataclass
+
+import httpx
+from openai.types.audio import Transcription
+
+import base64
+
+from pipecat.frames.frames import LLMMessagesAppendFrame
+
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    CancelFrame,
+    DataFrame,
+    EndFrame,
+    InputAudioRawFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    StartFrame,
+    SystemFrame,
+    TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
+)
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
+    TranscriptionUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+    TurnAnalyzerUserTurnStopStrategy,
+)
+from pipecat.turns.types import ProcessFrameResult
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.processors.frameworks.rtvi.observer import RTVIObserver
+from pipecat.processors.frameworks.rtvi.processor import RTVIProcessor
+from pipecat.runner.types import RunnerArguments
+from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.services.whisper.base_stt import BaseWhisperSTTService
+from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.transport import (
+    SmallWebRTCInputTransport,
+    SmallWebRTCTransport,
+)
+
+FACADE_URL = os.environ.get("MECHA_VOICE_LLM", "http://127.0.0.1:8990/v1")
+STT_URL = os.environ.get("MECHA_VOICE_STT", "http://127.0.0.1:8992/v1")
+TTS_URL = os.environ.get("MECHA_VOICE_TTS", "http://127.0.0.1:8887/v1")
+TTS_VOICE = os.environ.get("MECHA_VOICE_TTS_VOICE", "default")
+TTS_SPEED = float(os.environ.get("MECHA_VOICE_TTS_SPEED", "1.0"))
+# Bounds mirror the TTS server's own. Duplicated rather than fetched
+# because they gate a value before it is sent: a slider that can ask for
+# 4x and learn it was refused mid-sentence is a worse control than one
+# that cannot ask.
+MIN_SPEED, MAX_SPEED = 0.5, 2.0
+
+# Chatterbox's expressiveness pair. Resemble's expressive recipe raises
+# exaggeration against a *lowered* cfg_weight, because a high one rushes
+# the cadence. **Honoured by the original Chatterbox only**: Turbo, the
+# live voice, accepts both and drops them (chatterbox_server.py `CONTROLS`),
+# so these were sent to a model that ignored them from 2026-08-26 until the
+# server began saying so - and the "flat voice" this was credited with
+# fixing was the references (docs/VOICE-RESEARCH.md, the correction under
+# "The voice was flat"). Sent only when the server lists them as controls
+# (`tts_controls`): an unlisted one is refused there, not ignored.
+TTS_EXAGGERATION = float(os.environ.get("MECHA_VOICE_TTS_EXAGGERATION", "0.8"))
+TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
+
+# GOAL-SYSTEM-DESIGN.md §6.2's voice readout: a small side channel to the
+# facade, symmetric with the TTS/STT legs above rather than piggybacking the
+# OpenAI-compatible completion response - `OpenAILLMService` parses that
+# through the real `openai` SDK's typed models, which drop an unrecognised
+# top-level field before any pipecat frame processor ever sees it.
+AFFECT_URL = f"{FACADE_URL}/mecha-affect"
+# This poll happens once per spoken answer (`LocalTTS.on_turn_context_created`),
+# so a hung (not merely refusing) facade costs this much once per answer, not
+# per sentence. Loopback, same machine - a healthy answer takes low
+# single-digit milliseconds.
+AFFECT_POLL_TIMEOUT_SECONDS = 0.05
+# A single, deliberately conservative nudge for whichever of the four labels
+# reachable today (`Affect::reachable_today`, mecha-core/src/appraisal.rs)
+# the harness names - not a full emotion-to-prosody mapping, because nothing
+# here can validate one perceptually. Lower `cfg_weight` reads as a more
+# measured, careful delivery (Resemble's own expressive recipe: cfg_weight
+# moves *against* exaggeration). Extending this is free once rung 7's
+# quarantined appraiser and counterfactual probe make more labels reachable
+# - only this table grows, nothing else here needs to change.
+AFFECT_CFG_WEIGHT_DELTA = -0.05
+
+# The voice director (docs/VOICE-BREEZE-DESIGN.md): how each sentence should
+# sound, asked of the facade per sentence when the TTS honours
+# `instructions`. The facade bounds the call (`voice_direction::
+# SENTENCE_DEADLINE` / `FIRST_SENTENCE_DEADLINE` in mecha-core: 2.5 s each -
+# a detailed direction measured 1.6 s median, 1.8 s max, on the loaded
+# model, and the first sentence's began with the turn); these are those plus
+# 0.3 s, so the facade's own deadline is the one that fires and a sentence
+# never waits on a facade that has stopped answering.
+DIRECT_URL = f"{FACADE_URL}/mecha-direct"
+DIRECT_TIMEOUT_SECONDS = 2.8
+DIRECT_FIRST_TIMEOUT_SECONDS = 2.8
+
+# Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
+# transcribes; "from beginning to end" phrasing makes the model refuse, and
+# naming an escape token ("output NOSPEECH") anchors the model into
+# answering it for real speech too - both found by testing. Treat any
+# rewording as a change to test, not a paraphrase. The trailing sentence
+# was tested against jfk.wav (unchanged) and silence/noise (degrades the
+# reply to droppable fragments instead of chat).
+# Segments quieter than this never reach the model. The gate was measured
+# against a chat-model transcriber, which handed silence or echo residue
+# stopped transcribing and started *answering* (saying it was an AI
+# with no calendar) - and that answer rode into mecha as the owner's words, the
+# observed 2026-08-24 bug. A transducer cannot do that, so the gate is now
+# about cost and false turns rather than about fabrication; it stays
+# because a half-second of room noise is not a turn whatever hears it.
+# Measured on this STT server: speech ~0.14 RMS, room noise ~0.009,
+# silence 0.000; the gate sits in the gap.
+MIN_SEGMENT_RMS = 0.010
+MIN_SEGMENT_SECONDS = 0.3
+
+# How long after the owner stops speaking the turn logic will wait for
+# Parakeet before deciding the transcript is not coming. Pipecat's default
+# (`DEFAULT_TTFS_P99`, 1.0s) is a streaming-STT number and was short for this
+# pipeline: the wait is anchored to the end of speech, so the 0.2s VAD window,
+# the segment hand-off, the smart-turn inference and the STT request all
+# spend it, and warm Parakeet answers 0.5-0.9s after speech ends (2.5s cold,
+# 2026-09-04 12:55 UTC). When it expired first, smart-turn's COMPLETE fired
+# the turn on the *previous* segment's text and this segment's transcript
+# arrived as a new turn - which is how "Grocery list?" was dropped from
+# one request and then barged in on the reply to it. Two seconds covers the
+# warm tail with room; every transcript here is finalized (`run_stt`), so on
+# the ordinary path the turn ends the moment the text lands and this only
+# bounds the wait when a segment yields no words at all. The cold 2.5s is
+# the first segment of a call, and that one is safe under any value: the
+# strategy holds no earlier text yet, so an expired net has nothing to end
+# the turn on and the turn waits for the transcript regardless.
+STT_TTFS_P99 = 2.0
+
+# The link watch (`LinkWatch`): how long the microphone audio may go missing
+# before the pipeline is told the *link* paused rather than that the owner
+# went quiet, and how long audio must flow again before the hold is lifted.
+#
+# A gap in packets is not silence, but everything downstream reads it as
+# one: Silero sees no speech, smart-turn's silence timer runs, and the STT
+# safety net expires — so a two-second cellular stall mid-sentence ends the
+# turn on the words before it and the rest arrives as a new turn. Measured
+# 2026-09-12 from a moving car: "Can you add" went to the model alone at
+# the instant the transport logged its first two-second audio timeout, and
+# every turn of both calls was a fragment. The stall threshold sits under
+# pipecat's own reaction to the same gap: its VAD controller forces a
+# speech stop one second after audio stops mid-utterance
+# (`audio_idle_timeout`, 1.0), which is the very ruling the hold exists to
+# keep back, so the hold must be in place first; the transport's own
+# complaint comes at 2.0 s. The settle is longer than
+# the VAD's `start_secs` (0.3): if the audio that resumes carries the rest
+# of the sentence, the VAD reopens the turn before the hold is released,
+# and a ruling made on the gap is discarded rather than acted on.
+#
+# Two things the watch is deliberately not: it is not a threshold on the
+# owner's speech (a paused link holds the turn whatever was said), and it
+# does not end anything — a link that never resumes is the client's grace
+# window and the transport's track error, exactly as before.
+LINK_STALL_SECS = 0.75
+LINK_RESUME_SETTLE_SECS = 0.6
+# What "flowing" means for the settle: frames arrive every 20 ms on a live
+# link, so a quarter second between two of them is the flow having broken,
+# and the settle restarts from the next frame rather than counting the gap.
+# Without this the settle measured time since the *first* frame back, and
+# one stray packet in a dead link lifted the hold 0.6 s later — the review
+# of #226 found it; the intermittent delivery it fails on is the 2026-09-12
+# shape exactly.
+LINK_FRAME_GAP_SECS = 0.25
+# How long the aggregator lets a user turn stay open with no stop strategy
+# ending it (pipecat's `user_turn_stop_timeout`, default 5.0). The hold
+# above *is* a turn no strategy is ending, so the default would ship the
+# fragment five seconds into a stall regardless — the smoke call showed it
+# (`User stopped speaking (strategy: None)`). This is the ceiling on a held
+# turn, and nothing more: it is not matched to anything on the page (the
+# page's `DROP_GRACE_MS` starts only once the browser reports ICE
+# `disconnected`, which the stalls that did the damage never produced), so
+# on exactly that shape the call is still live at fifteen seconds and the
+# turn simply ships late. Its price is paid on the *non*-stall path — a turn
+# no strategy ends, a transcript that never arrives past `STT_TTFS_P99`,
+# now sits for fifteen seconds of dead air where it sat for five. Chosen as
+# the longest wait a person mid-sentence will forgive before the answer to
+# half of it is worse than none (ninth review of #226 corrected the reason
+# recorded here; the number stands).
+USER_TURN_STOP_TIMEOUT = 15.0
+# A hold this long is no longer a stall being ridden out; it is worth a line
+# at WARNING, because a hold that never lifts is a call that never answers.
+LINK_HOLD_WARN_SECS = 10.0
+# How long a hold the *page* asked for on the link's account survives
+# against audio that has flowed continuously the whole time: the
+# page's `ok` travels over a channel that may be the thing that stalled and
+# is dropped silently when it is not open, so a lost one would otherwise
+# latch the hold for the life of the call (sixth review of #226 — the
+# mirror of the page's own `serverPauseExpired`). For a *link* hold the
+# worker holds the stronger witness: `_last_audio` is the uplink itself.
+# For a *mic* hold it is no witness at all — a track iOS muted on screen
+# lock keeps sending silence, which is the 40–80 s of frames with no speech
+# in them the 2026-09-12 journal measured — so a mic hold is never expired
+# by audio. What proves a microphone live is speech: the first VAD start
+# past the hold's own settling time lifts it (seventh review). The same
+# value as the warning, by coincidence and not by identity — two questions,
+# two constants, so tuning one cannot silently retune the other.
+LINK_PAGE_HOLD_EXPIRY_SECS = 10.0
+# The watchdog's own tick. The stall is declared at most one tick after
+# `LINK_STALL_SECS`, so the worst case is their sum, and that sum has to
+# land ahead of pipecat's forced stop at 1.0 s: 0.75 + 0.1 = 0.85 does,
+# where the earlier 0.25 s tick tied it exactly (third review of #226).
+LINK_TICK_SECS = 0.1
+# docs/VOICE-LINK-DESIGN.md §2.4: "resumed" means caught up, not "the first
+# packet arrived". A batch's own `backlog_ms` — what the page still holds —
+# must be under this before the hold lifts, so the turn-stop timers cannot
+# fire against a half-delivered sentence.
+LINK_CAUGHT_UP_MS = 500
+# §2.5: audio older than this on arrival is not conversation any more. It is
+# transcribed whole, never interrupts, and lands as one late user turn.
+BACKLOG_TALK_SECS = 120.0
+# The STT server is asked in pieces no longer than this.
+LATE_CHUNK_SECS = 60.0
+# A late span is cut into segments at runs of silence this long, and
+# each is transcribed on its own — as the live lane's VAD segments are.
+# Not an optimisation: Parakeet-TDT, given one clip with speech, a
+# second of silence and more speech, returns only what follows the
+# silence, or nothing — measured 2026-09-14 on the same five seconds at
+# lengths 4.5 s (text), 4.9–6.0 s (nothing), 7.0 s (only the words after
+# the gap). The live lane never hands it such a clip; the late lane did,
+# and its first real span "held no speech".
+LATE_GAP_SECS = 0.5
+LATE_PAD_SECS = 0.2
+# A late span is closed when no batch has followed it for this long.
+LATE_SETTLE_SECS = 1.0
+# How much faster than real time a backlog is pushed into the live
+# pipeline. Not unbounded: the segmented STT accumulates audio only after
+# the aggregator's VAD edge comes back *upstream* to it, with a one-second
+# pre-roll, so a burst that outruns that loop hands Parakeet segments with
+# their beginnings missing or nothing at all — the first 125 s live run
+# turned fifteen seconds of speech into one second and four empty
+# segments. At this pace the in-flight audio stays well inside the pre-roll
+# and a two-minute backlog is heard in thirty seconds.
+UPLINK_DRAIN_SPEED = 4.0
+# How long a late turn waits for the bot to finish speaking before it is put
+# anyway: live speech queues behind it, and a listener would rather hear a
+# reply cut than wait half a minute for their own words.
+LATE_BOT_WAIT_SECS = 10.0
+# Beyond that wait, how long a flush waits for the turn queue before giving
+# up on it and letting the live audio behind it go (`flush_late`).
+LATE_HANDOFF_SLACK_SECS = 5.0
+# pipecat's VAD controller forces a speech stop `audio_idle_timeout` (1.0 s,
+# wall clock) after frames stop arriving. On the buffered uplink frames stop
+# arriving exactly when the link stalls, the hold already keeps the *turn*
+# open, and the first end-to-end call (2026-09-14) showed what the timeout
+# still did: it closed the *segment* mid-word — "Wednesday foot." / "from
+# twelve…" — so the word straddling a 6 s stall reached Parakeet in two
+# halves. A real end of speech is found by Silero on silence that keeps
+# flowing, so the timeout is lengthened on this path only; it still ends a
+# segment when audio truly stops for good.
+UPLINK_VAD_IDLE_SECS = 30.0
+# The loop sampler (`LoopSampler`): how late the event loop's heartbeat may
+# run before the main thread's stack is recorded, and how often the thread
+# looks. The 2026-09-12 stall had a second signature the packet gap alone
+# cannot show: three independent two-second timers logged the same
+# microsecond, which is an event loop that was not running — every call on
+# record since 2026-08-25 shows it once, on the first turn, and its cause is
+# still unnamed. A lag figure alone would say *that* it stopped; the stack
+# says *where*, which is the measurement the next diagnosis needs and the
+# journal has never carried. Off the loop by construction: a thread that
+# only speaks when the loop cannot.
+LOOP_LAG_WARN_SECS = 0.5
+LOOP_SAMPLE_SECS = 0.1
+# pipecat's input track discards every queued audio frame when nothing has
+# read it for `_idle_timeout` (2.0 s, `SmallWebRTCTrack._idle_watcher`) — a
+# memory guard for a track nobody is consuming. On a live pipeline the reader
+# is the pipeline, and the one time it stops reading for two seconds is the
+# stall above: the frames it would discard are the owner's words arriving
+# late. Raised to a minute, which keeps the guard for a genuinely abandoned
+# track and takes it out of the path of a hiccup.
+TRACK_IDLE_DISCARD_SECS = 60.0
+
+
+class LoopSampler:
+    """A thread that watches the event loop's heartbeat and, when it
+    stops, writes down where the main thread is.
+
+    The heartbeat is a coroutine on the loop stamping a clock every
+    `LOOP_SAMPLE_SECS`; the thread compares that stamp to its own. When the
+    stamp is `LOOP_LAG_WARN_SECS` stale the loop is not running, and
+    `sys._current_frames()` still answers from another thread — it names
+    the frame the main thread is stuck in, C call and all, which is the one
+    thing a lag measured after the fact can never recover. One stack per
+    stall, logged the moment it is caught; the duration follows when the
+    beat resumes. Started once per process, from the first call."""
+
+    _instance = None
+
+    def __init__(self, main_thread_id: int):
+        self._main = main_thread_id
+        self._last_beat = _time.monotonic()
+        self._loop = None
+        self._captured = False
+        self._stalled_since: float | None = None
+        # (seconds, stack): what the tests read, and a bounded diagnostic in
+        # production — a box whose loop crosses the line routinely would
+        # otherwise grow this for the life of the process.
+        self.stalls = collections.deque(maxlen=32)
+
+    @classmethod
+    def start(cls):
+        """Idempotent per loop: the worker has one loop for its life, and a
+        test harness has one per case — a heartbeat whose loop has closed
+        would otherwise read as a stall that never ends."""
+        loop = asyncio.get_running_loop()
+        sampler = cls._instance
+        if sampler is None:
+            sampler = cls(threading.main_thread().ident)
+            threading.Thread(target=sampler._watch, name="voice-loop-sampler", daemon=True).start()
+            cls._instance = sampler
+        if sampler._loop is not loop:
+            sampler._loop = loop
+            sampler._last_beat = _time.monotonic()
+            loop.create_task(sampler._heartbeat(loop))
+        return sampler
+
+    async def _heartbeat(self, loop):
+        try:
+            while self._loop is loop:
+                self._last_beat = _time.monotonic()
+                await asyncio.sleep(LOOP_SAMPLE_SECS)
+        finally:
+            if self._loop is loop:
+                self._loop = None  # disarmed: no beat is owed, so no stall can be read
+
+    def _watch(self):
+        from loguru import logger
+
+        while True:
+            _time.sleep(LOOP_SAMPLE_SECS)
+            if self._loop is None:
+                # Disarmed mid-stall (the loop closed under it): the stall
+                # is over because the loop is, and the next loop starts
+                # with a clean capture flag.
+                self._captured = False
+                self._stalled_since = None
+                continue
+            now = _time.monotonic()
+            late = now - self._last_beat
+            if late >= LOOP_LAG_WARN_SECS:
+                if not self._captured:
+                    self._captured = True
+                    self._stalled_since = self._last_beat
+                    stack = self._main_stack()
+                    logger.warning(f"voice loop unresponsive for {late:.2f}s so far; main thread at:\n{stack}")
+                    self.stalls.append((late, stack))
+            elif self._captured:
+                total = self._last_beat - self._stalled_since
+                self._captured = False
+                self._stalled_since = None
+                logger.warning(f"voice loop was unresponsive for {total:.2f}s")
+
+    def _main_stack(self) -> str:
+        frame = sys._current_frames().get(self._main)
+        if frame is None:
+            return "  (main thread frame unavailable)"
+        # Innermost last, and only the tail: the outer frames are the runner
+        # and uvicorn on every stall, and the answer is at the bottom.
+        lines = traceback.format_stack(frame, limit=10)
+        return "".join(lines).rstrip()
+
+
+@dataclass
+class LinkStalledFrame(SystemFrame):
+    """Microphone audio stopped arriving. Not silence: unknown. The turn
+    logic holds every pending end-of-turn until `LinkResumedFrame`. A system
+    frame, so it is not queued behind audio that is not coming."""
+
+    reason: str = "audio"
+
+
+@dataclass
+class LinkResumedFrame(SystemFrame):
+    """Audio has flowed again for `LINK_RESUME_SETTLE_SECS`; whatever the
+    hold was keeping back may now be decided."""
+
+    after_secs: float = 0.0
+
+
+class Answering(FrameProcessor):
+    """Whether the model is answering: between an LLM response's start and
+    end frames. Sits behind the LLM. The typed-turn consumer waits on this
+    as well as on speech, because an answer can end without a word spoken
+    (a refusal, an error, a tool-only turn) - waiting for speech alone held
+    the next typed line for the whole start bound (review of #499)."""
+
+    def __init__(self):
+        super().__init__()
+        self.busy = False
+        # When the last answer ended (`time.monotonic`), for `answer_pending`.
+        self.ended_at: float | None = None
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self.busy = True
+        # An interrupted answer may never send its end frame: the
+        # interruption ends it, or `busy` would latch and every later typed
+        # line wait out the whole bound (review of #499, pass 4). pipecat
+        # queues exactly `InterruptionFrame()` downstream on every
+        # interruption (`PipelineWorker`); the task-side request is a
+        # different class that never reaches this processor.
+        elif isinstance(frame, (LLMFullResponseEndFrame, InterruptionFrame, EndFrame, CancelFrame)):
+            if self.busy:
+                self.ended_at = time.monotonic()
+            self.busy = False
+        await self.push_frame(frame, direction)
+
+
+def answer_pending(answering, bot_speaking, settle=None, now=time.monotonic) -> bool:
+    """Whether an answer is still under way: the model answering, the bot
+    speaking, or the model done less than `settle` ago. The last is the gap
+    between the model's end frame and the first spoken audio of a short
+    answer; a turn delivered in it barges in on speech about to start. It
+    is timestamped where the answer ends, so the gap is seen whoever waits
+    on it and from whichever turn - a spoken question's answer as much as a
+    typed one's (review of #499, pass 5) - and an idle call waits not at
+    all."""
+    if settle is None:
+        settle = TYPED_SETTLE_SECS
+    if answering.busy or bot_speaking():
+        return True
+    return answering.ended_at is not None and now() - answering.ended_at < settle
+
+
+class LinkWatch(FrameProcessor):
+    """Sits directly behind the transport and watches when the last
+    microphone frame arrived.
+
+    Two sources can pause a call. The pipeline's own view — no audio for
+    `LINK_STALL_SECS` — and the page's, which knows things the packets
+    cannot show: iOS muting the mic when the screen locks, the browser
+    reporting the far end has stopped hearing it (`hold`/`release`, from
+    the RTVI `link` client message). Either holds; both must clear before
+    the release, and each transition is reported once to `on_change`, which
+    is what tells the page to sound it. The frames the turn logic reads are
+    the same either way, so the strategy has one rule, not two."""
+
+    def __init__(self, on_change=None, **kwargs):
+        super().__init__(**kwargs)
+        self._on_change = on_change
+        self._last_audio: float | None = None
+        self._audio_stalled = False
+        # The page's reasons for holding, each with when it was asked for:
+        # a set, not a latest-wins slot, because the reasons expire by
+        # different witnesses (`link` by unbroken audio, `mic` by speech)
+        # and a hold pinned to whichever came first let the wrong witness
+        # lift it (eighth review of #226).
+        self._client_paused: dict[str, float] = {}
+        # When the current unbroken run of frames began (gaps under
+        # LINK_FRAME_GAP_SECS): the settle and the page-hold expiry both
+        # ask "has audio flowed, without a break, since X?"
+        self._flow_since: float | None = None
+        self._held_since: float | None = None
+        self._resumed_at: float | None = None
+        self._hold_warned = False
+        self._tick_task = None
+        # What the page still holds, from the last uplink batch's header.
+        # `None` until a batch has said: an RTP-only call has no backlog and
+        # resumes on flow alone, as before.
+        self._backlog_ms: int | None = None
+
+    @property
+    def held(self) -> bool:
+        return self._held_since is not None
+
+    def note_uplink(self, now: float, backlog_ms: int):
+        """An uplink batch arrived carrying `backlog_ms` of audio the page
+        has not yet sent. Counts as audio for the stall clock — it is the
+        audio — and is the caught-up witness the resume waits on."""
+        self._backlog_ms = backlog_ms
+        self._note_audio(now)
+
+    def forget_backlog(self):
+        """The uplink fell back to RTP: no batch will update the backlog
+        again, and a value frozen at the size that tripped the fallback
+        would hold the turn for the rest of the call (review of #231).
+        Flow alone decides from here, as on a call that never had one."""
+        self._backlog_ms = None
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self._tick_task = self.create_task(self._tick())
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            if self._tick_task:
+                await self.cancel_task(self._tick_task)
+                self._tick_task = None
+        elif isinstance(frame, InputAudioRawFrame):
+            self._note_audio(_time.monotonic())
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            # Broadcast by the aggregator, so it passes here going upstream.
+            await self._note_speech(_time.monotonic())
+        await self.push_frame(frame, direction)
+
+    async def _note_speech(self, now: float):
+        """The VAD found speech. A muted microphone cannot produce it, so a
+        page hold for the mic is over — after a stall's worth of settling,
+        because audio queued before the mute can still be segmenting."""
+        since = self._client_paused.get("mic")
+        if since is not None and now - since > LINK_STALL_SECS:
+            from loguru import logger
+
+            logger.warning(
+                "voice link: the page's mic hold expired — the owner is audibly speaking "
+                "and no ok arrived from the page"
+            )
+            del self._client_paused["mic"]
+            await self._settle("page-expired")
+
+    def _note_audio(self, now: float):
+        """A microphone frame arrived. While stalled, the settle counts
+        from this frame unless the flow has been continuous since it last
+        started — a burst after a break is a new start, not a continuation."""
+        prev = self._last_audio
+        self._last_audio = now
+        if self._flow_since is None or prev is None or now - prev > LINK_FRAME_GAP_SECS:
+            self._flow_since = now
+        if self._audio_stalled and (
+            self._resumed_at is None or prev is None or now - prev > LINK_FRAME_GAP_SECS
+        ):
+            self._resumed_at = now
+
+    async def hold(self, reason: str, now: float | None = None):
+        """The page says its side paused for `reason` (its link statistics,
+        or the mic's mute edge). Held until the page releases that reason,
+        or until the witness for it says otherwise: unbroken audio for
+        `LINK_PAGE_HOLD_EXPIRY_SECS` past this moment for a link hold, speech for a
+        mic hold. `now` is the audio clock's — a test owns it; production
+        reads the monotonic one."""
+        self._client_paused.setdefault(reason, _time.monotonic() if now is None else now)
+        await self._settle(reason)
+
+    async def release(self, reason: str | None = None):
+        """The page's `ok` for one reason — or, with none named, for all of
+        them, which is what a page that predates per-reason messages sends."""
+        if reason is None:
+            self._client_paused.clear()
+        else:
+            self._client_paused.pop(reason, None)
+        await self._settle("page")
+
+    async def _tick(self):
+        # The loop's own health is `LoopSampler`'s to report: a sleep that
+        # returns late here is the same fact, but only a thread off the loop
+        # can say where the loop was while it was not running.
+        while True:
+            await asyncio.sleep(LINK_TICK_SECS)
+            await self._judge(_time.monotonic())
+
+    async def _judge(self, now: float):
+        """The audio clock's verdict at `now`. Split from the tick so it can
+        be driven with a clock the test owns."""
+        if self._last_audio is not None:
+            gap = now - self._last_audio
+            if gap > LINK_FRAME_GAP_SECS:
+                self._flow_since = None
+            expired = [
+                reason
+                for reason, since in self._client_paused.items()
+                if reason != "mic"
+                and self._flow_since is not None
+                and now - max(self._flow_since, since) >= LINK_PAGE_HOLD_EXPIRY_SECS
+            ]
+            if expired:
+                from loguru import logger
+
+                logger.warning(
+                    f"voice link: the page's hold ({', '.join(expired)}) expired — audio has "
+                    f"flowed unbroken for {LINK_PAGE_HOLD_EXPIRY_SECS:.0f}s with no ok from the page"
+                )
+                for reason in expired:
+                    del self._client_paused[reason]
+                await self._settle("page-expired")
+            if not self._audio_stalled and gap >= LINK_STALL_SECS:
+                self._audio_stalled = True
+                self._resumed_at = None
+                await self._settle("audio")
+            elif self._audio_stalled and self._resumed_at is not None:
+                if gap > LINK_FRAME_GAP_SECS:
+                    # The flow broke inside the settle: whatever arrives
+                    # next starts it again.
+                    self._resumed_at = None
+                elif now - self._resumed_at >= LINK_RESUME_SETTLE_SECS and (
+                    self._backlog_ms is None or self._backlog_ms <= LINK_CAUGHT_UP_MS
+                ):
+                    self._audio_stalled = False
+                    self._resumed_at = None
+                    await self._settle("audio")
+        if self.held and not self._hold_warned and now - self._held_since > LINK_HOLD_WARN_SECS:
+            from loguru import logger
+
+            self._hold_warned = True
+            logger.warning(
+                f"voice link held for {now - self._held_since:.0f}s "
+                f"(audio_stalled={self._audio_stalled} page={sorted(self._client_paused) or None})"
+            )
+
+    async def _settle(self, reason: str):
+        """Recompute the combined hold and announce a transition, if any."""
+        from loguru import logger
+
+        want = self._audio_stalled or bool(self._client_paused)
+        if want and not self.held:
+            self._held_since = _time.monotonic()
+            self._hold_warned = False
+            logger.info(f"voice link paused ({reason})")
+            await self.push_frame(LinkStalledFrame(reason=reason))
+            if self._on_change:
+                await self._on_change("paused", reason, 0.0)
+        elif not want and self.held:
+            after = _time.monotonic() - self._held_since
+            self._held_since = None
+            logger.info(f"voice link resumed after {after:.1f}s ({reason})")
+            await self.push_frame(LinkResumedFrame(after_secs=after))
+            if self._on_change:
+                await self._on_change("ok", reason, after)
+
+
+# The echo defence: a phone or a laptop on speaker hears its own TTS, and
+# everything downstream is faithful about it - the VAD finds speech in it and
+# a transducer transcribes it - so the bot's words come back as the owner's.
+# The reasoning, the thresholds and the tests live in `echo_filter`, which is
+# a pure module for exactly that reason; this file owns the frames and the
+# clock that feed it.
+import time as _time
+
+from echo_filter import BotSpeech, echo_rms, overlapped
+from fragments import Joiner
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
+from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
+import journal
+from journal import withheld
+
+
+# The energy floor while our own speaker is playing.
+#
+# The premise was that echo surviving the browser's canceller is far quieter
+# than a voice at the microphone. Measured 2026-09-03 against the only
+# population this floor judges — segments classified by the bot's own speaking
+# edges — that is not true on this hardware: real barge-ins land at 0.0141,
+# 0.0201 and 0.0311, and the one identified echo sits at 0.0257, *between*
+# them. No threshold separates those, and every one high enough to catch the
+# echo costs a turn observed in the same fortnight.
+#
+# (An earlier note here and at the VAD comment below put the owner's speech at
+# ~0.024. That figure predates the classification and is superseded by the
+# numbers above; `docs/VOICE-RESEARCH.md` carries the method so the next person
+# re-derives rather than inherits.)
+#
+# The sample is also of the wrong machine — all of it predates the mic-meter
+# repair that put the browser's echo canceller back in the path — so the
+# quantity wants re-measuring before this is tuned at all.
+#
+# Tunable because the right value is a property of *this room and this
+# laptop*, not of the code — and it is set in `mecha-voice-worker.service`,
+# which carries a commented slot for it, never in a shell: systemd inherits no
+# login environment, so an `export` reaches this process not at all. The
+# measurement to set it from is in the worker's own journal — but read it
+# **classified**, because this floor only ever applies to segments where the
+# speaker was playing, and a margin computed over turns in silence is not a
+# margin against the ones it judges:
+#
+#     journalctl --user -u mecha-voice-worker \
+#       | grep -E "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"
+#
+# `--user` because this is a user unit: without it the command prints "No
+# entries", which reads like a quiet worker rather than a wrong command.
+# Once a call has been made against *this* file, `over_speaker=` is on the
+# `parakeet:` line and the edges need no correlating at all.
+#
+# Named precisely because the argument for having a knob at all is that the
+# measurement is checkable, and an instruction that does not work makes that
+# argument false. `MECHA_LOG` is mecha's *Rust* tracing filter and nothing in
+# this file reads it; loguru is what logs here.
+_ECHO_RMS_DEFAULT = 0.020
+
+
+def _echo_rms_from_env() -> float:
+    """The floor, or the default and a complaint.
+
+    The decision is `echo_filter.echo_rms`, which is pure and therefore
+    tested; this half owns the environment and the logger. Falling back is
+    never the silent kind — the refused value is named — because this is a
+    knob the comment above invites the owner to set by hand, and a typo in a
+    unit file must not be voice down in a restart loop.
+    """
+    value, complaint = echo_rms(
+        os.environ.get("MECHA_VOICE_ECHO_RMS"),
+        floor=MIN_SEGMENT_RMS,
+        default=_ECHO_RMS_DEFAULT,
+    )
+    if complaint:
+        from loguru import logger
+
+        logger.warning(complaint)
+    return value
+
+
+ECHO_SEGMENT_RMS = _echo_rms_from_env()
+
+
+def _new_echo_window() -> BotSpeech:
+    """One window per call, minted in `run_bot` beside everything else that
+    is per-connection.
+
+    It was a module global, which every other piece of per-call state here
+    deliberately is not — `LocalTTS`'s own docstring makes the point, and the
+    worker accepts concurrent calls, each with its own `run_bot`. A shared
+    window means caller A's replies land in caller B's blob, and B's fuzzy arm
+    is armed whenever B's *own* speaker is audible, so B can be judged against
+    words B never heard. Contamination only ever adds echo verdicts, and an
+    added echo verdict is a turn that never happens.
+
+    It mattered less when the match was per-phrase and exact, because a
+    cross-call collision then required B to say one of A's sentences verbatim.
+    Joining the window and matching by ordered subsequence made it require
+    only resemblance — to a haystack that was the union of every live call.
+    """
+    return BotSpeech()
+
+
+@dataclass
+class SegmentDroppedFrame(DataFrame):
+    """A VAD segment that will yield no transcript - the gate or the echo
+    filter dropped it, or the transcriber failed. `SegmentedSTTService`
+    runs the transcriber exactly once per VAD stop, so every stop ends in
+    either a `TranscriptionFrame` or one of these, and the turn logic can
+    count them against each other rather than guess. A data frame, not a
+    system frame, so it keeps its place in the queue behind the transcripts
+    ahead of it."""
+
+
+class SegmentGatedSTT(BaseWhisperSTTService):
+    """The energy/duration gate every segment passes before any model sees
+    it. Split out from the transcriber because it is a property of the
+    *audio*, not of whichever model reads it: room noise and half-second
+    breaths are not speech regardless of what is listening.
+
+    It also keeps the clock the echo defence needs: **was our own speaker
+    playing while this segment was captured**. Kept here rather than in a
+    processor of its own because pipecat pushes the bot-speaking edges
+    *upstream* as well as downstream (`base_output.py`), so the STT service
+    sees them where it stands, and because the question is asked in the same
+    breath as the energy floor it changes.
+
+    The edges are the transport's, not the TTS service's, and that is the
+    point: `BotStartedSpeakingFrame` fires when audio starts being written
+    out, which is when a room can hear it. TTS text is generated well before
+    that and would put the window in the wrong place."""
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("ttfs_p99_latency", STT_TTFS_P99)
+        super().__init__(**kwargs)
+        # This connection's own echo window. `run_bot` hands the same object
+        # to the TTS, which writes what it speaks into it.
+        self.echo_window = _new_echo_window()
+        self._segment_started_at = None
+        # Said once per connection, not once per segment: the condition is a
+        # property of the pipeline, so repeating it every turn would bury it.
+        self._warned_no_segment_start = False
+        self._bot_speaking = False
+        # Never `0.0`: `time.monotonic()` is uptime on Linux, so a zero here
+        # is "the bot stopped speaking at boot", which on a freshly started
+        # box is inside the tail.
+        self._bot_audible_until = float("-inf")
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._segment_started_at = _time.monotonic()
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._bot_audible_until = _time.monotonic()
+
+    async def run_stt(self, audio: bytes):
+        # Every transcript from an offline transcriber is the final word on
+        # its segment: there is no interim it revises. Saying so lets the
+        # turn logic end the turn the moment the text arrives instead of
+        # waiting out the STT safety net (`STT_TTFS_P99`) on top of it, and
+        # it is what makes a smart-turn COMPLETE wait for *this* segment's
+        # text rather than settle for the previous one's.
+        transcribed = False
+        async for frame in super().run_stt(audio):
+            if isinstance(frame, TranscriptionFrame):
+                frame.finalized = True
+                transcribed = True
+            yield frame
+        if not transcribed:
+            # The base emits nothing for empty text; the turn logic still
+            # needs to hear that this segment is accounted for.
+            yield SegmentDroppedFrame()
+
+    def take_segment_start(self) -> float | None:
+        """The start of the segment being transcribed, **consumed**.
+
+        Read-and-clear, so a start belongs to exactly one segment. Left in
+        place it was inherited, and inheriting it is not a stale reading — it
+        latches. `_bot_audible_until` only ever increases, so once the stored
+        start is older than the most recent `BotStoppedSpeakingFrame`,
+        `overlapped` answers True for every segment for the rest of the call:
+        the graded floor and the fuzzy text arm both stay armed, and the log
+        line reads `over_speaker=True segment_start=<a plausible float>`,
+        which is indistinguishable from a correct verdict.
+        `VADUserStartedSpeakingFrame` arriving for turn one and then stopping
+        is all it takes — a reordered processor, a partial rename, or audio
+        flushed without a paired onset — and it silences turns.
+
+        Clearing it collapses that case onto the diagnostic that already
+        exists: a segment with no start of its own reports `None` instead of
+        borrowing the last one's.
+        """
+        start, self._segment_started_at = self._segment_started_at, None
+        if start is None and not self._warned_no_segment_start:
+            from loguru import logger
+
+            self._warned_no_segment_start = True
+            # Not a debug line, because this is the whole graded defence going
+            # quiet. `overlapped` collapses to `bot_speaking` alone without a
+            # start, and Parakeet is offline — a segment is transcribed *after*
+            # it ends, so for the case this filter exists for (the mic caught
+            # the tail of a reply that has since finished) `bot_speaking` is
+            # already False. The raised floor and the whole fuzzy text arm
+            # would stop applying, and `over_speaker=False` would read as a
+            # healthy verdict on every line.
+            #
+            # It should be unreachable: `VADUserStartedSpeakingFrame` is
+            # broadcast, so it is pushed upstream as well as downstream
+            # (`frame_processor.broadcast_frame`), and `SegmentedSTTService`
+            # needs the pair to segment at all — `run_stt` is called from
+            # `_handle_user_stopped_speaking` and nowhere else. A pipecat
+            # change that delivered the stop and not the start would leave
+            # transcription limping rather than dead, which is exactly the
+            # shape that goes unnoticed.
+            logger.warning(
+                "no VAD segment start recorded — the echo filter's timing "
+                "layer is not receiving VADUserStartedSpeakingFrame, so the "
+                "graded RMS floor and the fuzzy text arm are both inert"
+            )
+        return start
+
+    def heard_the_speaker(self, segment_started_at: float | None) -> bool:
+        """Did our own reply overlap the segment about to be transcribed?
+
+        The start is logged beside the answer, not just the answer.
+        `over_speaker=False` reads identically whether the timing layer
+        decided "no overlap" or whether no start was recorded at all — a
+        pipecat upgrade renaming `VADUserStartedSpeakingFrame` would collapse
+        `overlapped` to `bot_speaking` alone, the graded floor would quietly
+        stop applying to everything but a live barge-in, and every log line
+        would still read healthy. `segment_start=None` is what makes that
+        visible, and `take_segment_start` is what makes it reachable.
+        """
+        return overlapped(
+            segment_started_at=segment_started_at,
+            bot_speaking=self._bot_speaking,
+            bot_audible_until=self._bot_audible_until,
+        )
+
+    @staticmethod
+    def _segment_stats(audio: bytes):
+        """Duration and RMS of a wav segment, from the bytes themselves."""
+        import array
+        import io
+        import math
+        import wave
+
+        with wave.open(io.BytesIO(audio)) as w:
+            frames = w.readframes(w.getnframes())
+            rate = w.getframerate() or 16000
+        samples = array.array("h", frames)
+        if not samples:
+            return 0.0, 0.0
+        rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32768
+        return len(samples) / rate, rms
+
+class ParakeetSTT(SegmentGatedSTT):
+    """The transcriber: Parakeet TDT behind parakeet_server.py,
+    whisper-style multipart. Takes the segment gate (energy, duration) and
+    the echo filter - a faithful transcriber faithfully transcribes the
+    bot's own speaker when echo cancellation fails, so the text filter
+    stays load-bearing - and needs no prompt discipline at all, because
+    there is no prompt. The output-side guards a chat-model transcriber
+    needed (refusal prefixes, a word-rate cap) went with it: a transducer
+    cannot emit words it did not hear."""
+
+    async def _transcribe(self, audio: bytes) -> Transcription:
+        from loguru import logger
+
+        try:
+            duration, rms = self._segment_stats(audio)
+        except Exception:
+            duration, rms = 1.0, 1.0
+        # Whether our own speaker was playing changes what this segment has to
+        # clear, and it is asked once here so the floor and the text filter
+        # cannot disagree about it.
+        segment_started_at = self.take_segment_start()
+        echoey = self.heard_the_speaker(segment_started_at)
+        floor = ECHO_SEGMENT_RMS if echoey else MIN_SEGMENT_RMS
+        if duration < MIN_SEGMENT_SECONDS or rms < floor:
+            # The RMS is printed on the gated path too, and deliberately: it
+            # is the only measurement of what this room's echo actually looks
+            # like, and `MECHA_VOICE_ECHO_RMS` has to be set from something.
+            logger.debug(
+                f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f} "
+                f"floor={floor:.4f} over_speaker={echoey} "
+                f"segment_start={segment_started_at}"
+            )
+            return Transcription(text="")
+        r = await self._client.audio.transcriptions.create(
+            model="parakeet", file=("segment.wav", audio, "audio/wav")
+        )
+        text = (r.text or "").strip()
+        logger.debug(
+            f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
+            f"over_speaker={echoey} segment_start={segment_started_at} "
+            f"text={withheld(text)}"
+        )
+        if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
+            logger.debug(f"parakeet echo filter: {withheld(text)} over_speaker={echoey}")
+            return Transcription(text="")
+        return Transcription(text=text)
+
+
+_voices_cache = None
+# The per-request controls the TTS's loaded model honours, as its
+# `/v1/voices` lists them; fetched with the voice list and dropped with it.
+# None is "unknown" - a server that predates the list, or one that could
+# not be asked - and nothing optional is sent then: the old server was
+# always Turbo, which ignores every control this would send.
+_controls_cache = None
+# Whether the TTS streams audio as it synthesises (`"streams": true` in its
+# `/v1/voices`), fetched with the list. Only an explicit true counts: absent
+# is Chatterbox, which speaks a sentence once all of it is made, and an
+# unknown answer keeps the whole-sentence prompt, whose length rules are the
+# safe side of a latency it cannot see.
+_streams_cache = False
+# When the list was last asked for without an answer (monotonic seconds), or
+# None. A failed ask is retried, but not sooner than CONTROLS_RETRY_SECS:
+# "could not ask" must not latch as "honours nothing" for the life of the
+# process (a TTS restarted mid-call would otherwise lose the original
+# model's controls for the rest of it), and a dead TTS must not cost a
+# 5 s timeout on every sentence.
+_controls_asked_at = None
+CONTROLS_RETRY_SECS = 30.0
+
+
+def available_voices(refresh=False):
+    """What the TTS server can actually speak as, asked once and cached.
+
+    Asked rather than configured, for the reason `GET /props` is asked of
+    llama-server: a list written down here is a claim about another
+    process, and the failure it produces is the UI offering a voice that
+    400s at the moment somebody wants to hear it. On failure this returns
+    None - meaning "unknown", never an empty list, because a picker that
+    renders no choices and a picker that could not ask are opposite
+    findings and only one of them should hide the control.
+
+    `refresh` drops the cache first. The voice-config handler passes it on a
+    *miss*, and the library's routes (`/mecha/voices`, `/mecha/sample`)
+    always do, since they answer what the box has now: a voice can be cloned onto the box
+    while this process runs (the settings page writes a WAV into the same
+    directory the TTS lists), and a forever-cache would refuse the new name
+    until a worker restart nobody was told to do. Refetching only on a miss
+    keeps the happy path at zero extra requests - a known voice never pays.
+    """
+    global _voices_cache, _controls_cache, _controls_asked_at, _streams_cache
+    if refresh:
+        _voices_cache = None
+    if _voices_cache is not None:
+        return _voices_cache
+    _controls_asked_at = time.monotonic()
+    import json
+    import urllib.request
+
+    from loguru import logger
+
+    try:
+        with urllib.request.urlopen(f"{TTS_URL}/voices", timeout=5) as r:
+            listed = json.load(r)
+        _voices_cache = listed.get("voices") or None
+        controls = listed.get("controls")
+        _controls_cache = frozenset(controls) if isinstance(controls, list) else None
+        _streams_cache = listed.get("streams") is True
+    except Exception as e:  # noqa: BLE001 - any failure is the same answer
+        logger.debug(f"voice list unavailable at {TTS_URL}/voices: {e}")
+        _voices_cache = None
+        _controls_cache = None
+        _streams_cache = False
+    return _voices_cache
+
+
+def tts_controls() -> frozenset | None:
+    """The controls the TTS honours (see `_controls_cache`). An answer stands
+    until a refresh; without one the TTS is asked, at most once per
+    CONTROLS_RETRY_SECS. None is unknown, and sends nothing optional."""
+    # Keyed on the controls, not the voices: a server that listed voices but
+    # no controls (one that predates the list - which is what a worker
+    # restarted first, as the restart order says, finds) is unknown too,
+    # and must be asked again once the new server is up.
+    if _controls_cache is None and (
+        _controls_asked_at is None
+        or time.monotonic() - _controls_asked_at >= CONTROLS_RETRY_SECS
+    ):
+        available_voices(refresh=True)
+    return _controls_cache
+
+
+def tts_streams() -> bool:
+    """Whether the TTS streams audio as it synthesises, so a spoken turn is
+    prompted without the whole-sentence length rules (the facade's
+    `VOICE_BLOCK_STREAMING`). Asked with the controls, on the same pacing;
+    anything but an explicit true is False."""
+    tts_controls()
+    return _streams_cache
+
+
+def tts_headers(honoured: frozenset | None, streams: bool) -> dict:
+    """What the facade is told about the TTS on every completion of a call.
+
+    `X-Voice-Directed`: the TTS takes a voice direction per sentence, so the
+    facade may start the first one from the owner's words while the reply is
+    being written. `X-Voice-TTS-Streams`: the TTS streams, so the spoken-turn
+    prompt drops its length rules - they were a latency control for an
+    engine that speaks a sentence only once all of it is synthesised (owner
+    ruling, 2026-10-03). Each is sent as exactly "1" or not at all."""
+    headers = {}
+    if honoured and "instructions" in honoured:
+        headers["X-Voice-Directed"] = "1"
+    if streams is True:
+        headers["X-Voice-TTS-Streams"] = "1"
+    return headers
+
+
+def controls_label(controls: frozenset | None, name: str) -> str:
+    """Whether `name` is honoured, for a log line: unknown is its own answer,
+    never "no" - could not ask and does not honour are opposite findings."""
+    return "unknown" if controls is None else str(name in controls)
+
+
+_noted_unsent_defaults = False
+
+
+def note_unsent_defaults(honoured: frozenset | None) -> None:
+    """Say once per process when the assistant's own TTS_EXAGGERATION /
+    TTS_CFG_WEIGHT are not reaching the voice - the persona path says so per
+    call, and the owner's environment deserves the same line, not silence."""
+    global _noted_unsent_defaults
+    if _noted_unsent_defaults or (honoured is not None and {"exaggeration", "cfg_weight"} <= honoured):
+        return
+    _noted_unsent_defaults = True
+    from loguru import logger
+
+    logger.info(
+        f"exaggeration={TTS_EXAGGERATION} / cfg_weight={TTS_CFG_WEIGHT} are not sent: "
+        + ("the TTS did not say which controls it honours" if honoured is None
+           else "the TTS's model does not honour them")
+    )
+
+
+async def reask_after_refusal(status: int | None) -> None:
+    """Ask the TTS what it honours again after it refused a request (4xx):
+    one restarted under another model refuses what the old one honoured, and
+    the next sentence should send what this one lists. Only on a 4xx - the
+    server answered, so asking is cheap; a dead one is left to
+    `tts_controls`' paced retry. After the error is out, never before it."""
+    if status is not None and 400 <= status < 500:
+        await asyncio.to_thread(available_voices, True)
+
+
+def optional_controls(controls: frozenset | None, **wanted) -> dict:
+    """The subset of `wanted` the TTS honours - what rides in the request's
+    `extra_body`. A control the model would drop is never sent, because the
+    server refuses it rather than speaking as if it had landed; nor is one
+    with no value (`instructions` when the director gave none)."""
+    return {
+        k: v for k, v in wanted.items() if controls and k in controls and v is not None
+    }
+
+
+class JoiningAggregator(SimpleTextAggregator):
+    """Pipecat's sentence splitter, with pieces that are not sentences of
+    their own held and joined to the next (`fragments.py`): a lone ".", a
+    vocal-event tag alone, a phrase that trails off in an ellipsis. Measured on
+    the 2026-10-03 night call: 497 pieces became 384, and the 59 that were
+    punctuation alone became none."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._joiner = Joiner()
+
+    @property
+    def text(self) -> Aggregation:
+        base = super().text
+        joined = " ".join(t for t in (self._joiner.held, base.text) if t)
+        return Aggregation(text=joined, type=base.type)
+
+    async def aggregate(self, text: str):
+        async for piece in super().aggregate(text):
+            # Only TOKEN mode yields anything but a sentence, and then nothing
+            # is ever held, so passing it through cannot reorder. This worker
+            # runs SENTENCE mode (pipecat's default); `flush` relies on the
+            # same, since in TOKEN mode the base flush returns None.
+            if piece.type != AggregationType.SENTENCE:
+                yield piece
+                continue
+            spoken = self._joiner.push(piece.text)
+            if spoken is not None:
+                yield Aggregation(text=spoken, type=piece.type)
+
+    async def flush(self):
+        rest = await super().flush()
+        spoken = self._joiner.flush(rest.text if rest else "")
+        return Aggregation(text=spoken, type=AggregationType.SENTENCE) if spoken else None
+
+    async def handle_interruption(self):
+        await super().handle_interruption()
+        self._joiner.clear()
+
+    async def reset(self):
+        await super().reset()
+        self._joiner.clear()
+
+
+class LocalTTS(OpenAITTSService):
+    """The stock service hard-validates `voice` against OpenAI's own list,
+    which rejects every voice our local servers actually have. Same wire
+    (POST /v1/audio/speech, pcm streaming), our voice names allowed.
+
+    Voice and speed are held here rather than read from the environment at
+    call time, because the page can change them mid-call: the service
+    instance is per-connection, so one listener's choice cannot reach
+    another's, and there is deliberately no way to set them globally from
+    a message."""
+
+    def __init__(self, *args, speed: float = 1.0,
+                 exaggeration: float = TTS_EXAGGERATION,
+                 cfg_weight: float = TTS_CFG_WEIGHT,
+                 affect_key: str | None = None,
+                 echo_window: BotSpeech, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Pieces with nothing to say on their own wait for the next
+        # (`JoiningAggregator`); built by `TTSService.__init__`, replaced here.
+        self._text_aggregator = JoiningAggregator(aggregation_type=self._text_aggregation_mode)
+        # Where this connection's spoken text is recorded for the echo filter:
+        # a reference to the STT's own window, so the two halves are the same
+        # object.
+        #
+        # Required, with no default, and that is the whole point. Optional
+        # plus a `None` check meant a TTS built without it spoke into nothing,
+        # the read side went on asking a window that could never fill, every
+        # transcript came back "not an echo", and the log line read
+        # `over_speaker=True` with no verdict — which is to say healthy. That
+        # is the silently-degrading guard this branch removed from the mic
+        # meter, arriving one door over. The module global it replaced could
+        # not be wired wrong; the price of per-connection state is that it can
+        # be, so a missing wire is a TypeError at startup instead.
+        self._echo_window = echo_window
+        self._speed = speed
+        self._exaggeration = exaggeration
+        self._cfg_weight = cfg_weight
+        # §6.2: the same namespaced key `mecha-cli`'s facade uses internally
+        # (`"chat:<id>"` for a hosted D3 session, `"voice:<slot>"` for the
+        # facade's own) - the two must not collide, so the namespace has to
+        # match on both sides of this poll. `None` when there is nothing to
+        # poll for (should not happen in practice; `run_bot` always sets one).
+        self._affect_key = affect_key
+        # Loopback, same machine - a healthy facade answers in low single-
+        # digit milliseconds. Worth naming as its own constant rather than
+        # matching the TTS server's own timeouts: a hung facade must cost
+        # this once per *answer* and no more (see `on_turn_context_created`),
+        # not the seconds a normal network timeout would tolerate. Falls
+        # back to the baseline on expiry, same as any other failure here.
+        self._affect_client = httpx.AsyncClient(timeout=AFFECT_POLL_TIMEOUT_SECONDS)
+        # Latched once per turn by `on_turn_context_created`, never re-polled
+        # per sentence - see that method's docstring for why.
+        self._affect_context_id: str | None = None
+        self._affect_params: tuple[float, float] = (self._exaggeration, self._cfg_weight)
+        # The director's side channel: its own client, so a slow direction
+        # never shares a connection pool with the affect poll, and the
+        # sentence count within the answer being spoken (reset when the
+        # context id moves, which is the base class's answer boundary).
+        self._direct_client = httpx.AsyncClient()
+        self._direct_context: str | None = None
+        self._direct_index = 0
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    def set_speed(self, speed: float) -> bool:
+        """Clamp-and-refuse rather than clamp-and-accept: a control that
+        silently substitutes a different value than the one asked for
+        leaves the UI showing a lie."""
+        if not (MIN_SPEED <= speed <= MAX_SPEED):
+            return False
+        self._speed = speed
+        return True
+
+    def set_voice_name(self, voice: str) -> None:
+        self._settings.voice = voice
+
+    def set_affect_key(self, key: str) -> None:
+        """Set once `named`/`session_key` are known in `run_bot` - the same
+        after-construction pattern `set_speed`/`set_voice_name` already use,
+        since the facade's namespaced key is not known at construction
+        time."""
+        self._affect_key = key
+
+    async def on_turn_context_created(self, context_id: str) -> None:
+        """§6.2's voice readout, latched once per answer rather than polled
+        per sentence.
+
+        `context_id` is the base class's own turn boundary — with
+        `reuse_context_id_within_turn` (the default, not overridden here),
+        `create_context_id` reuses one id for every sentence of an answer,
+        and this hook fires exactly once per new id, before any text reaches
+        `run_tts`. Polling from `run_tts` instead polled per sentence against
+        a set-and-overwrite cache, so a slow tail sentence - or the
+        confirmation offer appended after it - could read the *next*
+        answer's label once the facade's `turn.done` had already landed,
+        switching `cfg_weight` mid-utterance instead of lagging by one clean
+        turn.
+
+        Lags by one turn, honestly rather than by accident: the facade can
+        only cache a label once the turn that earned it has *finished*
+        (`Affect` is a function of the completed `RunOutcome`), and this
+        fires while that turn's own text is still streaming in - before the
+        facade has had a chance to update the cache. So what this reads is
+        the *previous* turn's mood, applied to the current turn's words.
+        There is no way to close that gap without holding speech until the
+        whole answer is known, which defeats the point of streaming - a
+        deliberate trade-off, not a bug.
+
+        **Logs every fire, unconditionally.** Whether this base-class hook is
+        actually dispatched by the installed pipecat is not provable from
+        this file alone (`run_tts`'s own `context_id` parameter proves TTS
+        context ids exist, not that this particular hook name is part of the
+        contract on every version). If it silently stopped firing, nothing
+        here would error - `_affect_context_id` would stay `None` and
+        `run_tts` would take the baseline every time, indistinguishable from
+        every session simply carrying no affect, which is most of them
+        (`Affect::Neutral` on 119 of 120 sessions in the rung 7 corpus). So
+        the log line fires every time this method runs, not only when it
+        changes the outgoing params - logging only the interesting case
+        would read identically to the hook never firing at all on an
+        ordinary, mostly-neutral day, which is exactly the silent-inertness
+        failure this exists to catch. Debug level, once per answer: the same
+        shape as the percent-encoding bug this module already shipped and
+        fixed, which was also silently inert until someone went looking.
+
+        **Except for a call into an incognito chat**, where the line is not
+        written at all: it would say one was spoken into, and this file's
+        records are outside the pipecat silence. The detector is off for
+        those calls; every other call still carries it."""
+        await super().on_turn_context_created(context_id)
+        self._affect_context_id = context_id
+        self._affect_params = await self._poll_affect_params()
+        from loguru import logger
+
+        # Not for a call into an incognito chat: this file's records are not
+        # `pipecat`'s, so the silence does not reach them, and the line would
+        # name the chat - or, redacted, still say one was spoken into, the
+        # fact the chat promised not to leave (review of #376).
+        if names_incognito(self._affect_key):
+            return
+        # Whether the TTS honours cfg_weight at all: on Turbo the nudge is
+        # computed and never sent, and the line must not read as applied.
+        honoured = controls_label(await asyncio.to_thread(tts_controls), "cfg_weight")
+        logger.debug(
+            f"voice affect latch: context={context_id} key={self._affect_key} "
+            f"cfg_weight={self._affect_params[1]:.3f} (baseline "
+            f"{self._cfg_weight:.3f}, honoured={honoured})"
+        )
+
+    async def _poll_affect_params(self) -> tuple[float, float]:
+        """One fetch of the cached label, applied to the caller's context
+        only - never mutating `self._exaggeration`/`self._cfg_weight`, which
+        stay the owner's configured baseline for every other session.
+
+        Failure, timeout, or a `neutral`/absent label all fall back to the
+        baseline silently - a harness hiccup must never make a call worse
+        or slower than if this did not exist."""
+        if not self._affect_key:
+            return self._exaggeration, self._cfg_weight
+        try:
+            r = await self._affect_client.get(
+                AFFECT_URL, params={"session": self._affect_key}
+            )
+            if r.status_code == 200:
+                label = r.json().get("affect")
+                if label and label != "neutral":
+                    return (
+                        self._exaggeration,
+                        max(0.0, self._cfg_weight + AFFECT_CFG_WEIGHT_DELTA),
+                    )
+        except Exception:
+            pass
+        return self._exaggeration, self._cfg_weight
+
+    async def direction_for(self, text: str, context_id: str) -> str | None:
+        """How this sentence should sound, from the facade's director, or
+        None - in which case it is spoken undirected. Never raises, never
+        waits past DIRECT_*_TIMEOUT_SECONDS, and never writes the sentence
+        or its direction to the journal: the session file is where they are
+        kept, and an incognito chat's are kept nowhere, so its calls leave
+        no line here at all."""
+        if not self._affect_key:
+            return None
+        if context_id != self._direct_context:
+            self._direct_context = context_id
+            self._direct_index = 0
+        index = self._direct_index
+        self._direct_index += 1
+        timeout = DIRECT_FIRST_TIMEOUT_SECONDS if index == 0 else DIRECT_TIMEOUT_SECONDS
+        outcome = "unanswered"
+        direction = None
+        try:
+            r = await self._direct_client.post(
+                DIRECT_URL,
+                json={
+                    "session": self._affect_key,
+                    "context": context_id,
+                    "index": index,
+                    "sentence": text.strip(),
+                    "voice": self._settings.voice,
+                },
+                timeout=timeout,
+            )
+            if r.status_code == 200:
+                body = r.json()
+                outcome = body.get("outcome") or "unknown"
+                line = body.get("direction")
+                direction = line if isinstance(line, str) and line.strip() else None
+            else:
+                outcome = f"http {r.status_code}"
+        except Exception as e:  # noqa: BLE001 - any failure speaks undirected
+            outcome = type(e).__name__
+        if not names_incognito(self._affect_key):
+            from loguru import logger
+
+            logger.debug(f"voice direction: index={index} outcome={outcome}")
+        return direction
+
+    async def run_tts(self, text: str, context_id: str):
+        from loguru import logger
+        from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
+
+        # What pipecat's `Generating TTS [...]` line used to give a timing
+        # study, without the words: when each sentence went to the TTS, and
+        # how long it was (`journal`; review of #547). Paired with the kept
+        # `_bot_started_speaking`/`_bot_stopped_speaking` lines, it gives
+        # characters per second of real playback. Not for an incognito call,
+        # by this file's rule for per-sentence lines (`direction_for`); the
+        # timing study is taken from ordinary calls (review of #547).
+        if not names_incognito(self._affect_key):
+            logger.debug(f"tts: {withheld(text)}")
+        try:
+            # `on_turn_context_created` always fires before `run_tts` for a
+            # given context per the base class's own contract, so the
+            # mismatch arm below should be unreachable - the baseline is
+            # always the safe answer if it somehow is not.
+            exaggeration, cfg_weight = (
+                self._affect_params
+                if context_id == self._affect_context_id
+                else (self._exaggeration, self._cfg_weight)
+            )
+            create_params = {
+                "input": text,
+                "model": self._settings.model,
+                "voice": self._settings.voice,
+                "speed": self._speed,
+                "response_format": "pcm",
+            }
+            # Not fields of OpenAI's speech API, so they ride in extra_body
+            # rather than being silently dropped by the typed client - and
+            # only those the TTS's model honours (`optional_controls`). The
+            # director is asked only when `instructions` would be sent: on a
+            # TTS that drops it, a direction is a model call for nothing.
+            controls = await asyncio.to_thread(tts_controls)
+            direction = (
+                await self.direction_for(text, context_id)
+                if controls and "instructions" in controls
+                else None
+            )
+            extra = optional_controls(
+                controls,
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                instructions=direction,
+            )
+            if extra:
+                create_params["extra_body"] = extra
+            async with self._client.audio.speech.with_streaming_response.create(
+                **create_params
+            ) as r:
+                if r.status_code != 200:
+                    error = await r.text()
+                    yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
+                    await reask_after_refusal(r.status_code)
+                    return
+                await self.start_tts_usage_metrics(text)
+                self._echo_window.note(text)
+                async for chunk in r.iter_bytes(self.chunk_size):
+                    if len(chunk) > 0:
+                        await self.stop_ttfb_metrics()
+                        yield TTSAudioRawFrame(chunk, self.sample_rate, 1, context_id=context_id)
+        except Exception as e:
+            yield ErrorFrame(error=f"TTS failed: {e}")
+            # The typed client raises on a 4xx before the branch above sees
+            # it, so the same re-ask, here.
+            await reask_after_refusal(getattr(e, "status_code", None))
+
+
+class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
+    """Pipecat's smart-turn stop strategy, with one assumption removed: that
+    a user turn starts *before* the VAD reports the user stopped.
+
+    That holds when the VAD starts turns. Here the transcript does (the VAD
+    was dropped from the start list on purpose - see `run_bot`), and
+    Parakeet is offline, so the transcript lands after the VAD stop and
+    after smart-turn has already ruled on the segment. The stock strategy
+    then resets itself at the turn start, which throws that ruling away,
+    and the next transcript takes its "no VAD stop was received" branch: the
+    turn is assumed complete and a timer of `ttfs_p99_latency - stop_secs`
+    ends it. With the defaults that was **0.8s after the first transcript of
+    every turn**, whatever smart-turn had said - the model's INCOMPLETE on
+    "put down a few", "The next thing is I have to" and "Okay. Just put it on
+    the list." was overruled by a timer each time
+    (2026-09-04 12:55 UTC; the signature is `User started speaking` followed
+    +0.80s by `inference triggered`). Later segments of the same turn were
+    fine, because by then the turn existed.
+
+    So: a turn that starts with a VAD stop already in hand keeps it. A
+    COMPLETE ruling ends the turn as soon as the (finalized) transcript
+    arrives; an INCOMPLETE one holds the turn open for smart-turn's own
+    silence limit or the owner speaking again, which is what the analyzer
+    is for. When the VAD *did* start the turn the stock reset runs as before.
+
+    The same premise has a second edge, and it is counted rather than
+    timed. "Finalized" means final for the *segment*; the stock strategy
+    reads it as final for the turn and clears it only when the VAD next
+    reports speech. A transcript that lands after the owner has already
+    resumed is therefore still "finalized" at the next VAD stop, and a
+    COMPLETE there ends the turn on it - the new segment's own words arrive
+    as a fresh turn and barge in on the reply. Each VAD stop here is one
+    segment owed one transcript (or none, when the gate drops it), so the
+    override counts segments still awaiting text and treats the transcript
+    as final for the turn only when nothing is outstanding. A dropped
+    segment says so (`SegmentDroppedFrame`, from the STT) and is counted
+    off the same way, so echo and breaths between turns - every bot
+    sentence on speakers - leave nothing outstanding when the owner's next
+    transcript opens a turn. The STT safety net (`STT_TTFS_P99`) is left
+    for a transcript that never comes at all.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._refuse_if_pipecat_moved()
+        self._segments_awaiting_text = 0
+        # Set by `LinkStalledFrame`, cleared by `LinkResumedFrame`: while
+        # the link is paused no pending end-of-turn is acted on, whatever
+        # smart-turn ruled or the safety net decided about the gap. The
+        # ruling is kept, not discarded — if the audio that resumes is
+        # silence, the turn ends on it then; if it is the rest of the
+        # sentence, the VAD start clears it as it always did.
+        self._link_held = False
+
+    async def _handle_vad_user_stopped_speaking(self, frame):
+        # A segment just ended and its words are not here yet, whatever an
+        # earlier transcript said about itself.
+        self._segments_awaiting_text += 1
+        self._transcript_finalized = False
+        await super()._handle_vad_user_stopped_speaking(frame)
+
+    async def _handle_transcription(self, frame):
+        self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
+        if self._segments_awaiting_text:
+            # Another segment is still out; this text cannot close the turn.
+            frame.finalized = False
+        await super()._handle_transcription(frame)
+
+    async def process_frame(self, frame):
+        if isinstance(frame, LinkStalledFrame):
+            self._link_held = True
+            return ProcessFrameResult.CONTINUE
+        if isinstance(frame, LinkResumedFrame):
+            self._link_held = False
+            # Whatever was decided during the hold is decided now.
+            await self._maybe_trigger_user_turn_stopped()
+            return ProcessFrameResult.CONTINUE
+        if isinstance(frame, SegmentDroppedFrame):
+            self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
+            if not self._segments_awaiting_text and self._text:
+                # The last words heard are, after all, the last words: a
+                # COMPLETE waiting on this segment can end the turn now
+                # rather than at the safety net.
+                self._transcript_finalized = True
+                await self._maybe_trigger_user_turn_stopped()
+            return ProcessFrameResult.CONTINUE
+        return await super().process_frame(frame)
+
+    async def handle_user_turn_stopped(self):
+        self._segments_awaiting_text = 0
+        await super().handle_user_turn_stopped()
+
+    async def _maybe_trigger_user_turn_stopped(self):
+        if self._link_held:
+            return
+        await super()._maybe_trigger_user_turn_stopped()
+
+    def _refuse_if_pipecat_moved(self):
+        # The one private the override reads. A pipecat upgrade that renames
+        # it would otherwise turn this back into the stock strategy without a
+        # word - the silently-degrading guard - so it is a refusal to start
+        # the call instead.
+        for private in ("_vad_stopped", "_transcript_finalized", "_text"):
+            if not hasattr(self, private):
+                raise RuntimeError(
+                    "TranscriptStartedTurnStop: pipecat's TurnAnalyzerUserTurnStopStrategy "
+                    f"no longer keeps `{private}`; re-derive the override against this version"
+                )
+        # And the method it overrides must still be the one the controller
+        # calls: a rename there leaves the private in place, construction
+        # succeeds, and the override is simply never reached - the same
+        # quiet fallback from the other side.
+        for method in (
+            "handle_user_turn_started",
+            "handle_user_turn_stopped",
+            "_handle_vad_user_stopped_speaking",
+            "_handle_transcription",
+            "_maybe_trigger_user_turn_stopped",
+            "process_frame",
+        ):
+            if not any(method in vars(c) for c in type(self).__mro__[1:]):
+                raise RuntimeError(
+                    "TranscriptStartedTurnStop: pipecat no longer defines "
+                    f"`{method}` on the stop strategy; the override is unreachable"
+                )
+
+    async def handle_user_turn_started(self):
+        if self._vad_stopped:
+            # The transcript that started this turn is the one the pending
+            # stop is waiting for. Keep the ruling and the timer.
+            return
+        self._segments_awaiting_text = 0
+        await super().handle_user_turn_started()
+
+
+# ------------------------------------------------- the reliable uplink
+#
+# docs/VOICE-LINK-DESIGN.md. The page taps the encoded frames its RTP sender
+# is about to send and ships them over the data channel — reliable, ordered —
+# so a stall delays the owner's words instead of losing them. Here they are
+# decoded and pushed into the transport's own audio queue, where Silero, the
+# segmenter and smart-turn see them exactly as they saw RTP audio. RTP is
+# still sent (the page's receiver reports are its only uplink witness) and
+# read only to be *discarded*: two copies of one voice is a stream at twice
+# speed. The page declares the mode in the offer's `request_data`, so the
+# choice is made before a single RTP frame is read.
+#
+# Not a second data channel: pipecat's `SmallWebRTCConnection` claims every
+# channel the page opens as *the* RTVI channel and JSON-parses its messages,
+# so a binary channel would hijack RTVI and log an error ten times a second.
+# Base64 inside RTVI client messages costs a third more bytes on ~4 kB/s of
+# Opus and nothing else.
+
+
+# A page that declared the channel and then delivers nothing — the tap's
+# worker script missing from the deployed `dist`, a transform that attaches
+# and never fires or stops firing mid-call — would be a call nobody could
+# hear, silently, with RTP carrying the voice past a reader that ignores
+# it. Both ends watch, for the whole call, and each tells the other. The
+# worker's witness is **RTP frames still arriving while no batch has**: a
+# stalled link stops both and must not trip this — falling back during a
+# stall would gain nothing and discard the buffered speech that follows —
+# and the first cut's witness (a pushed live frame) tripped on exactly a
+# reconnect's late-lane backlog (review of #231). The RTP track is read and
+# discarded rather than left unread, because aiortc counts packets on
+# consumption: an unread track shows `packetsReceived = 0` forever, which
+# the first end-to-end deaf call proved.
+UPLINK_DEAF_SECS = 6.0
+UPLINK_WATCH_SECS = 2.0
+# The page heartbeats on the channel every two seconds; a channel with no
+# message of any kind for this long is blocked, not a dead tap. SCTP is
+# ordered and reliable, so one lost packet head-of-line-blocks every later
+# message while RTP keeps delivering whatever gets through — a lossy link
+# is exactly "RTP arriving, no batch for six seconds", and falling back
+# there would discard the buffered speech at the moment it was about to be
+# delivered (review of #231, third pass).
+UPLINK_CHANNEL_ALIVE_SECS = 5.0
+
+
+def deaf_verdict(rtp_arriving: bool, channel_alive: bool, secs_since_batch: float) -> bool:
+    """Is the tap dead? Only when the link is demonstrably carrying the
+    voice, the channel is demonstrably carrying the page's other messages,
+    and none of the voice is arriving as batches. Pure, for the test."""
+    return rtp_arriving and channel_alive and secs_since_batch >= UPLINK_DEAF_SECS
+
+
+class UplinkInput(SmallWebRTCInputTransport):
+    """The transport input reading RTP audio and **discarding** it: speech
+    arrives through `UplinkAudio.push_pcm` → `push_audio_frame` instead —
+    unless nothing does while RTP flows, in which case the frames stop
+    being discarded and the call is an RTP call from then on."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._refuse_if_pipecat_moved()
+        self.batches = 0
+        self.last_batch_at = _time.monotonic()
+        self.last_rtp_at = None
+        self.last_channel_at = None
+        self.rtp_fallback = False
+        self.on_fallback = None  # sync: the link forgets its backlog
+        self.on_stop = None  # sync: the injector stops its own tasks
+        self.announce = None  # async: tell the page
+        self._watch_task = None
+
+    def _refuse_if_pipecat_moved(self):
+        # Two pipecat privates are overridden here, and a rename of either
+        # degrades silently in the worse direction: `_receive_audio` renamed
+        # means the base reader runs beside the batches — one voice at
+        # twice speed, as garbled transcripts — and `_stop_tasks` renamed
+        # means the injector's tasks leak per call. The same shape as
+        # `TranscriptStartedTurnStop._refuse_if_pipecat_moved`: a refusal to
+        # start the call, not a quiet fallback (review of #231).
+        base = SmallWebRTCInputTransport
+        for method in ("_receive_audio", "_stop_tasks", "push_audio_frame", "start"):
+            if not any(method in vars(c) for c in base.__mro__):
+                raise RuntimeError(
+                    f"UplinkInput: pipecat's input transport no longer defines `{method}`; "
+                    "re-derive the override against this version"
+                )
+        if not hasattr(self._client, "read_audio_frame"):
+            raise RuntimeError("UplinkInput: pipecat's client no longer has `read_audio_frame`")
+
+    def note_batch(self):
+        self.batches += 1
+        self.last_batch_at = _time.monotonic()
+
+    def note_channel(self):
+        """Any client message at all: the channel is carrying."""
+        self.last_channel_at = _time.monotonic()
+
+    def channel_alive(self, now: float) -> bool:
+        return self.last_channel_at is not None and now - self.last_channel_at < UPLINK_CHANNEL_ALIVE_SECS
+
+    async def _receive_audio(self):
+        from loguru import logger
+
+        logger.info("uplink: RTP audio read and discarded — speech arrives over the data channel")
+        self.last_batch_at = _time.monotonic()
+        self._watch_task = self.create_task(self._watch())
+        try:
+            async for frame in self._client.read_audio_frame():
+                if not frame:
+                    continue
+                self.last_rtp_at = _time.monotonic()
+                if self.rtp_fallback:
+                    await super().push_audio_frame(frame)
+        except Exception as e:  # noqa: BLE001 - mirrors the base reader
+            logger.error(f"{self} exception receiving data: {e.__class__.__name__} ({e})")
+
+    async def _stop_tasks(self):
+        if self._watch_task:
+            await self.cancel_task(self._watch_task)
+            self._watch_task = None
+        if self.on_stop:
+            self.on_stop()
+        await super()._stop_tasks()
+
+    def rtp_arriving(self, now: float) -> bool:
+        return self.last_rtp_at is not None and now - self.last_rtp_at < UPLINK_WATCH_SECS
+
+    async def _watch(self):
+        from loguru import logger
+
+        while not self.rtp_fallback:
+            await asyncio.sleep(UPLINK_WATCH_SECS)
+            now = _time.monotonic()
+            since = now - self.last_batch_at
+            arriving = self.rtp_arriving(now)
+            alive = self.channel_alive(now)
+            logger.debug(
+                f"uplink watch: rtp_arriving={arriving} channel_alive={alive} since_batch={since:.1f}s batches={self.batches}"
+            )
+            if deaf_verdict(arriving, alive, since):
+                await self.engage_fallback("RTP is arriving and no batch has")
+
+    async def engage_fallback(self, why: str):
+        """Stop discarding RTP. Idempotent; the page is told."""
+        from loguru import logger
+
+        if self.rtp_fallback:
+            return
+        self.rtp_fallback = True
+        logger.error(
+            f"uplink: falling back to RTP — {why} (is voice-uplink-transform.js deployed?). "
+            "The turn hold no longer waits on a backlog; batches arriving now are ignored."
+        )
+        if self.on_fallback:
+            self.on_fallback()
+        if self.announce:
+            try:
+                await self.announce({"t": "uplink", "state": "rtp", "why": why})
+            except Exception as e:  # noqa: BLE001 - an announcement is not load-bearing
+                logger.warning(f"uplink: could not announce the fallback ({e})")
+
+
+class UplinkTransport(SmallWebRTCTransport):
+    def input(self) -> SmallWebRTCInputTransport:
+        if not self._input:
+            self._input = UplinkInput(self._client, self._params, name=self._input_name)
+        # A pipecat that ever built `_input` eagerly would hand back the stock
+        # reader here while `run_bot` still built the injector: RTP read and
+        # batches pushed, one voice at twice speed. Refuse instead.
+        if not isinstance(self._input, UplinkInput):
+            raise RuntimeError("UplinkTransport: pipecat constructed the input before `input()`; re-derive")
+        return self._input
+
+
+def _wav16(pcm: bytes, rate: int = 16000) -> bytes:
+    """PCM s16 mono as a WAV, the shape the STT server takes."""
+    import struct
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + len(pcm), b"WAVE", b"fmt ", 16, 1, 1, rate, rate * 2, 2, 16, b"data", len(pcm)
+    )
+    return header + pcm
+
+
+def late_segments(pcm: bytes, rate: int = 16000) -> list[bytes]:
+    """Runs of speech in a late span, each padded by `LATE_PAD_SECS`, split
+    at silence of `LATE_GAP_SECS` or more and at `LATE_CHUNK_SECS`, and
+    dropped under `MIN_SEGMENT_SECONDS` or `MIN_SEGMENT_RMS` — the live
+    gate's floors. Pure, for the test."""
+    import numpy as np
+
+    frame = rate // 50  # 20 ms
+    x = np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype=np.int16).astype(np.float32) / 32768.0
+    n = len(x) // frame
+    if n == 0:
+        return []
+    rms = np.sqrt((x[: n * frame].reshape(n, frame) ** 2).mean(axis=1))
+    speech = rms >= MIN_SEGMENT_RMS
+    gap = int(LATE_GAP_SECS * 50)
+    pad = int(LATE_PAD_SECS * 50)
+    runs: list[list[int]] = []
+    i = 0
+    while i < n:
+        if not speech[i]:
+            i += 1
+            continue
+        start = i
+        last = i
+        while i < n and (speech[i] or i - last < gap):
+            if speech[i]:
+                last = i
+            i += 1
+        runs.append([start, last + 1])
+    out = []
+    max_frames = int(LATE_CHUNK_SECS * 50)
+    min_frames = int(MIN_SEGMENT_SECONDS * 50)
+    for start, end in runs:
+        # The floor is on the speech itself; the padding comes after, or a
+        # blip grows past the floor on padding alone.
+        if end - start < min_frames:
+            continue
+        a, b = max(0, start - pad), min(n, end + pad)
+        while b - a > max_frames:
+            out.append(x[a * frame : (a + max_frames) * frame])
+            a += max_frames
+        out.append(x[a * frame : b * frame])
+    return [(seg * 32768.0).astype(np.int16).tobytes() for seg in out]
+
+
+def lane_for(backlog_ms: int, ms: float | None = None, live_from_ms: float | None = None) -> str:
+    """§2.5: which lane a batch takes — from how far behind the page says
+    it is, or from being captured before this connection began
+    (`live_from_ms`, the page's own mark in `audio-start`): speech carried
+    over from a previous call is late whatever its backlog, because it is
+    arriving into a pipeline that never heard the call it belongs to. A
+    pure function so both boundaries are testable on their own."""
+    if ms is not None and live_from_ms is not None and ms < live_from_ms:
+        return "late"
+    return "late" if backlog_ms >= BACKLOG_TALK_SECS * 1000 else "live"
+
+
+def late_prefix(from_wall_ms: int | None, to_wall_ms: int | None, tz_offset_min: int, dropped_ms: float) -> str:
+    """What the model reads ahead of a late span: when it was said, in the
+    phone's own clock, and what was lost before it, if anything. The times
+    are the page's wall-clock stamps on the frames themselves — the only
+    clock that survives an outage, since the media clock does not run while
+    nothing is captured (review of #231). The listener hears only the
+    answer."""
+
+    def clock(ms: int | None) -> str:
+        if ms is None:
+            return "earlier"
+        import datetime as _dt
+
+        at = ms + tz_offset_min * 60_000
+        return _dt.datetime.fromtimestamp(at / 1000, tz=_dt.timezone.utc).strftime("%H:%M")
+
+    a, b = clock(from_wall_ms), clock(to_wall_ms)
+    # Unmistakably the harness's note, not the owner's words: the first
+    # live run had the model read "(said 15:40–15:40 …)" as a time the
+    # owner was asking about. One clock when both ends share a minute;
+    # no clock at all when the page gave none.
+    if from_wall_ms is None and to_wall_ms is None:
+        when = "earlier"
+    else:
+        when = f"at {a}" if a == b else f"between {a} and {b}"
+    note = f"delivered late — said {when} while the connection was down"
+    if dropped_ms >= 1000:
+        lost = round(dropped_ms / 1000)
+        note += f"; about {lost} seconds before this were lost"
+    return f"[{note}] "
+
+
+class UplinkAudio:
+    """Decodes what the page sends and routes it by age (§2.5)."""
+
+    def __init__(self, transport_input, link: "LinkWatch", stt: "ParakeetSTT", user_id: str = "", announce=None):
+        import av
+
+        self._input = transport_input
+        self._announce = announce
+        self._link = link
+        self._stt = stt
+        self._user_id = user_id
+        self._decoder = av.CodecContext.create("opus", "r")
+        self._resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+        self._tz_offset_min = 0
+        self._live_from_ms: float | None = None
+        self._expect_seq: int | None = None
+        # The late span being assembled: PCM plus where it starts and ends,
+        # on the media clock and on the page's wall clock.
+        self._late_pcm = bytearray()
+        self._late_from: float | None = None
+        self._late_to: float = 0.0
+        self._late_wall_from: int | None = None
+        self._late_wall_to: int | None = None
+        self._late_dropped_ms = 0.0
+        self._settle_task = None
+        self._rest = b""
+        self.rtp_fallback = False
+        # Audio decoded and queued for the pipeline but not yet pushed, and
+        # the page's last reported backlog: together the link's witness.
+        self._queued_ms = 0
+        self._page_backlog_ms = 0
+        # One ordered queue of delivery work, one consumer, nothing ever
+        # cancelled. pipecat runs each client-message handler as its own
+        # task, so `on_audio` must decide and enqueue before its first
+        # `await` or two batches could interleave; and a flush must never
+        # be a cancellable task's body — the first cut's settle timer *was*
+        # the flush after its sleep, and a late batch arriving mid-flush
+        # cancelled the turn being transcribed with the audio already moved
+        # into locals: minutes of speech gone without a log (review of
+        # #231). Here the timer only enqueues.
+        self._work: asyncio.Queue = asyncio.Queue()
+        self._consumer = None
+        self._rtp_fallback_warned = False
+        self.batches = 0
+        self.late_turns = 0
+        # Where a late turn goes once transcribed: the call's one queue of
+        # turns (`TypedTurns.deliver`), set by `run_bot` once it exists, so a
+        # late turn never lands inside a typed turn's answer. Unset (the
+        # tests' fakes), the turn waits for speech and is pushed here.
+        self.deliver = None
+
+    async def on_start(self, d: dict):
+        """`audio-start`: the page's zone and where its live capture begins,
+        once per connection."""
+        self._tz_offset_min = int(d.get("tz_offset_min") or 0)
+        self._live_from_ms = float(d["live_from_ms"]) if d.get("live_from_ms") is not None else None
+        self._expect_seq = None
+
+    def _decode(self, frames) -> bytes:
+        import av
+
+        out = bytearray()
+        for entry in frames:
+            try:
+                data = base64.b64decode(entry[1])
+            except Exception:
+                continue
+            for frame in self._decoder.decode(av.Packet(data)):
+                for r in self._resampler.resample(frame):
+                    out += r.to_ndarray().tobytes()
+        return bytes(out)
+
+    def on_fallback(self):
+        """The transport fell back to RTP: this injector is done. Queued
+        audio is dropped — pushing it beside the RTP reader's frames would
+        interleave old speech with new — and dropped with its size in the
+        journal, never silently; and the link forgets its backlog *after*
+        this, because a queued `push_pcm` re-noting it was how the second
+        pass's fix came undone (fifth review of #231)."""
+        from loguru import logger
+
+        self.rtp_fallback = True
+        dropped_ms = self._queued_ms
+        while not self._work.empty():
+            try:
+                self._work.get_nowait()
+                self._work.task_done()
+            except asyncio.QueueEmpty:
+                break
+        self._queued_ms = 0
+        self._page_backlog_ms = 0
+        if dropped_ms:
+            logger.warning(f"uplink: {dropped_ms / 1000:.1f}s of decoded audio dropped at the fallback")
+        self._link.forget_backlog()
+
+    def close(self):
+        """The transport is stopping: nothing more will be delivered."""
+        for task in (self._consumer, self._settle_task):
+            if task and not task.done():
+                task.cancel()
+        self._consumer = self._settle_task = None
+
+    def _ensure_consumer(self):
+        if self._consumer is None or self._consumer.done():
+            self._consumer = asyncio.get_event_loop().create_task(self._consume())
+
+    async def _consume(self):
+        from loguru import logger
+
+        while True:
+            item = await self._work.get()
+            try:
+                await item()
+            except Exception as e:  # noqa: BLE001 - one item must not end delivery
+                logger.error(f"uplink: delivery failed ({e.__class__.__name__}: {e})")
+            finally:
+                self._work.task_done()
+
+    async def drain(self):
+        """Wait until everything enqueued so far has been delivered."""
+        await self._work.join()
+
+    async def on_audio(self, d: dict):
+        """One batch. Everything here up to the enqueue is synchronous, so
+        batches are delivered in the order they arrived whatever pipecat
+        does with the handler tasks. Live batches go to the transport's
+        audio queue; late ones accumulate into a span transcribed whole."""
+        from loguru import logger
+
+        note = getattr(self._input, "note_batch", None)
+        if note:
+            note()  # the deafness witness: a batch arrived, whatever its lane
+        if self.rtp_fallback or getattr(self._input, "rtp_fallback", False):
+            if not self._rtp_fallback_warned:
+                self._rtp_fallback_warned = True
+                logger.warning("uplink: batches arriving after the RTP fallback started — ignored, not doubled")
+            return
+        seq = int(d.get("seq") or 0)
+        if self._expect_seq is not None and seq != self._expect_seq:
+            logger.warning(f"uplink: batch {seq} after {self._expect_seq - 1} — the channel reordered or dropped")
+        self._expect_seq = seq + 1
+        backlog_ms = int(d.get("backlog_ms") or 0)
+        start_ms = float(d.get("ms") or 0)
+        wall_ms = int(d["wall_ms"]) if d.get("wall_ms") is not None else None
+        frames = d.get("frames") or []
+        dur_ms = sum(float(f[0]) for f in frames if isinstance(f, (list, tuple)) and len(f) == 2)
+        dropped_ms = sum(
+            max(0.0, float(x.get("to_ms", 0)) - float(x.get("from_ms", 0))) for x in (d.get("dropped") or [])
+        )
+        self.batches += 1
+        self._page_backlog_ms = backlog_ms
+        pcm = self._decode(frames)
+        self._ensure_consumer()
+        if lane_for(backlog_ms, start_ms, self._live_from_ms) == "late":
+            self._link.note_uplink(_time.monotonic(), backlog_ms + self._queued_ms)
+            if self._late_from is None:
+                self._late_from = start_ms
+                self._late_wall_from = wall_ms
+            self._late_to = start_ms + dur_ms
+            self._late_wall_to = wall_ms + int(dur_ms) if wall_ms is not None else self._late_wall_to
+            self._late_dropped_ms += dropped_ms
+            self._late_pcm += pcm
+            self._arm_late_settle()
+            return
+        # Live: a span that was being assembled is closed first, so its turn
+        # precedes the speech that ended it — both are queue items, in order,
+        # and the flush returns only once its turn is delivered (§2.5).
+        self._work.put_nowait(self.flush_late)
+        if dropped_ms:
+            logger.warning(f"uplink: the page dropped {dropped_ms / 1000:.0f}s of audio before batch {seq}")
+        self._queued_ms += int(len(pcm) / 32)
+        self._link.note_uplink(_time.monotonic(), backlog_ms + self._queued_ms)
+        self._work.put_nowait(lambda: self.push_pcm(pcm))
+
+    async def push_pcm(self, pcm: bytes):
+        """Into the transport's own queue, in 20 ms frames, as RTP audio was,
+        paced at `UPLINK_DRAIN_SPEED` times real time (see the constant). A
+        batch rarely decodes to a whole number of frames (the resampler
+        holds a few samples), so the tail carries into the next batch rather
+        than being dropped — a frame a batch, across a drain, is real loss.
+        What is still queued here counts toward the link's backlog: the
+        page's number reaches zero when the last batch leaves the phone,
+        which is well before the last frame reaches the pipeline."""
+        step = 16000 * 2 // 50
+        buf = self._rest + pcm
+        whole = len(buf) - len(buf) % step
+        frame_secs = 0.02 / UPLINK_DRAIN_SPEED
+        for i in range(0, whole, step):
+            if self.rtp_fallback:
+                # Whatever is left is RTP's now; see `on_fallback`.
+                return
+            await self._input.push_audio_frame(
+                InputAudioRawFrame(audio=buf[i : i + step], sample_rate=16000, num_channels=1)
+            )
+            self._queued_ms = max(0, self._queued_ms - 20)
+            self._link.note_uplink(_time.monotonic(), self._page_backlog_ms + self._queued_ms)
+            await asyncio.sleep(frame_secs)
+        self._rest = buf[whole:]
+
+    def _arm_late_settle(self):
+        """A span with no batch after it for `LATE_SETTLE_SECS` is closed.
+        The timer only enqueues the flush; cancelling it cancels a sleep and
+        nothing else."""
+        loop = asyncio.get_event_loop()
+        if self._settle_task and not self._settle_task.done():
+            self._settle_task.cancel()
+
+        async def settle():
+            await asyncio.sleep(LATE_SETTLE_SECS)
+            self._work.put_nowait(self.flush_late)
+
+        self._settle_task = loop.create_task(settle())
+
+    async def flush_late(self):
+        """Transcribe the assembled span and put it to the model as one
+        turn, after the bot has finished speaking — a late span never
+        interrupts (§2.5)."""
+        from loguru import logger
+
+        if self._late_from is None:
+            return
+        pcm, from_ms, to_ms, dropped_ms = (
+            bytes(self._late_pcm),
+            self._late_from,
+            self._late_to,
+            self._late_dropped_ms,
+        )
+        wall_from, wall_to = self._late_wall_from, self._late_wall_to
+        self._late_pcm = bytearray()
+        self._late_from, self._late_to, self._late_dropped_ms = None, 0.0, 0.0
+        self._late_wall_from = self._late_wall_to = None
+        # `_rest` is deliberately not reset: it is `push_pcm`'s carry, live
+        # audio's business, and a late flush between two live batches must
+        # not drop the frame tail between them.
+        text = await self._transcribe(pcm)
+        if not text:
+            logger.info(f"uplink: late span {from_ms:.0f}–{to_ms:.0f} ms held no speech")
+            return
+        prefix = late_prefix(wall_from, wall_to, self._tz_offset_min, dropped_ms)
+        logger.info(
+            f"uplink: late turn ({(to_ms - from_ms) / 1000:.0f}s of audio): {prefix}{withheld(text)}"
+        )
+        if self.deliver is not None:
+            # Handed to the call's one consumer of turns, and awaited: the
+            # live audio that closed this span is the next item on this
+            # queue, and §2.5 puts the turn before it. The consumer bounds
+            # its own wait at `LATE_BOT_WAIT_SECS`; this bound is only for a
+            # consumer that is gone (the call ending), so live audio is never
+            # held behind nothing.
+            done = self.deliver(lambda: self._send_late(prefix + text))
+            try:
+                await asyncio.wait_for(asyncio.shield(done), LATE_BOT_WAIT_SECS + LATE_HANDOFF_SLACK_SECS)
+            except asyncio.TimeoutError:
+                logger.warning("uplink: the late turn was not delivered in time; live audio goes on behind it")
+            return
+        # Never interrupts — within reason: the queue behind this holds live
+        # speech, so the wait for the bot to finish is bounded.
+        for _ in range(int(LATE_BOT_WAIT_SECS * 10)):
+            if not getattr(self._stt, "_bot_speaking", False):
+                break
+            await asyncio.sleep(0.1)
+        await self._send_late(prefix + text)
+
+    async def _send_late(self, turn: str):
+        from loguru import logger
+
+        # Counted where it is sent, not where it was transcribed: a turn the
+        # consumer never got to (the call ending) is not one that landed
+        # (review of #499, pass 8).
+        self.late_turns += 1
+        # Appended to the context and run at once — not a `TranscriptionFrame`.
+        # A transcript-only turn has no VAD edge for any stop strategy to
+        # rule on, so it sat on the aggregator's 15 s wall-clock timeout
+        # (`strategy: None`) before the model saw it; measured 2026-09-14,
+        # as the review of #231 predicted. The page is told separately, so
+        # its transcript shows what the model was given.
+        if self._announce:
+            try:
+                await self._announce({"t": "late-turn", "text": turn})
+            except Exception as e:  # noqa: BLE001 - display, not delivery
+                logger.warning(f"uplink: could not show the late turn ({e})")
+        await self._input.push_frame(
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": turn}], run_llm=True)
+        )
+
+    async def _transcribe(self, pcm: bytes) -> str:
+        """Segment by segment, as the live lane does (see `LATE_GAP_SECS`):
+        each run of speech, padded, under `LATE_CHUNK_SECS`, above the same
+        duration and energy floors the live segment gate applies."""
+        parts = []
+        for piece in late_segments(pcm):
+            r = await self._stt._client.audio.transcriptions.create(
+                model="parakeet", file=("late.wav", _wav16(piece), "audio/wav")
+            )
+            t = (r.text or "").strip()
+            if t:
+                parts.append(t)
+        return " ".join(parts)
+
+
+# ---- incognito: a call nothing keeps the words of ----
+#
+# `docs/INCOGNITO-DESIGN.md` §6.4. The journal this unit writes to is kept on
+# disk, and at pipecat's default level (the runner re-adds a DEBUG sink on
+# start) it holds both sides of every call: `Transcription: …` from the STT
+# service and every sentence the TTS service is handed. So while a call into
+# an incognito chat is live, the whole `pipecat` namespace is disabled - at the
+# logger's core, not on a sink, because `pipecat.runner.run` calls
+# `logger.remove()` and adds its own sink, and a filter on ours would be
+# thrown away with it, silently. This file's own lines that carry words keep
+# their measurements and lose the words (`journal.withheld`).
+#
+# Every call, incognito or not, also runs with `journal.install`'s sink, which
+# drops pipecat's text-bearing DEBUG lines (the `services` family). That is a
+# sink filter, and it holds only because it is installed after the runner's
+# one reset in `main()`: at server start (`install`'s lifespan) and again at
+# the top of each `run_bot`. The incognito silence above stays at the core
+# regardless, so a call into an incognito chat never depends on the sink.
+#
+# Process-wide on purpose: an ordinary call running beside an incognito one
+# loses all of pipecat's lines for the overlap, warnings and errors included.
+# The narrower cut - a filter keyed on the call's context - leaks on the
+# first task started outside that context, and the promise is the one that
+# must not bend.
+#
+# `mecha serve` hands this worker an offer naming an incognito chat only
+# after `GET /mecha/unlogged` answers yes (`install`), so a worker that
+# predates the silence is never handed one. Per turn, the facade admits a
+# spoken turn into an incognito chat only on `X-Voice-Unlogged: 1`, sent
+# only from inside `Unlogged.held`.
+INCOGNITO_PREFIX = "incognito-"
+
+
+def persona_voice(body) -> dict | None:
+    """The voice a persona call speaks in (PERSONA-DESIGN.md §11), as
+    `mecha serve` put it in the offer - never the page, whose own
+    `persona_voice` serve strips. Checked again here, for the reason
+    `named_chat_session` is: a claim checked on one side of a seam only.
+    Raises on a malformed one, which ends the call - a persona speaking in
+    the default voice instead is the failure this exists to prevent."""
+    want = body.get("persona_voice") if isinstance(body, dict) else None
+    if want is None:
+        return None
+    if not isinstance(want, dict) or not isinstance(want.get("voice"), str):
+        raise ValueError("persona_voice without a voice")
+    out = {"voice": want["voice"]}
+    for field, lo, hi in (("speed", MIN_SPEED, MAX_SPEED), ("exaggeration", 0.0, 2.0),
+                          ("cfg_weight", 0.0, 1.0)):
+        if field in want:
+            value = want[field]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not lo <= value <= hi:
+                raise ValueError(f"persona_voice {field} {value!r} is outside {lo}-{hi}")
+            out[field] = float(value)
+    return out
+
+
+def named_chat_session(body) -> str | None:
+    """The chat session the offer names (D3), or None.
+
+    Validated here as well as at the facade, and to the same rule
+    (mecha-cli's `valid_key`): this value becomes a directory name under the
+    producer root, it arrives from a browser, and a claim checked on only one
+    side of a seam is a claim nobody checks the day the other side is reached
+    directly. Refusing costs a call that is merely unshared; passing it on
+    costs whatever a bad name does."""
+    want = body.get("session") if isinstance(body, dict) else None
+    if not isinstance(want, str):
+        return None
+    want = want.strip()
+    if (
+        0 < len(want) <= 32
+        and want[0] not in "-_"
+        and all(c.islower() or c.isdigit() or c in "-_" for c in want)
+        and want.isascii()
+    ):
+        return want
+    if want.startswith(INCOGNITO_PREFIX):
+        # Refused without repeating it: a name carrying the prefix is one
+        # an incognito chat may have sent, and it is not written down.
+        print("voice: refusing a malformed chat session", flush=True)
+    elif want:
+        print(f"voice: refusing malformed chat session {want!r}", flush=True)
+    return None
+
+
+def offers_incognito(request_data) -> bool:
+    """Whether an offer's session names an incognito chat, read off the raw
+    string before `named_chat_session` validates it. The silence keys on
+    this, so a malformed name carrying the prefix still holds it: `mecha
+    serve` decides on the prefix, and the two sides must never disagree in
+    the direction that logs (review of #376)."""
+    want = request_data.get("session") if isinstance(request_data, dict) else None
+    return isinstance(want, str) and want.strip().startswith(INCOGNITO_PREFIX)
+
+
+def is_incognito(named: str | None) -> bool:
+    """Whether a named session is an incognito chat. The prefix is the
+    server's (`incognito::is_incognito_key`), which refuses it at the
+    ordinary door, so no recorded chat can carry it."""
+    return bool(named) and named.startswith(INCOGNITO_PREFIX)
+
+
+# How long an answered offer may wait for its browser to connect before the
+# call is ended. Pipecat gives the peer connection 60 s, but the bot built
+# for it runs on until the fifteen-minute idle timeout, holding VAD, turn
+# detection, STT and TTS on a one-GPU box - and, for a call into an
+# incognito chat, the process-wide log silence (`Unlogged`), so every other
+# call loses pipecat's lines for the quarter hour. Measured 2026-09-28: a
+# synthetic incognito offer that never connected held the silence from
+# 22:08:32 to its idle timeout at ~22:23:32, and an ordinary offer at 22:10:42
+# logged no pipecat lines at all. Ninety seconds is past pipecat's own
+# connection timeout and any ICE a cellular link completes.
+CONNECT_DEADLINE_SECS = 90.0
+
+
+async def end_unless_connected(
+    connected: asyncio.Event, deadline_secs: float, end, fired: asyncio.Event
+) -> bool:
+    """Wait up to `deadline_secs` for `connected`; if it never comes, set
+    `fired`, say so and `await end()`. Returns whether the call was ended. A
+    call that connects in time is left alone for the rest of its life - after
+    that the disconnect handler and the idle timeout own it. `fired` is set
+    before `end` runs, so whoever tidies up knows this task is mid-teardown
+    and must be let finish (`settle_deadline`)."""
+    try:
+        await asyncio.wait_for(connected.wait(), deadline_secs)
+        return False
+    except asyncio.TimeoutError:
+        fired.set()
+        print(
+            f"voice client never connected after {deadline_secs:.0f}s - ending the call",
+            flush=True,
+        )
+        await end()
+        return True
+
+
+async def settle_deadline(deadline: asyncio.Task, fired: asyncio.Event) -> None:
+    """Tidy the deadline task once the call is over. One that fired is what
+    ended the call, and `runner.run()` can return while its `runner.cancel()`
+    is still tearing down - cancelling it there would interrupt the teardown
+    it asked for, so it is awaited to the end, and anything it raised is
+    raised here rather than left for a GC-time warning (review of #386). One
+    that has not fired is waiting on a call that ended some other way, and
+    is cancelled."""
+    if fired.is_set():
+        await deadline
+        return
+    deadline.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await deadline
+
+
+class Unlogged:
+    """The live calls into incognito chats, and the log silence they hold.
+
+    Counted, not flagged: two incognito calls overlap, and the first to end
+    must not lift the silence under the second."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live = 0
+
+    @property
+    def active(self) -> bool:
+        return self._live > 0
+
+    def enter(self):
+        from loguru import logger
+
+        with self._lock:
+            self._live += 1
+            if self._live == 1:
+                logger.disable("pipecat")
+
+    def exit(self):
+        from loguru import logger
+
+        with self._lock:
+            self._live -= 1
+            if self._live == 0:
+                logger.enable("pipecat")
+
+    @contextlib.contextmanager
+    def held(self, quiet: bool):
+        """Hold the silence for one call's life when `quiet`; otherwise a
+        no-op, so the caller's shape is the same for every call."""
+        if not quiet:
+            yield
+            return
+        self.enter()
+        try:
+            yield
+        finally:
+            self.exit()
+
+
+UNLOGGED = Unlogged()
+
+
+def names_incognito(key: str | None) -> bool:
+    """Whether a namespaced session key (`chat:<id>`) is an incognito chat's.
+    This file's records are `__main__`, which the pipecat silence does not
+    reach, so a line that would name one is not written at all: redacted, it
+    would still say an incognito chat was spoken into."""
+    return bool(key) and key.startswith(f"chat:{INCOGNITO_PREFIX}")
+
+
+class OfferSilence:
+    """Hold the silence while an offer naming an incognito chat is handled.
+
+    `bot` holds it for the call, but the runner handles the offer first,
+    and on its error path logs the whole request - `request_data.session`,
+    the chat's key, included - at DEBUG. Pure ASGI rather than Starlette's
+    `BaseHTTPMiddleware`: the body is read once here and replayed to the
+    runner exactly as it arrived."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST" or not scope.get(
+            "path", ""
+        ).endswith("/api/offer"):
+            await self.app(scope, receive, send)
+            return
+        chunks, more = [], True
+        while more:
+            message = await receive()
+            if message.get("type") != "http.request":
+                break
+            chunks.append(message.get("body", b""))
+            more = message.get("more_body", False)
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        try:
+            quiet = offers_incognito((json.loads(body) or {}).get("request_data"))
+        except (ValueError, AttributeError):
+            quiet = False
+        with UNLOGGED.held(quiet):
+            await self.app(scope, replay, send)
+
+
+# What a voice says when the library previews it: fixed, so the route speaks
+# nothing a page wrote. A statement, a question and a pause, because those are
+# where clones differ.
+SAMPLE_LINE = (
+    "Hello. This is how I sound reading something aloud. "
+    "Does a question rise at the end? It should. And a pause... carries too."
+)
+
+
+async def speech_body(text: str, voice: str, speed: float, instructions: str | None, fmt: str) -> dict:
+    """The TTS request for `text` in `voice` - the expressiveness a call
+    opens with, so what is heard here is the voice as a call sounds: the
+    same honoured-only controls a call sends (`optional_controls`),
+    `instructions` among them when Listen's director gave a line."""
+    body = {
+        "input": text,
+        "model": "tts",
+        "voice": voice,
+        "response_format": fmt,
+        "speed": speed,
+    }
+    return body | optional_controls(
+        await asyncio.to_thread(tts_controls),
+        exaggeration=TTS_EXAGGERATION,
+        cfg_weight=TTS_CFG_WEIGHT,
+        instructions=instructions,
+    )
+
+
+async def tts_wav(text: str, voice: str, speed: float = 1.0, instructions: str | None = None) -> bytes:
+    """`text` in `voice`, as a WAV, from the TTS server (`speech_body`).
+    Raises on any failure; the route says which."""
+    body = await speech_body(text, voice, speed, instructions, "wav")
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(f"{TTS_URL}/audio/speech", json=body)
+        # As in `run_tts`: a TTS restarted under another model is asked
+        # again before the next request.
+        await reask_after_refusal(r.status_code if r.status_code >= 400 else None)
+        r.raise_for_status()
+        return r.content
+
+
+# What a streamed piece is: raw signed 16-bit little-endian mono at this
+# rate, the format a call takes from the same TTS (`response_format: "pcm"`,
+# which every TTS this worker fronts serves).
+PCM_RATE = 24000
+
+
+async def tts_pcm(text: str, voice: str, speed: float = 1.0, instructions: str | None = None):
+    """`text` in `voice` as raw PCM chunks, passed on as the TTS makes them -
+    a play button's piece heard from its first chunk rather than after its
+    last (docs/VOICE-BREEZE-DESIGN.md S3.1). The TTS's answer is awaited
+    here, so a refusal raises before a byte is sent and the route can still
+    say which; what is returned is an async iterator of the chunks, which
+    closes the TTS request when it ends or is dropped - a stop on the page
+    stops the synthesis it was waiting for. A chunk is not sample-aligned:
+    the reader keeps an odd byte for the next one."""
+    body = await speech_body(text, voice, speed, instructions, "pcm")
+    # Each wait is bounded, never the whole piece, which streams for as long
+    # as it takes to speak. `read` covers the wait for the TTS's answer as
+    # well as each wait between chunks, so it is `tts_wav`'s 60 s: a model
+    # loading has as long to answer here as on the WAV path (review of #555).
+    client = httpx.AsyncClient(timeout=httpx.Timeout(60))
+    try:
+        r = await client.send(client.build_request("POST", f"{TTS_URL}/audio/speech", json=body), stream=True)
+    except BaseException:
+        await client.aclose()
+        raise
+    try:
+        await reask_after_refusal(r.status_code if r.status_code >= 400 else None)
+        r.raise_for_status()
+    except BaseException:
+        await r.aclose()
+        await client.aclose()
+        raise
+
+    # Decoded, as `run_tts` and `tts_wav` read theirs: serve passes no
+    # content-encoding on, so a compressed body would reach the page as
+    # samples (review of #555).
+    async def chunks():
+        try:
+            async for chunk in r.aiter_bytes():
+                if chunk:
+                    yield chunk
+        finally:
+            await r.aclose()
+            await client.aclose()
+
+    return chunks()
+
+
+async def tts_sample(voice: str) -> bytes:
+    """`SAMPLE_LINE` in `voice`: the library's preview."""
+    return await tts_wav(SAMPLE_LINE, voice)
+
+
+# The most a single speak request carries: a piece of a reply, which the page
+# cuts at sentences (`speech.js`), not a document.
+MAX_SPEAK_CHARS = 1200
+
+# The longest delivery direction a speak request carries - serve's director
+# bounds its lines to this (`voice_direction::MAX_CHARS` in mecha-core).
+MAX_INSTRUCTIONS_CHARS = 300
+
+
+def speak_request(body, known, default_voice=TTS_VOICE, default_speed=TTS_SPEED):
+    """A play button's request (`POST /mecha/speak`), checked: `(text, voice,
+    speed, instructions)`, or `(None, status, why, None)` refused.
+    `instructions` is the delivery direction serve's director wrote for the
+    piece (Listen's director pass, docs/VOICE-BREEZE-DESIGN.md S3.1), or
+    None to speak it undirected; it reaches the TTS only when its model
+    honours one (`tts_wav`). The voice must be one the TTS
+    lists when named; none named is this worker's own, and so is a speed
+    left unset - `MECHA_VOICE_TTS_SPEED`, the rate a call opens at
+    (`run_bot`'s `bound.get("speed", TTS_SPEED)`), never a hardcoded 1.0.
+    A rate the owner chose arrives named, as a call's opening patch does:
+    serve sends the persona's own, or the owner's from Settings → Voice
+    for the assistant's replies (review of #502). Pure, so it is tested
+    without a server (`test_speak.py`)."""
+    if not isinstance(body, dict):
+        return None, 400, "not a request", None
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None, 400, "nothing to say", None
+    text = text.strip()
+    if len(text) > MAX_SPEAK_CHARS:
+        return None, 400, f"more than {MAX_SPEAK_CHARS} characters at once", None
+    voice = body.get("voice")
+    if voice is None:
+        voice = default_voice
+    elif not isinstance(voice, str):
+        return None, 400, "a voice is a name", None
+    elif known is None:
+        return None, 503, "the TTS server could not say which voices it has", None
+    elif voice not in known:
+        return None, 404, f"no voice named {voice!r}", None
+    speed = body.get("speed")
+    if speed is None:
+        speed = default_speed
+    if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not MIN_SPEED <= speed <= MAX_SPEED:
+        return None, 400, f"speed is {MIN_SPEED}-{MAX_SPEED}", None
+    instructions = body.get("instructions")
+    if instructions is not None:
+        if not isinstance(instructions, str):
+            return None, 400, "a direction is text", None
+        instructions = instructions.strip()
+        if len(instructions) > MAX_INSTRUCTIONS_CHARS:
+            return None, 400, f"a direction is at most {MAX_INSTRUCTIONS_CHARS} characters", None
+        instructions = instructions or None
+    return text, voice, float(speed), instructions
+
+
+def install(app) -> None:
+    """What this worker adds to the runner's app, before `main` starts it.
+
+    `GET /mecha/unlogged` is the vouch `mecha serve` asks for before it
+    forwards an offer naming an incognito chat: a worker that predates the
+    silence has no such route, so it is never handed the offer - never the
+    chat's key, never a word (`serve::forward_offer`, review of #376).
+
+    It also puts the journal sink in place at server start (`journal`):
+    composed into the app's lifespan the way pipecat composes its own, so it
+    runs after `main()` has replaced loguru's handlers with an unfiltered
+    DEBUG one. `run_bot` installs it again per call, so a start that skipped
+    the lifespan still keeps words out of every call."""
+    from loguru import logger as _logger
+
+    app.router.lifespan_context = journal.lifespan(app.router.lifespan_context, _logger, sys.stderr)
+
+    @app.get("/mecha/unlogged")
+    async def unlogged():
+        return {"unlogged": True}
+
+    # What `mecha serve` checks a persona's voice against before it forwards
+    # a call to one (PERSONA-DESIGN.md §11), asked fresh so a voice cloned a
+    # minute ago counts. Also the vouch that this worker applies
+    # `persona_voice`: one that predates it 404s here and is never handed a
+    # persona call, which it would answer in its own voice. `None` when the
+    # TTS could not be asked - unknown, and serve refuses on it.
+    @app.get("/mecha/voices")
+    async def voices():
+        return {"voices": available_voices(refresh=True)}
+
+    # The voice library's preview (Library -> Voices): `SAMPLE_LINE` spoken
+    # in a voice the TTS lists. Fixed text, so this route cannot be made to
+    # say anything; an unlisted voice is refused before the TTS is asked.
+    @app.get("/mecha/sample")
+    async def sample(voice: str):
+        from fastapi.responses import JSONResponse, Response
+
+        known = available_voices(refresh=True)
+        if known is None:
+            return JSONResponse({"error": "the TTS server could not say which voices it has"}, 503)
+        if voice not in known:
+            return JSONResponse({"error": f"no voice named {voice!r}"}, 404)
+        try:
+            wav = await tts_sample(voice)
+        except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+            return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+        return Response(content=wav, media_type="audio/wav")
+
+    # Whether this worker speaks a play button's piece with a direction:
+    # its TTS's model honours `instructions`. Serve asks before it asks the
+    # director for one (Listen's director pass), so no model writes a line
+    # an engine would drop; a worker older than this route 404s, which serve
+    # reads as no. Unknown (the TTS could not be asked) is no, too.
+    @app.get("/mecha/directs")
+    async def directs():
+        controls = await asyncio.to_thread(tts_controls)
+        return {"directs": bool(controls and "instructions" in controls)}
+
+    # A play button on a reply (the owner's ask, 2026-10-01): a piece of a
+    # reply spoken in a voice. Nothing of the text or its direction is
+    # logged - not even a length beside the voice - so an incognito chat's
+    # reply leaves no trace here; the TTS server logs none either.
+    # `"stream": true` answers raw PCM as the TTS makes it (`tts_pcm`), at
+    # the rate `x-sample-rate` names; without it, the piece is one WAV - what
+    # a serve older than streaming asks for.
+    from fastapi import Request
+
+    @app.post("/mecha/speak")
+    async def speak(request: Request):
+        from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - a body that is not JSON is refused, as any bad one
+            body = None
+        stream = isinstance(body, dict) and body.get("stream") is True
+        named = isinstance(body, dict) and body.get("voice") is not None
+        known = available_voices(refresh=False) if named else None
+        if named and (known is None or body.get("voice") not in known):
+            # A voice cloned since the last ask: one refetch before refusing.
+            known = available_voices(refresh=True)
+        checked = speak_request(body, known)
+        if checked[0] is None:
+            # A refusal is `(None, status, why, None)`.
+            _, status, why, _ = checked
+            return JSONResponse({"error": why}, status)
+        text, voice, speed, instructions = checked
+        if stream:
+            try:
+                chunks = await tts_pcm(text, voice, speed, instructions)
+            except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+                return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+            return StreamingResponse(chunks, media_type="audio/pcm", headers={"x-sample-rate": str(PCM_RATE)})
+        try:
+            wav = await tts_wav(text, voice, speed, instructions)
+        except Exception as e:  # noqa: BLE001 - said, not raised: the page shows it
+            return JSONResponse({"error": f"the TTS server did not speak: {e.__class__.__name__}"}, 502)
+        return Response(content=wav, media_type="audio/wav")
+
+    app.add_middleware(OfferSilence)
+
+
+def session_line(session_key: str, named: str | None) -> str:
+    """The journal's line for a call starting. Nothing about an incognito
+    chat is written down - not its key, and not that one was spoken into,
+    which is the fact it promised not to leave (review of #376) - so such a
+    call reads as one that named no chat."""
+    if named and not is_incognito(named):
+        return f"voice session key: {session_key} (speaking into chat session {named!r})"
+    return f"voice session key: {session_key}"
+
+
+# The longest typed turn a call takes: a message, not a document.
+MAX_TYPED_CHARS = 4000
+
+
+def typed_turn(data) -> str | None:
+    """The text a page typed into a live call (`{"t": "typed", "d":
+    {"text": ...}}`), as the turn the model is given, or None for nothing
+    worth a turn. Trimmed and capped; anything that is not a string is
+    nothing. A typed line enters exactly as heard speech does - a user turn,
+    with the trust the audio on this same channel already has - and is
+    answered aloud, since that is what being in a call means."""
+    text = data.get("text") if isinstance(data, dict) else None
+    if not isinstance(text, str):
+        return None
+    text = text.strip()[:MAX_TYPED_CHARS]
+    return text or None
+
+
+# How long a typed turn waits for the answer before it to begin (the model
+# starting, or speech), and then to finish: bounds, so an answer that never
+# starts cannot hold the next line long. The model's own response frames end
+# an answer that speaks nothing (`Answering`).
+TYPED_ANSWER_START_SECS = 10.0
+TYPED_ANSWER_END_SECS = 180.0
+# The most typed lines waiting at once.
+TYPED_QUEUE_MAX = 20
+# How long after the model's answer ends it still counts as under way
+# (`answer_pending`). The model's end frame and the first spoken audio are
+# not adjacent for a short answer; a turn sent in that gap would barge in on
+# speech about to start (review of #499, passes 4 and 5).
+TYPED_SETTLE_SECS = 1.5
+
+
+class TypedTurns:
+    """The turns a call puts to the model outside its live audio - typed
+    lines, and late spans the uplink transcribed (`UplinkAudio.deliver`) -
+    delivered one at a time (review of #499).
+
+    `docs/VOICE-LINK-DESIGN.md` §2.3: every delivery goes through one ordered
+    queue with one consumer and nothing is cancelled. Each client message
+    runs as its own task, so two lines typed in quick succession would each
+    push a turn and the second would take the conversation's slot - a
+    barge-in on the first answer before a word of it was spoken; and a late
+    turn pushed from the uplink's own task could land inside a typed turn's
+    answer the same way (pass 5). Here a turn waits until the answer before
+    it is over (`busy`, which is `answer_pending`; bounded), and only then
+    is given to the model.
+
+    A late turn goes first and waits least. §2.5 puts it *before* the live
+    audio that closed its span, and that audio is queued behind the flush
+    on the uplink's own queue, so the flush waits for this delivery
+    (`deliver` returns when it is pushed): a late turn jumps the typed
+    lines, waits for the answer under way only as long as the uplink always
+    has (`late_secs`, `LATE_BOT_WAIT_SECS`), and a typed line waiting on an
+    answer steps aside for it rather than hold live speech for minutes
+    (review of #499, pass 6)."""
+
+    def __init__(self, push, busy, log=print,
+                 start_secs=TYPED_ANSWER_START_SECS, end_secs=TYPED_ANSWER_END_SECS,
+                 late_secs=LATE_BOT_WAIT_SECS):
+        self._push = push
+        self._busy = busy
+        self._log = log
+        self._start_secs = start_secs
+        self._end_secs = end_secs
+        self._late_secs = late_secs
+        # Typed lines, bounded at `TYPED_QUEUE_MAX` - a page pasting in a
+        # loop is not a conversation; late turns, never refused - each is
+        # something the owner said.
+        self._typed: collections.deque[str] = collections.deque()
+        self._late: collections.deque = collections.deque()
+        self._ready = asyncio.Event()
+        # Until when a turn just pushed may still be about to be answered:
+        # between the push and the model's first frame `busy` reads false,
+        # and a turn that stepped aside for a late one must not have that
+        # gap taken as the answer being over (review of #499, pass 6).
+        self._unstarted_until: float | None = None
+
+    def put(self, data) -> str:
+        """Enqueue a client message's payload: "queued", "not-a-turn", or
+        "full" (said in the journal, without the words) - one reading of
+        the payload, so the caller need not read it again."""
+        text = typed_turn(data)
+        if text is None:
+            return "not-a-turn"
+        if len(self._typed) >= TYPED_QUEUE_MAX:
+            self._log(f"voice typed turn dropped: {TYPED_QUEUE_MAX} already waiting")
+            return "full"
+        self._typed.append(text)
+        self._ready.set()
+        return "queued"
+
+    def deliver(self, send) -> asyncio.Future:
+        """Enqueue a late turn: `send` is awaited ahead of any typed line,
+        once the answer under way is over or `late_secs` has passed. The
+        future is done when it has been sent (or failed): what the uplink
+        awaits before the live audio behind it moves."""
+        done = asyncio.get_running_loop().create_future()
+        self._late.append((send, done))
+        self._ready.set()
+        return done
+
+    def _pushed(self):
+        self._unstarted_until = time.monotonic() + self._start_secs
+
+    def _answering(self) -> bool:
+        """`busy`, noting that an answer asked for has begun - whoever looks."""
+        if self._busy():
+            self._unstarted_until = None
+            return True
+        return False
+
+    def _in_the_way(self) -> bool:
+        """Whether a turn about to be pushed would barge in: an answer under
+        way, or one just asked for that has not begun (bounded)."""
+        if self._answering():
+            return True
+        return self._unstarted_until is not None and time.monotonic() < self._unstarted_until
+
+    async def _until(self, want: bool, secs: float, yield_to_late: bool = False, ahead: bool = False):
+        """True when `busy` reads `want` (with `ahead`, when nothing is in
+        the way of the next push), False at the bound - and None the moment
+        a late turn is waiting, if asked to step aside for one."""
+        for _ in range(int(secs * 10)):
+            if yield_to_late and self._late:
+                return None
+            if bool(self._in_the_way() if ahead else self._answering()) == want:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def _answered(self):
+        """This answer, begun and over, before the next turn goes: bounded
+        either way, and never in a late turn's way - which then waits on
+        the same answer itself (`_in_the_way`)."""
+        if await self._until(True, self._start_secs, yield_to_late=True):
+            await self._until(False, self._end_secs, yield_to_late=True)
+
+    async def run(self):
+        while True:
+            if not self._late and not self._typed:
+                self._ready.clear()
+                await self._ready.wait()
+                continue
+            if self._late:
+                send, done = self._late.popleft()
+                try:
+                    try:
+                        await self._until(False, self._late_secs, ahead=True)
+                        await send()
+                        self._pushed()
+                    finally:
+                        # Resolved the moment the turn is sent, so the live
+                        # audio behind the flush moves then, not after the
+                        # answer; and resolved, never cancelled, even at
+                        # teardown: a cancelled future would raise
+                        # `CancelledError` in the flush, which the uplink's
+                        # consumer does not catch (review of #499, pass 8).
+                        if not done.done():
+                            done.set_result(None)
+                    await self._answered()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's turns
+                    # Covers the wait after the send too: anything raised
+                    # there would end the call's one consumer, and every
+                    # later line would be shown and never answered (pass 8).
+                    self._log(f"voice late turn failed: {e.__class__.__name__}")
+                continue
+            text = self._typed.popleft()
+            try:
+                # Not over an answer under way - a turn here is not a
+                # barge-in; but a late turn arriving meanwhile goes first.
+                if await self._until(False, self._end_secs, yield_to_late=True, ahead=True) is None:
+                    self._typed.appendleft(text)
+                    continue
+                # Never the words: the journal keeps their length (`journal`).
+                self._log(f"voice typed turn: {withheld(text)}")
+                await self._push(text)
+                self._pushed()
+                await self._answered()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - one bad turn must not end the call's typing
+                # Said, without the words, and the next turn still goes: a
+                # consumer that died here would leave every later line shown
+                # on the page and never answered (review of #499).
+                self._log(f"voice typed turn failed: {e.__class__.__name__}")
+
+
+# `named` is required, with no default: a second caller that forgot it would
+# silently lose the chat binding - and an incognito call its silence - rather
+# than fail.
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments, named: str | None,
+                  bound: dict | None):
+    from loguru import logger as _logger
+
+    # Before anything in the call can log: words never reach the journal.
+    journal.install(_logger, sys.stderr)
+    LoopSampler.start()
+    stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
+    # A persona call's voice is bound here, at construction, so its first
+    # word is already in it; `bound` is `persona_voice`'s, checked in `bot`.
+    bound = bound or {}
+    tts = LocalTTS(
+        api_key="unused",
+        base_url=TTS_URL,
+        settings=OpenAITTSService.Settings(voice=bound.get("voice", TTS_VOICE), model="tts"),
+        speed=bound.get("speed", TTS_SPEED),
+        exaggeration=bound.get("exaggeration", TTS_EXAGGERATION),
+        cfg_weight=bound.get("cfg_weight", TTS_CFG_WEIGHT),
+        # One window, both ends: the STT reads what the TTS wrote, and no
+        # other call on this worker can reach it.
+        echo_window=stt.echo_window,
+    )
+    # A persona's expressiveness its TTS cannot honour is spoken without,
+    # since refusing would end the call - but said, once, rather than
+    # dropped where nobody looks (the server refuses it one level down).
+    honoured = await asyncio.to_thread(tts_controls)
+    note_unsent_defaults(honoured)
+    dropped = [
+        k for k in ("exaggeration", "cfg_weight")
+        if k in bound and (honoured is None or k not in honoured)
+    ]
+    if dropped:
+        from loguru import logger
+
+        logger.info(
+            f"persona voice sets {', '.join(dropped)}, which the TTS's model does not "
+            "honour; speaking without"
+            if honoured is not None
+            else f"persona voice sets {', '.join(dropped)}; the TTS did not say which "
+            "controls it honours, so they are not sent"
+        )
+    # The facade ignores the re-sent history (the Conversation is the
+    # server's state) and the system prompt rides in mecha's cached prefix,
+    # so neither is configured here. The session key travels as a header -
+    # pipecat's service has no `user` field, and without a key every call
+    # would share one eternal conversation and two clients would barge-in
+    # on each other forever. Per connection: one call, one slot.
+    session_key = f"webrtc-{uuid.uuid4().hex[:8]}"
+    headers = {"X-Voice-Session": session_key}
+
+    # D3: when the caller named a chat session in the WebRTC offer, the
+    # facade speaks into *that* conversation instead of opening one of its
+    # own - talking and typing become one transcript, one taint slate, one
+    # workspace. A second header rather than overloading the first, because
+    # the two mean different things and only one of them is ours to mint.
+    # `named` is validated in `bot` (`named_chat_session`), before the
+    # transport exists, so an incognito call's silence covers all of it.
+    if named:
+        headers["X-Chat-Session"] = named
+    if is_incognito(named):
+        # True by construction: `bot` holds `UNLOGGED` for exactly this case,
+        # around the whole of this function. Checked rather than assumed -
+        # and not with `assert`, which `-O` strips - because the claim
+        # loosens a refusal on the other side: a call that cannot vouch ends.
+        if not UNLOGGED.active:
+            raise RuntimeError("an incognito call reached run_bot without its log silence")
+        headers["X-Voice-Unlogged"] = "1"
+    headers.update(tts_headers(honoured, await asyncio.to_thread(tts_streams)))
+    # §6.2: the same namespaced key `mecha-cli`'s facade keys its cache by
+    # (`hosted_completion`'s `confirm_key`) - a hosted chat session and this
+    # connection's own voice slot must not collide, so the namespace has to
+    # match exactly on both sides of the poll.
+    tts.set_affect_key(f"chat:{named}" if named else f"voice:{session_key}")
+    print(session_line(session_key, named), flush=True)
+    llm = OpenAILLMService(
+        api_key="unused",
+        base_url=FACADE_URL,
+        model="mecha",
+        default_headers=headers,
+    )
+
+    context = LLMContext()
+    # A user turn starts on a *transcription*, never on the VAD. Pipecat's
+    # default is both (`[VADUserTurnStartStrategy, Transcription...]`) and
+    # the VAD always wins the race, which is the bug: 200ms of anything
+    # Silero scores as speech stops the bot mid-sentence, and a keyboard
+    # clears that easily. Observed 2026-08-25 in a real call - 1.18s at
+    # rms 0.0124 interrupted a reply and transcribed to '' - so the bot
+    # stopped for a sound with no words in it.
+    #
+    # Dropping VAD from the *start* list fixes it structurally rather than
+    # by tuning: `BaseWhisperSTTService.run_stt` emits no TranscriptionFrame
+    # at all for empty text (`if text or self._push_empty_transcripts`),
+    # so a wordless segment now reaches no strategy and the bot simply
+    # keeps talking. This is "resume on an empty transcript" achieved by
+    # never stopping, which needs no state to unwind.
+    #
+    # The VAD analyzer stays - it still *segments*, which is what hands the
+    # STT an utterance. What changed is that a false segment now costs one
+    # wasted 92ms transcription instead of an interruption, so the gate can
+    # afford to stay sensitive. That matters here: the owner's measured
+    # speech is ~0.024 RMS against a 0.14 tuning assumption, so raising VAD
+    # (that 0.024 is superseded — see `ECHO_SEGMENT_RMS` above, where the same
+    # quantity classified by speaker state runs 0.0141 to 0.0774 — but the
+    # conclusion it supported here, that the gap to noise is small, holds)
+    # thresholds to chase noise would start dropping quiet real speech.
+    # start_secs 0.2 -> 0.3 only rejects the shortest transients; confidence
+    # and min_volume are left alone deliberately.
+    #
+    # The cost, stated: Parakeet is offline, so a transcript arrives after
+    # the utterance ends. Barge-in is therefore "finish the phrase and it
+    # stops" rather than instant. A streaming STT would restore instant
+    # barge-in via use_interim=True; with this one interim frames never
+    # exist, so it is False rather than misleading.
+    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
+            user_turn_stop_timeout=USER_TURN_STOP_TIMEOUT,
+            # See `UPLINK_VAD_IDLE_SECS`; the RTP path keeps pipecat's 1.0 s.
+            # Chosen once, here: a call that later falls back to RTP keeps
+            # the 30 s, which Silero's stop on flowing silence makes safe.
+            audio_idle_timeout=UPLINK_VAD_IDLE_SECS if isinstance(transport, UplinkTransport) else 1.0,
+            user_turn_strategies=UserTurnStrategies(
+                start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
+                # Pipecat's default stop strategy and analyzer, with the
+                # transcript-started turn handled - the class explains.
+                stop=[TranscriptStartedTurnStop(turn_analyzer=LocalSmartTurnAnalyzerV3())],
+            ),
+        ),
+    )
+
+    # RTVI is how the page knows what is happening: transcripts both ways,
+    # user/bot speaking edges, and bot-llm-started - which is exactly the
+    # thinking-sound trigger (request in flight, no first token yet). The
+    # worker observes; the client plays. docs/VOICE-RESEARCH.md D7/D9.
+    rtvi = RTVIProcessor()
+
+    async def on_link_change(state, reason, after_secs):
+        # Best effort by design: a paused link may not carry the message
+        # that says so, which is why the page watches its own statistics
+        # too. The one that gets through first is the one that sounds.
+        try:
+            await rtvi.send_server_message(
+                {"t": "link", "state": state, "reason": reason, "after_secs": round(after_secs, 1)}
+            )
+        except Exception as e:  # noqa: BLE001 - an announcement is not load-bearing
+            print(f"voice link: could not announce {state} ({e})", flush=True)
+
+    link = LinkWatch(on_change=on_link_change)
+    # The buffered uplink (docs/VOICE-LINK-DESIGN.md), when the page declared
+    # it in the offer; a page without the tap runs the RTP path unchanged.
+    uplink = (
+        UplinkAudio(transport.input(), link, stt, announce=rtvi.send_server_message)
+        if isinstance(transport, UplinkTransport)
+        else None
+    )
+    if uplink:
+        print("voice uplink: buffered over the data channel", flush=True)
+        transport.input().on_fallback = uplink.on_fallback  # drops its queue, then the link forgets
+        transport.input().on_stop = uplink.close
+        transport.input().announce = rtvi.send_server_message
+
+    answering = Answering()
+    pipeline = Pipeline(
+        [
+            transport.input(),
+            link,
+            rtvi,
+            stt,
+            user_aggregator,
+            llm,
+            answering,
+            tts,
+            transport.output(),
+            assistant_aggregator,
+        ]
+    )
+
+    # Pipecat cancels an "idle" pipeline - and the runner with it - after
+    # `idle_timeout_secs`, where idle means neither side produced a speaking
+    # frame. The default is 300s, which is a *conversational* silence on a
+    # phone: think for five minutes, read something, put it in your pocket,
+    # and the call dies with no message of any kind. The client sees only the
+    # peer connection close, which is how "the call ends by itself" was
+    # reported. Measured in production 2026-08-25: a call connected 11:36:23
+    # ended 11:41:50 on exactly this timer.
+    #
+    # The timeout is kept rather than disabled, because an abandoned tab
+    # otherwise holds VAD, turn detection, STT and TTS open forever on a box
+    # with one GPU. It is raised to fifteen minutes - past any pause that is
+    # still a conversation - and, more importantly, it now *says so* on the
+    # way out (below): a component that stops has to be able to tell you why,
+    # or the only symptom is a surface that silently stopped working.
+    IDLE_SECS = 15 * 60
+    worker = PipelineWorker(
+        pipeline,
+        params=PipelineParams(enable_metrics=True),
+        observers=[RTVIObserver(rtvi)],
+        idle_timeout_secs=IDLE_SECS,
+    )
+
+    @worker.event_handler("on_idle_timeout")
+    async def on_idle_timeout(worker):
+        # Fired before the cancel, so the data channel is still open and this
+        # is the last chance to name the cause. Best-effort by design: a
+        # failure here must not stop the teardown it is announcing.
+        print(f"voice idle timeout after {IDLE_SECS}s - ending the call", flush=True)
+        try:
+            await rtvi.send_server_message({"t": "call-ending", "reason": "idle", "after_secs": IDLE_SECS})
+        except Exception as e:  # noqa: BLE001 - an announcement is not load-bearing
+            print(f"voice idle timeout: could not announce ({e})", flush=True)
+
+    from pipecat.workers.runner import WorkerRunner
+
+    runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
+    await runner.add_workers(worker)
+
+    # The voice controls (D7's dock). One message type serves read and
+    # write: `{}` asks what is available, a payload sets it, and both
+    # answer with the same shape, so the page has exactly one code path
+    # for "what is the voice now" and cannot render a control that
+    # disagrees with the server.
+    #
+    # This is a *presentation* channel: it can pick a voice and a rate, and
+    # there is deliberately no field here that reaches the workspace or the
+    # posture. The remote-control rule - inbound text is a prompt, never a
+    # command - is what keeps a data channel from becoming a control plane.
+    # The one way in to the agent is a typed turn (`typed`, 2026-10-01): it
+    # is a prompt in exactly that sense, the owner's words as a user turn
+    # with the trust the audio on this channel already has (the buffered
+    # uplink carries that audio here too), and never a field, a setting or
+    # a command.
+    # Typed lines (`typed`): appended and run at once, as a late turn is -
+    # a transcript-only turn has no VAD edge for a stop strategy to rule on.
+    async def push_typed(text: str):
+        await transport.input().push_frame(
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": text}], run_llm=True)
+        )
+
+    # Busy while the model answers, the bot speaks, or the gap between the
+    # two has not passed: an answer is over when all are done, spoken or not.
+    typed = TypedTurns(
+        push_typed,
+        lambda: answer_pending(answering, lambda: getattr(stt, "_bot_speaking", False)),
+        log=lambda line: print(line, flush=True),
+    )
+    # Late turns join the same queue: one consumer for every turn put to the
+    # model outside live audio (review of #499, pass 5).
+    if uplink is not None:
+        uplink.deliver = typed.deliver
+    typed_task = asyncio.create_task(typed.run())
+
+    @rtvi.event_handler("on_client_message")
+    async def on_client_message(rtvi, msg):
+        # The uplink's own messages: audio, and the clock it is stamped on.
+        # Audio is not a prompt and not a command — it is the microphone,
+        # arriving by a route that retransmits — and it goes where the
+        # microphone's frames go, nowhere else.
+        # Every message is the channel's proof of life, for the deafness
+        # watch: a blocked channel carries nothing, a dead tap carries
+        # everything but audio.
+        if uplink is not None:
+            transport.input().note_channel()
+        if msg.type == "typed":
+            # Decided and enqueued before any await: one consumer delivers
+            # them in order (`TypedTurns`). A line that is a turn and was not
+            # taken (the queue is full) is said to the page, which has
+            # already shown it as sent (review of #499).
+            if typed.put(msg.data) == "full":
+                await rtvi.send_server_message({"t": "typed-dropped"})
+            return
+        if msg.type == "heartbeat":
+            return
+        if msg.type == "uplink":
+            # The page's side of the watch: its tap died, it is on RTP now.
+            # `why` is the page's words: one printable line, as `link`.
+            data = msg.data if isinstance(msg.data, dict) else {}
+            if uplink is not None and data.get("state") == "rtp":
+                why = "".join(c for c in str(data.get("why") or "")[:64] if c.isprintable())
+                await transport.input().engage_fallback(f"the page reported {why or 'a dead tap'}")
+            return
+        if msg.type in ("audio", "audio-start"):
+            if uplink is None:
+                return
+            data = msg.data if isinstance(msg.data, dict) else {}
+            try:
+                if msg.type == "audio-start":
+                    await uplink.on_start(data)
+                else:
+                    await uplink.on_audio(data)
+            except Exception as e:  # noqa: BLE001 - one bad batch must not end the call
+                print(f"voice uplink: batch failed ({e.__class__.__name__}: {e})", flush=True)
+            return
+        if msg.type == "link":
+            # The page's side of the pause: what it saw (`reason`) is logged
+            # in its own words so the journal carries the phone's view of a
+            # call beside the worker's, and it holds the turn exactly as a
+            # gap in the audio would. A prompt-shaped payload has nowhere to
+            # go here: the only thing this message can do is pause.
+            data = msg.data if isinstance(msg.data, dict) else {}
+            # One printable line each: the journal is the instrument every
+            # diagnosis here is read from, and a page must not be able to
+            # write a second line into it.
+            state = "".join(c for c in str(data.get("state", ""))[:16] if c.isprintable())
+            reason = "".join(c for c in str(data.get("reason", ""))[:32] if c.isprintable())
+            print(f"voice link (page): state={state} reason={reason}", flush=True)
+            if state == "paused":
+                await link.hold(reason or "page")
+            else:
+                await link.release(reason or None)
+            return
+        if msg.type != "voice-config":
+            return
+        data = msg.data or {}
+        applied, refused = {}, {}
+        if "voice" in data and bound.get("voice"):
+            # A persona call's voice is the persona's, bound at the offer:
+            # the page's remembered voice must not re-voice it.
+            refused["voice"] = str(data["voice"])
+        elif "voice" in data:
+            want = str(data["voice"])
+            known = available_voices()
+            if known is not None and want not in known:
+                # A miss may be a voice cloned since this process last
+                # asked - one revalidation before refusing, so a fresh
+                # clone works on the next call rather than after a worker
+                # restart. A genuinely unknown name costs one extra list
+                # fetch and is then refused exactly as before.
+                known = available_voices(refresh=True)
+            # Unknown list means unknown, not permissive: refusing here
+            # costs one unchanged voice, where guessing costs a 400 in
+            # the middle of a spoken sentence.
+            if known is not None and want in known:
+                tts.set_voice_name(want)
+                applied["voice"] = want
+            else:
+                refused["voice"] = want
+        if "speed" in data and "speed" in bound:
+            # The profile's speed, like its voice, is the persona's.
+            refused["speed"] = data["speed"]
+        elif "speed" in data:
+            try:
+                want = float(data["speed"])
+            except (TypeError, ValueError):
+                refused["speed"] = data["speed"]
+            else:
+                if tts.set_speed(want):
+                    applied["speed"] = want
+                else:
+                    refused["speed"] = want
+        if applied:
+            print(f"voice config: {applied}", flush=True)
+        await rtvi.send_server_message({
+            "t": "voice-config",
+            "voices": available_voices(),
+            "voice": tts._settings.voice,
+            "speed": tts.speed,
+            "range": {"min": MIN_SPEED, "max": MAX_SPEED},
+            "refused": refused or None,
+        })
+
+    connected = asyncio.Event()
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        connected.set()
+        print("voice client connected", flush=True)
+        # See TRACK_IDLE_DISCARD_SECS. Two privates, and a guard on each:
+        # this is a memory limit being relaxed, not a correctness rule, so a
+        # pipecat that moved them costs a warning rather than the call — but
+        # never silence, because the discard it leaves in place is the one
+        # that ate the owner's words.
+        track = getattr(getattr(transport.input(), "_client", None), "_audio_input_track", None)
+        if track is not None and hasattr(track, "_idle_timeout"):
+            track._idle_timeout = TRACK_IDLE_DISCARD_SECS
+        else:
+            from loguru import logger
+
+            logger.warning(
+                "could not relax the input track's idle discard "
+                "(pipecat moved `_client._audio_input_track._idle_timeout`); "
+                "a stall will discard queued audio"
+            )
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        print("voice client disconnected", flush=True)
+        await runner.cancel()
+
+    # An answered offer whose browser never connects ends here rather than at
+    # the idle timeout (`CONNECT_DEADLINE_SECS`).
+    fired = asyncio.Event()
+    deadline = asyncio.create_task(
+        end_unless_connected(connected, CONNECT_DEADLINE_SECS, runner.cancel, fired)
+    )
+    try:
+        await runner.run()
+    finally:
+        # Awaited, not only cancelled: an exception it held would otherwise
+        # surface only as a GC-time warning (the review of #386's rule).
+        typed_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typed_task
+        await settle_deadline(deadline, fired)
+
+
+async def bot(runner_args: RunnerArguments):
+    webrtc_connection: SmallWebRTCConnection = runner_args.webrtc_connection
+    body = runner_args.body if isinstance(runner_args.body, dict) else {}
+    quiet = offers_incognito(body)
+    # Held before the transport exists and released only when the call is
+    # over, however it ends: nothing of an incognito call is logged at any
+    # point in its life. Keyed on the raw name, so it covers the refusal
+    # just below as well.
+    with UNLOGGED.held(quiet):
+        named = named_chat_session(body)
+        if quiet and not is_incognito(named):
+            # A name that claimed to be incognito and failed validation.
+            # Going on would drop the chat binding and answer in the
+            # facade's own, recorded, slot while the page says nothing is
+            # kept; the call ends instead.
+            await webrtc_connection.disconnect()
+            return
+        try:
+            bound = persona_voice(body)
+        except ValueError as e:
+            print(f"voice: refusing a persona call ({e})", flush=True)
+            await webrtc_connection.disconnect()
+            return
+        if bound is not None:
+            known = available_voices(refresh=True)
+            if known is None or bound["voice"] not in known:
+                # Serve asked a moment ago; a voice removed since is refused
+                # here rather than spoken as the default.
+                print(f"voice: refusing a persona call in unknown voice {bound['voice']!r}",
+                      flush=True)
+                await webrtc_connection.disconnect()
+                return
+        # Decided here, from the offer, before any RTP frame is read: a switch
+        # mid-call would deliver the first words twice.
+        transport_cls = UplinkTransport if body.get("uplink") == "channel" else SmallWebRTCTransport
+        transport = transport_cls(
+            webrtc_connection=webrtc_connection,
+            params=TransportParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+            ),
+        )
+        await run_bot(transport, runner_args, named, bound)
+
+
+if __name__ == "__main__":
+    from pipecat.runner.run import app, main
+
+    install(app)
+    main()

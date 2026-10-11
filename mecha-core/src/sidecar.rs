@@ -137,8 +137,9 @@ pub const SIDECARS: &[Sidecar] = &[
         needed_by: &[Feature::Voice],
         serves: &["stt"],
         evidence: &[Evidence::UserUnit("mecha-parakeet.service")],
-        installer: "7d",
-        models_in_hub: true,
+        installer: "7d-1",
+        // Unpacked from its release tarball into its own tree, never the hub.
+        models_in_hub: false,
     },
     Sidecar {
         id: "voice-worker",
@@ -146,7 +147,7 @@ pub const SIDECARS: &[Sidecar] = &[
         needed_by: &[Feature::Voice],
         serves: &["turn"],
         evidence: &[Evidence::UserUnit("mecha-voice-worker.service")],
-        installer: "7d",
+        installer: "7d-2",
         models_in_hub: true,
     },
     // The speech server: Breeze and its OpenAI-shaped adapter, the default
@@ -918,7 +919,7 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c-1", "7c-2", "7d", "7e", "7f"].contains(&s.installer),
+                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"].contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
