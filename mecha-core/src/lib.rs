@@ -61,6 +61,7 @@ pub mod capture;
 pub mod charter;
 pub mod clock;
 pub mod closure;
+pub mod comfyui_unit;
 pub mod compact;
 pub mod comparison;
 pub mod config;
