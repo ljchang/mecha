@@ -57,7 +57,7 @@
   }
 
   function refresh() {
-    if (typeof document !== 'undefined' && document.hidden) return;
+    if (document.hidden) return;
     for (const name of spec?.datasets ?? []) refreshOne(name);
   }
 
@@ -96,13 +96,21 @@
     return { kind: 'ready' };
   }
 
+  /**
+   * Over every dataset a panel draws from: the oldest `generated_at` (a chart
+   * is only as fresh as its stalest input), any stale reason, and whether a
+   * read failed while older rows stay drawn.
+   */
   function freshness(panel) {
-    const name = namesOf(panel)[0];
-    const d = name ? data[name]?.dataset : null;
+    const names = namesOf(panel);
+    const times = names
+      .map((n) => data[n]?.dataset?.generated_at)
+      .filter(Boolean)
+      .sort();
     return {
-      at: d ? asOf(d.generated_at, timeZone) : null,
-      stale: name ? stale[name] : null,
-      lagging: name ? Boolean(data[name]?.error && data[name]?.dataset) : false,
+      at: times.length ? asOf(times[0], timeZone) : null,
+      stale: names.map((n) => stale[n]).find(Boolean) ?? null,
+      lagging: names.some((n) => Boolean(data[n]?.error && data[n]?.dataset)),
     };
   }
 </script>
@@ -125,10 +133,12 @@
           <p class="note bad">Could not load {st.why}</p>
         {:else if st.kind === 'loading'}
           <p class="note">Loading…</p>
+        {:else if panel.type === 'kpi'}
+          <!-- Before the empty state: a count over no rows is a real 0, and
+               any other figure over nothing is already a dash. -->
+          <p class="figure">{formatFigure(kpi(rowsByName[panel.dataset] ?? [], panel.value))}</p>
         {:else if st.kind === 'empty'}
           <p class="note">{st.why}</p>
-        {:else if panel.type === 'kpi'}
-          <p class="figure">{formatFigure(kpi(rowsByName[panel.dataset] ?? [], panel.value))}</p>
         {:else if panel.type === 'chart'}
           <Chart chart={panel.vegalite} {rowsByName} mode={scheme} />
         {:else if panel.type === 'table'}

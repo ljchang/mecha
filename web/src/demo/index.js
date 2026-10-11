@@ -73,6 +73,14 @@ function replay(userText, request_id) {
 // from it, and a regex over source can.
 export const ROUTES = [
   ['GET', /^\/api\/ping$/, () => ({ ok: true })],
+  ['GET', /^\/api\/hud$/, () => fx.hudBoards],
+  ['GET', /^\/api\/hud\/lab_week$/, () => fx.hudBoard],
+  [
+    'GET',
+    /^\/api\/hud\/lab_week\/data\/([a-z_]+)$/,
+    (_url, [name]) =>
+      fx.hudData[name] ?? new Response(`"${name}" has not been produced yet`, { status: 404 }),
+  ],
   ['GET', /^\/api\/summary$/, () => fx.summary],
   ['GET', /^\/api\/today$/, () => ({
     as_of: new Date().toISOString(),

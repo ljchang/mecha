@@ -138,6 +138,11 @@ assert.equal(bar.datasets, undefined, 'the spec is not mutated');
 assert.deepEqual(viewFor(bar, {}).datasets.visits, [], 'a dataset not loaded yet is empty');
 assert.equal(viewFor({ ...bar, width: 300 }, {}).width, 300, 'a chart that sized itself keeps it');
 assert.equal(viewFor({ hconcat: [bar] }, {}).width, undefined, 'a composed view keeps its own sizing');
+// A spec held in Svelte state arrives as a proxy, which `structuredClone`
+// refuses; a Proxy stands in for it here.
+const proxied = new Proxy(bar, {});
+assert.throws(() => structuredClone(proxied));
+assert.equal(viewFor(proxied, { visits: rows }).datasets.visits.length, 4, 'a proxied spec still draws');
 
 // Polling never faster than the floor.
 assert.equal(pollEvery(5_000), POLL_FLOOR_MS);
