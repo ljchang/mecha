@@ -376,6 +376,18 @@ fn push_published(
                     continue;
                 }
             };
+            // Refused already: said and counted every tick, never re-sent —
+            // and checked before `plan` builds a body of the rows, which for a
+            // `size` or `budget` refusal is the largest on the board.
+            if let Some(refused) = pushed.refusal(release.version, name, dataset.generation) {
+                eprintln!(
+                    "{id}/{name}: generation {} was refused ({}) and is not sent again; \
+                     the next generation, or a new publish, is",
+                    dataset.generation, refused.code
+                );
+                unpushed += 1;
+                continue;
+            }
             let body = match publish::plan(
                 &installed,
                 name,
@@ -404,16 +416,6 @@ fn push_published(
                     continue;
                 }
             };
-            // Refused already: said and counted every tick, never re-sent.
-            if let Some(refused) = pushed.refusal(release.version, name, dataset.generation) {
-                eprintln!(
-                    "{id}/{name}: generation {} was refused ({}) and is not sent again; \
-                     the next generation, or a new publish, is",
-                    dataset.generation, refused.code
-                );
-                unpushed += 1;
-                continue;
-            }
             match push_one(program, &published.bundle, name, &body) {
                 Ok(outcome) => match outcome["outcome"].as_str() {
                     Some("stored") | Some("unchanged") => {

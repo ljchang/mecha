@@ -841,6 +841,11 @@
             </div>
           {/if}
         {:else}
+          {#if detail.loaders !== undefined && args.visibility === 'public'}
+            <!-- The release's most consequential argument, marked where the
+                 reviewer is looking rather than left in the arguments grid. -->
+            <div class="card pad"><span class="chip warnchip">public — anyone with the link reads it, and every refresh pushes new rows there unreviewed</span></div>
+          {/if}
           {#if detail.preview}
             <!-- A dashboard publish is reviewed as its page with real numbers
                  in it, on the preview origin — never this one — and beside
