@@ -780,6 +780,23 @@ impl SceneSlot {
         self.lookup_hash(&hash(bytes))
     }
 
+    /// [`lookup`](Self::lookup), saying why there is none: no record (`Ok(None)`),
+    /// or one that does not read or parse (`Err`), which a judge reports
+    /// rather than taking for a picture never recorded (review of #644).
+    pub fn lookup_said(&self, bytes: &[u8]) -> std::result::Result<Option<Scene>, String> {
+        let path = self
+            .store
+            .join("index")
+            .join(format!("{}.json", hash(bytes)));
+        match std::fs::read(&path) {
+            Ok(b) => serde_json::from_slice(&b)
+                .map(Some)
+                .map_err(|e| format!("the picture's scene record does not parse: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("the picture's scene record did not read: {e}")),
+        }
+    }
+
     /// The same, by a hash already taken.
     pub fn lookup_hash(&self, h: &str) -> Option<Scene> {
         is_hash(h)
@@ -962,6 +979,28 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A judge is told a record that does not read from one never written
+    /// (review of #644).
+    #[test]
+    fn a_lookup_says_why_there_is_no_record() {
+        let dir = std::env::temp_dir().join(format!("mecha-scene-{}", uuid::Uuid::new_v4()));
+        let slot = persona_slot(&dir, "p", "c");
+        std::fs::create_dir_all(slot.store.join("index")).unwrap();
+        assert_eq!(slot.lookup_said(b"picture"), Ok(None));
+        let at = slot
+            .store
+            .join("index")
+            .join(format!("{}.json", hash(b"picture")));
+        std::fs::write(&at, "{ torn").unwrap();
+        assert!(slot
+            .lookup_said(b"picture")
+            .unwrap_err()
+            .contains("does not parse"));
+        std::fs::write(&at, serde_json::to_vec(&Scene::default()).unwrap()).unwrap();
+        assert_eq!(slot.lookup_said(b"picture"), Ok(Some(Scene::default())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn slot() -> (SceneSlot, PathBuf) {
         let root =
