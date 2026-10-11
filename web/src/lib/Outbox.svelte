@@ -652,9 +652,15 @@
                so the draft cannot be sent from here until you say what the
                destination shows. Neither answer sends anything. -->
           <div class="card pad col">
-            <p class="note">Look in {fromThread ?? args.account ?? 'the account'}'s Sent folder{kind === 'event' ? ' or calendar' : ''}, then say what you found.</p>
+            {#if detail.kind === 'publish'}
+              <!-- A publish has no Sent folder: the place to look is the
+                   factory, where a release shows as a new version. -->
+              <p class="note">Look at the bundle on the factory (<code>factory-publish list</code>, or your hangar) for a new version, then say what you found.</p>
+            {:else}
+              <p class="note">Look in {fromThread ?? args.account ?? 'the account'}'s Sent folder{kind === 'event' ? ' or calendar' : ''}, then say what you found.</p>
+            {/if}
             <label class="field">What you checked
-              <input bind:value={deliveryEvidence} placeholder="e.g. not in Sent — or the message id you found" />
+              <input bind:value={deliveryEvidence} placeholder={detail.kind === 'publish' ? 'e.g. no new version — or the version you found' : 'e.g. not in Sent — or the message id you found'} />
             </label>
             <div class="btnrow start">
               <button class="btn" disabled={busy || !deliveryEvidence.trim()} onclick={() => reconcile('not-delivered')}>It wasn't sent</button>

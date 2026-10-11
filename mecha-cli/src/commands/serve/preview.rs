@@ -373,7 +373,7 @@ mod tests {
             std::env::temp_dir().join(format!("mecha-preview-outbox-{}", uuid::Uuid::new_v4()));
         let store = OutboxStore::open(&root).unwrap();
         let mut item = store
-            .stage_publish_by_harness(tool, serde_json::json!({"id": id, "bundle": "/x"}))
+            .stage_publish_by_harness(tool, serde_json::json!({"id": id, "bundle": "/x"}), &root)
             .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         item.status = status.to_string();
@@ -524,7 +524,7 @@ mod tests {
         let outbox = OutboxStore::open(&outbox_root).unwrap();
         let args = serde_json::json!({"id": "hud-lab", "bundle": bundle.display().to_string()});
         let staged = outbox
-            .stage_publish_by_harness("factory__bundle_publish", args.clone())
+            .stage_publish_by_harness("factory__bundle_publish", args.clone(), &bundles)
             .unwrap();
         let by_model = outbox
             .stage(
