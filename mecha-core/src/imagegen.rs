@@ -4089,13 +4089,18 @@ impl Tool for ImageGenerate {
                         .as_ref()
                         .map(|e| e.text.trim().trim_end_matches('.').to_string())
                         .unwrap_or_default();
-                    let in_act = clothes_in_act(
-                        p,
-                        &p.doing,
-                        &[together_sent, plan.also.as_deref()],
-                        &everyone,
-                        &asked_wearing,
-                    );
+                    // Someone this edit dresses has the new outfit in the
+                    // instruction ("Dress Maya in …"), whatever the person
+                    // line says, so it is neither left out here nor claimed
+                    // as left out (review of #647, pass 7).
+                    let in_act = !plan.delta.dressed.contains(&p.who.key())
+                        && clothes_in_act(
+                            p,
+                            &p.doing,
+                            &[together_sent, plan.also.as_deref()],
+                            &everyone,
+                            &asked_wearing,
+                        );
                     if in_act {
                         clothes_said
                             .push((name.clone(), matches!(p.who, crate::scene::Who::Library(_))));
@@ -9595,6 +9600,45 @@ mod tests {
                 .map(String::as_str),
             Some(turbo)
         );
+    }
+
+    /// An edit that dresses someone states the new outfit in its instruction,
+    /// so the manifest never claims it was left out, even where their act
+    /// states a clothing state: a reader-merged outfit on a bare follow-up
+    /// is the reachable shape (review of #647, pass 7). Fails where the edit
+    /// path suppressed and claimed whatever the instruction said.
+    #[tokio::test]
+    async fn an_edit_that_dresses_someone_never_claims_their_outfit_left_out() {
+        let (url, seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a porch", "people": [
+                    {"who": "maya", "wearing": "a wool sweater",
+                     "doing": "wearing a green parka, shaking off the rain"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({"people": [
+            {"who": "Maya", "wearing": "a red dress"}
+        ]})))));
+        let then = t
+            .call(
+                json!({"picture": picture_of(&first.content),
+                       "scene": {"people": [{"who": "maya"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!then.is_error, "{}", then.content);
+        let manifest = manifest_of(&dir, &then.content);
+        assert_eq!(manifest["route"], "edited", "{manifest}");
+        assert!(last_prompt(&seen).contains("Dress Maya in a red dress"));
+        assert!(manifest["clothes_in_act"].is_null(), "{manifest}");
     }
 
     /// A reader that answers as told, standing in for the persona host's.
