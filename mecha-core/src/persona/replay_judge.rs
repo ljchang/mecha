@@ -583,11 +583,21 @@ impl Identity {
 pub struct PersonVerdict {
     #[serde(flatten)]
     pub clause: Clause,
+    /// On their own crop; `None` when they were not identified.
     pub own: Option<bool>,
     /// On each other identified person's crop: a yes is the clause drawn
     /// on them too. Empty for an expression, which two people may share.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub elsewhere: Vec<Option<bool>>,
+    pub elsewhere: Vec<Elsewhere>,
+}
+
+/// A person's clause read on someone else's crop.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Elsewhere {
+    /// Whose crop: the record's person, by index.
+    pub person: usize,
+    /// A yes is the clause drawn on them: a bleed onto `person`.
+    pub shows: Option<bool>,
 }
 
 impl Judgement {
@@ -696,7 +706,7 @@ pub fn summarise(judged: &[Judgement]) -> Summary {
             judged
                 .iter()
                 .flat_map(|j| &j.person_clauses)
-                .flat_map(|v| v.elsewhere.iter().flatten().copied()),
+                .flat_map(|v| v.elsewhere.iter().filter_map(|e| e.shows)),
         ),
         clauses_drawn: Counted::of(verdicts().filter_map(|v| match (v.base, v.picture) {
             (Some(false), Some(shown)) => Some(shown),
@@ -733,8 +743,8 @@ pub fn caption(j: &Judgement) -> Vec<String> {
         let bled = j
             .person_clauses
             .iter()
-            .flat_map(|v| v.elsewhere.iter().flatten())
-            .filter(|b| **b)
+            .flat_map(|v| &v.elsewhere)
+            .filter(|e| e.shows == Some(true))
             .count();
         lines.push(format!(
             "identified {found}/{} · bleed {bled}",
@@ -1006,7 +1016,10 @@ mod tests {
             person_clauses: vec![PersonVerdict {
                 clause: clause("wearing"),
                 own: Some(true),
-                elsewhere: vec![Some(true)],
+                elsewhere: vec![Elsewhere {
+                    person: 1,
+                    shows: Some(true),
+                }],
             }],
             ..Judgement::default()
         };
