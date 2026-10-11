@@ -332,7 +332,10 @@ impl ChatState {
             sessions_dir: Session::default_dir()?,
             work_dir: producer_root()?,
             sessions: Mutex::new(HashMap::new()),
-            personas: Arc::new(super::persona_chat::PersonaChats::new()?),
+            personas: Arc::new(
+                super::persona_chat::PersonaChats::new()?
+                    .with_image_steps(config.image.as_ref().map(|i| i.steps)),
+            ),
             stopping: Default::default(),
             runs: Default::default(),
             jobs: super::late::Jobs::marked("chat")?,

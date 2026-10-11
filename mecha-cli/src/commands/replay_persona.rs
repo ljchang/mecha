@@ -105,6 +105,28 @@ pub struct SampleArgs {
     #[arg(long, requires = "layers")]
     pub layers_posed: bool,
 
+    /// Render with these picture settings (`sampling::Tuning`), as a
+    /// persona's owner may set them; each left out is the model's default,
+    /// so an arm with none samples as every picture did before. Never read
+    /// from the persona's own settings: an arm says what it measures.
+    #[arg(long, requires = "persona", value_parser = ["standard", "turbo"])]
+    pub image_model: Option<String>,
+    /// The guidance scale, 1 to 5 in steps of 0.5.
+    #[arg(long, requires = "persona")]
+    pub cfg: Option<f64>,
+    /// Denoising steps, 4 to 60.
+    #[arg(long, requires = "persona")]
+    pub steps: Option<u32>,
+    /// One of KSampler's samplers (`sampling::SAMPLERS`).
+    #[arg(long, requires = "persona")]
+    pub sampler: Option<String>,
+    /// One of KSampler's schedulers (`sampling::SCHEDULERS`).
+    #[arg(long, requires = "persona")]
+    pub scheduler: Option<String>,
+    /// Send the fixed negative prompt (`sampling::NEGATIVE`).
+    #[arg(long, requires = "persona")]
+    pub negative: bool,
+
     /// Run the turn's recorded Nth tool call (1-based) verbatim through the
     /// real tool, with the turn's stamps and no model turn: arms then differ
     /// only in what they set, never in what the model wrote this time.
@@ -556,6 +578,19 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     // A picture call renders unless asked not to, where the persona can
     // draw at all.
     let render = !args.no_render && probe.registry().get(IMAGE_TOOL).is_some();
+    // The arm's picture settings, held to the settings page's door.
+    let image_tuning = mecha_core::sampling::Tuning {
+        model: match args.image_model.as_deref() {
+            Some("turbo") => mecha_core::sampling::Model::Turbo,
+            _ => mecha_core::sampling::Model::Standard,
+        },
+        cfg: args.cfg,
+        steps: args.steps,
+        sampler: args.sampler.clone(),
+        scheduler: args.scheduler.clone(),
+        negative: args.negative,
+    }
+    .checked()?;
     if !args.no_render && !render {
         eprintln!("note: this persona has no `{IMAGE_TOOL}`, so nothing is drawn");
     }
@@ -623,6 +658,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             "readers_stamped": render && !args.no_readers,
             "layers": render && args.layers,
             "layers_posed": render && args.layers_posed,
+            "image_tuning": render.then_some(&image_tuning),
             "run_call": args.run_call,
             "image_seed_base": render.then_some(args.image_seed_base),
             // The real picture tool runs on two paths, for different ends:
@@ -666,6 +702,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         readers: !args.no_readers,
         layers: args.layers,
         layers_posed: args.layers_posed,
+        image_tuning: image_tuning.clone(),
         run_call: match args.run_call {
             Some(n) => {
                 let (name, input) = pr::recorded_call(&path, &text, line, n)?;
@@ -760,6 +797,8 @@ pub struct Sampler {
     layers: bool,
     /// Posed cutouts, with `layers` (`--layers-posed`).
     layers_posed: bool,
+    /// The arm's picture settings (`--image-model`, `--cfg`, ...).
+    image_tuning: mecha_core::sampling::Tuning,
     /// The recorded call run verbatim through the tool (`--run-call`).
     run_call: Option<(String, serde_json::Value)>,
 }
@@ -940,6 +979,7 @@ impl Sampler {
             // Set below for a rendering arm that asks (`--layers`).
             layers: false,
             layers_posed: false,
+            image_tuning: Default::default(),
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,
@@ -963,6 +1003,7 @@ impl Sampler {
             }
             turn.layers = self.layers;
             turn.layers_posed = self.layers_posed;
+            turn.image_tuning = self.image_tuning.clone();
         }
         let before = staged
             .as_ref()
