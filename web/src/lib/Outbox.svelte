@@ -855,6 +855,11 @@
                 referrerpolicy="no-referrer"
               ></iframe>
             </div>
+          {:else if detail.loaders !== undefined}
+            <!-- A dashboard publish with no preview origin: the page is not
+                 shown here, and the review says so rather than releasing on
+                 the queries alone without a word. -->
+            <div class="card pad"><span class="warn">The page itself is not previewed here: set <code>[web] preview_port</code> and <code>preview_origin</code> to see it with real numbers, or open the staged bundle with <code>mecha outbox show {detail.id}</code>.</span></div>
           {/if}
           {#if detail.loaders === null}
             <div class="card pad"><span class="warn">The queries this releases could not be read — check the board with <code>mecha hud list</code> before releasing.</span></div>
