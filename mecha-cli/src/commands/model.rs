@@ -192,12 +192,13 @@ fn router_of(cfg: &Config, base: &str, list: &[router::RouterModel]) -> Router {
                     .map(str::to_string)
                     .collect(),
                 // A model-less entry asks for one row only — the loaded
-                // model, else the only one (review of #637).
+                // model, else the only one — and none from a list this build
+                // cannot read, as the probe has it (review of #637).
                 sampling_mismatches: router::sampling_mismatches_listed(
                     cfg,
                     base,
                     m,
-                    router::name_for(list) == Some(m.id.as_str()),
+                    readable && router::name_for(list) == Some(m.id.as_str()),
                 ),
                 // The rule in the tense that is true of the row: the loaded
                 // model *is* loaded (found on review, pass 3).
