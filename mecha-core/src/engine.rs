@@ -496,6 +496,10 @@ pub async fn install_build(
         // Unpacked into a scratch directory and renamed into place, so a
         // run interrupted mid-unpack leaves no tree that looks like a build.
         let part = root.join(format!("{}.part", spec.tag));
+        // Any tag's scratch left by a run that never returned — a build
+        // killed mid-compile leaves gigabytes nothing else reaches; no
+        // manifest entry names it (review of #643).
+        sweep_scratch(&root);
         let _ = std::fs::remove_dir_all(&part);
         std::fs::create_dir_all(&part)?;
         let downloads = root.join("download");
@@ -824,7 +828,21 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
     step(c, "building llama.cpp")?;
     copy_flat(&build.join("bin"), part)?;
     if let Some((nvcc, _)) = &tc.cuda {
-        let copied = copy_cuda_runtime(nvcc, part)?;
+        let dirs = toolkit_dirs(nvcc, &build);
+        let copied = copy_cuda_runtime(&dirs, part)?;
+        // Said here, where the build is known and the words are right, not
+        // as `health`'s "the runtime archive did not land" (review of #643).
+        if copied.is_empty() {
+            bail!(
+                "the CUDA build links no toolkit library found in {} — mecha copies the runtime \
+                 beside the engine so it survives a toolkit change; check where your toolkit's \
+                 libcudart is",
+                dirs.iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         say(&format!(
             "copied the CUDA toolkit's {} beside it",
             copied.join(", ")
@@ -860,15 +878,7 @@ fn copy_flat(from: &Path, to: &Path) -> Result<()> {
 /// read for its own (review of #643). What the toolkit does not provide —
 /// the driver's `libcuda`, the C and C++ runtimes — is the system's, as it
 /// is for a release.
-fn copy_cuda_runtime(nvcc: &Path, part: &Path) -> Result<Vec<String>> {
-    let home = nvcc
-        .parent()
-        .and_then(Path::parent)
-        .context("nvcc is not in a toolkit's bin/")?;
-    let mut dirs = vec![home.join("lib64"), home.join("lib")];
-    if let Ok(targets) = std::fs::read_dir(home.join("targets")) {
-        dirs.extend(targets.filter_map(|e| e.ok()).map(|e| e.path().join("lib")));
-    }
+fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
     let mut todo: Vec<PathBuf> = std::fs::read_dir(part)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -886,7 +896,7 @@ fn copy_cuda_runtime(nvcc: &Path, part: &Path) -> Result<Vec<String>> {
             if dest.exists() {
                 continue;
             }
-            let Some(from) = toolkit_lib(&dirs, &lib) else {
+            let Some(from) = toolkit_lib(dirs, &lib) else {
                 continue;
             };
             // `copy` follows the link: the soname becomes a plain file.
@@ -899,11 +909,48 @@ fn copy_cuda_runtime(nvcc: &Path, part: &Path) -> Result<Vec<String>> {
     Ok(copied)
 }
 
+/// Where the toolkit's libraries are: the directory CMake resolved and
+/// linked against (`CUDAToolkit_LIBRARY_DIR` in the build's cache), then the
+/// `/usr/local/cuda` layout under `nvcc`'s parent. The first covers a
+/// distro-packaged toolkit — `nvcc` in `/usr/bin`, the runtime under
+/// `/usr/lib/<triple>/` — which the second cannot reach (review of #643).
+fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_to_string(build.join("CMakeCache.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.strip_prefix("CUDAToolkit_LIBRARY_DIR:"))
+        .filter_map(|l| l.split_once('=').map(|(_, v)| PathBuf::from(v.trim())))
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    if let Some(home) = nvcc.parent().and_then(Path::parent) {
+        dirs.extend([home.join("lib64"), home.join("lib")]);
+        if let Ok(targets) = std::fs::read_dir(home.join("targets")) {
+            dirs.extend(targets.filter_map(|e| e.ok()).map(|e| e.path().join("lib")));
+        }
+    }
+    dirs
+}
+
 /// Where the toolkit keeps `lib`, if it does: its library directories'
 /// top level only — never `stubs/`, whose `libcuda.so` is a link-time stand
 /// in for the driver and must never be shipped.
 fn toolkit_lib(dirs: &[PathBuf], lib: &str) -> Option<PathBuf> {
     dirs.iter().map(|d| d.join(lib)).find(|p| p.exists())
+}
+
+/// Remove every `<tag>.part` and `<tag>.src` under the engine root: an
+/// install's scratch, which only an install in flight may hold, and one runs
+/// at a time.
+fn sweep_scratch(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".part") || name.ends_with(".src") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// A llama.cpp release as the release API describes it — the source F10
@@ -1755,27 +1802,79 @@ mod tests {
         assert!(!nested);
     }
 
-    /// A library is the toolkit's when its library directories hold it at
-    /// their top level; the driver stub under `stubs/` never is, so it is
-    /// never shipped in the driver's place.
+    /// The copy end to end, on synthesized ELFs: the engine needs cuBLAS,
+    /// cuBLAS needs cuBLASLt, so both land — the second only because the
+    /// first was read in turn — while the driver stub under `stubs/` and the
+    /// system's C++ runtime never do (review of #643).
     #[test]
-    fn a_toolkit_library_is_found_and_the_driver_stub_is_not() {
+    fn the_toolkit_libraries_a_build_needs_are_copied_transitively() {
         let root = std::env::temp_dir().join(format!("mecha-tk-{}", uuid::Uuid::new_v4()));
-        let lib64 = root.join("lib64");
+        let lib64 = root.join("cuda/lib64");
+        let part = root.join("part");
         std::fs::create_dir_all(lib64.join("stubs")).unwrap();
-        std::fs::write(lib64.join("libcudart.so.13"), b"").unwrap();
-        std::fs::write(lib64.join("libnvJitLink.so.13"), b"").unwrap();
-        std::fs::write(lib64.join("stubs/libcuda.so.1"), b"").unwrap();
-        let dirs = vec![lib64.clone(), root.join("lib")];
-        let found = |l: &str| toolkit_lib(&dirs, l).is_some();
-        let got = (
-            found("libcudart.so.13"),
-            found("libnvJitLink.so.13"),
-            found("libcuda.so.1"),
-            found("libstdc++.so.6"),
+        std::fs::create_dir_all(&part).unwrap();
+        std::fs::write(
+            part.join("llama-server"),
+            elf(
+                &["libcublas.so.13", "libcuda.so.1", "libstdc++.so.6"],
+                Some("$ORIGIN"),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            lib64.join("libcublas.so.13"),
+            elf(&["libcublasLt.so.13"], None),
+        )
+        .unwrap();
+        std::fs::write(lib64.join("libcublasLt.so.13"), elf(&[], None)).unwrap();
+        std::fs::write(lib64.join("stubs/libcuda.so.1"), elf(&[], None)).unwrap();
+        let copied = copy_cuda_runtime(&[lib64.clone(), root.join("cuda/lib")], &part);
+        let has = |n: &str| part.join(n).is_file();
+        let landed = (
+            has("libcublas.so.13"),
+            has("libcublasLt.so.13"),
+            has("libcuda.so.1"),
         );
         let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(got, (true, true, false, false));
+        assert_eq!(
+            copied.unwrap(),
+            vec!["libcublas.so.13", "libcublasLt.so.13"]
+        );
+        assert_eq!(landed, (true, true, false));
+    }
+
+    /// The library directory CMake resolved comes first — a distro toolkit
+    /// keeps the runtime where `nvcc`'s parent says nothing about.
+    #[test]
+    fn the_toolkit_dirs_start_with_what_cmake_linked() {
+        let root = std::env::temp_dir().join(format!("mecha-tkd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("CMakeCache.txt"),
+            "CUDAToolkit_BIN_DIR:PATH=/usr/bin\nCUDAToolkit_LIBRARY_DIR:PATH=/usr/lib/x86_64-linux-gnu\n",
+        )
+        .unwrap();
+        let dirs = toolkit_dirs(Path::new("/usr/bin/nvcc"), &root);
+        let none = toolkit_dirs(Path::new("/usr/local/cuda/bin/nvcc"), &root.join("absent"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(dirs[0], PathBuf::from("/usr/lib/x86_64-linux-gnu"));
+        assert_eq!(none[0], PathBuf::from("/usr/local/cuda/lib64"));
+    }
+
+    /// A killed build's scratch is swept by the next install.
+    #[test]
+    fn scratch_from_a_killed_install_is_swept() {
+        let root = std::env::temp_dir().join(format!("mecha-sw-{}", uuid::Uuid::new_v4()));
+        for d in ["b1.src/build", "b2.part", "b3", "current.d"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        sweep_scratch(&root);
+        let left: std::collections::BTreeSet<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(left, ["b3", "current.d"].map(String::from).into());
     }
 
     /// A GPU that cannot be read is never answered with the CPU build.
