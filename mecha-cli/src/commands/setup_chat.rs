@@ -40,6 +40,9 @@ pub struct Ready {
     naming: Naming,
     /// llama.cpp's download when the machine has no engine of its own.
     pub engine_bytes: Option<u64>,
+    /// Whether that engine is built here, no release fitting (7b-2): its
+    /// download is the source, and the compile is the wait.
+    pub engine_built: bool,
     /// The chat row recommended for this machine's tier, if there is one.
     pub row: Option<&'static mecha_core::recommend::Recommendation>,
 }
@@ -131,16 +134,15 @@ pub async fn prepare() -> Result<Option<Ready>> {
     // driver.
     // Its download is priced from the pin for this machine's build, never
     // remembered: a CPU build is a fiftieth of a CUDA one.
-    let engine_bytes = if mecha_core::llama_units::has_engine(&m) {
-        None
+    let (engine_bytes, engine_built) = if mecha_core::llama_units::has_engine(&m) {
+        (None, false)
     } else {
-        let target = mecha_core::engine::choose(
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            mecha_core::engine::read_nvidia(),
+        let target = mecha_core::engine::choose_here()
+            .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
+        (
+            Some(mecha_core::engine::download_bytes(target)),
+            target.is_built(),
         )
-        .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
-        Some(mecha_core::engine::download_bytes(target))
     };
 
     let slot = mecha_core::recommend::SLOTS
@@ -154,6 +156,7 @@ pub async fn prepare() -> Result<Option<Ready>> {
         hub,
         naming,
         engine_bytes,
+        engine_built,
         row,
     }))
 }
@@ -227,12 +230,19 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
         "\nThis installs{} the router (a systemd user service on :{}) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
-        match ready.engine_bytes {
-            Some(b) => format!(
+        match (ready.engine_bytes, ready.engine_built) {
+            // A build here is said as one: its download is small, and the
+            // compile is the wait (7b-2).
+            (Some(b), true) => format!(
+                " llama.cpp (no release build fits this machine, so mecha's pinned version is \
+                 built here: {:.0} MiB of source, then a compile of minutes, longer for CUDA) and",
+                b as f64 / 1_048_576.0
+            ),
+            (Some(b), false) => format!(
                 " llama.cpp (mecha's pinned build, {:.0} MiB to download) and",
                 b as f64 / 1_048_576.0
             ),
-            None => String::new(),
+            (None, _) => String::new(),
         },
         ready.naming.port
     );

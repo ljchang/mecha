@@ -1,5 +1,6 @@
 //! The llama.cpp engine, installed from a pinned release (`docs/FEATURES-DESIGN.md`
-//! §10.3, step 7b-1).
+//! §10.3, step 7b-1) — or, where no release build fits, built here from the
+//! pin's own commit (7b-2).
 //!
 //! One engine serves the router, the embeddings server and the OCR server, so
 //! it is the sidecar every local feature stands on. It is installed **side by
@@ -28,6 +29,18 @@
 //!   `LD_LIBRARY_PATH` cleared so the libraries beside it are the ones it loads;
 //! - a GPU build lists a GPU in `--list-devices`. A CUDA build that finds no
 //!   device still runs — on the CPU — so "it started" proves nothing here.
+//!
+//! **Built here** when no release fits: an NVIDIA driver too old for the
+//! arm64 CUDA build or for any x64 one, or a Linux architecture no release
+//! covers. The source is the pin's commit, fetched by its hash with git and
+//! checked against it — the commit sha is the pin, as an asset's sha256 is
+//! — and built the way the release builds it (`$ORIGIN` RUNPATH, every
+//! library beside the binary), so the same three checks pass or fail it.
+//! A CUDA build copies the toolkit's runtime beside the libraries, as the
+//! release's second archive does. What the build needs — git, cmake, a C++
+//! compiler, and for CUDA `nvcc` and the GPU's compute capability — is
+//! checked before anything is asked or fetched, and every missing piece is
+//! named at once.
 //!
 //! macOS assets are Mach-O and resolve through `@loader_path`; the RUNPATH
 //! check is ELF-only, and the version and device checks still run there.
@@ -156,9 +169,10 @@ pub struct Asset {
     pub archives: &'static [(&'static str, &'static str, u64)],
 }
 
-/// The release builds mecha installs. Vulkan, ROCm and SYCL builds exist
-/// upstream and are not offered yet: a machine that wants one gets the CPU
-/// build named as such, and the build fallback (7b-2).
+/// The builds mecha installs: the release's, and two it builds here from the
+/// pinned commit when no release fits (7b-2). Vulkan, ROCm and SYCL builds
+/// exist upstream and are not offered yet: a machine that wants one gets the
+/// CPU build named as such.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Target {
@@ -169,6 +183,10 @@ pub enum Target {
     LinuxX64Cpu,
     MacArm64,
     MacX64,
+    /// Built here for CUDA, with the toolkit this machine has.
+    BuiltCuda,
+    /// Built here for the CPU, on an architecture no release covers.
+    BuiltCpu,
 }
 
 impl Target {
@@ -179,14 +197,26 @@ impl Target {
             Target::LinuxX64Cuda12 => "CUDA 12",
             Target::LinuxArm64Cpu | Target::LinuxX64Cpu | Target::MacX64 => "CPU",
             Target::MacArm64 => "Metal",
+            Target::BuiltCuda => "CUDA, built here",
+            Target::BuiltCpu => "CPU, built here",
         }
     }
 
-    /// Whether the build ships its CUDA runtime as a second archive.
+    /// Whether this machine builds it from source rather than fetching a
+    /// release archive.
+    pub fn is_built(self) -> bool {
+        matches!(self, Target::BuiltCuda | Target::BuiltCpu)
+    }
+
+    /// Whether the build ships its CUDA runtime beside it: a release's as a
+    /// second archive, a build's copied from the toolkit.
     pub fn needs_cudart(self) -> bool {
         matches!(
             self,
-            Target::LinuxArm64Cuda13 | Target::LinuxX64Cuda13 | Target::LinuxX64Cuda12
+            Target::LinuxArm64Cuda13
+                | Target::LinuxX64Cuda13
+                | Target::LinuxX64Cuda12
+                | Target::BuiltCuda
         )
     }
 
@@ -198,6 +228,7 @@ impl Target {
                 | Target::LinuxX64Cuda13
                 | Target::LinuxX64Cuda12
                 | Target::MacArm64
+                | Target::BuiltCuda
         )
     }
 }
@@ -234,23 +265,21 @@ pub fn choose(os: &str, arch: &str, nvidia: Nvidia) -> std::result::Result<Targe
         ("linux", "aarch64", Nvidia::Driver(ma, mi)) if (ma, mi) >= CUDA13_DRIVER => {
             Ok(Target::LinuxArm64Cuda13)
         }
-        ("linux", "aarch64", Nvidia::Driver(ma, mi)) => Err(format!(
-            "the NVIDIA driver is {ma}.{mi}; the arm64 CUDA build needs 580 or newer, and there \
-             is no older arm64 CUDA build to fall back on — update the driver, or wait for the \
-             build-from-source installer"
-        )),
+        // No arm64 CUDA release runs on an older driver: built here, with
+        // the toolkit that matches it.
+        ("linux", "aarch64", Nvidia::Driver(..)) => Ok(Target::BuiltCuda),
         ("linux", "x86_64", Nvidia::Driver(ma, mi)) if (ma, mi) >= CUDA13_DRIVER => {
             Ok(Target::LinuxX64Cuda13)
         }
         ("linux", "x86_64", Nvidia::Driver(ma, mi)) if (ma, mi) >= CUDA12_DRIVER => {
             Ok(Target::LinuxX64Cuda12)
         }
-        ("linux", "x86_64", Nvidia::Driver(ma, mi)) => Err(format!(
-            "the NVIDIA driver is {ma}.{mi}; the oldest CUDA build needs 525.60 or newer — \
-             update the driver"
-        )),
+        ("linux", "x86_64", Nvidia::Driver(..)) => Ok(Target::BuiltCuda),
         ("linux", "aarch64", Nvidia::None) => Ok(Target::LinuxArm64Cpu),
         ("linux", "x86_64", Nvidia::None) => Ok(Target::LinuxX64Cpu),
+        // An architecture no release covers is built here.
+        ("linux", _, Nvidia::Driver(..)) => Ok(Target::BuiltCuda),
+        ("linux", _, Nvidia::None) => Ok(Target::BuiltCpu),
         (os, arch, _) => Err(format!("mecha pins no llama.cpp build for {os} on {arch}")),
     }
 }
@@ -295,8 +324,27 @@ fn parse_driver(text: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// [`choose`] for this machine, and for a build here, whether it has what
+/// the build needs — so a machine that cannot build is told before it is
+/// asked anything, as one no release fits is.
+pub fn choose_here() -> std::result::Result<Target, String> {
+    let target = choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())?;
+    if target.is_built() {
+        toolchain(target)?;
+    }
+    Ok(target)
+}
+
+/// What a build here fetches: the pin's commit and its history without
+/// file contents, then the files at the commit. 57 MiB for `b11391`,
+/// measured 2026-10-10; rounded up, since history only grows.
+const SOURCE_BYTES: u64 = 60 * 1_048_576;
+
 /// What installing the pinned engine for a target downloads, in bytes.
 pub fn download_bytes(target: Target) -> u64 {
+    if target.is_built() {
+        return SOURCE_BYTES;
+    }
     asset(target).map_or(0, |a| a.archives.iter().map(|(_, _, b)| b).sum())
 }
 
@@ -349,6 +397,8 @@ pub struct Spec {
 pub enum Source {
     Pinned(&'static Asset),
     OwnerConfirmed(Vec<Archive>),
+    /// Built here from the spec's commit (7b-2): the commit sha is the pin.
+    Commit,
 }
 
 /// One archive of an owner-confirmed release.
@@ -362,13 +412,18 @@ pub struct Archive {
 impl Spec {
     /// The shipped pin, for a target.
     pub fn pin(target: Target) -> Result<Spec> {
+        let source = if target.is_built() {
+            Source::Commit
+        } else {
+            Source::Pinned(
+                asset(target).with_context(|| format!("no asset pinned for {target:?}"))?,
+            )
+        };
         Ok(Spec {
             tag: PIN.tag.into(),
             build: PIN.build,
             commit: PIN.commit.into(),
-            source: Source::Pinned(
-                asset(target).with_context(|| format!("no asset pinned for {target:?}"))?,
-            ),
+            source,
         })
     }
 
@@ -377,6 +432,7 @@ impl Spec {
         match &self.source {
             Source::Pinned(a) => a.archives.iter().map(|(_, _, b)| b).sum(),
             Source::OwnerConfirmed(v) => v.iter().map(|a| a.bytes).sum(),
+            Source::Commit => SOURCE_BYTES,
         }
     }
 }
@@ -384,8 +440,7 @@ impl Spec {
 /// Install the pinned engine for this machine: fetch, unpack, check, link.
 /// Idempotent — a build already unpacked and answering is linked, not fetched.
 pub async fn install_engine(m: &Machinery, say: Say<'_>) -> Result<PathBuf> {
-    let target = choose(std::env::consts::OS, std::env::consts::ARCH, read_nvidia())
-        .map_err(anyhow::Error::msg)?;
+    let target = choose_here().map_err(anyhow::Error::msg)?;
     let id = "llama";
     let home = &m.mecha_home;
     let link = current(home);
@@ -441,9 +496,16 @@ pub async fn install_build(
         // Unpacked into a scratch directory and renamed into place, so a
         // run interrupted mid-unpack leaves no tree that looks like a build.
         let part = root.join(format!("{}.part", spec.tag));
+        // Any tag's scratch left by a run that never returned — a build
+        // killed mid-compile leaves gigabytes nothing else reaches; no
+        // manifest entry names it (review of #643).
+        sweep_scratch(&root);
         let _ = std::fs::remove_dir_all(&part);
         std::fs::create_dir_all(&part)?;
         let downloads = root.join("download");
+        if matches!(spec.source, Source::Commit) {
+            build_from_source(&root, &part, target, spec, say).await?;
+        }
         let archives: Vec<(String, u64)> = match &spec.source {
             Source::Pinned(a) => a
                 .archives
@@ -451,6 +513,7 @@ pub async fn install_build(
                 .map(|(n, _, b)| (n.to_string(), *b))
                 .collect(),
             Source::OwnerConfirmed(v) => v.iter().map(|a| (a.name.clone(), a.bytes)).collect(),
+            Source::Commit => Vec::new(),
         };
         for (i, (name, bytes)) in archives.iter().enumerate() {
             say(&format!(
@@ -471,6 +534,7 @@ pub async fn install_build(
                     )
                     .await?
                 }
+                Source::Commit => unreachable!("a build fetches no archive"),
                 Source::OwnerConfirmed(v) => {
                     crate::fetch::fetch_confirmed_release_asset(
                         REPO,
@@ -524,6 +588,421 @@ pub async fn install_build(
         },
     )?;
     Ok(dir)
+}
+
+/// What a build here runs, found before anything is asked or fetched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toolchain {
+    pub git: PathBuf,
+    pub cmake: PathBuf,
+    /// Ninja when there is one; CMake falls back to Make otherwise.
+    pub ninja: Option<PathBuf>,
+    /// `nvcc`, and the GPU's compute capability without its dot (`121`),
+    /// for a CUDA build.
+    pub cuda: Option<(PathBuf, String)>,
+}
+
+/// What a build for `target` needs on this machine, or every missing piece
+/// named at once — the design's toolchain check (§10.3).
+pub fn toolchain(target: Target) -> std::result::Result<Toolchain, String> {
+    toolchain_from(
+        target,
+        find_program,
+        crate::recommend::nvidia_smi("compute_cap").as_deref(),
+    )
+}
+
+/// [`toolchain`] over what was found, so every row is a test.
+fn toolchain_from(
+    target: Target,
+    find: impl Fn(&str) -> Option<PathBuf>,
+    compute_cap: Option<&str>,
+) -> std::result::Result<Toolchain, String> {
+    let mut missing: Vec<String> = Vec::new();
+    let need = |missing: &mut Vec<String>, name: &str, what: &str| {
+        let found = find(name);
+        if found.is_none() {
+            missing.push(what.to_string());
+        }
+        found
+    };
+    let git = need(&mut missing, "git", "git");
+    let cmake = need(&mut missing, "cmake", "cmake");
+    if ["c++", "g++", "clang++"].iter().all(|c| find(c).is_none()) {
+        missing.push("a C++ compiler (g++ or clang++)".into());
+    }
+    let ninja = find("ninja");
+    if ninja.is_none() && find("make").is_none() {
+        missing.push("ninja or make".into());
+    }
+    let cuda = if target == Target::BuiltCuda {
+        let nvcc = need(
+            &mut missing,
+            "nvcc",
+            "nvcc (the CUDA toolkit, matching this driver)",
+        );
+        let arch = compute_cap.and_then(cuda_arch);
+        if arch.is_none() {
+            missing.push(
+                "the GPU's compute capability (`nvidia-smi --query-gpu=compute_cap` did not \
+                 answer one)"
+                    .into(),
+            );
+        }
+        nvcc.zip(arch)
+    } else {
+        None
+    };
+    match (git, cmake) {
+        (Some(git), Some(cmake)) if missing.is_empty() => Ok(Toolchain {
+            git,
+            cmake,
+            ninja,
+            cuda,
+        }),
+        _ => Err(format!(
+            "no llama.cpp release build fits this machine ({}), so mecha builds {} here from its \
+             commit — and that needs {}, which this machine does not have",
+            target.label(),
+            PIN.tag,
+            missing.join(", ")
+        )),
+    }
+}
+
+/// `12.1` → `121`, as `CMAKE_CUDA_ARCHITECTURES` takes it; ggml adds the
+/// `a` a 12.x part needs itself. The first GPU is read: one build, one
+/// architecture.
+fn cuda_arch(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let (major, minor) = line.split_once('.')?;
+    let ok = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
+    (ok(major) && ok(minor)).then(|| format!("{major}{minor}"))
+}
+
+/// A program on `PATH`, or where its installer puts it when a user unit's
+/// `PATH` does not reach (`/usr/local/cuda/bin` for `nvcc`).
+fn find_program(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(["/usr/local/bin", "/usr/bin", "/usr/local/cuda/bin"].map(PathBuf::from))
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// How many compile jobs a build runs: one per CPU, but no more than the
+/// memory left after a reserve holds at a few GiB each — a CUDA compile
+/// takes that much, and a build that pushes the chat model out of memory
+/// is the failure the memory floor exists for.
+fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
+    const PER_JOB: u64 = 4 << 30;
+    const RESERVE: u64 = 8 << 30;
+    let by_memory = available.map_or(2, |a| (a.saturating_sub(RESERVE) / PER_JOB) as usize);
+    cpus.min(by_memory).clamp(1, 16)
+}
+
+/// Run one step of a build; a failure carries the end of its output, which
+/// is where a compiler or CMake says what went wrong.
+///
+/// Awaited, so the executor is not held for the minutes a compile takes, and
+/// left in the terminal's foreground process group: a Ctrl-C at `features
+/// enable` or `setup chat` reaches mecha and every compiler together, as it
+/// would a `make` typed by hand. A group of its own took the compile out of
+/// the signal's reach, so it outlived mecha (review of #643). `kill_on_drop`
+/// ends the step's own process if its future is dropped.
+pub(crate) async fn step(c: std::process::Command, what: &str) -> Result<String> {
+    let mut c = tokio::process::Command::from(c);
+    c.kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = c.spawn().with_context(|| format!("starting {what}"))?;
+    let out = child
+        .wait_with_output()
+        .await
+        .with_context(|| format!("running {what}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if !out.status.success() {
+        let lines: Vec<&str> = text.lines().collect();
+        let tail = lines[lines.len().saturating_sub(30)..].join("\n");
+        bail!("{what} failed ({}):\n{tail}", out.status);
+    }
+    Ok(text)
+}
+
+/// Build the spec's commit into `part`, flat, as the release is built: the
+/// release's own flags (`$ORIGIN` RUNPATH, set at build time) and its own
+/// packaging (`build/bin` as it stands), so `health` reads it as it reads a
+/// release. The source tree is removed whether the build passes or fails.
+async fn build_from_source(
+    root: &Path,
+    part: &Path,
+    target: Target,
+    spec: &Spec,
+    say: Say<'_>,
+) -> Result<()> {
+    let tc = toolchain(target).map_err(anyhow::Error::msg)?;
+    let src = root.join(format!("{}.src", spec.tag));
+    let _ = std::fs::remove_dir_all(&src);
+    std::fs::create_dir_all(&src)?;
+    let built = build_in(&src, part, &tc, spec, say).await;
+    let _ = std::fs::remove_dir_all(&src);
+    built
+}
+
+async fn build_in(
+    src: &Path,
+    part: &Path,
+    tc: &Toolchain,
+    spec: &Spec,
+    say: Say<'_>,
+) -> Result<()> {
+    say(&format!(
+        "fetching llama.cpp's source at {} ({:.0} MiB)",
+        spec.tag,
+        SOURCE_BYTES as f64 / 1_048_576.0
+    ));
+    let git = |args: &[&str]| {
+        let mut c = std::process::Command::new(&tc.git);
+        c.arg("-C")
+            .arg(src)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0");
+        c
+    };
+    step(git(&["init", "--quiet"]), "git init").await?;
+    // Blobless, not shallow: the build number llama.cpp reports is the
+    // commit count, which a shallow clone gets wrong (`1`), and `health`
+    // checks it. History without file contents is 57 MiB.
+    step(
+        git(&[
+            "fetch",
+            "--quiet",
+            "--filter=blob:none",
+            &format!("https://github.com/{REPO}"),
+            &spec.commit,
+        ]),
+        "fetching llama.cpp's source",
+    )
+    .await?;
+    step(
+        git(&[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "--quiet",
+            "FETCH_HEAD",
+        ]),
+        "checking out llama.cpp's source",
+    )
+    .await?;
+    let head = step(git(&["rev-parse", "HEAD"]), "reading the commit").await?;
+    if head.trim() != spec.commit {
+        bail!(
+            "the source fetched for {} is commit {}, not the pinned {}",
+            spec.tag,
+            head.trim(),
+            spec.commit
+        );
+    }
+
+    let build = src.join("build");
+    let mut c = std::process::Command::new(&tc.cmake);
+    c.arg("-S").arg(src).arg("-B").arg(&build);
+    if let Some(ninja) = &tc.ninja {
+        c.args(["-G", "Ninja"])
+            .arg(format!("-DCMAKE_MAKE_PROGRAM={}", ninja.display()));
+    }
+    // The release's flags (`.github/workflows/release.yml` at the pin), less
+    // its portable-CPU ones: a build here is for this machine.
+    c.args([
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_RPATH=$ORIGIN",
+        "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
+        "-DLLAMA_BUILD_TESTS=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=OFF",
+        "-DLLAMA_BUILD_TOOLS=ON",
+        "-DLLAMA_BUILD_SERVER=ON",
+    ]);
+    if let Some((nvcc, arch)) = &tc.cuda {
+        c.arg("-DGGML_CUDA=ON")
+            .arg(format!("-DCMAKE_CUDA_COMPILER={}", nvcc.display()))
+            .arg(format!("-DCMAKE_CUDA_ARCHITECTURES={arch}"));
+    }
+    say("configuring the build");
+    step(c, "configuring llama.cpp (cmake)").await?;
+    let available = crate::system::Reader::new()
+        .now(crate::system::Measurement::MemoryAvailable)
+        .value()
+        .map(|b| b as u64);
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let jobs = build_jobs(cpus, available);
+    say(&format!(
+        "building llama-server with {jobs} jobs — minutes for the CPU, longer for CUDA"
+    ));
+    let mut c = std::process::Command::new(&tc.cmake);
+    c.arg("--build")
+        .arg(&build)
+        .args(["--config", "Release", "--target", "llama-server", "-j"])
+        .arg(jobs.to_string());
+    step(c, "building llama.cpp").await?;
+    copy_flat(&build.join("bin"), part)?;
+    if let Some((nvcc, _)) = &tc.cuda {
+        let dirs = toolkit_dirs(nvcc, &build);
+        let copied = copy_cuda_runtime(&dirs, part)?;
+        // Said here, where the build is known and the words are right, not
+        // as `health`'s "the runtime archive did not land" (review of #643).
+        if copied.is_empty() {
+            bail!(
+                "the CUDA build links no toolkit library found in {} — mecha copies the runtime \
+                 beside the engine so it survives a toolkit change; check where your toolkit's \
+                 libcudart is",
+                dirs.iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        say(&format!(
+            "copied the CUDA toolkit's {} beside it",
+            copied.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Copy a directory's top level into another, links as links — the
+/// release's `tar -C build/bin .`, without the archive.
+fn copy_flat(from: &Path, to: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(std::fs::read_link(entry.path())?, &dest)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &dest)
+                .with_context(|| format!("copying {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Every library the build needs that the CUDA toolkit provides, copied
+/// beside it as a plain file, as the release's `cudart-` archive carries
+/// them — so the engine runs on the toolkit it was built with, whatever the
+/// toolkit becomes. Not a list of names: a build here links whatever this
+/// toolkit and ggml ask for, so each ELF's NEEDED entries are resolved
+/// against the toolkit's library directories, and a library copied in is
+/// read for its own (review of #643). What the toolkit does not provide —
+/// the driver's `libcuda`, the C and C++ runtimes — is the system's, as it
+/// is for a release.
+fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
+    let mut todo: Vec<PathBuf> = std::fs::read_dir(part)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    let mut copied = Vec::new();
+    while let Some(path) = todo.pop() {
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            continue;
+        }
+        let Some(d) = elf_dynamic_in(&mut FileAt(std::fs::File::open(&path)?))? else {
+            continue;
+        };
+        for lib in d.needed {
+            let dest = part.join(&lib);
+            if dest.exists() || !toolkit_named(&lib) {
+                continue;
+            }
+            let Some(from) = toolkit_lib(dirs, &lib) else {
+                continue;
+            };
+            // `copy` follows the link: the soname becomes a plain file.
+            std::fs::copy(&from, &dest).with_context(|| format!("copying {}", from.display()))?;
+            copied.push(lib);
+            todo.push(dest);
+        }
+    }
+    copied.sort();
+    Ok(copied)
+}
+
+/// Where the toolkit's libraries are: the directory CMake resolved and
+/// linked against (`CUDAToolkit_LIBRARY_DIR` in the build's cache), then the
+/// `/usr/local/cuda` layout under `nvcc`'s parent. The first covers a
+/// distro-packaged toolkit — `nvcc` in `/usr/bin`, the runtime under
+/// `/usr/lib/<triple>/` — which the second cannot reach (review of #643).
+fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_to_string(build.join("CMakeCache.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.strip_prefix("CUDAToolkit_LIBRARY_DIR:"))
+        .filter_map(|l| l.split_once('=').map(|(_, v)| PathBuf::from(v.trim())))
+        .filter(|d| !d.as_os_str().is_empty())
+        .collect();
+    if let Some(home) = nvcc.parent().and_then(Path::parent) {
+        dirs.extend([home.join("lib64"), home.join("lib")]);
+        if let Ok(targets) = std::fs::read_dir(home.join("targets")) {
+            dirs.extend(targets.filter_map(|e| e.ok()).map(|e| e.path().join("lib")));
+        }
+    }
+    dirs
+}
+
+/// Whether a library is the CUDA toolkit's — the runtime and its math and
+/// compiler libraries — by name. Where it resolved proves nothing: a distro
+/// toolkit's directory is `/usr/lib/<triple>/`, which holds libc, libstdc++
+/// and the driver's `libcuda` too, none of which may ship beside the engine
+/// (review of #643).
+fn toolkit_named(lib: &str) -> bool {
+    // Each name with its `.so` dot, so a prefix never reaches a neighbour:
+    // `libcu` alone took `libcurl` and `libcups` too (review of #643).
+    const TOOLKIT: [&str; 15] = [
+        "libcudart.",
+        "libcublas.",
+        "libcublasLt.",
+        "libcufft.",
+        "libcurand.",
+        "libcusolver.",
+        "libcusparse.",
+        "libcudnn.",
+        "libcudnn_",
+        "libcupti.",
+        "libnvrtc.",
+        "libnvJitLink.",
+        "libnvToolsExt.",
+        "libnvblas.",
+        "libnvjpeg.",
+    ];
+    TOOLKIT.iter().any(|p| lib.starts_with(p))
+}
+
+/// Where the toolkit keeps `lib`, if it does: its library directories'
+/// top level only — never `stubs/`, whose `libcuda.so` is a link-time stand
+/// in for the driver and must never be shipped.
+fn toolkit_lib(dirs: &[PathBuf], lib: &str) -> Option<PathBuf> {
+    dirs.iter().map(|d| d.join(lib)).find(|p| p.exists())
+}
+
+/// Remove every `<tag>.part` and `<tag>.src` under the engine root: an
+/// install's scratch, which only an install in flight may hold, and one runs
+/// at a time.
+fn sweep_scratch(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".part") || name.ends_with(".src") {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// A llama.cpp release as the release API describes it — the source F10
@@ -598,6 +1077,8 @@ fn platform_is(target: Target, platform: &str) -> bool {
         Target::LinuxX64Cpu => platform == "ubuntu-x64",
         Target::MacArm64 => platform == "macos-arm64",
         Target::MacX64 => platform == "macos-x64",
+        // Built here: no release publishes them.
+        Target::BuiltCuda | Target::BuiltCpu => false,
     }
 }
 
@@ -1240,7 +1721,11 @@ mod tests {
             choose("linux", "aarch64", Driver(580, 173)),
             Ok(Target::LinuxArm64Cuda13)
         );
-        assert!(choose("linux", "aarch64", Driver(570, 1)).is_err());
+        // No release fits an older driver: built here with its toolkit.
+        assert_eq!(
+            choose("linux", "aarch64", Driver(570, 1)),
+            Ok(Target::BuiltCuda)
+        );
         assert_eq!(
             choose("linux", "x86_64", Driver(590, 0)),
             Ok(Target::LinuxX64Cuda13)
@@ -1253,11 +1738,222 @@ mod tests {
             choose("linux", "x86_64", Driver(525, 60)),
             Ok(Target::LinuxX64Cuda12)
         );
-        assert!(choose("linux", "x86_64", Driver(525, 59)).is_err());
+        assert_eq!(
+            choose("linux", "x86_64", Driver(525, 59)),
+            Ok(Target::BuiltCuda)
+        );
         assert_eq!(choose("linux", "x86_64", None), Ok(Target::LinuxX64Cpu));
         assert_eq!(choose("linux", "aarch64", None), Ok(Target::LinuxArm64Cpu));
         assert_eq!(choose("macos", "aarch64", None), Ok(Target::MacArm64));
         assert!(choose("windows", "x86_64", None).is_err());
+        // A Linux architecture no release covers is built here.
+        assert_eq!(choose("linux", "riscv64", None), Ok(Target::BuiltCpu));
+        assert_eq!(
+            choose("linux", "powerpc64", Driver(580, 0)),
+            Ok(Target::BuiltCuda)
+        );
+    }
+
+    /// A build here is the pin's commit, priced as its source fetch, and no
+    /// release asset is ever matched to it — so `--upgrade` cannot fetch a
+    /// release over it.
+    #[test]
+    fn a_build_here_is_the_pins_commit() {
+        for t in [Target::BuiltCuda, Target::BuiltCpu] {
+            let spec = Spec::pin(t).unwrap();
+            assert!(matches!(spec.source, Source::Commit));
+            assert_eq!(spec.commit, PIN.commit);
+            assert_eq!(spec.bytes(), SOURCE_BYTES);
+            assert_eq!(download_bytes(t), SOURCE_BYTES);
+            assert!(!platform_is(t, "ubuntu-arm64"));
+            assert!(!platform_is(t, "ubuntu-cuda-13.4-arm64"));
+        }
+        assert!(Target::BuiltCuda.needs_cudart() && Target::BuiltCuda.wants_gpu());
+        assert!(!Target::BuiltCpu.needs_cudart() && !Target::BuiltCpu.wants_gpu());
+        // A record from a newer mecha naming a target this one lacks still
+        // loads; these two round-trip by name.
+        let b: Build =
+            serde_json::from_str(r#"{"tag":"b1","commit":"c","target":"built-cuda"}"#).unwrap();
+        assert_eq!(b.target, Some(Target::BuiltCuda));
+    }
+
+    /// Everything a build needs and lacks is named at once, and a CUDA
+    /// build also needs nvcc and the GPU's compute capability.
+    #[test]
+    fn the_toolchain_names_every_missing_piece() {
+        let have = |names: &'static [&'static str]| {
+            move |n: &str| {
+                names
+                    .contains(&n)
+                    .then(|| PathBuf::from(format!("/bin/{n}")))
+            }
+        };
+        let full = have(&["git", "cmake", "g++", "ninja", "nvcc"]);
+        let tc = toolchain_from(Target::BuiltCuda, full, Some("12.1\n")).unwrap();
+        assert_eq!(tc.cuda, Some((PathBuf::from("/bin/nvcc"), "121".into())));
+        assert_eq!(tc.ninja, Some(PathBuf::from("/bin/ninja")));
+        // The CPU build asks nothing of CUDA.
+        let cpu = toolchain_from(
+            Target::BuiltCpu,
+            have(&["git", "cmake", "c++", "make"]),
+            None,
+        )
+        .unwrap();
+        assert_eq!((cpu.cuda, cpu.ninja), (None, None));
+
+        let err = toolchain_from(Target::BuiltCuda, have(&["git"]), None).unwrap_err();
+        for piece in [
+            "cmake",
+            "C++ compiler",
+            "ninja or make",
+            "nvcc",
+            "compute capability",
+        ] {
+            assert!(err.contains(piece), "{piece}: {err}");
+        }
+        assert!(err.contains(PIN.tag), "{err}");
+    }
+
+    #[test]
+    fn a_compute_capability_reads_as_cmake_takes_it() {
+        assert_eq!(cuda_arch("12.1\n"), Some("121".into()));
+        assert_eq!(cuda_arch("8.6\n8.9\n"), Some("86".into()));
+        assert_eq!(cuda_arch("[N/A]"), None);
+        assert_eq!(cuda_arch(""), None);
+    }
+
+    /// Jobs are bounded by memory after the reserve, never below one.
+    #[test]
+    fn a_build_runs_as_many_jobs_as_memory_holds() {
+        const G: u64 = 1 << 30;
+        assert_eq!(build_jobs(20, Some(29 * G)), 5);
+        assert_eq!(build_jobs(4, Some(128 * G)), 4);
+        assert_eq!(build_jobs(20, Some(4 * G)), 1);
+        assert_eq!(build_jobs(20, None), 2);
+        assert_eq!(build_jobs(64, Some(512 * G)), 16);
+    }
+
+    /// The release's packaging, without the archive: files copied, links
+    /// kept as links, so `libllama.so` still names its versioned file.
+    #[test]
+    fn a_build_is_copied_flat_with_its_links() {
+        let root = std::env::temp_dir().join(format!("mecha-flat-{}", uuid::Uuid::new_v4()));
+        let (from, to) = (root.join("bin"), root.join("part"));
+        std::fs::create_dir_all(from.join("nested")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(from.join("libllama.so.0.0.1"), b"lib").unwrap();
+        std::os::unix::fs::symlink("libllama.so.0.0.1", from.join("libllama.so")).unwrap();
+        std::fs::write(from.join("llama-server"), b"bin").unwrap();
+        copy_flat(&from, &to).unwrap();
+        let link = std::fs::read_link(to.join("libllama.so"));
+        let server = std::fs::read(to.join("llama-server"));
+        let nested = to.join("nested").exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(link.unwrap(), PathBuf::from("libllama.so.0.0.1"));
+        assert_eq!(server.unwrap(), b"bin");
+        assert!(!nested);
+    }
+
+    /// The copy end to end, on synthesized ELFs: the engine needs cuBLAS,
+    /// cuBLAS needs cuBLASLt, so both land — the second only because the
+    /// first was read in turn — while the driver stub under `stubs/` and the
+    /// system's C++ runtime never do (review of #643).
+    #[test]
+    fn the_toolkit_libraries_a_build_needs_are_copied_transitively() {
+        let root = std::env::temp_dir().join(format!("mecha-tk-{}", uuid::Uuid::new_v4()));
+        let lib64 = root.join("cuda/lib64");
+        let part = root.join("part");
+        std::fs::create_dir_all(lib64.join("stubs")).unwrap();
+        std::fs::create_dir_all(&part).unwrap();
+        std::fs::write(
+            part.join("llama-server"),
+            elf(
+                &["libcublas.so.13", "libcuda.so.1", "libstdc++.so.6"],
+                Some("$ORIGIN"),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            lib64.join("libcublas.so.13"),
+            elf(&["libcublasLt.so.13"], None),
+        )
+        .unwrap();
+        std::fs::write(lib64.join("libcublasLt.so.13"), elf(&[], None)).unwrap();
+        std::fs::write(lib64.join("stubs/libcuda.so.1"), elf(&[], None)).unwrap();
+        // A distro toolkit's directory is the system's: the driver, libc and
+        // libstdc++ sit beside the toolkit's libraries, and none may ship
+        // (review of #643).
+        for system in ["libcuda.so.1", "libstdc++.so.6", "libc.so.6"] {
+            std::fs::write(lib64.join(system), elf(&["libc.so.6"], None)).unwrap();
+        }
+        let copied = copy_cuda_runtime(&[lib64.clone(), root.join("cuda/lib")], &part);
+        let has = |n: &str| part.join(n).is_file();
+        let landed = (has("libcublas.so.13"), has("libcublasLt.so.13"));
+        let system = ["libcuda.so.1", "libstdc++.so.6", "libc.so.6"].map(has);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            copied.unwrap(),
+            vec!["libcublas.so.13", "libcublasLt.so.13"]
+        );
+        assert_eq!(landed, (true, true));
+        assert_eq!(system, [false; 3]);
+    }
+
+    #[test]
+    fn a_toolkit_library_is_known_by_its_name() {
+        for lib in [
+            "libcudart.so.13",
+            "libcublasLt.so.13",
+            "libcudnn.so.9",
+            "libnvrtc.so.13",
+            "libnvJitLink.so.13",
+        ] {
+            assert!(toolkit_named(lib), "{lib}");
+        }
+        for lib in [
+            "libcuda.so.1",
+            "libnvidia-ml.so.1",
+            "libstdc++.so.6",
+            "libc.so.6",
+            "libcurl.so.4",
+            "libcups.so.2",
+        ] {
+            assert!(!toolkit_named(lib), "{lib}");
+        }
+    }
+
+    /// The library directory CMake resolved comes first — a distro toolkit
+    /// keeps the runtime where `nvcc`'s parent says nothing about.
+    #[test]
+    fn the_toolkit_dirs_start_with_what_cmake_linked() {
+        let root = std::env::temp_dir().join(format!("mecha-tkd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("CMakeCache.txt"),
+            "CUDAToolkit_BIN_DIR:PATH=/usr/bin\nCUDAToolkit_LIBRARY_DIR:PATH=/usr/lib/x86_64-linux-gnu\n",
+        )
+        .unwrap();
+        let dirs = toolkit_dirs(Path::new("/usr/bin/nvcc"), &root);
+        let none = toolkit_dirs(Path::new("/usr/local/cuda/bin/nvcc"), &root.join("absent"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(dirs[0], PathBuf::from("/usr/lib/x86_64-linux-gnu"));
+        assert_eq!(none[0], PathBuf::from("/usr/local/cuda/lib64"));
+    }
+
+    /// A killed build's scratch is swept by the next install.
+    #[test]
+    fn scratch_from_a_killed_install_is_swept() {
+        let root = std::env::temp_dir().join(format!("mecha-sw-{}", uuid::Uuid::new_v4()));
+        for d in ["b1.src/build", "b2.part", "b3", "current.d"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        sweep_scratch(&root);
+        let left: std::collections::BTreeSet<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(left, ["b3", "current.d"].map(String::from).into());
     }
 
     /// A GPU that cannot be read is never answered with the CPU build.
@@ -1948,6 +2644,55 @@ mod tests {
         let man = Manifest::read(&m.mecha_home).unwrap();
         assert!(man.entries[0].builds.iter().any(|b| b.tag == release.tag));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The build fallback, for real: the pin's commit fetched, built for
+    /// `MECHA_TEST_BUILD` (`cpu`, the default, or `cuda`), and passed by the
+    /// same checks a release passes — the pinned build number and commit,
+    /// `$ORIGIN` throughout, and for CUDA its runtime beside it and a GPU
+    /// listed. Minutes for the CPU; gate a CUDA run on the memory floor.
+    /// `cargo test -p mecha-core -- --ignored a_build_from_source`
+    #[tokio::test]
+    #[ignore]
+    async fn a_build_from_source_passes_the_release_checks() {
+        let target = match std::env::var("MECHA_TEST_BUILD").as_deref() {
+            Ok("cuda") => Target::BuiltCuda,
+            _ => Target::BuiltCpu,
+        };
+        let root = std::env::temp_dir().join(format!("mecha-7b2-{}", uuid::Uuid::new_v4()));
+        let m = Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        Manifest::begin(&m.mecha_home, "llama").unwrap();
+        let r = install_build(&m, target, &Spec::pin(target).unwrap(), &mut |s| {
+            eprintln!("{s}")
+        })
+        .await;
+        let dir = engine_root(&m.mecha_home).join(PIN.tag);
+        let version = engine_output(&dir.join("llama-server"), "--version");
+        let leftovers: Vec<String> = std::fs::read_dir(engine_root(&m.mecha_home))
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let man = Manifest::read(&m.mecha_home);
+        let _ = std::fs::remove_dir_all(&root);
+        r.unwrap();
+        assert!(reports_the_pin(&version.unwrap()));
+        // The source tree and the scratch directory are gone; the build is
+        // all that stays.
+        assert_eq!(leftovers, vec![PIN.tag.to_string()]);
+        let man = man.unwrap();
+        assert!(man.entries[0]
+            .builds
+            .iter()
+            .any(|b| b.tag == PIN.tag && b.target == Some(target)));
     }
 
     /// The real thing, over the network (~700 MB on a CUDA machine): fetch,
