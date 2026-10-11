@@ -157,6 +157,13 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                 }
             }
             for s in install::offered(&p, chat_here) {
+                // Someone's own server where the install would put one is
+                // used, not installed over — never offered, so the switch
+                // is still written (review of #638).
+                if let Some(why) = install::left_alone(s.id, &m)? {
+                    println!("{}: {why}", s.label);
+                    continue;
+                }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
