@@ -474,6 +474,11 @@ impl Reader {
             .clone()
     }
 
+    /// Whether this reader's deadline has passed: nothing more may start.
+    fn spent(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
     /// How long the next command may take.
     pub fn budget(&self) -> Duration {
         match self.deadline {
@@ -661,6 +666,13 @@ impl Reader {
             Err(r) => r,
         };
         match m {
+            // A scan reads files, not a command, and still spends the
+            // sample's time: once the deadline is spent it starts nothing,
+            // so a slow store costs one reading, never the whole minute
+            // (review of #641).
+            _ if m.cost() == Cost::Scan && self.spent() => {
+                Reading::unread("the sample's time ran out before this was read")
+            }
             // On macOS each figure fails on its own source alone.
             MemoryTotal if cfg!(target_os = "macos") => Reading::of(
                 self.mac_total().map(|v| v as f64),

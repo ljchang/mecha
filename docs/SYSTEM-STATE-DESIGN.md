@@ -562,7 +562,7 @@ one by deleting a copy.
 | **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers, including pressure, OOM kills, temperatures, uptime, disk I/O and network throughput. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
 | **S2a** | The `Scan` tier and the call: `runs.live`, `tasks.running`, `holds.live`, `permits.live`, `jobs.live` with its marker, `voice.live`, `triggers.*` and `messages.unread`, all recorded (§7.3). | S1 |
 | **S2b** | The `Loopback` tier and the hourly walks: `model.*`, `image.*`, `tasks.open`, `store.*`, and model loads gated by the memory floor (§7.2). | S2a |
-| **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2 |
+| **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2a |
 | **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | S3 |
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
 | **S6** | The memory floor (§3.7): `system::admit` and `mecha system admit --need`, with image generation, model loads, background admission and the build scripts all calling it. The image tool's `memory_verdict` becomes a caller of `admit`, not a second implementation. | R5; S1 (it needs `memory.available` and `pressure.memory`, nothing more) |
@@ -681,6 +681,11 @@ S2a is built:
 
 They are recorded every minute, because the sampler records every `Now`
 measurement.
+
+**A scan spends the sample's time.** It runs no command, but it reads files,
+and the run ledger only grows. So a `Scan` reading checks the shared
+deadline first, and once it is spent it reads `Unread` rather than start.
+A slow store then costs one reading, never the whole minute.
 
 **Every scan is read-only**, which three stores' own readers are not. A
 measurement may write nothing but the series (§4 rule 3):

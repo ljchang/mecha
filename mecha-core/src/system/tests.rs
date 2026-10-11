@@ -1127,13 +1127,21 @@ fn meminfo_without_mem_available_is_unknown_not_empty() {
 #[test]
 fn every_now_measurement_is_wired_to_a_reader() {
     // A spent budget: no command runs, and every reading still answers.
-    // A scratch home: the scans must not read the developer's own.
+    // A scan runs no command, and a spent budget would stop it before its
+    // arm, so scans read with time left — in a scratch home, never the
+    // developer's own.
     let s = Scratch::new();
-    let reader = Reader::until(std::time::Instant::now()).with_home(s.0.clone());
+    let spent = Reader::until(std::time::Instant::now()).with_home(s.0.clone());
+    let scans = Reader::new().with_home(s.0.clone());
     for m in Measurement::ALL
         .iter()
         .filter(|m| m.how() == measure::How::Now)
     {
+        let reader = if m.cost() == measure::Cost::Scan {
+            &scans
+        } else {
+            &spent
+        };
         if let Reading::Unread { why } = reader.now(*m) {
             assert_ne!(why, measure::NOT_WIRED, "{} has no reader", m.name());
         }
@@ -1335,6 +1343,17 @@ fn a_fresh_home_counts_no_work_in_flight() {
     let s = Scratch::new();
     for m in SCANS {
         assert_eq!(scan(&s.0, m), obs(0.0), "{}", m.name());
+    }
+}
+
+/// A scan spends the sample's time like a command does: once the deadline
+/// has passed it starts nothing, and reads as unknown, never zero.
+#[test]
+fn a_spent_budget_starts_no_scan() {
+    let s = Scratch::new();
+    let reader = Reader::until(std::time::Instant::now()).with_home(s.0.clone());
+    for m in SCANS {
+        unread_saying(reader.now(m), "time ran out");
     }
 }
 
