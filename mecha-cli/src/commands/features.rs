@@ -412,8 +412,8 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     )?;
     let cfg = Config::load_global()?;
     let chat_here = mecha_core::install::chat_runs_here(&cfg);
-    // Read lazily, as `price` reads it: a plan with nothing to fetch probes
-    // no driver, and a wedged `nvidia-smi` must not hang it (review of #643).
+    // Kept, so the note below can say whether the engine is built here —
+    // and still read only if `price` reads it (review of #643).
     let mut nvidia = None;
     mecha_core::install::price(&mut p, chat_here, || {
         *nvidia.insert(mecha_core::engine::read_nvidia())
