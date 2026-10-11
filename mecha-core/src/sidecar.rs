@@ -501,6 +501,9 @@ pub enum FileState {
     /// Kept outside the hub by a sidecar that could not be checked: not
     /// priced, never offered over.
     KeeperUnknown { sidecar: &'static str },
+    /// What a sidecar would fetch whose install is not offered on this
+    /// machine (`install::price`): not priced, and why.
+    NotOffered { why: String },
     /// The chat slot served by mecha's router from a GGUF the owner brought
     /// (`mecha setup chat`): the pinned row is not this machine's model, so
     /// it is neither priced nor offered.

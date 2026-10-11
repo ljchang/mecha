@@ -207,43 +207,59 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     let mut nvidia = move || -> crate::engine::Nvidia {
         *seen.get_or_insert_with(|| read.take().map_or(crate::engine::Nvidia::None, |f| f()))
     };
+    let wanted = |plan: &Plan, id: &str| {
+        plan.sidecars.iter().any(|s| {
+            s.id == id
+                && matches!(
+                    s.state,
+                    SidecarState::Missing { .. } | SidecarState::Incomplete
+                )
+                && installable(s.id)
+                && not_needed(s.id, feature, chat_here).is_none()
+        })
+    };
     // The speech server's default voice is fetched beside the slot's model
     // and codec, which the plan prices already; the clip is priced here so
-    // nothing it fetches goes uncounted (review of #649).
-    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
-        s.id == crate::speech_unit::ID
-            && matches!(
-                s.state,
-                SidecarState::Missing { .. } | SidecarState::Incomplete
-            )
-            && installable(s.id)
-            && not_needed(s.id, feature, chat_here).is_none()
-    }) {
-        let bytes: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
-        s.bytes = Some(bytes);
-        plan.download_bytes += bytes;
+    // nothing it fetches goes uncounted (review of #649). A machine
+    // `speech_unit::fits` refuses is not offered the server, so neither the
+    // clip nor the slot's model is its plan's (review of #649).
+    if wanted(plan, crate::speech_unit::ID) {
+        match crate::speech_unit::fits(std::env::consts::OS, nvidia()) {
+            Ok(_) => {
+                let bytes: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+                if let Some(s) = plan
+                    .sidecars
+                    .iter_mut()
+                    .find(|s| s.id == crate::speech_unit::ID)
+                {
+                    s.bytes = Some(bytes);
+                }
+                plan.download_bytes += bytes;
+            }
+            Err(why) => not_offered(plan, crate::speech_unit::ID, &why),
+        }
     }
     // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB,
     // too much to leave out of the total the way the voice worker's 250 MB
     // is. The models are the image slot's files, priced by the plan already.
     // A machine `comfyui_unit::fits` refuses is priced at nothing, as one
-    // `engine::choose` refuses is (review of #645).
-    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
-        s.id == crate::comfyui_unit::ID
-            && matches!(
-                s.state,
-                SidecarState::Missing { .. } | SidecarState::Incomplete
-            )
-            && installable(s.id)
-            && not_needed(s.id, feature, chat_here).is_none()
-    }) {
+    // `engine::choose` refuses is (review of #645) — its models included.
+    if wanted(plan, crate::comfyui_unit::ID) {
         let fits =
             crate::comfyui_unit::fits(std::env::consts::OS, std::env::consts::ARCH, nvidia());
-        if let (Ok(()), Some(bytes)) =
-            (fits, crate::comfyui_unit::env_bytes(std::env::consts::ARCH))
-        {
-            s.bytes = Some(bytes);
-            plan.download_bytes += bytes;
+        match (fits, crate::comfyui_unit::env_bytes(std::env::consts::ARCH)) {
+            (Ok(()), Some(bytes)) => {
+                if let Some(s) = plan
+                    .sidecars
+                    .iter_mut()
+                    .find(|s| s.id == crate::comfyui_unit::ID)
+                {
+                    s.bytes = Some(bytes);
+                }
+                plan.download_bytes += bytes;
+            }
+            (Ok(()), None) => {}
+            (Err(why), _) => not_offered(plan, crate::comfyui_unit::ID, &why),
         }
     }
     let Some(s) = plan.sidecars.iter_mut().find(|s| {
@@ -294,6 +310,30 @@ pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
              used as it is"
         )
     }))
+}
+
+/// Unprice what a sidecar would fetch for its slots: its install is not
+/// offered on this machine, so those files are not this plan's download
+/// (review of #649). Said, with why, rather than dropped.
+fn not_offered(plan: &mut Plan, id: &str, why: &str) {
+    let serves = crate::sidecar::SIDECARS
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.serves)
+        .unwrap_or(&[]);
+    let Plan {
+        files,
+        download_bytes,
+        ..
+    } = plan;
+    for f in files.iter_mut().filter(|f| serves.contains(&f.slot)) {
+        if let FileState::Download { bytes } = f.state {
+            *download_bytes = download_bytes.saturating_sub(bytes);
+            f.state = FileState::NotOffered {
+                why: why.to_string(),
+            };
+        }
+    }
 }
 
 /// What `mecha features enable` offers to install for one plan: each
@@ -901,10 +941,11 @@ mod tests {
         }
     }
 
-    /// The speech server's voice clip is priced, the one file it fetches
-    /// that is not the slot's (review of #649).
+    /// A machine the speech server is not offered on prices none of what it
+    /// would fetch — the voice clip, nor the slot's model, which reads as
+    /// not fetched here, with why (review of #649).
     #[test]
-    fn the_speech_servers_voice_is_priced() {
+    fn a_speech_server_not_offered_here_is_not_priced() {
         let mut p = Plan {
             feature: Feature::Voice,
             sidecars: vec![PlannedSidecar {
@@ -913,17 +954,28 @@ mod tests {
                 state: SidecarState::Missing { step: "7f" },
                 bytes: None,
             }],
-            files: vec![],
-            download_bytes: 5,
+            files: vec![crate::sidecar::PlannedFile {
+                slot: "tts",
+                model: "a speech model",
+                repo: Some("org/r"),
+                path: "m.gguf",
+                state: FileState::Download { bytes: 100 },
+            }],
+            download_bytes: 105,
             nothing_to_do: false,
         };
+        // No NVIDIA device: `speech_unit::fits` refuses, whatever the OS.
         price(&mut p, true, || crate::engine::Nvidia::None);
-        let voice: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
         if installable(crate::speech_unit::ID) {
-            assert_eq!(p.sidecars[0].bytes, Some(voice));
-            assert_eq!(p.download_bytes, 5 + voice);
-        } else {
+            assert_eq!(p.sidecars[0].bytes, None);
             assert_eq!(p.download_bytes, 5);
+            assert!(
+                matches!(&p.files[0].state, FileState::NotOffered { why } if why.contains("NVIDIA")),
+                "{:?}",
+                p.files[0].state
+            );
+        } else {
+            assert_eq!(p.download_bytes, 105, "not offered at all: untouched");
         }
     }
 

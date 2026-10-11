@@ -588,6 +588,7 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                 "a different file is at its path — not replaced, and not used".to_string()
             }
             FileState::WithSidecar => "comes with its sidecar's install".to_string(),
+            FileState::NotOffered { why } => format!("not fetched here — {why}"),
             FileState::HeldBy { sidecar } => format!("kept by the provided {sidecar}; not read"),
             FileState::Unverified => {
                 "a file of the pinned size, placed by hand — not hashed by the plan".to_string()
