@@ -1113,12 +1113,16 @@ impl TriggerStore {
             .collect();
         let mut ran: BTreeMap<String, std::collections::BTreeSet<DateTime<Utc>>> = BTreeMap::new();
         let mut failed = 0;
-        // Rows are appended when a run ends, roughly in time order; one that
-        // started before the window cannot account for a slot inside it,
-        // and an hour covers runs ending out of order.
+        // Rows are appended when a run ends, so the file is in end order,
+        // and the scan stops on the end time: a run that ended before the
+        // window started before it too, and can account for no slot inside
+        // it. Stopping on the start time instead would end the scan at a
+        // long run that began a day ago and just finished, and every slot
+        // behind it would read as missed (review of #641). An hour covers
+        // rows appended out of order.
         let stop = since - chrono::Duration::hours(1);
         let unreadable_rows = self.scan_runs_rev(|row| {
-            if row.started_at < stop {
+            if row.finished_at.unwrap_or(row.started_at) < stop {
                 return false;
             }
             if row.started_at >= since && row.status == RunStatus::Error {
@@ -1401,6 +1405,11 @@ mod tests {
         ] {
             store.append_run(&r).unwrap();
         }
+        // A run that began two days ago and has just ended, appended last:
+        // the scan must read past it to the rows above.
+        let mut long = row("queue", None, "2031-04-15T11:00:00Z", RunStatus::Ok);
+        long.finished_at = Some(utc("2031-04-17T12:10:00Z"));
+        store.append_run(&long).unwrap();
         // 12:00's run is in flight.
         store
             .mark_running("queue", Some(utc("2031-04-17T12:00:00Z")))
