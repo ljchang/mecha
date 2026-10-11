@@ -918,7 +918,9 @@ advances it.
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
-- `reader`: what the scene reader merged into the call, or why it fell back;
+- `reader`: what the scene reader merged into the call, or why it fell back,
+  and whose clothes it held back because the call's own act already dresses
+  them (a second outfit beside "wearing X pulled down" drew two people);
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Each picture's compiled prompt is saved for the owner, never in the
