@@ -9039,7 +9039,8 @@ mod tests {
             url: url.clone(),
             min_available_mb: 0,
             unload_after_secs: 0,
-            turbo_model: "my-turbo.gguf".into(),
+            // Through the unet loader, where the pinned-file check lives.
+            turbo_model: "my-turbo.safetensors".into(),
             ..Default::default()
         })
         .unwrap()

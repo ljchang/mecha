@@ -278,19 +278,25 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 );
             }
             let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
-            let cached = mecha_core::fetch::cached(
-                &hub,
-                comfy::TURBO_REPO,
-                comfy::TURBO_REVISION,
-                &comfy::TURBO_FILE,
-                false,
-            )? == mecha_core::fetch::Cached::Verified;
+            let wanted = comfy::turbo_wanted(
+                &m.mecha_home,
+                turbo,
+                cfg.image.as_ref().map(|i| i.turbo_model.as_str()),
+            );
+            // Asked only when turbo is in play, and an unreadable cache is
+            // one without it — the full download offered, never an `enable
+            // image` failed over a file it does not want (review of #650).
+            let cached = wanted.is_some()
+                && mecha_core::fetch::cached(
+                    &hub,
+                    comfy::TURBO_REPO,
+                    comfy::TURBO_REVISION,
+                    &comfy::TURBO_FILE,
+                    false,
+                )
+                .is_ok_and(|c| c == mecha_core::fetch::Cached::Verified);
             let facts = TurboFacts {
-                wanted: comfy::turbo_wanted(
-                    &m.mecha_home,
-                    turbo,
-                    cfg.image.as_ref().map(|i| i.turbo_model.as_str()),
-                ),
+                wanted,
                 found: comfy_found.as_ref().map(|(_, state)| state),
                 installing,
                 cached,
