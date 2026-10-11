@@ -1694,6 +1694,7 @@ mod tests {
             .stage_publish_by_harness(
                 "factory__bundle_publish",
                 serde_json::json!({"id": "hud-lab", "bundle": bundle.display().to_string()}),
+                &root,
             )
             .unwrap();
 

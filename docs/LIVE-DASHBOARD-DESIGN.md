@@ -892,7 +892,10 @@ In two repositories, split where the trust boundary is:
 - **Home** (this repository): `mecha hud publish <id> [--public]` assembles
   the bundle (`hud::publish::assemble`) into `~/.mecha/hud/staged/`, outside
   every run's workspace, so nothing but the owner can change it before release, and stages `factory__bundle_publish`
-  in the outbox, authored by the harness. Each `mecha hud refresh` then
+  in the outbox, authored by the harness, with that directory as the item's
+  workspace: a release runs the tool under the item's workspace, and the
+  factory's server reads nothing outside its root. Without it the first real
+  release (2026-10-11) ran under serve's `work/web` and was refused. Each `mecha hud refresh` then
   pushes the published boards' datasets (`hud::publish::plan`) through
   `factory-publish dataset push`, reading what was released from the
   factory client's local store and never asking the box. The standalone page
