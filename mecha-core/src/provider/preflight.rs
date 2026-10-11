@@ -118,11 +118,10 @@ async fn get(url: &str, query: &[(&str, &str)]) -> Option<Props> {
     body.json::<Props>().await.ok()
 }
 
-/// What config claims against what is served. Empty means they agree.
-///
-/// Pure, so the interesting half is unit-tested without a model on the
-/// machine — the same split `compact.rs` uses, and for the same reason:
-/// getting this wrong is silent.
+/// What config claims against what is served. Empty means they agree. Reads
+/// one thing from the process — whether its probe named this entry's model
+/// (`router::unnamed_model`) — and hands the rest to
+/// [`disagreements_given`].
 pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<String> {
     // "Runs ask for that" only where this process's probe named it
     // (`router::unnamed_model`; only `router::unnamed_bases`' entries are
@@ -139,6 +138,10 @@ pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<Str
 
 /// [`disagreements`], told whether this process asked the server for the
 /// entry's model name — the one input it reads from the process.
+///
+/// Pure, so the interesting half is unit-tested without a model on the
+/// machine — the same split `compact.rs` uses, and for the same reason:
+/// getting this wrong is silent.
 fn disagreements_given(
     name: &str,
     cfg: &ProviderConfig,
@@ -340,7 +343,8 @@ mod tests {
         let said = disagreements_given("local", &own, &p, false).join("\n");
         assert!(!said.contains("so runs ask for that"), "{said}");
         assert!(said.contains("an unnamed one is not served"), "{said}");
-        // Nothing listens on :1, so nothing named it.
+        // No probe in this process has named :1 (only `stub`'s ephemeral
+        // ports are ever asked), so the snapshot holds no name for it.
         let said = disagreements("local", &own, &p).join("\n");
         assert!(said.contains("an unnamed one is not served"), "{said}");
     }
