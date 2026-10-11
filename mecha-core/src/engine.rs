@@ -981,17 +981,26 @@ fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
 /// and the driver's `libcuda` too, none of which may ship beside the engine
 /// (review of #643).
 fn toolkit_named(lib: &str) -> bool {
-    let cu = lib.starts_with("libcu") && !lib.starts_with("libcuda.");
-    let nv = [
-        "libnvrtc",
-        "libnvJitLink",
-        "libnvToolsExt",
-        "libnvblas",
-        "libnvjpeg",
-    ]
-    .iter()
-    .any(|p| lib.starts_with(p));
-    cu || nv
+    // Each name with its `.so` dot, so a prefix never reaches a neighbour:
+    // `libcu` alone took `libcurl` and `libcups` too (review of #643).
+    const TOOLKIT: [&str; 15] = [
+        "libcudart.",
+        "libcublas.",
+        "libcublasLt.",
+        "libcufft.",
+        "libcurand.",
+        "libcusolver.",
+        "libcusparse.",
+        "libcudnn.",
+        "libcudnn_",
+        "libcupti.",
+        "libnvrtc.",
+        "libnvJitLink.",
+        "libnvToolsExt.",
+        "libnvblas.",
+        "libnvjpeg.",
+    ];
+    TOOLKIT.iter().any(|p| lib.starts_with(p))
 }
 
 /// Where the toolkit keeps `lib`, if it does: its library directories'
@@ -1926,6 +1935,8 @@ mod tests {
             "libnvidia-ml.so.1",
             "libstdc++.so.6",
             "libc.so.6",
+            "libcurl.so.4",
+            "libcups.so.2",
         ] {
             assert!(!toolkit_named(lib), "{lib}");
         }
