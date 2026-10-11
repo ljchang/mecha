@@ -67,15 +67,19 @@ impl Clause {
             "expression" => {
                 format!("Does a person in this picture have this expression: \"{quoted}\"?")
             }
+            "text" => format!("Are these words written in this picture: \"{quoted}\"?"),
             other => format!("Does this picture show this {other}: \"{quoted}\"?"),
         };
         format!("{ask} Answer yes or no.")
     }
 }
 
-/// What a scene record says its picture shows, as clauses. A photo used as
-/// the setting is the owner's picture, not words to check, so it is left
-/// out, as is any field the record leaves empty.
+/// What a scene record says its picture shows, as clauses: the setting's
+/// words, the style, what is between the people, each person's doing,
+/// wearing and expression, and each run of words the picture renders. A
+/// photo used as the setting is the owner's picture, not words to check;
+/// light and camera say how it was shot, which a yes/no reads poorly; and
+/// an empty field says nothing. Those are left out.
 pub fn clauses(scene: &Scene) -> Vec<Clause> {
     let mut out = Vec::new();
     let mut push = |field: &str, person: Option<usize>, text: &str| {
@@ -102,6 +106,9 @@ pub fn clauses(scene: &Scene) -> Vec<Clause> {
         push("doing", Some(i), &p.doing);
         push("wearing", Some(i), &p.wearing);
         push("expression", Some(i), &p.expression);
+    }
+    for words in scene.text.iter().flat_map(|t| &t.value) {
+        push("text", None, &words.words);
     }
     out
 }
@@ -183,6 +190,11 @@ pub struct Judgement {
     pub people_asked: Option<u32>,
     /// The record's count, when the record knows who is in the picture.
     pub people_recorded: Option<usize>,
+    /// Questions asked that got no verdict: no answer, or one that could
+    /// not be read. Every rate is over what was answered, so this says how
+    /// much it stands on.
+    #[serde(default)]
+    pub unanswered: usize,
     pub clauses: Vec<Verdict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_similarity: Option<f64>,
@@ -256,6 +268,10 @@ pub struct Summary {
     /// two arms with different mixes of edits are read by both numbers.
     pub layout_similarity_mean: Option<f64>,
     pub layouts: usize,
+    /// Questions asked across the arm that got no verdict: the rates above
+    /// are over what was answered, so two arms are read by this too
+    /// (review of #644).
+    pub unanswered: usize,
 }
 
 pub fn summarise(judged: &[Judgement]) -> Summary {
@@ -284,6 +300,7 @@ pub fn summarise(judged: &[Judgement]) -> Summary {
         layout_similarity_mean: (!layouts.is_empty())
             .then(|| layouts.iter().sum::<f64>() / layouts.len() as f64),
         layouts: layouts.len(),
+        unanswered: judged.iter().map(|j| j.unanswered).sum(),
     }
 }
 
@@ -399,6 +416,11 @@ mod tests {
                 text: "a lighthouse at dusk".into(),
             }),
             style: field("watercolour".into()),
+            text: field(vec![crate::scene::Words {
+                words: "OPEN LATE".into(),
+                at: String::new(),
+                look: String::new(),
+            }]),
             people: vec![person("reading a map", ""), person("", "a red scarf")],
             people_known: true,
             ..Scene::default()
@@ -414,6 +436,7 @@ mod tests {
                 ("style".into(), None, "watercolour".into()),
                 ("doing".into(), Some(0), "reading a map".into()),
                 ("wearing".into(), Some(1), "a red scarf".into()),
+                ("text".into(), None, "OPEN LATE".into()),
             ]
         );
         let photo = Scene {
@@ -468,6 +491,7 @@ mod tests {
             ],
             roles: Some(serde_json::json!("applied")),
             layout_similarity: Some(0.8),
+            unanswered: 1,
             ..Judgement::default()
         };
         let b = Judgement {
@@ -490,6 +514,7 @@ mod tests {
         assert_eq!((s.roles_applied.hits, s.roles_applied.of), (1, 2));
         assert!((s.layout_similarity_mean.unwrap() - 0.7).abs() < 1e-9);
         assert_eq!(s.layouts, 2);
+        assert_eq!(s.unanswered, 1, "what the rates do not stand on");
         assert_eq!(
             summarise(&[]).clauses_shown.rate,
             None,

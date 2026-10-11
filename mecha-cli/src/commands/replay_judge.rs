@@ -328,21 +328,44 @@ async fn ask_of(
 fn verdict<T>(
     answer: std::result::Result<String, String>,
     read: fn(&str) -> Option<T>,
-    errors: &mut Vec<String>,
+    j: &mut Judgement,
 ) -> Option<T> {
-    match answer {
+    let v = match answer {
         Ok(a) => {
             let v = read(&a);
             if v.is_none() {
-                errors.push("an answer could not be read".into());
+                j.errors.push("an answer could not be read".into());
             }
             v
         }
         Err(e) => {
-            errors.push(e);
+            j.errors.push(e);
             None
         }
+    };
+    j.unanswered += usize::from(v.is_none());
+    v
+}
+
+/// The picture an edit started from, from its manifest: only a plain path
+/// inside the sample's workspace, and one the workspace holds. Either
+/// refusal is said, so a lost base-picture control never reads as a new
+/// picture (review of #644).
+fn base_of(manifest: Option<&Value>, work: &Path, errors: &mut Vec<String>) -> Option<PathBuf> {
+    let named = manifest.and_then(|m| m["picture"].as_str())?;
+    if !Path::new(named)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        errors.push("the picture it started from is not a plain path in the workspace".into());
+        return None;
     }
+    let at = work.join(named);
+    if !at.is_file() {
+        errors.push("the picture it started from is not in the sample's workspace".into());
+        return None;
+    }
+    Some(at)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -375,17 +398,9 @@ async fn judge_one(
     j.reader = manifest.and_then(|m| m.get("reader").cloned());
     j.prompt = prompt_of(render, picture);
     // The picture an edit started from, as the sample's workspace holds it.
-    // Only a plain path inside the workspace: the manifest is the tool's
-    // own, but nothing is read from beyond the sample's folder on its word.
-    let base = manifest
-        .and_then(|m| m["picture"].as_str())
-        .filter(|p| {
-            Path::new(p)
-                .components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-        })
-        .map(|p| scratch.join("work").join(p))
-        .filter(|p| p.is_file());
+    // The manifest is the tool's own, but nothing is read from beyond the
+    // sample's folder on its word.
+    let base = base_of(manifest, &scratch.join("work"), &mut j.errors);
     let base_bytes = match base.as_ref().map(std::fs::read) {
         Some(Ok(b)) => Some(b),
         Some(Err(e)) => {
@@ -397,9 +412,6 @@ async fn judge_one(
         None => None,
     };
     j.base = base.map(|p| p.display().to_string());
-    if let Some(b) = &base_bytes {
-        j.layout_similarity = mecha_core::imagegen::layout_similarity(b, &bytes);
-    }
     // The picture's own record, from the sample's staged store, through
     // the slot that owns its layout; a record that does not read is said
     // as that, not as none (review of #644).
@@ -421,7 +433,7 @@ async fn judge_one(
     // The detector and the picture's rendering for the model are CPU work:
     // off the runtime, as `imagegen` keeps the detector, and each picture
     // rendered once for all its questions.
-    let (faces, shown, shown_base) = {
+    let (faces, shown, shown_base, layout) = {
         let bytes = bytes.clone();
         let base_bytes = base_bytes.clone();
         tokio::task::spawn_blocking(move || {
@@ -429,10 +441,14 @@ async fn judge_one(
                 mecha_core::face::CachedRetinaFace.faces_in(&bytes),
                 Shown::of(&bytes),
                 base_bytes.as_deref().map(Shown::of),
+                base_bytes
+                    .as_deref()
+                    .and_then(|b| mecha_core::imagegen::layout_similarity(b, &bytes)),
             )
         })
         .await?
     };
+    j.layout_similarity = layout;
     match faces {
         Ok(n) => j.faces = Some(n),
         Err(e) => j.errors.push(e),
@@ -467,20 +483,20 @@ async fn judge_one(
     j.people_asked = verdict(
         ask_of(provider.as_ref(), pass, &shown, rj::PEOPLE_QUESTION).await,
         rj::count,
-        &mut j.errors,
+        &mut j,
     );
     for clause in clauses {
         let question = clause.question();
         let picture_says = verdict(
             ask_of(provider.as_ref(), pass, &shown, &question).await,
             rj::yes_no,
-            &mut j.errors,
+            &mut j,
         );
         let base_says = match &shown_base {
             Some(b) => verdict(
                 ask_of(provider.as_ref(), pass, b, &question).await,
                 rj::yes_no,
-                &mut j.errors,
+                &mut j,
             ),
             None => None,
         };
@@ -594,15 +610,48 @@ mod tests {
     /// An empty or unreadable answer is said, never only counted as none.
     #[test]
     fn an_answer_with_no_verdict_is_said() {
+        let mut j = Judgement::default();
+        assert_eq!(verdict(Ok("Yes".into()), rj::yes_no, &mut j), Some(true));
+        assert!(j.errors.is_empty());
+        assert_eq!(verdict(Ok("maybe".into()), rj::yes_no, &mut j), None);
+        assert_eq!(verdict(Err("empty".into()), rj::count, &mut j), None);
+        assert_eq!(j.errors.len(), 2);
+        assert_eq!(j.unanswered, 2, "counted for the summary as well as said");
+    }
+
+    /// The base is read only from a plain path the workspace holds, and a
+    /// refusal is said (review of #644).
+    #[test]
+    fn a_base_picture_is_read_only_from_inside_the_workspace() {
+        let work = std::env::temp_dir().join(format!("mecha-rjb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(work.join("images")).unwrap();
+        std::fs::write(work.join("images/a.png"), b"x").unwrap();
+        let m = |p: &str| serde_json::json!({"picture": p});
         let mut errors = Vec::new();
         assert_eq!(
-            verdict(Ok("Yes".into()), rj::yes_no, &mut errors),
-            Some(true)
+            base_of(Some(&m("images/a.png")), &work, &mut errors),
+            Some(work.join("images/a.png"))
         );
         assert!(errors.is_empty());
-        assert_eq!(verdict(Ok("maybe".into()), rj::yes_no, &mut errors), None);
-        assert_eq!(verdict(Err("empty".into()), rj::count, &mut errors), None);
-        assert_eq!(errors.len(), 2);
+        for bad in [
+            "../a.png",
+            "/etc/passwd",
+            "images/../../a.png",
+            "images/gone.png",
+        ] {
+            assert_eq!(base_of(Some(&m(bad)), &work, &mut errors), None, "{bad}");
+        }
+        assert_eq!(errors.len(), 4, "each refusal is said");
+        assert_eq!(
+            base_of(Some(&serde_json::json!({})), &work, &mut errors),
+            None
+        );
+        assert_eq!(
+            errors.len(),
+            4,
+            "a new picture has no base and nothing to say"
+        );
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     #[test]
