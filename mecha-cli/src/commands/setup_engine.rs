@@ -319,10 +319,11 @@ async fn run_upgrade(
     .map_err(anyhow::Error::msg)?;
     // An upgrade fetches a release's build, and no release fits a machine
     // whose engine is built here: its engine moves with the pin (7b-2).
-    // Lifting this needs more than the fetch: `install_build`'s compile runs
-    // through a blocking `Command::output()`, so `engine_gate::upgrade`'s
-    // cancel arm could not fire during it, and its "interrupted while
-    // fetching" would be the wrong words (review of #643).
+    // Lifting it means resolving a newer commit to build, since no release
+    // asset matches a built target (`engine::platform_is`). The compile
+    // itself is cancellable (`engine::step` runs in a killable process
+    // group), though `engine_gate::upgrade`'s "interrupted while fetching"
+    // would then want other words (review of #643).
     if target.is_built() {
         anyhow::bail!(
             "this machine's llama.cpp is built here ({}), since no release build fits it — \
