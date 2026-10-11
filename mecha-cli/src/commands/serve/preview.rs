@@ -110,7 +110,12 @@ pub(super) fn valid_origin(origin: &str) -> bool {
     let Some(rest) = origin.trim_end_matches('/').strip_prefix("https://") else {
         return false;
     };
-    let (host, port) = rest.split_once(':').unwrap_or((rest, ""));
+    let (host, port) = match rest.split_once(':') {
+        // A colon promises a port: one with none is a malformed source.
+        Some((host, port)) if !port.is_empty() => (host, port),
+        Some(_) => return false,
+        None => (rest, ""),
+    };
     !host.is_empty()
         && host
             .chars()
@@ -403,6 +408,7 @@ mod tests {
             "https://box 'unsafe-inline'",
             "https://",
             "https://box:84a",
+            "https://box.tail.ts.net:",
         ] {
             assert!(!valid_origin(bad), "{bad}");
         }
