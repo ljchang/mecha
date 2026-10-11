@@ -704,25 +704,23 @@ pub(crate) fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
 /// Run one step of a build; a failure carries the end of its output, which
 /// is where a compiler or CMake says what went wrong.
 ///
-/// Awaited, in a process group of its own that is killed whole when the
-/// future is dropped: a caller's cancel arm (`engine_gate`'s, on Ctrl-C)
-/// then ends a compile of minutes instead of waiting it out, and no
-/// compiler outlives it (review of #643).
+/// Awaited, so the executor is not held for the minutes a compile takes, and
+/// left in the terminal's foreground process group: a Ctrl-C at `features
+/// enable` or `setup chat` reaches mecha and every compiler together, as it
+/// would a `make` typed by hand. A group of its own took the compile out of
+/// the signal's reach, so it outlived mecha (review of #643). `kill_on_drop`
+/// ends the step's own process if its future is dropped.
 pub(crate) async fn step(c: std::process::Command, what: &str) -> Result<String> {
     let mut c = tokio::process::Command::from(c);
-    #[cfg(unix)]
-    c.process_group(0);
     c.kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let child = c.spawn().with_context(|| format!("starting {what}"))?;
-    let mut group = Group(child.id());
     let out = child
         .wait_with_output()
         .await
         .with_context(|| format!("running {what}"))?;
-    group.0 = None;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -734,24 +732,6 @@ pub(crate) async fn step(c: std::process::Command, what: &str) -> Result<String>
         bail!("{what} failed ({}):\n{tail}", out.status);
     }
     Ok(text)
-}
-
-/// A build step's process group, killed whole if the step is dropped before
-/// it finishes — `kill_on_drop` reaches only the leader, and `cmake --build`
-/// leaves its compilers running.
-struct Group(Option<u32>);
-
-impl Drop for Group {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0.and_then(|p| i32::try_from(p).ok()) {
-            // SAFETY: `kill` takes no pointers; a negative pid names the group
-            // this step started, which only its own processes are in.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        }
-    }
 }
 
 /// Build the spec's commit into `part`, flat, as the release is built: the
@@ -981,17 +961,26 @@ pub(crate) fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
 /// and the driver's `libcuda` too, none of which may ship beside the engine
 /// (review of #643).
 fn toolkit_named(lib: &str) -> bool {
-    let cu = lib.starts_with("libcu") && !lib.starts_with("libcuda.");
-    let nv = [
-        "libnvrtc",
-        "libnvJitLink",
-        "libnvToolsExt",
-        "libnvblas",
-        "libnvjpeg",
-    ]
-    .iter()
-    .any(|p| lib.starts_with(p));
-    cu || nv
+    // Each name with its `.so` dot, so a prefix never reaches a neighbour:
+    // `libcu` alone took `libcurl` and `libcups` too (review of #643).
+    const TOOLKIT: [&str; 15] = [
+        "libcudart.",
+        "libcublas.",
+        "libcublasLt.",
+        "libcufft.",
+        "libcurand.",
+        "libcusolver.",
+        "libcusparse.",
+        "libcudnn.",
+        "libcudnn_",
+        "libcupti.",
+        "libnvrtc.",
+        "libnvJitLink.",
+        "libnvToolsExt.",
+        "libnvblas.",
+        "libnvjpeg.",
+    ];
+    TOOLKIT.iter().any(|p| lib.starts_with(p))
 }
 
 /// Where the toolkit keeps `lib`, if it does: its library directories'
@@ -1926,6 +1915,8 @@ mod tests {
             "libnvidia-ml.so.1",
             "libstdc++.so.6",
             "libc.so.6",
+            "libcurl.so.4",
+            "libcups.so.2",
         ] {
             assert!(!toolkit_named(lib), "{lib}");
         }
