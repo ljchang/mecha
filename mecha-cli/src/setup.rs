@@ -1480,7 +1480,19 @@ async fn prepare_tools_carrying(
                     // other process that draws (IMAGE-DESIGN.md §16.2).
                     let tool = match mecha_core::work::mecha_home() {
                         Ok(home) => {
-                            tool.with_model_record(home.join("image").join("held-model.json"))
+                            let tool =
+                                tool.with_model_record(home.join("image").join("held-model.json"));
+                            // The chat's picture settings, under every surface
+                            // that names itself — a chat, `mecha run`, a
+                            // trigger, a persona's chat over it. Not under the
+                            // callers that name none (eval, batch, a persona
+                            // replay): an arm measures what it names (the
+                            // owner, 2026-10-11).
+                            if opts.surface.is_some() {
+                                tool.with_chat_settings(mecha_core::sampling::chat_path(&home))
+                            } else {
+                                tool
+                            }
                         }
                         Err(_) => tool,
                     };

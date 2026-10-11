@@ -44,29 +44,34 @@ export const ENDPOINTS = [
   ...CHAT_SUFFIXES.map((s) => `/api/persona-chat/X${s}`),
 ];
 
-// The picture-settings presets: the reference setting every picture used
-// before tuning, mecha-a3's guided setting (G3: cfg 3, 30 steps,
+// The picture-settings presets: nothing set — the layer below, the chat's on
+// a persona's page and the model's own on the chat's (the owner,
+// 2026-10-11) — mecha-a3's guided setting (G3: cfg 3, 30 steps,
 // res_multistep/beta, the fixed negative; 2026-10-11), and the turbo model at
-// its own defaults. A preset sets every field, so nothing of the last one is
-// left behind.
+// its own defaults. A preset replaces every field, so nothing of the last one
+// is left behind; turbo takes none of a standard chat's numbers
+// (`sampling::Tuning::over`).
 export const IMAGE_PRESETS = {
-  default: { model: 'standard' },
+  default: {},
   guided: { model: 'standard', cfg: 3, steps: 30, sampler: 'res_multistep', scheduler: 'beta', negative: true },
   turbo: { model: 'turbo' },
 };
 
-// The body the image-settings route takes: what the owner set, with `patch`
-// laid over it; a field patched to null goes back to the model's default.
+// The body the image-settings routes take: what the owner set, with `patch`
+// laid over it. A field patched to null is unset — the layer below — and an
+// explicit `standard` or negative `false` is sent as itself, since it
+// overrides a chat that chose otherwise.
 export function imageSettingsBody(set, patch, token) {
   const next = { ...(set ?? {}), ...patch };
   const field = (k) => (next[k] === null || next[k] === undefined || next[k] === '' ? undefined : next[k]);
+  const model = field('model');
   return {
-    model: next.model === 'turbo' ? 'turbo' : 'standard',
+    model: model === 'turbo' || model === 'standard' ? model : undefined,
     cfg: field('cfg') === undefined ? undefined : Number(next.cfg),
     steps: field('steps') === undefined ? undefined : Number(next.steps),
     sampler: field('sampler'),
     scheduler: field('scheduler'),
-    negative: !!next.negative,
+    negative: next.negative === true || next.negative === false ? next.negative : undefined,
     unlock: token ?? undefined,
   };
 }
