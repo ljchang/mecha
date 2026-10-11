@@ -124,6 +124,27 @@ async fn get(url: &str, query: &[(&str, &str)]) -> Option<Props> {
 /// machine — the same split `compact.rs` uses, and for the same reason:
 /// getting this wrong is silent.
 pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<String> {
+    // "Runs ask for that" only where this process's probe named it
+    // (`router::unnamed_model`; only `router::unnamed_bases`' entries are
+    // probed): off the machine, or a built-in entry that is not the default,
+    // nothing was asked, and an unnamed request is not served by a router.
+    let asked = crate::provider::router::asks_its_server(cfg)
+        && cfg
+            .base_url
+            .as_deref()
+            .and_then(crate::provider::router::unnamed_model)
+            .is_some();
+    disagreements_given(name, cfg, props, asked)
+}
+
+/// [`disagreements`], told whether this process asked the server for the
+/// entry's model name — the one input it reads from the process.
+fn disagreements_given(
+    name: &str,
+    cfg: &ProviderConfig,
+    props: &Props,
+    asked: bool,
+) -> Vec<String> {
     let mut out = Vec::new();
 
     if let (Some(declared), Some(served)) =
@@ -188,11 +209,6 @@ pub fn disagreements(name: &str, cfg: &ProviderConfig, props: &Props) -> Vec<Str
     // only by `mecha setup` (found on review of #627). Only what the server
     // reports, so `mecha setup --write` can always clear it.
     if let (None, Some(served)) = (cfg.model.as_deref(), props.model_alias.as_deref()) {
-        // Asked for only where `router::asks_its_server` says (an entry the
-        // owner configured, on this machine): elsewhere — off the machine, or
-        // the built-in default — nothing is asked at start, and an unnamed
-        // request is not served by a router.
-        let asked = crate::provider::router::asks_its_server(cfg);
         out.push(if asked {
             format!(
                 "[providers.{name}] sets no `model`; the server is serving {served:?}, so runs \
@@ -314,18 +330,18 @@ mod tests {
         let silent: Props = serde_json::from_str("{}").unwrap();
         assert!(disagreements("local", &c, &silent).is_empty());
 
-        // "Runs ask for that" only where they do: an owner-configured entry
-        // here. The built-in default is never asked, so it is not told it
-        // was (review of #637).
+        // "Runs ask for that" only where this process asked: the wording
+        // follows the probe, and an entry nothing probed — no name in the
+        // snapshot for its server — is not told it was (review of #637).
         let mut own = c.clone();
-        own.base_url = Some("http://127.0.0.1:8080".into());
-        own.built_in = false;
-        let said = disagreements("local", &own, &p).join("\n");
+        own.base_url = Some("http://127.0.0.1:1".into());
+        let said = disagreements_given("local", &own, &p, true).join("\n");
         assert!(said.contains("so runs ask for that"), "{said}");
-        let mut builtin = own.clone();
-        builtin.built_in = true;
-        let said = disagreements("local", &builtin, &p).join("\n");
+        let said = disagreements_given("local", &own, &p, false).join("\n");
         assert!(!said.contains("so runs ask for that"), "{said}");
+        assert!(said.contains("an unnamed one is not served"), "{said}");
+        // Nothing listens on :1, so nothing named it.
+        let said = disagreements("local", &own, &p).join("\n");
         assert!(said.contains("an unnamed one is not served"), "{said}");
     }
 

@@ -310,9 +310,7 @@ impl Follower {
         // this probe read it: a surface that outlives a `mecha model use`
         // moves with it rather than load the old pick back (review of #637).
         let asks = asked_name(&cfg, &want, &named);
-        let stays = |cur: &Bound| {
-            cur.provider_name == want && asks.as_deref().is_none_or(|n| n == cur.model)
-        };
+        let stays = |cur: &Bound| stays(&cur.provider_name, &cur.model, &want, asks.as_deref());
         if stays(&self.current()) {
             return Ok(self.current());
         }
@@ -559,6 +557,15 @@ async fn observe(
     (seen, named)
 }
 
+/// Whether a surface bound to `provider`/`model` stays put this turn: the
+/// entry it should be on is the one it is on, and — for an entry that asks
+/// its server — the name the server gave now is the one it was built with.
+/// A moved name is a rebuild, or the next request would load the old pick
+/// back (review of #637).
+fn stays(provider: &str, model: &str, want: &str, asks: Option<&str>) -> bool {
+    provider == want && asks.is_none_or(|n| n == model)
+}
+
 /// The model entry `want` asks for when it names none and its server said
 /// what it serves in this probe (`router::asks_its_server`); `None` for an
 /// entry that names its own, or a server that did not say.
@@ -712,8 +719,13 @@ mod tests {
         assert_eq!(asked_name(&cfg, "local", &[]), None);
         cfg.providers.get_mut("local").unwrap().model = Some("qwen".into());
         assert_eq!(asked_name(&cfg, "local", &named), None);
+        // The built-in default asks too: it is what a machine with no config
+        // file runs on (review of #637).
         let builtin = Config::default();
-        assert_eq!(asked_name(&builtin, "local", &named), None);
+        assert_eq!(
+            asked_name(&builtin, "local", &named).as_deref(),
+            Some("gemma-4-26b-a4b")
+        );
     }
 
     /// Production following the router, the uncensored arm and Gemma as its
@@ -766,6 +778,22 @@ mod tests {
         assert_eq!(
             resolve_seen(&c, false, seen(Some("gemma-4-26b-a4b"))).as_deref(),
             Some("gemma26")
+        );
+    }
+
+    /// A surface stays only on the entry it should be on and, for an entry
+    /// that asks its server, on the name the server gives now.
+    #[test]
+    fn a_surface_rebuilds_when_its_entry_or_its_asked_name_moves() {
+        assert!(stays("local", "qwen", "local", None), "names its own model");
+        assert!(stays("local", "qwen", "local", Some("qwen")));
+        assert!(
+            !stays("local", "qwen", "local", Some("gemma")),
+            "the server moved"
+        );
+        assert!(
+            !stays("local", "qwen", "gemma26", None),
+            "followed to another entry"
         );
     }
 
