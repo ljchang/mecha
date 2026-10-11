@@ -606,6 +606,24 @@ mod tests {
         push_published(store, &["lab".to_string()], true, bundles, program).unwrap()
     }
 
+    /// `publish` finds the renderer where the vite build writes it: the
+    /// constant and the two file names, read against the config itself, so a
+    /// rename on either side fails here rather than at a real publish.
+    #[test]
+    fn the_renderer_is_vendored_from_where_vite_writes_it() {
+        let vite = include_str!("../../../web/vite.hud.config.js");
+        for expected in [
+            format!("outDir: 'dist/{}'", publish::RENDERER_DIR),
+            "fileName: () => 'hud.js'".to_string(),
+            "cssFileName: 'hud'".to_string(),
+        ] {
+            assert!(
+                vite.contains(&expected),
+                "vite.hud.config.js lacks {expected}"
+            );
+        }
+    }
+
     /// A refused generation is sent once: later ticks still count it, but
     /// send nothing until a new generation arrives.
     #[test]

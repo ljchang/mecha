@@ -208,13 +208,10 @@ pub fn plan(
     let Some(declared) = release.declared.datasets.get(name) else {
         return Plan::Undeclared;
     };
-    let Some(loader) = installed.loaders().get(name) else {
+    if installed.loaders().get(name).is_none() {
         return Plan::Undeclared;
-    };
-    if loader.digest() != declared.loader_digest
-        || dataset.loader_digest != declared.loader_digest
-        || loader.columns() != declared.columns.as_slice()
-    {
+    }
+    if !from_declared_loader(installed, name, dataset, declared) {
         return Plan::LoaderChanged;
     }
     if last_pushed.is_some_and(|g| g >= dataset.generation) {
@@ -229,6 +226,24 @@ pub fn plan(
         "rows": dataset.rows,
         "external": dataset.external,
     }))
+}
+
+/// Whether `dataset` was produced by the loader `declared` names, and that
+/// loader is still the installed one — the one rule both the push and the
+/// outbox's preview frame apply, so the frame never shows rows a release
+/// would not receive (review of #651). The digest covers the whole loader,
+/// columns included.
+pub fn from_declared_loader(
+    installed: &Installed,
+    name: &str,
+    dataset: &Dataset,
+    declared: &DeclaredDataset,
+) -> bool {
+    installed
+        .loaders()
+        .get(name)
+        .is_some_and(|l| l.digest() == declared.loader_digest)
+        && dataset.loader_digest == declared.loader_digest
 }
 
 /// Which bundle a board is published as — written when its publish is
