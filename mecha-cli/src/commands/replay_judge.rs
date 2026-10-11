@@ -156,6 +156,9 @@ pub async fn execute(
             .chain([sheet.clone()])
             .collect::<Vec<_>>(),
     )?;
+    // Made now, so a folder it cannot be written in stops the run before any
+    // question rather than after them all (review of #644).
+    let mut sheet_file = super::replay_persona::private_file(&sheet)?;
 
     let follower = Follower::start(global.clone(), Box::new(|_| {})).await?;
     let router = follower.router_base();
@@ -235,8 +238,7 @@ pub async fn execute(
         rows.push((arm.label.clone(), tiles));
     }
     let title = format!("{} — {}", first.persona, rj::JUDGES);
-    super::replay_persona::private_file(&sheet)?
-        .write_all(rj::sheet_html(&title, &rows).as_bytes())?;
+    sheet_file.write_all(rj::sheet_html(&title, &rows).as_bytes())?;
     if json {
         println!(
             "{}",
@@ -263,6 +265,16 @@ fn file_url(path: &str) -> String {
         }
     }
     url
+}
+
+/// The sample's own folder, absolute, or none: nothing is read on the
+/// manifest's word from a path that would resolve against the current
+/// directory (review of #644).
+fn scratch_of(render: &Value) -> Option<PathBuf> {
+    render["scratch"]
+        .as_str()
+        .filter(|s| Path::new(s).is_absolute())
+        .map(PathBuf::from)
 }
 
 /// What a sample's manifests say of `picture`: the one whose `image` names
@@ -391,7 +403,11 @@ async fn judge_one(
             return Ok(j);
         }
     };
-    let scratch = PathBuf::from(render["scratch"].as_str().unwrap_or_default());
+    let Some(scratch) = scratch_of(render) else {
+        j.errors
+            .push("the sample names no scratch folder, so nothing was judged".into());
+        return Ok(j);
+    };
     let manifest = manifest_of(render, picture);
     j.route = manifest.and_then(|m| m["route"].as_str().map(str::to_string));
     j.roles = manifest.and_then(|m| m.get("roles").cloned());
@@ -652,6 +668,30 @@ mod tests {
             "a new picture has no base and nothing to say"
         );
         let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// A sample that names no folder, or a relative one, is judged on
+    /// nothing rather than on the current directory.
+    #[test]
+    fn a_sample_is_read_only_from_its_own_folder() {
+        let at = |v: Value| scratch_of(&serde_json::json!({ "scratch": v }));
+        assert_eq!(
+            at("/r/c.work/sample-000".into()),
+            Some(PathBuf::from("/r/c.work/sample-000"))
+        );
+        assert_eq!(at("".into()), None);
+        assert_eq!(at("c.work/sample-000".into()), None);
+        assert_eq!(scratch_of(&serde_json::json!({})), None);
+    }
+
+    /// The scene reader and role splitter are sent the sample's image seed,
+    /// so two arms at one base read as well as draw at the same seeds
+    /// (review of #615).
+    #[test]
+    fn a_replays_readers_are_seeded_by_the_sample() {
+        let src = include_str!("replay_persona.rs");
+        assert!(src.contains("persona_provider_seeded(&bound, PersonaUse::Judge, image_seed)"));
+        assert!(!src.contains("persona_provider(&bound, PersonaUse::Judge)"));
     }
 
     #[test]
