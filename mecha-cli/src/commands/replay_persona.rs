@@ -160,6 +160,14 @@ pub struct SampleArgs {
     #[arg(long, default_value_t = 2048, requires = "persona")]
     pub parsed_limit: usize,
 
+    /// Send the history as this build would have recorded it
+    /// (`agent::rerecord`): a call cut off mid-value kept as its head and a
+    /// note, and an unreadable call's result said as the loop now says it.
+    /// For a turn recorded before #611, whose history still holds the whole
+    /// loop. The header counts what changed.
+    #[arg(long, requires = "persona")]
+    pub rerecord: bool,
+
     /// Sample i's pictures draw their fresh seeds from a stream seeded
     /// image-seed-base + i, so two arms run with the same base render each
     /// sample at the same seeds.
@@ -459,10 +467,15 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     if args.samples == 0 {
         bail!("--samples must be at least 1");
     }
-    let branch: Branch = match args.at_call {
+    let mut branch: Branch = match args.at_call {
         Some(call) => pr::branch_at_call(&path, &text, line, call)?,
         None => pr::branch_at(&path, &text, line)?,
     };
+    // Before anything is sent or digested: every sample carries the history
+    // as rewritten, and its digests are of what was sent.
+    let rerecorded = args
+        .rerecord
+        .then(|| mecha_core::agent::rerecord(&mut branch.messages));
     let overlay = Arc::new(load_overlay(args.overlay.as_deref())?);
 
     let pin: Pin = serde_json::from_slice(
@@ -681,6 +694,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     // the readers are seeded with, so a header says whether two arms'
     // readers were paired.
     let mut header = header;
+    header["header"]["rerecorded"] = serde_json::json!(rerecorded);
     header["header"]["readers_seed"] =
         serde_json::json!((render && !args.no_readers).then_some("image_seed_base + i"));
     writeln!(file, "{header}")?;
