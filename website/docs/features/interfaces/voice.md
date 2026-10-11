@@ -55,10 +55,25 @@ way and starts `mecha-voice-worker.service` on `:7860`, under
 through `mecha serve`'s relay — its origin allowlist names no page, so a
 browser cannot reach it directly — which needs no hostname. Either one you
 already run on those ports — on those units, from a terminal, or under
-another name — is left as it is and used. Breeze is a local build of a
-qwentts.cpp fork, behind a small adapter that runs from the checkout
-(`scripts/voice/breeze_server.py`); Chatterbox, the voice before it, still
-runs as a container image if you would rather use it.
+another name — is left as it is and used.
+
+**The speech server installs itself too**, on Linux with an NVIDIA GPU and
+the CUDA toolkit:
+
+- **The engine:** a qwentts.cpp fork, built from a pinned commit of
+  [ljchang/qwentts.cpp](https://github.com/ljchang/qwentts.cpp/tree/breeze).
+  It takes about seven minutes on a DGX Spark.
+- **The weights:** Breeze TTS 2's, converted and fetched by sha256 from
+  [mecha-factory/mecha-speech-gguf](https://huggingface.co/mecha-factory/mecha-speech-gguf).
+- **The default voice:** a VCTK reading (CC BY 4.0).
+- **The services:** `mecha-breeze-tts.service` on `:8886` and its adapter,
+  `mecha-breeze-adapter.service`, on `:8887`, under
+  `~/.mecha/sidecars/speech/`.
+
+**Breeze TTS 2's weights are licensed for research and non-commercial use
+only**, and the install says so before it fetches them. Chatterbox, the
+voice before Breeze, still runs as a container image if you would rather use
+it.
 This is a build-it-yourself feature, and the honest summary is that setting it
 up takes an afternoon.
 

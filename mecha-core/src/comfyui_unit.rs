@@ -778,6 +778,24 @@ mod tests {
         );
     }
 
+    /// The table `enable image` writes with no install — an empty one —
+    /// loads as `[image]` on its defaults, which is what turns images on
+    /// (`feature::state` reads `cfg.image.is_some()`; review of #645).
+    #[test]
+    fn an_empty_image_table_loads_and_switches_images_on() {
+        let root = std::env::temp_dir().join(format!("mecha-7e-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        std::fs::write(&path, "# mine\n").unwrap();
+        let wrote = write_image_table(&path, None).unwrap();
+        let cfg = crate::config::Config::load_layers(Some(&path), None);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(wrote);
+        let image = cfg.unwrap().image.expect("an [image] table");
+        assert_eq!(image.url, crate::imagegen::ImageConfig::default().url);
+        assert_eq!(image.server_temp_dir, None);
+    }
+
     #[test]
     fn the_shipped_port_is_the_image_url_default() {
         let url = crate::imagegen::ImageConfig::default().url;

@@ -304,6 +304,25 @@ const OCR_SOURCES: &[Source] = &[Source::HuggingFace {
     ],
 }];
 
+/// The speech slot's published files: the converted model and the codec
+/// (`speech_unit`, step 7f).
+const TTS_SOURCES: &[Source] = &[Source::HuggingFace {
+    repo: crate::speech_unit::WEIGHTS_REPO,
+    revision: crate::speech_unit::WEIGHTS_REVISION,
+    files: &[
+        HubFile {
+            path: "breeze-tts2-Q6_K.gguf",
+            sha256: "7fd2c236a959285ba4faff226a3500e61ad492a7cc2cc3d9716bf0ccf0b324c1",
+            bytes: 2_825_553_728,
+        },
+        HubFile {
+            path: "qwen-tokenizer-12hz-BF16.gguf",
+            sha256: "cc04d7352ff4cb339435cdccf59cf38e6e92f3cf789bc94a6a1b467093bafa18",
+            bytes: 358_980_384,
+        },
+    ],
+}];
+
 /// The registry. Order is the page's row order.
 pub const SLOTS: &[Slot] = &[
     Slot {
@@ -556,9 +575,12 @@ pub const SLOTS: &[Slot] = &[
                 model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
                 counts: "peak while speaking: GPU memory and the server's and adapter's process memory",
                 // Converted from BreezeBlue/Breeze-TTS-2 (non-commercial
-                // weights) into qwentts.cpp's GGUF: no published file to pin;
-                // its installer builds it (step 7f).
-                sources: &[],
+                // weights) into qwentts.cpp's GGUF and published for the
+                // installer (step 7f, 2026-10-11). Q6_K is the owner's
+                // default (VOICE-BREEZE-DESIGN §6, 2026-10-03) and what the
+                // live server runs; Q5_K_M, the fallback, is published beside
+                // it (review of #649).
+                sources: TTS_SOURCES,
                 excludes: None,
             },
             // The GB10's readings, kept apart for a card: arithmetic there.
@@ -570,7 +592,7 @@ pub const SLOTS: &[Slot] = &[
                 },
                 model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
                 counts: "the GB10's GPU and process readings, carried to a card",
-                sources: &[],
+                sources: TTS_SOURCES,
                 excludes: None,
             },
         ],

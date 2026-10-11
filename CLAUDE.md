@@ -263,6 +263,8 @@ stt_unit.rs  speech to text from nothing: a hash-locked environment, the model b
              its pin, one rendered unit; a server mecha did not write is left alone
 comfyui_unit.rs the image server from nothing: ComfyUI by its commit, torch from a
              lock per arch, the slot's models linked from the hub, checked by node
+speech_unit.rs the speech server from nothing: Breeze's engine built from the published
+             fork's commit, its weights by pin, the adapter; checked by a sentence
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,
