@@ -494,3 +494,79 @@ Also not built, and not a measurement: **the queue line that names the step** (1
   - lower identity on profile faces (yaw 64–83°);
   - the cost.
 
+
+## 16. Picture settings per persona (owner, 2026-10-11)
+
+The owner's ruling: put the sampler's parameters on the persona page so they
+can be adjusted. Switching to turbo unloads the standard model, and the
+layers mode stays a switch beside them. mecha-a3 measured the settings these
+presets carry; the six-call replay set gates the build.
+
+### 16.1 What may be set
+
+`sampling::Tuning`, in `state.toml`'s `[image]` table beside `touching`. It
+is written only by the settings page's route and read fresh each turn, like
+the switch:
+
+| Field | Range | Unset means |
+|---|---|---|
+| `model` | `standard`, `turbo` | standard (`[image] diffusion_model`) |
+| `steps` | 4–60 | `[image] steps` (40); 8 for turbo |
+| `cfg` | 1–5 in steps of 0.5 | 1 (guidance off) |
+| `sampler` | KSampler's list at the pinned ComfyUI | `euler` |
+| `scheduler` | KSampler's list at the pinned ComfyUI | `simple` |
+| `negative` | on or off | off |
+
+- **The negative prompt is fixed in code** (`sampling::NEGATIVE`). The owner
+  turns it on or off, never writes it, and no model does. At cfg 1 the
+  sampler skips the unconditioned pass, so the page says it has no effect
+  there.
+- **The graph stays fixed** (§3). Only these values vary, each from a closed
+  range or list checked at the door (`Tuning::checked`), so nothing invalid
+  reaches ComfyUI.
+- **A damaged line costs that line.** The stored table is read one field at
+  a time (`Tuning::lenient`).
+- **An untuned persona draws byte-for-byte as before.**
+
+The page offers three presets, each of which sets every field:
+- **Default:** the reference setting.
+- **Guided:** mecha-a3's G3 setting, cfg 3, 30 steps, `res_multistep`/`beta`
+  and the negative, about 50 s.
+- **Turbo:** the turbo model at its own defaults, 10–15 s.
+
+The page also shows a rough time per picture (`sampling::estimate_secs`).
+
+### 16.2 Switching models
+
+The turbo model is the Comfy-Org turbo int8 file (`[image] turbo_model`). It
+shares the text encoder and VAE with the standard model.
+
+- **A switch unloads the other model.** When a picture needs a different
+  diffusion model from the one this process last sent the server, the job
+  POSTs `/free` first and waits for the unload to run (`UNLOAD_SETTLE`).
+  ComfyUI would otherwise keep both resident, about 7 GB more against the
+  memory floor.
+- **The memory floor asks for a cold load on a switch.**
+- **The record is per process, keyed by server address** (`LAST_MODEL`),
+  since every persona's form shares the one server. Another process's
+  pictures are unseen, so a server this process has not used is read as
+  holding the standard model.
+- **The first picture after a switch pays the load.**
+
+### 16.3 With layers
+
+The settings apply to every pass, a layered picture's included. Layers with
+turbo is therefore every pass in turbo. mecha-a3 measured turbo unable to
+carry two-person acts in one pass (the act drawn on one figure in 2 of 12), so the pairing is the
+owner's to try, not a recommendation.
+
+### 16.4 Replays
+
+`mecha replay --persona` takes `--image-model`, `--cfg`, `--steps`,
+`--sampler`, `--scheduler` and `--negative`. They are held to the same door,
+and the header records them as `image_tuning`.
+
+- **An arm never reads the persona's stored settings.** It says what it
+  measures, as `--layers` does.
+- **Each picture's manifest and prompt-log line record** the sampling used:
+  cfg, sampler, scheduler and whether the negative was sent.

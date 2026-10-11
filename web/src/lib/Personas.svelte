@@ -23,7 +23,7 @@
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, withJob, clockOf, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
-    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
+    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM, imageSettingsBody, presetBody,
   } from './persona.js';
   import { historyLines } from './call-lines.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -1278,6 +1278,41 @@
     }
   }
 
+  // The picture settings, stored in state.toml by their own route; each
+  // change saves at once, as the switches beside them do.
+  async function saveImage(body) {
+    busy = true;
+    try {
+      const res = await fetch(personaUrl(chosen.name, '/image-settings', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      await load();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function setImage(patch) {
+    return saveImage(imageSettingsBody(chosen.image?.set, patch, token));
+  }
+
+  // Every value a select may offer, from the list the server checks against.
+  function cfgChoices(o) {
+    const [min, max, step] = o?.cfg ?? [1, 5, 0.5];
+    const out = [];
+    for (let v = min; v <= max + 1e-9; v += step) out.push(Math.round(v * 10) / 10);
+    return out;
+  }
+  function stepChoices(o) {
+    const [min, max] = o?.steps ?? [4, 60];
+    return Array.from({ length: max - min + 1 }, (_, i) => min + i);
+  }
+
   async function setLocked(locked) {
     busy = true;
     try {
@@ -1739,6 +1774,64 @@
             </span>
             <button type="button" role="switch" class="tf-switch" aria-checked={chosen.touching === 'precise'} aria-label="Touching scenes: precise (slower)" aria-describedby="touchhint" disabled={busy} onclick={() => setTouching(chosen.touching === 'precise' ? 'single' : 'precise')}><span class="tf-knob"></span></button>
           </div>
+          <!-- How this persona's pictures are sampled: the owner's settings in
+               the same [image] table, each from the server's own lists, so
+               nothing the graph cannot take is offered. Applies to every
+               pass, a layered picture's included. -->
+          {#if chosen.image}
+            {@const img = chosen.image}
+            {@const opts = data?.image_options}
+            <div class="imgset">
+              <div class="locktext">
+                Picture settings
+                <span class="hint" id="imghint">about {img.estimate_secs} s a picture in one pass{img.model === 'turbo' ? ' with the turbo model: quick, weaker on two people touching' : ''}; changing model loads it on the next picture and unloads the other</span>
+              </div>
+              <div class="presets" role="group" aria-label="Picture presets">
+                <button type="button" class="linkbtn" disabled={busy} onclick={() => saveImage(presetBody('default', token))}>Default</button>
+                <button type="button" class="linkbtn" disabled={busy} onclick={() => saveImage(presetBody('guided', token))}>Guided</button>
+                <button type="button" class="linkbtn" disabled={busy} onclick={() => saveImage(presetBody('turbo', token))}>Turbo</button>
+              </div>
+              <div class="imggrid">
+                <label>Model
+                  <select value={img.set?.model ?? 'standard'} disabled={busy} onchange={(e) => setImage({ model: e.currentTarget.value })}>
+                    <option value="standard">Standard</option>
+                    <option value="turbo">Turbo</option>
+                  </select>
+                </label>
+                <label>Steps
+                  <select value={img.set?.steps ?? ''} disabled={busy} onchange={(e) => setImage({ steps: e.currentTarget.value || null })}>
+                    <option value="">default ({img.defaults.steps})</option>
+                    {#each stepChoices(opts) as n (n)}<option value={n}>{n}</option>{/each}
+                  </select>
+                </label>
+                <label>Guidance (cfg)
+                  <select value={img.set?.cfg ?? ''} disabled={busy} onchange={(e) => setImage({ cfg: e.currentTarget.value || null })}>
+                    <option value="">default ({img.defaults.cfg})</option>
+                    {#each cfgChoices(opts) as v (v)}<option value={v}>{v}</option>{/each}
+                  </select>
+                </label>
+                <label>Sampler
+                  <select value={img.set?.sampler ?? ''} disabled={busy} onchange={(e) => setImage({ sampler: e.currentTarget.value || null })}>
+                    <option value="">default ({img.defaults.sampler})</option>
+                    {#each opts?.samplers ?? [] as n (n)}<option value={n}>{n}</option>{/each}
+                  </select>
+                </label>
+                <label>Scheduler
+                  <select value={img.set?.scheduler ?? ''} disabled={busy} onchange={(e) => setImage({ scheduler: e.currentTarget.value || null })}>
+                    <option value="">default ({img.defaults.scheduler})</option>
+                    {#each opts?.schedulers ?? [] as n (n)}<option value={n}>{n}</option>{/each}
+                  </select>
+                </label>
+              </div>
+              <div class="lockrow inner">
+                <span class="locktext">
+                  Negative prompt
+                  <span class="hint" id="neghint">{img.cfg > 1 ? 'steers away from extra people, extra limbs and a waxy look; the text is fixed' : 'has no effect at guidance 1: the sampler skips it'}</span>
+                </span>
+                <button type="button" role="switch" class="tf-switch" aria-checked={!!img.negative} aria-label="Negative prompt" aria-describedby="neghint" disabled={busy} onclick={() => setImage({ negative: !img.negative })}><span class="tf-knob"></span></button>
+              </div>
+            </div>
+          {/if}
         {/if}
         {#if asForm && current.form.form}
           {#key current.digest}
@@ -2435,6 +2528,14 @@
   .lockrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; font-size: 14px; }
   .locktext { flex: 1; min-width: 0; }
   .lockrow .hint { display: block; margin-top: 2px; }
+  .imgset { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: 10px; font-size: 14px; }
+  .imgset .hint { display: block; margin-top: 2px; }
+  .imgset .presets { display: flex; flex-wrap: wrap; gap: 12px; }
+  .imggrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 12px; }
+  .imggrid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); min-width: 0; }
+  .imggrid select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--accent-900); border-radius: 6px; padding: 4px 6px; min-width: 0; max-width: 100%; }
+  .imgset .lockrow.inner { padding: 0; border: none; background: none; }
+  .imgset :global(.tf-switch:disabled) { opacity: 0.5; cursor: default; }
   .lockrow :global(.tf-switch:disabled) { opacity: 0.5; cursor: default; }
   .abtn.wide { width: 100%; }
   .status { display: flex; flex-wrap: wrap; gap: 6px 16px; }

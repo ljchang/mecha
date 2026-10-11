@@ -435,10 +435,14 @@ pub struct State {
 }
 
 /// A persona's picture settings, `state.toml`'s `[image]` table.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ImageSettings {
     #[serde(default)]
     pub touching: Touching,
+    /// How its pictures are sampled (`sampling::Tuning`), in the same
+    /// table: each unset field is the model's default.
+    #[serde(flatten)]
+    pub tuning: crate::sampling::Tuning,
 }
 
 impl ImageSettings {
@@ -459,11 +463,20 @@ pub enum Touching {
     Single,
 }
 
+/// The table a field at a time: a line that does not read is that line's
+/// default, never the others' (`sampling::Tuning::lenient`).
 fn lenient_image<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ImageSettings, D::Error> {
     let raw = Option::<toml::Value>::deserialize(d)?;
-    Ok(raw
-        .and_then(|v| v.try_into::<ImageSettings>().ok())
-        .unwrap_or_default())
+    let Some(toml::Value::Table(table)) = raw else {
+        return Ok(ImageSettings::default());
+    };
+    Ok(ImageSettings {
+        touching: table
+            .get("touching")
+            .and_then(|v| v.clone().try_into::<Touching>().ok())
+            .unwrap_or_default(),
+        tuning: crate::sampling::Tuning::lenient(&table),
+    })
 }
 
 /// Where a portrait sits in its circle, as the page draws it: `x` and `y`
@@ -1942,6 +1955,30 @@ pub fn touching(dir: &Path, name: &str) -> Touching {
         .unwrap_or_default()
 }
 
+/// How this persona's pictures are sampled now, read like [`touching`]:
+/// anything unreadable is the reference setting.
+pub fn tuning(dir: &Path, name: &str) -> crate::sampling::Tuning {
+    if validate_name(name).is_err() {
+        return crate::sampling::Tuning::default();
+    }
+    read_prose(&dir.join(name).join("state.toml"))
+        .and_then(|s| parse_toml::<State>(&s))
+        .map(|s| s.image.tuning)
+        .unwrap_or_default()
+}
+
+/// How this persona's pictures are sampled, each field held to its range or
+/// list. The owner's settings route is the one caller: no tool writes it.
+pub fn set_tuning(dir: &Path, name: &str, tuning: crate::sampling::Tuning) -> Result<State> {
+    let tuning = tuning.checked()?;
+    let (_, p) = current(dir, name)?;
+    let mut state = p.state;
+    state.image.tuning = tuning;
+    state.updated = now();
+    write_state(&dir.join(name), &state)?;
+    Ok(state)
+}
+
 /// How this persona's touching scenes are drawn (IMAGE-DESIGN.md §15.1).
 /// The owner's settings route is the one caller: no tool writes it.
 pub fn set_touching(dir: &Path, name: &str, touching: Touching) -> Result<State> {
@@ -3075,6 +3112,62 @@ mod tests {
             !text.contains("[image]"),
             "the default writes no table: {text}"
         );
+    }
+
+    /// The picture settings share `[image]` with the touching switch: each
+    /// round-trips, a bad line costs that line and never the switch beside
+    /// it, the door refuses a value out of range, and the defaults write no
+    /// table.
+    #[test]
+    fn the_picture_settings_are_stored_beside_the_switch() {
+        use crate::sampling::{Model, Tuning};
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        set_touching(&dir, "mara", Touching::Precise).unwrap();
+        let guided = Tuning {
+            cfg: Some(3.0),
+            steps: Some(30),
+            sampler: Some("res_multistep".into()),
+            scheduler: Some("beta".into()),
+            negative: true,
+            ..Tuning::default()
+        };
+        set_tuning(&dir, "mara", guided.clone()).unwrap();
+        assert_eq!(tuning(&dir, "mara"), guided);
+        assert_eq!(
+            touching(&dir, "mara"),
+            Touching::Precise,
+            "the switch is kept"
+        );
+        assert!(set_tuning(
+            &dir,
+            "mara",
+            Tuning {
+                cfg: Some(9.0),
+                ..Tuning::default()
+            }
+        )
+        .is_err());
+        assert_eq!(
+            tuning(&dir, "mara"),
+            guided,
+            "a refused change writes nothing"
+        );
+        // A damaged line costs that line: the switch and the rest survive.
+        let file = dir.join("mara").join("state.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, text.replace("steps = 30", "steps = \"lots\"")).unwrap();
+        let read = tuning(&dir, "mara");
+        assert_eq!(read.steps, None);
+        assert_eq!(read.sampler.as_deref(), Some("res_multistep"));
+        assert_eq!(touching(&dir, "mara"), Touching::Precise);
+        // Back to the defaults with the switch off: no table at all.
+        set_tuning(&dir, "mara", Tuning::default()).unwrap();
+        set_touching(&dir, "mara", Touching::Single).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("[image]"), "{text}");
+        assert_eq!(tuning(&dir, "mara").model, Model::Standard);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// A frame belongs to the picture it was measured against: a settings
