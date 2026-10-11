@@ -206,7 +206,21 @@ pub fn turbo_wanted(mecha_home: &Path, asked: bool) -> Option<String> {
         return Some("this install has it already".into());
     }
     let personas = mecha_home.join("personas");
-    let mut names: Vec<String> = std::fs::read_dir(&personas)
+    // An unreadable store is said, never read as one where no persona
+    // chooses turbo (review of #650); a missing one is no personas.
+    let entries = match std::fs::read_dir(&personas) {
+        Ok(entries) => Some(entries),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(
+                "{} could not be read ({e}), so no persona's choice of the turbo model is \
+                 known; `mecha features enable image --turbo` fetches it",
+                personas.display()
+            );
+            None
+        }
+    };
+    let mut names: Vec<String> = entries
         .into_iter()
         .flatten()
         .flatten()

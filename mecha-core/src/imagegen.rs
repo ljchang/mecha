@@ -1121,7 +1121,10 @@ impl ComfyUi {
             if !choices.iter().any(|c| c.as_str() == Some(want.as_str())) {
                 // The turbo model is fetched on demand, so its absence has
                 // a command that ends it (the owner, 2026-10-11).
-                if turbo && input == "unet_name" {
+                // Only the pinned file: `--turbo` fetches nothing else, and a
+                // configured `turbo_model` it cannot supply keeps the
+                // settings' own refusal (review of #650).
+                if turbo && input == "unet_name" && want == crate::sampling::TURBO_MODEL {
                     bail!(
                         "the image server has no `{want}`, the turbo model this persona's \
                          picture settings choose — `mecha features enable image --turbo` \
@@ -4988,6 +4991,8 @@ mod tests {
         /// What `/view` answers, in turn, in place of [`PNG`]'s undecodable
         /// bytes; the last one answers every call after.
         views: Vec<Vec<u8>>,
+        /// The unet loader lists no turbo model: one never fetched.
+        no_turbo: bool,
     }
 
     impl Default for Fake {
@@ -5002,6 +5007,7 @@ mod tests {
                 temp: None,
                 interrupted_record: None,
                 views: Vec::new(),
+                no_turbo: false,
             }
         }
     }
@@ -5017,6 +5023,7 @@ mod tests {
             temp,
             interrupted_record,
             views,
+            no_turbo,
         } = opts;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -5077,10 +5084,13 @@ mod tests {
                     let out = if let Some(node) = path.strip_prefix("/object_info/") {
                         let files = |input: &str, name: &str| json!({node: {"input": {"required": {input: [[name], {}]}}}});
                         json_reply(match node {
-                            "UNETLoader" => json!({node: {"input": {"required": {"unet_name": [[
-                                "qwen_image_2.1_int8_convrot.safetensors",
-                                crate::sampling::TURBO_MODEL,
-                            ], {}]}}}}),
+                            "UNETLoader" => {
+                                let mut unets = vec!["qwen_image_2.1_int8_convrot.safetensors"];
+                                if !no_turbo {
+                                    unets.push(crate::sampling::TURBO_MODEL);
+                                }
+                                json!({node: {"input": {"required": {"unet_name": [unets, {}]}}}})
+                            }
                             "UnetLoaderGGUF" => files("unet_name", "Qwen-Image-2.1-Q4.gguf"),
                             // A server with only some of KSampler's names.
                             "KSampler" => json!({node: {"input": {"required": {
@@ -8996,37 +9006,50 @@ mod tests {
         assert_eq!(sent(&seen), ["free", "prompt", "free", "prompt", "prompt"]);
     }
 
-    /// A turbo model the server lacks is refused naming the command that
-    /// fetches it — turbo is fetched on demand (the owner, 2026-10-11) — and
-    /// before anything is sent.
+    /// The pinned turbo model missing from the server is refused naming the
+    /// command that fetches it — turbo is fetched on demand (the owner,
+    /// 2026-10-11) — before anything is sent. A configured `turbo_model`
+    /// that command cannot supply is refused naming the settings instead,
+    /// so the refusal never names a command that would not end it (review
+    /// of #650).
     #[tokio::test]
     async fn a_missing_turbo_model_is_refused_naming_the_fetch() {
-        let (url, seen) = distinct(1).await;
-        let (dir, store) = (tempdir(), tempdir());
-        let t = ImageGenerate::new(ImageConfig {
-            url: url.clone(),
-            min_available_mb: 0,
-            unload_after_secs: 0,
-            turbo_model: "not-fetched-turbo.safetensors".into(),
-            ..Default::default()
-        })
-        .unwrap()
-        .polling_every(Duration::from_millis(10))
-        .with_library_dir(tempdir())
-        .with_seeds();
-        let mut cx = scene_ctx(&dir, &store, "chat-a");
-        cx.image_tuning = crate::sampling::Tuning {
+        let turbo = crate::sampling::Tuning {
             model: crate::sampling::Model::Turbo,
             ..Default::default()
         };
         let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
-        let out = t.call(call, &cx).await.unwrap();
+        let (url, seen) = fake_with(Fake {
+            no_turbo: true,
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store) = (tempdir(), tempdir());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.image_tuning = turbo.clone();
+        let out = tool(&url).call(call.clone(), &cx).await.unwrap();
         assert!(out.is_error, "{}", out.content);
         assert!(
             out.content.contains("features enable image --turbo"),
             "{}",
             out.content
         );
+        // Not the pinned file: the settings' refusal, no command.
+        let own = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            turbo_model: "my-turbo.gguf".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .polling_every(Duration::from_millis(10))
+        .with_library_dir(tempdir())
+        .with_seeds();
+        let out = own.call(call, &cx).await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("--turbo"), "{}", out.content);
+        assert!(out.content.contains("picture settings"), "{}", out.content);
         assert!(
             !seen
                 .lock()
