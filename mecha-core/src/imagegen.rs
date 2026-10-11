@@ -2918,20 +2918,177 @@ const STATE_WORDS: &[&str] = &[
     "unclothed",
 ];
 
-/// Whether `text` states a clothing state: one of [`STATE_WORDS`], or
-/// "dressed in" / "clothed in", which name the clothes ("dressed in a
-/// parka").
+/// Things worn that are not an outfit: a clause that names only these
+/// ("wearing a bike helmet") leaves the person's clothes to the prompt,
+/// where dropping them left nothing saying the person was dressed at all
+/// (review of #647, pass 8).
+const ACCESSORIES: &[&str] = &[
+    "headphones",
+    "earbuds",
+    "earphones",
+    "headset",
+    "glasses",
+    "sunglasses",
+    "spectacles",
+    "goggles",
+    "monocle",
+    "hat",
+    "hats",
+    "cap",
+    "caps",
+    "beanie",
+    "helmet",
+    "crown",
+    "crowns",
+    "tiara",
+    "headband",
+    "wig",
+    "backpack",
+    "bag",
+    "handbag",
+    "purse",
+    "scarf",
+    "scarves",
+    "gloves",
+    "mittens",
+    "watch",
+    "necklace",
+    "bracelet",
+    "earrings",
+    "ring",
+    "rings",
+    "jewelry",
+    "jewellery",
+    "mask",
+    "badge",
+    "lanyard",
+    "belt",
+    "tie",
+    "bowtie",
+    "boots",
+    "shoes",
+    "sneakers",
+    "sandals",
+    "heels",
+    "socks",
+    "slippers",
+    "ribbon",
+    "bow",
+    "brooch",
+    "pin",
+    "makeup",
+    "lipstick",
+    "perfume",
+    "flower",
+    "flowers",
+];
+
+/// Garments, which make a clause an outfit even beside an accessory
+/// ("wearing a parka and a beanie").
+const GARMENTS: &[&str] = &[
+    "dress",
+    "dresses",
+    "gown",
+    "shirt",
+    "tshirt",
+    "blouse",
+    "top",
+    "tank",
+    "sweater",
+    "jumper",
+    "hoodie",
+    "cardigan",
+    "sweatshirt",
+    "jacket",
+    "coat",
+    "parka",
+    "raincoat",
+    "overcoat",
+    "blazer",
+    "vest",
+    "suit",
+    "tuxedo",
+    "uniform",
+    "costume",
+    "robe",
+    "bathrobe",
+    "kimono",
+    "towel",
+    "pajamas",
+    "pyjamas",
+    "nightgown",
+    "nightie",
+    "onesie",
+    "jeans",
+    "pants",
+    "trousers",
+    "shorts",
+    "skirt",
+    "leggings",
+    "tights",
+    "overalls",
+    "jumpsuit",
+    "sweatpants",
+    "joggers",
+    "bra",
+    "underwear",
+    "panties",
+    "boxers",
+    "briefs",
+    "lingerie",
+    "corset",
+    "camisole",
+    "slip",
+    "swimsuit",
+    "bikini",
+    "trunks",
+    "leotard",
+    "apron",
+    "sari",
+    "poncho",
+    "cloak",
+    "cape",
+    "polo",
+    "clothes",
+    "clothing",
+    "outfit",
+];
+
+/// Whether `text` states a clothing state. An undress word always does. A
+/// clause with a wear word ([`STATE_WORDS`], or "dressed in" / "clothed in")
+/// does unless it names an accessory and no garment, with no "only" or
+/// "nothing" to make the accessory the whole outfit. An item neither list
+/// knows counts as clothing: that keeps the measured "wearing a wetsuit peeled to
+/// the waist" case, and a missing garment errs toward the record's outfit.
 fn states_clothing(text: &str) -> bool {
-    let words: Vec<String> = text
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(str::to_string)
-        .collect();
-    words.iter().any(|w| STATE_WORDS.contains(&w.as_str()))
-        || words
-            .windows(2)
-            .any(|w| matches!(w[0].as_str(), "dressed" | "clothed") && w[1] == "in")
+    const UNDRESS: &[&str] = &[
+        "undressed",
+        "naked",
+        "nude",
+        "topless",
+        "shirtless",
+        "bottomless",
+        "unclothed",
+    ];
+    text.to_lowercase()
+        .split([',', ';', '.', ':'])
+        .any(|clause| {
+            let words: Vec<&str> = clause
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .collect();
+            if words.iter().any(|w| UNDRESS.contains(w)) {
+                return true;
+            }
+            let wears = words.iter().any(|w| STATE_WORDS.contains(w))
+                || words
+                    .windows(2)
+                    .any(|w| matches!(w[0], "dressed" | "clothed") && w[1] == "in");
+            let only_accessories = words.iter().any(|w| ACCESSORIES.contains(w))
+                && !words.iter().any(|w| GARMENTS.contains(w))
+                && !words.iter().any(|w| matches!(*w, "only" | "nothing"));
+            wears && !only_accessories
+        })
 }
 
 /// Whether a person's act already says what they have on. That is their own
@@ -2941,7 +3098,7 @@ fn states_clothing(text: &str) -> bool {
 /// states no outfit beside it.
 ///
 /// Whatever filled `wearing` (the call, the reader, the record, or a
-/// newcomer's default), a second outfit beside "wearing jeans pulled down"
+/// newcomer's default), a second outfit beside "wearing a wetsuit peeled to the waist"
 /// is a dressed and an undressed person in one sentence, which the image
 /// model drew as two (mecha-a3, 2026-10-11, on a94a0a076). The record keeps
 /// the clothes; only the prompt leaves them out.
@@ -4498,6 +4655,12 @@ impl Tool for ImageGenerate {
                     .collect();
                 (!named.is_empty() && layered.is_none()).then_some(named)
             };
+            // Described people by count only: their name is their
+            // description, and the manifest carries no scene words, but the
+            // omission is never a silent null (review of #647, pass 8).
+            let clothes_others = clothes_said.iter().filter(|(_, library)| !*library).count();
+            let clothes_others =
+                (clothes_others > 0 && layered.is_none()).then_some(clothes_others);
             let manifest = json!({
                 "image": path,
                 "tool_use_id": ctx.call_id,
@@ -4523,6 +4686,7 @@ impl Tool for ImageGenerate {
                 // passes carry each person's outfit on the cutout, and the
                 // one-pass prompt this names was never drawn (review of #647).
                 "clothes_in_act": clothes_named,
+                "clothes_in_act_others": clothes_others,
                 "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
@@ -9192,6 +9356,23 @@ mod tests {
         // clothing state (review of #647, pass 4).
         assert!(!act(&maya, "folding clothes into a suitcase", None));
         assert!(!act(&maya, "leaning on a worn fence", None), "an adjective");
+        // An accessory alone is not an outfit: dropping the record's left the
+        // prompt saying nothing of clothes (review of #647, pass 8).
+        assert!(!act(&maya, "wearing a bike helmet, oiling a chain", None));
+        assert!(!act(&maya, "wearing mirrored goggles", None));
+        assert!(
+            act(&maya, "wearing a parka and a beanie", None),
+            "a garment too"
+        );
+        assert!(
+            act(&maya, "wearing only wellington boots", None),
+            "only makes the boots everything worn"
+        );
+        assert!(
+            act(&maya, "wearing a wetsuit peeled to the waist", None),
+            "an unknown item with a state"
+        );
+        assert!(act(&maya, "wearing a dirndl", None), "unknown items count");
         assert!(!act(&maya, "dressed for the gala, dancing", None));
         assert!(!act(&maya, "showing off her new outfit", None));
         // A retouch pasted into the same prompt is a shared text too.
@@ -9333,7 +9514,9 @@ mod tests {
             "{}",
             out.content
         );
-        assert!(manifest_of(&dir, &out.content)["clothes_in_act"].is_null());
+        let manifest = manifest_of(&dir, &out.content);
+        assert!(manifest["clothes_in_act"].is_null(), "no description");
+        assert_eq!(manifest["clothes_in_act_others"], 1, "but counted");
 
         // A retouch in the same prompt that states a clothing state is a
         // shared act too (review of #647, pass 4).
@@ -9373,7 +9556,7 @@ mod tests {
                 json!({"scene": {"setting": "a cabin by a lake",
                     "people": [{"who": "maya", "wearing": "a wool sweater", "where": "left"},
                                {"who": "john", "wearing": "a flannel shirt", "where": "right"}],
-                    "together": "both of them wearing paper crowns, laughing"}}),
+                    "together": "both of them wearing only bath towels, laughing"}}),
                 &cx,
             )
             .await
@@ -9395,7 +9578,7 @@ mod tests {
         let prompt = last_prompt(&seen);
         assert!(prompt.contains("wool sweater"), "{prompt}");
         assert!(
-            !prompt.contains("paper crowns"),
+            !prompt.contains("bath towels"),
             "not in this prompt: {prompt}"
         );
         assert!(manifest_of(&dir, &second.content)["clothes_in_act"].is_null());

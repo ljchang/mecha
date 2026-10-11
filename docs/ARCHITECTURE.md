@@ -937,9 +937,11 @@ advances it.
 - `clothes_in_act`: which library people's outfit the prompt left out
   because their act already states a clothing state (their own words, or
   the `together` or a retouch naming them or nobody), never an outfit the
-  call itself gave this turn. The result drops its note on where their
-  clothes came from. The record keeps the clothes. A second
-  outfit beside "wearing jeans pulled down" drew two people
+  call itself gave this turn, nor one an edit restates in its instruction.
+  A clause that names only accessories ("wearing a bike helmet") is no
+  outfit. Described people are counted in `clothes_in_act_others`, never
+  named. The result drops its note on where their clothes came from. The record keeps the clothes. A second
+  outfit beside "wearing a wetsuit peeled to the waist" drew two people
   (`imagegen::clothes_in_act`).
   One-pass pictures only: a layered picture's cutouts keep the outfit, and
   its manifest never claims this;
