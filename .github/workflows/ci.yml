@@ -154,12 +154,9 @@ jobs:
         working-directory: web
       # The bundle is what actually ships; a component that tests clean and
       # does not compile is not a passing state.
+      # `build` runs both targets: the app, and the standalone dashboard
+      # bundle a published page vendors (`vite.hud.config.js`).
       - run: npm run build
-        working-directory: web
-      # The standalone dashboard bundle is a second build target with its own
-      # entry and config (`vite.hud.config.js`); a page vendors it, so it
-      # compiles here too.
-      - run: npm run build:hud
         working-directory: web
 
   # The voice worker's echo filter is Python, so `cargo test` cannot see it and

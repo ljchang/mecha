@@ -226,17 +226,28 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
 /// The outbox tool that publishes a bundle: the factory's `bundle_publish`,
 /// as `[outbox] publish_tools` routes it. Never a guess at a server's name.
 fn publish_tool(cfg: &mecha_core::config::Config) -> Result<String> {
-    cfg.outbox
+    let routed: Vec<&String> = cfg
+        .outbox
         .publish_tools
         .iter()
-        .find(|t| t.ends_with("__bundle_publish"))
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no factory `bundle_publish` is routed through the outbox — \
-                 `[outbox] publish_tools` must name it (e.g. \"factory__bundle_publish\")"
-            )
-        })
+        .filter(|t| t.ends_with("__bundle_publish"))
+        .collect();
+    match routed.as_slice() {
+        [one] => Ok(one.to_string()),
+        [] => anyhow::bail!(
+            "no factory `bundle_publish` is routed through the outbox — \
+             `[outbox] publish_tools` must name it (e.g. \"factory__bundle_publish\")"
+        ),
+        // Which box gets the board is never config order (review of #651).
+        many => anyhow::bail!(
+            "`[outbox] publish_tools` routes more than one `bundle_publish` ({}), \
+             so which factory gets the board is ambiguous",
+            many.iter()
+                .map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
@@ -389,6 +400,16 @@ fn push_published(
                     continue;
                 }
             };
+            // Refused already: said and counted every tick, never re-sent.
+            if let Some(refused) = pushed.refusal(release.version, name, dataset.generation) {
+                eprintln!(
+                    "{id}/{name}: generation {} was refused ({}) and is not sent again; \
+                     the next generation, or a new publish, is",
+                    dataset.generation, refused.code
+                );
+                unpushed += 1;
+                continue;
+            }
             match push_one(program, &published.bundle, name, &body) {
                 Ok(outcome) => match outcome["outcome"].as_str() {
                     Some("stored") | Some("unchanged") => {
@@ -409,14 +430,16 @@ fn push_published(
                             release.version,
                             outcome["message"].as_str().unwrap_or_default()
                         );
+                        pushed.refuse(release.version, name, dataset.generation, "stale");
                         unpushed += 1;
                     }
                     _ => {
+                        let code = outcome["code"].as_str().unwrap_or("?");
                         eprintln!(
-                            "{id}/{name}: the factory refused the push ({}): {}",
-                            outcome["code"].as_str().unwrap_or("?"),
+                            "{id}/{name}: the factory refused the push ({code}): {}",
                             outcome["message"].as_str().unwrap_or_default()
                         );
+                        pushed.refuse(release.version, name, dataset.generation, code);
                         unpushed += 1;
                     }
                 },
@@ -577,6 +600,49 @@ mod tests {
         push_published(store, &["lab".to_string()], true, bundles, program).unwrap()
     }
 
+    /// A refused generation is sent once: later ticks still count it, but
+    /// send nothing until a new generation arrives.
+    #[test]
+    fn a_refused_generation_is_counted_every_tick_and_sent_once() {
+        let (s, store, bundles) = published_lab(2, true);
+        let calls = s.0.join("calls");
+        let refused = stub(
+            &s.0,
+            &format!(
+                r#"cat >/dev/null; echo x >>{}; echo '{{"outcome":"refused","code":"budget","message":"no"}}'"#,
+                calls.display()
+            ),
+        );
+        let sent = || {
+            std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        assert_eq!(push(&store, &bundles, &refused), 1);
+        assert_eq!(push(&store, &bundles, &refused), 1, "still counted");
+        assert_eq!(sent(), 1, "the same rows are not sent twice");
+
+        // A new generation is sent, and a success clears the refusal.
+        let data = store.board_path("lab").unwrap().join("data/visits.json");
+        let mut dataset: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&data).unwrap()).unwrap();
+        dataset["generation"] = 4.into();
+        std::fs::write(&data, dataset.to_string()).unwrap();
+        let stored = stub(
+            &s.0,
+            &format!(
+                r#"cat >/dev/null; echo x >>{}; echo '{{"outcome":"stored"}}'"#,
+                calls.display()
+            ),
+        );
+        assert_eq!(push(&store, &bundles, &stored), 0);
+        assert_eq!(sent(), 2);
+        let record = publish::Pushed::read(&store.board_path("lab").unwrap()).unwrap();
+        assert_eq!(record.last(1, "visits"), Some(4));
+        assert!(record.refused.is_empty());
+    }
+
     /// Every way a push can end is counted the way the timer must see it:
     /// stored is recorded and not pushed again; stale and refused are not
     /// pushed; a dataset the release did not declare is not pushed.
@@ -600,6 +666,7 @@ mod tests {
             r#"cat >/dev/null; echo '{"outcome":"stale","message":"moved"}'"#,
         );
         assert_eq!(push(&store, &bundles, &stale), 1, "stale is not pushed");
+        std::fs::remove_file(board.join("pushed.json")).unwrap();
         let refused = stub(
             &s.0,
             r#"cat >/dev/null; echo '{"outcome":"refused","code":"shape","message":"no"}'"#,
