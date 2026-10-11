@@ -262,22 +262,18 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
         Some(dir) => dir,
         None => mecha_core::work::mecha_home()?.join("web").join("dist"),
     };
-    let out = publish::staged_root(store.root())
-        .join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S%3f")));
-    publish::assemble(&installed, &assets.join(publish::RENDERER_DIR), &out)?;
-    let bundle = publish::bundle_id(id);
     // The store `mecha outbox show` and `send` open, resolved the same way.
     let outbox = crate::commands::outbox::open_store()?;
-    let item = outbox.stage_publish_by_harness(
+    let item = stage(
+        store,
+        &outbox,
+        &installed,
+        id,
         &tool,
-        serde_json::json!({
-            "id": bundle,
-            "bundle": out.display().to_string(),
-            "title": installed.spec().title(),
-            "visibility": if public { "public" } else { "private" },
-        }),
+        &assets.join(publish::RENDERER_DIR),
+        public,
     )?;
-    publish::mark_published(&store.board_path(id)?, &bundle)?;
+    let bundle = publish::bundle_id(id);
     println!(
         "staged {:?} for the factory as `{bundle}` ({}) — outbox item {}",
         installed.spec().title(),
@@ -291,6 +287,38 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
     println!("  release it: mecha outbox send {}", item.id);
     println!("  after the release, every refresh pushes its datasets");
     Ok(())
+}
+
+/// Assemble `installed`'s release bundle in the HUD store's staging
+/// directory and stage its publish, released under that directory as its
+/// jail — the factory's server is rooted at the release's workspace and
+/// reads nothing outside it.
+fn stage(
+    store: &Store,
+    outbox: &mecha_core::outbox::OutboxStore,
+    installed: &mecha_core::hud::Installed,
+    id: &str,
+    tool: &str,
+    renderer: &std::path::Path,
+    public: bool,
+) -> Result<mecha_core::outbox::OutboxItem> {
+    use mecha_core::hud::publish;
+    let staged = publish::staged_root(store.root());
+    let out = staged.join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S%3f")));
+    publish::assemble(installed, renderer, &out)?;
+    let bundle = publish::bundle_id(id);
+    let item = outbox.stage_publish_by_harness(
+        tool,
+        serde_json::json!({
+            "id": bundle,
+            "bundle": out.display().to_string(),
+            "title": installed.spec().title(),
+            "visibility": if public { "public" } else { "private" },
+        }),
+        &staged,
+    )?;
+    publish::mark_published(&store.board_path(id)?, &bundle)?;
+    Ok(item)
 }
 
 /// Push every published board's datasets that changed since the last push.
@@ -622,6 +650,50 @@ mod tests {
                 "vite.hud.config.js lacks {expected}"
             );
         }
+    }
+
+    /// The release runs under the item's workspace, and the factory's
+    /// server reads only inside it: the staged bundle must be there. The
+    /// first real dashboard release was refused because it was not.
+    #[test]
+    fn a_staged_dashboard_is_released_under_a_jail_that_holds_its_bundle() {
+        let (s, store, _bundles) = published_lab(0, true);
+        let renderer = s.0.join("renderer");
+        std::fs::create_dir_all(&renderer).unwrap();
+        std::fs::write(renderer.join("hud.js"), "").unwrap();
+        std::fs::write(renderer.join("hud.css"), "").unwrap();
+        let outbox = mecha_core::outbox::OutboxStore::open(s.0.join("outbox")).unwrap();
+        let installed = store.load("lab").unwrap().unwrap();
+        let item = stage(
+            &store,
+            &outbox,
+            &installed,
+            "lab",
+            "factory__bundle_publish",
+            &renderer,
+            false,
+        )
+        .unwrap();
+        let jail = item
+            .workspace
+            .as_ref()
+            .expect("a release with no workspace runs under the reviewer's")
+            .canonicalize()
+            .unwrap();
+        let bundle = std::path::PathBuf::from(item.args["bundle"].as_str().unwrap())
+            .canonicalize()
+            .unwrap();
+        assert!(
+            bundle.starts_with(&jail),
+            "{} outside {}",
+            bundle.display(),
+            jail.display()
+        );
+        // Nothing but staged bundles: not the HUD store, not the mecha home.
+        assert_eq!(
+            jail,
+            publish::staged_root(store.root()).canonicalize().unwrap()
+        );
     }
 
     /// A refused generation is sent once: later ticks still count it, but
