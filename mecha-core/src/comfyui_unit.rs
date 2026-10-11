@@ -184,14 +184,33 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@PORT@", &naming.port.to_string())
 }
 
-/// Whether this install links the turbo model where ComfyUI looks.
-pub fn turbo_linked(mecha_home: &Path) -> bool {
-    dir(mecha_home)
+/// What is at the turbo model's path in this install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurboHere {
+    Absent,
+    /// mecha's link into the hub (its blob may since have gone).
+    Linked,
+    /// A file someone put there by hand: theirs, never replaced (review of
+    /// #650).
+    Placed,
+}
+
+pub fn turbo_here(mecha_home: &Path) -> TurboHere {
+    match dir(mecha_home)
         .join("ComfyUI")
         .join("models")
         .join(TURBO_FILE.path)
         .symlink_metadata()
-        .is_ok()
+    {
+        Err(_) => TurboHere::Absent,
+        Ok(m) if m.file_type().is_symlink() => TurboHere::Linked,
+        Ok(_) => TurboHere::Placed,
+    }
+}
+
+/// Whether this install links the turbo model where ComfyUI looks.
+pub fn turbo_linked(mecha_home: &Path) -> bool {
+    turbo_here(mecha_home) == TurboHere::Linked
 }
 
 /// Why an install here should fetch the turbo model, or `None`: it was
@@ -206,7 +225,7 @@ pub fn turbo_wanted(mecha_home: &Path, asked: bool, configured: Option<&str>) ->
         return Some("asked for with --turbo".into());
     }
     if turbo_linked(mecha_home) {
-        return Some("this install has it already".into());
+        return Some("this install linked it before".into());
     }
     if configured.is_some_and(|c| c != crate::sampling::TURBO_MODEL) {
         return None;
@@ -684,7 +703,12 @@ mod tests {
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink("/nonexistent/blob", &link).unwrap();
         let linked = turbo_wanted(&home, false, pinned);
+        // A file put there by hand is no link of mecha's.
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, b"theirs").unwrap();
+        let placed = (turbo_here(&home), turbo_wanted(&home, false, pinned));
         let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(placed, (TurboHere::Placed, None));
         assert_eq!(none, None);
         assert!(asked.unwrap().contains("--turbo"));
         assert_eq!(standard, None);
@@ -695,7 +719,7 @@ mod tests {
         assert_eq!(untabled, chosen);
         assert_eq!(elsewhere, None);
         assert!(
-            linked.unwrap().contains("already"),
+            linked.unwrap().contains("before"),
             "a dangling link still counts"
         );
     }
