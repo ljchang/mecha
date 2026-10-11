@@ -1474,6 +1474,8 @@ async fn prepare_tools_carrying(
         if wants {
             match mecha_core::imagegen::ImageGenerate::new(image) {
                 Ok(tool) => {
+                    // The operator's `[system]` floor, not the defaults.
+                    let tool = tool.with_floor(cfg.system.clone());
                     // A new picture's seed is the CLI's and the evals' only:
                     // `mecha run`, and the one-shot callers that name no
                     // surface (eval, batch). Never a chat (IMAGE-DESIGN.md §5.1).

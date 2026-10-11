@@ -108,6 +108,15 @@ pub struct PersonaChats {
     calls: StdMutex<HashMap<String, (u64, Option<String>)>>,
     /// The next binding's id.
     next_call: std::sync::atomic::AtomicU64,
+    /// A Regenerate pressed on a call's screen, waiting for its line
+    /// (`call_regenerate`): the call's turns reach the server as words
+    /// through the voice worker, so the page registers the edit here and
+    /// the spoken turn that says its line takes it. One per chat; a newer
+    /// press replaces it. With when it was pressed, and its id, which a
+    /// withdraw names so it never takes a newer press (review of #642).
+    call_regenerates: StdMutex<HashMap<String, (PanelEdit, std::time::Instant, u64)>>,
+    /// The next registration's id.
+    next_regenerate: std::sync::atomic::AtomicU64,
     /// Every chat's background jobs (`docs/BACKGROUND-JOBS-DESIGN.md`): a
     /// picture drawn past the turn that asked for it, one in flight per chat
     /// key. A finished one comes back through `delivered`, drained by the
@@ -269,12 +278,24 @@ struct PanelNames {
     persona: String,
 }
 
+/// Which turn a panel edit rides, for how its drawing may be stopped
+/// ([`draw_panel_edit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelTurn {
+    /// Typed: Stop ends the drawing with the turn.
+    Typed,
+    /// A call's: talking barges in by cancelling the run, so the drawing
+    /// runs under no run token and only its wait for the line can be ended.
+    Spoken,
+}
+
 /// The edit panel's change, drawn by the harness (IMAGE-DESIGN.md §5.3):
 /// the owner's words and the picture's record through a one-shot extraction
 /// (a painted area skips it: that is a retouch), then the typed call through
 /// `Agent::dispatch_one`, every gate a model's call meets. The fact the turn
 /// keeps, and whether a picture was drawn. A failure is said in the fact,
 /// never retried.
+#[allow(clippy::too_many_arguments)]
 async fn draw_panel_edit(
     agent: &mecha_core::agent::Agent,
     cx: &mecha_core::agent::RunContext,
@@ -283,13 +304,13 @@ async fn draw_panel_edit(
     extractor: &Result<(Box<dyn mecha_core::provider::Provider>, String), String>,
     names: &PanelNames,
     events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    turn: PanelTurn,
 ) -> (String, bool) {
     use mecha_core::persona::edit;
     let fail = |why: String| {
-        (
-            edit::fact(&edit.picture, "not understood", &edit::not_understood(&why)),
-            false,
-        )
+        let result = edit::not_understood(&why);
+        undrawn_card(events, &result);
+        (edit::fact(&edit.picture, "not understood", &result), false)
     };
     // A Regenerate never quietly discards what was painted (mecha-05, on
     // #616's note): the pair is refused by name.
@@ -407,6 +428,42 @@ async fn draw_panel_edit(
             }
         }
     };
+    // In a call, talking barges in by cancelling the run, and talking never
+    // stops a picture (owner, Q2 2026-10-05). So a call's redraw renders
+    // under no run token: the owner's words wait for it (`speak` answers
+    // Busy and the worker says them again) rather than ending it, and a
+    // hang-up lets it finish and land in the chat (owner, 2026-10-10).
+    // Waiting behind another picture is not drawing: that wait stays under
+    // the run's token, so a barge-in or a hang-up ends it undrawn, rather
+    // than holding the chat for as long as the line ahead takes (review of
+    // #634). A picture Stop empties the line and so would let the wait
+    // resolve into a draw: the Stop count is read before and after, as
+    // `dispatch`'s own wait reads it (review of #606), and a Stop meanwhile
+    // ends it undrawn too.
+    if turn == PanelTurn::Spoken {
+        if let (Some(sink), Some(stop)) = (&cx.jobs, &cx.cancel) {
+            let stops = sink.stops();
+            let waited = tokio::select! {
+                () = sink.idle() => true,
+                () = stop.cancelled() => false,
+            };
+            if !waited || sink.stops() != stops {
+                let result =
+                    "Nothing was drawn: stopped while it waited for the picture before it.";
+                undrawn_card(events, result);
+                return (edit::fact(&edit.picture, &change, result), false);
+            }
+        }
+    }
+    let detached;
+    let cx = if turn == PanelTurn::Spoken {
+        let mut free = cx.clone();
+        free.cancel = None;
+        detached = free;
+        &detached
+    } else {
+        cx
+    };
     let dispatched = agent
         .dispatch_one(cx, conversation, "image_generate", call, events)
         .await;
@@ -414,6 +471,30 @@ async fn draw_panel_edit(
         edit::fact(&edit.picture, &change, &dispatched.content),
         !dispatched.is_error,
     )
+}
+
+/// A panel edit that ended before the harness's call, said on the live
+/// stream as a refused call is: its fact reaches the transcript, but no
+/// `ToolCall` reaches the page, which would show the persona saying it
+/// wasn't drawn with no card saying why until a reload (review of #642).
+fn undrawn_card(events: &Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>, result: &str) {
+    let Some(tx) = events else { return };
+    let id = format!(
+        "{}{}",
+        mecha_core::agent::HARNESS_CALL,
+        uuid::Uuid::new_v4().simple()
+    );
+    let _ = tx.send(AgentEvent::ToolCall {
+        id: id.clone(),
+        name: "image_generate".into(),
+        input: serde_json::json!({}),
+    });
+    let _ = tx.send(AgentEvent::ToolResult {
+        id,
+        name: "image_generate".into(),
+        is_error: true,
+        content: result.into(),
+    });
 }
 
 fn pin_path(sessions: &Path, id: &str) -> PathBuf {
@@ -431,10 +512,15 @@ const JUDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 /// The most text a session goal may carry.
 const MAX_GOAL: usize = 2000;
 
-/// How many tokens a persona may reason for on a spoken turn (owner,
-/// 2026-10-03: "start with call turns first"). A typed turn keeps the
-/// server's `--reasoning-budget` (4096).
-///
+/// Why a typed Regenerate into a running turn is refused.
+const REGENERATE_WAITS: &str = "a reply is running; Regenerate waits for it to finish";
+
+/// How long a Regenerate pressed in a call waits for its line: past the
+/// worker's longest wait for an answer under way (`TYPED_ANSWER_END_SECS`,
+/// 180 s, in `scripts/voice/worker.py`), so a line queued behind a long
+/// answer still finds it.
+const CALL_REGENERATE_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
+
 /// Why a door refused, as the route will say it.
 #[derive(Debug)]
 pub enum Refusal {
@@ -674,11 +760,13 @@ fn reader_cache(cached: bool) -> Option<mecha_core::document::Cache> {
 
 impl PersonaChats {
     pub fn new() -> Result<Self> {
-        Ok(Self::with(
+        let mut chats = Self::with(
             Store::default_dir()?,
             mecha_core::work::producer_dir("persona")?,
             Arc::new(crate::setup::persona_provider),
-        ))
+        );
+        chats.jobs = super::late::Jobs::marked("persona")?;
+        Ok(chats)
     }
 
     fn with(store: PathBuf, work: PathBuf, provider: ProviderFactory) -> Self {
@@ -692,6 +780,8 @@ impl PersonaChats {
             reading: Arc::new(tokio::sync::Semaphore::new(1)),
             calls: StdMutex::new(HashMap::new()),
             next_call: std::sync::atomic::AtomicU64::new(1),
+            call_regenerates: StdMutex::new(HashMap::new()),
+            next_regenerate: std::sync::atomic::AtomicU64::new(1),
             jobs: Default::default(),
         }
     }
@@ -1298,6 +1388,23 @@ impl PersonaChats {
         Ok(serde_json::json!({ "frame": state.frame }))
     }
 
+    /// Set how this persona's touching scenes are drawn (IMAGE-DESIGN.md
+    /// §15.1): the owner's switch, written to `state.toml` and nowhere else.
+    pub fn touching(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        touching: mecha_core::persona::Touching,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let state =
+            mecha_core::persona::set_touching(&self.store, &p.name, touching).map_err(failed)?;
+        Ok(serde_json::json!({ "touching": state.image.touching }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
     /// `Config::timezone` documents — not UTC (review of #418).
@@ -1346,6 +1453,7 @@ impl PersonaChats {
                     // Where the owner placed it in the circle; null is the
                     // page's default framing.
                     "frame": p.state.frame,
+                    "touching": p.state.image.touching,
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     // Waiting on the owner — the page's Waiting section —
@@ -2724,6 +2832,109 @@ impl PersonaChats {
         }
     }
 
+    /// Register a Regenerate pressed on the call screen (IMAGE-DESIGN.md
+    /// §5.4; owner, 2026-10-10: a spoken call turn), and the line the page
+    /// says into the call to take it. Through the same door as every turn,
+    /// and only on a chat with a call placed: the registration is what
+    /// makes the turn a redraw, and the line only says which turn. With
+    /// the registration's id, for a withdraw.
+    pub async fn call_regenerate(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+        picture: &str,
+    ) -> Result<(String, u64), Refusal> {
+        self.persona_of(library, key, token).await?;
+        if !self
+            .calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(key)
+        {
+            return Err(Refusal::Conflict("no call is placed to this chat".into()));
+        }
+        let picture = picture.trim();
+        if picture.is_empty() || picture.len() > 512 || picture.contains('\n') {
+            return Err(Refusal::Bad("not a picture path".into()));
+        }
+        let edit = PanelEdit {
+            picture: picture.to_string(),
+            mask: None,
+            words: String::new(),
+            redraw: true,
+            regions: Vec::new(),
+        };
+        let id = self
+            .next_regenerate
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key.to_string(), (edit, std::time::Instant::now(), id));
+        Ok((mecha_core::persona::edit::regenerate_line(picture), id))
+    }
+
+    /// Withdraw the Regenerate registered on `key` as `id` whose line
+    /// never reached the call — the page could not say it — so a later
+    /// turn that happened to say those words is not taken as one (review
+    /// of #634). Only that press: a newer one, even for the same picture,
+    /// stays (review of #642).
+    pub async fn withdraw_call_regenerate(
+        &self,
+        library: &LibraryState,
+        key: &str,
+        token: Option<&str>,
+        id: u64,
+    ) -> Result<(), Refusal> {
+        self.persona_of(library, key, token).await?;
+        let mut held = self
+            .call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if held.get(key).is_some_and(|(_, _, held_id)| *held_id == id) {
+            held.remove(key);
+        }
+        Ok(())
+    }
+
+    /// The Regenerate a spoken turn on `key` carries: the registered one,
+    /// when `utterance` is its line and it is still fresh, with when it was
+    /// registered. Left in place: it is spent (`spend_call_regenerate`) only
+    /// once a turn has started with it, so a turn refused as Busy and said
+    /// again by the worker still finds it (review of #634). A stale one is
+    /// dropped; a fresh one waits for its line past other turns, since the
+    /// worker queues a typed line behind an answer.
+    fn call_regenerate_for(
+        &self,
+        key: &str,
+        utterance: &str,
+    ) -> Option<(PanelEdit, std::time::Instant)> {
+        let mut held = self
+            .call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (edit, at, _) = held.get(key)?;
+        if at.elapsed() > CALL_REGENERATE_WAIT {
+            held.remove(key);
+            return None;
+        }
+        (utterance.trim() == mecha_core::persona::edit::regenerate_line(&edit.picture))
+            .then(|| (edit.clone(), *at))
+    }
+
+    /// Spend the registration a started turn took: the one registered at
+    /// `at`, never a newer press that replaced it meanwhile.
+    fn spend_call_regenerate(&self, key: &str, at: std::time::Instant) {
+        let mut held = self
+            .call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if held.get(key).is_some_and(|(_, held_at, _)| *held_at == at) {
+            held.remove(key);
+        }
+    }
+
     /// Which personas speak in each library voice, by display name — for the
     /// voice library's "used by" (Library → Voices). Behind the lock as the
     /// persona list is: a locked persona is named only for an unlock.
@@ -2813,6 +3024,12 @@ impl PersonaChats {
             self.release_offer(key, id);
         }
         let name = self.persona_of(library, key, token).await?;
+        // A Regenerate pressed in this call and never said is not the next
+        // call's (review of #634).
+        self.call_regenerates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(key);
         let chat = {
             let sessions = self.sessions.lock().await;
             sessions
@@ -2905,6 +3122,10 @@ impl PersonaChats {
                 }
             }
         }
+        // A Regenerate pressed on the call's screen, if this is its line;
+        // spent only when a turn starts with it.
+        let registered = self.call_regenerate_for(key, utterance);
+        let regenerate = registered.as_ref().map(|(edit, _)| edit.clone());
         for _ in 0..BARGE_IN_TRIES {
             // The last reply, read while the conversation is still here: the
             // run about to start takes it.
@@ -2939,12 +3160,15 @@ impl PersonaChats {
                     None,
                     token.as_deref(),
                     Vec::new(),
-                    None,
+                    regenerate.clone(),
                     Some(spoken),
                 )
                 .await
             {
                 Ok(_) => {
+                    if let Some((_, at)) = registered {
+                        self.spend_call_regenerate(key, at);
+                    }
                     // After `start`, which creates a first chat's session:
                     // the transcript the director records in, and who speaks.
                     let seed = {
@@ -3080,6 +3304,11 @@ impl PersonaChats {
             if ps.live.is_some() {
                 if spoken.is_some() {
                     return Err(Refusal::Busy);
+                }
+                // A steer carries text only: a Regenerate folded in would
+                // reach the persona as the bare words (review of #634).
+                if edit.as_ref().is_some_and(|e| e.redraw) {
+                    return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
                 }
                 let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
                 let bound = chat.follower.current();
@@ -3238,6 +3467,9 @@ impl PersonaChats {
             if spoken.is_some() {
                 return Err(Refusal::Busy);
             }
+            if edit.as_ref().is_some_and(|e| e.redraw) {
+                return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
+            }
             let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let bound = chat.follower.current();
             return self.steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
@@ -3320,8 +3552,10 @@ impl PersonaChats {
         let variety_note = mecha_core::persona::variety::note(&conversation.messages);
         // A turn the picture edit panel sent: the harness draws the change
         // itself, and the persona only replies (IMAGE-DESIGN.md §5.3). Typed
-        // only; a spoken turn is the persona's own, under the call note.
-        let panel = edit.filter(|_| spoken.is_none());
+        // only, but for a Regenerate: a spoken turn is the persona's own,
+        // under the call note, and the one edit a call carries is the redraw
+        // its screen registered (`call_regenerate`; owner, 2026-10-10).
+        let panel = edit.filter(|e| spoken.is_none() || e.redraw);
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -3644,6 +3878,10 @@ impl PersonaChats {
                 ),
                 // A served picture's seeds are random, as every chat's.
                 image_seeds: None,
+                // The owner's switch, read fresh this turn (§15.1).
+                layers: mecha_core::persona::touching(&self.store, &name)
+                    == mecha_core::persona::Touching::Precise,
+                layers_posed: false,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -3734,6 +3972,11 @@ impl PersonaChats {
                             extractor,
                             &names,
                             &Some(tx.clone()),
+                            if spoken_turn {
+                                PanelTurn::Spoken
+                            } else {
+                                PanelTurn::Typed
+                            },
                         )
                         .await;
                         mecha_core::agent::append_user_text(
@@ -4481,6 +4724,42 @@ pub struct FrameBody {
     unlock: Option<String>,
 }
 
+/// The touching-scenes switch, a closed set: a value outside it is refused
+/// at the door (a 400), never stored.
+#[derive(serde::Deserialize)]
+pub struct TouchingBody {
+    touching: TouchingValue,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TouchingValue {
+    Single,
+    Precise,
+}
+
+/// POST /api/personas/{name}/image-touching
+pub async fn image_touching(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<TouchingBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let touching = match body.touching {
+        TouchingValue::Single => mecha_core::persona::Touching::Single,
+        TouchingValue::Precise => mecha_core::persona::Touching::Precise,
+    };
+    respond(
+        chat.personas
+            .touching(&state.library, &name, touching, body.unlock.as_deref()),
+    )
+}
+
 /// POST /api/personas/{name}/frame
 pub async fn frame(
     State(state): Web,
@@ -5123,6 +5402,49 @@ pub async fn call_ended(
 }
 
 #[derive(serde::Deserialize)]
+pub struct CallRegenerateBody {
+    picture: String,
+    #[serde(default)]
+    unlock: Option<String>,
+    /// The page could not say the line: take back the registration with
+    /// this id (`PersonaChats::withdraw_call_regenerate`).
+    #[serde(default)]
+    withdraw: Option<u64>,
+}
+
+/// POST /api/persona-chat/{key}/call-regenerate — a Regenerate pressed on
+/// the call screen: registered, with the line the page says into the call
+/// for the spoken turn that takes it (`PersonaChats::call_regenerate`).
+pub async fn call_regenerate(
+    State(state): Web,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<CallRegenerateBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c.clone(),
+        Err(resp) => return resp,
+    };
+    if let Some(id) = body.withdraw {
+        return match chat
+            .personas
+            .withdraw_call_regenerate(&state.library, &key, body.unlock.as_deref(), id)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({ "withdrawn": true })).into_response(),
+            Err(r) => r.into_response(),
+        };
+    }
+    match chat
+        .personas
+        .call_regenerate(&state.library, &key, body.unlock.as_deref(), &body.picture)
+        .await
+    {
+        Ok((line, id)) => Json(serde_json::json!({ "line": line, "id": id })).into_response(),
+        Err(r) => r.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct SaveReplyBody {
     text: String,
     #[serde(default)]
@@ -5466,6 +5788,9 @@ mod tests {
         drawn_untrusted: Arc<StdMutex<Vec<bool>>>,
         /// How many panel extractions were asked (`Capture`'s `.5`).
         extracted: Arc<StdMutex<usize>>,
+        /// With a length, the stand-in renders as the real tool does: a
+        /// deferred job that takes that long and stops on its token.
+        draw_takes: Arc<StdMutex<Option<std::time::Duration>>>,
     }
 
     impl Drop for World {
@@ -5506,6 +5831,7 @@ mod tests {
     struct DrawStub(
         Arc<StdMutex<Vec<serde_json::Value>>>,
         Arc<StdMutex<Vec<bool>>>,
+        Arc<StdMutex<Option<std::time::Duration>>>,
     );
 
     #[async_trait::async_trait]
@@ -5536,8 +5862,22 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(ctx.taint.is_some_and(|t| t.untrusted));
-            Ok(mecha_core::tool::ToolOutput::ok(
-                "image: images/stub.png\nA new picture. It is on the owner's screen; you have not seen it.",
+            const DRAWN: &str =
+                "image: images/stub.png\nA new picture. It is on the owner's screen; you have not seen it.";
+            let Some(takes) = *self.2.lock().unwrap() else {
+                return Ok(mecha_core::tool::ToolOutput::ok(DRAWN));
+            };
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let stop = cancel.clone();
+            let job = async move {
+                tokio::select! {
+                    () = tokio::time::sleep(takes) => mecha_core::tool::ToolOutput::ok(DRAWN),
+                    () = stop.cancelled() => mecha_core::tool::ToolOutput::err("stopped while drawing"),
+                }
+            };
+            Ok(mecha_core::tool::ToolOutput::deferred(
+                "being made: images/stub.png",
+                mecha_core::jobs::DeferredJob::new(job, cancel, "busy"),
             ))
         }
     }
@@ -5609,10 +5949,12 @@ mod tests {
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
         let drawn = Arc::new(StdMutex::new(Vec::new()));
         let drawn_untrusted = Arc::new(StdMutex::new(Vec::new()));
+        let draw_takes = Arc::new(StdMutex::new(None));
         if draws {
             pool.insert(Arc::new(DrawStub(
                 Arc::clone(&drawn),
                 Arc::clone(&drawn_untrusted),
+                Arc::clone(&draw_takes),
             )));
         }
         let mut config = mecha_core::config::Config::default();
@@ -5645,6 +5987,7 @@ mod tests {
             drawn,
             drawn_untrusted,
             extracted,
+            draw_takes,
         }
     }
 
@@ -5655,18 +5998,29 @@ mod tests {
 
     /// `turn`, sent from the picture edit panel when `edit`.
     async fn turn_as(w: &World, key: &str, text: &str, edit: Option<PanelEdit>) {
+        turn_events(w, key, text, edit).await;
+    }
+
+    /// `turn_as`, and every event the page was sent for it, `Done` last.
+    async fn turn_events(
+        w: &World,
+        key: &str,
+        text: &str,
+        edit: Option<PanelEdit>,
+    ) -> Vec<WireEvent> {
         let (mut rx, _) = w.personas().subscribe(&w.library, key, None).await.unwrap();
         w.personas()
             .send_with(&w.chat, &w.library, key, text, None, None, Vec::new(), edit)
             .await
             .unwrap();
+        let mut seen = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
                 Ok(Ok(WireEvent::Done { ok, error, .. })) => {
                     assert!(ok, "{error:?}");
-                    return;
+                    return seen;
                 }
-                Ok(Ok(_)) => continue,
+                Ok(Ok(event)) => seen.push(event),
                 other => panic!("no Done event: {other:?}"),
             }
         }
@@ -6022,6 +6376,369 @@ mod tests {
         assert_eq!(card["version_of"], "images/a.png");
     }
 
+    /// Regenerate on the call screen (owner, 2026-10-10): a spoken call turn
+    /// whose words are the line the page registered draws the picture again
+    /// by the harness, and its card is a version, as a typed Regenerate's
+    /// is. The words alone grant nothing: unregistered, or with no call
+    /// placed, they are a turn like any other. Fails before this change,
+    /// which dropped every edit on a spoken turn.
+    #[tokio::test]
+    async fn a_regenerate_pressed_in_a_call_is_drawn_by_the_harness_on_its_spoken_line() {
+        let w = world_built(
+            Mode::Say("Ochre gulls wheel overhead.".into()),
+            |_| {},
+            true,
+        );
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        // No call placed: nothing to register against.
+        assert!(matches!(
+            w.personas()
+                .call_regenerate(&w.library, &key, None, "images/a.png")
+                .await,
+            Err(Refusal::Conflict(_))
+        ));
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        // The line spoken with nothing registered is words: no harness draw.
+        spoken(&w, &key, "Regenerate images/a.png").await;
+        assert!(w.drawn.lock().unwrap().is_empty(), "drawn unregistered");
+
+        let line = w
+            .personas()
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(line, "Regenerate images/a.png");
+        // Another turn first: the registration waits for its own line.
+        spoken(&w, &key, "one moment").await;
+        assert!(w.drawn.lock().unwrap().is_empty(), "drawn on another line");
+        spoken(&w, &key, &line).await;
+        assert_eq!(
+            w.drawn.lock().unwrap().clone(),
+            vec![serde_json::json!({"picture": "images/a.png"})]
+        );
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let card = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|e| e["kind"] == "tool" && e["name"] == "image_generate")
+            .expect("a card")
+            .clone();
+        assert_eq!(card["version_of"], "images/a.png");
+        // Taken once: the same line again is words.
+        spoken(&w, &key, &line).await;
+        assert_eq!(w.drawn.lock().unwrap().len(), 1, "drawn twice");
+    }
+
+    /// Talking over a call's Regenerate never stops the picture (owner, Q2
+    /// 2026-10-05): the barge-in waits for the draw, the picture lands as a
+    /// version, and the words are answered after. Fails when the draw runs
+    /// under the run's token, which the barge-in fires: the render is
+    /// stopped and the card is an error.
+    #[tokio::test]
+    async fn talking_over_a_regenerate_in_a_call_does_not_stop_the_picture() {
+        let w = world_built(
+            Mode::Say("Ochre gulls wheel overhead.".into()),
+            |_| {},
+            true,
+        );
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        *w.draw_takes.lock().unwrap() = Some(std::time::Duration::from_millis(600));
+        let line = w
+            .personas()
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap()
+            .0;
+        let first = match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, &line, false)
+            .await
+        {
+            crate::voice::Hosted::Started(turn) => turn,
+            _ => panic!("the Regenerate's turn did not start"),
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // The owner talks over the draw.
+        spoken(&w, &key, "are you still there").await;
+        let _ = first.done.await;
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let card = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool" && e["name"] == "image_generate")
+            .expect("a card")
+            .clone();
+        assert_eq!(card["is_error"], false, "{card}");
+        assert_eq!(card["version_of"], "images/a.png", "{card}");
+    }
+
+    /// A Regenerate whose line the page could not say is taken back, so a
+    /// later turn saying those words is words (review of #634). Only that
+    /// press: a newer one, even for the same picture, stays (review of #642).
+    #[tokio::test]
+    async fn a_call_regenerate_never_said_is_withdrawn() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let chats = w.personas();
+        let (line, first) = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        chats
+            .withdraw_call_regenerate(&w.library, &key, None, first)
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &line).is_none());
+        // A second press of the same picture, then the first's withdraw
+        // arriving late: the second stands.
+        let (again, second) = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        assert_ne!(first, second);
+        chats
+            .withdraw_call_regenerate(&w.library, &key, None, first)
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &again).is_some());
+    }
+
+    /// A call's registration is spent only by a turn that starts with it
+    /// (review of #634): looked up as often as the worker says the line,
+    /// spent once, and never a newer press that replaced it. Before, the
+    /// lookup took it, so a turn refused as Busy lost the redraw and the
+    /// worker's retry reached the persona as bare words.
+    #[tokio::test]
+    async fn a_call_regenerate_is_spent_only_by_the_turn_that_starts_with_it() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let line = w
+            .personas()
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap()
+            .0;
+        let chats = w.personas();
+        let (_, first) = chats.call_regenerate_for(&key, &line).expect("found");
+        let (_, again) = chats
+            .call_regenerate_for(&key, &line)
+            .expect("still there for the worker's retry");
+        assert_eq!(first, again);
+        // A newer press replaces it: spending the older one leaves the newer.
+        let newer = chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap()
+            .0;
+        chats.spend_call_regenerate(&key, first);
+        let (_, held) = chats
+            .call_regenerate_for(&key, &newer)
+            .expect("the newer press stands");
+        assert_ne!(held, first);
+        chats.spend_call_regenerate(&key, held);
+        assert!(chats.call_regenerate_for(&key, &newer).is_none());
+        // And a call's end drops one never said.
+        chats
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap();
+        chats
+            .call_ended(&w.library, &key, None, 1, None)
+            .await
+            .unwrap();
+        assert!(chats.call_regenerate_for(&key, &line).is_none());
+    }
+
+    /// A call's redraw waiting behind another picture waits under the run's
+    /// token (review of #634): a barge-in ends the wait undrawn, rather than
+    /// the redraw holding the chat for as long as the line ahead takes.
+    /// Before, the wait was detached with the render, and the barge-in found
+    /// the chat Busy for its whole window.
+    #[tokio::test]
+    async fn a_call_regenerate_waiting_behind_a_picture_ends_undrawn_on_a_barge_in() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        // A picture already being made, which ends only when told to.
+        let ahead = tokio_util::sync::CancellationToken::new();
+        let watched = ahead.clone();
+        let job = mecha_core::jobs::DeferredJob::new(
+            async move {
+                watched.cancelled().await;
+                mecha_core::tool::ToolOutput::err("stopped")
+            },
+            ahead.clone(),
+            "busy",
+        );
+        w.personas()
+            .jobs
+            .queue
+            .submit(&key, 0, "ahead", "image_generate", job)
+            .unwrap();
+        let line = w
+            .personas()
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap()
+            .0;
+        let first = match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, &line, false)
+            .await
+        {
+            crate::voice::Hosted::Started(turn) => turn,
+            _ => panic!("the Regenerate's turn did not start"),
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // The owner talks while it waits.
+        spoken(&w, &key, "never mind").await;
+        let _ = first.done.await;
+        assert!(w.drawn.lock().unwrap().is_empty(), "drawn after all");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let card = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool" && e["name"] == "image_generate")
+            .expect("a card")
+            .clone();
+        assert_eq!(card["is_error"], true, "{card}");
+        assert!(
+            card["preview"]
+                .as_str()
+                .is_some_and(|p| p.contains("waited for the picture before it")),
+            "{card}"
+        );
+        ahead.cancel();
+    }
+
+    /// A picture Stop while a call's Regenerate waits in line ends it
+    /// undrawn (review of #634, pass 4; the #606 rule): the Stop empties the
+    /// line, and without the Stop count read around the wait, the emptied
+    /// line released the waiting redraw into a draw.
+    #[tokio::test]
+    async fn a_picture_stop_while_a_call_regenerate_waits_ends_it_undrawn() {
+        let w = world_built(Mode::Say("Done.".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "hello").await;
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        let ahead = tokio_util::sync::CancellationToken::new();
+        let watched = ahead.clone();
+        let job = mecha_core::jobs::DeferredJob::new(
+            async move {
+                watched.cancelled().await;
+                mecha_core::tool::ToolOutput::err("stopped")
+            },
+            ahead.clone(),
+            "busy",
+        );
+        w.personas()
+            .jobs
+            .queue
+            .submit(&key, 0, "ahead", "image_generate", job)
+            .unwrap();
+        let line = w
+            .personas()
+            .call_regenerate(&w.library, &key, None, "images/a.png")
+            .await
+            .unwrap()
+            .0;
+        let first = match w
+            .personas()
+            .speak(&w.chat, &w.library, &key, &line, false)
+            .await
+        {
+            crate::voice::Hosted::Started(turn) => turn,
+            _ => panic!("the Regenerate's turn did not start"),
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // The picture Stop: the chat's pictures, not the reply.
+        w.personas()
+            .cancel(&w.library, &key, None, true, None)
+            .await
+            .unwrap();
+        let _ = first.done.await;
+        assert!(w.drawn.lock().unwrap().is_empty(), "drawn after a Stop");
+    }
+
+    /// A typed Regenerate into a running turn is refused (review of #634): a
+    /// steer carries text alone, and the persona would read the words.
+    #[tokio::test]
+    async fn a_typed_regenerate_into_a_running_turn_is_refused() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_built(Mode::Gate(Arc::clone(&gate)), |_| {}, true);
+        let key = open_chat(&w).await;
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: String::new(),
+            redraw: true,
+            regions: Vec::new(),
+        };
+        let refused = w
+            .personas()
+            .send_with(
+                &w.chat,
+                &w.library,
+                &key,
+                "Regenerate images/a.png",
+                None,
+                None,
+                Vec::new(),
+                Some(edit),
+            )
+            .await;
+        assert!(matches!(refused, Err(Refusal::Conflict(_))), "{refused:?}");
+        gate.notify_waiters();
+        assert!(w.drawn.lock().unwrap().is_empty());
+    }
+
     /// The extraction reads the picture's record, so an untrusted record
     /// arms the conversation before the harness draws: the fields the call
     /// sets are stamped untrusted, never laundered by a re-wording
@@ -6204,7 +6921,7 @@ mod tests {
             redraw: false,
             regions: Vec::new(),
         };
-        turn_as(
+        let live = turn_events(
             &w,
             &key,
             "Edit images/a.png with mask inbox/mask-a.png",
@@ -6212,6 +6929,15 @@ mod tests {
         )
         .await;
         assert_eq!(w.drawn.lock().unwrap().len(), 2, "nothing more drawn");
+        // Its card is said live, as a refused call: no re-read is needed to
+        // see why nothing was drawn (review of #642).
+        assert!(
+            live.iter().any(|e| matches!(e,
+                WireEvent::ToolResult { name, is_error: true, preview, .. }
+                    if name == "image_generate"
+                        && preview.contains("nothing was said for the painted area"))),
+            "{live:?}"
+        );
         let reply = w.seen.lock().unwrap().last().unwrap().clone();
         let owner = reply.messages.last().unwrap().text();
         assert!(
@@ -7353,6 +8079,50 @@ mod tests {
             .frame(&w.library, "mara", None, Some(&token))
             .unwrap();
         assert!(row(Some(&token))["frame"].is_null(), "the default again");
+    }
+
+    /// The touching-scenes switch: set from the page, carried by the list,
+    /// read by the host each turn, behind the lock like every write, and a
+    /// value outside the closed set refused at the door (IMAGE-DESIGN.md
+    /// §15.1).
+    #[tokio::test]
+    async fn the_touching_switch_is_set_listed_read_and_locked() {
+        use mecha_core::persona::Touching;
+        let w = world();
+        let row = |token: Option<&str>| {
+            w.personas().list(&w.library, token, Some(chrono_tz::UTC))["personas"][0].clone()
+        };
+        assert_eq!(
+            row(None)["touching"],
+            "single",
+            "off until the owner sets it"
+        );
+        let set = w
+            .personas()
+            .touching(&w.library, "mara", Touching::Precise, None)
+            .unwrap();
+        assert_eq!(set["touching"], "precise");
+        assert_eq!(row(None)["touching"], "precise");
+        assert_eq!(
+            mecha_core::persona::touching(&w.store(), "mara"),
+            Touching::Precise
+        );
+        assert!(
+            serde_json::from_value::<TouchingBody>(serde_json::json!({"touching": "sideways"}))
+                .is_err(),
+            "an unknown value never reaches the store"
+        );
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas()
+                .touching(&w.library, "mara", Touching::Single, None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        w.personas()
+            .touching(&w.library, "mara", Touching::Single, Some(&token))
+            .unwrap();
+        assert_eq!(row(Some(&token))["touching"], "single");
     }
 
     /// A proposal from the main chat, read and approved where personas live

@@ -1,6 +1,6 @@
 # System state — design
 
-**2026-10-10. Proposed; R1, R2, R3 and R3b ruled the same day; R4 ruled 2026-10-10; R5 and R5b open (§9).** `mecha system` is one layer through which mecha reads the state of
+**2026-10-10. R1–R5b ruled the same day (§9). S0, S1, S6 and S2a built (§7, §7.1–§7.3).** `mecha system` is one layer through which mecha reads the state of
 the machine it runs on and the services it runs beside. Each measurement in
 it has its own specific name, drawn from one closed list. Every consumer
 reads the system through it, and none probes for itself:
@@ -22,7 +22,9 @@ sensor.
 ## 0. Why: the system is read in many places today
 
 An inventory of `origin/main` at `5669f2579`, plus the host sampler on #630,
-found every reader below written for one consumer:
+found every reader below written for one consumer. The table is that
+snapshot, so it uses the paths of the time: `hud::host` is `system` since S0,
+and S1 folded the first four rows into `system::source`.
 
 | Source | Readers today |
 |---|---|
@@ -167,17 +169,18 @@ now.
 | `category.gpu_memory` | `nvidia-smi --query-compute-apps`, per `Category` | bytes | Fork | yes | hud |
 | `model.slots.busy`, `model.slots.total` | `GET /slots?autoload=false` on :8080, local provider only | count | Loopback | yes | brief, `mecha model use`, model-idle.sh |
 | `model.resident` | `GET /models` on the router | a model id | Loopback | **no: a name** | router, `mecha model list` |
-| `runs.live` | `runmarker` dirs, plus pid checks | count | Scan | yes | brief, serve board |
-| `holds.live` | the `hold` dir, plus pid checks | count | Scan | yes | follow, `mecha model` |
+| `runs.live` | `runmarker` dirs (delegated tasks and trigger fires), plus pid checks | count | Scan | yes | brief, serve board |
+| `holds.live` | the `hold` dir, every router, plus pid checks; never swept | count | Scan | yes | follow, `mecha model` |
 | `permits.live` | the `permit` dir, plus pid checks | count | Scan | yes | brief |
-| `voice.live` | **one answer**, chosen in S2 (§6) | bool | File | yes | brief and replay_persona, which disagree |
+| `voice.live` | the speech engine's journal: a sentence synthesised in the last three minutes, for a call in any chat or a reply read aloud (§7.3) | bool | Fork | yes | replay_persona, the build gate |
 | `image.loaded` | ComfyUI `GET /system_stats` | bool | Loopback | yes | imagegen |
 | `services.failed` | `systemctl --user --failed` | count | Fork | yes | CLI doctor |
 | `backlog.outbox`, `backlog.questions`, `backlog.frontdoor`, `backlog.proposals`, `backlog.candidates` | `backlog::Backlog::survey`, one per field | count | Scan | yes | homeostat, charter readings |
 | **Pressure and health** (added 2026-10-10, second pass) | | | | | |
-| `pressure.cpu`, `pressure.memory`, `pressure.io` | `/proc/pressure/*`, `some avg60`: the share of time work was stalled waiting on that resource | % | File | yes | nothing |
-| `memory.oom_kills` | `/proc/vmstat` `oom_kill`, delta per minute | count | File | yes | nothing |
-| `category.oom_kills` | each unit's `memory.events` `oom_kill`, per `Category` | count | File | yes | nothing |
+| `pressure.{cpu,memory,io}.avg10`, `.avg60` | `/proc/pressure/*`, the `some` line: the share of the last ten or sixty seconds that work was stalled waiting on that resource | % | File | yes | nothing |
+| `memory.oom_kills` | `/proc/vmstat` `oom_kill`, since the previous sample: how many | count | File | yes | nothing |
+| `memory.oom_kills.global`, `memory.oom_kills.capped` | the kernel log's `oom-kill:` lines (`constraint=`): the machine ran out, or a cgroup hit its cap. Recorded only when they reconcile with the counter (§7.1) | count | Fork | yes | nothing |
+| `category.oom_kills` | the kernel log's victim cgroup, per `Category` — not `memory.events`, which resets when a killed service restarts (§7.1) | count | Fork | yes | nothing |
 | `cpu.temperature` | the hottest `/sys/class/thermal` zone | °C | File | yes | nothing |
 | `gpu.throttled` | `nvidia-smi` `clocks_throttle_reasons.active` ≠ 0 | bool | Fork | yes | nothing |
 | `system.uptime` | `/proc/uptime`; a fall is a reboot | seconds | File | yes | nothing |
@@ -185,18 +188,18 @@ now.
 | `disk.read_rate`, `disk.write_rate`, `disk.busy` | `/proc/diskstats` deltas on the disk holding `/` | bytes/s, % | File | yes | nothing |
 | `store.mecha.size`, `store.work.size`, `store.models.size` | directory walks of `~/.mecha`, `~/.mecha/work` and the model hub cache | bytes | Scan, **hourly** | yes | `mecha work` (work dir only) |
 | **Network** | | | | | |
-| `network.uplink.rx_rate`, `network.uplink.tx_rate` | `/proc/net/dev` deltas on the default-route interface (from `/proc/net/route`) | bytes/s | File | yes | nothing |
+| `network.uplink.rx_rate`, `network.uplink.tx_rate` | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` deltas on the default-route interface (from `/proc/net/route`), keyed by its `ifindex` so a switch of interface never makes a rate | bytes/s | File | yes | nothing |
 | `network.uplink.kind` | `wired` or `wireless`, from `/sys/class/net/<if>/wireless` | label | File | yes | nothing |
-| `network.wifi.signal` | `/proc/net/wireless` link quality; `NotHere` on a wired uplink | % | File | yes | nothing |
-| `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/proc/net/dev` deltas on the tailnet interface | bytes/s | File | yes | nothing |
+| `network.wifi.signal`, `network.wifi.bitrate` | `iw dev <uplink> link`: signal level and the link's transmit rate; `NotHere` on a wired uplink. This driver reports nothing in `/proc/net/wireless` (§7.1) | dBm, Mbit/s | Fork | yes | nothing |
+| `network.tailnet.rx_rate`, `network.tailnet.tx_rate` | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` deltas on the tailnet interface, keyed by `ifindex` | bytes/s | File | yes | nothing |
 | `network.tailnet.up`, `network.tailnet.peers_online` | `tailscale status --json`: backend state, and a count of online peers, never their names | bool, count | Fork | yes | nothing |
 | **Work in flight** | | | | | |
-| `tasks.running` | `taskruns` markers, plus pid checks | count | Scan | yes | serve board |
+| `tasks.running` | `taskruns` markers, plus pid checks (a subset of `runs.live`) | count | Scan | yes | serve board |
 | `tasks.open` | open board tasks, from the graph store read-only | count | Scan, **hourly** | yes | `kg_task_list` |
-| `jobs.live` | background jobs (`jobs.rs`); **not readable outside the serving process today** (§2.1) | count | File | yes | nothing |
+| `jobs.live` | background jobs running (`jobs.rs`), from each host queue's marker (§2.1, built in S2a) | count | Scan | yes | nothing |
 | `image.queue.running`, `image.queue.pending` | ComfyUI `GET /queue` | count | Loopback | yes | nothing |
-| `triggers.missed`, `triggers.failed` | the trigger ledger: slots past due with no run, and runs that failed, over 24 h | count | Scan | yes | doctor |
-| `mail.drain.pending` | `~/.mecha/requests`, not yet drained | count | Scan | yes | doctor |
+| `triggers.missed`, `triggers.failed` | the trigger files and ledger over 24 h: slots that did not run (skipped, collapsed by a catch-up, or never accounted), and runs that ended in error (§7.3) | count | Scan | yes | doctor |
+| ~~`mail.drain.pending`~~ | dropped in S2a: the queue it names is on the factory box (§7.3) | | | | |
 | `messages.unread` | the inter-agent mailbox (`mailbox.rs`) | count | Scan | yes | nothing |
 
 ### 2.1 Notes on the second pass
@@ -248,8 +251,8 @@ outside it can count them. The fix is the shape `runmarker.rs` already uses:
 - removed when it ends;
 - checked against a live pid.
 
-That marker is part of S2. Until it exists, `jobs.live` reads `Unread`,
-never 0.
+That marker is part of S2, and S2a built it: one file per host queue,
+holding counts and nothing else (§7.3).
 
 **Hourly is a cadence, not a tier.** A directory walk over the model cache
 or the graph store costs more than a minute deserves. So `store.*` and
@@ -536,13 +539,13 @@ one by deleting a copy.
 
 - **`nvidia-smi` with no timeout** in the host sampler goes through
   `recommend::nvidia_smi` instead, with its 10 s kill.
-- **Two "is a voice call live?" answers** become one: `voice.live` reads
-  the stamp file (`brief::VoicePresence`).
-  - The stamp is the better primitive. The voice worker writes it, and it
-    is checked against a live pid. The journal grep only infers liveness
-    from a log line.
-  - If the stamp misses a case the journal catches, the fix is to write the
-    stamp in that case, not to keep a second reader.
+- **Two "is a voice call live?" answers** turned out to be two questions
+  (§7.3), so they stay two, each with one reader:
+  - `voice.live` is the machine's: is the speech engine speaking, whichever
+    chat the call is in. The build gate and `replay_persona` read it.
+  - The brief's `VoicePresence` stamp is the owner's context, and it is
+    deliberately not written for an incognito chat (`INCOGNITO-DESIGN.md`
+    §6.4). So it cannot be the machine's answer.
   - The live-call build gate in the memory notes becomes
     `mecha system probe voice.live`.
 - **Four `/proc/meminfo` parsers** become one. `imagegen` and `recommend`
@@ -557,16 +560,230 @@ one by deleting a copy.
 |---|---|---|
 | **S0** | Move `hud::host` into `system`. The store becomes `~/.mecha/system/series.sqlite`, `mecha hud sample` becomes `mecha system sample`, and the unit becomes `mecha-system-sample`. The `host` board's source and the doctor check follow. **Before the dashboard's step 2b deploys** (R2), so nothing migrates. | #630 merged |
 | **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers, including pressure, OOM kills, temperatures, uptime, disk I/O and network throughput. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
-| **S2** | `model.*`, `runs.live`, `holds.live`, `permits.live`, `voice.live`, `image.*`, `tasks.*`, `triggers.*`, `mail.drain.pending`, `messages.unread`, and the job marker that makes `jobs.live` readable. The brief reads them through `system`, and they are recorded in the series, except `model.resident`. | S1 |
-| **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2 |
+| **S2a** | The `Scan` tier and the call: `runs.live`, `tasks.running`, `holds.live`, `permits.live`, `jobs.live` with its marker, `voice.live`, `triggers.*` and `messages.unread`, all recorded (§7.3). | S1 |
+| **S2b** | The `Loopback` tier and the hourly walks: `model.*`, `image.*`, `tasks.open`, `store.*`, and model loads gated by the memory floor (§7.2). | S2a |
+| **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2a |
 | **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | S3 |
 | **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
 | **S6** | The memory floor (§3.7): `system::admit` and `mecha system admit --need`, with image generation, model loads, background admission and the build scripts all calling it. The image tool's `memory_verdict` becomes a caller of `admit`, not a second implementation. | R5; S1 (it needs `memory.available` and `pressure.memory`, nothing more) |
+
+### 7.1 What S1 built, and where it differs from §2
+
+S1 is built: `system::source` (one parser per source, with the bounded
+runner taken from `recommend::nvidia_smi`), `system::measure` (the closed
+list, `Reading`, and a `Reader` that reads each source once per probe or
+sample), the series' named-reading tables, and `mecha system probe`.
+`homeostat`, `imagegen` and `recommend` read through it, and their own
+parsers are gone. Building it changed six things in §2, each from something
+read on this machine:
+
+- **Pressure is two names per resource.** `pressure.memory.avg10` and
+  `pressure.memory.avg60` use the kernel's own field names. The floor reads
+  the ten-second figure (R5), and the series records both, so a minute's
+  row holds the minute's average as well as the moment's.
+- **OOM kills are three names, not one.** On 2026-10-10 `/proc/vmstat`
+  counted 986 kills. The kernel log held 991 `oom-kill:` lines over 15
+  days, 989 of them `constraint=CONSTRAINT_MEMCG`: cgroups hitting the cap
+  they were given, nearly all in `run-*.scope` cgroups like the ones the
+  sandbox runs confined commands in. Only two were `CONSTRAINT_NONE`, the
+  machine actually running out. So:
+  - `memory.oom_kills` is the counter, and it is authoritative on how many;
+  - `memory.oom_kills.global` and `memory.oom_kills.capped` come from the
+    log;
+  - `category.oom_kills` takes the victim's unit from the log.
+
+  The split is recorded only when the log accounts for exactly the
+  counter's kills in that window, and otherwise it is NULL.
+  `category.oom_kills` comes from the log rather than `memory.events`
+  because a service whose main process is killed is restarted in a fresh
+  cgroup, which resets that counter: it would lose exactly the kill it
+  was meant to record.
+- **Wi-Fi is read from `iw`, not `/proc/net/wireless`.** This driver
+  reports nothing there. `iw dev <if> link` gives the signal in dBm and
+  the link's transmit rate, so `network.wifi.bitrate` is the link's speed
+  without any test traffic.
+- **`cpu.temperature` is the package on this machine.** The GB10's thermal
+  zones sit on the die the GPU shares, and they read 93 °C at peak with the
+  GPU at 96%. It is still the measurement to read; its doc says what it is.
+- **Rates come from the series, with a rule.** A rate is recorded only
+  between two samples where the counter did not fall (a reboot) and its
+  device or interface did not change. Interfaces are keyed by index, never
+  by name.
+- **A slice with no memory accounting is refused.** If no user service
+  reports `memory.current`, the sample is refused rather than recorded as
+  zeros. This was #630's last open minor. It is a deploy-time change worth
+  watching: a machine whose user manager has no memory controller
+  delegated now records nothing, and the doctor's stopped-sampler finding
+  is what says so.
+- **One deadline per sample.** A sample runs seven commands, and a bound
+  on each did not add up to a bound on the sample (§4 rule 7).
+  `SAMPLE_BUDGET` is shared, and a test keeps it under the unit's
+  `TimeoutStartSec`. The OOM log window runs between the moments the
+  kernel counter was read, so a slow sample does not misalign the two.
+- **`system_minute` is now written twice over.** Memory, CPU, GPU and
+  disk figures land in both `system_minute` (which the host board's
+  loaders read) and `reading_minute`. They come from the same read, so
+  they cannot disagree. The duplicate ends when the host board's loaders
+  move onto `reading_minute`, which is part of S3. Until then, add no
+  third writer.
+
+`mecha system probe` (S3's diagnostic) shipped with S1 because it is how
+S1 was checked on this machine. `read`, over a range, is still S3.
+
+### 7.2 What S6 built, and what it moved
+
+S6 is built:
+- `system::floor`: `SystemConfig` (`[system]`, global-file only),
+  `admit`, `admit_now` and `Admit`;
+- `mecha system admit --need SIZE`, which exits non-zero when refused;
+- the image tool's gate, moved onto the floor. `imagegen::memory_verdict`
+  and its own `mem_available_mb` are gone.
+
+**Pictures can now be refused where they were not before.** The image
+figure, `min_available_mb` (20 GiB cold, 12 GiB warm), was a measured need
+with "a little room", not a reserve. The floor adds R5's 8 GiB on top, so a
+generation needs 28 GiB cold and 20 GiB warm. With the chat model and the
+image server both resident, this machine had 28–33 GiB available on
+2026-10-10, so the warm path passes with room. The pressure ceiling is
+new protection for pictures as well.
+
+Two callers from §3.7's table are deliberately not in S6:
+- **Model loads and switches** move to S2. The router keeps one resident
+  model, so a switch frees the old model before loading the new one, and
+  the real need is the difference between the two presets' sizes. Nothing
+  in mecha knows a preset's size yet: that is S2's `model.*` work, and a
+  guessed need would be the wrong number in a refusal.
+- **Background admission** needs no gate of its own. A background run
+  allocates through the same points a foreground run does (a picture, a
+  model load), and those are gated where the allocation happens. A second
+  gate at admission would refuse on a need it could only guess.
 
 S0 is small, and it is the only step that is cheaper now than later.
 **S0 is built**, in the same change as this document (the owner asked for
 the design to ship with the first implementation PR rather than be reviewed
 on its own).
+
+### 7.3 What S2a built, and where it differs from §2
+
+S2 is split in two. S2a reads mecha's own stores and the call, and S2b the
+local servers and the hourly walks, because the second half needs things the
+first does not: a preset's size for the model-load gate, and a cadence the
+sampler does not have yet.
+
+S2a is built:
+- `runs.live`, `tasks.running`, `holds.live`, `permits.live`, `jobs.live`,
+  `voice.live`, `triggers.missed`, `triggers.failed` and `messages.unread`,
+  numbered 70–78;
+- a `Scan` cost tier;
+- the job marker;
+- `Reader::with_home`, so a test scans a scratch home and never the
+  developer's own.
+
+They are recorded every minute, because the sampler records every `Now`
+measurement.
+
+**A scan spends the sample's time.** It runs no command, but it reads files,
+and the run ledger only grows. So a `Scan` reading checks the shared
+deadline first, and once it is spent it reads `Unread` rather than start.
+A slow store then costs one reading, never the whole minute. The check sits
+where a scan starts, so a source already read (the task markers, the
+trigger tally) answers every measurement drawn from it. A sample reads
+everything that runs no command before any fork, so a wedged `nvidia-smi`
+spends its own share of the deadline, not the scans'.
+
+**Every scan is read-only**, which three stores' own readers are not. A
+measurement may write nothing but the series (§4 rule 3):
+- `Holds::live` sweeps dead holds, so `holds.live` reads
+  `Holds::census`, which counts them the same way and removes nothing.
+- `MailboxStore::messages_for` quarantines a corrupt message, so
+  `messages.unread` reads `count_pending_at`.
+- `RunMarkers::running` clears a dead marker, so the trigger tally reads
+  `peek`.
+
+A test scans every store and checks that nothing was created or removed.
+
+**A file that does not parse makes the count unread, never one short.**
+A torn marker may be a live run, so the reading is `Unread`, and its reason
+gives the floor ("at least 2"). This is the brief's rule for seats and runs
+(`unreadable`), applied to a single number.
+
+**`voice.live` is the speech engine's journal, not the brief's stamp.**
+§6 planned the stamp, but an incognito chat writes no stamp. The stamp is
+copied into every run's brief, which is a transcript, and a call in an
+incognito chat must not reach another chat's transcript
+(`INCOGNITO-DESIGN.md` §6.4). So:
+- the stamp would miss exactly the calls a build must not stutter;
+- writing the stamp for them would break the incognito promise.
+
+The two answers are two questions. `voice.live` is the machine's, and
+reading it from the journal counts every call. It records no chat and no
+words. The engine logs `[Perf] Total … RTF 0.242` for every sentence it
+synthesises, so a reply read aloud in a chat counts too. That is what the
+gate wants: GPU work stutters either one. That a call happened is outside incognito's promise (§10 there:
+the worker's journal already says so).
+
+Whether the engine can be speaking at all comes from systemd's *active*
+state, never its unit file. A unit that is masked, or whose file broke or
+vanished after a daemon-reload, keeps running. So:
+- active (or starting, stopping, reloading) reads the journal;
+- inactive or failed reads 0;
+- not found and inactive is `NotHere`;
+- anything this build cannot read is `Unread`, because the gate reading
+  it goes ahead on a no.
+
+Two consequences:
+- **Between two turns, it reads 0** when the engine has said nothing for
+  three minutes. This is the window the build gate and `replay_persona`
+  used.
+- **S5's tool inherits a question.** The series now says, minute by minute,
+  when a call was live. A `system_read` result lands in a transcript, so
+  S5 must decide whether `voice.live` is readable there, or whether the
+  incognito rule keeps it out.
+
+**`jobs.live` counts a marker per host queue.** A serving process runs two
+queues (assistant chats and persona chats), and each rewrites
+`~/.mecha/jobs/<pid>-<queue>.json` whenever its line changes, with only
+`{pid, running, waiting}`. A job in an incognito chat is a number like any
+other. A queue removes its file when dropped, and a reader skips a dead
+pid. A killed or crashed host never runs its drop, so a host starting
+sweeps the markers dead hosts left; it owns the directory, and a reader
+never sweeps.
+Only the host opts in (`Jobs::marked`), so a test's queue writes nothing.
+`jobs.live` counts running jobs; the marker carries the waiting count, so
+a later measurement needs no change of format.
+
+**`triggers.missed` walks the schedule, not just the ledger.** A scheduler
+that is down writes no rows, so a ledger count alone would read 0 exactly
+when the most is being missed. For each enabled trigger:
+- every slot in the last 24 h is due once `TICK_GRACE` has passed, walked
+  in the trigger's own zone or, without one, in `[agent] timezone`, as the
+  scheduler fires it (`Reader::configured`);
+- a slot is missed unless an `ok` or `error` row accounts for it, or a live
+  run marker carries it;
+- a stale or overlapping skip is missed, and so is a slot a catch-up
+  collapsed into a later run.
+
+A trigger is charged only from its file's last change, so a schedule edited
+at noon does not owe the morning's slots under the new expression. A
+trigger file that does not load cannot be walked, so the reading is
+unread and its reason gives the floor. A ledger row inside the window that
+does not parse may be a run that accounted for a slot, or one that failed,
+so both `triggers.*` readings are then unread.
+
+**`messages.unread` follows `[messages] dir`.** The CLI loads the global
+config once and hands it to the reader (`Reader::configured`), so a moved
+mailbox is not read as an empty one.
+
+**`mail.drain.pending` is dropped.** §2 placed it at `~/.mecha/requests`,
+but that directory is the front door's request store, which
+`backlog.frontdoor` already counts. What "not yet drained" names is the
+factory box's queue, and reading it would be egress (§4 rule 3).
+
+**The brief does not read these through `system`.** §7 planned that it
+would, but the brief's readers carry names: which task, which trigger,
+who holds a seat. Rule 2 keeps names out of this layer. So the two layers
+share the store's own reader, which leaves one parser per store. They do
+not share the measurement.
 
 ## 8. Deliberately out of scope
 
@@ -609,18 +826,19 @@ on its own).
   - It is not on persona tool lists.
 - **R3b. Private — ruled 2026-10-10:** `system_read` results carry
   `private_data: true`.
-- **R5. The memory floor's reserve — open.** This is the headroom
-  `admit` keeps back beyond a stated need (§3.7). Recommended: a fixed
-  figure in config, `[system] memory_reserve`, starting at 8 GiB. That is
-  about one voice pipeline plus margin on this box. A pressure ceiling
-  (`pressure.memory` avg10 above 10%) refuses regardless of headroom. Both
-  are tuned only from `memory.oom_kills` and `pressure.memory` once the
-  series has weeks in it.
-- **R5b. `MemoryHigh=` on the heavy units — open.** This is the operational
-  complement in §3.7: the router and ComfyUI get reclaimed and slowed
-  inside their own cgroups before the global OOM killer chooses a victim.
-  Recommended: yes, after S1 is recording, so that its effect is measured
-  rather than assumed.
+- **R5. The memory floor's reserve — ruled 2026-10-10** as the starting
+  plan, "adjust as needed". The reserve is the headroom `admit` keeps back
+  beyond a stated need (§3.7). It is a fixed figure in config,
+  `[system] memory_reserve`, starting at 8 GiB: about one voice pipeline
+  plus margin on this box. A pressure ceiling refuses regardless of
+  headroom: `pressure.memory.avg10` above 10%. Both are tuned from
+  `memory.oom_kills.global` and `pressure.memory.avg60` once the series has
+  weeks in it.
+- **R5b. `MemoryHigh=` on the heavy units — ruled 2026-10-10: yes.** This
+  is the operational complement in §3.7: the router and ComfyUI are
+  reclaimed and slowed inside their own cgroups before the global OOM
+  killer chooses a victim. It is applied once S1 has been recording for a
+  while, so that its effect is measured against a before, not assumed.
 - **R4. The homeostat reads the series — ruled 2026-10-10:** yes, "so we
   have a unified system measurement". The homeostat stops probing `/proc`
   itself and reads `system`, and a run's record carries the minutes it ran

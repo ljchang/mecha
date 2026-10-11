@@ -32,8 +32,8 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
-const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/jobs/order'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
+const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
   '/api/personas',
@@ -435,7 +435,11 @@ export function applyEvent(state, ev) {
       // `started` is the page's clock, for the "drawing a picture… 1:24"
       // line: a local model can take minutes on an image. (A re-read takes
       // it from the server's `working.since` instead — `withWorking`.)
-      return { ...s, entries: [...s.entries, { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() }] };
+      // `version_of`: the harness's Regenerate says live which picture this
+      // one is a version of, as the transcript does (IMAGE-DESIGN.md §5.4).
+      const entry = { kind: 'tool', id: ev.id, name: ev.name, is_error: null, started: Date.now() };
+      if (ev.version_of) entry.version_of = ev.version_of;
+      return { ...s, entries: [...s.entries, entry] };
     }
     // The preview is kept: its first line names the picture a finished
     // `image_generate` drew, which the page shows under the row (`picture.js`).

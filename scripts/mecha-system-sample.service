@@ -16,6 +16,8 @@ ExecStart=%h/.cargo/bin/mecha system sample
 # Type=oneshot has no start timeout by default, and `nvidia-smi` blocks for
 # good on a wedged driver; the timer never starts a run while one is active,
 # so a hung sample would stop sampling instead of failing a minute. A sample
-# takes well under a second.
+# takes well under a second, and every command inside it shares one 20 s
+# deadline (system::SAMPLE_BUDGET; a test keeps it 5 s under this), so a
+# wedged driver costs readings, never the minute.
 TimeoutStartSec=30s
 Nice=10

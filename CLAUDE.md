@@ -258,6 +258,8 @@ llama_units.rs the on-demand embeddings and OCR servers from nothing: units and
              launchers shipped in the binary, rendered, started through their socket
 router_unit.rs the resident router from nothing: its unit, launcher and presets
              from the tier's chat geometry or the owner's GGUF; `mecha setup chat`
+stt_unit.rs  speech to text from nothing: a hash-locked environment, the model by
+             its pin, one rendered unit; a server mecha did not write is left alone
 ```
 
 `RunContext` is what one *run* gets: the path jail, the approver, its budget,
@@ -488,10 +490,10 @@ images ·
 the security model in full · the front door · web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
-triggers · the HUD · the run-quality corpus (the gate, diagnosis, harness rumination) ·
+triggers · the HUD · system state · the run-quality corpus (the gate, diagnosis, harness rumination) ·
 the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
 features ·
-the experiment store · system state ·
+the experiment store ·
 context accounting · timezones · compaction · the eval rig.
 
 Read the section before changing the subsystem — nearly every paragraph in it

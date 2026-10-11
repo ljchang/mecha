@@ -282,23 +282,21 @@ impl Homeostat {
     }
 }
 
+/// The one-minute load, through `mecha system` — one parser per source
+/// (`docs/SYSTEM-STATE-DESIGN.md` §6). Anything but a reading is `None`.
 fn load_avg_1m() -> Option<f32> {
-    std::fs::read_to_string("/proc/loadavg")
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
+    crate::system::Reader::new()
+        .now(crate::system::Measurement::CpuLoad1m)
+        .value()
+        .map(|v| v as f32)
 }
 
+/// `MemAvailable` in kB, through `mecha system`.
 fn mem_available_kb() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    text.lines()
-        .find_map(|l| l.strip_prefix("MemAvailable:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
+    crate::system::Reader::new()
+        .now(crate::system::Measurement::MemoryAvailable)
+        .value()
+        .map(|b| b as u64 / 1024)
 }
 
 #[cfg(test)]

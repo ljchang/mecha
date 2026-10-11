@@ -256,6 +256,35 @@ pub struct Scene {
     /// The chat whose render last advanced it.
     #[serde(default)]
     pub chat: Option<String>,
+    /// How a layered picture was built (IMAGE-DESIGN.md §15.4): what a
+    /// later reshaping edit re-places one person from. `None` for a picture
+    /// drawn in one pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<Layers>,
+}
+
+/// A layered picture's build: the plate, each person's cutout and part, and
+/// the placing and finish seeds. Hashes are of the bytes saved beside the
+/// picture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Layers {
+    pub plate: String,
+    pub people: Vec<LayerPerson>,
+    pub placing_seed: u64,
+    pub finish_seed: u64,
+    /// The build drew on the whole scene, so this is the scene's own origin
+    /// when it landed. Absent reads untrusted.
+    #[serde(default)]
+    pub origin: Origin,
+}
+
+/// One person in a layered build.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LayerPerson {
+    pub who: String,
+    pub cutout: String,
+    pub part: String,
+    pub seed: u64,
 }
 
 /// What a call says about a scene: only the fields it sends.
@@ -351,8 +380,12 @@ impl Scene {
             picture: _,
             seed: _,
             chat: _,
+            layers,
         } = self;
         let mut o = Origin::Clean;
+        if let Some(l) = layers {
+            o = o.union(l.origin);
+        }
         for f in [light, camera, style, together].into_iter().flatten() {
             o = o.union(f.origin);
         }
@@ -747,6 +780,23 @@ impl SceneSlot {
         self.lookup_hash(&hash(bytes))
     }
 
+    /// [`lookup`](Self::lookup), saying why there is none: no record (`Ok(None)`),
+    /// or one that does not read or parse (`Err`), which a judge reports
+    /// rather than taking for a picture never recorded (review of #644).
+    pub fn lookup_said(&self, bytes: &[u8]) -> std::result::Result<Option<Scene>, String> {
+        let path = self
+            .store
+            .join("index")
+            .join(format!("{}.json", hash(bytes)));
+        match std::fs::read(&path) {
+            Ok(b) => serde_json::from_slice(&b)
+                .map(Some)
+                .map_err(|e| format!("the picture's scene record does not parse: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("the picture's scene record did not read: {e}")),
+        }
+    }
+
     /// The same, by a hash already taken.
     pub fn lookup_hash(&self, h: &str) -> Option<Scene> {
         is_hash(h)
@@ -929,6 +979,28 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A judge is told a record that does not read from one never written
+    /// (review of #644).
+    #[test]
+    fn a_lookup_says_why_there_is_no_record() {
+        let dir = std::env::temp_dir().join(format!("mecha-scene-{}", uuid::Uuid::new_v4()));
+        let slot = persona_slot(&dir, "p", "c");
+        std::fs::create_dir_all(slot.store.join("index")).unwrap();
+        assert_eq!(slot.lookup_said(b"picture"), Ok(None));
+        let at = slot
+            .store
+            .join("index")
+            .join(format!("{}.json", hash(b"picture")));
+        std::fs::write(&at, "{ torn").unwrap();
+        assert!(slot
+            .lookup_said(b"picture")
+            .unwrap_err()
+            .contains("does not parse"));
+        std::fs::write(&at, serde_json::to_vec(&Scene::default()).unwrap()).unwrap();
+        assert_eq!(slot.lookup_said(b"picture"), Ok(Some(Scene::default())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn slot() -> (SceneSlot, PathBuf) {
         let root =

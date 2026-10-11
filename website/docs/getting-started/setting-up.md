@@ -70,7 +70,9 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 ### A local model (the default)
 
-On Linux, `mecha setup chat` installs everything the default needs: llama.cpp,
+`mecha setup` asks about this first (step 3 below). On Linux, choosing the
+recommended model — or `mecha setup chat` on its own — installs everything
+the default needs: llama.cpp,
 the model recommended for this machine's memory (or a GGUF you already have),
 and the router that serves it on `:8080`. It then reads the model's settings
 off the server and writes them into `[providers.local]`:
