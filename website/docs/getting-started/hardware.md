@@ -191,7 +191,7 @@ which puts the resident sum near 59 GiB rather than 50.
 | layout — `layout` | PP-DocLayoutV3 (ONNX) | CPU | Per request | 1.1 | peak process memory | Measured 2026-09-29 |
 | image generation — `image` | Qwen-Image 2.1 int8 ConvRot, in ComfyUI | GPU | Released on idle | ~20.3 | peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load; ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by what the int8 file measured above it on 2026-10-04: ~0.7 from cold, ~0.8 warm); not counted: from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset | Arithmetic |
 | speech to text — `voice` | Parakeet TDT 0.6B v3 int8 | CPU | Resident | 0.7 | process memory | Measured 2026-10-02 |
-| speech — `voice` | Breeze TTS 2 Q5_K_M, in qwentts.cpp | GPU | Resident | 4.1 | peak while speaking: GPU memory and the server's and adapter's process memory (measured with Q6_K, the larger) | Measured 2026-10-03 |
+| speech — `voice` | Breeze TTS 2 Q6_K, in qwentts.cpp | GPU | Resident | 4.1 | peak while speaking: GPU memory and the server's and adapter's process memory | Measured 2026-10-03 |
 | turn detection — `voice` | Silero VAD and smart-turn v3, in the voice worker | CPU | Resident | 0.5 | the worker's process memory | Measured 2026-10-02 |
 
 Added up — which is *arithmetic*, since nobody has seen every row loaded at

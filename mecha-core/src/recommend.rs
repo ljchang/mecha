@@ -311,9 +311,9 @@ const TTS_SOURCES: &[Source] = &[Source::HuggingFace {
     revision: crate::speech_unit::WEIGHTS_REVISION,
     files: &[
         HubFile {
-            path: "breeze-tts2-Q5_K_M.gguf",
-            sha256: "1f0370d978c8ddc36a89d3504fb07e4848eca3ee064ba92cf5ae1cf09872a67e",
-            bytes: 2_557_512_960,
+            path: "breeze-tts2-Q6_K.gguf",
+            sha256: "7fd2c236a959285ba4faff226a3500e61ad492a7cc2cc3d9716bf0ccf0b324c1",
+            bytes: 2_825_553_728,
         },
         HubFile {
             path: "qwen-tokenizer-12hz-BF16.gguf",
@@ -572,12 +572,14 @@ pub const SLOTS: &[Slot] = &[
                     // it is 4,062. Chatterbox, the default before, was 8,018.
                     peak: Peak::Measured { mb: 4_185, machine: GB10, date: "2026-10-03" },
                 },
-                model: "Breeze TTS 2 Q5_K_M, in qwentts.cpp",
-                counts: "peak while speaking: GPU memory and the server's and adapter's process memory (measured with Q6_K, the larger)",
+                model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
+                counts: "peak while speaking: GPU memory and the server's and adapter's process memory",
                 // Converted from BreezeBlue/Breeze-TTS-2 (non-commercial
                 // weights) into qwentts.cpp's GGUF and published for the
-                // installer (step 7f, 2026-10-11). Q5_K_M is what the live
-                // server runs: RTF 0.40 against Q6_K's 0.44, depth KL 0.011.
+                // installer (step 7f, 2026-10-11). Q6_K is the owner's
+                // default (VOICE-BREEZE-DESIGN §6, 2026-10-03) and what the
+                // live server runs; Q5_K_M, the fallback, is published beside
+                // it (review of #649).
                 sources: TTS_SOURCES,
                 excludes: None,
             },
@@ -588,7 +590,7 @@ pub const SLOTS: &[Slot] = &[
                     gpu: Peak::Arithmetic { mb: 3_994 },
                     host: Peak::Arithmetic { mb: 191 },
                 },
-                model: "Breeze TTS 2 Q5_K_M, in qwentts.cpp",
+                model: "Breeze TTS 2 Q6_K, in qwentts.cpp",
                 counts: "the GB10's GPU and process readings, carried to a card",
                 sources: TTS_SOURCES,
                 excludes: None,
