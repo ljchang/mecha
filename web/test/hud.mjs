@@ -167,9 +167,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dir = path.join(here, '../src/lib/hud');
 const files = fs.readdirSync(dir).filter((f) => /\.(svelte|js)$/.test(f));
 assert.ok(files.length >= 7, `the renderer's files: ${files}`);
-for (const f of [...files.map((x) => path.join(dir, x)), path.join(here, '../src/hud-standalone.js')]) {
+const scanned = [
+  ...files.map((x) => path.join(dir, x)),
+  path.join(here, '../src/hud-standalone.js'),
+  // The route component draws board titles and refusal strings.
+  path.join(here, '../src/lib/Hud.svelte'),
+];
+for (const f of scanned) {
   const src = fs.readFileSync(f, 'utf8');
-  const code = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  // Whole-line comments and block comments only: a `//` inside a string
+  // (`'https://x'`) must not blank the code after it on the same line.
+  const code = src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
   const name = path.basename(f);
   assert.ok(!/\{@html/.test(code), `${name}: {@html}`);
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML/.test(code), `${name}: an HTML string sink`);

@@ -51,11 +51,22 @@
     const view = viewFor(chart, rowsByName);
     const config = vegaConfig(mode, narrow);
     let cancelled = false;
+    // Each draw gets its own target, hidden until it is drawn: datasets land
+    // one at a time, so a second draw can start before the first finishes,
+    // and two embeds into one element would leave whichever finished last —
+    // possibly the older rows (review of #646). A superseded draw is thrown
+    // away; the newest one replaces the chart.
+    const target = document.createElement('div');
+    target.className = 'vega-target pending';
+    el.appendChild(target);
     (async () => {
       try {
         const { default: embed } = await import('vega-embed');
-        if (cancelled) return;
-        const result = await embed(el, view, {
+        if (cancelled) {
+          target.remove();
+          return;
+        }
+        const result = await embed(target, view, {
           mode: 'vega-lite',
           actions: false,
           ast: true,
@@ -66,12 +77,16 @@
         });
         if (cancelled) {
           result.finalize();
+          target.remove();
           return;
         }
         shown?.finalize();
+        for (const old of [...el.children]) if (old !== target) old.remove();
+        target.classList.remove('pending');
         shown = result;
         failed = null;
       } catch (e) {
+        target.remove();
         if (!cancelled) failed = String(e?.message ?? e);
       }
     })();
@@ -94,7 +109,10 @@
 {/if}
 
 <style>
-  .chart { width: 100%; min-height: 120px; }
+  .chart { width: 100%; min-height: 120px; position: relative; }
+  /* In the flow's width, so a `container` chart measures right, but unseen
+     until drawn. */
+  .chart :global(.vega-target.pending) { position: absolute; left: 0; right: 0; top: 0; visibility: hidden; }
   .chart.hidden { display: none; }
   .note { margin: 0; font-size: 13px; color: var(--hud-muted); }
   .bad { color: var(--hud-bad); }
