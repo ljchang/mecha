@@ -202,45 +202,19 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
     Ok((path, persona, id))
 }
 
-/// Whether a call is live now. The speech engine logs a real-time
-/// factor per sentence it speaks, and a hold shows only a turn in flight,
-/// not a call between turns. Not installed is no call; installed and
-/// unreadable is a refusal, since unknown is not clear. A `systemctl` that
-/// cannot be run at all reads as not installed: on a machine without a user
-/// systemd there is no speech engine unit to be on a call through.
+/// Whether a call is live now, as `mecha system probe voice.live` reads it:
+/// a hold shows only a turn in flight, not a call between turns. No speech
+/// engine here is no call; one whose journal cannot be read is a refusal,
+/// since unknown is not clear.
 fn voice_live() -> Result<bool> {
-    const UNIT: &str = "mecha-breeze-tts.service";
-    let installed = std::process::Command::new("systemctl")
-        .args(["--user", "cat", UNIT])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if !installed {
-        return Ok(false);
+    use mecha_core::system::{Measurement, Reader, Reading};
+    match Reader::new().now(Measurement::VoiceLive) {
+        Reading::Observed { value } => Ok(value != 0.0),
+        Reading::NotHere => Ok(false),
+        Reading::Unread { why } => {
+            bail!("a live call cannot be ruled out: {why}")
+        }
     }
-    let out = std::process::Command::new("journalctl")
-        .args([
-            "--user",
-            "-u",
-            UNIT,
-            "--since",
-            "-3 min",
-            "--no-pager",
-            "-o",
-            "cat",
-        ])
-        .output()
-        .context("reading the speech engine's journal for a live call")?;
-    if !out.status.success() {
-        bail!(
-            "the speech engine's journal did not read, so a live call cannot be ruled out: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|l| l.contains("RTF")))
 }
 
 /// Wait while the owner is using the model: a call, or a turn in flight on

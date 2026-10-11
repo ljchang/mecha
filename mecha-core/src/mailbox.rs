@@ -154,6 +154,13 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 65_536;
 /// messages are never pruned — they are capped instead, and the cap refuses.
 pub const DEFAULT_KEEP_RESOLVED: usize = 100;
 
+/// [`MailboxStore::count_pending_at`]'s answer.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PendingCount {
+    pub pending: usize,
+    pub unreadable: usize,
+}
+
 pub struct MailboxStore {
     root: PathBuf,
     pending_cap: usize,
@@ -474,6 +481,46 @@ impl MailboxStore {
                     .join(", ")
             ),
         }
+    }
+
+    /// How many messages wait unclaimed, across every recipient under `root`,
+    /// **read only**: [`messages_for`](Self::messages_for) quarantines a
+    /// corrupt file as it reads, which a measurement may not
+    /// (`SYSTEM-STATE-DESIGN.md` §4 rule 3). A file that cannot be read or
+    /// parsed is counted in `unreadable`, never dropped — it may be pending.
+    /// A root that does not exist is an empty mailbox.
+    pub fn count_pending_at(root: &Path) -> Result<PendingCount> {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PendingCount::default())
+            }
+            Err(e) => return Err(e).with_context(|| format!("reading {}", root.display())),
+        };
+        let mut out = PendingCount::default();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !entry.path().is_dir() || crate::work::valid_producer(&name).is_err() {
+                continue;
+            }
+            let messages = std::fs::read_dir(entry.path())
+                .with_context(|| format!("reading {}", entry.path().display()))?;
+            for m in messages.flatten() {
+                let path = m.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                match std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<MailboxMessage>(&t).ok())
+                {
+                    Some(msg) if msg.status == "pending" => out.pending += 1,
+                    Some(_) => {}
+                    None => out.unreadable += 1,
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Every recipient that has a mailbox directory.

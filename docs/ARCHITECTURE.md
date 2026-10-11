@@ -5981,7 +5981,7 @@ was ever deployed.
   at its timeout. It drains the output on a thread while the command runs:
   waiting first and reading after fills a 64 KiB pipe and stalls the child
   into the timeout, which is what the old shape did with a large answer.
-  **A bound per command is not a bound per sample.** A sample runs seven
+  **A bound per command is not a bound per sample.** A sample runs nine
   commands, and a wedged driver hangs all three `nvidia-smi` calls, so a
   10 s bound each added up past the unit's 30 s, and systemd killed the
   sample before it wrote anything. `collect` therefore gives its `Reader`
@@ -6011,6 +6011,18 @@ was ever deployed.
   believed only when it accounts for exactly that many. Do not read
   `category.oom_kills` from `memory.events`: a restarted service gets a
   fresh cgroup, and the counter resets on exactly the kill that mattered.
+- **A scan writes nothing (S2a).** Three stores' own readers write as they
+  read: `Holds::live` sweeps, `messages_for` quarantines, and
+  `RunMarkers::running` clears. So the measurements read `Holds::census`,
+  `count_pending_at` and `peek`, and a test scans every store and checks
+  that nothing was created or removed. A file that does not parse makes a
+  count `Unread` with its floor, never one short.
+- **`voice.live` is not the brief's voice stamp.** The stamp is the owner's
+  context, copied into other chats' transcripts, so an incognito call
+  writes none. The machine's answer reads the speech engine's journal,
+  which counts every call and names none. Do not merge the two: one would
+  miss the calls a build must not stutter, and the other would leak
+  incognito into briefs (design §7.3).
 
 ## Session records and replay
 

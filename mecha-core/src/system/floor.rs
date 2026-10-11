@@ -98,7 +98,10 @@ impl Admit {
                 .iter()
                 .map(|(c, b)| format!("{c} {:.1} GB", gb(*b)))
                 .collect();
-            format!(" Holding the most now: {}.", list.join(", "))
+            format!(
+                " Holding the most as of the last sample: {}.",
+                list.join(", ")
+            )
         };
         match self {
             Admit::Yes { .. } => None,
@@ -163,7 +166,7 @@ pub fn admit(available: &Reading, pressure: &Reading, need: u64, cfg: &SystemCon
         }
         _ => {}
     }
-    let reserve = cfg.memory_reserve_mb * MIB;
+    let reserve = cfg.memory_reserve_mb.saturating_mul(MIB);
     let floor = need.saturating_add(reserve);
     if available < floor {
         return Admit::Short {
@@ -188,22 +191,28 @@ pub fn admit_now(need: u64, cfg: &SystemConfig, series: Option<&Path>) -> Admit 
     );
     if let Admit::Short { holders, .. } | Admit::Pressure { holders, .. } = &mut verdict {
         if let Some(db) = series {
-            *holders = largest_holders(&reader, db);
+            *holders = largest_holders(&reader, db, chrono::Utc::now());
         }
     }
     verdict
 }
 
 /// The three categories holding the most memory, above a gigabyte, from the
-/// series. Categories only: the refusal never names a process.
-fn largest_holders(reader: &Reader, db: &Path) -> Vec<(&'static str, u64)> {
-    let Probed::ByCategory(rows) =
-        super::probe(reader, db, Measurement::CategoryMemory, chrono::Utc::now())
+/// series' newest minute. Categories only: the refusal never names a
+/// process. `other` is left out: it is the remainder — the kernel, the page
+/// cache, whatever no unit owns — and names nothing the owner could stop.
+pub(super) fn largest_holders(
+    reader: &Reader,
+    db: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<(&'static str, u64)> {
+    let Probed::ByCategory(rows) = super::probe(reader, db, Measurement::CategoryMemory, now)
     else {
         return Vec::new();
     };
     let mut held: Vec<(&'static str, u64)> = rows
         .into_iter()
+        .filter(|(c, _)| *c != super::Category::Other.label())
         .filter_map(|(c, r)| r.value().map(|v| (c, v as u64)))
         .filter(|(_, b)| *b >= 1024 * MIB)
         .collect();
