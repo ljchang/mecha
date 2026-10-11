@@ -6157,7 +6157,10 @@ was ever deployed.
   arrives, since the cancel would stop its own render. It ends when the run
   asks again (`SampleEnded`). Fresh picture seeds come from a harness
   stream, `ToolCtx::image_seeds`, seeded `--image-seed-base` + i, so two
-  arms render sample i at the same seeds. `--at-call N` branches inside the
+  arms render sample i at the same seeds. The scene reader and role
+  splitter are sent that seed too (`persona_provider_seeded`), so they read
+  alike when the arm does not change what they read; with the config's seed
+  they were paired by accident or not at all. `--at-call N` branches inside the
   run, after the batch holding its Nth call. It refuses a call whose picture
   was deferred, because the next request was the closing one. A response
   that calls the picture tool beside another tool loses its render: the
