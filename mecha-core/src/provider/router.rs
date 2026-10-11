@@ -347,9 +347,14 @@ async fn observe_unnamed(cfg: &Config, line: CommandLine<'_>) -> Unnamed {
                 match readable(&list).then(|| name_for(&list)).flatten() {
                     Some(m) => {
                         // R4 for an entry that asks: its temperature reaches
-                        // this model. A followed router's resident model is
-                        // checked in `observe_all` already, for every entry.
-                        if !followed_bases(cfg).contains(&b) {
+                        // this model. Skipped only where `observe_all` already
+                        // checked this very model — a followed router's
+                        // resident one — never on the base alone: a router's
+                        // only, unloaded model is named here and loaded by
+                        // the first request (review of #637).
+                        let reported =
+                            followed_bases(cfg).contains(&b) && resident(&list) == Some(m);
+                        if !reported {
                             if let Some(model) = list.iter().find(|x| x.id == m) {
                                 mismatches.extend(sampling_mismatches_of(cfg, &b, model, |p| {
                                     asks_its_server(p)
@@ -718,6 +723,22 @@ pub fn preset_temperature(m: &RouterModel) -> Option<f64> {
 pub fn sampling_mismatches(cfg: &Config, b: &str, m: &RouterModel) -> Vec<String> {
     sampling_mismatches_of(cfg, b, m, |p| {
         p.model.as_deref() == Some(m.id.as_str()) || asks_its_server(p)
+    })
+}
+
+/// [`sampling_mismatches`] for a listed model that need not become resident:
+/// a model-less entry counts only where `asked` says this is the model it
+/// would ask for — under every other row its temperature reaches nothing
+/// (review of #637). `mecha model use` keeps the wider rule, since the model
+/// it loads is the one such an entry then asks for.
+pub fn sampling_mismatches_listed(
+    cfg: &Config,
+    b: &str,
+    m: &RouterModel,
+    asked: bool,
+) -> Vec<String> {
+    sampling_mismatches_of(cfg, b, m, |p| {
+        p.model.as_deref() == Some(m.id.as_str()) || (asked && asks_its_server(p))
     })
 }
 
@@ -1285,6 +1306,10 @@ mod tests {
                 .any(|w| w.contains("[providers.local] temperature = 0.2")),
             "{w:?}"
         );
+        // Listed, not loaded: a model-less entry's temperature reaches only
+        // the model it asks for, so it is not claimed against another row.
+        assert!(sampling_mismatches_listed(&c, b, &m, false).is_empty());
+        assert!(!sampling_mismatches_listed(&c, b, &m, true).is_empty());
     }
 
     #[test]
@@ -1525,6 +1550,26 @@ mod tests {
         let mut tuned = model_less(&url);
         tuned.providers.get_mut("local").unwrap().temperature = Some(0.2);
         let w = observe_for(&tuned, false, named).await;
+        server.await.unwrap();
+        assert!(w.iter().any(|w| w.contains("temperature = 0.2")), "{w:?}");
+
+        // A followed router with one model, unloaded: the entry names it and
+        // the first request loads it, so R4 is said now — `observe_all`
+        // checks only a resident one (review of #637).
+        let one =
+            r#"{"data":[{"id":"a","status":{"value":"unloaded","args":["--temperature","0.6"]}}]}"#;
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            one,
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            one,
+        ])
+        .await;
+        let mut followed = model_less(&url);
+        let local = followed.providers.get_mut("local").unwrap();
+        local.follow_loaded = true;
+        local.temperature = Some(0.2);
+        let w = observe(&followed, true).await;
         server.await.unwrap();
         assert!(w.iter().any(|w| w.contains("temperature = 0.2")), "{w:?}");
 
