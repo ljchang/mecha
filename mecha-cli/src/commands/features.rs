@@ -243,7 +243,27 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
             }
         }
     }
-    set(ids, true)
+    set(ids, true)?;
+    if features.contains(&Feature::Image) {
+        image_table()?;
+    }
+    Ok(())
+}
+
+/// `image` reads off with no `[image]` table, whatever the switch says, and
+/// only an install writes one — so a server used as it is (`--no-install`,
+/// or one already on `:8188` that was left alone) would leave images off.
+/// Written here on its defaults where there is none (review of #645).
+fn image_table() -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    if mecha_core::comfyui_unit::write_image_table(&path, None)? {
+        println!(
+            "Wrote an [image] table into {} on its defaults — ComfyUI at 127.0.0.1:8188. An \
+             incognito chat also needs its server_temp_dir.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn set(ids: &[String], on: bool) -> Result<()> {
