@@ -260,8 +260,9 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
         // been tested more): fetched into an install of mecha's — a fresh
         // one, or one already here, reinstalled to link it — and only said
         // for a ComfyUI someone else runs.
-        // (why, what it downloads)
-        let mut fetch_turbo: Option<(String, u64)> = None;
+        // (why, what it downloads, whether an installed server is
+        // reinstalled — restarted — for it)
+        let mut fetch_turbo: Option<(String, u64, bool)> = None;
         if features.contains(&Feature::Image) {
             // `--turbo` fetches the pinned file, which a picture loads only
             // when `[image] turbo_model` names it (review of #650).
@@ -318,13 +319,32 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     // Its size rides on its own clause, not the row's total:
                     // a row re-offered for a lost model carries none (review
                     // of #650).
-                    if let (true, Some((label, _))) = (reinstall, &comfy_found) {
-                        todo.push((comfy::ID, *label, Feature::Image, None));
+                    match (reinstall, &comfy_found) {
+                        (true, Some((label, _))) => {
+                            todo.push((comfy::ID, *label, Feature::Image, None));
+                            fetch_turbo = Some((why, download, true));
+                        }
+                        (true, None) => {}
+                        (false, _) => fetch_turbo = Some((why, download, false)),
                     }
-                    fetch_turbo = Some((why, download));
                 }
             }
         }
+        // The turbo model is optional: re-offered alone, it never costs the
+        // switch (#645; review of #650). Without a terminal its reinstall
+        // is left for one, and a no below keeps the switch.
+        if let Some((why, _, true)) = &fetch_turbo {
+            if !yes && !std::io::stdin().is_terminal() {
+                println!(
+                    "The turbo model is not fetched ({why}): linking it restarts the image \
+                     server, which needs a yes at a terminal — `mecha features enable image \
+                     --turbo`."
+                );
+                todo.retain(|(id, ..)| *id != comfy::ID);
+                fetch_turbo = None;
+            }
+        }
+        let turbo_only = matches!(fetch_turbo, Some((.., true))) && todo.len() == 1;
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
@@ -341,10 +361,18 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 ids.join(" ")
             );
             let turbo_line = match &fetch_turbo {
-                Some((why, 0)) => format!(", with the turbo model ({why}; in the cache)"),
-                Some((why, download)) => format!(
-                    ", with the turbo model ({} to fetch; {why})",
-                    bytes_text(*download)
+                Some((why, download, reinstall)) => format!(
+                    ", {} the turbo model ({}; {why})",
+                    if *reinstall {
+                        "restarted to link"
+                    } else {
+                        "with"
+                    },
+                    if *download == 0 {
+                        "in the cache".to_string()
+                    } else {
+                        format!("{} to fetch", bytes_text(*download))
+                    }
                 ),
                 None => String::new(),
             };
@@ -387,14 +415,20 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 std::io::stdin().read_line(&mut answer)?;
                 answer
             };
-            if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            let go = matches!(answer.trim(), "y" | "Y" | "yes");
+            if !go && turbo_only {
+                println!(
+                    "The turbo model is not fetched; `mecha features enable image --turbo` \
+                     fetches it."
+                );
+            } else if !go {
                 println!(
                     "Nothing written. `mecha features enable {} --no-install` writes the switch without installing.",
                     ids.join(" ")
                 );
                 return Ok(());
             }
-            for (id, label, ..) in &todo {
+            for (id, label, ..) in todo.iter().filter(|_| go) {
                 println!("Installing {label}…");
                 let turbo = *id == comfy::ID && fetch_turbo.is_some();
                 install::install(id, &m, &machine, &hub, turbo, &mut |s| println!("  {s}"))
