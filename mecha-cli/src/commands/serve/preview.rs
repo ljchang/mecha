@@ -57,7 +57,7 @@ pub(super) fn url_for(
 /// routed `bundle_publish` the model calls is staged too, with arguments it
 /// chose; only `mecha hud publish` assembles a dashboard from the owner's own
 /// installed board, so only its items are previewed (review of #651).
-fn is_dashboard_publish(item: &mecha_core::outbox::OutboxItem) -> bool {
+pub(super) fn is_dashboard_publish(item: &mecha_core::outbox::OutboxItem) -> bool {
     mecha_core::outbox::Author::parse(&item.author) == mecha_core::outbox::Author::Harness
         && item.status == "pending"
         && item.kind == OutboxKind::Publish
@@ -245,7 +245,7 @@ fn answer(p: &Preview, item: &str, path: &str) -> Option<(Vec<u8>, &'static str,
 
 /// `path`, canonical, when it is inside `root` (both canonicalized) — never a
 /// path an outbox item or a URL names outside it.
-fn within(root: &Path, path: &Path) -> Option<PathBuf> {
+pub(super) fn within(root: &Path, path: &Path) -> Option<PathBuf> {
     let root = root.canonicalize().ok()?;
     let path = path.canonicalize().ok()?;
     path.starts_with(&root).then_some(path)
