@@ -204,6 +204,21 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                 todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
             }
         }
+        // Likewise the speech server: voice may be spoken by a server the
+        // owner runs — Chatterbox, or Breeze by hand — so a machine that
+        // cannot build the engine is not offered it, and keeps the switch.
+        if todo
+            .iter()
+            .any(|(id, ..)| *id == mecha_core::speech_unit::ID)
+        {
+            if let Err(why) = mecha_core::speech_unit::fits(std::env::consts::OS, read_nvidia()) {
+                println!(
+                    "The speech server is not installed: {why}. Voice switches on for one you \
+                     run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::speech_unit::ID);
+            }
+        }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
@@ -225,6 +240,12 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                 let built = if *id == "llama" && built_here {
                     ", then built here — no release fits this machine; minutes for the CPU, \
                      longer for CUDA"
+                } else if *id == mecha_core::speech_unit::ID {
+                    // Always a build, and the weights' licence is said
+                    // before the yes, not only at the fetch (review of #649).
+                    ", built here from its pinned commit (about seven minutes on a GB10), then \
+                     its model; Breeze TTS 2's weights are licensed for research and \
+                     non-commercial use only"
                 } else {
                     ""
                 };
@@ -525,6 +546,10 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             SidecarState::Missing { .. } if not_needed.is_some() => {
                 not_needed.unwrap_or_default().to_string()
             }
+            SidecarState::Missing { .. } if s.not_offered.is_some() => format!(
+                "not offered here — {}",
+                s.not_offered.as_deref().unwrap_or_default()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -567,6 +592,7 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                 "a different file is at its path — not replaced, and not used".to_string()
             }
             FileState::WithSidecar => "comes with its sidecar's install".to_string(),
+            FileState::NotOffered { why } => format!("not fetched here — {why}"),
             FileState::HeldBy { sidecar } => format!("kept by the provided {sidecar}; not read"),
             FileState::Unverified => {
                 "a file of the pinned size, placed by hand — not hashed by the plan".to_string()
@@ -962,6 +988,7 @@ mod tests {
                 label: "the chat router",
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
+                not_offered: None,
             }],
             // The chat model's files are named but not counted: the plan's
             // total is what `enable` fetches (review of #627).
@@ -1002,12 +1029,16 @@ mod tests {
                         by: "x on PATH".into(),
                     },
                     bytes: None,
+                    not_offered: None,
                 },
                 PlannedSidecar {
-                    id: "speech",
-                    label: "the speech server",
-                    state: SidecarState::Missing { step: "7f" },
+                    // Every real sidecar has an installer since 7f: one
+                    // that does not yet is a made-up id.
+                    id: "not-yet",
+                    label: "a later sidecar",
+                    state: SidecarState::Missing { step: "7z" },
                     bytes: None,
+                    not_offered: None,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -1016,6 +1047,7 @@ mod tests {
                         why: "denied".into(),
                     },
                     bytes: None,
+                    not_offered: None,
                 },
             ],
             files: vec![
@@ -1063,7 +1095,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7f",
+            "not here — its installer arrives in step 7z",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",

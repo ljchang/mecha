@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mecha-parakeet.service` started on `:8992`, all under
   `~/.mecha/sidecars/stt/`. The model's 465 MiB counts in the plan's total.
   A Parakeet you already run on `:8992` is left alone and used as it is.
+- **The speech server installs itself.** On Linux with an NVIDIA GPU and
+  the CUDA toolkit, `mecha features enable voice` now also offers Breeze TTS
+  2:
+  - its engine, built from a pinned commit of the published qwentts.cpp port;
+  - its converted weights and a default voice, fetched by sha256 from
+    `mecha-factory/mecha-speech-gguf` and counted in the plan's total;
+  - the adapter, from a hash-pinned lock;
+  - `mecha-breeze-tts.service` on `:8886` and `mecha-breeze-adapter.service`
+    on `:8887`, checked by speaking a sentence.
+
+  The weights are licensed for research and non-commercial use only, which
+  the install says before fetching them. A speech server you already run is
+  left alone and used.
 - **The image server installs itself.** On Linux with an NVIDIA driver
   580 or newer, `mecha features enable image` now offers ComfyUI: the pinned
   release fetched by its commit, torch for CUDA 13 and ComfyUI's

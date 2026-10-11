@@ -84,8 +84,12 @@
 > built here with the release's own `$ORIGIN` flags, for a driver too old
 > for any CUDA release or an architecture none covers, after a toolchain
 > check that names every missing piece — is built (CPU and CUDA builds
-> measured on the GB10, 2026-10-10). 7f and step 8 are unbuilt (step 7
-> redesigned in §10). The
+> measured on the GB10, 2026-10-10). 7f — `speech_unit.rs`, the speech
+> server from nothing (Breeze's qwentts.cpp port built from its pinned
+> commit, the converted weights and a default voice fetched by sha256 from
+> their published repository, the adapter from a hash lock, two rendered
+> units, checked by speaking a sentence) — is built. Step 8 is unbuilt
+> (step 7 redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1690,9 +1694,32 @@ Step 7 becomes these, each a PR that leaves every feature working:
   (`scripts/comfyui/comfyui-idle-reset` and its timer) for the installed
   unit, as 7e-2.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
-  default since 2026-10-03, built from a pinned commit with its model
-  converted at install. (This step was Chatterbox, with a venv lock and a
-  Docker recipe written down as a file, until Breeze replaced it.)
+  default since 2026-10-03 — built (`speech_unit.rs`). The owner ruled on
+  2026-10-11 to publish both halves, so neither is converted at install:
+  - **The engine:** the port on `github.com/ljchang/qwentts.cpp` (branch
+    `breeze`), built from its pinned commit with 7b-2's helpers. That is
+    the toolchain check, `$ORIGIN` RUNPATH, the toolkit's runtime copied
+    beside it, and a check that the build reports its commit and is
+    self-contained.
+  - **The weights:** Q6_K (the owner's default, and what the live server
+    runs; Q5_K_M is published beside it as the fallback) and the 12 Hz codec
+    on `mecha-factory/mecha-speech-gguf`, the `tts` slot's sources.
+    They're fetched into the hub by sha256 and linked, with a default VCTK
+    voice beside them.
+  - **The licence notice:** Breeze's weights are research and
+    non-commercial only; the install says so before fetching (the owner's
+    ruling: fetch, with notices). The repository carries the licence, the
+    NOTICE and the model card the licence requires.
+  - **The adapter:** `breeze_server.py` and its two modules ship in the
+    binary, held equal to `scripts/voice/`, from a hash lock.
+  - **The units:** `mecha-breeze-tts` on `:8886` and
+    `mecha-breeze-adapter` on `:8887`, the worker's `MECHA_VOICE_TTS`
+    default.
+  - **The check:** a sentence spoken through both and read back as a WAV
+    of plausible length.
+  - **Not covered:** Chatterbox, which is left as a provided alternative.
+  (This step was Chatterbox, with a venv lock and a Docker recipe written
+  down as a file, until Breeze replaced it.)
 
 **How to know it works:** a clean container (no `~/.mecha`, no `scripts/`)
 runs `cargo install` then `mecha features enable documents`, answers yes to

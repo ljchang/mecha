@@ -612,12 +612,40 @@ pub fn toolchain(target: Target) -> std::result::Result<Toolchain, String> {
     )
 }
 
+/// What a build for `target` needs and lacks, as a list rather than
+/// llama.cpp's sentence — for a caller that builds something else and says
+/// it in its own words (`speech_unit`; review of #649).
+pub fn toolchain_missing(target: Target) -> std::result::Result<Toolchain, Vec<String>> {
+    toolchain_parts(
+        target,
+        find_program,
+        crate::recommend::nvidia_smi("compute_cap").as_deref(),
+    )
+}
+
 /// [`toolchain`] over what was found, so every row is a test.
 fn toolchain_from(
     target: Target,
     find: impl Fn(&str) -> Option<PathBuf>,
     compute_cap: Option<&str>,
 ) -> std::result::Result<Toolchain, String> {
+    toolchain_parts(target, find, compute_cap).map_err(|missing| {
+        format!(
+            "no llama.cpp release build fits this machine ({}), so mecha builds {} here from its \
+             commit — and that needs {}, which this machine does not have",
+            target.label(),
+            PIN.tag,
+            missing.join(", ")
+        )
+    })
+}
+
+/// The toolchain, or every missing piece by name.
+fn toolchain_parts(
+    target: Target,
+    find: impl Fn(&str) -> Option<PathBuf>,
+    compute_cap: Option<&str>,
+) -> std::result::Result<Toolchain, Vec<String>> {
     let mut missing: Vec<String> = Vec::new();
     let need = |missing: &mut Vec<String>, name: &str, what: &str| {
         let found = find(name);
@@ -660,13 +688,7 @@ fn toolchain_from(
             ninja,
             cuda,
         }),
-        _ => Err(format!(
-            "no llama.cpp release build fits this machine ({}), so mecha builds {} here from its \
-             commit — and that needs {}, which this machine does not have",
-            target.label(),
-            PIN.tag,
-            missing.join(", ")
-        )),
+        _ => Err(missing),
     }
 }
 
@@ -694,7 +716,7 @@ fn find_program(name: &str) -> Option<PathBuf> {
 /// memory left after a reserve holds at a few GiB each — a CUDA compile
 /// takes that much, and a build that pushes the chat model out of memory
 /// is the failure the memory floor exists for.
-fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
+pub(crate) fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
     const PER_JOB: u64 = 4 << 30;
     const RESERVE: u64 = 8 << 30;
     let by_memory = available.map_or(2, |a| (a.saturating_sub(RESERVE) / PER_JOB) as usize);
@@ -902,7 +924,7 @@ fn copy_flat(from: &Path, to: &Path) -> Result<()> {
 /// read for its own (review of #643). What the toolkit does not provide —
 /// the driver's `libcuda`, the C and C++ runtimes — is the system's, as it
 /// is for a release.
-fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
+pub(crate) fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
     let mut todo: Vec<PathBuf> = std::fs::read_dir(part)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -938,7 +960,7 @@ fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
 /// `/usr/local/cuda` layout under `nvcc`'s parent. The first covers a
 /// distro-packaged toolkit — `nvcc` in `/usr/bin`, the runtime under
 /// `/usr/lib/<triple>/` — which the second cannot reach (review of #643).
-fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
+pub(crate) fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_to_string(build.join("CMakeCache.txt"))
         .unwrap_or_default()
         .lines()

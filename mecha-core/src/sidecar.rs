@@ -169,7 +169,10 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::DockerImage("mecha/chatterbox"),
         ],
         installer: "7f",
-        models_in_hub: true,
+        // A speech server run by hand (Breeze, the Chatterbox container) keeps
+        // its own models: held, never priced. Mecha's own install links them
+        // from the hub, read there as ComfyUI's are (review of #649).
+        models_in_hub: false,
     },
 ];
 
@@ -501,6 +504,9 @@ pub enum FileState {
     /// Kept outside the hub by a sidecar that could not be checked: not
     /// priced, never offered over.
     KeeperUnknown { sidecar: &'static str },
+    /// What a sidecar would fetch whose install is not offered on this
+    /// machine (`install::price`): not priced, and why.
+    NotOffered { why: String },
     /// The chat slot served by mecha's router from a GGUF the owner brought
     /// (`mecha setup chat`): the pinned row is not this machine's model, so
     /// it is neither priced nor offered.
@@ -516,6 +522,11 @@ pub struct PlannedSidecar {
     /// (`install::price`): the engine's pinned archives for this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
+    /// Why `enable` will not offer its install on this machine, though it
+    /// is missing (`install::price`): said on its row as on its files', so
+    /// one plan does not contradict itself (review of #649).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_offered: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -660,6 +671,7 @@ pub fn plan(
             label: s.label,
             state,
             bytes: None,
+            not_offered: None,
         });
     }
 
@@ -735,7 +747,7 @@ pub fn plan(
             // An interrupted install too: it resumes by fetching what the
             // hub lacks, so that is what it is priced at (review of #645).
             Some((sc, SidecarState::Installed | SidecarState::Incomplete))
-                if sc.id == crate::comfyui_unit::ID =>
+                if sc.id == crate::comfyui_unit::ID || sc.id == crate::speech_unit::ID =>
             {
                 None
             }
@@ -1234,6 +1246,15 @@ mod tests {
             matches!(speech.state, SidecarState::Provided { .. }),
             "{:?}",
             speech.state
+        );
+        // Its models are its own: held, never priced — nothing will fetch
+        // the slot's GGUF on a machine already speaking (review of #649).
+        let tts: Vec<_> = p.files.iter().filter(|f| f.slot == "tts").collect();
+        assert!(!tts.is_empty());
+        assert!(
+            tts.iter()
+                .all(|f| matches!(f.state, FileState::HeldBy { .. })),
+            "{tts:#?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
