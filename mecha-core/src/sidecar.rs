@@ -723,6 +723,12 @@ pub fn plan(
                     .map(|p| (sc, &p.state))
             });
         let held = match keeper {
+            // Mecha's own ComfyUI links the slot's files from the hub
+            // (`comfyui_unit`), so they are read there like any model: a
+            // cleared cache reads as a download, and `offered` offers the
+            // install again — a dangling link alone would read as present
+            // (`exists` is an lstat; review of #645).
+            Some((sc, SidecarState::Installed)) if sc.id == crate::comfyui_unit::ID => None,
             Some((sc, SidecarState::Provided { .. } | SidecarState::Installed)) => {
                 Some(FileState::HeldBy { sidecar: sc.label })
             }
@@ -1390,10 +1396,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A ComfyUI mecha installed keeps its models in its own tree too: held,
-    /// never priced as a hub download.
+    /// A ComfyUI mecha installed links its models from the hub, so they are
+    /// read there: an empty hub reads as a download, never as held — which is
+    /// what makes a cleared cache visible and the install offered again.
     #[test]
-    fn an_installed_comfyui_holds_its_own_models_too() {
+    fn an_installed_comfyui_reads_its_models_from_the_hub() {
         let root = scratch();
         let m = machinery(&root);
         let tree = root.join("home/.mecha/sidecars/comfyui");
@@ -1414,8 +1421,13 @@ mod tests {
         .unwrap();
         let p = plan(Feature::Image, &m, &GB10, &root.join("hub"), false).unwrap();
         let image: Vec<_> = p.files.iter().filter(|f| f.slot == "image").collect();
-        assert_eq!(image.len(), 1);
-        assert_eq!(image[0].state, FileState::HeldBy { sidecar: "ComfyUI" });
+        assert_eq!(image.len(), 3, "{image:#?}");
+        assert!(
+            image
+                .iter()
+                .all(|f| matches!(f.state, FileState::Download { .. })),
+            "{image:#?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

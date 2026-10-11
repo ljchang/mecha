@@ -10,8 +10,10 @@
 //! (`locks/comfyui-cu130-*.txt`), torch by direct URL so no second index is
 //! ever consulted. The models are the image slot's own pins
 //! (`recommend::SLOTS`), fetched into the hub like every other model and
-//! linked into ComfyUI's `models/` tree, each link recorded — a cleared cache
-//! leaves a link dangling, and the install reads incomplete.
+//! linked into ComfyUI's `models/` tree. The plan reads an installed
+//! ComfyUI's models from the hub (`sidecar::plan`), so a cleared cache reads
+//! as a download and the install is offered again — a dangling link alone
+//! would read present, since the record's check is an `lstat`.
 //!
 //! **The check is the graph, not the process.** ComfyUI answering proves
 //! little; the install asks `/object_info` for every node type
@@ -54,15 +56,15 @@ const PYTHON: &str = "3.12";
 const COMMIT_STAMP: &str = ".mecha-commit";
 
 /// Every node type [`crate::imagegen`] sends but the GGUF loader, which only
-/// an owner's own `.gguf` needs. A test holds this to `imagegen.rs`.
-pub const NODES: [&str; 13] = [
+/// an owner's own `.gguf` needs. A test builds the graphs and holds the two
+/// sets equal, both ways.
+pub const NODES: [&str; 12] = [
     "CLIPLoader",
     "EmptyLatentImage",
     "ImageToMask",
     "KSampler",
     "LoadImage",
     "PreviewImage",
-    "SaveImage",
     "SetLatentNoiseMask",
     "TextEncodeQwenImage21",
     "UNETLoader",
@@ -550,28 +552,46 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Every node type `imagegen.rs` names in a graph is one the install
-    /// checks for — or the GGUF loader, which only an owner's `.gguf` needs.
-    /// A new node in a graph without a line here would install a server
-    /// that cannot draw it.
+    /// The install checks exactly the node types mecha's graphs send — built
+    /// here, not read off the source: a text-to-image graph, an edit, and a
+    /// masked edit, with the default loader and a `.gguf` one. Both ways, so
+    /// a node added to a graph fails here, and so does one left in `NODES`
+    /// that no graph sends any more (review of #645).
     #[test]
-    fn the_install_checks_every_node_imagegen_sends() {
-        let src = include_str!("imagegen.rs");
+    fn the_install_checks_exactly_the_nodes_the_graphs_send() {
+        use crate::imagegen::{comfy_graph, ImageConfig, Request, EDIT_REFERENCE_SIZE};
+        let req = Request {
+            prompt: "a lighthouse".into(),
+            negative: String::new(),
+            size: Some((1024, 1024)),
+            steps: 4,
+            seed: 1,
+            references: Vec::new(),
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+        };
+        let gguf = ImageConfig {
+            diffusion_model: "model.gguf".into(),
+            ..ImageConfig::default()
+        };
+        let refs = ["ref.png".to_string()];
         let mut sent = std::collections::BTreeSet::new();
-        for (i, _) in src.match_indices("\"class_type\"") {
-            let rest = &src[i + "\"class_type\"".len()..];
-            let rest = rest.trim_start_matches([' ', ':']);
-            if let Some(name) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
-                sent.insert(name.to_string());
+        for cfg in [ImageConfig::default(), gguf] {
+            for g in [
+                comfy_graph(&cfg, &req, &[], None),
+                comfy_graph(&cfg, &req, &refs, None),
+                comfy_graph(&cfg, &req, &refs, Some("mask.png")),
+            ] {
+                for node in g.as_object().unwrap().values() {
+                    sent.insert(node["class_type"].as_str().unwrap().to_string());
+                }
             }
         }
-        assert!(sent.len() >= 10, "found {sent:?}");
-        for n in &sent {
-            assert!(
-                NODES.contains(&n.as_str()) || n == "UnetLoaderGGUF",
-                "{n} is sent and not checked"
-            );
-        }
+        // The GGUF loader is the one sent node the install does not bring.
+        assert!(sent.remove("UnetLoaderGGUF"), "{sent:?}");
+        let checked: std::collections::BTreeSet<String> =
+            NODES.iter().map(|n| n.to_string()).collect();
+        assert_eq!(sent, checked);
     }
 
     /// The models linked are the image slot's, and their names are the ones
