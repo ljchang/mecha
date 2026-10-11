@@ -865,9 +865,19 @@ impl ComfyUi {
     /// holds (`LAST_MODEL`); `standard` is what an unused server is read as.
     fn switching(&self, file: &str, standard: &str) -> bool {
         let last = LAST_MODEL.lock().unwrap_or_else(|e| e.into_inner());
-        last.get(self.base.as_str())
-            .map_or(standard, String::as_str)
-            != file
+        match last.get(self.base.as_str()).map(String::as_str) {
+            // Released since its last picture: it holds nothing to unload.
+            Some("") => false,
+            Some(held) => held != file,
+            None => standard != file,
+        }
+    }
+
+    /// Note that this server now holds no model: an idle release unloaded
+    /// it, so the next picture switches nothing, whichever model it asks for
+    /// (review of #648).
+    fn released(&self) {
+        self.drew_with("");
     }
 
     /// Note `file` as the model this server now draws with.
@@ -995,14 +1005,27 @@ impl ComfyUi {
     /// Every file the graph names is one the server can load, checked before
     /// submitting: a missing file otherwise fails deep in a run as a node
     /// validation error the model cannot act on.
-    async fn preflight(&self, cfg: &ImageConfig, model: &str) -> Result<()> {
-        let model = model.to_string();
-        let checks = [
-            (unet_loader(&model).0, "unet_name", &model),
-            ("CLIPLoader", "clip_name", &cfg.text_encoder),
-            ("VAELoader", "vae_name", &cfg.vae),
+    ///
+    /// A persona's picture settings are checked the same way, and a value the
+    /// server lacks is refused naming the setting, since it stays chosen until
+    /// the owner changes it (review of #648): the turbo file, and a sampler
+    /// or scheduler other than the reference ones, which every ComfyUI has.
+    async fn preflight(&self, cfg: &ImageConfig, s: &crate::sampling::Sampling) -> Result<()> {
+        let model = cfg.model_file(s.model).to_string();
+        let reference = crate::sampling::Sampling::reference(s.steps);
+        let turbo = s.model == crate::sampling::Model::Turbo;
+        let mut checks = vec![
+            (unet_loader(&model).0, "unet_name", model.clone(), turbo),
+            ("CLIPLoader", "clip_name", cfg.text_encoder.clone(), false),
+            ("VAELoader", "vae_name", cfg.vae.clone(), false),
         ];
-        for (node, input, want) in checks {
+        if s.sampler != reference.sampler {
+            checks.push(("KSampler", "sampler_name", s.sampler.clone(), true));
+        }
+        if s.scheduler != reference.scheduler {
+            checks.push(("KSampler", "scheduler", s.scheduler.clone(), true));
+        }
+        for (node, input, want, chosen) in checks {
             let info = self.get_json(&format!("object_info/{node}")).await?;
             let Some(choices) = info
                 .pointer(&format!("/{node}/input/required/{input}/0"))
@@ -1019,6 +1042,13 @@ impl ComfyUi {
                 bail!("the image server has no `{node}` node; update ComfyUI");
             };
             if !choices.iter().any(|c| c.as_str() == Some(want.as_str())) {
+                if chosen {
+                    bail!(
+                        "the image server has no `{want}` for {node}, which this persona's \
+                         picture settings choose; change them on the persona's page, or add it \
+                         to the image server"
+                    );
+                }
                 let have: Vec<&str> = choices.iter().filter_map(Value::as_str).collect();
                 bail!(
                     "the image server has no `{want}` for {node} (it has: {})",
@@ -1220,11 +1250,18 @@ impl ComfyUi {
         };
         self.await_server(cancel, SERVER_WAIT).await?;
         let model = cfg.model_file(req.sampling.model);
-        self.preflight(cfg, model).await?;
+        self.preflight(cfg, &req.sampling).await?;
         // The other model out first, so the two are never resident at once.
         if self.switching(model, &cfg.diffusion_model) {
             self.release().await;
-            tokio::time::sleep(UNLOAD_SETTLE).await;
+            let settle = tokio::time::sleep(UNLOAD_SETTLE);
+            match cancel {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => return Err(Failure::Cancelled),
+                    _ = settle => {}
+                },
+                None => settle.await,
+            }
         }
         self.drew_with(model);
         // `comfy_graph`'s masked arm needs the picture it masks; without one
@@ -2462,6 +2499,7 @@ impl ImageGenerate {
             tokio::time::sleep(Duration::from_secs(after)).await;
             if generation.load(Ordering::SeqCst) == armed {
                 backend.release().await;
+                backend.released();
             }
         });
     }
@@ -4933,6 +4971,10 @@ mod tests {
                                 crate::sampling::TURBO_MODEL,
                             ], {}]}}}}),
                             "UnetLoaderGGUF" => files("unet_name", "Qwen-Image-2.1-Q4.gguf"),
+                            // A server with only some of KSampler's names.
+                            "KSampler" => json!({node: {"input": {"required": {
+                                "sampler_name": [["euler", "res_multistep"], {}],
+                                "scheduler": [["simple", "beta"], {}]}}}}),
                             "CLIPLoader" => files("clip_name", "qwen3vl_8b_w4a8.safetensors"),
                             "VAELoader" => files("vae_name", "qwen_image_2.1_vae_bf16.safetensors"),
                             _ => json!({node: {"input": {}}}),
@@ -8841,6 +8883,58 @@ mod tests {
         let out = t.call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sent(&seen), ["free", "prompt", "free", "prompt", "prompt"]);
+    }
+
+    /// A sampler the persona's settings choose and the server lacks is
+    /// refused before anything is sent, naming the setting: it stays chosen
+    /// until the owner changes it, so a bare node error would recur on every
+    /// picture (review of #648). One the server has draws.
+    #[tokio::test]
+    async fn a_chosen_sampler_the_server_lacks_is_refused_naming_the_setting() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store) = (tempdir(), tempdir());
+        let t = tool(&url);
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        cx.image_tuning = crate::sampling::Tuning {
+            sampler: Some("dpmpp_2m".into()),
+            ..Default::default()
+        };
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("picture settings"), "{}", out.content);
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /prompt")),
+            "nothing was sent"
+        );
+        cx.image_tuning.sampler = Some("res_multistep".into());
+        cx.image_tuning.scheduler = Some("beta".into());
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+    }
+
+    /// After an idle release the server holds nothing, so the next picture
+    /// unloads nothing, whichever model it asks for (review of #648); a
+    /// server this process never used reads as holding the standard model.
+    #[test]
+    fn a_released_server_has_nothing_to_unload() {
+        let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let server = server_at(addr);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        assert!(!server.switching(standard, standard));
+        assert!(
+            server.switching(turbo, standard),
+            "unused reads as standard"
+        );
+        server.drew_with(turbo);
+        assert!(server.switching(standard, standard));
+        server.released();
+        assert!(!server.switching(standard, standard));
+        assert!(!server.switching(turbo, standard));
     }
 
     /// A reader that answers as told, standing in for the persona host's.

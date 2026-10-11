@@ -135,6 +135,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Picture settings per persona.** A persona's settings page has a Picture
+  settings panel beside the touching-scenes switch. It sets the model
+  (standard or turbo), steps, guidance (cfg), sampler, scheduler and whether
+  a fixed negative prompt is sent. Presets are offered for the default, a
+  guided setting and turbo, with a rough time per picture. A persona nobody
+  tuned draws exactly as before. Switching models unloads the other one
+  first, and the turbo model needs one more file (`[image] turbo_model`).
+  `mecha replay --persona` takes the same settings as flags.
 - **Regenerate a picture, and step through its versions.** A picture in
   the assistant's chat or a persona chat has a Regenerate button beside
   Edit. It draws the same picture again at a new seed, with no words and no

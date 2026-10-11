@@ -1784,7 +1784,7 @@
             <div class="imgset">
               <div class="locktext">
                 Picture settings
-                <span class="hint" id="imghint">about {img.estimate_secs} s a picture in one pass{img.model === 'turbo' ? ' with the turbo model: quick, weaker on two people touching' : ''}; changing model loads it on the next picture and unloads the other</span>
+                <span class="hint" id="imghint">about {img.estimate_secs} s a picture in one pass{img.model === 'turbo' ? ' with the turbo model: quick, weaker on two people touching' : ''}{img.model === 'turbo' && img.cfg > 1 ? '; turbo is made for guidance 1, and above it each step costs twice' : ''}; changing model loads it on the next picture and unloads the other</span>
               </div>
               <div class="presets" role="group" aria-label="Picture presets">
                 <button type="button" class="linkbtn" disabled={busy} onclick={() => saveImage(presetBody('default', token))}>Default</button>
@@ -1793,7 +1793,7 @@
               </div>
               <div class="imggrid">
                 <label>Model
-                  <select value={img.set?.model ?? 'standard'} disabled={busy} onchange={(e) => setImage({ model: e.currentTarget.value })}>
+                  <select value={img.set?.model ?? 'standard'} aria-describedby="imghint" disabled={busy} onchange={(e) => setImage({ model: e.currentTarget.value })}>
                     <option value="standard">Standard</option>
                     <option value="turbo">Turbo</option>
                   </select>

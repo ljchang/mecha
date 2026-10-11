@@ -785,6 +785,7 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 | `backend` | string | `comfyui` | The image server's kind. `comfyui` is the only one today. |
 | `url` | string | `http://127.0.0.1:8188` | The server. Must be on this machine (`127.0.0.1`, `::1` or `localhost`); anything else is refused at startup. |
 | `diffusion_model` | string | `qwen_image_2.1_int8_convrot.safetensors` | File names as the server lists them. A `.gguf` file loads through the ComfyUI-GGUF node, any other through ComfyUI's own loader. |
+| `turbo_model` | string | `qwen_image_2.1_turbo_int8_convrot.safetensors` | The turbo distillation a persona's picture settings may choose instead. It needs only this file beside the others; the text encoder and VAE are shared. |
 | `text_encoder` | string | `qwen3vl_8b_w4a8.safetensors` | |
 | `vae` | string | `qwen_image_2.1_vae_bf16.safetensors` | |
 | `steps` | integer | `40` | Denoising steps; 40 is the model's reference setting. |
