@@ -1,0 +1,24 @@
+# mecha's speech adapter, as `mecha features enable voice` installs it
+# (mecha-core/src/speech_unit.rs): the OpenAI-shaped surface the voice worker
+# speaks to, over the engine. What runs is the copy mecha wrote, from an
+# environment built from a hash lock. Rendered at install.
+
+[Unit]
+Description=mecha speech adapter (:@ADAPTER_PORT@, over :@ENGINE_PORT@)
+Wants=@ENGINE_UNIT@.service
+After=@ENGINE_UNIT@.service
+
+[Service]
+Type=exec
+WorkingDirectory=@DIR@/adapter
+Environment=BREEZE_TTS_URL=http://127.0.0.1:@ENGINE_PORT@
+Environment=BREEZE_PORT=@ADAPTER_PORT@
+Environment=VOICES_DIR=@DIR@/voices
+Environment=BREEZE_MODEL_NAME=@MODEL_NAME@
+ExecStart=@DIR@/venv/bin/python -B breeze_server.py
+Restart=on-failure
+RestartSec=5
+OOMScoreAdjust=300
+
+[Install]
+WantedBy=default.target

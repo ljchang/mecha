@@ -529,6 +529,11 @@ impl Command {
     /// loaded model. Not `mecha eval`: a scorecard grades the model it names,
     /// and two taken a week apart must not be different models under one
     /// condition. It is still observed, for its permit seats (found on review).
+    /// A model-less entry is still asked what its server serves, so an eval
+    /// on one grades what is loaded when it starts — and says which: its arm
+    /// records the asked name (`eval::measurement_arm`), and the condition
+    /// hash includes the model, so two loaded models are two conditions,
+    /// never one (review of #637).
     fn may_follow(&self) -> bool {
         !matches!(self, Command::Eval(_))
     }
@@ -578,8 +583,8 @@ impl Command {
             // A persona replay holds per sample (`Follower::enter`), and
             // before each it waits out every other process's hold: held for
             // its whole life, two of them would each wait on the other's
-            // hold forever.
-            Command::Replay(a) => a.persona.is_none(),
+            // hold forever. Its judges hold per picture, the same way.
+            Command::Replay(a) => a.persona.is_none() && a.judge.is_empty(),
             // **Per subcommand where only some run a model** (review of D13):
             // held per command, `tasks stop` — the documented way to stop a
             // detached `tasks work` — waited behind a switch that was waiting
@@ -863,7 +868,11 @@ async fn follow_the_loaded_model(global: &GlobalOpts, may_follow: bool) {
     // themselves (lesson, pointwise, gossip, …) never reach `setup`'s pin. It
     // is still observed: its permit pool is sized to what is loaded.
     let follows = may_follow && global.model.is_none() && global.provider.is_none();
-    for warning in mecha_core::provider::router::observe(&cfg, follows).await {
+    let line = mecha_core::provider::router::CommandLine {
+        provider: global.provider.as_deref(),
+        model: global.model.is_some(),
+    };
+    for warning in mecha_core::provider::router::observe_for(&cfg, follows, line).await {
         tracing::warn!("{warning}");
     }
 }
@@ -1099,6 +1108,12 @@ mod tests {
         let persona = cmd(&["mecha", "replay", "--persona", "a-chat", "--at", "4"]);
         assert!(persona.runs_a_model());
         assert!(!persona.is_one_run());
+        // Its judges hold per picture the same way, and take no session.
+        let judge = cmd(&["mecha", "replay", "--judge", "a.jsonl", "b.jsonl"]);
+        assert!(judge.runs_a_model());
+        assert!(!judge.is_one_run());
+        assert!(Cli::try_parse_from(["mecha", "replay", "s", "--judge", "a.jsonl"]).is_err());
+        assert!(Cli::try_parse_from(["mecha", "replay", "--sheet", "x.html"]).is_err());
     }
 
     /// `--force` overrides a measurement, and a rollback measures nothing:

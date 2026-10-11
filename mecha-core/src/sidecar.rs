@@ -124,7 +124,11 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "ComfyUI",
         needed_by: &[Feature::Image],
         serves: &["image"],
+        // Its own unit first, as `stt`'s and the worker's name theirs: with
+        // the record lost, mecha's server must not read as missing (review
+        // of #645).
         evidence: &[
+            Evidence::UserUnit("mecha-comfyui.service"),
             Evidence::UserUnit("comfyui.service"),
             Evidence::Home("ComfyUI"),
         ],
@@ -137,8 +141,9 @@ pub const SIDECARS: &[Sidecar] = &[
         needed_by: &[Feature::Voice],
         serves: &["stt"],
         evidence: &[Evidence::UserUnit("mecha-parakeet.service")],
-        installer: "7d",
-        models_in_hub: true,
+        installer: "7d-1",
+        // Unpacked from its release tarball into its own tree, never the hub.
+        models_in_hub: false,
     },
     Sidecar {
         id: "voice-worker",
@@ -146,7 +151,7 @@ pub const SIDECARS: &[Sidecar] = &[
         needed_by: &[Feature::Voice],
         serves: &["turn"],
         evidence: &[Evidence::UserUnit("mecha-voice-worker.service")],
-        installer: "7d",
+        installer: "7d-2",
         models_in_hub: true,
     },
     // The speech server: Breeze and its OpenAI-shaped adapter, the default
@@ -164,7 +169,10 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::DockerImage("mecha/chatterbox"),
         ],
         installer: "7f",
-        models_in_hub: true,
+        // A speech server run by hand (Breeze, the Chatterbox container) keeps
+        // its own models: held, never priced. Mecha's own install links them
+        // from the hub, read there as ComfyUI's are (review of #649).
+        models_in_hub: false,
     },
 ];
 
@@ -496,6 +504,9 @@ pub enum FileState {
     /// Kept outside the hub by a sidecar that could not be checked: not
     /// priced, never offered over.
     KeeperUnknown { sidecar: &'static str },
+    /// What a sidecar would fetch whose install is not offered on this
+    /// machine (`install::price`): not priced, and why.
+    NotOffered { why: String },
     /// The chat slot served by mecha's router from a GGUF the owner brought
     /// (`mecha setup chat`): the pinned row is not this machine's model, so
     /// it is neither priced nor offered.
@@ -511,6 +522,11 @@ pub struct PlannedSidecar {
     /// (`install::price`): the engine's pinned archives for this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<u64>,
+    /// Why `enable` will not offer its install on this machine, though it
+    /// is missing (`install::price`): said on its row as on its files', so
+    /// one plan does not contradict itself (review of #649).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_offered: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -655,6 +671,7 @@ pub fn plan(
             label: s.label,
             state,
             bytes: None,
+            not_offered: None,
         });
     }
 
@@ -722,6 +739,18 @@ pub fn plan(
                     .map(|p| (sc, &p.state))
             });
         let held = match keeper {
+            // Mecha's own ComfyUI links the slot's files from the hub
+            // (`comfyui_unit`), so they are read there like any model: a
+            // cleared cache reads as a download, and `offered` offers the
+            // install again — a dangling link alone would read as present
+            // (`exists` is an lstat; review of #645).
+            // An interrupted install too: it resumes by fetching what the
+            // hub lacks, so that is what it is priced at (review of #645).
+            Some((sc, SidecarState::Installed | SidecarState::Incomplete))
+                if sc.id == crate::comfyui_unit::ID || sc.id == crate::speech_unit::ID =>
+            {
+                None
+            }
             Some((sc, SidecarState::Provided { .. } | SidecarState::Installed)) => {
                 Some(FileState::HeldBy { sidecar: sc.label })
             }
@@ -918,7 +947,7 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c-1", "7c-2", "7d", "7e", "7f"].contains(&s.installer),
+                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"].contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
@@ -1218,6 +1247,15 @@ mod tests {
             "{:?}",
             speech.state
         );
+        // Its models are its own: held, never priced — nothing will fetch
+        // the slot's GGUF on a machine already speaking (review of #649).
+        let tts: Vec<_> = p.files.iter().filter(|f| f.slot == "tts").collect();
+        assert!(!tts.is_empty());
+        assert!(
+            tts.iter()
+                .all(|f| matches!(f.state, FileState::HeldBy { .. })),
+            "{tts:#?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1389,10 +1427,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A ComfyUI mecha installed keeps its models in its own tree too: held,
-    /// never priced as a hub download.
+    /// A ComfyUI mecha installed links its models from the hub, so they are
+    /// read there: an empty hub reads as a download, never as held — which is
+    /// what makes a cleared cache visible and the install offered again. An
+    /// interrupted install the same: it resumes by fetching what the hub
+    /// lacks, so that is its price (review of #645).
     #[test]
-    fn an_installed_comfyui_holds_its_own_models_too() {
+    fn an_installed_comfyui_reads_its_models_from_the_hub() {
+        for incomplete in [false, true] {
+            installed_comfyui_reads_the_hub(incomplete);
+        }
+    }
+
+    fn installed_comfyui_reads_the_hub(incomplete: bool) {
         let root = scratch();
         let m = machinery(&root);
         let tree = root.join("home/.mecha/sidecars/comfyui");
@@ -1400,7 +1447,7 @@ mod tests {
         let manifest = Manifest {
             entries: vec![Entry {
                 sidecar: "comfyui".into(),
-                incomplete: false,
+                incomplete,
                 wrote: vec![tree],
                 builds: vec![],
             }],
@@ -1413,8 +1460,13 @@ mod tests {
         .unwrap();
         let p = plan(Feature::Image, &m, &GB10, &root.join("hub"), false).unwrap();
         let image: Vec<_> = p.files.iter().filter(|f| f.slot == "image").collect();
-        assert_eq!(image.len(), 1);
-        assert_eq!(image[0].state, FileState::HeldBy { sidecar: "ComfyUI" });
+        assert_eq!(image.len(), 3, "incomplete={incomplete}: {image:#?}");
+        assert!(
+            image
+                .iter()
+                .all(|f| matches!(f.state, FileState::Download { .. })),
+            "{image:#?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

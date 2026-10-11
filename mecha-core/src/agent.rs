@@ -1597,6 +1597,8 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || crate::persona::edit::is_fact(text)
         || text == crate::persona::edit::DONE
         || text == crate::persona::edit::NOT_DRAWN
+        || text == crate::persona::edit::REDRAW_DONE
+        || text == crate::persona::edit::REDRAW_NOT_DRAWN
         // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
         // recorded before it carry the same fully-templated nudge bodies
         // bare, and one such nudge was already mined as a steer and probed as
@@ -4718,7 +4720,7 @@ impl Agent {
         input: Value,
         events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Dispatched {
-        let call_id = format!("harness_{}", uuid::Uuid::new_v4().simple());
+        let call_id = format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
         // Stamped and armed as a run is, so what the run would withhold and
         // what its messages and notes armed reach this call too.
         let stamped = Self::stamped(cx, events);
@@ -5953,6 +5955,20 @@ impl Agent {
         blocks.append(&mut pictures);
         (blocks, provenance)
     }
+}
+
+/// What every [`Agent::dispatch_one`] call id opens with, so a reader of
+/// the live events can tell the harness's own call from a model's. A
+/// convention, not a proof: a provider that let the model choose its call
+/// ids could send one that opens the same way. Nothing gates on it; it
+/// marks a card on the page (`WireEvent::Tool::version_of`), and a gate
+/// must never.
+pub const HARNESS_CALL: &str = "harness_";
+
+/// Whether `id` is a call the harness made ([`Agent::dispatch_one`]), not
+/// the model.
+pub fn is_harness_call(id: &str) -> bool {
+    id.starts_with(HARNESS_CALL)
 }
 
 /// What [`Agent::dispatch_one`] did with one harness call.
@@ -9581,7 +9597,7 @@ mod tests {
             .await;
         assert_eq!(one.content, "SECRET-42");
         assert!(!one.is_error && !one.denied);
-        assert!(one.call_id.starts_with("harness_"), "{}", one.call_id);
+        assert!(is_harness_call(&one.call_id), "{}", one.call_id);
         assert_ne!(one.call_id, two.call_id);
         assert!(convo.taint.private, "armed as a turn would be");
         assert!(!one.staged);

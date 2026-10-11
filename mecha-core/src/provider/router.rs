@@ -227,12 +227,183 @@ pub fn resident(models: &[RouterModel]) -> Option<&str> {
 struct Snapshot {
     seen: Vec<Seen>,
     follows: bool,
+    /// What each model-less local entry's server serves, by normalised base:
+    /// the name its requests carry (see [`unnamed_model`]).
+    unnamed: Vec<(String, String)>,
 }
 
 static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
     seen: Vec::new(),
     follows: false,
+    unnamed: Vec::new(),
 });
+
+/// The servers asked what they serve: every entry that [`asks_its_server`]
+/// and that the owner configured — or that is the default provider, which a
+/// machine with no config file runs on (the built-in `local`, since F12; a
+/// no-config install sent `gpt-4o-mini` until review of #637). The built-in
+/// entry is otherwise left out, so a hosted-only machine sends nothing to
+/// `:8080`.
+fn unnamed_bases(cfg: &Config, line: CommandLine<'_>) -> Vec<String> {
+    let mut bases: Vec<String> = cfg
+        .providers
+        .iter()
+        .filter(|(name, p)| {
+            // ...and the entry `--provider` named: the run resolves to it,
+            // so it is asked whatever the default is (review of #637).
+            asks_its_server(p)
+                && (p.configured_local()
+                    || **name == cfg.default_provider
+                    || line.provider == Some(name.as_str()))
+        })
+        .map(|(_, p)| p)
+        .filter_map(|p| p.base_url.as_deref())
+        .map(base)
+        .collect();
+    bases.sort();
+    bases.dedup();
+    bases
+}
+
+/// Whether an entry with no `model` takes its name from its server — the one
+/// predicate [`observe`], the provider and the preflight warning all read, so
+/// what is said and what is sent cannot disagree (review of #637):
+/// `kind = "local"`, on this machine, naming no model. Which of these are
+/// actually *asked* is [`unnamed_bases`]'; one that was not reads no name.
+pub fn asks_its_server(p: &ProviderConfig) -> bool {
+    p.kind == "local" && p.model.is_none() && p.base_url.as_deref().is_some_and(is_loopback)
+}
+
+/// Which model a request to a router names when its entry names none: the
+/// resident one, else the only one it lists — the first request then loads
+/// it. `None` when several are listed and none is resident, since naming one
+/// would be a guess and could evict nothing but would load a stranger.
+pub fn name_for(models: &[RouterModel]) -> Option<&str> {
+    if let Some(r) = resident(models) {
+        return Some(r);
+    }
+    match models {
+        [only] => Some(only.id.as_str()),
+        _ => None,
+    }
+}
+
+/// What an entry with no `model` at `base_url` asks for in this process —
+/// what its server said it serves when [`observe`] looked. `None` when it was
+/// not asked (off-machine, not configured by the owner) or did not say.
+///
+/// Read, like [`follow`], from the process snapshot: a request must name a
+/// model on a router (an unnamed one is not served), and a record must name
+/// the model that answered — a placeholder like `gpt-4o-mini` is wrong on
+/// both counts (the known limitation of #627).
+pub fn unnamed_model(base_url: &str) -> Option<String> {
+    let b = base(base_url);
+    let s = SNAPSHOT.read().ok()?;
+    s.unnamed
+        .iter()
+        .find(|(at, _)| *at == b)
+        .map(|(_, m)| m.clone())
+}
+
+/// What a command line named, as the probe needs it: the entry `--provider`
+/// names, which is asked whatever the default is, and whether `--model` was
+/// given, which makes "a run cannot know which model to ask for" untrue of
+/// it. `follows` cannot stand in for either: it is false for `--provider`,
+/// `--model` and `mecha eval` alike (review of #637).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandLine<'a> {
+    pub provider: Option<&'a str>,
+    pub model: bool,
+}
+
+/// What asking the model-less entries' servers found: the names, the
+/// advice for a router that cannot be answered for (several models, none
+/// loaded), and R4's temperature mismatches — kept apart, because the
+/// advice is moot for a run that named its model and R4 never is.
+struct Unnamed {
+    named: Vec<Named>,
+    advice: Vec<String>,
+    mismatches: Vec<String>,
+}
+
+/// Ask each model-less entry's server what it serves.
+async fn observe_unnamed(cfg: &Config, line: CommandLine<'_>) -> Unnamed {
+    let mut named = Vec::new();
+    let mut warnings = Vec::new();
+    let mut mismatches = Vec::new();
+    for b in unnamed_bases(cfg, line) {
+        match is_router(&b).await {
+            Some(true) => {
+                let Some(http) = client(Duration::from_secs(2)) else {
+                    continue;
+                };
+                let Some(list) = list_on(&http, &b).await else {
+                    continue;
+                };
+                // The followed routers' rule, on this side too: a list this
+                // cannot read supports no conclusion about what is resident,
+                // and naming its apparent resident could evict the owner's
+                // pick (review of #637).
+                match readable(&list).then(|| name_for(&list)).flatten() {
+                    Some(m) => {
+                        // R4 for an entry that asks: its temperature reaches
+                        // this model. Skipped only where `observe_all` already
+                        // checked this very model — a followed router's
+                        // resident one — never on the base alone: a router's
+                        // only, unloaded model is named here and loaded by
+                        // the first request (review of #637).
+                        let reported =
+                            followed_bases(cfg).contains(&b) && resident(&list) == Some(m);
+                        if !reported {
+                            if let Some(model) = list.iter().find(|x| x.id == m) {
+                                mismatches.extend(sampling_mismatches_of(cfg, &b, model, |p| {
+                                    asks_its_server(p)
+                                }));
+                            }
+                        }
+                        named.push((b, m.to_string()))
+                    }
+                    // Two states reach here, and the advice differs (review
+                    // of #637): several loaded is a server started otherwise.
+                    None if list.iter().filter(|m| m.is_resident()).count() > 1 => {
+                        warnings.push(format!(
+                            "a local provider at {b} names no `model`, and the router there has \
+                             more than one model loaded — so a run cannot know which to ask \
+                             for. Set `model` in its table, or unload all but one."
+                        ))
+                    }
+                    None if readable(&list) => warnings.push(format!(
+                        "a local provider at {b} names no `model`, and the router there serves \
+                         several with none loaded — so a run cannot know which to ask for. Set \
+                         `model` in its table (`mecha setup --write` writes it once one is \
+                         loaded)."
+                    )),
+                    // The followed routers' rule: a list this cannot read
+                    // supports no conclusion, and says so (review of #637).
+                    None => warnings.push(format!(
+                        "a local provider at {b} names no `model`, and the router there answered \
+                         /models with a list this cannot read — so a run cannot know which model \
+                         to ask for. Set `model` in its table."
+                    )),
+                }
+            }
+            Some(false) => {
+                if let Some(m) = crate::provider::preflight::fetch(&b, None)
+                    .await
+                    .and_then(|p| p.model_alias)
+                {
+                    named.push((b, m));
+                }
+            }
+            None => {}
+        }
+    }
+    Unnamed {
+        named,
+        advice: warnings,
+        mismatches,
+    }
+}
 
 /// Snapshot every router a `follow_loaded` provider points at, replacing the
 /// last snapshot. `follows` is whether this process's default provider may
@@ -244,9 +415,17 @@ static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
 /// one run. Four loopback round trips per router with a model resident —
 /// `/props` and `/models` here, then `preflight::fetch`'s bare `/props` and
 /// the resident model's own; a refused connection costs nothing and leaves
-/// the default standing.
+/// the default standing. Each owner-configured local entry with no `model`
+/// costs two more (`/props`, then `/models` or the plain server's `/props`).
 pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
     observe_seen(cfg, follows).await.0
+}
+
+/// [`observe`] for a process that knows its command line: the entry
+/// `--provider` named is asked too, and the "cannot know which" advice is
+/// left out when `--model` named one. `observe` is this with nothing named.
+pub async fn observe_for(cfg: &Config, follows: bool, line: CommandLine<'_>) -> Vec<String> {
+    observe_all_for(cfg, follows, line).await.0
 }
 
 /// [`observe`], also returning what *this* call saw. A caller that resolves
@@ -255,6 +434,28 @@ pub async fn observe(cfg: &Config, follows: bool) -> Vec<String> {
 /// newer one — a long-lived surface resolving from the global could then
 /// rebuild onto the superseded model (review of #347).
 pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen>) {
+    let (warnings, seen, _) = observe_all(cfg, follows).await;
+    (warnings, seen)
+}
+
+/// What one model-less entry's server said it serves: the normalised base and
+/// the name (see [`unnamed_model`]).
+pub type Named = (String, String);
+
+/// [`observe_seen`], also returning what each model-less entry resolved to in
+/// *this* call — for a long-lived surface, which must rebuild when that name
+/// changes and must read it from its own probe, never the global, for the
+/// reason `observe_seen` gives (review of #637).
+pub async fn observe_all(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen>, Vec<Named>) {
+    observe_all_for(cfg, follows, CommandLine::default()).await
+}
+
+/// [`observe_all`] with the command line's names (see [`CommandLine`]).
+pub async fn observe_all_for(
+    cfg: &Config,
+    follows: bool,
+    line: CommandLine<'_>,
+) -> (Vec<String>, Vec<Seen>, Vec<Named>) {
     let mut seen = Vec::new();
     let mut unreadable = Vec::new();
     for b in followed_bases(cfg) {
@@ -330,6 +531,17 @@ pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen
         Vec::new()
     };
     warnings.extend(unreadable);
+    // Asked whether or not this process follows — a `--provider` or an
+    // eval naming no model resolves from it. R4's mismatches are always said,
+    // as the followed routers' are; the "cannot know which" advice is left
+    // out only for a run whose `--model` named what it asks for (review of
+    // #637).
+    let found = observe_unnamed(cfg, line).await;
+    let unnamed = found.named;
+    warnings.extend(found.mismatches);
+    if !line.model {
+        warnings.extend(found.advice);
+    }
     for (name, p) in &cfg.providers {
         if p.follow_loaded && !follows_here(p) {
             warnings.push(format!(
@@ -346,9 +558,10 @@ pub async fn observe_seen(cfg: &Config, follows: bool) -> (Vec<String>, Vec<Seen
         *slot = Snapshot {
             seen: seen.clone(),
             follows,
+            unnamed: unnamed.clone(),
         };
     }
-    (warnings, seen)
+    (warnings, seen, unnamed)
 }
 
 /// How many background runs may hold the model at once, under this process's
@@ -472,10 +685,12 @@ pub fn would_not_follow(cfg: &Config, b: &str, model: &str) -> Option<String> {
 /// How many entries name `model` on `b`, when that count means runs would not
 /// follow it (none, or several) — `None` when they would.
 fn unfollowed_namers(cfg: &Config, b: &str, model: &str) -> Option<usize> {
+    // A default that names no model asks its server, so it names whatever is
+    // loaded there — this one included (review of #637).
     let default_names = cfg.providers.get(&cfg.default_provider).is_some_and(|p| {
         follows_here(p)
             && p.base_url.as_deref().map(base).as_deref() == Some(b)
-            && p.model.as_deref() == Some(model)
+            && (p.model.as_deref() == Some(model) || asks_its_server(p))
     });
     if default_names {
         return None;
@@ -506,13 +721,40 @@ pub fn preset_temperature(m: &RouterModel) -> Option<f64> {
 /// config that disagrees with its tuning is un-tuned without a word. An entry
 /// with no `temperature` sends none, and the preset governs.
 pub fn sampling_mismatches(cfg: &Config, b: &str, m: &RouterModel) -> Vec<String> {
+    sampling_mismatches_of(cfg, b, m, |p| {
+        p.model.as_deref() == Some(m.id.as_str()) || asks_its_server(p)
+    })
+}
+
+/// [`sampling_mismatches`] for a listed model that need not become resident:
+/// a model-less entry counts only where `asked` says this is the model it
+/// would ask for — under every other row its temperature reaches nothing
+/// (review of #637). `mecha model use` keeps the wider rule, since the model
+/// it loads is the one such an entry then asks for.
+pub fn sampling_mismatches_listed(
+    cfg: &Config,
+    b: &str,
+    m: &RouterModel,
+    asked: bool,
+) -> Vec<String> {
+    sampling_mismatches_of(cfg, b, m, |p| {
+        p.model.as_deref() == Some(m.id.as_str()) || (asked && asks_its_server(p))
+    })
+}
+
+/// [`sampling_mismatches`] over the entries at `b` that `which` picks. An
+/// entry that names no model and asks its server sends its temperature to
+/// whatever is loaded, so it is checked against that (review of #637).
+fn sampling_mismatches_of(
+    cfg: &Config,
+    b: &str,
+    m: &RouterModel,
+    which: impl Fn(&ProviderConfig) -> bool,
+) -> Vec<String> {
     let preset = preset_temperature(m);
     cfg.providers
         .iter()
-        .filter(|(_, p)| {
-            p.base_url.as_deref().map(base).as_deref() == Some(b)
-                && p.model.as_deref() == Some(m.id.as_str())
-        })
+        .filter(|(_, p)| p.base_url.as_deref().map(base).as_deref() == Some(b) && which(p))
         .filter_map(|(name, p)| {
             let t = p.temperature?;
             let agrees = preset.is_some_and(|pt| (pt - t).abs() < 1e-9);
@@ -863,6 +1105,15 @@ mod tests {
         c
     }
 
+    /// The built-in config with a hosted default: asks no local server, so
+    /// a test's snapshot reset never depends on what this box runs.
+    fn hosted() -> Config {
+        Config {
+            default_provider: "anthropic".into(),
+            ..Config::default()
+        }
+    }
+
     fn seen(resident: Option<&str>) -> Vec<Seen> {
         vec![Seen {
             base_url: "http://127.0.0.1:8080".into(),
@@ -1021,6 +1272,46 @@ mod tests {
         assert_eq!(seats_for(&[at(Some(1)), at(Some(1))], 3), 1, "two agree");
     }
 
+    /// A followed default that names no model asks its server, so it names
+    /// whatever is loaded: no "runs will swap it back out" for it, and its
+    /// temperature is checked against that model's preset (review of #637).
+    #[test]
+    fn a_followed_default_that_asks_names_the_resident_model() {
+        let mut c = cfg();
+        let local = c.providers.get_mut("local").unwrap();
+        local.model = None;
+        assert!(asks_its_server(local));
+        let b = "http://127.0.0.1:8080";
+        // Loaded and named by no entry: the default asks and gets it.
+        assert_eq!(unfollowable(&c, b, "a-model-nobody-names"), None);
+        assert_eq!(would_not_follow(&c, b, "a-model-nobody-names"), None);
+        assert!(orphans(&c, &seen(Some("a-model-nobody-names"))).is_empty());
+        // An entry that does name it is still followed to.
+        assert_eq!(
+            followed(&c, "local", &seen(Some("gemma-4-26b-a4b"))).as_deref(),
+            Some("gemma26")
+        );
+        c.providers.get_mut("local").unwrap().temperature = Some(0.2);
+        let m = RouterModel {
+            id: "a-model-nobody-names".into(),
+            status: Status {
+                value: "loaded".into(),
+                args: vec!["--temperature".into(), "0.6".into()],
+                ..Default::default()
+            },
+        };
+        let w = sampling_mismatches(&c, b, &m);
+        assert!(
+            w.iter()
+                .any(|w| w.contains("[providers.local] temperature = 0.2")),
+            "{w:?}"
+        );
+        // Listed, not loaded: a model-less entry's temperature reaches only
+        // the model it asks for, so it is not claimed against another row.
+        assert!(sampling_mismatches_listed(&c, b, &m, false).is_empty());
+        assert!(!sampling_mismatches_listed(&c, b, &m, true).is_empty());
+    }
+
     #[test]
     fn a_preset_temperature_that_disagrees_with_config_is_named() {
         let m = |args: &[&str]| RouterModel {
@@ -1141,6 +1432,168 @@ mod tests {
         c
     }
 
+    /// A model-less entry's request names the router's resident model, else
+    /// its only one; with several and none loaded, nothing is guessed.
+    #[test]
+    fn a_model_less_entry_names_the_resident_or_the_only_model() {
+        let m = |id: &str, status: &str| RouterModel {
+            id: id.into(),
+            status: Status {
+                value: status.into(),
+                ..Default::default()
+            },
+        };
+        assert_eq!(name_for(&[m("a", "unloaded"), m("b", "loaded")]), Some("b"));
+        assert_eq!(name_for(&[m("a", "unloaded")]), Some("a"));
+        assert_eq!(name_for(&[m("a", "unloaded"), m("b", "unloaded")]), None);
+        assert_eq!(name_for(&[]), None);
+    }
+
+    /// The wiring: `observe` asks a model-less entry's server, and the
+    /// provider built from that entry names what it serves — never
+    /// `gpt-4o-mini` (the known limitation of #627). A router with one model
+    /// listed and nothing loaded, then a plain llama-server.
+    #[tokio::test]
+    async fn a_model_less_local_entry_asks_for_what_its_server_serves() {
+        use crate::provider::Provider;
+        let _turn = SNAPSHOT_TESTS.lock().await;
+        let built = |c: &Config| {
+            crate::provider::openai::OpenAiCompatible::from_config(&c.providers["local"])
+                .unwrap()
+                .default_model()
+                .to_string()
+        };
+        let model_less = |url: &str| {
+            let mut c = Config {
+                default_provider: "local".into(),
+                ..Default::default()
+            };
+            let mut e = entry("unused", url, false);
+            e.model = None;
+            c.providers.insert("local".into(), e);
+            c
+        };
+
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"qwen3.6-35b-a3b","status":{"value":"unloaded"}}]}"#,
+        ])
+        .await;
+        let c = model_less(&url);
+        assert!(observe(&c, true).await.is_empty());
+        server.await.unwrap();
+        assert_eq!(built(&c), "qwen3.6-35b-a3b");
+
+        let (url, server) = stub(vec![
+            r#"{"model_alias":"plain-model","default_generation_settings":{"n_ctx":8192}}"#,
+            r#"{"model_alias":"plain-model","default_generation_settings":{"n_ctx":8192}}"#,
+        ])
+        .await;
+        let c = model_less(&url);
+        observe(&c, true).await;
+        server.await.unwrap();
+        assert_eq!(built(&c), "plain-model");
+
+        // Several, none loaded: a warning, and no name made up.
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"a","status":{"value":"unloaded"}},{"id":"b","status":{"value":"unloaded"}}]}"#,
+        ])
+        .await;
+        let c = model_less(&url);
+        let w = observe(&c, true).await;
+        server.await.unwrap();
+        assert!(w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
+        assert_eq!(unnamed_model(&url), None);
+
+        // Not following is not naming a model: a `--provider` run or an
+        // eval still asks, so it is still told (review of #637)...
+        let several = || {
+            stub(vec![
+                r#"{"role":"router","model_alias":"llama-server"}"#,
+                r#"{"data":[{"id":"a","status":{"value":"unloaded"}},{"id":"b","status":{"value":"unloaded"}}]}"#,
+            ])
+        };
+        let (url, server) = several().await;
+        let w = observe(&model_less(&url), false).await;
+        server.await.unwrap();
+        assert!(w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
+        // ...and a run given `--model` is not: it named what it asks for.
+        let (url, server) = several().await;
+        let named = CommandLine {
+            provider: None,
+            model: true,
+        };
+        let w = observe_for(&model_less(&url), false, named).await;
+        server.await.unwrap();
+        assert!(!w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
+
+        // A list with a status this build cannot read names nothing, even
+        // where one model reads resident: the unknown one may be resident too.
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"a","status":{"value":"loaded"}},{"id":"b","status":{"value":"swapping"}}]}"#,
+        ])
+        .await;
+        let w = observe(&model_less(&url), true).await;
+        server.await.unwrap();
+        assert_eq!(unnamed_model(&url), None);
+        assert!(w.iter().any(|w| w.contains("cannot read")), "{w:?}");
+
+        // R4 is never held back: a model-less entry's temperature reaches
+        // the one model it asks for, followed or not (review of #637).
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            r#"{"data":[{"id":"a","status":{"value":"loaded","args":["--temperature","0.6"]}}]}"#,
+        ])
+        .await;
+        let mut tuned = model_less(&url);
+        tuned.providers.get_mut("local").unwrap().temperature = Some(0.2);
+        let w = observe_for(&tuned, false, named).await;
+        server.await.unwrap();
+        assert!(w.iter().any(|w| w.contains("temperature = 0.2")), "{w:?}");
+
+        // A followed router with one model, unloaded: the entry names it and
+        // the first request loads it, so R4 is said now — `observe_all`
+        // checks only a resident one (review of #637).
+        let one =
+            r#"{"data":[{"id":"a","status":{"value":"unloaded","args":["--temperature","0.6"]}}]}"#;
+        let (url, server) = stub(vec![
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            one,
+            r#"{"role":"router","model_alias":"llama-server"}"#,
+            one,
+        ])
+        .await;
+        let mut followed = model_less(&url);
+        let local = followed.providers.get_mut("local").unwrap();
+        local.follow_loaded = true;
+        local.temperature = Some(0.2);
+        let w = observe(&followed, true).await;
+        server.await.unwrap();
+        assert!(w.iter().any(|w| w.contains("temperature = 0.2")), "{w:?}");
+
+        // The built-in entry is asked as the default — what a machine with
+        // no config file runs on — or as the entry `--provider` names; a
+        // hosted default asks nothing, so a reset never reaches this box's
+        // :8080.
+        let none = CommandLine::default();
+        let local = CommandLine {
+            provider: Some("local"),
+            model: false,
+        };
+        assert_eq!(
+            unnamed_bases(&Config::default(), none),
+            vec!["http://127.0.0.1:8080".to_string()]
+        );
+        assert!(unnamed_bases(&hosted(), none).is_empty());
+        assert_eq!(
+            unnamed_bases(&hosted(), local),
+            vec!["http://127.0.0.1:8080".to_string()]
+        );
+        observe(&hosted(), false).await;
+    }
+
     /// The wiring, not just the pure half: `observe` reads a router, and
     /// `Config::provider(None)` — the call every default run makes — answers
     /// with the sibling. If `provider` stopped consulting the snapshot, every
@@ -1164,7 +1617,7 @@ mod tests {
             "one short of one slot, floored at one"
         );
         // Leave the process-global snapshot as a process with no router has it.
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// A process given `--model`/`--provider` does not follow, and its permit
@@ -1183,7 +1636,7 @@ mod tests {
             "seats still read off the resident model"
         );
         // Leave the process-global snapshot as a process with no router has it.
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// A router that says it is one and then gives no readable answer is a
@@ -1212,7 +1665,7 @@ mod tests {
             seen.iter().all(|s| s.base_url != base(&url)),
             "two resident is not \"nothing resident\": a long-lived surface must not move on it"
         );
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// R4 is read wherever a model became resident, not only by `use`.
@@ -1236,7 +1689,7 @@ mod tests {
                 .any(|w| w.contains("[providers.gemma26] temperature = 0.6")),
             "{w:?}"
         );
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// A load refused because the resident model is busy is asked again, and

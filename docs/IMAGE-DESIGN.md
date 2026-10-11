@@ -275,7 +275,7 @@ Each PR goes through its review loop, then a3's gates, then the owner's merge wo
 2. **One picture per run** (§5.5). **Built: #596, merged 2026-10-08.** It added `ToolChoice` to `CompletionRequest`, rendered by both providers (`"tool_choice": "none"` and `{"type": "none"}`). A provider added later must render it or refuse the request, never drop it: a dropped `tool_choice` costs the clean end (the structural rule still refuses a second picture), and a guard that silently stops working is the shape this repo refuses.
 3. **The panel through extraction plus `dispatch_one`,** and the `HarnessPicture` record (§5.3). **Built: #598, merged 2026-10-08.** The record is the fact in the owner's turn (`persona::edit::fact`), not a type of its own.
 4. **Regenerate** on the same record (§5.4). **Built: #616, merged 2026-10-09** (the server half: `PanelEdit.redraw`, the fact's `REDRAWN`, the card's `version_of`); the page's versions are step 5.
-5. **The web:** versions on the card, and Edit and Regenerate on the version showing. **Built in the persona chat** (`pictureVersions` in `web/src/lib/picture.js`): a card whose `version_of` names a picture higher up shows on that picture's card, following a chain of Regenerates back to the first picture, and its own place in the chat says "drawn again" with a Show that steps the card to it. A `version_of` naming a picture the transcript no longer shows leaves the card standing alone. Regenerate is disabled while a run is live, since a message into a running turn steers it as text alone. `version_of` comes only with the transcript, so the page reads the finished turn again. **The call screen has Regenerate too** (owner, 2026-10-10: a spoken call turn). A call's turns reach the server as words through the voice worker, so the page registers the redraw first (`PersonaChats::call_regenerate`, only with a call placed) and says the line it is given (`persona::edit::regenerate_line`) into the call. The spoken turn that says it takes the registration, the harness draws, and the persona answers aloud. The words bind the turn and grant nothing: unregistered, they are words. A redraw is the one edit a spoken turn carries. It renders under no run token, because a barge-in cancels the run and talking never stops a picture (ruling Q2, 2026-10-05): the owner's words wait for it. A hang-up does not stop it either; the picture lands in the chat (owner, 2026-10-10: "It should finish and land in chat"). **The assistant's chat has Regenerate too** (owner, 2026-10-10): its send takes `regenerate` (a picture path), and the run task draws it through `dispatch_one` before `run_in`. That is #616's draw, without the panel: the fact is kept in the owner's turn, the model replies under a closing run, and the card carries `version_of`. A Regenerate into a running turn is refused (409), never folded in as a steer. The page's card is the persona chat's.
+5. **The web:** versions on the card, and Edit and Regenerate on the version showing. **Built in the persona chat** (`pictureVersions` in `web/src/lib/picture.js`): a card whose `version_of` names a picture higher up shows on that picture's card, following a chain of Regenerates back to the first picture, and its own place in the chat says "drawn again" with a Show that steps the card to it. A `version_of` naming a picture the transcript no longer shows leaves the card standing alone. Regenerate is disabled while a run is live, since a message into a running turn steers it as text alone. `version_of` comes live too, on the harness's own call (`WireEvent::Tool`, marked by `persona::edit::redraw_of_call` on a `harness_` id), so the card folds as the stream draws it, with no re-read. **The call screen has Regenerate too** (owner, 2026-10-10: a spoken call turn). A call's turns reach the server as words through the voice worker, so the page registers the redraw first (`PersonaChats::call_regenerate`, only with a call placed) and says the line it is given (`persona::edit::regenerate_line`) into the call. The spoken turn that says it takes the registration, the harness draws, and the persona answers aloud. The words bind the turn and grant nothing: unregistered, they are words, and a registration whose line the page could not say is withdrawn. A redraw is the one edit a spoken turn carries. It renders under no run token, because a barge-in cancels the run and talking never stops a picture (ruling Q2, 2026-10-05): the owner's words wait for it. A hang-up does not stop it either; the picture lands in the chat (owner, 2026-10-10: "It should finish and land in chat"). **The assistant's chat has Regenerate too** (owner, 2026-10-10): its send takes `regenerate` (a picture path), and the run task draws it through `dispatch_one` before `run_in`. That is #616's draw, without the panel: the fact is kept in the owner's turn, the model replies under a closing run in the chat's own terms (`REDRAW_DONE`: it has no edit panel), and the card carries `version_of`. A Regenerate into a running turn is refused (409), never folded in as a steer. The page's card is the persona chat's.
 6. **Real people through the library, and several portraits per entry** (§4.1), after G4b passes. This step covers adding people from photos on the library page, picking a face in a group photo, the minimum face size, the `real` and `minor` marks and the default portrait. Usage rules are not part of this build (§14). **Ruled 2026-10-07: get it working first, with no restrictions; step 6 is not held for §14.**
 
 7. **Layers for touching scenes** (§15), behind a per-persona switch, offered once §15.7's gate passes. **Built: #625 (the switch) and #626 (the pipeline), merged 2026-10-10,** after the owner took the gate's result and offered the switch (§15.7).
@@ -494,3 +494,105 @@ Also not built, and not a measurement: **the queue line that names the step** (1
   - lower identity on profile faces (yaw 64–83°);
   - the cost.
 
+
+## 16. Picture settings per persona (owner, 2026-10-11)
+
+The owner's ruling: put the sampler's parameters on the persona page so they
+can be adjusted. Switching to turbo unloads the standard model, and the
+layers mode stays a switch beside them. mecha-a3 measured the settings these
+presets carry; the six-call replay set gates the build.
+
+### 16.1 What may be set
+
+`sampling::Tuning`, in `state.toml`'s `[image]` table beside `touching`. It
+is written only by the settings page's route and read fresh each turn, like
+the switch:
+
+| Field | Range | Unset means |
+|---|---|---|
+| `model` | `standard`, `turbo` | standard (`[image] diffusion_model`) |
+| `steps` | 4–60 | `[image] steps` (40); 8 for turbo |
+| `cfg` | 1–5 in steps of 0.5 | 1 (guidance off) |
+| `sampler` | KSampler's list at the pinned ComfyUI | `euler` |
+| `scheduler` | KSampler's list at the pinned ComfyUI | `simple` |
+| `negative` | on or off | off |
+
+- **The negative prompt is fixed in code** (`sampling::NEGATIVE`). The owner
+  turns it on or off, never writes it, and no model does. At cfg 1 the
+  sampler skips the unconditioned pass, so the page says it has no effect
+  there.
+- **The graph stays fixed** (§3). Only these values vary, each from a closed
+  range or list checked at the door (`Tuning::checked`), so nothing invalid
+  reaches ComfyUI.
+- **A damaged line costs that line.** The stored table is read one field at
+  a time (`Tuning::lenient`).
+- **An untuned persona draws byte-for-byte as before.**
+
+The page offers three presets, each of which sets every field:
+- **Default:** the reference setting.
+- **Guided:** mecha-a3's G3 setting, cfg 3, 30 steps, `res_multistep`/`beta`
+  and the negative, about 50 s.
+- **Turbo:** the turbo model at its own defaults, 10–15 s.
+
+The page also shows a rough time per picture (`sampling::estimate_secs`).
+
+### 16.2 Switching models
+
+The turbo model is the Comfy-Org turbo int8 file (`[image] turbo_model`). It
+shares the text encoder and VAE with the standard model.
+
+- **A switch unloads the other model.** When a picture needs a different
+  diffusion model from the one the server last drew with, the job notes
+  the switch, POSTs `/free` and waits for the unload to run
+  (`UNLOAD_SETTLE`). ComfyUI would otherwise keep both resident, about 7 GB
+  more against the memory floor.
+- **It is best effort when pictures overlap.** ComfyUI acts on `/free` only
+  once its queue is empty, so two pictures already queued on different
+  models can still both load. The switch is noted before the unload, so a
+  picture starting meanwhile sees it and is asked for a cold load.
+- **The memory floor asks for a cold load on a switch.**
+- **The record is shared, keyed by server address.** It lives in
+  `~/.mecha/image/held-model.json`, written whole and renamed over
+  (`ComfyUi::model_record`). Every process that draws reads and updates it:
+  serve, a replay or a CLI run. A serve restarted after a turbo picture,
+  or a replay beside serve, otherwise read the server as holding the
+  standard model and loaded it beside turbo (mecha-a3's gate). A server no
+  record names reads as holding the standard model; tests keep the record
+  in memory.
+- **The first picture after a switch pays the load.**
+- **A chosen value the server lacks is refused before anything is sent**
+  (`preflight`, review of #648). That covers the turbo file and a sampler
+  or scheduler other than the reference ones. The refusal names the
+  persona's picture settings, since the choice stays until the owner changes
+  it. The turbo file is not in the features installer's pins; that is
+  §16.5's open item.
+- **An idle release marks the server empty** (`released`), so the next
+  picture unloads nothing, whichever model it asks for.
+
+### 16.3 With layers
+
+The settings apply to every pass, a layered picture's included. Layers with
+turbo is therefore every pass in turbo. mecha-a3 measured turbo unable to
+carry two-person acts in one pass (the act drawn on one figure in 2 of 12), so the pairing is the
+owner's to try, not a recommendation.
+
+### 16.4 Replays
+
+`mecha replay --persona` takes `--image-model`, `--cfg`, `--steps`,
+`--sampler`, `--scheduler` and `--negative`. They are held to the same door,
+and the header records them as `image_tuning`.
+
+- **An arm never reads the persona's stored settings.** It says what it
+  measures, as `--layers` does.
+- **Each picture's manifest and prompt-log line record** the sampling used:
+  cfg, sampler, scheduler and whether the negative was sent.
+
+### 16.5 Open
+
+- **The turbo file is not installed by `mecha features enable image`.** The
+  image slot in `recommend.rs` pins three files, and adding a fourth
+  (7.26 GB, Comfy-Org's `cb504a40` serves it) is for the installer's lane to
+  decide. Until then the page offers Turbo everywhere, and a server without
+  the file refuses it by name.
+- **cfg above 1 with turbo is allowed.** It undoes the distillation's
+  point, and the page says so beside the choice.

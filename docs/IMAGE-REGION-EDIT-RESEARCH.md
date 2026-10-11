@@ -378,7 +378,11 @@ cannot rule out designed away.
   nowhere else in the frame". With four hues for four regions there would
   be nothing to pick.
 - **What the page sends.** It sends one colour-indexed **region index** PNG
-  at the picture's size: each region's pixels in its palette colour, and
+  at the size the modal paints at (the picture's own, capped at 2048 on the
+  long side: `workSize`, since #623), so it can arrive either side of the
+  edit canvas, which is why `prepare_regions` picks its `floor` by which
+  side it arrived on.
+  Each region's pixels are in its palette colour, and
   every unpainted pixel RGB black (not merely transparent, since
   `to_luma8()` drops alpha). It is uploaded into the jail like today's mask.
   The panel's turn then carries `regions: [{colour, words}]` beside it.

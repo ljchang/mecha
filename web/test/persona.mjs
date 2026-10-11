@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isPersonaKey, withUnlock, listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, ENDPOINTS, settle, keptEdits,
   taintLabel, doseLine, fileUnsaved, unsavedFiles, lockWaits, callTime, hangUpReport, personaName, authoringUrl, keptCharacter, OWNER_FILES, toolStatus, waitingLine, withWorking, withJob, clockOf,
-  fileUrl, uploadUrl,
+  fileUrl, uploadUrl, IMAGE_PRESETS, imageSettingsBody, presetBody,
 } from '../src/lib/persona.js';
 import { pictureOf } from '../src/lib/picture.js';
 
@@ -56,11 +56,29 @@ assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
   for (const f of readdirSync(dir).filter((f) => f.endsWith('.svelte') || f.endsWith('.js'))) {
     for (const m of readFileSync(new URL(f, dir), 'utf8').matchAll(/personaUrl\([^,()]+,\s*'([^']*)'/g)) used.add(m[1]);
   }
-  assert.ok(used.has('/image-touching') && used.has('/frame'), [...used].join(' '));
+  assert.ok(used.has('/image-touching') && used.has('/image-settings') && used.has('/frame'), [...used].join(' '));
   for (const suffix of used) assert.doesNotThrow(() => personaUrl('mara', suffix, null), suffix);
 }
+// The picture settings: a patch lays over what is set, null sends a field
+// back to the model's default, and a preset sets every field so nothing of
+// the last one stays behind.
+{
+  const set = { model: 'standard', cfg: 3, steps: 30, sampler: 'res_multistep', negative: true };
+  assert.deepEqual(imageSettingsBody(set, { steps: 20 }, null), {
+    model: 'standard', cfg: 3, steps: 20, sampler: 'res_multistep', scheduler: undefined, negative: true, unlock: undefined,
+  });
+  assert.equal(imageSettingsBody(set, { cfg: null }, null).cfg, undefined);
+  assert.equal(imageSettingsBody(set, { cfg: '2.5' }, null).cfg, 2.5, 'a select sends a string');
+  assert.equal(imageSettingsBody({}, { model: 'hyper' }, null).model, 'standard');
+  assert.equal(imageSettingsBody(set, {}, 'tok').unlock, 'tok');
+  const turbo = presetBody('turbo', null);
+  assert.deepEqual([turbo.model, turbo.cfg, turbo.steps, turbo.negative], ['turbo', undefined, undefined, false]);
+  const guided = presetBody('guided', null);
+  assert.deepEqual([guided.cfg, guided.steps, guided.sampler, guided.scheduler, guided.negative], [3, 30, 'res_multistep', 'beta', true]);
+  assert.deepEqual(Object.keys(IMAGE_PRESETS), ['default', 'guided', 'turbo']);
+}
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 29);
+assert.equal(ENDPOINTS.length, 30);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
