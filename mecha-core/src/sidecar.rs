@@ -169,7 +169,10 @@ pub const SIDECARS: &[Sidecar] = &[
             Evidence::DockerImage("mecha/chatterbox"),
         ],
         installer: "7f",
-        models_in_hub: true,
+        // A speech server run by hand (Breeze, the Chatterbox container) keeps
+        // its own models: held, never priced. Mecha's own install links them
+        // from the hub, read there as ComfyUI's are (review of #649).
+        models_in_hub: false,
     },
 ];
 
@@ -738,7 +741,7 @@ pub fn plan(
             // An interrupted install too: it resumes by fetching what the
             // hub lacks, so that is what it is priced at (review of #645).
             Some((sc, SidecarState::Installed | SidecarState::Incomplete))
-                if sc.id == crate::comfyui_unit::ID =>
+                if sc.id == crate::comfyui_unit::ID || sc.id == crate::speech_unit::ID =>
             {
                 None
             }
@@ -1237,6 +1240,15 @@ mod tests {
             matches!(speech.state, SidecarState::Provided { .. }),
             "{:?}",
             speech.state
+        );
+        // Its models are its own: held, never priced — nothing will fetch
+        // the slot's GGUF on a machine already speaking (review of #649).
+        let tts: Vec<_> = p.files.iter().filter(|f| f.slot == "tts").collect();
+        assert!(!tts.is_empty());
+        assert!(
+            tts.iter()
+                .all(|f| matches!(f.state, FileState::HeldBy { .. })),
+            "{tts:#?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
