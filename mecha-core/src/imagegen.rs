@@ -1119,6 +1119,16 @@ impl ComfyUi {
                 bail!("the image server has no `{node}` node; update ComfyUI");
             };
             if !choices.iter().any(|c| c.as_str() == Some(want.as_str())) {
+                // The turbo model is fetched on demand, so its absence has
+                // a command that ends it (the owner, 2026-10-11).
+                if turbo && input == "unet_name" {
+                    bail!(
+                        "the image server has no `{want}`, the turbo model this persona's \
+                         picture settings choose — `mecha features enable image --turbo` \
+                         fetches it into the image server mecha installs; or choose the \
+                         standard model on the persona's page"
+                    );
+                }
                 if chosen {
                     bail!(
                         "the image server has no `{want}` for {node}, which this persona's \
@@ -8984,6 +8994,47 @@ mod tests {
         let out = t.call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sent(&seen), ["free", "prompt", "free", "prompt", "prompt"]);
+    }
+
+    /// A turbo model the server lacks is refused naming the command that
+    /// fetches it — turbo is fetched on demand (the owner, 2026-10-11) — and
+    /// before anything is sent.
+    #[tokio::test]
+    async fn a_missing_turbo_model_is_refused_naming_the_fetch() {
+        let (url, seen) = distinct(1).await;
+        let (dir, store) = (tempdir(), tempdir());
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            turbo_model: "not-fetched-turbo.safetensors".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .polling_every(Duration::from_millis(10))
+        .with_library_dir(tempdir())
+        .with_seeds();
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.image_tuning = crate::sampling::Tuning {
+            model: crate::sampling::Model::Turbo,
+            ..Default::default()
+        };
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("features enable image --turbo"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.starts_with("POST /prompt")),
+            "nothing was sent"
+        );
     }
 
     /// A sampler the persona's settings choose and the server lacks is

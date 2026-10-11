@@ -43,6 +43,18 @@ use crate::sidecar::{Machinery, Manifest};
 
 /// The sidecar this installs (`sidecar::SIDECARS`).
 pub const ID: &str = "comfyui";
+/// The turbo distillation's repository and revision. A later revision than
+/// the image slot's: the turbo file is not in that one.
+pub const TURBO_REPO: &str = "Comfy-Org/Qwen-Image-2.1";
+pub const TURBO_REVISION: &str = "df94239739eef7205973a145ffa6f441f7b64e84";
+/// The turbo model, fetched on demand rather than with the slot (the owner,
+/// 2026-10-11: until it has been tested more): `--turbo`, a persona whose
+/// picture settings choose it, or an install that already links it.
+pub const TURBO_FILE: crate::recommend::HubFile = crate::recommend::HubFile {
+    path: "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+    sha256: "8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c",
+    bytes: 7_256_787_829,
+};
 /// ComfyUI's commit: v0.37.0-31, what the hand-built server ran on
 /// 2026-10-10 (`TextEncodeQwenImage21` is in it).
 pub const COMMIT: &str = "88ab4a06566454ad89db8f0bedb970d6c08cd1b7";
@@ -172,6 +184,48 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@PORT@", &naming.port.to_string())
 }
 
+/// Whether this install links the turbo model where ComfyUI looks.
+pub fn turbo_linked(mecha_home: &Path) -> bool {
+    dir(mecha_home)
+        .join("ComfyUI")
+        .join("models")
+        .join(TURBO_FILE.path)
+        .symlink_metadata()
+        .is_ok()
+}
+
+/// Why an install here should fetch the turbo model, or `None`: it was
+/// asked for, it is linked already (a reinstall keeps it), or a persona's
+/// picture settings choose it. `[image] turbo_model` is not a reason — it
+/// has a default, so it is set on every machine.
+pub fn turbo_wanted(mecha_home: &Path, asked: bool) -> Option<String> {
+    if asked {
+        return Some("asked for with --turbo".into());
+    }
+    if turbo_linked(mecha_home) {
+        return Some("this install has it already".into());
+    }
+    let personas = mecha_home.join("personas");
+    let mut names: Vec<String> = std::fs::read_dir(&personas)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| {
+            crate::persona::tuning(&personas, name).model == crate::sampling::Model::Turbo
+        })
+        .collect();
+    names.sort();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!("{one}'s picture settings choose it")),
+        many => Some(format!(
+            "the picture settings of {} choose it",
+            many.join(", ")
+        )),
+    }
+}
+
 /// The image slot's pinned files for this machine: (repo, revision, file).
 fn models(
     machine: &crate::recommend::Machine,
@@ -203,11 +257,14 @@ fn models(
     Ok(out)
 }
 
+/// `turbo` also fetches and links [`TURBO_FILE`], and checks ComfyUI
+/// lists it.
 pub async fn install(
     m: &Machinery,
     naming: &Naming,
     machine: &crate::recommend::Machine,
     hub: &Path,
+    turbo: bool,
     say: Say<'_>,
 ) -> Result<()> {
     let arch = std::env::consts::ARCH;
@@ -228,7 +285,10 @@ pub async fn install(
             naming.port
         );
     }
-    let models = models(machine)?;
+    let mut models = models(machine)?;
+    if turbo {
+        models.push((TURBO_REPO, TURBO_REVISION, &TURBO_FILE));
+    }
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -559,6 +619,60 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The file fetched on demand is the one a turbo picture loads, by
+    /// name, and lands in the directory the unet loader reads.
+    #[test]
+    fn the_turbo_pin_is_the_file_a_turbo_picture_loads() {
+        assert_eq!(
+            TURBO_FILE.path,
+            format!("diffusion_models/{}", crate::sampling::TURBO_MODEL)
+        );
+        assert_eq!(
+            crate::imagegen::ImageConfig::default().turbo_model,
+            crate::sampling::TURBO_MODEL
+        );
+    }
+
+    /// Turbo is fetched when asked for, when already linked, or when a
+    /// persona's picture settings choose it — and not because of anything
+    /// else in a persona's `[image]` table.
+    #[test]
+    fn turbo_is_wanted_when_asked_linked_or_chosen() {
+        let home = std::env::temp_dir().join(format!("mecha-turbo-{}", uuid::Uuid::new_v4()));
+        let persona = |name: &str, image: &str| {
+            let d = home.join("personas").join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("state.toml"), format!("[image]\n{image}\n")).unwrap();
+        };
+        let none = turbo_wanted(&home, false);
+        let asked = turbo_wanted(&home, true);
+        persona("ada", "cfg = 3.0");
+        let standard = turbo_wanted(&home, false);
+        persona("cleo", "model = \"turbo\"");
+        persona("bea", "model = \"turbo\"");
+        let chosen = turbo_wanted(&home, false);
+        let _ = std::fs::remove_dir_all(home.join("personas"));
+        let link = dir(&home)
+            .join("ComfyUI")
+            .join("models")
+            .join(TURBO_FILE.path);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/blob", &link).unwrap();
+        let linked = turbo_wanted(&home, false);
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(none, None);
+        assert!(asked.unwrap().contains("--turbo"));
+        assert_eq!(standard, None);
+        assert_eq!(
+            chosen.as_deref(),
+            Some("the picture settings of bea, cleo choose it")
+        );
+        assert!(
+            linked.unwrap().contains("already"),
+            "a dangling link still counts"
+        );
+    }
+
     /// The install checks exactly the node types mecha's graphs send — built
     /// here, not read off the source: a text-to-image graph, an edit, and a
     /// masked edit, with the default loader and a `.gguf` one. Both ways, so
@@ -832,7 +946,10 @@ mod tests {
         // and renames it, so a linked blob is never written through.
         let hub = root.join("hub");
         let live = dirs::home_dir().unwrap().join("ComfyUI/models");
-        for (repo, _, f) in models(&machine).unwrap() {
+        // With turbo, so the on-demand file's fetch, link and check run too.
+        let mut seeded = models(&machine).unwrap();
+        seeded.push((TURBO_REPO, TURBO_REVISION, &TURBO_FILE));
+        for (repo, _, f) in seeded {
             let blob = hub
                 .join(format!("models--{}", repo.replace('/', "--")))
                 .join("blobs")
@@ -844,12 +961,13 @@ mod tests {
             }
         }
         let mut said = Vec::new();
-        let r = install(&m, &naming, &machine, &hub, &mut |s| {
+        let r = install(&m, &naming, &machine, &hub, true, &mut |s| {
             said.push(s.to_string())
         })
         .await;
         let stamped =
             std::fs::read_to_string(dir(&m.mecha_home).join("ComfyUI").join(COMMIT_STAMP));
+        let turbo = turbo_linked(&m.mecha_home);
         let cleaned = remove(&m, &naming);
         eprintln!("{said:#?}");
         let man = Manifest::read(&m.mecha_home);
@@ -857,6 +975,7 @@ mod tests {
         r.unwrap();
         cleaned.unwrap();
         assert_eq!(stamped.unwrap(), COMMIT);
+        assert!(turbo, "the turbo model was linked");
         let man = man.unwrap();
         assert!(
             !man.entries.iter().any(|e| e.sidecar == ID),

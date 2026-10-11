@@ -47,6 +47,11 @@ pub enum Cmd {
         /// needs and this machine lacks (`mecha features plan <id>` lists it).
         #[arg(long)]
         no_install: bool,
+        /// With `image`: also fetch the turbo model (6.8 GiB), which a
+        /// persona's picture settings can choose. Without it, the turbo
+        /// model is fetched only once a persona chooses it.
+        #[arg(long)]
+        turbo: bool,
     },
     /// Switch features off in the global `config.toml`'s `[features]` table.
     /// Their settings stay, for when they are switched back on.
@@ -77,7 +82,11 @@ pub async fn execute(args: Args) -> Result<()> {
         anyhow::bail!("`--probe` reads the machine; it does not go with `enable` or `disable`");
     }
     match args.cmd {
-        Some(Cmd::Enable { ids, no_install }) => return enable(&ids, no_install, false).await,
+        Some(Cmd::Enable {
+            ids,
+            no_install,
+            turbo,
+        }) => return enable(&ids, no_install, turbo, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         None => {}
@@ -120,13 +129,22 @@ pub async fn execute(args: Args) -> Result<()> {
 /// `yes` is an answer already given: the guided `mecha setup` lists every
 /// install with its size and asks once (ruling F14), so this neither asks
 /// again nor refuses for want of a terminal to ask at.
-pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Result<()> {
+/// `turbo` is `--turbo`: the image server's install fetches the turbo model
+/// too, as it does unasked once a persona's picture settings choose it.
+pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
+    use mecha_core::comfyui_unit as comfy;
     use mecha_core::install;
     use mecha_core::sidecar::SidecarState;
     use std::io::IsTerminal;
 
     let cfg = Config::load_global()?;
     let features = feature::plan_enable(&cfg, ids).map_err(anyhow::Error::msg)?;
+    if turbo && !features.contains(&Feature::Image) {
+        anyhow::bail!("`--turbo` is the image model's: `mecha features enable image --turbo`");
+    }
+    if turbo && no_install {
+        anyhow::bail!("`--turbo` fetches a model and `--no-install` installs nothing; drop one");
+    }
     // The machine is read only when some sidecar these features need is one
     // mecha installs and this machine would run: `enable messages` beside a
     // hosted provider stays a switch write, with no GPU probe to wait on.
@@ -143,9 +161,15 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
         let read_nvidia = || *nvidia.get_or_init(mecha_core::engine::read_nvidia);
+        // The image server as the plan found it: whether a turbo fetch has
+        // an install of mecha's to land in.
+        let mut comfy_found: Option<(&'static str, SidecarState)> = None;
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
+            if let Some(s) = p.sidecars.iter().find(|s| s.id == comfy::ID) {
+                comfy_found = Some((s.label, s.state.clone()));
+            }
             // A check that could not run is never installed over — and
             // never passed over in silence either.
             for s in &p.sidecars {
@@ -219,6 +243,61 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                 todo.retain(|(id, ..)| *id != mecha_core::speech_unit::ID);
             }
         }
+        // The turbo model, on demand (the owner, 2026-10-11: until it has
+        // been tested more): fetched into an install of mecha's — a fresh
+        // one, or one already here, reinstalled to link it — and only said
+        // for a ComfyUI someone else runs.
+        let mut fetch_turbo: Option<String> = None;
+        if features.contains(&Feature::Image) {
+            let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
+            let linked = comfy::turbo_linked(&m.mecha_home);
+            match (comfy::turbo_wanted(&m.mecha_home, turbo), &comfy_found) {
+                (None, _) => {}
+                (Some(_), Some((_, SidecarState::Installed))) if linked && !installing => {
+                    if turbo {
+                        println!("The turbo model is installed already.");
+                    }
+                }
+                (Some(why), Some((label, state)))
+                    if installing || matches!(state, SidecarState::Installed) =>
+                {
+                    let download = match mecha_core::fetch::cached(
+                        &hub,
+                        comfy::TURBO_REPO,
+                        comfy::TURBO_REVISION,
+                        &comfy::TURBO_FILE,
+                        false,
+                    )? {
+                        mecha_core::fetch::Cached::Verified => 0,
+                        _ => comfy::TURBO_FILE.bytes,
+                    };
+                    // The guided setup listed its downloads before its one
+                    // yes (ruling F14): nothing it did not list is fetched.
+                    if yes && !turbo && download > 0 {
+                        println!(
+                            "The turbo model is not fetched by this setup ({why}); \
+                             `mecha features enable image` fetches it ({}).",
+                            bytes_text(download)
+                        );
+                    } else {
+                        match todo.iter_mut().find(|(id, ..)| *id == comfy::ID) {
+                            Some((.., bytes)) => *bytes = bytes.map(|b| b + download),
+                            None => todo.push((comfy::ID, label, Feature::Image, Some(download))),
+                        }
+                        fetch_turbo = Some(why);
+                    }
+                }
+                (Some(why), Some((_, SidecarState::Provided { by }))) => println!(
+                    "The turbo model is not fetched ({why}): the image server here is {by}, not \
+                     mecha's — it needs {} in its models/diffusion_models/.",
+                    mecha_core::sampling::TURBO_MODEL
+                ),
+                (Some(why), _) if turbo => {
+                    println!("The turbo model is not fetched ({why}): mecha installs no image server here.")
+                }
+                (Some(_), _) => {}
+            }
+        }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
@@ -234,6 +313,10 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                  server, its systemd user units, started once to check them:",
                 ids.join(" ")
             );
+            let turbo_line = fetch_turbo
+                .as_ref()
+                .map(|why| format!(", with the turbo model ({why})"))
+                .unwrap_or_default();
             for (id, label, _, bytes) in &todo {
                 // A build here is said as one: its download is the source,
                 // and the compile is the wait (review of #643).
@@ -246,6 +329,8 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                     ", built here from its pinned commit (about seven minutes on a GB10), then \
                      its model; Breeze TTS 2's weights are licensed for research and \
                      non-commercial use only"
+                } else if *id == comfy::ID {
+                    &turbo_line
                 } else {
                     ""
                 };
@@ -280,7 +365,8 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
             }
             for (id, label, ..) in &todo {
                 println!("Installing {label}…");
-                install::install(id, &m, &machine, &hub, &mut |s| println!("  {s}"))
+                let turbo = *id == comfy::ID && fetch_turbo.is_some();
+                install::install(id, &m, &machine, &hub, turbo, &mut |s| println!("  {s}"))
                     .await
                     .with_context(|| {
                         format!(
