@@ -280,13 +280,22 @@ fn answer(p: &Preview, item: &str, path: &str) -> Option<(Vec<u8>, &'static str,
     if let Some(file) = path.strip_prefix("data/") {
         let board = item.args["id"].as_str()?.strip_prefix("hud-")?;
         let name = file.strip_suffix(".json")?;
-        // Only a dataset the board's spec declares: a removed loader's
-        // leftover file is not "the board's rows now".
-        let installed = p.hud.load(board).ok()?.ok()?;
-        if !installed.spec().datasets().iter().any(|d| d == name) {
+        // Only rows this release would push: a dataset the staged bundle
+        // declares, from the loader it declares. A loader edited since
+        // staging is never pushed to this release (`publish::plan`), so the
+        // frame shows the empty panel the released page would, not the new
+        // loader's numbers under the old spec (review of #651).
+        let declared = std::fs::read_to_string(within(
+            &bundle,
+            &bundle.join(mecha_core::hud::publish::DATASETS_FILE),
+        )?)
+        .ok()?;
+        let declared: mecha_core::hud::publish::Declared = serde_json::from_str(&declared).ok()?;
+        let declared = declared.datasets.get(name)?;
+        let dataset = p.hud.dataset(board, name).ok()??;
+        if dataset.loader_digest != declared.loader_digest {
             return None;
         }
-        let dataset = p.hud.dataset(board, name).ok()??;
         return Some((
             serde_json::to_vec(&dataset).ok()?,
             "application/json",
@@ -483,17 +492,31 @@ mod tests {
         )
         .unwrap();
         let hud = mecha_core::hud::store::Store::at(&hud_root);
-        hud.install(&draft, Some("lab"), chrono::Utc::now())
+        let installed = hud
+            .install(&draft, Some("lab"), chrono::Utc::now())
             .unwrap()
             .unwrap_or_else(|r| panic!("the fixture does not install: {r}"));
-        let data = hud_root.join("boards/lab/data");
-        std::fs::create_dir_all(&data).unwrap();
+        // What the staged release declares, as `assemble` writes it.
         std::fs::write(
-            data.join("visits.json"),
-            r#"{"name":"visits","generated_at":"2031-04-17T09:00:00Z","generation":1,
-                "loader_digest":"d","columns":[{"name":"n","type":"integer"}],"rows":[[3]],"external":false}"#,
+            bundle.join(mecha_core::hud::publish::DATASETS_FILE),
+            serde_json::to_string(&mecha_core::hud::publish::declared(&installed)).unwrap(),
         )
         .unwrap();
+        let data = hud_root.join("boards/lab/data");
+        std::fs::create_dir_all(&data).unwrap();
+        let rows = |digest: &str| {
+            std::fs::write(
+                data.join("visits.json"),
+                serde_json::json!({
+                    "name": "visits", "generated_at": "2031-04-17T09:00:00Z", "generation": 1,
+                    "loader_digest": digest, "columns": [{"name": "n", "type": "integer"}],
+                    "rows": [[3]], "external": false,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        rows(&installed.loaders()["visits"].digest());
         std::fs::write(data.join("leftover.json"), r#"{}"#).unwrap();
         let outbox_root = root.join("outbox");
         let outbox = OutboxStore::open(&outbox_root).unwrap();
@@ -559,6 +582,14 @@ mod tests {
             status(format!("/p/{}/data/leftover.json", staged.id), true).await,
             StatusCode::NOT_FOUND,
             "a dataset the spec does not declare"
+        );
+        // Rows from a loader edited since staging are never pushed to this
+        // release, so the frame does not show them either.
+        rows("a-later-loader");
+        assert_eq!(
+            status(format!("/p/{}/data/visits.json", staged.id), true).await,
+            StatusCode::NOT_FOUND,
+            "rows the release would never receive"
         );
         assert_eq!(
             status(format!("/p/{}/..%2F..%2Fsecret.txt", staged.id), true).await,

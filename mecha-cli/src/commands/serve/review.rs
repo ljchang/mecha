@@ -250,7 +250,7 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
 /// both (`LIVE-DASHBOARD-DESIGN.md` §6.3). Read from the installed board and
 /// checked against what the staged bundle declared, so a loader edited since
 /// staging is said rather than shown as what was staged.
-fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value {
+pub(crate) fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value {
     match mecha_core::hud::store::Store::open() {
         Ok(store) => dashboard_loaders_in(&store, item),
         Err(_) => serde_json::Value::Null,

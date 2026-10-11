@@ -194,9 +194,12 @@ query the owner already released and sends its rows to one fixed host.
   (`LIVE-DASHBOARD-DESIGN.md` §6.3): in the web outbox, a dashboard's publish
   shows the page with real numbers (framed from a separate preview origin)
   beside each loader's query and declared shape, and releasing it approves
-  both. `mecha outbox show` in a terminal shows the staged page without them. A changed loader, query or shape is a new publish, back
-  through the outbox, and home refuses to push a dataset whose loader digest
-  differs from the released one.
+  both. `mecha outbox show` in a terminal prints the same queries with the
+  same two marks — third-party content, changed since staged — from the same
+  producer, and points at the staged page rather than rendering it; the
+  preview frame serves only rows the release would receive. A changed loader,
+  query or shape is a new publish, back through the outbox, and home refuses
+  to push a dataset whose loader digest differs from the released one.
 - *The key.* Each timer holds a key of its own narrow scope (`slots`,
   `data`), which can do that one thing and cannot publish, release or read.
 - *The box.* A dataset push is refused unless its columns and loader digest
