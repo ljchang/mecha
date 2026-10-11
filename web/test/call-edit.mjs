@@ -187,9 +187,10 @@ function rig({ live = true } = {}) {
 // into the call, never the chat's send; a call with no live line says so.
 {
   const src2 = readOut('  async function regenerateInCall(path) {');
-  const make = (live) =>
+  const make = (live, switchTo = null) =>
     new Function(
       'live',
+      'switchTo',
       `'use strict';
        const log = [];
        let key = 'k1', token = null;
@@ -199,11 +200,12 @@ function rig({ live = true } = {}) {
        const send = async () => log.push('chat-send');
        const fetch = async (url, opts) => {
          log.push('post:' + url + ' ' + opts.body);
+         if (switchTo) key = switchTo;
          return { ok: true, json: async () => ({ line: 'Regenerate images/b.png', id: 7 }) };
        };
        ${src2}
        return async () => { await regenerateInCall('images/b.png'); await null; return { log }; };`,
-    )(live);
+    )(live, switchTo);
   const out = await make(true)();
   is(
     out.log,
@@ -219,6 +221,12 @@ function rig({ live = true } = {}) {
       'notice:The call is not connected, so the picture was not drawn again.',
     ],
     'a call with no live line takes the registration back and says so (review of #634)',
+  );
+  const moved = await make(true, 'k2')();
+  is(
+    moved.log.slice(1),
+    ['post:/api/persona-chat/k1/call-regenerate {"picture":"images/b.png","withdraw":7}'],
+    'a chat switched under the press takes its registration back, saying nothing into the call (review of #642)',
   );
 }
 

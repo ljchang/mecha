@@ -324,15 +324,21 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const { line, id } = await res.json();
-      if (k !== key) return;
-      if (!caller?.say(line)) {
-        // Taken back, so a later turn that says those words is words
-        // (review of #634).
+      // A line never said is taken back, so a later turn that says those
+      // words is words (reviews of #634, #642): the chat changed under the
+      // press, or the call has no live line.
+      const withdraw = () =>
         fetch(chatUrl(k, '/call-regenerate'), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ picture: path, unlock: token ?? undefined, withdraw: id }),
         }).catch(() => {});
+      if (k !== key) {
+        withdraw();
+        return;
+      }
+      if (!caller?.say(line)) {
+        withdraw();
         notice('The call is not connected, so the picture was not drawn again.');
         return;
       }
