@@ -238,16 +238,20 @@ static SNAPSHOT: RwLock<Snapshot> = RwLock::new(Snapshot {
     unnamed: Vec::new(),
 });
 
-/// The servers a request would reach with no model to name: entries the
-/// owner configured as `kind = "local"` on this machine, with no `model`.
-/// The built-in entry is left out — it is a default nobody chose, and asking
-/// `:8080` on every start of a hosted-only machine would be a request nobody
-/// asked for (and would make a test's reset depend on the box).
+/// The servers asked what they serve: every entry that [`asks_its_server`]
+/// and that the owner configured — or that is the default provider, which a
+/// machine with no config file runs on (the built-in `local`, since F12; a
+/// no-config install sent `gpt-4o-mini` until review of #637). The built-in
+/// entry is otherwise left out, so a hosted-only machine sends nothing to
+/// `:8080`.
 fn unnamed_bases(cfg: &Config) -> Vec<String> {
     let mut bases: Vec<String> = cfg
         .providers
-        .values()
-        .filter(|p| asks_its_server(p))
+        .iter()
+        .filter(|(name, p)| {
+            asks_its_server(p) && (p.configured_local() || **name == cfg.default_provider)
+        })
+        .map(|(_, p)| p)
         .filter_map(|p| p.base_url.as_deref())
         .map(base)
         .collect();
@@ -258,10 +262,11 @@ fn unnamed_bases(cfg: &Config) -> Vec<String> {
 
 /// Whether an entry with no `model` takes its name from its server — the one
 /// predicate [`observe`], the provider and the preflight warning all read, so
-/// what is said and what is sent cannot disagree (review of #637): owner
-/// configured, `kind = "local"`, on this machine, naming no model.
+/// what is said and what is sent cannot disagree (review of #637):
+/// `kind = "local"`, on this machine, naming no model. Which of these are
+/// actually *asked* is [`unnamed_bases`]'; one that was not reads no name.
 pub fn asks_its_server(p: &ProviderConfig) -> bool {
-    p.configured_local() && p.model.is_none() && p.base_url.as_deref().is_some_and(is_loopback)
+    p.kind == "local" && p.model.is_none() && p.base_url.as_deref().is_some_and(is_loopback)
 }
 
 /// Which model a request to a router names when its entry names none: the
@@ -1027,6 +1032,15 @@ mod tests {
         c
     }
 
+    /// The built-in config with a hosted default: asks no local server, so
+    /// a test's snapshot reset never depends on what this box runs.
+    fn hosted() -> Config {
+        Config {
+            default_provider: "anthropic".into(),
+            ..Config::default()
+        }
+    }
+
     fn seen(resident: Option<&str>) -> Vec<Seen> {
         vec![Seen {
             base_url: "http://127.0.0.1:8080".into(),
@@ -1426,9 +1440,15 @@ mod tests {
         server.await.unwrap();
         assert!(!w.iter().any(|w| w.contains("names no `model`")), "{w:?}");
 
-        // The built-in entry is never asked: a reset must not reach :8080.
-        assert!(unnamed_bases(&Config::default()).is_empty());
-        observe(&Config::default(), false).await;
+        // The built-in entry is asked only as the default — what a machine
+        // with no config file runs on; a hosted default asks nothing, so a
+        // reset never reaches this box's :8080.
+        assert_eq!(
+            unnamed_bases(&Config::default()),
+            vec!["http://127.0.0.1:8080".to_string()]
+        );
+        assert!(unnamed_bases(&hosted()).is_empty());
+        observe(&hosted(), false).await;
     }
 
     /// The wiring, not just the pure half: `observe` reads a router, and
@@ -1454,7 +1474,7 @@ mod tests {
             "one short of one slot, floored at one"
         );
         // Leave the process-global snapshot as a process with no router has it.
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// A process given `--model`/`--provider` does not follow, and its permit
@@ -1473,7 +1493,7 @@ mod tests {
             "seats still read off the resident model"
         );
         // Leave the process-global snapshot as a process with no router has it.
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// A router that says it is one and then gives no readable answer is a
@@ -1502,7 +1522,7 @@ mod tests {
             seen.iter().all(|s| s.base_url != base(&url)),
             "two resident is not \"nothing resident\": a long-lived surface must not move on it"
         );
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// R4 is read wherever a model became resident, not only by `use`.
@@ -1526,7 +1546,7 @@ mod tests {
                 .any(|w| w.contains("[providers.gemma26] temperature = 0.6")),
             "{w:?}"
         );
-        observe(&Config::default(), false).await;
+        observe(&hosted(), false).await;
     }
 
     /// A load refused because the resident model is busy is asked again, and

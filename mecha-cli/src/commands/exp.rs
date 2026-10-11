@@ -2999,8 +2999,14 @@ mod tests {
         assert!(e.contains("names no `model`"), "{e}");
         cfg.providers.get_mut("local").unwrap().model = Some("qwen".into());
         assert!(refuse_an_unnamed_model(&cfg).is_ok());
-        // The built-in default asks nothing, and is not this refusal's.
-        assert!(refuse_an_unnamed_model(&mecha_core::config::Config::default()).is_ok());
+        // The built-in default asks too — it is what a machine with no config
+        // file runs on (review of #637) — and a hosted default does not.
+        assert!(refuse_an_unnamed_model(&mecha_core::config::Config::default()).is_err());
+        let hosted = mecha_core::config::Config {
+            default_provider: "anthropic".into(),
+            ..Default::default()
+        };
+        assert!(refuse_an_unnamed_model(&hosted).is_ok());
     }
 
     /// A position whose home could not be rendered leaves the principal's

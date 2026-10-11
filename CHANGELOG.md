@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every session record then named as the model that answered. It now asks
   for the router's loaded model, or its only one, or a plain server's alias,
   read once when the command starts; a router with several and none loaded
-  is reported rather than guessed at.
+  is reported rather than guessed at. The same holds with no config file at
+  all, where the built-in local provider is the default.
 
 - **A new install uses a model on your machine, not Anthropic.** `mecha
   config init` now makes the local provider (`127.0.0.1:8080`) the default,
