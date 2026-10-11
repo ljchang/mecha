@@ -99,7 +99,7 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "stt" => cfg!(target_os = "linux"),
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
@@ -218,17 +218,23 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
 /// answering where its install would put one, which mecha did not install.
 /// Asked by `features enable` after [`offered`], which reads no socket.
 pub fn left_alone(id: &str, m: &Machinery) -> Result<Option<String>> {
-    if id == crate::stt_unit::ID {
-        let naming = crate::stt_unit::Naming::shipped();
-        if crate::stt_unit::someone_elses(m, &naming)? {
-            return Ok(Some(format!(
-                "a server already answers on :{} that mecha did not install — left alone, and \
-                 used as it is",
-                naming.port
-            )));
+    let port = match id {
+        crate::stt_unit::ID => {
+            let naming = crate::stt_unit::Naming::shipped();
+            crate::stt_unit::someone_elses(m, &naming)?.then_some(naming.port)
         }
-    }
-    Ok(None)
+        crate::voice_worker_unit::ID => {
+            let naming = crate::voice_worker_unit::Naming::shipped();
+            crate::voice_worker_unit::someone_elses(m, &naming)?.then_some(naming.port)
+        }
+        _ => None,
+    };
+    Ok(port.map(|port| {
+        format!(
+            "a server already answers on :{port} that mecha did not install — left alone, and \
+             used as it is"
+        )
+    }))
 }
 
 /// What `mecha features enable` offers to install for one plan: each
@@ -484,6 +490,54 @@ pub async fn install_layout(
     Ok(())
 }
 
+/// A Python environment at `dir/venv` from a lock with every file pinned by
+/// hash, for the sidecar `id` — the venv, its managed Python and the lock
+/// each recorded before they are written (§10.2 item 2), and the install run
+/// every time, since it is idempotent and a half-finished one is resumed by
+/// it. Its download cache is dropped after: the wheels are in the venv, and
+/// the cache would keep their size again for nothing.
+pub(crate) async fn locked_env(
+    m: &Machinery,
+    id: &str,
+    dir: &Path,
+    python_version: &str,
+    lock: &str,
+    what: &str,
+    say: Say<'_>,
+) -> Result<()> {
+    let home = &m.mecha_home;
+    let uv = ensure_uv(m, say).await?;
+    let venv = dir.join("venv");
+    let python = venv.join("bin/python");
+    // Each on its own line in the record, so a partly deleted install reads
+    // incomplete rather than installed — the managed Python included, which
+    // the venv's interpreter links into (`install_layout`'s reason).
+    Manifest::record(home, id, &venv)?;
+    Manifest::record(home, id, &dir.join("python"))?;
+    if !python.exists() {
+        say(&format!("building a Python {python_version} environment"));
+        let mut c = std::process::Command::new(&uv);
+        c.args(["venv", "--quiet", "--clear", "--python", python_version])
+            .arg(&venv);
+        uv_env(&mut c, dir);
+        run(&mut c, "uv venv")?;
+    }
+    let lock_file = dir.join("requirements.txt");
+    crate::llama_units::write_owned(home, id, &lock_file, lock, 0o644)?;
+    say(&format!(
+        "installing {what}, every file checked against the lock"
+    ));
+    let mut c = std::process::Command::new(&uv);
+    c.args(["pip", "install", "--quiet", "--require-hashes", "--python"])
+        .arg(&python)
+        .arg("-r")
+        .arg(&lock_file);
+    uv_env(&mut c, dir);
+    run(&mut c, "uv pip install")?;
+    let _ = std::fs::remove_dir_all(dir.join(".uv-cache"));
+    Ok(())
+}
+
 /// `uv`'s environment for an install whose tree is `dir`: its Python, its
 /// cache and nothing of the operator's uv configuration — one tree per
 /// install, removable whole.
@@ -533,6 +587,15 @@ pub async fn install(
             crate::stt_unit::install(m, &naming, say).await?;
             say(&format!(
                 "speech to text answers on :{} — `[voice] stt_url`'s default",
+                naming.port
+            ));
+            Ok(())
+        }
+        "voice-worker" => {
+            let naming = crate::voice_worker_unit::Naming::shipped();
+            crate::voice_worker_unit::install(m, &naming, say).await?;
+            say(&format!(
+                "the voice worker answers on :{} — `[voice] offer_target`'s default",
                 naming.port
             ));
             Ok(())
@@ -769,7 +832,7 @@ mod tests {
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2", "7d-1"]
+            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2"]
         } else {
             &["7a-3", "7b"]
         };
