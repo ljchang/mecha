@@ -574,7 +574,7 @@ async fn judge_one(
         rj::count,
         &mut j,
     );
-    for clause in clauses {
+    for clause in clauses.iter().cloned() {
         let question = clause.question();
         let picture_says = verdict(
             ask_of(provider.as_ref(), pass, &shown, &question).await,
@@ -597,7 +597,7 @@ async fn judge_one(
     }
     // Each identified person's own clauses on their own crop, and their
     // doing and wearing on everyone else's: drawn on the wrong person.
-    for clause in scene.as_ref().map(rj::clauses).unwrap_or_default() {
+    for clause in clauses.iter().cloned() {
         let Some(person) = clause.person else {
             continue;
         };
