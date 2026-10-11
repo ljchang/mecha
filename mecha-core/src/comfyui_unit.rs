@@ -143,10 +143,13 @@ pub fn fits(
         ));
     }
     match nvidia {
-        Nvidia::Driver(ma, mi) if (ma, mi) >= (580, 0) => Ok(()),
+        // The engine's floor, one constant: a bump moves both (review of #645).
+        Nvidia::Driver(ma, mi) if (ma, mi) >= crate::engine::CUDA13_DRIVER => Ok(()),
         Nvidia::Driver(ma, mi) => Err(format!(
             "the NVIDIA driver is {ma}.{mi}; the pinned torch is built for CUDA 13, which needs \
-             580 or newer — update the driver"
+             {}.{} or newer — update the driver",
+            crate::engine::CUDA13_DRIVER.0,
+            crate::engine::CUDA13_DRIVER.1
         )),
         Nvidia::Unread => Err(
             "this machine shows an NVIDIA device, but `nvidia-smi` could not be read — fix it \
