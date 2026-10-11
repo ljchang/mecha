@@ -748,7 +748,9 @@ when the most is being missed. For each enabled trigger:
 A trigger is charged only from its file's last change, so a schedule edited
 at noon does not owe the morning's slots under the new expression. A
 trigger file that does not load cannot be walked, so the reading is
-unread and its reason gives the floor.
+unread and its reason gives the floor. A ledger row inside the window that
+does not parse may be a run that accounted for a slot, or one that failed,
+so both `triggers.*` readings are then unread.
 
 **`messages.unread` follows `[messages] dir`.** The CLI loads the global
 config once and hands it to the reader (`Reader::configured`), so a moved

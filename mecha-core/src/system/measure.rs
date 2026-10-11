@@ -465,6 +465,9 @@ impl Reader {
                     Ran::Out(t) => Reading::Observed {
                         value: if source::spoke(&t) { 1.0 } else { 0.0 },
                     },
+                    // The engine is installed, so a journal that cannot be
+                    // asked is not looking, never "no call" (review of #641).
+                    Ran::Missing => Reading::unread("journalctl is not installed"),
                     other => ran_reading(&other, "journalctl"),
                 }
             })
@@ -817,6 +820,11 @@ impl Reader {
             },
             VoiceLive => self.voice(),
             TriggersMissed => match self.tally() {
+                Ok(t) if t.unreadable_rows > 0 => Reading::unread(format!(
+                    "{} ledger row(s) could not be read, and each may be a run that \
+                     accounts for a slot",
+                    t.unreadable_rows
+                )),
                 Ok(t) if t.unloadable > 0 => Reading::unread(format!(
                     "{} trigger file(s) do not load, so at least {} slot(s) were missed",
                     t.unloadable, t.missed
@@ -827,6 +835,10 @@ impl Reader {
                 Err(r) => r,
             },
             TriggersFailed => match self.tally() {
+                Ok(t) if t.unreadable_rows > 0 => Reading::unread(format!(
+                    "{} ledger row(s) could not be read, so at least {} run(s) failed",
+                    t.unreadable_rows, t.failed
+                )),
                 Ok(t) => Reading::Observed {
                     value: t.failed as f64,
                 },
