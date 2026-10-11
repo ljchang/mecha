@@ -2705,7 +2705,6 @@ const STATE_WORDS: &[&str] = &[
     "wearing",
     "wears",
     "wore",
-    "worn",
     "undressed",
     "naked",
     "nude",
@@ -3246,9 +3245,12 @@ impl Tool for ImageGenerate {
         // prompt itself stays out of the manifest (ARCHITECTURE §images).
         let mut roles_said: Option<String> = None;
         // Whose outfit the prompt left out because their act already says
-        // what they have on (`clothes_in_act`): in the manifest, so a person
-        // drawn without the record's clothes is never a silent null.
-        let mut clothes_said: Vec<String> = Vec::new();
+        // what they have on (`clothes_in_act`), by the name the result uses,
+        // and whether they are a library character. Library names go in the
+        // manifest, so a person drawn without the record's clothes is never a
+        // silent null; a described person's name is their description, so
+        // it only silences their clothes note (review of #647, pass 5).
+        let mut clothes_said: Vec<(String, bool)> = Vec::new();
         // The words a split put in the prompt, for the owner's prompt log
         // (`words`), which the privacy guard reads.
         let mut split_words: Vec<String> = Vec::new();
@@ -3387,11 +3389,11 @@ impl Tool for ImageGenerate {
                             &everyone,
                             &asked_wearing,
                         );
-                        // Library people only: a described person's name is
-                        // their description, and the manifest never carries
-                        // scene words (review of #647, pass 3).
-                        if let (true, crate::scene::Who::Library(n)) = (kept, &p.who) {
-                            in_act.push(capitalized(n));
+                        if kept {
+                            in_act.push((
+                                crate::picture::shown(&p.who),
+                                matches!(p.who, crate::scene::Who::Library(_)),
+                            ));
                         }
                         match &p.who {
                             crate::scene::Who::Library(n) => {
@@ -3871,6 +3873,13 @@ impl Tool for ImageGenerate {
                 let mut said = String::new();
                 let mut crops = 0usize;
                 let everyone: Vec<&crate::scene::Person> = plan.people.iter().collect();
+                // The `together` reaches an edit prompt only on a placement
+                // or when the call changed it; otherwise it is the record's,
+                // not in the prompt, and says nothing the model reads
+                // (review of #647, pass 5).
+                let together_sent = (placed || plan.delta.together)
+                    .then(|| plan.next.together.as_ref().map(|f| f.value.as_str()))
+                    .flatten();
                 for ((p, entry), anchor) in described.iter().zip(&entries).zip(anchors) {
                     let name = crate::picture::shown(&p.who);
                     let text = entry
@@ -3880,15 +3889,13 @@ impl Tool for ImageGenerate {
                     let in_act = clothes_in_act(
                         p,
                         &p.doing,
-                        &[
-                            plan.next.together.as_ref().map(|f| f.value.as_str()),
-                            plan.also.as_deref(),
-                        ],
+                        &[together_sent, plan.also.as_deref()],
                         &everyone,
                         &asked_wearing,
                     );
-                    if let (true, crate::scene::Who::Library(n)) = (in_act, &p.who) {
-                        clothes_said.push(capitalized(n));
+                    if in_act {
+                        clothes_said
+                            .push((name.clone(), matches!(p.who, crate::scene::Who::Library(_))));
                     }
                     said.push_str(&edit_person(&name, &text, p, together, in_act));
                     match anchor {
@@ -4273,6 +4280,16 @@ impl Tool for ImageGenerate {
                 Some((w, h)) => format!("{w}×{h}"),
                 None => "picture-shaped".to_string(),
             };
+            // Library names only: a described person's name is their
+            // description, and the manifest carries no scene words.
+            let clothes_named: Option<Vec<&String>> = {
+                let named: Vec<&String> = clothes_said
+                    .iter()
+                    .filter(|(_, library)| *library)
+                    .map(|(n, _)| n)
+                    .collect();
+                (!named.is_empty() && layered.is_none()).then_some(named)
+            };
             let manifest = json!({
                 "image": path,
                 "tool_use_id": ctx.call_id,
@@ -4297,8 +4314,7 @@ impl Tool for ImageGenerate {
                 // Only for the prompt that was sent: a layered picture's
                 // passes carry each person's outfit on the cutout, and the
                 // one-pass prompt this names was never drawn (review of #647).
-                "clothes_in_act": (!clothes_said.is_empty() && layered.is_none())
-                    .then_some(&clothes_said),
+                "clothes_in_act": clothes_named,
                 "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
@@ -4449,7 +4465,7 @@ impl Tool for ImageGenerate {
             // them out: then the sentence would tell the model something the
             // picture does not show (review of #647, pass 4).
             for (who, note) in &plan.clothes_said {
-                if layered.is_some() || !clothes_said.contains(who) {
+                if layered.is_some() || !clothes_said.iter().any(|(n, _)| n == who) {
                     text.push(' ');
                     text.push_str(note);
                 }
@@ -8900,6 +8916,7 @@ mod tests {
         // The same in a person's own act: a task or an occasion is not a
         // clothing state (review of #647, pass 4).
         assert!(!act(&maya, "folding clothes into a suitcase", None));
+        assert!(!act(&maya, "leaning on a worn fence", None), "an adjective");
         assert!(!act(&maya, "dressed for the gala, dancing", None));
         assert!(!act(&maya, "showing off her new outfit", None));
         // A retouch pasted into the same prompt is a shared text too.
@@ -8928,7 +8945,7 @@ mod tests {
     /// `wearing` whatever the act said (review of #647).
     #[tokio::test]
     async fn an_act_that_dresses_its_person_draws_one_outfit_and_says_so() {
-        let (url, seen) = distinct(5).await;
+        let (url, seen) = distinct(6).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -9005,6 +9022,20 @@ mod tests {
             "the record keeps it"
         );
 
+        // A described person on record in a grey hoodie, then in an act
+        // that dresses them: the outfit is left out the same way, the result
+        // never says they wear the record's (review of #647, pass 5), and
+        // their description never reaches the manifest.
+        let before = t
+            .call(
+                json!({"scene": {"setting": "a bus shelter", "people": [
+                    {"who": "a tall stranger with a scar across one cheek",
+                     "wearing": "a grey hoodie", "doing": "waiting"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!before.is_error, "{}", before.content);
         // A described person's outfit is left out the same way, but their
         // description never reaches the manifest, which carries no scene
         // words (review of #647, pass 3).
@@ -9020,7 +9051,13 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         let prompt = last_prompt(&seen);
         assert!(prompt.contains("soaked overcoat"), "{prompt}");
+        assert!(!prompt.contains("grey hoodie"), "{prompt}");
         assert!(!prompt.contains("clothes that suit the scene"), "{prompt}");
+        assert!(
+            !out.content.contains("what this chat last drew them in"),
+            "{}",
+            out.content
+        );
         assert!(manifest_of(&dir, &out.content)["clothes_in_act"].is_null());
 
         // A retouch in the same prompt that states a clothing state is a
@@ -9040,6 +9077,73 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["clothes_in_act"],
             json!(["Maya"])
+        );
+    }
+
+    /// On an edit the recorded `together` is not in the prompt unless the
+    /// edit places people on a photo or changes it, so it never holds an
+    /// outfit back; a newcomer's own act still does (review of #647, pass 5).
+    #[tokio::test]
+    async fn an_edit_reads_only_the_acts_its_prompt_carries() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (
+            tempdir(),
+            tempdir(),
+            library_with(&["maya", "john", "wren"]),
+        );
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a cabin by a lake",
+                    "people": [{"who": "maya", "wearing": "a wool sweater", "where": "left"},
+                               {"who": "john", "wearing": "a flannel shirt", "where": "right"}],
+                    "together": "both of them wearing paper crowns, laughing"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        // Only Maya's expression changes: the recorded act stays on the
+        // record but is not in the edit prompt (an added or moved person
+        // clears it, `Scene::apply`), so her recorded sweater is stated.
+        let second = t
+            .call(
+                json!({"picture": picture_of(&first.content), "scene": {"people": [
+                    {"who": "maya", "expression": "grinning"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!second.is_error, "{}", second.content);
+        assert_eq!(manifest_of(&dir, &second.content)["route"], "edited");
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("wool sweater"), "{prompt}");
+        assert!(
+            !prompt.contains("paper crowns"),
+            "not in this prompt: {prompt}"
+        );
+        assert!(manifest_of(&dir, &second.content)["clothes_in_act"].is_null());
+        // Wren joins in an act that dresses her: her outfit is left out.
+        let third = t
+            .call(
+                json!({"picture": picture_of(&second.content), "scene": {"people": [
+                    {"who": "wren", "doing": "wearing a green parka, waving"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!third.is_error, "{}", third.content);
+        let prompt = last_prompt(&seen);
+        assert!(!prompt.contains("clothes that suit the scene"), "{prompt}");
+        assert_eq!(
+            manifest_of(&dir, &third.content)["clothes_in_act"],
+            json!(["Wren"])
+        );
+        assert!(
+            !third.content.contains("Wren had no clothes given"),
+            "{}",
+            third.content
         );
     }
 
