@@ -412,19 +412,24 @@ fn plan(id: &str, json: bool, verify: bool) -> Result<()> {
     )?;
     let cfg = Config::load_global()?;
     let chat_here = mecha_core::install::chat_runs_here(&cfg);
-    let nvidia = mecha_core::engine::read_nvidia();
-    mecha_core::install::price(&mut p, chat_here, || nvidia);
+    // Read lazily, as `price` reads it: a plan with nothing to fetch probes
+    // no driver, and a wedged `nvidia-smi` must not hang it (review of #643).
+    let mut nvidia = None;
+    mecha_core::install::price(&mut p, chat_here, || {
+        *nvidia.insert(mecha_core::engine::read_nvidia())
+    });
     if json {
         println!("{}", serde_json::to_string_pretty(&p)?);
     } else {
         print!("{}", render_plan(&p, chat_here));
         // The plan prices a build here by its source; the compile is said.
-        let builds = p
-            .sidecars
-            .iter()
-            .any(|s| s.id == "llama" && s.bytes.is_some())
-            && mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, nvidia)
-                .is_ok_and(|t| t.is_built());
+        let builds = nvidia.is_some_and(|n| {
+            p.sidecars
+                .iter()
+                .any(|s| s.id == "llama" && s.bytes.is_some())
+                && mecha_core::engine::choose(std::env::consts::OS, std::env::consts::ARCH, n)
+                    .is_ok_and(|t| t.is_built())
+        });
         if builds {
             println!(
                 "No llama.cpp release fits this machine, so its download is the source, built \
