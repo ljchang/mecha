@@ -211,7 +211,7 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
             .iter()
             .any(|(id, ..)| *id == mecha_core::speech_unit::ID)
         {
-            if let Err(why) = mecha_core::speech_unit::fits() {
+            if let Err(why) = mecha_core::speech_unit::fits(std::env::consts::OS, read_nvidia()) {
                 println!(
                     "The speech server is not installed: {why}. Voice switches on for one you \
                      run yourself."
@@ -240,6 +240,12 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
                 let built = if *id == "llama" && built_here {
                     ", then built here — no release fits this machine; minutes for the CPU, \
                      longer for CUDA"
+                } else if *id == mecha_core::speech_unit::ID {
+                    // Always a build, and the weights' licence is said
+                    // before the yes, not only at the fetch (review of #649).
+                    ", built here from its pinned commit (about seven minutes on a GB10), then \
+                     its model; Breeze TTS 2's weights are licensed for research and \
+                     non-commercial use only"
                 } else {
                     ""
                 };

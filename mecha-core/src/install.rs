@@ -207,6 +207,22 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     let mut nvidia = move || -> crate::engine::Nvidia {
         *seen.get_or_insert_with(|| read.take().map_or(crate::engine::Nvidia::None, |f| f()))
     };
+    // The speech server's default voice is fetched beside the slot's model
+    // and codec, which the plan prices already; the clip is priced here so
+    // nothing it fetches goes uncounted (review of #649).
+    if let Some(s) = plan.sidecars.iter_mut().find(|s| {
+        s.id == crate::speech_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && installable(s.id)
+            && not_needed(s.id, feature, chat_here).is_none()
+    }) {
+        let bytes: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+        s.bytes = Some(bytes);
+        plan.download_bytes += bytes;
+    }
     // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB,
     // too much to leave out of the total the way the voice worker's 250 MB
     // is. The models are the image slot's files, priced by the plan already.
@@ -882,6 +898,32 @@ mod tests {
                 assert_eq!(fits.download_bytes, 5 + b);
             }
             _ => assert_eq!(fits.download_bytes, 5, "not offered here, not priced"),
+        }
+    }
+
+    /// The speech server's voice clip is priced, the one file it fetches
+    /// that is not the slot's (review of #649).
+    #[test]
+    fn the_speech_servers_voice_is_priced() {
+        let mut p = Plan {
+            feature: Feature::Voice,
+            sidecars: vec![PlannedSidecar {
+                id: crate::speech_unit::ID,
+                label: "the speech server",
+                state: SidecarState::Missing { step: "7f" },
+                bytes: None,
+            }],
+            files: vec![],
+            download_bytes: 5,
+            nothing_to_do: false,
+        };
+        price(&mut p, true, || crate::engine::Nvidia::None);
+        let voice: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+        if installable(crate::speech_unit::ID) {
+            assert_eq!(p.sidecars[0].bytes, Some(voice));
+            assert_eq!(p.download_bytes, 5 + voice);
+        } else {
+            assert_eq!(p.download_bytes, 5);
         }
     }
 
