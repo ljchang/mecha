@@ -564,8 +564,9 @@ shares the text encoder and VAE with the standard model.
   (`preflight`, review of #648). That covers the turbo file and a sampler
   or scheduler other than the reference ones. The refusal names the
   persona's picture settings, since the choice stays until the owner changes
-  it. The turbo file is not in the features installer's pins; that is
-  §16.5's open item.
+  it. For the pinned turbo file, it names `mecha features enable image
+  --turbo` instead, which fetches it on demand (`FEATURES-DESIGN.md` §7e,
+  `comfyui_unit::turbo_wanted`; #650).
 - **An idle release marks the server empty** (`released`), so the next
   picture unloads nothing, whichever model it asks for.
 
@@ -589,10 +590,5 @@ and the header records them as `image_tuning`.
 
 ### 16.5 Open
 
-- **The turbo file is not installed by `mecha features enable image`.** The
-  image slot in `recommend.rs` pins three files, and adding a fourth
-  (7.26 GB, Comfy-Org's `cb504a40` serves it) is for the installer's lane to
-  decide. Until then the page offers Turbo everywhere, and a server without
-  the file refuses it by name.
 - **cfg above 1 with turbo is allowed.** It undoes the distillation's
   point, and the page says so beside the choice.
