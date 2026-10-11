@@ -4248,7 +4248,11 @@ impl Tool for ImageGenerate {
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
                 "roles": roles_said,
-                "clothes_in_act": (!clothes_said.is_empty()).then_some(&clothes_said),
+                // Only for the prompt that was sent: a layered picture's
+                // passes carry each person's outfit on the cutout, and the
+                // one-pass prompt this names was never drawn (review of #647).
+                "clothes_in_act": (!clothes_said.is_empty() && layered.is_none())
+                    .then_some(&clothes_said),
                 "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
@@ -7652,6 +7656,38 @@ mod tests {
             "people": [{"who": "maya", "wearing": "a yellow raincoat", "where": "left"},
                        {"who": "john", "wearing": "a flannel shirt", "where": "right"}],
             "together": "Maya lifts John off the ground"}})
+    }
+
+    /// A layered picture never claims `clothes_in_act`: its passes carry the
+    /// outfit on each cutout, and the one-pass prompt the claim is about was
+    /// never sent (review of #647). Fails where the manifest took it from
+    /// the compiled prompt whichever route drew.
+    #[tokio::test]
+    async fn a_layered_picture_never_claims_its_clothes_were_left_out() {
+        let (url, _) = fake_with(Fake {
+            history: vec![done(); 5],
+            views: vec![
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["together"] =
+            json!("Maya, soaked through her clothes, lifts John off the ground");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["route"], "layered", "{}", out.content);
+        assert!(manifest["clothes_in_act"].is_null(), "{manifest}");
     }
 
     /// `[image] timeout_secs` bounds the whole layered build: a pass that
