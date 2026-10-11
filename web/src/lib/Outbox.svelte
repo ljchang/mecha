@@ -855,21 +855,23 @@
                 referrerpolicy="no-referrer"
               ></iframe>
             </div>
-            {#if detail.loaders?.length}
-              <div class="card pad col">
-                <div class="kicker">what each refresh will run and publish, unreviewed, after this release</div>
-                {#each detail.loaders as l (l.name)}
-                  <div class="loader">
-                    <div class="hrow">
-                      <span class="hkey">{l.name}</span>
-                      <span class="hval">from {l.source}, {l.schedule}{#if l.changed_since_staged}<span class="chip warnchip">changed since staged</span>{/if}</span>
-                    </div>
-                    <pre class="query">{l.query}</pre>
-                    <div class="hint">{l.columns.map((c) => `${c.name} (${c.type})`).join(', ')}</div>
+          {/if}
+          {#if detail.loaders === null}
+            <div class="card pad"><span class="warn">The queries this releases could not be read — check the board with <code>mecha hud list</code> before releasing.</span></div>
+          {:else if detail.loaders?.length}
+            <div class="card pad col">
+              <div class="kicker">what each refresh will run and publish, unreviewed, after this release</div>
+              {#each detail.loaders as l (l.name)}
+                <div class="loader">
+                  <div class="hrow">
+                    <span class="hkey">{l.name}</span>
+                    <span class="hval">from {l.source}, {l.schedule}{#if l.changed_since_staged}<span class="chip warnchip">changed since staged</span>{/if}</span>
                   </div>
-                {/each}
-              </div>
-            {/if}
+                  <pre class="query">{l.query}</pre>
+                  <div class="hint">{l.columns.map((c) => `${c.name} (${c.type})`).join(', ')}</div>
+                </div>
+              {/each}
+            </div>
           {/if}
           {#if doc}
             <div class="card pad col">
@@ -1137,4 +1139,5 @@
   .loader { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; border-top: 1px solid #2a2a38; }
   .loader:first-of-type { border-top: 0; }
   .query { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; padding: 8px 10px; border-radius: var(--radius-chip, 6px); background: var(--void); }
+  .warn { color: var(--hazard); }
 </style>
