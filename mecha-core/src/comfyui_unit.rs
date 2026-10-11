@@ -692,6 +692,21 @@ mod tests {
         }
     }
 
+    /// Each lock names the commit it was compiled for, and it is `COMMIT`:
+    /// a bump that moves the constant and not the locks fails here, not on
+    /// an owner's machine (review of #645).
+    #[test]
+    fn the_locks_were_compiled_for_this_commit() {
+        for lock in [LOCK_AARCH64, LOCK_X86_64] {
+            let header: String = lock
+                .lines()
+                .take_while(|l| l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(header.contains(&COMMIT[..8]), "{header}");
+        }
+    }
+
     #[test]
     fn the_unit_renders_this_home_and_port() {
         let dir = Path::new("/srv/owner/.mecha/sidecars/comfyui");
