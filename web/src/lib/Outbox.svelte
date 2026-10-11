@@ -865,7 +865,7 @@
                 <div class="loader">
                   <div class="hrow">
                     <span class="hkey">{l.name}</span>
-                    <span class="hval">from {l.source}, {l.schedule}{#if l.changed_since_staged}<span class="chip warnchip">changed since staged</span>{/if}</span>
+                    <span class="hval">from {l.source}, {l.schedule}{#if l.external}<span class="chip warnchip">third-party content: published under your name as is</span>{/if}{#if l.changed_since_staged}<span class="chip warnchip">changed since staged</span>{/if}</span>
                   </div>
                   <pre class="query">{l.query}</pre>
                   <div class="hint">{l.columns.map((c) => `${c.name} (${c.type})`).join(', ')}</div>

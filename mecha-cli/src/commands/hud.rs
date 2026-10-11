@@ -432,18 +432,33 @@ fn push_one(bundle: &str, name: &str, body: &serde_json::Value) -> Result<serde_
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| anyhow::anyhow!("running factory-publish: {e}"))?;
-    child
+    // The rows are written from a thread while the output drains: a body over
+    // a pipe's buffer must not deadlock against a child writing stderr, and a
+    // child that exits before reading all of it (a bad key, an unknown
+    // bundle) must report its own reason, never a broken pipe that reads as
+    // "retry" (review of #651).
+    let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| anyhow::anyhow!("no stdin to factory-publish"))?
-        .write_all(body.to_string().as_bytes())?;
+        .ok_or_else(|| anyhow::anyhow!("no stdin to factory-publish"))?;
+    let bytes = body.to_string().into_bytes();
+    let writer = std::thread::spawn(move || {
+        let mut stdin = stdin;
+        stdin.write_all(&bytes)
+    });
     let out = child.wait_with_output()?;
+    let written = writer.join();
     if !out.status.success() {
         bail!(
             "factory-publish exited {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         );
+    }
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => bail!("factory-publish did not read the whole push: {e}"),
+        Err(_) => bail!("writing the push to factory-publish panicked"),
     }
     let line = String::from_utf8_lossy(&out.stdout);
     serde_json::from_str(line.trim())

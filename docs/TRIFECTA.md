@@ -204,7 +204,8 @@ query the owner already released and sends its rows to one fixed host.
 
 **What this does not close.** A loader over a source whose content is
 third-party publishes that text under your name without a second look —
-the review shows that it is such a loader, and that is the whole control.
+the review marks such a loader (a source whose `content` is third-party
+or unset), and that mark is the whole control.
 And the push is unreviewed per push by design: a stolen `data` key can
 misstate a released dashboard's numbers, in the released shape, until it is
 revoked.

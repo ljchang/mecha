@@ -31,7 +31,7 @@ export function filesSource(base, { granted = false } = {}) {
         // The page keeps the numbers it has, marked stale, and says how to
         // get current ones (R16) — never an empty dashboard.
         if (granted && seen.has(name) && [401, 403, 404, 410].includes(res.status)) {
-          const e = new Error('your viewing access has ended — sign in again for current numbers');
+          const e = new Error('your viewing access has ended — reload, or sign in again, for current numbers');
           e.signIn = true;
           throw e;
         }
