@@ -26,7 +26,7 @@ import {
   tooltipLines,
 } from '../src/lib/hud/hud.js';
 import { vegaConfig, scheme } from '../src/lib/hud/theme.js';
-import { dataBase } from '../src/lib/hud/source.js';
+import { dataBase, filesSource } from '../src/lib/hud/source.js';
 
 const visits = {
   columns: [
@@ -170,6 +170,33 @@ assert.equal(dataBase('/g/0a1b2c/'), '/g/0a1b2c/data/');
 assert.equal(dataBase('/g/0a1b2c/index.html'), '/g/0a1b2c/data/');
 assert.equal(dataBase('/preview/index.html'), './data/');
 assert.equal(dataBase('/b/hud-lab/'), './data/', 'the share URL redirects to a version first');
+
+assert.equal(dataBase('/g/0A1B2C/x'), '/g/0A1B2C/data/', 'either case of hex');
+
+// R16: under a grant, a read that fails after one that worked is the grant
+// ending — the page is told to sign in again and keeps what it has. A first
+// read that fails, or a public page's, is an ordinary error.
+{
+  const answers = [];
+  globalThis.fetch = async () => answers.shift();
+  const ok = { status: 200, ok: true, json: async () => ({ rows: [] }), headers: { get: () => '"t"' } };
+  const gone = { status: 404, ok: false };
+
+  const granted = filesSource('/g/ab/data/', { granted: true });
+  answers.push(gone);
+  await assert.rejects(granted.dataset('x', null), (e) => !e.signIn, 'a grant never read is no sign-in');
+  answers.push(ok, gone);
+  assert.equal((await granted.dataset('x', null)).etag, '"t"');
+  await assert.rejects(granted.dataset('x', '"t"'), (e) => e.signIn === true && /sign in again/.test(e.message));
+
+  const open = filesSource('/b/hud-lab/data/');
+  answers.push(ok, gone);
+  await open.dataset('x', null);
+  await assert.rejects(open.dataset('x', null), (e) => !e.signIn, 'a public page has no grant to renew');
+
+  answers.push({ status: 304, ok: false });
+  assert.equal(await open.dataset('x', '"t"'), null, 'unchanged is null');
+}
 
 // The gates (§4.1): the renderer's source carries no `{@html}`, no
 // `innerHTML`, and no inline style — a dynamic value goes through the CSSOM.

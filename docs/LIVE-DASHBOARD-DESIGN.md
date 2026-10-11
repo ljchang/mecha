@@ -900,9 +900,18 @@ In two repositories, split where the trust boundary is:
   renderer into `dist/hud-renderer/`, so the one rsync that deploys the app
   deploys what a publish vendors.
 
-**Still owed for step 5:** the outbox's preview origin (R17, §6.5, the next
-PR), and §6.1's runtime gate run against the box's real policy on the first
-real publish.
+- **The preview** (R17, §6.5): `mecha serve` binds a second listener when
+  `[web] preview_port` and `preview_origin` are both set. `tailscale serve`
+  exposes it as its own origin. It serves only a pending dashboard publish's
+  bundle and the board's current rows, owner-checked, under the
+  interactive class's CSP with `frame-ancestors` naming this machine's doors.
+  The app's CSP gains `frame-src` naming exactly that origin. The outbox
+  detail frames the page (`sandbox="allow-scripts allow-same-origin"`, safe
+  because the origin is not the app's) beside each loader's query, flagging
+  one changed since staging.
+
+**Still owed for step 5:** §6.1's runtime gate run against the box's real
+policy on the first real publish.
 
 ## 9. Deliberately not in scope
 

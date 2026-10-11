@@ -17,11 +17,12 @@
 //! written when the outbox ran `bundle_publish` — home never asks the box.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::loader::Column;
 use super::store::Dataset;
 use super::Installed;
 
@@ -46,14 +47,6 @@ pub fn bundle_id(board: &str) -> String {
     format!("hud-{board}")
 }
 
-/// One column, as `datasets.json` and a push carry it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WireColumn {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub kind: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Declared {
     pub datasets: BTreeMap<String, DeclaredDataset>,
@@ -61,22 +54,10 @@ pub struct Declared {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeclaredDataset {
-    pub columns: Vec<WireColumn>,
+    /// As the loader declares them: `loader::Column` is already the wire's
+    /// `{name, type}`.
+    pub columns: Vec<Column>,
     pub loader_digest: String,
-}
-
-fn columns_of(loader: &super::loader::Loader) -> Vec<WireColumn> {
-    loader
-        .columns()
-        .iter()
-        .map(|c| WireColumn {
-            name: c.name.clone(),
-            kind: serde_json::to_value(c.kind)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-        })
-        .collect()
 }
 
 /// What a release of `installed` declares: every dataset, its columns, and
@@ -90,7 +71,7 @@ pub fn declared(installed: &Installed) -> Declared {
                 (
                     name.clone(),
                     DeclaredDataset {
-                        columns: columns_of(loader),
+                        columns: loader.columns().to_vec(),
                         loader_digest: loader.digest(),
                     },
                 )
@@ -223,7 +204,7 @@ pub fn plan(
     };
     if loader.digest() != declared.loader_digest
         || dataset.loader_digest != declared.loader_digest
-        || columns_of(loader) != declared.columns
+        || loader.columns() != declared.columns.as_slice()
     {
         return Plan::LoaderChanged;
     }
@@ -274,11 +255,18 @@ pub struct Pushed {
 }
 
 impl Pushed {
-    pub fn read(board_dir: &Path) -> Pushed {
-        std::fs::read_to_string(board_dir.join(PUSHED_FILE))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+    /// What was pushed. None yet is an empty record; one that cannot be read
+    /// is an error — never a fresh start, which would resend every dataset
+    /// under a counter the box may already be past (review of #651).
+    pub fn read(board_dir: &Path) -> Result<Pushed> {
+        let path = board_dir.join(PUSHED_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Pushed::default()),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
     }
 
     /// The generation last pushed for `name` under `release`.
@@ -306,9 +294,4 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
-}
-
-/// The factory client's local bundle store (`~/.mecha/bundles`).
-pub fn bundles_root() -> Result<PathBuf> {
-    Ok(crate::work::mecha_home()?.join("bundles"))
 }

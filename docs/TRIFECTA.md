@@ -191,9 +191,10 @@ query the owner already released and sends its rows to one fixed host.
 
 **Owned by: the release review, the key's scope, and the box's checks.**
 - *The review, once.* What runs unattended is exactly what a human released
-  (`LIVE-DASHBOARD-DESIGN.md` §6.3): a dashboard's publish shows the page with
-  real numbers beside each loader's query and declared shape, and releasing
-  it approves both. A changed loader, query or shape is a new publish, back
+  (`LIVE-DASHBOARD-DESIGN.md` §6.3): in the web outbox, a dashboard's publish
+  shows the page with real numbers (framed from a separate preview origin)
+  beside each loader's query and declared shape, and releasing it approves
+  both. `mecha outbox show` in a terminal shows the staged page without them. A changed loader, query or shape is a new publish, back
   through the outbox, and home refuses to push a dataset whose loader digest
   differs from the released one.
 - *The key.* Each timer holds a key of its own narrow scope (`slots`,

@@ -228,7 +228,54 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
     // here, where the other store reads live, so `detail_json` stays pure.
     let serves = outbox_source::serves_at_staging(&item, &messages)
         .map(crate::commands::outbox::serves_note);
-    Json(detail_json(&item, &sources, serves.as_ref())).into_response()
+    let mut body = detail_json(&item, &sources, serves.as_ref());
+    // A pending dashboard publish is reviewed as its rendered page, on the
+    // preview origin (`preview.rs`, R17).
+    if let Some(url) = super::preview::url_for(super::preview::origin(), &item) {
+        body["preview"] = url.into();
+        body["loaders"] = dashboard_loaders(&item);
+    }
+    Json(body).into_response()
+}
+
+/// A dashboard publish's queries, shown beside its page: releasing approves
+/// both (`LIVE-DASHBOARD-DESIGN.md` §6.3). Read from the installed board and
+/// checked against what the staged bundle declared, so a loader edited since
+/// staging is said rather than shown as what was staged.
+fn dashboard_loaders(item: &mecha_core::outbox::OutboxItem) -> serde_json::Value {
+    let Some(board) = item.args["id"]
+        .as_str()
+        .and_then(|i| i.strip_prefix("hud-"))
+    else {
+        return serde_json::Value::Null;
+    };
+    let staged: mecha_core::hud::publish::Declared = item.args["bundle"]
+        .as_str()
+        .map(|b| std::path::Path::new(b).join(mecha_core::hud::publish::DATASETS_FILE))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let Ok(store) = mecha_core::hud::store::Store::open() else {
+        return serde_json::Value::Null;
+    };
+    let Ok(Ok(installed)) = store.load(board) else {
+        return serde_json::Value::Null;
+    };
+    installed
+        .loaders()
+        .iter()
+        .map(|(name, l)| {
+            let declared = staged.datasets.get(name);
+            serde_json::json!({
+                "name": name,
+                "source": l.source(),
+                "schedule": l.schedule().to_string(),
+                "query": l.query(),
+                "columns": l.columns(),
+                "changed_since_staged": declared.is_none_or(|d| d.loader_digest != l.digest()),
+            })
+        })
+        .collect()
 }
 
 /// Pure, so the nothing-is-dropped property is a unit test rather than a

@@ -6,7 +6,8 @@
 export function dataBase(pathname) {
   const version = /^(\/b\/[a-z0-9_-]+\/)v\/\d+\//.exec(pathname);
   if (version) return `${version[1]}data/`;
-  const grant = /^(\/g\/[0-9a-f]+\/)/.exec(pathname);
+  // The box mints capabilities as hex; either case is a grant.
+  const grant = /^(\/g\/[0-9a-fA-F]+\/)/.exec(pathname);
   if (grant) return `${grant[1]}data/`;
   return './data/';
 }

@@ -755,10 +755,15 @@ fn a_dataset_is_pushed_only_to_its_release_while_its_loader_is_the_released_one(
 
     // What was pushed is kept per release; a new release starts over.
     let board = store.board_path("lab_week").unwrap();
-    let mut pushed = Pushed::read(&board);
+    let mut pushed = Pushed::read(&board).unwrap();
     pushed.record(2, "visits_by_day", 4);
     pushed.write(&board).unwrap();
-    let back = Pushed::read(&board);
+    let back = Pushed::read(&board).unwrap();
+    std::fs::write(board.join("pushed.json"), "{").unwrap();
+    assert!(
+        Pushed::read(&board).is_err(),
+        "a torn record is said, never a fresh start"
+    );
     assert_eq!(back.last(2, "visits_by_day"), Some(4));
     assert_eq!(back.last(3, "visits_by_day"), None);
     let mut moved = back.clone();
