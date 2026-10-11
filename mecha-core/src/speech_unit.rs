@@ -230,7 +230,7 @@ pub async fn install(
         .is_ok_and(|s| s.trim() == COMMIT)
         && engine_health(&engine).is_ok();
     if !built {
-        build_engine(&dir, &engine, &tc, say)?;
+        build_engine(&dir, &engine, &tc, say).await?;
     }
 
     // --- the weights and the voice, from the hub, linked where the units look
@@ -326,7 +326,7 @@ pub async fn install(
 /// server and its libraries copied flat with the toolkit's runtime beside
 /// them, checked, stamped and swapped in whole. The source tree goes either
 /// way.
-fn build_engine(dir: &Path, engine: &Path, tc: &Toolchain, say: Say<'_>) -> Result<()> {
+async fn build_engine(dir: &Path, engine: &Path, tc: &Toolchain, say: Say<'_>) -> Result<()> {
     let src = dir.join("engine.src");
     let part = dir.join("engine.part");
     for p in [&src, &part] {
@@ -334,7 +334,7 @@ fn build_engine(dir: &Path, engine: &Path, tc: &Toolchain, say: Say<'_>) -> Resu
     }
     std::fs::create_dir_all(&src)?;
     std::fs::create_dir_all(&part)?;
-    let built = build_into(&src, &part, tc, say);
+    let built = build_into(&src, &part, tc, say).await;
     let _ = std::fs::remove_dir_all(&src);
     if let Err(e) = built {
         let _ = std::fs::remove_dir_all(&part);
@@ -347,7 +347,7 @@ fn build_engine(dir: &Path, engine: &Path, tc: &Toolchain, say: Say<'_>) -> Resu
     Ok(())
 }
 
-fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<()> {
+async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<()> {
     use crate::engine::step;
     let git = |args: &[&str]| {
         let mut c = std::process::Command::new(&tc.git);
@@ -361,11 +361,12 @@ fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<(
         "fetching the speech engine's source at {}",
         &COMMIT[..7]
     ));
-    step(git(&["init", "--quiet"]), "git init")?;
+    step(git(&["init", "--quiet"]), "git init").await?;
     step(
         git(&["fetch", "--quiet", "--depth", "1", FORK, COMMIT]),
         "fetching the speech engine's source",
-    )?;
+    )
+    .await?;
     step(
         git(&[
             "-c",
@@ -375,8 +376,9 @@ fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<(
             "FETCH_HEAD",
         ]),
         "checking out the speech engine's source",
-    )?;
-    let head = step(git(&["rev-parse", "HEAD"]), "reading the commit")?;
+    )
+    .await?;
+    let head = step(git(&["rev-parse", "HEAD"]), "reading the commit").await?;
     if head.trim() != COMMIT {
         bail!(
             "the speech engine's source is commit {}, not the pinned {COMMIT}",
@@ -395,7 +397,8 @@ fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<(
             "ggml",
         ]),
         "fetching ggml for the speech engine",
-    )?;
+    )
+    .await?;
 
     let (nvcc, arch) = tc
         .cuda
@@ -417,7 +420,7 @@ fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<(
     .arg(format!("-DCMAKE_CUDA_COMPILER={}", nvcc.display()))
     .arg(format!("-DCMAKE_CUDA_ARCHITECTURES={arch}"));
     say("configuring the speech engine's build");
-    step(c, "configuring the speech engine (cmake)")?;
+    step(c, "configuring the speech engine (cmake)").await?;
     let available = crate::system::Reader::new()
         .now(crate::system::Measurement::MemoryAvailable)
         .value()
@@ -432,7 +435,7 @@ fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Result<(
         .arg(&build)
         .args(["--config", "Release", "--target", "tts-server", "-j"])
         .arg(jobs.to_string());
-    step(c, "building the speech engine")?;
+    step(c, "building the speech engine").await?;
     // The server and its libraries sit at the top of `build/`, nothing else
     // of it is wanted: the rest is the build's own.
     for entry in std::fs::read_dir(&build)? {

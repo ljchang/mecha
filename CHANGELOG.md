@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`mecha setup` is one guided pass.** At a terminal it asks about the chat
+  model first — the one recommended for your machine, a GGUF you have, or a
+  hosted model — then each feature as a yes or no with what it downloads, then
+  shows everything and the total and asks once before installing it all. No
+  more stopping to run `mecha setup chat` and coming back.
 - **A new install uses a model on your machine, not Anthropic.** `mecha
   config init` now makes the local provider (`127.0.0.1:8080`) the default,
   with Anthropic kept beside it for `-p anthropic`; `mecha setup` names `mecha
@@ -182,13 +187,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds only, so a built engine moves with mecha's pin.
 - **Regenerate a picture, and step through its versions.** A picture in
   the assistant's chat or a persona chat has a Regenerate button beside
-  Edit. It draws
-  the same picture again at a new seed, with no words and no painted area,
-  and the new one shows on the same card, with ‹ › to step between the
-  versions. Edit, Regenerate and Download act on the version showing.
-  Regenerate is off while the persona is answering. On a call, Regenerate
-  is in the picture viewer: the persona answers aloud, and talking over the
-  redraw does not stop it.
+  Edit. It draws the same picture again at a new seed, with no words and no
+  painted area, and the new one shows on the same card, with ‹ › to step
+  between the versions, as soon as it is drawn. Edit, Regenerate and
+  Download act on the version showing. Regenerate is off while the persona
+  is answering. On a call, Regenerate is in the picture viewer: the persona
+  answers aloud, and talking over the redraw does not stop it.
+
+- **`mecha replay --judge` scores a persona replay's pictures.** For each
+  picture a replay drew, it counts faces and people against the scene's
+  record, and asks a vision model whether each thing the record says is
+  in the picture (and, for an edit, whether it was already in the picture
+  it started from). It writes the verdicts beside the samples and a
+  contact sheet with one row per file, so two arms can be compared by eye
+  and by count.
 
 - **`mecha replay --persona` samples a persona chat's turn.** It branches at
   one of the chat's turns (`--list` shows them) and sends that turn's first
@@ -623,7 +635,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature — web, Slack, mail, docs, the graph, search, PDF extraction, image
   generation, personas, voice, incognito, the front door and messages.
   `mecha features enable <id>` and `disable <id>` edit it in place, keeping
-  your comments; `mecha config init` writes it with everything off. An install
+  your comments; `mecha config init` writes it with every line commented —
+  listed and off, but not answered, so `mecha setup` asks about each. (A
+  config written by an earlier `config init`, with every line `= false`, reads
+  each as a no: comment out or delete the lines you want to be asked about.) An install
   from before the table has every switch unanswered, so `mecha features` marks
   what you have set up as "not enabled, but set up here", a session or service
   prints one line naming them when it starts, and `mecha setup` offers each.

@@ -802,6 +802,15 @@ fn measurement_numbers_and_names_are_pinned_and_unique() {
         (43, "gpu.unified"),
         (52, "network.uplink.kind"),
         (61, "services.failed"),
+        (70, "runs.live"),
+        (71, "tasks.running"),
+        (72, "holds.live"),
+        (73, "permits.live"),
+        (74, "jobs.live"),
+        (75, "voice.live"),
+        (76, "triggers.missed"),
+        (77, "triggers.failed"),
+        (78, "messages.unread"),
         (104, "category.oom_kills"),
     ];
     for (n, name) in pinned {
@@ -1118,11 +1127,21 @@ fn meminfo_without_mem_available_is_unknown_not_empty() {
 #[test]
 fn every_now_measurement_is_wired_to_a_reader() {
     // A spent budget: no command runs, and every reading still answers.
-    let reader = Reader::until(std::time::Instant::now());
+    // A scan runs no command, and a spent budget would stop it before its
+    // arm, so scans read with time left — in a scratch home, never the
+    // developer's own.
+    let s = Scratch::new();
+    let spent = Reader::until(std::time::Instant::now()).with_home(s.0.clone());
+    let scans = Reader::new().with_home(s.0.clone());
     for m in Measurement::ALL
         .iter()
         .filter(|m| m.how() == measure::How::Now)
     {
+        let reader = if m.cost() == measure::Cost::Scan {
+            &scans
+        } else {
+            &spent
+        };
         if let Reading::Unread { why } = reader.now(*m) {
             assert_ne!(why, measure::NOT_WIRED, "{} has no reader", m.name());
         }
@@ -1253,4 +1272,313 @@ fn a_size_reads_as_a_person_writes_it() {
     assert_eq!(parse_size("lots"), None);
     assert_eq!(parse_size("-3G"), None);
     assert_eq!(parse_size(""), None);
+}
+
+/// A refusal names the largest kinds of work from the newest recorded
+/// minute, never `other`: the remainder is the kernel and the page cache,
+/// and names nothing the owner could stop.
+#[test]
+fn the_largest_holders_are_named_kinds_of_work_never_the_remainder() {
+    let s = Scratch::new();
+    let db = s.0.join("series.sqlite");
+    let units = [
+        ("llama-local.service".to_string(), 40 * GIB, 0, 1),
+        ("comfyui.service".to_string(), 20 * GIB, 0, 1),
+        ("mecha-serve.service".to_string(), 2 * GIB, 0, 1),
+        ("mecha-parakeet.service".to_string(), GIB / 2, 0, 1),
+        // No unit of ours: `other`, and the largest of all.
+        ("build-1.scope".to_string(), 60 * GIB, 0, 1),
+    ];
+    let mut minute = sample(0, &units, 0, 0);
+    minute.mem = MemInfo {
+        total: 160 * GIB,
+        available: 16 * GIB,
+        swap_total: 0,
+        swap_free: 0,
+    };
+    record(&db, &minute).unwrap();
+    assert_eq!(
+        floor::largest_holders(&Reader::new(), &db, minute.at),
+        vec![
+            ("chat model", 40 * GIB),
+            ("image generation", 20 * GIB),
+            ("mecha", 2 * GIB)
+        ],
+        "voice is under a gigabyte, and other is never named"
+    );
+}
+
+// ---- S2a: work in flight ----
+
+/// A pid no process has: past the kernel's range, which `process_alive`
+/// refuses.
+const DEAD: u32 = u32::MAX;
+
+fn scan(home: &Path, m: Measurement) -> Reading {
+    Reader::new().with_home(home.to_path_buf()).now(m)
+}
+
+fn unread_saying(r: Reading, said: &str) {
+    match r {
+        Reading::Unread { why } => assert!(why.contains(said), "{why}"),
+        other => panic!("expected unread, got {other:?}"),
+    }
+}
+
+const SCANS: [Measurement; 8] = [
+    Measurement::RunsLive,
+    Measurement::TasksRunning,
+    Measurement::HoldsLive,
+    Measurement::PermitsLive,
+    Measurement::JobsLive,
+    Measurement::TriggersMissed,
+    Measurement::TriggersFailed,
+    Measurement::MessagesUnread,
+];
+
+/// A home with no stores yet has nothing in flight: zero, read — not
+/// unread, which would be a fresh install reported as an incident.
+#[test]
+fn a_fresh_home_counts_no_work_in_flight() {
+    let s = Scratch::new();
+    for m in SCANS {
+        assert_eq!(scan(&s.0, m), obs(0.0), "{}", m.name());
+    }
+}
+
+/// A scan spends the sample's time like a command does: once the deadline
+/// has passed it starts nothing, and reads as unknown, never zero.
+#[test]
+fn a_spent_budget_starts_no_scan() {
+    let s = Scratch::new();
+    let reader = Reader::until(std::time::Instant::now()).with_home(s.0.clone());
+    for m in SCANS {
+        unread_saying(reader.now(m), "time ran out");
+    }
+}
+
+/// A sample reads everything that runs no command before any fork, so a
+/// wedged fork spends only its own share of the deadline.
+#[test]
+fn a_sample_reads_files_and_scans_before_any_fork() {
+    let order = reading_order();
+    let first_fork = order
+        .iter()
+        .position(|m| m.cost() == measure::Cost::Fork)
+        .expect("this list has forks");
+    assert!(
+        order[first_fork..]
+            .iter()
+            .all(|m| m.cost() == measure::Cost::Fork),
+        "{order:?}"
+    );
+    let now = Measurement::ALL
+        .iter()
+        .filter(|m| m.how() == measure::How::Now)
+        .count();
+    assert_eq!(order.len(), now, "every Now measurement, once");
+}
+
+/// A source read once answers every measurement drawn from it, deadline or
+/// not: `runs.live` and `tasks.running` count the same moment.
+#[test]
+fn a_source_already_read_answers_after_the_deadline() {
+    let s = Scratch::new();
+    crate::runmarker::RunMarkers::new(crate::runmarker::task_dir_under(&s.0))
+        .mark_running("task-a", None)
+        .unwrap();
+    let reader = Reader::until(std::time::Instant::now() + std::time::Duration::from_millis(200))
+        .with_home(s.0.clone());
+    assert_eq!(reader.now(Measurement::RunsLive), obs(1.0));
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert_eq!(reader.now(Measurement::TasksRunning), obs(1.0));
+    unread_saying(reader.now(Measurement::HoldsLive), "time ran out");
+}
+
+/// Scanning writes nothing: not a store into being, not a sweep of the dead.
+#[test]
+fn scanning_creates_and_removes_nothing() {
+    let s = Scratch::new();
+    let holds = crate::hold::dir_under(&s.0);
+    std::fs::create_dir_all(&holds).unwrap();
+    let dead = holds.join(format!("{DEAD}-gone.hold"));
+    std::fs::write(&dead, "{").unwrap();
+    for m in SCANS {
+        scan(&s.0, m);
+    }
+    assert!(dead.exists(), "a dead hold was swept by a measurement");
+    let mut left: Vec<String> = std::fs::read_dir(&s.0)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(left, vec!["holds"], "a scan created a store");
+}
+
+#[test]
+fn runs_count_tasks_and_trigger_fires_and_skip_the_dead() {
+    let s = Scratch::new();
+    let tasks = crate::runmarker::RunMarkers::new(crate::runmarker::task_dir_under(&s.0));
+    tasks.mark_running("task-a", None).unwrap();
+    crate::trigger::TriggerStore::open(crate::trigger::TriggerStore::root_under(&s.0))
+        .unwrap()
+        .mark_running("brief", None)
+        .unwrap();
+    std::fs::write(
+        tasks.dir().join("task-b.running"),
+        format!(r#"{{"pid":{DEAD},"started_at":"2031-04-17T09:00:00Z"}}"#),
+    )
+    .unwrap();
+    assert_eq!(scan(&s.0, Measurement::RunsLive), obs(2.0));
+    assert_eq!(scan(&s.0, Measurement::TasksRunning), obs(1.0));
+
+    // A torn marker may be a run: the count is unread, never one short.
+    std::fs::write(tasks.dir().join("task-c.running"), "{").unwrap();
+    unread_saying(scan(&s.0, Measurement::TasksRunning), "at least 1");
+    unread_saying(scan(&s.0, Measurement::RunsLive), "at least 2");
+}
+
+#[test]
+fn holds_count_every_router_and_a_torn_file_by_the_pid_in_its_name() {
+    let s = Scratch::new();
+    let dir = crate::hold::dir_under(&s.0);
+    std::fs::create_dir_all(&dir).unwrap();
+    let me = std::process::id();
+    let hold = |pid: u32, router: &str| {
+        serde_json::to_string(&crate::hold::Hold {
+            pid,
+            base_url: router.into(),
+            what: "a test".into(),
+            taken_at: Utc::now(),
+        })
+        .unwrap()
+    };
+    std::fs::write(dir.join(format!("{me}-a.hold")), hold(me, "http://one")).unwrap();
+    std::fs::write(dir.join(format!("{me}-b.hold")), hold(me, "http://two")).unwrap();
+    std::fs::write(dir.join(format!("{DEAD}-c.hold")), hold(DEAD, "http://one")).unwrap();
+    // Torn, with a live pid in its name: a hold, as `Holds::live` reads it.
+    std::fs::write(dir.join(format!("{me}-d.hold")), "{").unwrap();
+    assert_eq!(scan(&s.0, Measurement::HoldsLive), obs(3.0));
+
+    std::fs::write(dir.join("no-pid.hold"), "{").unwrap();
+    unread_saying(scan(&s.0, Measurement::HoldsLive), "at least 3");
+}
+
+#[test]
+fn permits_count_the_seats_held_now() {
+    let s = Scratch::new();
+    let pool = crate::permit::Permits::new(crate::permit::dir_under(&s.0), 3);
+    let held = pool.take("a test").unwrap().expect("a free seat");
+    assert_eq!(scan(&s.0, Measurement::PermitsLive), obs(1.0));
+    drop(held);
+    assert_eq!(scan(&s.0, Measurement::PermitsLive), obs(0.0));
+}
+
+#[test]
+fn messages_count_what_waits_unclaimed_in_the_mailbox_the_config_names() {
+    let s = Scratch::new();
+    let elsewhere = s.0.join("moved");
+    let store = crate::mailbox::MailboxStore::open(&elsewhere).unwrap();
+    store
+        .send(
+            "planner",
+            "builder",
+            None,
+            "the schema is merged",
+            None,
+            crate::agent::Taint::default(),
+        )
+        .unwrap();
+    // The default place is empty; the configured one holds the message.
+    assert_eq!(scan(&s.0, Measurement::MessagesUnread), obs(0.0));
+    let mut cfg = crate::config::Config::default();
+    cfg.messages.dir = Some(elsewhere.clone());
+    let configured = |home: &Path| {
+        Reader::new()
+            .with_home(home.to_path_buf())
+            .configured(Some(&cfg))
+            .now(Measurement::MessagesUnread)
+    };
+    assert_eq!(configured(&s.0), obs(1.0));
+
+    // A torn message may be pending, and a scan does not quarantine it.
+    let torn = elsewhere.join("planner").join("zz-torn.json");
+    std::fs::write(&torn, "{").unwrap();
+    unread_saying(configured(&s.0), "at least 1");
+    assert!(torn.exists(), "a measurement quarantined a message");
+}
+
+/// The reader walks a trigger with no zone of its own in `[agent]
+/// timezone`, as the scheduler fires it (review of #641): the slot that ran
+/// is the one it checks.
+#[test]
+fn the_tally_reaches_the_agents_timezone_through_the_config() {
+    let s = Scratch::new();
+    let new_york: chrono_tz::Tz = "America/New_York".parse().unwrap();
+    let now = Utc::now();
+    let store =
+        crate::trigger::TriggerStore::open(crate::trigger::TriggerStore::root_under(&s.0)).unwrap();
+    let mut t = crate::trigger::Trigger::new("brief", "0 9 * * *".parse().unwrap(), "brief me");
+    t.created_at = Some(now - chrono::Duration::hours(30));
+    store.save(&t).unwrap();
+    // Written 30 hours ago, so the whole day is owed.
+    let written: std::time::SystemTime = (now - chrono::Duration::hours(30)).into();
+    std::fs::File::options()
+        .write(true)
+        .open(store.path_of("brief"))
+        .unwrap()
+        .set_modified(written)
+        .unwrap();
+    // The slot that ran: 09:00 in New York, the last one past the grace.
+    let slot = t
+        .schedule
+        .prev_at_or_before(now - chrono::Duration::minutes(2), new_york)
+        .unwrap();
+    let mut ran = crate::trigger::RunRecord::started("brief", Some(slot), false);
+    ran.started_at = slot;
+    store.append_run(&ran).unwrap();
+
+    let mut cfg = crate::config::Config::default();
+    cfg.agent.timezone = Some("America/New_York".into());
+    let reader = Reader::new().with_home(s.0.clone()).configured(Some(&cfg));
+    assert_eq!(reader.now(Measurement::TriggersMissed), obs(0.0));
+}
+
+/// Only an active unit can be speaking, and only "not found and inactive" is
+/// no engine at all: a masked or broken unit file says nothing about a
+/// process that is still running (review of #641).
+#[test]
+fn the_speech_engine_is_running_by_its_active_state_never_its_unit_file() {
+    use source::{parse_unit_run, UnitRun};
+    let run = |load: &str, active: &str| {
+        parse_unit_run(&format!("LoadState={load}\nActiveState={active}\n"))
+    };
+    assert_eq!(run("loaded", "active"), Some(UnitRun::Running));
+    assert_eq!(run("masked", "active"), Some(UnitRun::Running));
+    assert_eq!(run("not-found", "active"), Some(UnitRun::Running));
+    assert_eq!(run("error", "deactivating"), Some(UnitRun::Running));
+    assert_eq!(run("loaded", "inactive"), Some(UnitRun::Stopped));
+    assert_eq!(run("loaded", "failed"), Some(UnitRun::Stopped));
+    assert_eq!(run("not-found", "inactive"), Some(UnitRun::Absent));
+    assert_eq!(
+        run("loaded", "maintenance"),
+        None,
+        "a state this build does not know"
+    );
+    assert_eq!(
+        parse_unit_run("LoadState=loaded\n"),
+        None,
+        "no active state"
+    );
+    assert_eq!(parse_unit_run(""), None);
+}
+
+#[test]
+fn a_call_is_live_when_the_speech_engine_logged_a_sentence() {
+    assert!(source::spoke(
+        "[Perf] Total 812.4 ms (42 frames, 9.10 ms/frame AR, audio 3.36 s, RTF 0.242)\n"
+    ));
+    assert!(!source::spoke("loading the model\nready on :8094\n"));
+    assert!(!source::spoke(""));
 }

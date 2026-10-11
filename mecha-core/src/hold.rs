@@ -56,6 +56,13 @@ pub struct Switch {
     pub started_at: DateTime<Utc>,
 }
 
+/// [`Holds::census`]'s answer: live holds, and files that may be.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Census {
+    pub live: usize,
+    pub unreadable: usize,
+}
+
 /// The directory.
 pub struct Holds {
     dir: PathBuf,
@@ -247,6 +254,38 @@ impl Holds {
         }
         out.sort_by_key(|h| h.taken_at);
         out
+    }
+
+    /// How many runs hold a model, on every router, **without sweeping**:
+    /// [`live`](Self::live) removes what it finds dead, which a switch may
+    /// do and a measurement may not (`SYSTEM-STATE-DESIGN.md` §4 rule 3).
+    /// Counted as `live` counts: a file this build cannot read is a hold
+    /// while the pid in its name is alive. One whose name carries no pid
+    /// cannot be placed, and is counted in `unreadable` — it may be a hold.
+    /// A directory that does not exist is no holds; one that cannot be read
+    /// is an error.
+    pub fn census(&self) -> Result<Census> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Census::default()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e)
+                    .context(format!("reading the holds in {}", self.dir.display())))
+            }
+        };
+        let mut out = Census::default();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("hold") {
+                continue;
+            }
+            match read::<Hold>(&path).map(|h| h.pid).or_else(|| pid_of(&path)) {
+                Some(pid) if crate::process_alive(pid) => out.live += 1,
+                Some(_) => {}
+                None => out.unreadable += 1,
+            }
+        }
+        Ok(out)
     }
 
     /// The switch pending on `base_url`, if any. One whose switcher is gone

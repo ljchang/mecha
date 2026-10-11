@@ -54,8 +54,8 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Eight tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]`, `[slack]`, `[web]`, `[system]`, `[harness]`, `[image]`, `[documents]` and `[approval]`.
+Eleven tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]`, `[system]`, `[harness]`, `[image]`, `[documents]`, `[voice]`, `[personas]`, `[features]` and `[approval]`.
 `[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
@@ -67,8 +67,10 @@ off the check standing between a picture and an out-of-memory;
 authority on which of this harness's protections are load-bearing — a repository
 able to set that could hand the diagnostician its own prose about what is safe to
 change; `[image]` names where model-written image prompts are sent, which is
-only safe while you chose it; and `[documents]` names where page images of your
-documents are sent and how the PDF parser is confined. The strip is loud rather than silent — a project file naming any of them
+only safe while you chose it; `[documents]` names where page images of your
+documents are sent and how the PDF parser is confined; `[voice]` names where your
+audio goes; `[personas]` holds a safety setting; and `[features]` turns on a
+feature's tools, servers and web surface. The strip is loud rather than silent — a project file naming any of them
 logs a warning saying the section is ignored, because an ignored section that
 looks applied is the silently-degrading-sandbox shape. A global one is kept, of
 course; there is a test on each side of that boundary.
@@ -421,25 +423,27 @@ file and carries none by default.
 
 Which optional parts of mecha are switched on: one `true` or `false` per
 feature. **Global file only** — a project's `mecha.toml` is stripped of it, so a
-cloned repository can never turn a feature on. `mecha config init` writes the
-table in full with every feature off, and `mecha features enable <id>` edits it
-in place.
+cloned repository can never turn a feature on. `mecha config init` (and `mecha
+setup`, when there is no file yet) writes the table with every feature listed
+and none answered: each line is commented, so the feature is off and `mecha
+setup` asks about it. `mecha features enable <id>` writes `true` in place; a
+`false` is a no that `mecha setup` keeps rather than asks about again.
 
 ```toml
 [features]
-web = false        # the web app (`mecha serve`)
-slack = false      # Slack remote control
-mail = false       # mail and calendar
-docs = false       # Google Docs, Sheets and Slides
-graph = false      # the knowledge graph and the task board
-search = false     # web search and open
-documents = false  # PDF extraction (OCR and layout are [documents] settings)
-image = false      # image generation and the character library
-personas = false   # characters you write and talk to
-voice = false      # dictation and voice calls
-incognito = false  # a web chat that leaves no trace
-frontdoor = false  # inbound requests, polls and publishing
-messages = false   # messages between sessions on this machine
+# web = false        # the web app (`mecha serve`)
+# slack = false      # Slack remote control
+# mail = false       # mail and calendar
+# docs = false       # Google Docs, Sheets and Slides
+# graph = false      # the knowledge graph and the task board
+# search = false     # web search and open
+# documents = false  # PDF extraction (OCR and layout are [documents] settings)
+# image = false      # image generation and the character library
+# personas = false   # characters you write and talk to
+# voice = false      # dictation and voice calls
+# incognito = false  # a web chat that leaves no trace
+# frontdoor = false  # inbound requests, polls and publishing
+# messages = false   # messages between sessions on this machine
 ```
 
 The switch is the only switch; a settings table such as `[image]` or
