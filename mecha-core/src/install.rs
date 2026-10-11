@@ -223,7 +223,17 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     // nothing it fetches goes uncounted (review of #649). A machine
     // `speech_unit::fits` refuses is not offered the server, so neither the
     // clip nor the slot's model is its plan's (review of #649).
-    if wanted(plan, crate::speech_unit::ID) {
+    // Asked of every machine it is missing on, installable or not: macOS is
+    // not offered it either, and is told why (review of #649).
+    let speech_missing = plan.sidecars.iter().any(|s| {
+        s.id == crate::speech_unit::ID
+            && matches!(
+                s.state,
+                SidecarState::Missing { .. } | SidecarState::Incomplete
+            )
+            && not_needed(s.id, feature, chat_here).is_none()
+    });
+    if speech_missing {
         match crate::speech_unit::fits(std::env::consts::OS, nvidia()) {
             Ok(_) => {
                 let bytes: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
