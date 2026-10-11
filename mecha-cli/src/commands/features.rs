@@ -278,9 +278,11 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
             // An installed server re-offered for turbo alone has not been
             // through the fit check above, and the install would fail on it
             // — writing no switch, which a machine that does not fit is
-            // never refused (#645; review of #650).
+            // never refused (#645; review of #650). A missing one dropped
+            // by that check is told the same reason it was, not another.
             let unfit = match (&wanted, &comfy_found) {
-                (Some(_), Some((_, SidecarState::Installed))) if !installing && !linked => {
+                (Some(_), Some((_, SidecarState::Provided { .. }))) => None,
+                (Some(_), Some(_)) if !installing && !linked && !comfy_left_alone => {
                     comfy::fits(std::env::consts::OS, std::env::consts::ARCH, read_nvidia()).err()
                 }
                 _ => None,
@@ -332,8 +334,12 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     comfy::Naming::shipped().port,
                     mecha_core::sampling::TURBO_MODEL
                 ),
+                (Some(why), Some((_, SidecarState::Unknown { .. }))) if turbo => println!(
+                    "The turbo model is not fetched ({why}): the image server could not be \
+                     checked (said above)."
+                ),
                 (Some(why), _) if turbo => {
-                    println!("The turbo model is not fetched ({why}): mecha installs no image server here.")
+                    println!("The turbo model is not fetched ({why}): mecha is not installing an image server here.")
                 }
                 (Some(_), _) => {}
             }
@@ -955,9 +961,6 @@ fn render(rows: &[Row], announced: &[feature::Announcement]) -> String {
 mod tests {
     use super::*;
 
-    /// The #445 leftover: a graph tool missing from a run's surface names the
-    /// switch when that is why, and the `[[mcp]]` entry only when it is not —
-    /// read from the global file, as every refusal is.
     /// `--turbo` is the image model's, and fetches: both refusals come
     /// before the machine is read, and write nothing (review of #650).
     #[test]
@@ -979,6 +982,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
     }
 
+    /// The #445 leftover: a graph tool missing from a run's surface names the
+    /// switch when that is why, and the `[[mcp]]` entry only when it is not —
+    /// read from the global file, as every refusal is.
     #[test]
     fn a_missing_graph_tool_names_the_switch_when_that_is_the_cause() {
         let home = crate::testenv::HomeGuard::new("features-graph-absent");
