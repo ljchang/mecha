@@ -83,7 +83,10 @@ fn read_arm(file: &Path) -> Result<Arm> {
 fn distinct_labels(arms: &mut [Arm]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for a in arms.iter() {
-        let path = std::path::absolute(&a.file)?;
+        // Canonical, so `a/../a/c.jsonl` is `a/c.jsonl` (read_arm has
+        // already read it, so it exists).
+        let path = std::fs::canonicalize(&a.file)
+            .with_context(|| format!("resolving {}", a.file.display()))?;
         if !seen.insert(path.clone()) {
             bail!("{} is named twice", path.display());
         }
@@ -100,6 +103,15 @@ fn distinct_labels(arms: &mut [Arm]) -> Result<()> {
 /// Every output refused before any question is asked if it is there
 /// already: a verdict file is one judges' reading, never two mixed.
 fn refuse_existing(outputs: &[PathBuf]) -> Result<()> {
+    // Two outputs at one path would write over each other (a `--sheet`
+    // named as an arm's verdicts), so they are told apart first.
+    let mut seen = std::collections::HashSet::new();
+    for out in outputs {
+        let at = std::path::absolute(out)?;
+        if !seen.insert(at.clone()) {
+            bail!("{} would be written twice", at.display());
+        }
+    }
     for out in outputs {
         if out.exists() {
             bail!(
@@ -182,11 +194,16 @@ pub async fn execute(
                 continue;
             };
             let index = sample["sample"].as_u64().unwrap_or_default() as usize;
+            // The pictures the tool delivered: each has a manifest. A layered
+            // build also saves its plate and each cutout into the workspace,
+            // and judging those would make a layers arm's count of pictures
+            // unlike a plain arm's (review of #644, pass 2).
             let pictures: Vec<&str> = render["pictures"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
+                .filter(|p| manifest_of(render, Path::new(p)).is_some())
                 .collect();
             for picture in pictures {
                 let j = judge_one(
@@ -201,7 +218,7 @@ pub async fn execute(
                 .await?;
                 writeln!(file, "{}", serde_json::to_string(&j)?)?;
                 tiles.push(rj::Tile {
-                    src: format!("file://{picture}"),
+                    src: file_url(picture),
                     caption: rj::caption(&j),
                 });
                 eprintln!(
@@ -230,6 +247,22 @@ pub async fn execute(
         println!("{}", serde_json::to_string_pretty(&summaries)?);
     }
     Ok(())
+}
+
+/// A local picture's address for the sheet: a `#`, `?`, `%` or space in a
+/// folder name would otherwise end or bend the URL (review of #644).
+fn file_url(path: &str) -> String {
+    let mut url = String::from("file://");
+    for c in path.chars() {
+        match c {
+            '%' => url.push_str("%25"),
+            '#' => url.push_str("%23"),
+            '?' => url.push_str("%3F"),
+            ' ' => url.push_str("%20"),
+            c => url.push(c),
+        }
+    }
+    url
 }
 
 /// What a sample's manifests say of `picture`: the one whose `image` names
@@ -277,6 +310,19 @@ async fn ask(
         );
     }
     Ok(text)
+}
+
+/// One question about one picture, answered or not.
+async fn ask_of(
+    provider: &dyn mecha_core::provider::Provider,
+    pass: &QuarantinedPass,
+    picture: &[u8],
+    question: &str,
+) -> std::result::Result<String, String> {
+    match pass.ask_about(picture, question) {
+        Ok(request) => ask(provider, request).await,
+        Err(e) => Err(format!("the picture could not be shown: {e:#}")),
+    }
 }
 
 /// An answer read by `read`, or why there is no verdict: an answer it
@@ -343,7 +389,16 @@ async fn judge_one(
         })
         .map(|p| scratch.join("work").join(p))
         .filter(|p| p.is_file());
-    let base_bytes = base.as_ref().and_then(|p| std::fs::read(p).ok());
+    let base_bytes = match base.as_ref().map(std::fs::read) {
+        Some(Ok(b)) => Some(b),
+        Some(Err(e)) => {
+            j.errors.push(format!(
+                "the picture it started from did not read, so nothing was asked of it: {e}"
+            ));
+            None
+        }
+        None => None,
+    };
     j.base = base.map(|p| p.display().to_string());
     if let Some(b) = &base_bytes {
         j.layout_similarity = mecha_core::imagegen::layout_similarity(b, &bytes);
@@ -380,28 +435,26 @@ async fn judge_one(
         })
         .await?;
     let provider = crate::setup::persona_provider(&bound, PersonaUse::Judge)?;
-    let shown = mecha_core::image::rendered_block(&bytes, None)?;
-    let shown_base = base_bytes
-        .as_deref()
-        .map(|b| mecha_core::image::rendered_block(b, None))
-        .transpose()?;
+    let shown: &[u8] = &bytes;
+    let shown_base = base_bytes.as_deref();
     j.people_asked = verdict(
-        ask(
-            provider.as_ref(),
-            pass.ask_about(shown.clone(), rj::PEOPLE_QUESTION),
-        )
-        .await,
+        ask_of(provider.as_ref(), pass, shown, rj::PEOPLE_QUESTION).await,
         rj::count,
         &mut j.errors,
     );
     for clause in clauses {
         let question = clause.question();
-        let on = |block: &mecha_core::message::Block| {
-            ask(provider.as_ref(), pass.ask_about(block.clone(), &question))
-        };
-        let picture_says = verdict(on(&shown).await, rj::yes_no, &mut j.errors);
-        let base_says = match &shown_base {
-            Some(b) => verdict(on(b).await, rj::yes_no, &mut j.errors),
+        let picture_says = verdict(
+            ask_of(provider.as_ref(), pass, shown, &question).await,
+            rj::yes_no,
+            &mut j.errors,
+        );
+        let base_says = match shown_base {
+            Some(b) => verdict(
+                ask_of(provider.as_ref(), pass, b, &question).await,
+                rj::yes_no,
+                &mut j.errors,
+            ),
             None => None,
         };
         j.clauses.push(Verdict {
@@ -465,7 +518,10 @@ mod tests {
     #[test]
     fn outputs_and_labels_are_settled_before_any_question() {
         let dir = std::env::temp_dir().join(format!("mecha-rj-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("a")).unwrap();
+        for d in ["a", "b"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+            std::fs::write(dir.join(d).join("c.jsonl"), "").unwrap();
+        }
         let there = dir.join("a").join("v.jsonl");
         std::fs::write(&there, "").unwrap();
         let err = refuse_existing(&[dir.join("none"), there.clone()]).unwrap_err();
@@ -480,9 +536,32 @@ mod tests {
         let mut arms = vec![arm(dir.join("a/c.jsonl")), arm(dir.join("b/c.jsonl"))];
         distinct_labels(&mut arms).unwrap();
         assert_ne!(arms[0].label, arms[1].label);
-        let mut twice = vec![arm(dir.join("a/c.jsonl")), arm(dir.join("a/c.jsonl"))];
+        // One file by two spellings is one file.
+        let mut twice = vec![arm(dir.join("a/c.jsonl")), arm(dir.join("a/../a/c.jsonl"))];
         assert!(distinct_labels(&mut twice).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only a picture the tool delivered has a manifest: a layered build's
+    /// plate and cutouts are not judged (review of #644, pass 2).
+    #[test]
+    fn only_a_delivered_picture_has_a_manifest() {
+        let render = serde_json::json!({"manifests": [{"image": "images/1-2.png"}]});
+        assert!(manifest_of(&render, Path::new("/s/work/images/1-2.png")).is_some());
+        assert!(manifest_of(&render, Path::new("/s/work/images/1-2-plate.png")).is_none());
+        assert!(manifest_of(&render, Path::new("/s/work/images/1-2-cutout-mara.png")).is_none());
+    }
+
+    /// A sheet named as an arm's verdicts is refused, and a tile's address
+    /// survives the characters a folder may hold.
+    #[test]
+    fn outputs_never_collide_and_addresses_survive_their_folders() {
+        let v = PathBuf::from("/r/c.replay-judges-1.jsonl");
+        assert!(refuse_existing(&[v.clone(), v]).is_err());
+        assert_eq!(
+            file_url("/r/run #2/a?.png"),
+            "file:///r/run%20%232/a%3F.png"
+        );
     }
 
     /// An empty or unreadable answer is said, never only counted as none.
