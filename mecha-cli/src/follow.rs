@@ -174,17 +174,20 @@ impl Follower {
         let cfg = load_config(&opts)?;
         let pinned = opts.provider.is_some() || opts.model.is_some();
         let warned = Mutex::new(HashSet::new());
-        let seen = observe(&cfg, pinned, &warned).await;
+        let (seen, named) = observe(&cfg, pinned, command_line(&opts), &warned).await;
         let generations = AtomicU64::new(0);
-        let first = build(
-            &opts,
-            &finish,
-            &generations,
-            resolve(&cfg, pinned, &seen),
-            None,
-            &seen,
-        )
-        .await?;
+        let want = resolve(&cfg, pinned, &seen);
+        // Never over a `--model`: that is the owner's name, not the server's.
+        let asks = if opts.model.is_none() {
+            let entry = want
+                .clone()
+                .or_else(|| opts.provider.clone())
+                .unwrap_or_else(|| cfg.default_provider.clone());
+            asked_name(&cfg, &entry, &named)
+        } else {
+            None
+        };
+        let first = build(&opts, &finish, &generations, want, asks, None, &seen).await?;
         Ok(Follower {
             opts,
             pinned,
@@ -299,17 +302,36 @@ impl Follower {
                 return Ok(self.current());
             }
         };
-        let seen = observe(&cfg, self.pinned, &self.warned).await;
-        let Some(want) = resolve(&cfg, self.pinned, &seen) else {
-            return Ok(self.current());
+        let (seen, named) =
+            observe(&cfg, self.pinned, command_line(&self.opts), &self.warned).await;
+        let want = match resolve(&cfg, self.pinned, &seen) {
+            Some(want) => want,
+            // `--provider` on an entry that names no model pins the entry,
+            // not a model: its name is the server's, asked each turn as
+            // `start` asked it, so a `mecha model use` is followed rather
+            // than loaded back. `--model` alone freezes the name (review of
+            // #637).
+            None => {
+                let cur = self.current().provider_name.clone();
+                let asks = asked_name(&cfg, &cur, &named).is_some();
+                if !pinned_entry_asks(&self.opts, asks) {
+                    return Ok(self.current());
+                }
+                cur
+            }
         };
-        if self.current().provider_name == want {
+        // A default that names no model asks for what its server serves, as
+        // this probe read it: a surface that outlives a `mecha model use`
+        // moves with it rather than load the old pick back (review of #637).
+        let asks = asked_name(&cfg, &want, &named);
+        let stays = |cur: &Bound| stays(&cur.provider_name, &cur.model, &want, asks.as_deref());
+        if stays(&self.current()) {
             return Ok(self.current());
         }
         let _one = self.rebuilding.lock().await;
         // Another turn may have rebuilt while this one waited.
         let cur = self.current();
-        if cur.provider_name == want {
+        if stays(&cur) {
             return Ok(cur);
         }
         let built = build(
@@ -317,6 +339,7 @@ impl Follower {
             &self.finish,
             &self.generations,
             Some(want.clone()),
+            asks.clone(),
             Some(&cur),
             &seen,
         );
@@ -532,9 +555,14 @@ impl Follower {
 async fn observe(
     cfg: &Config,
     pinned: bool,
+    line: mecha_core::provider::router::CommandLine<'_>,
     warned: &Mutex<HashSet<String>>,
-) -> Vec<mecha_core::provider::router::Seen> {
-    let (warnings, seen) = mecha_core::provider::router::observe_seen(cfg, !pinned).await;
+) -> (
+    Vec<mecha_core::provider::router::Seen>,
+    Vec<mecha_core::provider::router::Named>,
+) {
+    let (warnings, seen, named) =
+        mecha_core::provider::router::observe_all_for(cfg, !pinned, line).await;
     let mut warned = warned.lock().unwrap_or_else(|e| e.into_inner());
     warned.retain(|w| warnings.contains(w));
     for w in warnings {
@@ -542,7 +570,50 @@ async fn observe(
             tracing::warn!("{w}");
         }
     }
-    seen
+    (seen, named)
+}
+
+/// Whether a pinned surface still asks its server each turn: `--provider` on
+/// an entry that names no model pins the entry, not a model, so its name is
+/// the server's; `--model` freezes it (review of #637).
+fn pinned_entry_asks(opts: &GlobalOpts, entry_asks: bool) -> bool {
+    opts.model.is_none() && opts.provider.is_some() && entry_asks
+}
+
+/// What the surface's own `--provider`/`--model` named, for the probe.
+fn command_line(opts: &GlobalOpts) -> mecha_core::provider::router::CommandLine<'_> {
+    mecha_core::provider::router::CommandLine {
+        provider: opts.provider.as_deref(),
+        model: opts.model.is_some(),
+    }
+}
+
+/// Whether a surface bound to `provider`/`model` stays put this turn: the
+/// entry it should be on is the one it is on, and — for an entry that asks
+/// its server — the name the server gave now is the one it was built with.
+/// A moved name is a rebuild, or the next request would load the old pick
+/// back (review of #637).
+fn stays(provider: &str, model: &str, want: &str, asks: Option<&str>) -> bool {
+    provider == want && asks.is_none_or(|n| n == model)
+}
+
+/// The model entry `want` asks for when it names none and its server said
+/// what it serves in this probe (`router::asks_its_server`); `None` for an
+/// entry that names its own, or a server that did not say.
+fn asked_name(
+    cfg: &Config,
+    want: &str,
+    named: &[mecha_core::provider::router::Named],
+) -> Option<String> {
+    let p = cfg.providers.get(want)?;
+    if !mecha_core::provider::router::asks_its_server(p) {
+        return None;
+    }
+    let b = mecha_core::provider::router::base(p.base_url.as_deref()?);
+    named
+        .iter()
+        .find(|(at, _)| *at == b)
+        .map(|(_, m)| m.clone())
 }
 
 /// The provider the default resolves to now, or `None` to stay where the
@@ -593,7 +664,13 @@ fn resolve_seen(
     if default.model.as_deref() == Some(resident) {
         return Some(name.clone());
     }
+    // An entry that names the resident model is followed to; failing one, a
+    // default that names no model stands, since it asks its server and so
+    // names the resident model too — `None` here would keep the surface on
+    // the model it last asked for, and its next request would load that
+    // back (review of #637).
     mecha_core::provider::router::followed(cfg, name, std::slice::from_ref(&seen))
+        .or_else(|| mecha_core::provider::router::asks_its_server(default).then(|| name.clone()))
 }
 
 /// One `setup::prepare`, finished by the surface. `provider` names the
@@ -606,12 +683,21 @@ async fn build(
     finish: &Finish,
     generations: &AtomicU64,
     provider: Option<String>,
+    model: Option<String>,
     carry: Option<&Bound>,
     seen: &[mecha_core::provider::router::Seen],
 ) -> Result<Arc<Bound>> {
     let mut opts = opts.clone();
     if provider.is_some() {
         opts.provider = provider;
+    }
+    // The name this surface's own probe read, never the process global a
+    // concurrent observe may have overwritten (`router::observe_seen`).
+    // The one exception: when the probe could not name it, `opts.model`
+    // stays unset and `from_config` falls back to the global (review of
+    // #637).
+    if model.is_some() {
+        opts.model = model;
     }
     // The old todo handle goes in where `prepare` registers one, before the
     // subagents are built from the registry — so parent, children and page
@@ -638,6 +724,40 @@ mod tests {
     use mecha_core::provider::router::Seen;
 
     const ROUTER: &str = "http://127.0.0.1:8080";
+
+    /// A model-less entry the owner configured here asks for what this probe
+    /// read for its server; one that names its model, or the built-in
+    /// default, asks for nothing (review of #637).
+    #[test]
+    fn a_model_less_default_asks_for_what_this_probe_read() {
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers.insert(
+            "local".into(),
+            ProviderConfig {
+                kind: "local".into(),
+                base_url: Some(format!("{ROUTER}/v1")),
+                ..Default::default()
+            },
+        );
+        let named = vec![(ROUTER.to_string(), "gemma-4-26b-a4b".to_string())];
+        assert_eq!(
+            asked_name(&cfg, "local", &named).as_deref(),
+            Some("gemma-4-26b-a4b")
+        );
+        assert_eq!(asked_name(&cfg, "local", &[]), None);
+        cfg.providers.get_mut("local").unwrap().model = Some("qwen".into());
+        assert_eq!(asked_name(&cfg, "local", &named), None);
+        // The built-in default asks too: it is what a machine with no config
+        // file runs on (review of #637).
+        let builtin = Config::default();
+        assert_eq!(
+            asked_name(&builtin, "local", &named).as_deref(),
+            Some("gemma-4-26b-a4b")
+        );
+    }
 
     /// Production following the router, the uncensored arm and Gemma as its
     /// siblings on the same port — the installed shape (§14).
@@ -671,6 +791,60 @@ mod tests {
             resident: resident.map(str::to_string),
             slots: Some(4),
         })
+    }
+
+    /// A followed default that names no model stands, whatever is loaded:
+    /// it asks its server, so the turn reads the name from its own probe —
+    /// a `None` here kept the surface on the model it last asked for, and
+    /// its next request loaded that back (review of #637).
+    #[test]
+    fn a_followed_default_that_asks_stands_and_asks() {
+        let mut c = cfg(true);
+        c.providers.get_mut("local").unwrap().model = None;
+        assert_eq!(
+            resolve_seen(&c, false, seen(Some("a-model-nobody-names"))).as_deref(),
+            Some("local")
+        );
+        // An entry naming the resident model still wins.
+        assert_eq!(
+            resolve_seen(&c, false, seen(Some("gemma-4-26b-a4b"))).as_deref(),
+            Some("gemma26")
+        );
+    }
+
+    #[test]
+    fn a_provider_pin_on_an_asking_entry_still_asks() {
+        let with = |provider: Option<&str>, model: Option<&str>| GlobalOpts {
+            provider: provider.map(str::to_string),
+            model: model.map(str::to_string),
+            ..GlobalOpts::default()
+        };
+        assert!(pinned_entry_asks(&with(Some("local"), None), true));
+        assert!(
+            !pinned_entry_asks(&with(Some("local"), None), false),
+            "names its own"
+        );
+        assert!(
+            !pinned_entry_asks(&with(Some("local"), Some("qwen")), true),
+            "--model"
+        );
+        assert!(!pinned_entry_asks(&with(None, Some("qwen")), true));
+    }
+
+    /// A surface stays only on the entry it should be on and, for an entry
+    /// that asks its server, on the name the server gives now.
+    #[test]
+    fn a_surface_rebuilds_when_its_entry_or_its_asked_name_moves() {
+        assert!(stays("local", "qwen", "local", None), "names its own model");
+        assert!(stays("local", "qwen", "local", Some("qwen")));
+        assert!(
+            !stays("local", "qwen", "local", Some("gemma")),
+            "the server moved"
+        );
+        assert!(
+            !stays("local", "qwen", "gemma26", None),
+            "followed to another entry"
+        );
     }
 
     /// The case the module exists for: the owner loaded another model from

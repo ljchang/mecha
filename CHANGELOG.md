@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A local provider with no `model` asks for what its server serves.** A
+  `[providers.local]` on this machine that names no `model` used to send
+  `gpt-4o-mini` — which a llama-server router does not serve, and which
+  every session record then named as the model that answered. It now asks
+  for the router's loaded model, or its only one, or a plain server's alias,
+  read once when the command starts; a router with several and none loaded
+  is reported rather than guessed at. The same holds with no config file at
+  all, where the built-in local provider is the default.
+
 - **`mecha setup` is one guided pass.** At a terminal it asks about the chat
   model first — the one recommended for your machine, a GGUF you have, or a
   hosted model — then each feature as a yes or no with what it downloads, then
