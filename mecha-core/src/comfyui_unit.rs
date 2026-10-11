@@ -757,6 +757,23 @@ mod tests {
         assert_eq!(owned_text, "[image]\nurl = \"http://127.0.0.1:9000\"\n");
     }
 
+    /// The registry knows the unit this installs: with its record lost, a
+    /// running install still shows itself rather than reading as missing.
+    #[test]
+    fn the_registry_names_the_unit_this_installs() {
+        let unit = format!("{}.service", Naming::shipped().unit);
+        let sc = crate::sidecar::SIDECARS
+            .iter()
+            .find(|s| s.id == ID)
+            .unwrap();
+        assert!(
+            sc.evidence
+                .iter()
+                .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(u) if *u == unit)),
+            "{unit}"
+        );
+    }
+
     #[test]
     fn the_shipped_port_is_the_image_url_default() {
         let url = crate::imagegen::ImageConfig::default().url;
