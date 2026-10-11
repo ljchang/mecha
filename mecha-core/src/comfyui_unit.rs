@@ -214,8 +214,8 @@ pub fn turbo_linked(mecha_home: &Path) -> bool {
 }
 
 /// Why an install here should fetch the turbo model, or `None`: it was
-/// asked for, it is linked already (a reinstall keeps it), or a persona's
-/// picture settings choose it while `configured` — `[image] turbo_model`,
+/// asked for, it is linked already (a reinstall keeps it), or the chat's
+/// or a persona's picture settings choose it while `configured` — `[image] turbo_model`,
 /// `None` without a table — is the pinned file. The key is never a reason
 /// of its own: it has a default, so it is set on every machine. Naming
 /// another file, it is what a turbo picture loads, which this fetch would
@@ -231,6 +231,8 @@ pub fn turbo_wanted(mecha_home: &Path, asked: bool, configured: Option<&str>) ->
         return None;
     }
     // The chat's settings are every persona's that leaves the model unset.
+    // A damaged or unreadable file is said by `sampling::chat` itself, in a
+    // warning, and reads here as nothing chosen.
     let chat = crate::sampling::chat(&crate::sampling::chat_path(mecha_home));
     if chat.model == Some(crate::sampling::Model::Turbo) {
         return Some("the chat's picture settings choose it".into());

@@ -36,6 +36,7 @@ export const PANE_FEATURE = {
   'review/entities': 'graph',
   'review/frontdoor': 'frontdoor',
   'settings/voice': 'voice',
+  'settings/images': 'image',
   'library/voices': 'voice',
 };
 

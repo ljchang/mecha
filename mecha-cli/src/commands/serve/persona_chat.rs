@@ -816,9 +816,14 @@ impl PersonaChats {
             .unwrap_or_default()
     }
 
-    /// A persona's picture settings as the page shows them, over the chat's.
-    fn image_view(&self, tuning: &mecha_core::sampling::Tuning) -> serde_json::Value {
-        picture_view(tuning, Some(&self.chat_tuning()), self.image_steps)
+    /// A persona's picture settings as the page shows them, over `chat` —
+    /// read once by the caller, so a list of personas reads the file once.
+    fn image_view(
+        &self,
+        tuning: &mecha_core::sampling::Tuning,
+        chat: &mecha_core::sampling::Tuning,
+    ) -> serde_json::Value {
+        picture_view(tuning, Some(chat), self.image_steps)
     }
 
     /// The chat's picture settings as Settings → Images shows them.
@@ -1481,7 +1486,9 @@ impl PersonaChats {
             .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
         let state =
             mecha_core::persona::set_tuning(&self.store, &p.name, tuning).map_err(failed)?;
-        Ok(serde_json::json!({ "image": self.image_view(&state.image.tuning) }))
+        Ok(
+            serde_json::json!({ "image": self.image_view(&state.image.tuning, &self.chat_tuning()) }),
+        )
     }
 
     /// The personas a browsing surface may list, with what is wrong with each.
@@ -1500,6 +1507,9 @@ impl PersonaChats {
         };
         let store = Store::load(&self.store);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        // The chat's picture settings, read once for every row (review of
+        // #654).
+        let chat_picture = self.chat_tuning();
         let unlocked = library.unlocked(token);
         let rows: Vec<serde_json::Value> = store
             .visible(unlocked)
@@ -1533,7 +1543,7 @@ impl PersonaChats {
                     // page's default framing.
                     "frame": p.state.frame,
                     "touching": p.state.image.touching,
-                    "image": self.image_view(&p.state.image.tuning),
+                    "image": self.image_view(&p.state.image.tuning, &chat_picture),
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     // Waiting on the owner — the page's Waiting section —
@@ -8377,16 +8387,23 @@ mod tests {
             steps: Some(99),
             ..Tuning::default()
         });
-        let persona = p.image_view(&Tuning::default());
-        let own = p.image_view(&Tuning {
-            cfg: Some(2.0),
-            negative: Some(false),
-            ..Tuning::default()
-        });
-        let turbo = p.image_view(&Tuning {
-            model: Some(Model::Turbo),
-            ..Tuning::default()
-        });
+        let chat = p.chat_tuning();
+        let persona = p.image_view(&Tuning::default(), &chat);
+        let own = p.image_view(
+            &Tuning {
+                cfg: Some(2.0),
+                negative: Some(false),
+                ..Tuning::default()
+            },
+            &chat,
+        );
+        let turbo = p.image_view(
+            &Tuning {
+                model: Some(Model::Turbo),
+                ..Tuning::default()
+            },
+            &chat,
+        );
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(set["image"]["cfg"], 3.0);
         assert_eq!(read["image"]["inherits"], "default");
