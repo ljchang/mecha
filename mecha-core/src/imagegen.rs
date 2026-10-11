@@ -772,6 +772,12 @@ struct ComfyUi {
     /// only [`UNSEEN_WAIT`] - enough for a restart already under way, not a
     /// minute and a half of every picture against a stopped service.
     answered: std::sync::atomic::AtomicBool,
+    /// Where the model each server holds is written for every process that
+    /// draws (`ImageGenerate::with_model_record`): a serve restarted after a
+    /// turbo picture, or a replay beside serve, otherwise read an unused
+    /// server as holding the standard model and loaded it beside turbo
+    /// (mecha-a3's gate of #648). Unset (tests), this process's memory alone.
+    model_record: std::sync::OnceLock<std::path::PathBuf>,
 }
 
 /// Why a generation did not produce an image.
@@ -851,6 +857,29 @@ struct Outcome {
 static LAST_MODEL: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+/// The shared held-model record, by server address; unreadable reads empty,
+/// so a server reads as holding the standard model, as an unused one does.
+fn read_held(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Written whole beside itself and renamed over, so a reader never sees half.
+fn write_held(
+    path: &std::path::Path,
+    held: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_vec(held)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// How long a job waits after asking the server to unload, so the unload
 /// runs before the job: ComfyUI's worker wakes for the flag and acts on it
 /// only once its queue is empty, and a prompt that lands first is drawn
@@ -864,8 +893,7 @@ impl ComfyUi {
     /// Whether a picture drawn with `file` changes the model the server
     /// holds (`LAST_MODEL`); `standard` is what an unused server is read as.
     fn switching(&self, file: &str, standard: &str) -> bool {
-        let last = LAST_MODEL.lock().unwrap_or_else(|e| e.into_inner());
-        match last.get(self.base.as_str()).map(String::as_str) {
+        match self.held().as_deref() {
             // Released since its last picture: it holds nothing to unload.
             Some("") => false,
             Some(held) => held != file,
@@ -880,12 +908,33 @@ impl ComfyUi {
         self.drew_with("");
     }
 
-    /// Note `file` as the model this server now draws with.
+    /// The model this server last drew with, as the shared record says when
+    /// there is one, else as this process saw it. `""` is a released server.
+    fn held(&self) -> Option<String> {
+        match self.model_record.get() {
+            Some(path) => read_held(path).remove(self.base.as_str()),
+            None => LAST_MODEL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(self.base.as_str())
+                .cloned(),
+        }
+    }
+
+    /// Note `file` as the model this server now draws with. A record that
+    /// cannot be written costs only the next switch's unload.
     fn drew_with(&self, file: &str) {
         LAST_MODEL
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(self.base.to_string(), file.to_string());
+        if let Some(path) = self.model_record.get() {
+            let mut held = read_held(path);
+            held.insert(self.base.to_string(), file.to_string());
+            if let Err(e) = write_held(path, &held) {
+                tracing::warn!("image_generate: the held-model record: {e:#}");
+            }
+        }
     }
 
     /// The client for `cfg`'s server, refusing one not on this machine — and
@@ -923,6 +972,7 @@ impl ComfyUi {
             http,
             poll: Duration::from_secs(1),
             answered: std::sync::atomic::AtomicBool::new(false),
+            model_record: std::sync::OnceLock::new(),
         })
     }
 
@@ -2116,6 +2166,13 @@ impl ImageGenerate {
     /// Admit generations against the operator's `[system]` floor.
     pub fn with_floor(mut self, floor: crate::system::floor::SystemConfig) -> Self {
         self.floor = floor;
+        self
+    }
+
+    /// Share which model each server holds with every other process that
+    /// draws, through the file at `path` (`ComfyUi::model_record`).
+    pub fn with_model_record(self, path: std::path::PathBuf) -> Self {
+        let _ = self.backend.model_record.set(path);
         self
     }
 
@@ -8935,6 +8992,32 @@ mod tests {
         server.released();
         assert!(!server.switching(standard, standard));
         assert!(!server.switching(turbo, standard));
+    }
+
+    /// A fresh process reads which model the server holds from the shared
+    /// record: after another drew with turbo, a standard picture unloads it
+    /// (mecha-a3's gate of #648). Fails where each process assumed standard.
+    #[test]
+    fn a_fresh_process_reads_the_held_model_from_the_record() {
+        let record = tempdir().join("held-model.json");
+        let addr: std::net::SocketAddr = "127.0.0.1:11".parse().unwrap();
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let earlier = server_at(addr);
+        earlier.model_record.set(record.clone()).unwrap();
+        earlier.drew_with(turbo);
+        // Another process: its own client, the same record.
+        let fresh = server_at(addr);
+        fresh.model_record.set(record.clone()).unwrap();
+        assert!(fresh.switching(standard, standard), "turbo is held");
+        fresh.released();
+        assert!(
+            !earlier.switching(standard, standard),
+            "released, as the record says"
+        );
+        // An unreadable record reads as an unused server.
+        std::fs::write(&record, "not json").unwrap();
+        assert!(!fresh.switching(standard, standard));
+        assert!(fresh.switching(turbo, standard));
     }
 
     /// A reader that answers as told, standing in for the persona host's.

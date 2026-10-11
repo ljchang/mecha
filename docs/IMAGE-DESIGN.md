@@ -547,10 +547,14 @@ shares the text encoder and VAE with the standard model.
   ComfyUI would otherwise keep both resident, about 7 GB more against the
   memory floor.
 - **The memory floor asks for a cold load on a switch.**
-- **The record is per process, keyed by server address** (`LAST_MODEL`),
-  since every persona's form shares the one server. Another process's
-  pictures are unseen, so a server this process has not used is read as
-  holding the standard model.
+- **The record is shared, keyed by server address.** It lives in
+  `~/.mecha/image/held-model.json`, written whole and renamed over
+  (`ComfyUi::model_record`). Every process that draws reads and updates it:
+  serve, a replay or a CLI run. A serve restarted after a turbo picture,
+  or a replay beside serve, otherwise read the server as holding the
+  standard model and loaded it beside turbo (mecha-a3's gate). A server no
+  record names reads as holding the standard model; tests keep the record
+  in memory.
 - **The first picture after a switch pays the load.**
 - **A chosen value the server lacks is refused before anything is sent**
   (`preflight`, review of #648). That covers the turbo file and a sampler
