@@ -196,14 +196,20 @@ pub fn turbo_linked(mecha_home: &Path) -> bool {
 
 /// Why an install here should fetch the turbo model, or `None`: it was
 /// asked for, it is linked already (a reinstall keeps it), or a persona's
-/// picture settings choose it. `[image] turbo_model` is not a reason — it
-/// has a default, so it is set on every machine.
-pub fn turbo_wanted(mecha_home: &Path, asked: bool) -> Option<String> {
+/// picture settings choose it while `configured` — `[image] turbo_model`,
+/// `None` without a table — is the pinned file. The key is never a reason
+/// of its own: it has a default, so it is set on every machine. Naming
+/// another file, it is what a turbo picture loads, which this fetch would
+/// not supply (review of #650).
+pub fn turbo_wanted(mecha_home: &Path, asked: bool, configured: Option<&str>) -> Option<String> {
     if asked {
         return Some("asked for with --turbo".into());
     }
     if turbo_linked(mecha_home) {
         return Some("this install has it already".into());
+    }
+    if configured.is_some_and(|c| c != crate::sampling::TURBO_MODEL) {
+        return None;
     }
     let personas = mecha_home.join("personas");
     // An unreadable store is said, never read as one where no persona
@@ -658,13 +664,18 @@ mod tests {
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("state.toml"), format!("[image]\n{image}\n")).unwrap();
         };
-        let none = turbo_wanted(&home, false);
-        let asked = turbo_wanted(&home, true);
+        let pinned = Some(crate::sampling::TURBO_MODEL);
+        let none = turbo_wanted(&home, false, pinned);
+        let asked = turbo_wanted(&home, true, pinned);
         persona("ada", "cfg = 3.0");
-        let standard = turbo_wanted(&home, false);
+        let standard = turbo_wanted(&home, false, pinned);
         persona("cleo", "model = \"turbo\"");
         persona("bea", "model = \"turbo\"");
-        let chosen = turbo_wanted(&home, false);
+        let chosen = turbo_wanted(&home, false, pinned);
+        let untabled = turbo_wanted(&home, false, None);
+        // Another configured file is what a turbo picture loads: fetching
+        // the pinned one for it would supply nothing.
+        let elsewhere = turbo_wanted(&home, false, Some("my-turbo.gguf"));
         let _ = std::fs::remove_dir_all(home.join("personas"));
         let link = dir(&home)
             .join("ComfyUI")
@@ -672,7 +683,7 @@ mod tests {
             .join(TURBO_FILE.path);
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink("/nonexistent/blob", &link).unwrap();
-        let linked = turbo_wanted(&home, false);
+        let linked = turbo_wanted(&home, false, pinned);
         let _ = std::fs::remove_dir_all(&home);
         assert_eq!(none, None);
         assert!(asked.unwrap().contains("--turbo"));
@@ -681,6 +692,8 @@ mod tests {
             chosen.as_deref(),
             Some("the picture settings of bea, cleo choose it")
         );
+        assert_eq!(untabled, chosen);
+        assert_eq!(elsewhere, None);
         assert!(
             linked.unwrap().contains("already"),
             "a dangling link still counts"
