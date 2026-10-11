@@ -80,8 +80,12 @@
 > lock per architecture with torch by direct URL, the image slot's three
 > pinned models fetched into the hub and linked, one rendered unit, checked
 > by asking `/object_info` for every node and model mecha sends) — is built.
-> 7b-2 (the build fallback), 7f and step 8 are unbuilt (step 7 redesigned
-> in §10). The
+> 7b-2 — the build fallback: the pin's commit fetched blobless by git and
+> built here with the release's own `$ORIGIN` flags, for a driver too old
+> for any CUDA release or an architecture none covers, after a toolchain
+> check that names every missing piece — is built (CPU and CUDA builds
+> measured on the GB10, 2026-10-10). 7f and step 8 are unbuilt (step 7
+> redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1411,11 +1415,18 @@ pin that sits:
 - **Self-contained, so a link can move it.** A build from source bakes the
   build tree's absolute path into the binary's RUNPATH (§10.1's stub, and
   `-next` after it), so copying `build/bin` somewhere and swapping a link
-  would change nothing that runs. The build fallback therefore installs
-  with `cmake --install` into the engine's directory with an
-  `$ORIGIN`-relative RUNPATH, and 7b asserts it with the `readelf -d` check
+  would change nothing that runs. The build fallback therefore builds as the
+  release does — `CMAKE_INSTALL_RPATH=$ORIGIN` with
+  `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`, so the build tree's binaries already
+  carry the relative RUNPATH — and copies `build/bin` flat, the release's own
+  packaging (`cmake --install` would split libraries from binaries, which
+  the flat check refuses). 7b asserts it with the `readelf -d` check
   `LLAMA-SERVER.md` prescribes; a release asset is checked the same way
-  rather than assumed.
+  rather than assumed. The source is fetched `--filter=blob:none`, never
+  shallow: `--version`'s build number is the commit count, which a shallow
+  clone reports as `1`, and the check reads it. A CUDA build copies the
+  toolkit's `libcudart`/`libcublas`/`libcublasLt` beside it, as the
+  release's `cudart-` archive carries them.
 - **Side by side:** each engine lives in `~/.mecha/sidecars/llama/<tag>/`,
   with the **resolved commit sha** recorded in the manifest and the ledger
   (a tag is a label; a rollback and an audit need the build), and the units

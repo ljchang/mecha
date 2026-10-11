@@ -1853,7 +1853,12 @@ layout's environment — a pinned `uv`, a Python 3.12 it builds, the hash-locked
 packages and the pinned model, all under `~/.mecha/sidecars/layout/` — and the
 llama.cpp engine: the official release for this machine (CUDA by the NVIDIA
 driver's version, Metal on Apple silicon, else the CPU build), checked by
-sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. The
+sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. Where
+no release build fits — an NVIDIA driver older than the release's CUDA needs,
+or a Linux architecture no release covers — the same pinned version is built
+on the machine from its commit, which needs git, cmake, a C++ compiler and,
+for CUDA, the toolkit's `nvcc`; what is missing is named before anything is
+asked. The
 engine is offered only where the feature runs something on it — an embeddings
 or OCR server. **The chat model is never `enable`'s**: its engine, model and
 router are `mecha setup chat`'s, where the model is chosen, so switching on the

@@ -317,6 +317,20 @@ async fn run_upgrade(
         mecha_core::engine::read_nvidia(),
     )
     .map_err(anyhow::Error::msg)?;
+    // An upgrade fetches a release's build, and no release fits a machine
+    // whose engine is built here: its engine moves with the pin (7b-2).
+    // Lifting it means resolving a newer commit to build, since no release
+    // asset matches a built target (`engine::platform_is`), and giving
+    // `engine_gate::upgrade`'s cancel arm a way to stop a compile — today a
+    // build is stopped by the terminal's Ctrl-C, which ends mecha with it
+    // (`engine::step`; review of #643).
+    if target.is_built() {
+        anyhow::bail!(
+            "this machine's llama.cpp is built here ({}), since no release build fits it — \
+             `--upgrade` fetches release builds only; a newer engine comes with a newer mecha's pin",
+            target.label()
+        );
+    }
     let release = mecha_core::engine::resolve_release(to, target)
         .await
         .context("asking GitHub which llama.cpp release to fetch")?;
