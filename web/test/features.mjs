@@ -94,6 +94,12 @@ console.log('where a link bounces');
   t('voices go home with voice off', bounceFor(noVoice, 'library', 'voices') === 'voice');
   t('a pane that refuses beats one that opens anyway', bounceFor(new Map([...noImages, ['voice', row('voice', 'off', { gated: true })]]), 'library', 'voices') === 'voice');
   t('a core view never bounces', bounceFor(noImages, 'chat', null) === null);
+  // Settings → Images is image generation's: a link to it with images off
+  // lands Home with the line that turns them on (review of #654).
+  t('the images pane is image generation\'s', featureOf('settings', 'images') === 'image');
+  const imagesOff = new Map([['image', row('image', 'off', { gated: true })]]);
+  t('the images pane goes home with images off', bounceFor(imagesOff, 'settings', 'images') === 'image');
+  t('and opens with them on', bounceFor(new Map([['image', row('image', 'on', { gated: true })]]), 'settings', 'images') === null);
   t('not answered is shown', bounceFor(null, 'library', 'characters') === null);
   // The chip agrees with the bounce: offered with images off, never with
   // voice off (review of #490).
