@@ -504,7 +504,7 @@ pub async fn install_build(
         std::fs::create_dir_all(&part)?;
         let downloads = root.join("download");
         if matches!(spec.source, Source::Commit) {
-            build_from_source(&root, &part, target, spec, say)?;
+            build_from_source(&root, &part, target, spec, say).await?;
         }
         let archives: Vec<(String, u64)> = match &spec.source {
             Source::Pinned(a) => a
@@ -703,8 +703,26 @@ fn build_jobs(cpus: usize, available: Option<u64>) -> usize {
 
 /// Run one step of a build; a failure carries the end of its output, which
 /// is where a compiler or CMake says what went wrong.
-fn step(mut c: std::process::Command, what: &str) -> Result<String> {
-    let out = c.output().with_context(|| format!("starting {what}"))?;
+///
+/// Awaited, in a process group of its own that is killed whole when the
+/// future is dropped: a caller's cancel arm (`engine_gate`'s, on Ctrl-C)
+/// then ends a compile of minutes instead of waiting it out, and no
+/// compiler outlives it (review of #643).
+pub(crate) async fn step(c: std::process::Command, what: &str) -> Result<String> {
+    let mut c = tokio::process::Command::from(c);
+    #[cfg(unix)]
+    c.process_group(0);
+    c.kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = c.spawn().with_context(|| format!("starting {what}"))?;
+    let mut group = Group(child.id());
+    let out = child
+        .wait_with_output()
+        .await
+        .with_context(|| format!("running {what}"))?;
+    group.0 = None;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -718,11 +736,29 @@ fn step(mut c: std::process::Command, what: &str) -> Result<String> {
     Ok(text)
 }
 
+/// A build step's process group, killed whole if the step is dropped before
+/// it finishes — `kill_on_drop` reaches only the leader, and `cmake --build`
+/// leaves its compilers running.
+struct Group(Option<u32>);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0.and_then(|p| i32::try_from(p).ok()) {
+            // SAFETY: `kill` takes no pointers; a negative pid names the group
+            // this step started, which only its own processes are in.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// Build the spec's commit into `part`, flat, as the release is built: the
 /// release's own flags (`$ORIGIN` RUNPATH, set at build time) and its own
 /// packaging (`build/bin` as it stands), so `health` reads it as it reads a
 /// release. The source tree is removed whether the build passes or fails.
-fn build_from_source(
+async fn build_from_source(
     root: &Path,
     part: &Path,
     target: Target,
@@ -733,12 +769,18 @@ fn build_from_source(
     let src = root.join(format!("{}.src", spec.tag));
     let _ = std::fs::remove_dir_all(&src);
     std::fs::create_dir_all(&src)?;
-    let built = build_in(&src, part, &tc, spec, say);
+    let built = build_in(&src, part, &tc, spec, say).await;
     let _ = std::fs::remove_dir_all(&src);
     built
 }
 
-fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) -> Result<()> {
+async fn build_in(
+    src: &Path,
+    part: &Path,
+    tc: &Toolchain,
+    spec: &Spec,
+    say: Say<'_>,
+) -> Result<()> {
     say(&format!(
         "fetching llama.cpp's source at {} ({:.0} MiB)",
         spec.tag,
@@ -752,7 +794,7 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
             .env("GIT_TERMINAL_PROMPT", "0");
         c
     };
-    step(git(&["init", "--quiet"]), "git init")?;
+    step(git(&["init", "--quiet"]), "git init").await?;
     // Blobless, not shallow: the build number llama.cpp reports is the
     // commit count, which a shallow clone gets wrong (`1`), and `health`
     // checks it. History without file contents is 57 MiB.
@@ -765,7 +807,8 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
             &spec.commit,
         ]),
         "fetching llama.cpp's source",
-    )?;
+    )
+    .await?;
     step(
         git(&[
             "-c",
@@ -775,8 +818,9 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
             "FETCH_HEAD",
         ]),
         "checking out llama.cpp's source",
-    )?;
-    let head = step(git(&["rev-parse", "HEAD"]), "reading the commit")?;
+    )
+    .await?;
+    let head = step(git(&["rev-parse", "HEAD"]), "reading the commit").await?;
     if head.trim() != spec.commit {
         bail!(
             "the source fetched for {} is commit {}, not the pinned {}",
@@ -810,7 +854,7 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
             .arg(format!("-DCMAKE_CUDA_ARCHITECTURES={arch}"));
     }
     say("configuring the build");
-    step(c, "configuring llama.cpp (cmake)")?;
+    step(c, "configuring llama.cpp (cmake)").await?;
     let available = crate::system::Reader::new()
         .now(crate::system::Measurement::MemoryAvailable)
         .value()
@@ -825,7 +869,7 @@ fn build_in(src: &Path, part: &Path, tc: &Toolchain, spec: &Spec, say: Say<'_>) 
         .arg(&build)
         .args(["--config", "Release", "--target", "llama-server", "-j"])
         .arg(jobs.to_string());
-    step(c, "building llama.cpp")?;
+    step(c, "building llama.cpp").await?;
     copy_flat(&build.join("bin"), part)?;
     if let Some((nvcc, _)) = &tc.cuda {
         let dirs = toolkit_dirs(nvcc, &build);
@@ -893,7 +937,7 @@ fn copy_cuda_runtime(dirs: &[PathBuf], part: &Path) -> Result<Vec<String>> {
         };
         for lib in d.needed {
             let dest = part.join(&lib);
-            if dest.exists() {
+            if dest.exists() || !toolkit_named(&lib) {
                 continue;
             }
             let Some(from) = toolkit_lib(dirs, &lib) else {
@@ -929,6 +973,25 @@ fn toolkit_dirs(nvcc: &Path, build: &Path) -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+/// Whether a library is the CUDA toolkit's — the runtime and its math and
+/// compiler libraries — by name. Where it resolved proves nothing: a distro
+/// toolkit's directory is `/usr/lib/<triple>/`, which holds libc, libstdc++
+/// and the driver's `libcuda` too, none of which may ship beside the engine
+/// (review of #643).
+fn toolkit_named(lib: &str) -> bool {
+    let cu = lib.starts_with("libcu") && !lib.starts_with("libcuda.");
+    let nv = [
+        "libnvrtc",
+        "libnvJitLink",
+        "libnvToolsExt",
+        "libnvblas",
+        "libnvjpeg",
+    ]
+    .iter()
+    .any(|p| lib.starts_with(p));
+    cu || nv
 }
 
 /// Where the toolkit keeps `lib`, if it does: its library directories'
@@ -1828,19 +1891,44 @@ mod tests {
         .unwrap();
         std::fs::write(lib64.join("libcublasLt.so.13"), elf(&[], None)).unwrap();
         std::fs::write(lib64.join("stubs/libcuda.so.1"), elf(&[], None)).unwrap();
+        // A distro toolkit's directory is the system's: the driver, libc and
+        // libstdc++ sit beside the toolkit's libraries, and none may ship
+        // (review of #643).
+        for system in ["libcuda.so.1", "libstdc++.so.6", "libc.so.6"] {
+            std::fs::write(lib64.join(system), elf(&["libc.so.6"], None)).unwrap();
+        }
         let copied = copy_cuda_runtime(&[lib64.clone(), root.join("cuda/lib")], &part);
         let has = |n: &str| part.join(n).is_file();
-        let landed = (
-            has("libcublas.so.13"),
-            has("libcublasLt.so.13"),
-            has("libcuda.so.1"),
-        );
+        let landed = (has("libcublas.so.13"), has("libcublasLt.so.13"));
+        let system = ["libcuda.so.1", "libstdc++.so.6", "libc.so.6"].map(has);
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
             copied.unwrap(),
             vec!["libcublas.so.13", "libcublasLt.so.13"]
         );
-        assert_eq!(landed, (true, true, false));
+        assert_eq!(landed, (true, true));
+        assert_eq!(system, [false; 3]);
+    }
+
+    #[test]
+    fn a_toolkit_library_is_known_by_its_name() {
+        for lib in [
+            "libcudart.so.13",
+            "libcublasLt.so.13",
+            "libcudnn.so.9",
+            "libnvrtc.so.13",
+            "libnvJitLink.so.13",
+        ] {
+            assert!(toolkit_named(lib), "{lib}");
+        }
+        for lib in [
+            "libcuda.so.1",
+            "libnvidia-ml.so.1",
+            "libstdc++.so.6",
+            "libc.so.6",
+        ] {
+            assert!(!toolkit_named(lib), "{lib}");
+        }
     }
 
     /// The library directory CMake resolved comes first — a distro toolkit
