@@ -141,34 +141,10 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     }
 
     // --- the environment
-    let uv = crate::install::ensure_uv(m, say).await?;
-    let venv = dir.join("venv");
-    let python = venv.join("bin/python");
+    crate::install::locked_env(m, ID, &dir, PYTHON, LOCK, "sherpa-onnx and the server", say)
+        .await?;
     let model = dir.join(MODEL_DIR);
-    // Each piece on its own line in the record, so a partly deleted install
-    // reads incomplete rather than installed — the managed Python included,
-    // which the venv's interpreter links into (`install_layout`'s reason).
-    Manifest::record(home, ID, &venv)?;
-    Manifest::record(home, ID, &dir.join("python"))?;
     Manifest::record(home, ID, &model)?;
-    if !python.exists() {
-        say(&format!("building a Python {PYTHON} environment"));
-        let mut c = std::process::Command::new(&uv);
-        c.args(["venv", "--quiet", "--clear", "--python", PYTHON])
-            .arg(&venv);
-        crate::install::uv_env(&mut c, &dir);
-        crate::install::run(&mut c, "uv venv")?;
-    }
-    let lock = dir.join("requirements.txt");
-    write_owned(home, ID, &lock, LOCK, 0o644)?;
-    say("installing sherpa-onnx and the server, every file checked against the lock");
-    let mut c = std::process::Command::new(&uv);
-    c.args(["pip", "install", "--quiet", "--require-hashes", "--python"])
-        .arg(&python)
-        .arg("-r")
-        .arg(&lock);
-    crate::install::uv_env(&mut c, &dir);
-    crate::install::run(&mut c, "uv pip install")?;
 
     // --- the model: fetched by its pin, unpacked beside, swapped in whole.
     // Kept only when it is this pin's: the tag is a rolling one, so a model
@@ -476,6 +452,15 @@ mod tests {
         assert_eq!(slot.rows.len(), 1, "a second row would need choosing");
     }
 
+    /// The shipped port is the one `[voice] stt_url` names by default.
+    #[test]
+    fn the_shipped_port_is_the_stt_url_default() {
+        assert_eq!(
+            crate::config::VoiceConfig::DEFAULT_STT_URL,
+            format!("http://127.0.0.1:{}/v1", Naming::shipped().port)
+        );
+    }
+
     /// The clip the check sends is a WAV the server's reader accepts: 44
     /// bytes of header, a second of samples.
     #[test]
@@ -571,11 +556,15 @@ mod tests {
         let stamped = std::fs::read_to_string(dir(&m.mecha_home).join(MODEL_DIR).join(PIN_STAMP));
         let cleaned = remove(&m, &naming);
         eprintln!("{said:#?}");
+        // Read before the scratch tree goes: the manifest lives inside it
+        // (`Manifest::path`), and an absent one reads as no entries — the
+        // assertion would hold whatever `remove` left (review of #639).
+        let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
         r.unwrap();
         cleaned.unwrap();
         assert_eq!(stamped.unwrap(), pin().unwrap().3);
-        let man = Manifest::read(&m.mecha_home).unwrap_or_default();
+        let man = man.unwrap();
         assert!(
             !man.entries.iter().any(|e| e.sidecar == ID),
             "{:?}",
