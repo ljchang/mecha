@@ -391,7 +391,7 @@ fn replace_word(text: &str, word: &str, with: &str) -> String {
 /// byte where it was, so no text makes the match give up: a full lowercase
 /// changed byte lengths outside ASCII, and the guard then left every name
 /// in place (review of #626).
-fn word_spans(text: &str, word: &str) -> Vec<(usize, usize)> {
+pub(crate) fn word_spans(text: &str, word: &str) -> Vec<(usize, usize)> {
     let needle = word.trim().to_ascii_lowercase();
     if needle.is_empty() {
         return Vec::new();

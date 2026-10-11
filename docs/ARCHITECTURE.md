@@ -934,6 +934,18 @@ advances it.
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
 - `reader`: what the scene reader merged into the call, or why it fell back;
+- `clothes_in_act`: which library people's outfit the prompt left out
+  because their act already states a clothing state (their own words, or
+  the `together` or a retouch naming them or nobody). Never an outfit the
+  call itself gave this turn, nor one an edit restates in its instruction;
+  a clause naming only an accessory, an expression or hair ("wearing a
+  bike helmet", "wearing a grin") is no outfit. Described people are
+  counted in `clothes_in_act_others`, never named, and the result drops
+  their note on where the clothes came from. The record keeps the clothes.
+  A second outfit beside an act that stated one drew two people
+  (mecha-a3, 2026-10-11; `imagegen::clothes_in_act`). One-pass pictures
+  only: a layered picture's cutouts keep the outfit, and its manifest
+  never claims this;
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Each picture's compiled prompt is saved for the owner, never in the
