@@ -50,9 +50,10 @@ pub const CFG_STEP: f64 = 0.5;
 pub const STEPS_MIN: u32 = 4;
 pub const STEPS_MAX: u32 = 60;
 
-/// KSampler's samplers at the pinned ComfyUI (`comfyui_unit`'s commit),
-/// read from its `/object_info/KSampler`. A name outside the list never
-/// reaches the graph.
+/// KSampler's samplers, read from `/object_info/KSampler` at ComfyUI
+/// 88ab4a06 (2026-10-11). A name outside the list never reaches the graph,
+/// and one the running server lacks is refused by `imagegen`'s preflight
+/// naming the setting.
 pub const SAMPLERS: &[&str] = &[
     "euler",
     "euler_cfg_pp",
@@ -101,7 +102,7 @@ pub const SAMPLERS: &[&str] = &[
     "uni_pc_bh2",
 ];
 
-/// KSampler's schedulers at the pinned ComfyUI, the same way.
+/// KSampler's schedulers, read and checked the same way.
 pub const SCHEDULERS: &[&str] = &[
     "simple",
     "sgm_uniform",
