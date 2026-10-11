@@ -1,0 +1,7 @@
+/* The standalone page around a dashboard (`hud-standalone.js`): the page owns
+   html and body, the component only itself, so the app that embeds the same
+   component keeps its own. */
+html, body { margin: 0; min-height: 100%; background: #161826; }
+@media (prefers-color-scheme: light) {
+  html, body { background: #f6f6f9; }
+}
