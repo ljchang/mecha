@@ -560,6 +560,11 @@ fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result
     })
 }
 
+/// What a person wears when nobody said and nothing is on record: drawn
+/// as the scene suits. A judge reads it as no claim about the picture
+/// (`persona::replay_judge::clauses`), since every outfit suits it.
+pub const WEARING_UNSAID: &str = "clothes that suit the scene";
+
 /// A person as a sentence names them.
 pub fn shown(who: &Who) -> String {
     match who {
@@ -822,7 +827,7 @@ pub fn plan(
                     p.origin = p.origin.union(from);
                 }
                 (None, Who::Described(_)) => {
-                    p.wearing = "clothes that suit the scene".into();
+                    p.wearing = WEARING_UNSAID.into();
                 }
                 (None, Who::Library(_)) => {
                     // Absorbed, and said (mecha-a3's G1: a refusal here was
@@ -835,7 +840,7 @@ pub fn plan(
                             shown(&p.who)
                         ),
                     ));
-                    p.wearing = "clothes that suit the scene".into();
+                    p.wearing = WEARING_UNSAID.into();
                 }
             }
         }

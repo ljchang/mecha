@@ -80,6 +80,7 @@ pub mod eval;
 pub mod exp_report;
 pub mod experiment;
 pub mod face;
+pub mod face_id;
 pub mod feature;
 pub mod fetch;
 pub mod fixture_check;
