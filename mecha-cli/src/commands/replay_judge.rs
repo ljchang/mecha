@@ -156,10 +156,6 @@ pub async fn execute(
             .chain([sheet.clone()])
             .collect::<Vec<_>>(),
     )?;
-    // Made now, so a folder it cannot be written in stops the run before any
-    // question rather than after them all (review of #644).
-    let mut sheet_file = super::replay_persona::private_file(&sheet)?;
-
     let follower = Follower::start(global.clone(), Box::new(|_| {})).await?;
     let router = follower.router_base();
     let model = follower.current().model.clone();
@@ -167,6 +163,12 @@ pub async fn execute(
     if !crate::setup::persona_provider(&follower.current(), PersonaUse::Judge)?.vision() {
         bail!("{model} cannot see pictures, so it cannot judge them; name one that can (-m)");
     }
+    // Made once every refusal that needs no question has passed (the load
+    // guard, the vision check), and before the first question: a folder it
+    // cannot be written in stops the run then, not after every question
+    // (review of #644), and a refusal leaves no empty sheet behind for the
+    // next run to be refused on (review of #652).
+    let mut sheet_file = super::replay_persona::private_file(&sheet)?;
     // The local allowance, not an answer's length: `no_thinking` is only a
     // request a template may ignore, and a reasoning model below
     // `--reasoning-budget` answers HTTP 200 with nothing in it (CLAUDE.md;
