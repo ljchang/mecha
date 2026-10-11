@@ -174,7 +174,7 @@ impl Follower {
         let cfg = load_config(&opts)?;
         let pinned = opts.provider.is_some() || opts.model.is_some();
         let warned = Mutex::new(HashSet::new());
-        let (seen, named) = observe(&cfg, pinned, &warned).await;
+        let (seen, named) = observe(&cfg, pinned, command_line(&opts), &warned).await;
         let generations = AtomicU64::new(0);
         let want = resolve(&cfg, pinned, &seen);
         // Never over a `--model`: that is the owner's name, not the server's.
@@ -302,7 +302,8 @@ impl Follower {
                 return Ok(self.current());
             }
         };
-        let (seen, named) = observe(&cfg, self.pinned, &self.warned).await;
+        let (seen, named) =
+            observe(&cfg, self.pinned, command_line(&self.opts), &self.warned).await;
         let Some(want) = resolve(&cfg, self.pinned, &seen) else {
             return Ok(self.current());
         };
@@ -541,12 +542,14 @@ impl Follower {
 async fn observe(
     cfg: &Config,
     pinned: bool,
+    line: mecha_core::provider::router::CommandLine<'_>,
     warned: &Mutex<HashSet<String>>,
 ) -> (
     Vec<mecha_core::provider::router::Seen>,
     Vec<mecha_core::provider::router::Named>,
 ) {
-    let (warnings, seen, named) = mecha_core::provider::router::observe_all(cfg, !pinned).await;
+    let (warnings, seen, named) =
+        mecha_core::provider::router::observe_all_for(cfg, !pinned, line).await;
     let mut warned = warned.lock().unwrap_or_else(|e| e.into_inner());
     warned.retain(|w| warnings.contains(w));
     for w in warnings {
@@ -555,6 +558,14 @@ async fn observe(
         }
     }
     (seen, named)
+}
+
+/// What the surface's own `--provider`/`--model` named, for the probe.
+fn command_line(opts: &GlobalOpts) -> mecha_core::provider::router::CommandLine<'_> {
+    mecha_core::provider::router::CommandLine {
+        provider: opts.provider.as_deref(),
+        model: opts.model.is_some(),
+    }
 }
 
 /// Whether a surface bound to `provider`/`model` stays put this turn: the
