@@ -1,0 +1,31 @@
+# mecha's voice worker, as `mecha features enable voice` installs it
+# (mecha-core/src/voice_worker_unit.rs). Rendered at install: the four
+# placeholders become absolute paths under this mecha home and the port, so
+# nothing here names a checkout — what runs is the copy mecha wrote.
+#
+# --allowed-origins names an origin no page has. `mecha serve` relays a
+# call's offer server to server, with no Origin header, so the relay is let
+# through; a page in a browser on this machine posting to the worker
+# directly — the drive-by voice injection the allowlist exists to stop —
+# is refused, whatever the machine's tailnet name is.
+#
+# No After=mecha-voice-serve.service, which scripts/voice/'s unit has: the
+# worker reaches the facade per call, as it does speech to text and the
+# speech server, never at start — so the order buys nothing, and naming a
+# unit this install did not write would order against a stranger.
+
+[Unit]
+Description=mecha voice worker: Pipecat (:@PORT@)
+After=network.target
+
+[Service]
+# `exec`: a missing interpreter fails the start at once, rather than as the
+# install check's two-minute timeout (review of #638).
+Type=exec
+WorkingDirectory=@DIR@
+ExecStart=@VENV@/bin/python -B worker.py --host 127.0.0.1 --port @PORT@ --allowed-origins @NO_PAGE@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

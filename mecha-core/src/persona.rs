@@ -44,6 +44,7 @@ pub mod memory;
 pub mod memory_tools;
 pub mod recall;
 pub mod replay;
+pub mod replay_judge;
 pub mod safety;
 pub mod search;
 pub mod turn;

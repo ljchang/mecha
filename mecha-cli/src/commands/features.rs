@@ -77,7 +77,7 @@ pub async fn execute(args: Args) -> Result<()> {
         anyhow::bail!("`--probe` reads the machine; it does not go with `enable` or `disable`");
     }
     match args.cmd {
-        Some(Cmd::Enable { ids, no_install }) => return enable(&ids, no_install).await,
+        Some(Cmd::Enable { ids, no_install }) => return enable(&ids, no_install, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         None => {}
@@ -117,7 +117,10 @@ pub async fn execute(args: Args) -> Result<()> {
 /// writes nothing. Without a terminal, an enable that would install refuses,
 /// naming `--no-install`; one with nothing to install writes the switch as
 /// before.
-async fn enable(ids: &[String], no_install: bool) -> Result<()> {
+/// `yes` is an answer already given: the guided `mecha setup` lists every
+/// install with its size and asks once (ruling F14), so this neither asks
+/// again nor refuses for want of a terminal to ask at.
+pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Result<()> {
     use mecha_core::install;
     use mecha_core::sidecar::SidecarState;
     use std::io::IsTerminal;
@@ -154,6 +157,13 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 }
             }
             for s in install::offered(&p, chat_here) {
+                // Someone's own server where the install would put one is
+                // used, not installed over — never offered, so the switch
+                // is still written (review of #638).
+                if let Some(why) = install::left_alone(s.id, &m)? {
+                    println!("{}: {why}", s.label);
+                    continue;
+                }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
                 }
@@ -177,7 +187,7 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
-            if !std::io::stdin().is_terminal() {
+            if !yes && !std::io::stdin().is_terminal() {
                 anyhow::bail!(
                     "enabling {} would install {list}; run it at a terminal to answer, or pass \
                      --no-install to write the switch only",
@@ -210,11 +220,16 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                 "(`mecha features plan {}` shows each piece, and the models and engine to download.)",
                 plans.join("` / `mecha features plan ")
             );
-            print!("Install now? [y/N] ");
-            use std::io::Write;
-            std::io::stdout().flush()?;
-            let mut answer = String::new();
-            std::io::stdin().read_line(&mut answer)?;
+            let answer = if yes {
+                "y".to_string()
+            } else {
+                print!("Install now? [y/N] ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                answer
+            };
             if !matches!(answer.trim(), "y" | "Y" | "yes") {
                 println!(
                     "Nothing written. `mecha features enable {} --no-install` writes the switch without installing.",
