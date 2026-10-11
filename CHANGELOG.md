@@ -224,6 +224,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is answering. On a call, Regenerate is in the picture viewer: the persona
   answers aloud, and talking over the redraw does not stop it.
 
+- **`mecha replay --persona --rerecord` replays an older chat as it would
+  be recorded today.** A tool call that ran away to the output limit is
+  shortened to its start with a note, and the answer to it is the one the
+  harness gives now, so a chat from before that fix is replayed with the
+  history this build would have kept.
+
 - **`mecha replay --judge` scores a persona replay's pictures.** For each
   picture a replay drew, it counts faces and people against the scene's
   record, and asks a vision model whether each thing the record says is
