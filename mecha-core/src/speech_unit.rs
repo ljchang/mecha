@@ -167,18 +167,41 @@ fn render(text: &str, dir: &Path, naming: &Naming, model: &str, codec: &str) -> 
         )
 }
 
-/// Whether this machine can build and run the engine, or every reason not.
-pub fn fits() -> std::result::Result<Toolchain, String> {
-    if !cfg!(target_os = "linux") {
+/// Whether this machine can build and run the engine, or every reason not —
+/// read from the OS and the driver, the toolchain asked only when those
+/// pass.
+pub fn fits(os: &str, nvidia: crate::engine::Nvidia) -> std::result::Result<Toolchain, String> {
+    fits_with(os, nvidia, || {
+        crate::engine::toolchain_missing(Target::BuiltCuda)
+    })
+}
+
+/// [`fits`] over what was read, so every row is a test.
+fn fits_with(
+    os: &str,
+    nvidia: crate::engine::Nvidia,
+    toolchain: impl FnOnce() -> std::result::Result<Toolchain, Vec<String>>,
+) -> std::result::Result<Toolchain, String> {
+    use crate::engine::Nvidia;
+    if os != "linux" {
         return Err(
             "the speech server is two systemd user units, which this system does not have — \
              start it by hand until launchd is designed (FEATURES-DESIGN §10.5)"
                 .into(),
         );
     }
-    match crate::engine::read_nvidia() {
-        crate::engine::Nvidia::Driver(..) => {}
-        _ => {
+    match nvidia {
+        Nvidia::Driver(..) => {}
+        // A device is there and could not be read: said as that, never as
+        // no GPU — unknown is not absent (review of #649).
+        Nvidia::Unread => {
+            return Err(
+                "this machine shows an NVIDIA device, but `nvidia-smi` could not be read — fix \
+                 it and run this again"
+                    .into(),
+            )
+        }
+        Nvidia::None => {
             return Err(
                 "the speech engine needs an NVIDIA GPU: on the CPU it speaks slower than real \
                  time"
@@ -186,8 +209,16 @@ pub fn fits() -> std::result::Result<Toolchain, String> {
             )
         }
     }
-    crate::engine::toolchain(Target::BuiltCuda)
-        .map_err(|why| why.replacen("llama.cpp", "the speech engine", 1))
+    // In this module's own words: the engine has no releases, and the pin
+    // that matters is the fork's commit, not llama.cpp's (review of #649).
+    toolchain().map_err(|missing| {
+        format!(
+            "the speech engine is built on this machine from its pinned commit ({}), and that \
+             needs {}, which this machine does not have",
+            &COMMIT[..7],
+            missing.join(", ")
+        )
+    })
 }
 
 pub async fn install(
@@ -197,7 +228,8 @@ pub async fn install(
     hub: &Path,
     say: Say<'_>,
 ) -> Result<()> {
-    let tc = fits().map_err(anyhow::Error::msg)?;
+    let tc =
+        fits(std::env::consts::OS, crate::engine::read_nvidia()).map_err(anyhow::Error::msg)?;
     let home = &m.mecha_home;
     let dir = dir(home);
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
@@ -786,6 +818,40 @@ mod tests {
         assert!(adapter.contains("Environment=VOICES_DIR=/srv/owner/.mecha/sidecars/speech/voices"));
         assert!(adapter.contains("Environment=BREEZE_MODEL_NAME=m-q5_k_m"));
         assert!(adapter.contains("After=e.service"));
+    }
+
+    #[test]
+    fn only_a_linux_nvidia_machine_with_the_toolchain_fits() {
+        use crate::engine::Nvidia as N;
+        let tc = || {
+            Ok(Toolchain {
+                git: "/bin/git".into(),
+                cmake: "/bin/cmake".into(),
+                ninja: None,
+                cuda: Some(("/bin/nvcc".into(), "121".into())),
+            })
+        };
+        let lacks = || {
+            Err(vec![
+                "nvcc (the CUDA toolkit, matching this driver)".to_string()
+            ])
+        };
+        assert!(fits_with("linux", N::Driver(570, 1), tc).is_ok());
+        let e = fits_with("linux", N::Driver(580, 0), lacks).unwrap_err();
+        assert!(
+            e.contains("speech engine") && e.contains("nvcc") && e.contains(&COMMIT[..7]),
+            "{e}"
+        );
+        assert!(!e.contains("llama.cpp") && !e.contains("release"), "{e}");
+        assert!(fits_with("linux", N::Unread, tc)
+            .unwrap_err()
+            .contains("nvidia-smi"));
+        assert!(fits_with("linux", N::None, tc)
+            .unwrap_err()
+            .contains("NVIDIA GPU"));
+        assert!(fits_with("macos", N::Driver(580, 0), tc)
+            .unwrap_err()
+            .contains("launchd"));
     }
 
     #[test]

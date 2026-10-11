@@ -304,7 +304,6 @@ const OCR_SOURCES: &[Source] = &[Source::HuggingFace {
     ],
 }];
 
-/// The registry. Order is the page's row order.
 /// The speech slot's published files: the converted model and the codec
 /// (`speech_unit`, step 7f).
 const TTS_SOURCES: &[Source] = &[Source::HuggingFace {
@@ -324,6 +323,7 @@ const TTS_SOURCES: &[Source] = &[Source::HuggingFace {
     ],
 }];
 
+/// The registry. Order is the page's row order.
 pub const SLOTS: &[Slot] = &[
     Slot {
         id: "chat",
