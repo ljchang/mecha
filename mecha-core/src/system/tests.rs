@@ -1507,6 +1507,35 @@ fn the_tally_reaches_the_agents_timezone_through_the_config() {
     assert_eq!(reader.now(Measurement::TriggersMissed), obs(0.0));
 }
 
+/// Only an active unit can be speaking, and only "not found and inactive" is
+/// no engine at all: a masked or broken unit file says nothing about a
+/// process that is still running (review of #641).
+#[test]
+fn the_speech_engine_is_running_by_its_active_state_never_its_unit_file() {
+    use source::{parse_unit_run, UnitRun};
+    let run = |load: &str, active: &str| {
+        parse_unit_run(&format!("LoadState={load}\nActiveState={active}\n"))
+    };
+    assert_eq!(run("loaded", "active"), Some(UnitRun::Running));
+    assert_eq!(run("masked", "active"), Some(UnitRun::Running));
+    assert_eq!(run("not-found", "active"), Some(UnitRun::Running));
+    assert_eq!(run("error", "deactivating"), Some(UnitRun::Running));
+    assert_eq!(run("loaded", "inactive"), Some(UnitRun::Stopped));
+    assert_eq!(run("loaded", "failed"), Some(UnitRun::Stopped));
+    assert_eq!(run("not-found", "inactive"), Some(UnitRun::Absent));
+    assert_eq!(
+        run("loaded", "maintenance"),
+        None,
+        "a state this build does not know"
+    );
+    assert_eq!(
+        parse_unit_run("LoadState=loaded\n"),
+        None,
+        "no active state"
+    );
+    assert_eq!(parse_unit_run(""), None);
+}
+
 #[test]
 fn a_call_is_live_when_the_speech_engine_logged_a_sentence() {
     assert!(source::spoke(

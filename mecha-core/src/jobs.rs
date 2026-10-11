@@ -1082,6 +1082,7 @@ mod tests {
                 .exists(),
             "a dropped queue leaves its marker"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
