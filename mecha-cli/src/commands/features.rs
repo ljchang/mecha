@@ -278,9 +278,6 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 );
             }
             let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
-            // Linked to a blob still in the hub: a link whose blob is gone
-            // is re-offered, or the refusal naming this command would name
-            // a command that does nothing (review of #650).
             let cached = mecha_core::fetch::cached(
                 &hub,
                 comfy::TURBO_REPO,
@@ -288,80 +285,38 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                 &comfy::TURBO_FILE,
                 false,
             )? == mecha_core::fetch::Cached::Verified;
-            let linked = cached && comfy::turbo_linked(&m.mecha_home);
-            let wanted = comfy::turbo_wanted(
-                &m.mecha_home,
-                turbo,
-                cfg.image.as_ref().map(|i| i.turbo_model.as_str()),
-            );
-            // An installed server re-offered for turbo alone has not been
-            // through the fit check above, and the install would fail on it
-            // — writing no switch, which a machine that does not fit is
-            // never refused (#645; review of #650). A missing one dropped
-            // by that check is told the same reason it was, not another.
-            let unfit = match (&wanted, &comfy_found) {
-                (Some(_), Some((_, SidecarState::Provided { .. }))) => None,
-                (Some(_), Some(_)) if !installing && !linked && !comfy_left_alone => {
-                    comfy::fits(std::env::consts::OS, std::env::consts::ARCH, read_nvidia()).err()
-                }
-                _ => None,
+            let facts = TurboFacts {
+                wanted: comfy::turbo_wanted(
+                    &m.mecha_home,
+                    turbo,
+                    cfg.image.as_ref().map(|i| i.turbo_model.as_str()),
+                ),
+                found: comfy_found.as_ref().map(|(_, state)| state),
+                installing,
+                cached,
+                linked_here: comfy::turbo_linked(&m.mecha_home),
+                left_alone: comfy_left_alone,
+                asked: turbo,
+                yes,
             };
-            match (wanted, &comfy_found) {
-                (None, _) => {}
-                (Some(_), Some((_, SidecarState::Installed))) if linked && !installing => {
-                    if turbo {
-                        println!("The turbo model is installed already.");
+            let unfit =
+                || comfy::fits(std::env::consts::OS, std::env::consts::ARCH, read_nvidia()).err();
+            match turbo_step(facts, unfit) {
+                TurboStep::Nothing => {}
+                TurboStep::Say(line) => println!("{line}"),
+                TurboStep::Fetch {
+                    why,
+                    download,
+                    reinstall,
+                } => {
+                    // Its size rides on its own clause, not the row's total:
+                    // a row re-offered for a lost model carries none (review
+                    // of #650).
+                    if let (true, Some((label, _))) = (reinstall, &comfy_found) {
+                        todo.push((comfy::ID, *label, Feature::Image, None));
                     }
+                    fetch_turbo = Some((why, download));
                 }
-                (Some(why), _) if unfit.is_some() => println!(
-                    "The turbo model is not fetched ({why}): {}.",
-                    unfit.as_deref().unwrap_or_default()
-                ),
-                (Some(why), Some((label, state)))
-                    if installing || matches!(state, SidecarState::Installed) =>
-                {
-                    let download = if cached { 0 } else { comfy::TURBO_FILE.bytes };
-                    // The guided setup listed its downloads and installs
-                    // before its one yes (ruling F14): nothing it did not
-                    // list is fetched, and no server it did not list is
-                    // reinstalled — a restart — to link one.
-                    if yes && !turbo && (download > 0 || !installing) {
-                        if download > 0 {
-                            println!(
-                                "The turbo model is not fetched by this setup ({why}); \
-                                 `mecha features enable image` fetches it ({}).",
-                                bytes_text(download)
-                            );
-                        }
-                    } else {
-                        // Its size rides on its own clause, not the row's
-                        // total: a row re-offered for a lost model carries
-                        // none (review of #650).
-                        if !installing {
-                            todo.push((comfy::ID, label, Feature::Image, None));
-                        }
-                        fetch_turbo = Some((why, download));
-                    }
-                }
-                (Some(why), Some((_, SidecarState::Provided { by }))) => println!(
-                    "The turbo model is not fetched ({why}): the image server here is {by}, not \
-                     mecha's — it needs {} in its models/diffusion_models/.",
-                    mecha_core::sampling::TURBO_MODEL
-                ),
-                (Some(why), _) if comfy_left_alone => println!(
-                    "The turbo model is not fetched ({why}): the image server on :{} is not \
-                     mecha's — it needs {} in its models/diffusion_models/.",
-                    comfy::Naming::shipped().port,
-                    mecha_core::sampling::TURBO_MODEL
-                ),
-                (Some(why), Some((_, SidecarState::Unknown { .. }))) if turbo => println!(
-                    "The turbo model is not fetched ({why}): the image server could not be \
-                     checked (said above)."
-                ),
-                (Some(why), _) if turbo => {
-                    println!("The turbo model is not fetched ({why}): mecha is not installing an image server here.")
-                }
-                (Some(_), _) => {}
             }
         }
         if !todo.is_empty() {
@@ -451,6 +406,125 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
         image_table()?;
     }
     Ok(())
+}
+
+/// What `enable` knows when it decides about the turbo model.
+struct TurboFacts<'a> {
+    /// [`mecha_core::comfyui_unit::turbo_wanted`]'s reason.
+    wanted: Option<String>,
+    /// The image server as the plan found it.
+    found: Option<&'a mecha_core::sidecar::SidecarState>,
+    /// The install is offered already, for its own sake.
+    installing: bool,
+    /// The pinned blob is in the hub and verified.
+    cached: bool,
+    /// The install links it (perhaps to a blob gone from the hub).
+    linked_here: bool,
+    /// A server on ComfyUI's port was left alone as someone else's.
+    left_alone: bool,
+    /// `--turbo`.
+    asked: bool,
+    /// The guided setup's one yes, already given (ruling F14).
+    yes: bool,
+}
+
+/// What `enable` does about the turbo model.
+#[derive(Debug, PartialEq)]
+enum TurboStep {
+    Nothing,
+    Say(String),
+    /// Fetch and link it; `reinstall` adds an installed server to the
+    /// installs, which restarts it.
+    Fetch {
+        why: String,
+        download: u64,
+        reinstall: bool,
+    },
+}
+
+/// The turbo model's decision, apart from the machine so a table can hold
+/// it (review of #650). `unfit` is the image server's fit check, asked only
+/// where the install would otherwise be offered without it.
+fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboStep {
+    use mecha_core::sidecar::SidecarState;
+    let Some(why) = f.wanted else {
+        return TurboStep::Nothing;
+    };
+    let file = mecha_core::sampling::TURBO_MODEL;
+    // Someone else's server is told the file, never installed over.
+    if let Some(SidecarState::Provided { by }) = f.found {
+        return TurboStep::Say(format!(
+            "The turbo model is not fetched ({why}): the image server here is {by}, not \
+             mecha's — it needs {file} in its models/diffusion_models/."
+        ));
+    }
+    if f.left_alone {
+        return TurboStep::Say(format!(
+            "The turbo model is not fetched ({why}): the image server on :{} is not mecha's \
+             — it needs {file} in its models/diffusion_models/.",
+            mecha_core::comfyui_unit::Naming::shipped().port
+        ));
+    }
+    // Linked to a blob still in the hub: a link whose blob is gone is
+    // re-offered, or the refusal naming this command would name a command
+    // that does nothing.
+    let linked = f.cached && f.linked_here;
+    let installed = matches!(f.found, Some(SidecarState::Installed));
+    if installed && linked && !f.installing {
+        return if f.asked {
+            TurboStep::Say("The turbo model is installed already.".into())
+        } else {
+            TurboStep::Nothing
+        };
+    }
+    // A server offered for turbo alone has not been through the fit check,
+    // and the install would fail on it — writing no switch, which a machine
+    // that does not fit is never refused (#645). One the check dropped is
+    // told the reason it was, not another.
+    if f.found.is_some() && !f.installing && !linked {
+        if let Some(unfit) = unfit() {
+            return TurboStep::Say(format!("The turbo model is not fetched ({why}): {unfit}."));
+        }
+    }
+    if f.installing || installed {
+        let download = if f.cached {
+            0
+        } else {
+            mecha_core::comfyui_unit::TURBO_FILE.bytes
+        };
+        // The guided setup listed its downloads and installs before its one
+        // yes (ruling F14): nothing it did not list is fetched, and no
+        // server it did not list is reinstalled — a restart — to link one.
+        if f.yes && !f.asked && (download > 0 || !f.installing) {
+            return if download > 0 {
+                TurboStep::Say(format!(
+                    "The turbo model is not fetched by this setup ({why}); `mecha features \
+                     enable image` fetches it ({}).",
+                    bytes_text(download)
+                ))
+            } else {
+                TurboStep::Nothing
+            };
+        }
+        return TurboStep::Fetch {
+            why,
+            download,
+            reinstall: !f.installing,
+        };
+    }
+    if !f.asked {
+        return TurboStep::Nothing;
+    }
+    TurboStep::Say(match f.found {
+        Some(SidecarState::Unknown { .. }) => format!(
+            "The turbo model is not fetched ({why}): the image server could not be checked \
+             (said above)."
+        ),
+        _ => format!(
+            "The turbo model is not fetched ({why}): mecha is not installing an image server \
+             here."
+        ),
+    })
 }
 
 /// `image` reads off with no `[image]` table, whatever the switch says, and
@@ -984,6 +1058,147 @@ fn render(rows: &[Row], announced: &[feature::Announcement]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The turbo decision's table: each state says one thing or fetches,
+    /// someone else's server is never installed over, the fit check is
+    /// asked only where nothing else checked the machine, and the guided
+    /// setup fetches and restarts nothing it did not list (review of #650).
+    #[test]
+    fn the_turbo_decision_holds_its_table() {
+        use mecha_core::sidecar::SidecarState as S;
+        let bytes = mecha_core::comfyui_unit::TURBO_FILE.bytes;
+        let installed = S::Installed;
+        let missing = S::Missing { step: "7e" };
+        let provided = S::Provided {
+            by: "unit comfyui.service".into(),
+        };
+        let unknown = S::Unknown { why: "?".into() };
+        let base = |found| TurboFacts {
+            wanted: Some("asked for with --turbo".into()),
+            found,
+            installing: false,
+            cached: false,
+            linked_here: false,
+            left_alone: false,
+            asked: true,
+            yes: false,
+        };
+        let fits = || None;
+        let never = || -> Option<String> { panic!("the fit check was asked") };
+        let said = |step: TurboStep, has: &str| match step {
+            TurboStep::Say(line) => assert!(line.contains(has), "{line}"),
+            other => panic!("{other:?}, not a line with {has:?}"),
+        };
+
+        // Not wanted: nothing, whatever the state.
+        let f = TurboFacts {
+            wanted: None,
+            ..base(Some(&installed))
+        };
+        assert_eq!(turbo_step(f, never), TurboStep::Nothing);
+        // Someone else's server, by evidence or by its port: told, never fetched.
+        said(turbo_step(base(Some(&provided)), never), "comfyui.service");
+        let f = TurboFacts {
+            left_alone: true,
+            ..base(Some(&missing))
+        };
+        said(turbo_step(f, never), "not mecha's");
+        // Installed and linked to a verified blob: said only when asked.
+        let linked = TurboFacts {
+            cached: true,
+            linked_here: true,
+            ..base(Some(&installed))
+        };
+        said(turbo_step(linked, never), "installed already");
+        let f = TurboFacts {
+            cached: true,
+            linked_here: true,
+            asked: false,
+            wanted: Some("this install has it already".into()),
+            ..base(Some(&installed))
+        };
+        assert_eq!(turbo_step(f, never), TurboStep::Nothing);
+        // Linked to a blob gone from the hub: re-offered at its full size.
+        let f = TurboFacts {
+            linked_here: true,
+            ..base(Some(&installed))
+        };
+        assert_eq!(
+            turbo_step(f, fits),
+            TurboStep::Fetch {
+                why: "asked for with --turbo".into(),
+                download: bytes,
+                reinstall: true
+            }
+        );
+        // Installed for turbo alone on a machine that no longer fits: the
+        // fit check's reason, and no install to fail.
+        said(
+            turbo_step(base(Some(&installed)), || Some("the driver is 570".into())),
+            "the driver is 570",
+        );
+        // Dropped by the fit check while missing: the same reason.
+        said(
+            turbo_step(base(Some(&missing)), || Some("the driver is 570".into())),
+            "the driver is 570",
+        );
+        // Installing anyway: no second fit check, the blob's size rides along.
+        let f = TurboFacts {
+            installing: true,
+            cached: true,
+            ..base(Some(&missing))
+        };
+        assert_eq!(
+            turbo_step(f, never),
+            TurboStep::Fetch {
+                why: "asked for with --turbo".into(),
+                download: 0,
+                reinstall: false
+            }
+        );
+        // The guided setup (F14): a download it did not list is said, not
+        // fetched; an installed server is not restarted to link a cached one;
+        // a cached one rides along with an install it did list.
+        let guided = |found, installing, cached| TurboFacts {
+            asked: false,
+            yes: true,
+            installing,
+            cached,
+            wanted: Some("ada's picture settings choose it".into()),
+            ..base(found)
+        };
+        said(
+            turbo_step(guided(Some(&installed), false, false), fits),
+            "not fetched by this setup",
+        );
+        assert_eq!(
+            turbo_step(guided(Some(&installed), false, true), fits),
+            TurboStep::Nothing
+        );
+        said(
+            turbo_step(guided(Some(&missing), true, false), never),
+            "not fetched by this setup",
+        );
+        assert!(matches!(
+            turbo_step(guided(Some(&missing), true, true), never),
+            TurboStep::Fetch {
+                download: 0,
+                reinstall: false,
+                ..
+            }
+        ));
+        // Nothing to install into: said only when asked.
+        said(
+            turbo_step(base(Some(&unknown)), fits),
+            "could not be checked",
+        );
+        said(turbo_step(base(Some(&missing)), fits), "not installing");
+        let f = TurboFacts {
+            asked: false,
+            ..base(Some(&missing))
+        };
+        assert_eq!(turbo_step(f, fits), TurboStep::Nothing);
+    }
 
     /// `--turbo` is the image model's, and fetches: both refusals come
     /// before the machine is read, and write nothing (review of #650).
