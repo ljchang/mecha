@@ -105,9 +105,9 @@ impl Detector {
         })?;
         let mut tensors =
             read_safetensors(&bytes).context("reading the face detector's weights")?;
-        Ok(Detector {
-            net: Net::load(&mut tensors).context("loading the face detector's weights")?,
-        })
+        let net = Net::load(&mut tensors).context("loading the face detector's weights")?;
+        all_claimed(&tensors, "the face detector")?;
+        Ok(Detector { net })
     }
 
     /// Every face in `img` above py-feat's own thresholds (score 0.5 after
@@ -573,6 +573,22 @@ impl Map {
 
 /// The weights `take` has not yet claimed, by name.
 pub(crate) type Tensors = HashMap<String, (Vec<usize>, Vec<f32>)>;
+
+/// Refuse weights that hold tensors the network never claimed: a file laid
+/// out other than the network assumes (batch norms folded differently, a
+/// head it does not run) would otherwise load and answer plausibly
+/// (review of #655).
+pub(crate) fn all_claimed(t: &Tensors, what: &str) -> Result<()> {
+    let mut left: Vec<&String> = t.keys().collect();
+    left.sort();
+    match left.first() {
+        None => Ok(()),
+        Some(first) => bail!(
+            "{what}'s weights hold {} tensor(s) this network does not use, `{first}` among them",
+            left.len()
+        ),
+    }
+}
 
 pub(crate) fn take(t: &mut Tensors, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
     t.remove(name)
@@ -1124,6 +1140,17 @@ mod tests {
         assert!(!t.contains_key("n"), "a counter is not a weight");
         assert!(read_safetensors(&file[..file.len() - 12]).is_err());
         assert!(read_safetensors(b"\xff\xff\xff\xff\xff\xff\xff\x7f").is_err());
+    }
+
+    /// Weights with a tensor the network never claimed are refused, by
+    /// name; none left over is fine (review of #655).
+    #[test]
+    fn weights_the_network_does_not_use_are_refused() {
+        let mut t: Tensors = HashMap::new();
+        assert!(all_claimed(&t, "x").is_ok());
+        t.insert("head.extra.weight".into(), (vec![1], vec![0.0]));
+        let err = all_claimed(&t, "the detector").unwrap_err().to_string();
+        assert!(err.contains("`head.extra.weight`"), "{err}");
     }
 
     #[test]

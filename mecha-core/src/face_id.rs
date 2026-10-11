@@ -14,7 +14,7 @@
 //! template by a similarity transform. The network runs on `face`'s own
 //! convolution, for the reason `face` gives.
 
-use crate::face::{read_safetensors, take, Conv, Face, Map, Tensors};
+use crate::face::{all_claimed, read_safetensors, take, Conv, Face, Map, Tensors};
 use crate::recommend::HubFile;
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -320,9 +320,9 @@ impl Embedder {
         let bytes = std::fs::read(weights)
             .with_context(|| format!("reading ArcFace's weights {}", weights.display()))?;
         let mut tensors = read_safetensors(&bytes).context("reading ArcFace's weights")?;
-        Ok(Embedder {
-            net: Net::load(&mut tensors).context("loading ArcFace's weights")?,
-        })
+        let net = Net::load(&mut tensors).context("loading ArcFace's weights")?;
+        all_claimed(&tensors, "ArcFace")?;
+        Ok(Embedder { net })
     }
 
     /// An aligned face's embedding, unit length. The face is RGB in
@@ -402,6 +402,16 @@ mod tests {
         let a = [0.6, 0.8];
         assert!((similarity(&a, &a) - 1.0).abs() < 1e-6);
         assert!((similarity(&a, &[0.8, -0.6])).abs() < 1e-6);
+    }
+
+    /// Both pinned weights load with every tensor claimed: a layer map that
+    /// disagrees with its file is refused at load (`face::all_claimed`).
+    /// Needs both fetched, so it is not part of the default run.
+    #[test]
+    #[ignore = "model: needs the installed face detector and the fetched ArcFace weights"]
+    fn the_pinned_weights_are_all_claimed() {
+        crate::face::Detector::load(&crate::face::weights().unwrap().expect("detector")).unwrap();
+        Embedder::load(&weights().unwrap().expect("arcface")).unwrap();
     }
 
     /// The alignment against InsightFace's own: `MECHA_FACE_ALIGN_PARITY`

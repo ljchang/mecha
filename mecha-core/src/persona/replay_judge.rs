@@ -120,7 +120,10 @@ impl Clause {
 
 /// The best assignment of faces to people: `similarity[p][f]` is person
 /// p's portrait against face f, and each face goes to at most one person,
-/// so that the total over the matched pairs is the greatest. Exhaustive,
+/// so that the total over the matched pairs is the greatest. A total, not
+/// each pair's own best: two near-tied cross pairs can outscore the right
+/// one, which in ArcFace's measured range (different people at 0.35 or
+/// under) stays below the match line (review of #655). Exhaustive,
 /// which a picture's handful of people allows; beyond eight people or faces
 /// each person takes their best free face in turn.
 pub fn assign(similarity: &[Vec<f32>]) -> Vec<Option<usize>> {
@@ -513,8 +516,8 @@ pub struct Identity {
     pub who: String,
     /// The detector's face, by index, best match first assigned.
     pub face: Option<usize>,
-    /// ArcFace similarity to their portrait; `None` with no face, or no
-    /// portrait to compare.
+    /// ArcFace similarity to their portrait; `None` when no face was left
+    /// for them.
     pub similarity: Option<f32>,
 }
 
