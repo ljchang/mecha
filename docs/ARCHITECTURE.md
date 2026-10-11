@@ -6125,15 +6125,17 @@ was ever deployed.
   Per picture it records the detector's faces (`FaceAnchors::faces_in`),
   the vision model's count of people, and the record's own count (the
   record is found by the picture's hash in the sample's staged store). Each
-  thing the record says (`clauses`: setting, style, together, and each
-  person's doing, wearing and expression) is asked as a yes/no, of the
+  thing the record says (`clauses`: setting, style, together, the words
+  it renders, and each person's doing, wearing and expression) is asked
+  as a yes/no, of the
   picture and, for an edit, of the picture it started from, so a clause
   the base already showed is not credited to the edit. It also records
   `layout_similarity` against that base and the manifest's `roles` and
   `reader`. A clause names no one, because the vision model cannot tell the
   cast apart by name; identity is a face-embedding judge, not built yet.
   Answers are read strictly (`yes_no`, `count`: the first word or nothing),
-  and a question that got no readable answer is in no denominator. The
+  and a question that got no readable answer is in no denominator but is
+  counted (`unanswered`), so a rate says what it stands on. The
   judges are versioned (`JUDGES`), and the verdict file is named by the
   version, so a changed judge is its own arm and re-judges old renders
   rather than mixing with them. Questions go to the persona's judge binding
