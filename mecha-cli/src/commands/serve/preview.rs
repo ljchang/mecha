@@ -53,8 +53,13 @@ pub(super) fn url_for(
     is_dashboard_publish(item).then(|| format!("{origin}/p/{}/", item.id))
 }
 
+/// Pending, a publish, a `hud-` bundle, and **staged by the harness**. A
+/// routed `bundle_publish` the model calls is staged too, with arguments it
+/// chose; only `mecha hud publish` assembles a dashboard from the owner's own
+/// installed board, so only its items are previewed (review of #651).
 fn is_dashboard_publish(item: &mecha_core::outbox::OutboxItem) -> bool {
-    item.status == "pending"
+    mecha_core::outbox::Author::parse(&item.author) == mecha_core::outbox::Author::Harness
+        && item.status == "pending"
         && item.kind == OutboxKind::Publish
         && item.tool.ends_with("__bundle_publish")
         && item.args["id"]
@@ -97,17 +102,53 @@ fn csp_for(origin: &str) -> String {
     )
 }
 
+/// A preview origin `[web] preview_origin` may name: `https://` and a host
+/// (with an optional port), nothing that could extend a policy it is
+/// written into. Refused, the preview is off and serve says why, never a
+/// silently downgraded app policy (review of #651).
+pub(super) fn valid_origin(origin: &str) -> bool {
+    let Some(rest) = origin.trim_end_matches('/').strip_prefix("https://") else {
+        return false;
+    };
+    let (host, port) = rest.split_once(':').unwrap_or((rest, ""));
+    !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        && port.chars().all(|c| c.is_ascii_digit())
+}
+
 pub(super) fn router(
     owner_login: Arc<String>,
     outbox_root: PathBuf,
     origin: &str,
 ) -> anyhow::Result<Router> {
+    router_at(
+        owner_login,
+        outbox_root,
+        mecha_core::work::producer_dir("hud")?,
+        mecha_core::hud::store::Store::open()?,
+        origin,
+    )
+}
+
+fn router_at(
+    owner_login: Arc<String>,
+    outbox_root: PathBuf,
+    bundles_root: PathBuf,
+    hud: mecha_core::hud::store::Store,
+    origin: &str,
+) -> anyhow::Result<Router> {
+    anyhow::ensure!(
+        valid_origin(origin),
+        "[web] preview_origin {origin:?} is not https://host[:port]"
+    );
     let csp = HeaderValue::from_str(&csp_for(origin))?;
     let state = Preview {
         owner_login,
         outbox_root,
-        bundles_root: mecha_core::work::producer_dir("hud")?,
-        hud: mecha_core::hud::store::Store::open()?,
+        bundles_root,
+        hud,
         csp,
     };
     Ok(Router::new()
@@ -314,6 +355,11 @@ mod tests {
                 "factory__bundle_publish",
                 "hud-",
             ),
+            {
+                let mut by_model = ok.clone();
+                by_model.author = "model".into();
+                by_model
+            },
         ] {
             assert_eq!(
                 url_for(o, &not),
@@ -324,5 +370,112 @@ mod tests {
                 not.tool
             );
         }
+    }
+    #[test]
+    fn a_preview_origin_is_https_and_a_host_and_nothing_more() {
+        assert!(valid_origin("https://box.tail.ts.net:8444"));
+        assert!(valid_origin("https://box.tail.ts.net/"));
+        for bad in [
+            "http://box:8444",
+            "https://box:8444; script-src *",
+            "https://box 'unsafe-inline'",
+            "https://",
+            "https://box:84a",
+        ] {
+            assert!(!valid_origin(bad), "{bad}");
+        }
+    }
+
+    /// The listener itself, driven by requests: the owner gate, a pending
+    /// harness-staged dashboard's page and rows, a model-staged one refused,
+    /// and nothing outside the bundle.
+    #[tokio::test]
+    async fn the_preview_serves_only_a_harness_staged_dashboard_to_its_owner() {
+        use tower::util::ServiceExt;
+        let root = std::env::temp_dir().join(format!("mecha-preview-{}", uuid::Uuid::new_v4()));
+        let bundles = root.join("work-hud");
+        let bundle = bundles.join("lab-1");
+        std::fs::create_dir_all(bundle.join("renderer")).unwrap();
+        std::fs::write(bundle.join("index.html"), "<div id=hud></div>").unwrap();
+        std::fs::write(root.join("secret.txt"), "no").unwrap();
+        let hud_root = root.join("hud");
+        let data = hud_root.join("boards/lab/data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(
+            data.join("visits.json"),
+            r#"{"name":"visits","generated_at":"2031-04-17T09:00:00Z","generation":1,
+                "loader_digest":"d","columns":[{"name":"n","type":"integer"}],"rows":[[3]],"external":false}"#,
+        )
+        .unwrap();
+        let outbox_root = root.join("outbox");
+        let outbox = OutboxStore::open(&outbox_root).unwrap();
+        let args = serde_json::json!({"id": "hud-lab", "bundle": bundle.display().to_string()});
+        let staged = outbox
+            .stage_publish_by_harness("factory__bundle_publish", args.clone())
+            .unwrap();
+        let by_model = outbox
+            .stage(
+                "factory__bundle_publish",
+                OutboxKind::Publish,
+                args,
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        let app = router_at(
+            Arc::new("owner@example.com".into()),
+            outbox_root,
+            bundles,
+            mecha_core::hud::store::Store::at(&hud_root),
+            "https://box.tail.ts.net:8444",
+        )
+        .unwrap();
+        let get = |path: String, owner: bool| {
+            let mut r = axum::http::Request::builder().uri(path);
+            if owner {
+                r = r.header(super::super::TAILSCALE_LOGIN, "owner@example.com");
+            }
+            r.body(axum::body::Body::empty()).unwrap()
+        };
+        let status = |path: String, owner: bool| {
+            let app = app.clone();
+            async move { app.oneshot(get(path, owner)).await.unwrap().status() }
+        };
+
+        assert_eq!(
+            status(format!("/p/{}/", staged.id), false).await,
+            StatusCode::FORBIDDEN
+        );
+        let page = app
+            .clone()
+            .oneshot(get(format!("/p/{}/", staged.id), true))
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let csp = page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            csp.contains("frame-ancestors https://box.tail.ts.net:*"),
+            "{csp}"
+        );
+        assert_eq!(
+            status(format!("/p/{}/data/visits.json", staged.id), true).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(format!("/p/{}/", by_model.id), true).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(format!("/p/{}/..%2F..%2Fsecret.txt", staged.id), true).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status("/p/no-such-item/".into(), true).await,
+            StatusCode::NOT_FOUND
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
