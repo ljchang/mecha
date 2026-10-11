@@ -1084,14 +1084,28 @@ impl OutboxStore {
     /// [`stage_by_harness`](Self::stage_by_harness) for a publication: a
     /// bundle the harness assembled from the owner's own files (a dashboard's
     /// release), reviewed as the rendered page it is.
-    pub fn stage_publish_by_harness(&self, tool: &str, args: Value) -> Result<OutboxItem> {
+    ///
+    /// `workspace` is the directory the bundle was assembled in, and the
+    /// release runs the tool under it as it would a run's jail. It is not
+    /// optional: without it the release falls back to the reviewer's
+    /// workspace, and the factory's server, rooted there, refuses a bundle
+    /// outside it — the first real dashboard release failed exactly so.
+    pub fn stage_publish_by_harness(
+        &self,
+        tool: &str,
+        args: Value,
+        workspace: &Path,
+    ) -> Result<OutboxItem> {
         self.stage_as(
             Author::Harness,
             tool,
             OutboxKind::Publish,
             args,
             Taint::default(),
-            Provenance::default(),
+            Provenance {
+                workspace: Some(workspace.to_path_buf()),
+                ..Provenance::default()
+            },
         )
     }
 
