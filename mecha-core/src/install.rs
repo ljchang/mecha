@@ -621,6 +621,21 @@ pub async fn install(
                 "ComfyUI answers on :{} — `[image] url`'s default",
                 naming.port
             ));
+            // ComfyUI-GGUF is not installed (the int8 default needs only the
+            // core loader), so a configured `.gguf` would fail at the first
+            // picture — said now rather than then.
+            if let Ok(cfg) = crate::config::Config::load_global() {
+                if let Some(image) = cfg.image.as_ref() {
+                    if image.diffusion_model.ends_with(".gguf") {
+                        say(&format!(
+                            "[image] diffusion_model is {} — a GGUF, which needs the \
+                             ComfyUI-GGUF node this install does not bring; remove the line to \
+                             use the installed int8 model",
+                            image.diffusion_model
+                        ));
+                    }
+                }
+            }
             // The switch alone reads off with no `[image]` table; one naming
             // the temp dir is written where there is none, and an owner's
             // own table is told the line rather than edited.
