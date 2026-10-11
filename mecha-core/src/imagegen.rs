@@ -2595,14 +2595,12 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
 /// silent: a `together` when it has none, and each person's `doing` and
 /// `wearing` when theirs has none, for people the call already names (mecha-
 /// a3's rule b). Nothing else: setting, light, camera and look stay the
-/// call's. What was merged, for the manifest, and whose clothes were held
-/// back because the call's own act already dresses them.
+/// call's. What was merged, for the manifest.
 fn merge_read(
     change: &mut crate::scene::SceneChange,
     read: &serde_json::Map<String, Value>,
-) -> (Vec<String>, Vec<String>) {
+) -> Vec<String> {
     let mut merged = Vec::new();
-    let mut held = Vec::new();
     // A pose is read only for a call that gave none and leaves no `together`
     // (mecha-a3, 2026-10-09): asked for a part per person on a one-way act,
     // the reader mirrored the verb onto the receiver 6 of 10 times, where the
@@ -2631,20 +2629,6 @@ fn merge_read(
         .cloned()
         .unwrap_or_default();
     let (mut doings, mut wearings) = (0, 0);
-    let everyone: Vec<String> = change
-        .people
-        .iter()
-        .filter(|p| !p.remove)
-        .flat_map(|p| [p.who.key(), crate::picture::shown(&p.who)])
-        .collect();
-    // A `together` that dresses or undresses someone it does not name could
-    // be about anyone in the picture, so it holds back everyone's.
-    let together_dresses = change.together.as_deref().filter(|t| dresses(t));
-    let together_names_no_one = together_dresses.is_some_and(|t| {
-        everyone
-            .iter()
-            .all(|n| crate::layers::word_spans(t, n).is_empty())
-    });
     for p in change.people.iter_mut().filter(|p| !p.remove) {
         let names = [p.who.key(), crate::picture::shown(&p.who).to_lowercase()];
         let Some(r) = said.iter().find(|r| {
@@ -2670,24 +2654,8 @@ fn merge_read(
         }
         if p.wearing.is_none() {
             if let Some(w) = text("wearing") {
-                // An act that already says what they have on is their
-                // clothes: a second outfit beside "wearing jeans pulled down"
-                // is a dressed and an undressed person in one sentence, which
-                // the image model satisfies by drawing two (mecha-a3,
-                // 2026-10-11, on a94a0a076).
-                let in_the_act = p.doing.as_deref().is_some_and(dresses)
-                    || together_dresses.is_some_and(|t| {
-                        together_names_no_one
-                            || names
-                                .iter()
-                                .any(|n| !crate::layers::word_spans(t, n).is_empty())
-                    });
-                if in_the_act {
-                    held.push(crate::picture::shown(&p.who));
-                } else {
-                    p.wearing = Some(w);
-                    wearings += 1;
-                }
+                p.wearing = Some(w);
+                wearings += 1;
             }
         }
     }
@@ -2697,34 +2665,7 @@ fn merge_read(
     if wearings > 0 {
         merged.push(format!("wearing×{wearings}"));
     }
-    (merged, held)
-}
-
-/// Words that say what someone has on, or has not: an act carrying one
-/// already dresses its person. Matched whole, so a clothesline is not one.
-const DRESSING_WORDS: &[&str] = &[
-    "wearing",
-    "wears",
-    "wore",
-    "worn",
-    "dressed",
-    "undressed",
-    "naked",
-    "nude",
-    "topless",
-    "shirtless",
-    "bottomless",
-    "clothed",
-    "unclothed",
-    "clothes",
-    "clothing",
-    "outfit",
-];
-
-fn dresses(text: &str) -> bool {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|w| DRESSING_WORDS.contains(&w))
+    merged
 }
 
 /// How long a persona's picture waits for the scene reader before it is drawn
@@ -2755,14 +2696,73 @@ fn doing_words(p: &crate::scene::Person, together: bool) -> String {
     parts.join(", ")
 }
 
+/// Words that say what someone has on, or has not. Matched as whole words,
+/// so a clothesline is not one; "clothes rack" is, which errs toward stating
+/// no outfit, the cheaper mistake.
+const DRESSING_WORDS: &[&str] = &[
+    "wearing",
+    "wears",
+    "wore",
+    "worn",
+    "dressed",
+    "undressed",
+    "naked",
+    "nude",
+    "topless",
+    "shirtless",
+    "bottomless",
+    "clothed",
+    "unclothed",
+    "clothes",
+    "clothing",
+    "outfit",
+];
+
+fn dresses(text: &str) -> bool {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| DRESSING_WORDS.contains(&w))
+}
+
+/// Whether a person's act already says what they have on: their own words
+/// (`doing`, a split part included), or the shared act when it names them
+/// or names nobody in the picture. Then the prompt states no outfit beside
+/// it. Whatever filled `wearing` (the call, the reader, the record, or a
+/// newcomer's default), a second outfit beside "wearing jeans pulled down"
+/// is a dressed and an undressed person in one sentence, which the image
+/// model drew as two (mecha-a3, 2026-10-11, on a94a0a076). The record keeps
+/// the clothes; only the prompt leaves them out.
+fn clothes_in_act(
+    p: &crate::scene::Person,
+    doing: &str,
+    together: Option<&str>,
+    everyone: &[&crate::scene::Person],
+) -> bool {
+    let named = |t: &str, q: &crate::scene::Person| {
+        [q.who.key(), crate::picture::shown(&q.who)]
+            .iter()
+            .any(|n| !crate::layers::word_spans(t, n).is_empty())
+    };
+    dresses(doing)
+        || together
+            .is_some_and(|t| dresses(t) && (named(t, p) || everyone.iter().all(|q| !named(t, q))))
+}
+
 /// A person as an edit prompt states them: name, library description,
-/// clothes, what they do and show.
-fn edit_person(name: &str, text: &str, p: &crate::scene::Person, together: bool) -> String {
+/// clothes unless the act already gives them (`clothes_in_act`), what they
+/// do and show.
+fn edit_person(
+    name: &str,
+    text: &str,
+    p: &crate::scene::Person,
+    together: bool,
+    in_act: bool,
+) -> String {
     let mut out = format!(" {name}");
     if !text.is_empty() {
         out.push_str(&format!(" ({text})"));
     }
-    if !p.wearing.trim().is_empty() {
+    if !p.wearing.trim().is_empty() && !in_act {
         out.push_str(&format!(
             ", wearing {}",
             p.wearing.trim().trim_end_matches('.')
@@ -3117,14 +3117,7 @@ impl Tool for ImageGenerate {
                 Some(match read {
                     Ok(extracted) => {
                         let before = call.change.clone();
-                        let (merged, held) = merge_read(&mut call.change, &extracted.scene);
-                        // Said beside the merge, so a person drawn without
-                        // the record's clothes is never a silent null.
-                        let held = if held.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; clothes kept to the act for {}", held.join(", "))
-                        };
+                        let merged = merge_read(&mut call.change, &extracted.scene);
                         // The reader's words pass the door the call's did: a
                         // library character whose entry did not load, named
                         // in them, would be drawn as a stranger (review of
@@ -3143,10 +3136,10 @@ impl Tool for ImageGenerate {
                             "fell back: the reader named a library entry that could not be read"
                                 .to_string()
                         } else if merged.is_empty() {
-                            format!("nothing to merge{held}")
+                            "nothing to merge".to_string()
                         } else {
                             read_from = record.as_ref().map(crate::scene::Scene::origin);
-                            format!("merged: {}{held}", merged.join(", "))
+                            format!("merged: {}", merged.join(", "))
                         }
                     }
                     Err(why) => {
@@ -3220,6 +3213,10 @@ impl Tool for ImageGenerate {
         // one place a picture says what happened (mecha-a3's G5). The
         // prompt itself stays out of the manifest (ARCHITECTURE §images).
         let mut roles_said: Option<String> = None;
+        // Whose outfit the prompt left out because their act already says
+        // what they have on (`clothes_in_act`): in the manifest, so a person
+        // drawn without the record's clothes is never a silent null.
+        let mut clothes_said: Vec<String> = Vec::new();
         // The words a split put in the prompt, for the owner's prompt log
         // (`words`), which the privacy guard reads.
         let mut split_words: Vec<String> = Vec::new();
@@ -3346,21 +3343,29 @@ impl Tool for ImageGenerate {
                                     together: bool| {
                     let mut cast = Vec::new();
                     let mut extras = Vec::new();
+                    let mut in_act = Vec::new();
+                    let everyone: Vec<&crate::scene::Person> = people.iter().collect();
+                    let shared = words.together.as_ref().map(|f| f.value.as_str());
                     for p in people {
+                        let doing = doing_words(p, together);
+                        let kept = clothes_in_act(p, &doing, shared, &everyone);
+                        if kept {
+                            in_act.push(crate::picture::shown(&p.who));
+                        }
                         match &p.who {
                             crate::scene::Who::Library(n) => {
                                 cast.push(crate::imagelib::CastMember {
                                     name: n.clone(),
                                     wearing: p.wearing.clone(),
-                                    doing: doing_words(p, together),
+                                    doing,
+                                    clothes_in_act: kept,
                                 })
                             }
                             crate::scene::Who::Described(d) => {
                                 let mut e = d.trim().trim_end_matches('.').to_string();
-                                if !p.wearing.trim().is_empty() {
+                                if !p.wearing.trim().is_empty() && !kept {
                                     e.push_str(&format!(", wearing {}", p.wearing.trim()));
                                 }
-                                let doing = doing_words(p, together);
                                 if !doing.is_empty() {
                                     e.push_str(&format!(", {doing}"));
                                 }
@@ -3380,12 +3385,13 @@ impl Tool for ImageGenerate {
                         &extras,
                         style.as_deref(),
                     )
+                    .map(|c| (c, in_act))
                 };
                 // A split is prompt-only and must never turn a drawable call
                 // into a refusal: parts the compiler will not take (a
                 // described person's part naming a library character, say)
                 // fall back to the call as sent (review of #609).
-                let compiled = match compile_from(&people, &words_scene, together) {
+                let (compiled, in_act) = match compile_from(&people, &words_scene, together) {
                     Ok(c) => c,
                     Err(_) if roles_said.as_deref() == Some("applied") => {
                         roles_said = Some("fell back: the split's parts did not compile".into());
@@ -3397,6 +3403,7 @@ impl Tool for ImageGenerate {
                     Err(why) => return Ok(refused(why)),
                 };
                 req.prompt = compiled.prompt;
+                clothes_said = in_act;
                 req.references = compiled
                     .references
                     .into_iter()
@@ -3828,7 +3835,16 @@ impl Tool for ImageGenerate {
                         .as_ref()
                         .map(|e| e.text.trim().trim_end_matches('.').to_string())
                         .unwrap_or_default();
-                    said.push_str(&edit_person(&name, &text, p, together));
+                    let in_act = clothes_in_act(
+                        p,
+                        &doing_words(p, together),
+                        plan.next.together.as_ref().map(|f| f.value.as_str()),
+                        &plan.people.iter().collect::<Vec<_>>(),
+                    );
+                    if in_act {
+                        clothes_said.push(name.clone());
+                    }
+                    said.push_str(&edit_person(&name, &text, p, together, in_act));
                     match anchor {
                         Some(crate::face::Anchor::Crop(bytes)) => {
                             req.references.push(Reference {
@@ -4232,6 +4248,7 @@ impl Tool for ImageGenerate {
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
                 "roles": roles_said,
+                "clothes_in_act": (!clothes_said.is_empty()).then_some(&clothes_said),
                 "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
@@ -8652,7 +8669,7 @@ mod tests {
                 {"who": "Wren", "doing": "watching"}
             ]
         });
-        let (merged, _) = merge_read(&mut change, read.as_object().unwrap());
+        let merged = merge_read(&mut change, read.as_object().unwrap());
         assert_eq!(change.together.as_deref(), Some("Maya and John dance"));
         assert_eq!(
             change.people[0].doing.as_deref(),
@@ -8682,7 +8699,7 @@ mod tests {
         };
         let read = json!({"people": [{"who": "Maya", "doing": "spinning"},
             {"who": "John", "doing": "clapping"}]});
-        let (merged, _) = merge_read(&mut change, read.as_object().unwrap());
+        let merged = merge_read(&mut change, read.as_object().unwrap());
         assert_eq!(change.people[1].doing.as_deref(), Some("clapping"));
         assert_eq!(merged, ["doing×2"]);
         // Each condition alone holds the reader's poses back: a pose the
@@ -8734,66 +8751,124 @@ mod tests {
         assert!(change.people[0].wearing.is_none(), "too long to merge");
     }
 
-    /// A person whose act already says what they have on keeps the act's
-    /// clothes: the reader's outfit beside it would put a dressed and an
-    /// undressed figure in one sentence (mecha-a3, 2026-10-11). Fails where
-    /// the merge looked only at the `wearing` field.
+    /// An act that says what someone has on is their clothes: their own
+    /// words, or a shared act naming them or nobody; a word is matched whole.
     #[test]
-    fn the_readers_clothes_are_held_back_from_an_act_that_dresses_its_person() {
-        let person = |who: &str, doing: Option<&str>| crate::scene::PersonChange {
+    fn an_act_that_dresses_someone_is_their_clothes() {
+        let person = |who: &str| crate::scene::Person {
             who: crate::scene::Who::Library(who.into()),
             at: None,
-            wearing: None,
-            doing: doing.map(str::to_string),
-            expression: None,
-            remove: false,
+            wearing: String::new(),
+            doing: String::new(),
+            expression: String::new(),
+            origin: crate::scene::Origin::Clean,
         };
-        let read = json!({"people": [
-            {"who": "Maya", "wearing": "a yellow raincoat"},
-            {"who": "John", "wearing": "a flannel shirt"}
-        ]});
-        // Her act dresses her; his says nothing about clothes.
-        let mut change = crate::scene::SceneChange {
-            people: vec![
-                person(
-                    "maya",
-                    Some("wearing her raincoat unbuttoned, shaking off the rain"),
-                ),
-                person("john", Some("holding the door")),
-            ],
-            ..Default::default()
-        };
-        let (merged, held) = merge_read(&mut change, read.as_object().unwrap());
-        assert_eq!(change.people[0].wearing, None, "the act's clothes are hers");
-        assert_eq!(change.people[1].wearing.as_deref(), Some("a flannel shirt"));
-        assert_eq!(merged, ["wearing×1"]);
-        assert_eq!(held, ["Maya"]);
-        // A `together` that dresses someone by name holds back theirs only.
-        let mut change = crate::scene::SceneChange {
-            together: Some("Maya, dressed for the storm, waves from the porch".into()),
-            people: vec![person("maya", None), person("john", None)],
-            ..Default::default()
-        };
-        let (_, held) = merge_read(&mut change, read.as_object().unwrap());
-        assert_eq!(held, ["Maya"]);
-        assert_eq!(change.people[1].wearing.as_deref(), Some("a flannel shirt"));
-        // One that names nobody could be about anyone, so holds back both.
-        let mut change = crate::scene::SceneChange {
-            together: Some("Both of them, soaked through their clothes, laugh".into()),
-            people: vec![person("maya", None), person("john", None)],
-            ..Default::default()
-        };
-        let (merged, held) = merge_read(&mut change, read.as_object().unwrap());
-        assert!(merged.is_empty(), "{merged:?}");
-        assert_eq!(held, ["Maya", "John"]);
-        // A word is matched whole: a clothesline does not dress anyone.
-        let mut change = crate::scene::SceneChange {
-            people: vec![person("maya", Some("pegging towels on the clothesline"))],
-            ..Default::default()
-        };
-        let (merged, held) = merge_read(&mut change, read.as_object().unwrap());
-        assert_eq!(merged, ["wearing×1"]);
-        assert!(held.is_empty());
+        let (maya, john) = (person("maya"), person("john"));
+        let both = [&maya, &john];
+        assert!(clothes_in_act(
+            &maya,
+            "wearing her raincoat unbuttoned",
+            None,
+            &both
+        ));
+        assert!(!clothes_in_act(
+            &maya,
+            "pegging towels on the clothesline",
+            None,
+            &both
+        ));
+        assert!(!clothes_in_act(&maya, "holding the door", None, &both));
+        let named = Some("Maya, dressed for the storm, waves to John");
+        assert!(clothes_in_act(&maya, "", named, &both));
+        assert!(clothes_in_act(&john, "", named, &both), "John is named too");
+        let hers = Some("Maya, dressed for the storm, waves");
+        assert!(!clothes_in_act(&john, "", hers, &both), "not his act");
+        let nobody = Some("both of them soaked through their clothes, laughing");
+        assert!(clothes_in_act(&john, "", nobody, &both));
+        assert!(!clothes_in_act(
+            &john,
+            "",
+            Some("Maya waves to John"),
+            &both
+        ));
+    }
+
+    /// Whoever filled `wearing` (here a newcomer's default, and on a restage
+    /// the record), a person whose act already says what they have on is
+    /// stated without a second outfit; the record keeps the clothes, and the
+    /// manifest says whose were left out. Fails where the prompt stated
+    /// `wearing` whatever the act said (review of #647).
+    #[tokio::test]
+    async fn an_act_that_dresses_its_person_draws_one_outfit_and_says_so() {
+        let (url, seen) = distinct(3).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        // A newcomer with no clothes given: the default fills the field.
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a porch", "people": [
+                    {"who": "maya", "doing": "wearing a green parka, shaking off the rain"},
+                    {"who": "john", "wearing": "a flannel shirt", "doing": "holding the door"}
+                ]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("green parka"), "{prompt}");
+        assert!(!prompt.contains("clothes that suit the scene"), "{prompt}");
+        assert!(prompt.contains("flannel shirt"), "{prompt}");
+        assert_eq!(
+            prompt.matches("wearing").count(),
+            2,
+            "one outfit each: {prompt}"
+        );
+        assert_eq!(
+            manifest_of(&dir, &out.content)["clothes_in_act"],
+            json!(["Maya"])
+        );
+
+        // On the record in a raincoat, then an act that dresses her: the
+        // restage draws from the record, and leaves its outfit out.
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a yellow raincoat", "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        assert!(manifest_of(&dir, &first.content)["clothes_in_act"].is_null());
+        let p1 = picture_of(&first.content);
+        let then = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [
+                    {"who": "maya", "doing": "wearing a green parka, shaking off the rain"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!then.is_error, "{}", then.content);
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("green parka"), "{prompt}");
+        assert!(!prompt.contains("yellow raincoat"), "{prompt}");
+        assert_eq!(
+            manifest_of(&dir, &then.content)["clothes_in_act"],
+            json!(["Maya"])
+        );
+        let landed = cx
+            .scene
+            .as_ref()
+            .unwrap()
+            .lookup(&std::fs::read(dir.join(picture_of(&then.content))).unwrap())
+            .unwrap();
+        assert_eq!(
+            landed.people[0].wearing, "a yellow raincoat",
+            "the record keeps it"
+        );
     }
 
     /// A reader that answers as told, standing in for the persona host's.
@@ -8850,40 +8925,6 @@ mod tests {
             "merged: wearing×2"
         );
         assert!(last_prompt(&seen).contains("yellow raincoat"));
-    }
-
-    /// A person whose act already dresses them is drawn in one outfit, and
-    /// the manifest says whose clothes were kept to the act. Fails where the
-    /// reader's outfit was merged beside the act's.
-    #[tokio::test]
-    async fn an_act_that_dresses_its_person_draws_one_outfit_and_says_so() {
-        let (url, seen) = distinct(1).await;
-        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
-        let t = tool(&url).with_library_dir(lib.clone());
-        let mut cx = scene_ctx(&dir, &store, "chat-a");
-        cx.scene_reader = Some(Arc::new(FakeReader(Ok(json!({"people": [
-            {"who": "Maya", "wearing": "a yellow raincoat"},
-            {"who": "John", "wearing": "a flannel shirt"}
-        ]})))));
-        let out = t
-            .call(
-                json!({"scene": {"setting": "a porch", "people": [
-                    {"who": "maya", "doing": "wearing a green parka, shaking off the rain"},
-                    {"who": "john", "doing": "holding the door"}
-                ]}}),
-                &cx,
-            )
-            .await
-            .unwrap();
-        assert!(!out.is_error, "{}", out.content);
-        let prompt = last_prompt(&seen);
-        assert!(prompt.contains("green parka"), "{prompt}");
-        assert!(!prompt.contains("yellow raincoat"), "{prompt}");
-        assert!(prompt.contains("flannel shirt"), "{prompt}");
-        assert_eq!(
-            manifest_of(&dir, &out.content)["reader"],
-            "merged: wearing×1; clothes kept to the act for Maya"
-        );
     }
 
     #[tokio::test]

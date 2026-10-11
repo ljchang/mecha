@@ -918,9 +918,11 @@ advances it.
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
-- `reader`: what the scene reader merged into the call, or why it fell back,
-  and whose clothes it held back because the call's own act already dresses
-  them (a second outfit beside "wearing X pulled down" drew two people);
+- `reader`: what the scene reader merged into the call, or why it fell back;
+- `clothes_in_act`: whose outfit the prompt left out because their act
+  already says what they have on (their own words, or a shared act naming
+  them or nobody). The record keeps the clothes. A second outfit beside
+  "wearing jeans pulled down" drew two people (`imagegen::clothes_in_act`);
 - the scene's picture hash, which is a pointer, never the scene.
 
 **Each picture's compiled prompt is saved for the owner, never in the
