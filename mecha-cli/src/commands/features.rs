@@ -177,19 +177,25 @@ async fn enable(ids: &[String], no_install: bool) -> Result<()> {
                     )
                 })?;
         }
-        // Likewise a machine the image server's pinned torch cannot run on.
+        // A machine the image server's pinned torch cannot run on is not
+        // offered it — and not refused the switch either: images may come
+        // from a ComfyUI the owner runs, stopped right now, and the switch
+        // is what turned them on before ComfyUI had an installer (review of
+        // #645).
         if todo
             .iter()
             .any(|(id, ..)| *id == mecha_core::comfyui_unit::ID)
         {
-            mecha_core::comfyui_unit::fits(
+            if let Err(why) = mecha_core::comfyui_unit::fits(
                 std::env::consts::OS,
                 std::env::consts::ARCH,
                 read_nvidia(),
-            )
-            .map_err(|why| {
-                anyhow::anyhow!("enabling {} needs ComfyUI, and {why}", ids.join(" "))
-            })?;
+            ) {
+                println!(
+                    "ComfyUI is not installed: {why}. Images switch on for one you run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
+            }
         }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
