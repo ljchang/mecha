@@ -222,6 +222,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness gives now, so a chat from before that fix is replayed with the
   history this build would have kept.
 
+- **`mecha replay --judge` knows who is who.** Each face in a judged
+  picture is matched to the scene's library characters by their portraits
+  (ArcFace, fetched the first time it is needed, with its non-commercial
+  research licence stated), and each person's clothing and action is
+  checked on that person, and on everyone else, so an outfit drawn on the
+  wrong person is counted as a bleed.
+
 - **`mecha replay --judge` scores a persona replay's pictures.** For each
   picture a replay drew, it counts faces and people against the scene's
   record, and asks a vision model whether each thing the record says is

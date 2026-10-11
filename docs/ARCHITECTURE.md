@@ -6203,8 +6203,22 @@ was ever deployed.
   picture and, for an edit, of the picture it started from, so a clause
   the base already showed is not credited to the edit. It also records
   `layout_similarity` against that base and the manifest's `roles` and
-  `reader`. A clause names no one, because the vision model cannot tell the
-  cast apart by name; identity is a face-embedding judge, not built yet.
+  `reader`. A whole-picture clause names no one, because the vision model
+  cannot tell the cast apart by name. So since `replay-judges-2` an identity
+  judge does: each face the detector finds (its five landmarks decoded
+  from RetinaFace's own landmark head) is aligned to InsightFace's template
+  and embedded by ArcFace R50 (`face_id`, checked against InsightFace's
+  `w600k_r50.onnx` to a cosine of 1.0000, and its alignment against
+  `cv2.warpAffine` to under a tenth of a level), then matched to the
+  record's library cast by their portraits, for the best total
+  (`assign`; a match is 0.35 or more). Each identified person's doing,
+  wearing and expression are asked of a crop around them (`person_crop`),
+  and their doing and wearing of every other identified person's crop:
+  a yes there is a **bleed**, an attribute drawn on the wrong person,
+  which a whole-picture clause passes. ArcFace's weights are InsightFace's
+  non-commercial research licence (owner, 2026-10-11): fetched on the
+  judge's first use with the licence said, never by a feature's install,
+  and, like the face detector, only with image generation on.
   Answers are read strictly (`yes_no`, `count`: the first word or nothing),
   and a question that got no readable answer is in no denominator but is
   counted (`unanswered`), so a rate says what it stands on. The
