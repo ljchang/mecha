@@ -362,6 +362,8 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
                         "{id}/{name}: not in release {} — publish the board again to add it",
                         release.version
                     );
+                    // Never pushed until republished: the timer says so.
+                    unpushed += 1;
                     continue;
                 }
                 Plan::LoaderChanged => {
@@ -411,7 +413,10 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
                 }
             }
         }
-        pushed.write(&dir)?;
+        if let Err(e) = pushed.write(&dir) {
+            eprintln!("{id}: what was pushed could not be recorded: {e:#}");
+            unpushed += 1;
+        }
     }
     Ok(unpushed)
 }
