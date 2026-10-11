@@ -1662,7 +1662,8 @@ Step 7 becomes these, each a PR that leaves every feature working:
   torch and torchvision as direct URLs to one wheel each so no second index
   is consulted for anything else (uv's dependency-confusion rule); the image
   slot's three files fetched into the hub and linked into ComfyUI's
-  `models/`, each link recorded; `mecha-comfyui.service` with its temp
+  `models/`, the plan reading an installed ComfyUI's models from the hub so
+  a cleared cache is offered again (a hand-built one still holds its own); `mecha-comfyui.service` with its temp
   directory under the install's tree, so `enable` can write `[image]
   server_temp_dir` where there is no `[image]` table. The check asks
   `/object_info` for every node type `imagegen.rs` sends (a test holds the
