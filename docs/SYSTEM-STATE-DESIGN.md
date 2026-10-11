@@ -685,7 +685,11 @@ measurement.
 **A scan spends the sample's time.** It runs no command, but it reads files,
 and the run ledger only grows. So a `Scan` reading checks the shared
 deadline first, and once it is spent it reads `Unread` rather than start.
-A slow store then costs one reading, never the whole minute.
+A slow store then costs one reading, never the whole minute. The check sits
+where a scan starts, so a source already read (the task markers, the
+trigger tally) answers every measurement drawn from it. A sample reads
+everything that runs no command before any fork, so a wedged `nvidia-smi`
+spends its own share of the deadline, not the scans'.
 
 **Every scan is read-only**, which three stores' own readers are not. A
 measurement may write nothing but the series (§4 rule 3):

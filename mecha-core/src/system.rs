@@ -240,6 +240,21 @@ pub fn fold(
     out
 }
 
+/// The `Now` measurements in the order a sample reads them: every one that
+/// runs no command first, the forks last. The forks share the sample's
+/// deadline, and one that wedges spends it; read first, it would leave the
+/// cheapest readings — the scans, in number order after the forks — unread
+/// for time they never used (review of #641).
+fn reading_order() -> Vec<Measurement> {
+    let mut order: Vec<Measurement> = Measurement::ALL
+        .iter()
+        .copied()
+        .filter(|m| m.how() == measure::How::Now)
+        .collect();
+    order.sort_by_key(|m| m.cost() == measure::Cost::Fork);
+    order
+}
+
 /// Read the machine now. The one function here that touches the system.
 ///
 /// **Refuses** rather than records when the two readings everything else is
@@ -283,11 +298,11 @@ pub fn collect(
                 .collect::<Vec<_>>()
         });
 
-    let now = Measurement::ALL
-        .iter()
-        .filter(|m| m.how() == measure::How::Now)
-        .map(|&m| (m, reader.now(m)))
+    let mut now: Vec<(Measurement, Reading)> = reading_order()
+        .into_iter()
+        .map(|m| (m, reader.now(m)))
         .collect();
+    now.sort_by_key(|(m, _)| *m);
 
     Ok(Sample {
         at,

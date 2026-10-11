@@ -386,7 +386,24 @@ impl Reader {
         self
     }
 
+    /// A scan reads files, not a command, and still spends the sample's
+    /// time: once the deadline is spent no new one starts, so a slow store
+    /// costs one reading, never the whole minute. Checked where a scan
+    /// resolves its root, so a source already read once (`tasks`, `tally`)
+    /// still answers every measurement drawn from it with the same moment
+    /// (review of #641).
+    fn unspent(&self) -> Result<(), Reading> {
+        if self.spent() {
+            Err(Reading::unread(
+                "the sample's time ran out before this was read",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     fn home(&self) -> Result<PathBuf, Reading> {
+        self.unspent()?;
         match &self.home {
             Some(home) => Ok(home.clone()),
             None => crate::work::mecha_home()
@@ -397,6 +414,7 @@ impl Reader {
     /// The trigger store's root: under the given home, or wherever the real
     /// store says (it honours `MECHA_TRIGGERS_DIR`).
     fn trigger_root(&self) -> Result<PathBuf, Reading> {
+        self.unspent()?;
         match &self.home {
             Some(home) => Ok(crate::trigger::TriggerStore::root_under(home)),
             None => crate::trigger::TriggerStore::default_root()
@@ -681,13 +699,6 @@ impl Reader {
             Err(r) => r,
         };
         match m {
-            // A scan reads files, not a command, and still spends the
-            // sample's time: once the deadline is spent it starts nothing,
-            // so a slow store costs one reading, never the whole minute
-            // (review of #641).
-            _ if m.cost() == Cost::Scan && self.spent() => {
-                Reading::unread("the sample's time ran out before this was read")
-            }
             // On macOS each figure fails on its own source alone.
             MemoryTotal if cfg!(target_os = "macos") => Reading::of(
                 self.mac_total().map(|v| v as f64),
@@ -872,12 +883,14 @@ impl Reader {
                 Err(r) => r,
             },
             MessagesUnread => {
-                let root = match (&self.messages, &self.home) {
-                    (Some(dir), _) => Ok(dir.clone()),
-                    (None, Some(home)) => Ok(home.join("messages")),
-                    (None, None) => crate::mailbox::MailboxStore::default_root()
-                        .map_err(|e| Reading::unread(format!("{e:#}"))),
-                };
+                let root = self
+                    .unspent()
+                    .and_then(|()| match (&self.messages, &self.home) {
+                        (Some(dir), _) => Ok(dir.clone()),
+                        (None, Some(home)) => Ok(home.join("messages")),
+                        (None, None) => crate::mailbox::MailboxStore::default_root()
+                            .map_err(|e| Reading::unread(format!("{e:#}"))),
+                    });
                 match root {
                     Ok(root) => counted(
                         crate::mailbox::MailboxStore::count_pending_at(&root)

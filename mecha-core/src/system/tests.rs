@@ -1357,6 +1357,44 @@ fn a_spent_budget_starts_no_scan() {
     }
 }
 
+/// A sample reads everything that runs no command before any fork, so a
+/// wedged fork spends only its own share of the deadline.
+#[test]
+fn a_sample_reads_files_and_scans_before_any_fork() {
+    let order = reading_order();
+    let first_fork = order
+        .iter()
+        .position(|m| m.cost() == measure::Cost::Fork)
+        .expect("this list has forks");
+    assert!(
+        order[first_fork..]
+            .iter()
+            .all(|m| m.cost() == measure::Cost::Fork),
+        "{order:?}"
+    );
+    let now = Measurement::ALL
+        .iter()
+        .filter(|m| m.how() == measure::How::Now)
+        .count();
+    assert_eq!(order.len(), now, "every Now measurement, once");
+}
+
+/// A source read once answers every measurement drawn from it, deadline or
+/// not: `runs.live` and `tasks.running` count the same moment.
+#[test]
+fn a_source_already_read_answers_after_the_deadline() {
+    let s = Scratch::new();
+    crate::runmarker::RunMarkers::new(crate::runmarker::task_dir_under(&s.0))
+        .mark_running("task-a", None)
+        .unwrap();
+    let reader = Reader::until(std::time::Instant::now() + std::time::Duration::from_millis(200))
+        .with_home(s.0.clone());
+    assert_eq!(reader.now(Measurement::RunsLive), obs(1.0));
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert_eq!(reader.now(Measurement::TasksRunning), obs(1.0));
+    unread_saying(reader.now(Measurement::HoldsLive), "time ran out");
+}
+
 /// Scanning writes nothing: not a store into being, not a sweep of the dead.
 #[test]
 fn scanning_creates_and_removes_nothing() {
