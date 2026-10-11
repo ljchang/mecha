@@ -246,7 +246,7 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
         None => mecha_core::work::mecha_home()?.join("web").join("dist"),
     };
     let out = mecha_core::work::producer_dir("hud")?
-        .join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S")));
+        .join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S%3f")));
     publish::assemble(&installed, &assets.join(publish::RENDERER_DIR), &out)?;
     let bundle = publish::bundle_id(id);
     // The store `mecha outbox show` and `send` open, resolved the same way.
@@ -296,8 +296,17 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
         let Ok(dir) = store.board_path(id) else {
             continue;
         };
-        let Some(published) = publish::published(&dir)? else {
-            continue;
+        // One board's trouble is counted and said, and the boards after it
+        // still push, as the refresh loop above treats a board (review of
+        // #651).
+        let published = match publish::published(&dir) {
+            Ok(Some(published)) => published,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("{id}: its publish record is unreadable: {e:#}");
+                unpushed += 1;
+                continue;
+            }
         };
         let release = match publish::release_at(&bundles, &published.bundle) {
             Ok(Some(release)) => release,
@@ -308,9 +317,14 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
                 continue;
             }
         };
-        let installed = match store.load(id)? {
-            Ok(installed) => installed,
-            Err(_) => continue,
+        let installed = match store.load(id) {
+            Ok(Ok(installed)) => installed,
+            Ok(Err(_)) => continue,
+            Err(e) => {
+                eprintln!("{id}: could not be read to push: {e:#}");
+                unpushed += 1;
+                continue;
+            }
         };
         let mut pushed = match Pushed::read(&dir) {
             Ok(pushed) => pushed,
@@ -325,8 +339,14 @@ fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
             }
         };
         for name in installed.loaders().keys() {
-            let Some(dataset) = store.dataset(id, name)? else {
-                continue;
+            let dataset = match store.dataset(id, name) {
+                Ok(Some(dataset)) => dataset,
+                Ok(None) => continue,
+                Err(e) => {
+                    eprintln!("{id}/{name}: could not be read to push: {e:#}");
+                    unpushed += 1;
+                    continue;
+                }
             };
             let body = match publish::plan(
                 &installed,

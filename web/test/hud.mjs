@@ -188,6 +188,8 @@ assert.equal(dataBase('/g/0A1B2C/x'), '/g/0A1B2C/data/', 'either case of hex');
   answers.push(ok, gone);
   assert.equal((await granted.dataset('x', null)).etag, '"t"');
   await assert.rejects(granted.dataset('x', '"t"'), (e) => e.signIn === true && /sign in again/.test(e.message));
+  answers.push(gone);
+  await assert.rejects(granted.dataset('y', null), (e) => !e.signIn, 'another dataset never seen is not the grant');
 
   const open = filesSource('/b/hud-lab/data/');
   answers.push(ok, gone);

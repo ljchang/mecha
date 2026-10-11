@@ -14,7 +14,10 @@ export function dataBase(pathname) {
 
 /** Datasets beside the page, revalidated by ETag. */
 export function filesSource(base, { granted = false } = {}) {
-  let seen = false;
+  // Per dataset: one that never loaded has not been pushed yet, or was
+  // refused on its own merits, which is not a grant that ended (review of
+  // #651).
+  const seen = new Set();
   return {
     async dataset(name, etag) {
       const res = await fetch(`${base}${encodeURIComponent(name)}.json`, {
@@ -27,14 +30,14 @@ export function filesSource(base, { granted = false } = {}) {
         // has ended, the data that was readable a minute ago answers 404.
         // The page keeps the numbers it has, marked stale, and says how to
         // get current ones (R16) — never an empty dashboard.
-        if (granted && seen && (res.status === 404 || res.status === 410)) {
+        if (granted && seen.has(name) && (res.status === 404 || res.status === 410)) {
           const e = new Error('your viewing access has ended — sign in again for current numbers');
           e.signIn = true;
           throw e;
         }
         throw new Error(`HTTP ${res.status}`);
       }
-      seen = true;
+      seen.add(name);
       return { dataset: await res.json(), etag: res.headers.get('ETag') };
     },
   };

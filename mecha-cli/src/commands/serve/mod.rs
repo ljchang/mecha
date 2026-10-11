@@ -321,6 +321,13 @@ pub async fn execute(args: Args) -> Result<()> {
         config.web.preview_port,
         config.web.preview_origin.as_deref(),
     ) {
+        (Some(_), Some(origin)) if !preview::valid_origin(origin) => {
+            eprintln!(
+                "warning: [web] preview_origin {origin:?} is not https://host[:port] \
+                 so there are no outbox previews"
+            );
+            None
+        }
         (Some(port), Some(origin)) => {
             let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             match tokio::net::TcpListener::bind(at).await {
@@ -1932,7 +1939,8 @@ mod tests {
             &src[start..end]
         };
         let api_body = body("\nfn api() -> gate::Owned {");
-        let router_body = body("\nfn router(state: WebState");
+        // The router serve runs: `router` is the tests' delegation to it.
+        let router_body = body("\nfn router_with_preview(");
         assert!(
             !api_body.contains(".route(") && !router_body.contains(".route("),
             "a route added with `.route` has no owner — use `.at`"

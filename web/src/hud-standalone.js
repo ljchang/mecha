@@ -1,6 +1,6 @@
 // The standalone dashboard (`docs/LIVE-DASHBOARD-DESIGN.md` §4.1): the same
 // `Dashboard` the app draws at `#hud/<id>`, built as one self-contained
-// `hud.js` + `hud.css` (`npm run build:hud`) for a page that serves the spec
+// `hud.js` + `hud.css` (`npm run build`, into `dist/hud-renderer/`) for a page that serves the spec
 // and its datasets beside it:
 //
 //   <link rel="stylesheet" href="hud.css">
