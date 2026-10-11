@@ -952,8 +952,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   then σ = 8), the setting a 60-image comparison on one textured picture
   found seamless (`IMAGE-REGION-EDIT-RESEARCH.md` §4, PR #424); §7.7 later
   saw a faint rectangular seam where the edge crossed a smooth background,
-  on one scene at n = 4 (`IMAGE-REGION-EDIT-RESEARCH.md` §7.7). The graph samples on the
-  encoded picture under a `SetLatentNoiseMask`. The result is then laid over
+  on one scene at n = 4. The graph samples on the encoded picture under a `SetLatentNoiseMask`. The result is then laid over
   the original in mecha's code (`composite_masked`), not the server's, so
   every pixel beyond the grown, feathered edge (up to about 37 px outside
   what was painted) is the original, byte for byte, at the edit canvas. For
