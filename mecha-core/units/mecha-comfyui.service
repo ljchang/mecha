@@ -1,0 +1,30 @@
+# mecha's image server, as `mecha features enable image` installs it
+# (mecha-core/src/comfyui_unit.rs). Rendered at install: the placeholders
+# become absolute paths under this mecha home and the port, so nothing here
+# names a checkout or a home directory.
+#
+# The temp directory is under the install's own tree, not the runtime dir,
+# so `[image] server_temp_dir` is one fixed path the install can name: the
+# image tool deletes each job's uploads and preview there by the names the
+# server returned.
+
+[Unit]
+Description=mecha image server: ComfyUI (:@PORT@)
+After=network.target
+
+[Service]
+# `exec`: a missing interpreter fails the start at once, rather than as the
+# install check's timeout (review of #638).
+Type=exec
+WorkingDirectory=@COMFY@
+# Triton compiles kernels at first use and needs a compiler; a user manager
+# without a login has no PATH to find one by (2026-09-05).
+Environment=PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/bin/mkdir -p @TEMP@
+ExecStart=@VENV@/bin/python -B main.py --listen 127.0.0.1 --port @PORT@ --temp-directory @TEMP@
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
