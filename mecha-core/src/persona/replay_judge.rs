@@ -17,9 +17,18 @@
 //! - **Layout** against the base (`imagegen::layout_similarity`), and the
 //!   manifest's own `roles` and `reader` outcomes, carried as they are.
 //!
-//! A clause names no one: the vision model cannot tell the cast apart by
-//! name, so "a person in this picture" is what is asked. Who is who is a
-//! face-identity judge's question, which this version does not ask.
+//! - **Identity** (since `replay-judges-2`): each face the detector finds,
+//!   embedded (`face_id`) and matched to the record's library cast by their
+//!   portraits, the best assignment over all of them ([`assign`]).
+//! - **Each person's own clauses**, asked on a crop around that person
+//!   ([`person_crop`]): what they are doing, wearing and showing. And the
+//!   **bleed**: each person's doing and wearing asked of every *other*
+//!   identified person's crop, where a yes is an attribute drawn on the
+//!   wrong person, which a whole-picture clause ("a person in this picture
+//!   is wearing it") passes (the replay smoke of #644).
+//!
+//! A whole-picture clause still names no one: the vision model cannot tell
+//! the cast apart by name. Who is who is the identity judge's answer.
 //!
 //! Everything here is a pure function of the answers; the questions are
 //! asked by the caller (`mecha replay --judge`), as quarantined one-shots
@@ -30,7 +39,12 @@ use serde::{Deserialize, Serialize};
 
 /// The judges' version. Bump it whenever a question, a parse or a count
 /// changes, so a verdict is never compared with one the old judges gave.
-pub const JUDGES: &str = "replay-judges-1";
+pub const JUDGES: &str = "replay-judges-2";
+
+/// The ArcFace similarity at which a face is taken for a library
+/// character's (`face_id`): the line a3's judges drew, under which two
+/// different people's faces fall (0.35 at most on py-feat's own measure).
+pub const IDENTITY_MATCH: f32 = 0.35;
 
 /// How many people a picture shows, asked of the vision model.
 pub const PEOPLE_QUESTION: &str = "How many people are in this picture? Count every \
@@ -74,10 +88,277 @@ impl Clause {
     }
 }
 
+impl Clause {
+    /// The question for one person's crop: about the person in its middle,
+    /// since a crop can catch the edge of someone beside them.
+    pub fn crop_question(&self) -> String {
+        let quoted = self.text.trim();
+        let ask = match self.field.as_str() {
+            "doing" => {
+                format!("Is the person in the middle of this picture doing this: \"{quoted}\"?")
+            }
+            "wearing" => {
+                format!("Is the person in the middle of this picture wearing this: \"{quoted}\"?")
+            }
+            "expression" => format!(
+                "Does the person in the middle of this picture have this expression: \"{quoted}\"?"
+            ),
+            other => format!(
+                "Does the person in the middle of this picture show this {other}: \"{quoted}\"?"
+            ),
+        };
+        format!("{ask} Answer yes or no.")
+    }
+
+    /// Whether another person showing it means it was drawn on the wrong
+    /// one: what someone is doing or wearing, not an expression two people
+    /// may share.
+    pub fn bleeds(&self) -> bool {
+        matches!(self.field.as_str(), "doing" | "wearing")
+    }
+}
+
+/// The best assignment of faces to people: `similarity[p][f]` is person
+/// p's portrait against face f, and each face goes to at most one person,
+/// so that the total over the matched pairs is the greatest. Exhaustive,
+/// which a picture's handful of people allows; beyond eight people or faces
+/// each person takes their best free face in turn.
+pub fn assign(similarity: &[Vec<f32>]) -> Vec<Option<usize>> {
+    let people = similarity.len();
+    let faces = similarity.iter().map(Vec::len).max().unwrap_or(0);
+    if people > 8 || faces > 8 {
+        let mut taken = vec![false; faces];
+        return similarity
+            .iter()
+            .map(|row| {
+                let best = (0..row.len())
+                    .filter(|&f| !taken[f])
+                    .max_by(|&a, &b| row[a].total_cmp(&row[b]))?;
+                taken[best] = true;
+                Some(best)
+            })
+            .collect();
+    }
+    fn walk(
+        sim: &[Vec<f32>],
+        p: usize,
+        taken: &mut Vec<bool>,
+        now: &mut Vec<Option<usize>>,
+        score: f32,
+        best: &mut (f32, Vec<Option<usize>>),
+    ) {
+        if p == sim.len() {
+            if score > best.0 {
+                *best = (score, now.clone());
+            }
+            return;
+        }
+        now.push(None);
+        walk(sim, p + 1, taken, now, score, best);
+        now.pop();
+        for f in 0..sim[p].len() {
+            if taken[f] {
+                continue;
+            }
+            taken[f] = true;
+            now.push(Some(f));
+            walk(sim, p + 1, taken, now, score + sim[p][f], best);
+            now.pop();
+            taken[f] = false;
+        }
+    }
+    let mut best = (f32::NEG_INFINITY, vec![None; people]);
+    walk(
+        similarity,
+        0,
+        &mut vec![false; faces],
+        &mut Vec::new(),
+        0.0,
+        &mut best,
+    );
+    best.1
+}
+
+/// The part of a `width`×`height` picture that is the person whose face
+/// box is `face` (`x0, y0, x1, y1`): about a shoulder's width either side
+/// of the face, from just above it to about seven face heights below,
+/// inside the picture. As `(x, y, width, height)`.
+pub fn person_crop(face: [f32; 4], width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let [x0, y0, x1, y1] = face;
+    let (fw, fh) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+    let cx = (x0 + x1) / 2.0;
+    let left = (cx - 1.6 * fw).clamp(0.0, width as f32);
+    let right = (cx + 1.6 * fw).clamp(0.0, width as f32);
+    let top = (y0 - 0.6 * fh).clamp(0.0, height as f32);
+    let bottom = (y1 + 7.0 * fh).clamp(0.0, height as f32);
+    let (x, y) = (left as u32, top as u32);
+    (
+        x,
+        y,
+        ((right - left) as u32).max(1).min(width - x),
+        ((bottom - top) as u32).max(1).min(height - y),
+    )
+}
+
+/// The identity judge's models and the library its cast is read from: the
+/// face detector, ArcFace, and each character's portrait embedded once.
+pub struct IdentityJudge {
+    detector: crate::face::Detector,
+    embedder: crate::face_id::Embedder,
+    library: crate::imagelib::Library,
+    portraits:
+        std::sync::Mutex<std::collections::HashMap<String, std::result::Result<Vec<f32>, String>>>,
+}
+
+/// What the identity judge made of one picture: how many faces, whose
+/// face each library character's is, a crop of each person identified
+/// (by the record's index), and what it could not do.
+pub struct Seen {
+    pub faces: Option<usize>,
+    pub identities: Vec<Identity>,
+    pub crops: Vec<(usize, crate::quarantine::Shown)>,
+    pub errors: Vec<String>,
+}
+
+impl IdentityJudge {
+    /// The two models from their weights, and the library at `library`.
+    pub fn load(
+        detector: &std::path::Path,
+        arcface: &std::path::Path,
+        library: &std::path::Path,
+    ) -> anyhow::Result<Self> {
+        Ok(IdentityJudge {
+            detector: crate::face::Detector::load(detector)?,
+            embedder: crate::face_id::Embedder::load(arcface)?,
+            library: crate::imagelib::Library::load(library).0,
+            portraits: Default::default(),
+        })
+    }
+
+    /// Every face in `img`, with its embedding.
+    fn found(&self, img: &image::RgbImage) -> anyhow::Result<Vec<(crate::face::Face, Vec<f32>)>> {
+        self.detector
+            .detect(img)?
+            .into_iter()
+            .map(|f| Ok((f, self.embedder.embed(img, &f)?)))
+            .collect()
+    }
+
+    /// A library character's portrait, embedded: its largest face. Once
+    /// per run per character; a portrait that cannot be had is said.
+    fn portrait(&self, who: &str) -> std::result::Result<Vec<f32>, String> {
+        let key = who.trim().to_lowercase();
+        let mut known = self.portraits.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(done) = known.get(&key) {
+            return done.clone();
+        }
+        let got = (|| {
+            let entry = self
+                .library
+                .get(crate::imagelib::Kind::Character, &key)
+                .ok_or_else(|| format!("{who} is not in the library"))?;
+            let (bytes, _) = self
+                .library
+                .read_portrait(entry)
+                .map_err(|e| format!("{who}'s portrait could not be read: {e:#}"))?;
+            let img = crate::image::decode_upright(&bytes, "the portrait")
+                .map_err(|e| format!("{who}'s portrait did not decode: {e:#}"))?
+                .to_rgb8();
+            let faces = self
+                .found(&img)
+                .map_err(|e| format!("{who}'s portrait: {e:#}"))?;
+            let area = |f: &crate::face::Face| (f.x1 - f.x0) * (f.y1 - f.y0);
+            faces
+                .into_iter()
+                .max_by(|a, b| area(&a.0).total_cmp(&area(&b.0)))
+                .map(|(_, e)| e)
+                .ok_or_else(|| format!("{who}'s portrait shows no face"))
+        })();
+        known.insert(key, got.clone());
+        got
+    }
+
+    /// The faces in a picture's `bytes`, matched to the library cast
+    /// `scene` names, and a crop of each person identified. CPU work: run
+    /// it off an async runtime.
+    pub fn identify(&self, bytes: &[u8], scene: Option<&Scene>) -> Seen {
+        let mut seen = Seen {
+            faces: None,
+            identities: Vec::new(),
+            crops: Vec::new(),
+            errors: Vec::new(),
+        };
+        let img = match image::load_from_memory(bytes) {
+            Ok(i) => i.to_rgb8(),
+            Err(e) => {
+                seen.errors.push(format!("the picture did not decode: {e}"));
+                return seen;
+            }
+        };
+        let found = match self.found(&img) {
+            Ok(f) => f,
+            Err(e) => {
+                seen.errors.push(format!("the face detector failed: {e:#}"));
+                return seen;
+            }
+        };
+        seen.faces = Some(found.len());
+        let Some(scene) = scene else {
+            return seen;
+        };
+        // The record's library characters with a portrait to compare.
+        let mut cast = Vec::new();
+        for (i, p) in scene.people.iter().enumerate() {
+            if let crate::scene::Who::Library(who) = &p.who {
+                match self.portrait(who) {
+                    Ok(e) => cast.push((i, who.clone(), e)),
+                    Err(why) => seen.errors.push(why),
+                }
+            }
+        }
+        let similarity: Vec<Vec<f32>> = cast
+            .iter()
+            .map(|(_, _, e)| {
+                found
+                    .iter()
+                    .map(|(_, f)| crate::face_id::similarity(e, f))
+                    .collect()
+            })
+            .collect();
+        for (k, ((person, who, _), face)) in cast.iter().zip(assign(&similarity)).enumerate() {
+            let identity = Identity {
+                person: *person,
+                who: who.clone(),
+                face,
+                similarity: face.map(|f| similarity[k][f]),
+            };
+            if let (true, Some(f)) = (identity.identified(), face) {
+                let b = found[f].0;
+                let (x, y, w, h) = person_crop([b.x0, b.y0, b.x1, b.y1], img.width(), img.height());
+                let crop = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+                let mut png = Vec::new();
+                match crop
+                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|()| crate::quarantine::Shown::of(&png))
+                {
+                    Ok(shown) => seen.crops.push((*person, shown)),
+                    Err(e) => seen
+                        .errors
+                        .push(format!("{who}'s crop could not be shown: {e:#}")),
+                }
+            }
+            seen.identities.push(identity);
+        }
+        seen
+    }
+}
+
 /// What a scene record says its picture shows, as clauses: the setting's
 /// words, the style, what is between the people, each person's doing,
 /// wearing and expression, and each run of words the picture renders. A
 /// photo used as the setting is the owner's picture, not words to check;
+/// clothes the harness filled in because nobody named any say nothing;
 /// light and camera say how it was shot, which a yes/no reads poorly; and
 /// an empty field says nothing. Those are left out.
 pub fn clauses(scene: &Scene) -> Vec<Clause> {
@@ -104,7 +385,11 @@ pub fn clauses(scene: &Scene) -> Vec<Clause> {
     }
     for (i, p) in scene.people.iter().enumerate() {
         push("doing", Some(i), &p.doing);
-        push("wearing", Some(i), &p.wearing);
+        // The harness's own stand-in for clothes nobody named is true of
+        // any outfit, so it is no clause (`picture::WEARING_UNSAID`).
+        if p.wearing.trim() != crate::picture::WEARING_UNSAID {
+            push("wearing", Some(i), &p.wearing);
+        }
         push("expression", Some(i), &p.expression);
     }
     for words in scene.text.iter().flat_map(|t| &t.value) {
@@ -205,9 +490,52 @@ pub struct Judgement {
     /// The compiled prompt, from the prompt log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Each library character the record names, and the face that is
+    /// theirs, if one is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identities: Vec<Identity>,
+    /// Each identified person's own clauses, on their own crop, and on
+    /// everyone else's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub person_clauses: Vec<PersonVerdict>,
     /// What a judge could not do, said rather than counted as a no.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+/// A library character the record names whose portrait could be compared,
+/// and the face matched to them. One with no portrait to compare is in
+/// `errors`, never here, so "not identified" means a face was looked for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Identity {
+    /// The record's person, by index.
+    pub person: usize,
+    pub who: String,
+    /// The detector's face, by index, best match first assigned.
+    pub face: Option<usize>,
+    /// ArcFace similarity to their portrait; `None` with no face, or no
+    /// portrait to compare.
+    pub similarity: Option<f32>,
+}
+
+impl Identity {
+    /// Whether the face matched is theirs.
+    pub fn identified(&self) -> bool {
+        self.similarity.is_some_and(|s| s >= IDENTITY_MATCH)
+    }
+}
+
+/// A person's clause, asked of their own crop and of each other identified
+/// person's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonVerdict {
+    #[serde(flatten)]
+    pub clause: Clause,
+    pub own: Option<bool>,
+    /// On each other identified person's crop: a yes is the clause drawn
+    /// on them too. Empty for an expression, which two people may share.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elsewhere: Vec<Option<bool>>,
 }
 
 impl Judgement {
@@ -260,6 +588,14 @@ pub struct Summary {
     pub faces_match: Counted,
     /// Clauses the picture was read as showing.
     pub clauses_shown: Counted,
+    /// Library characters the record names whose face was found and
+    /// matched.
+    pub identified: Counted,
+    /// Identified people's own clauses read on their own crop.
+    pub own_shown: Counted,
+    /// A person's doing or wearing read on another person's crop: drawn on
+    /// the wrong person.
+    pub bleeds: Counted,
     /// Of an edit's clauses the base was read as not showing, those the
     /// picture was read as showing: what the edit drew.
     pub clauses_drawn: Counted,
@@ -292,6 +628,24 @@ pub fn summarise(judged: &[Judgement]) -> Summary {
                 .filter_map(|j| Some(j.faces? == j.people_recorded?)),
         ),
         clauses_shown: Counted::of(verdicts().filter_map(|v| v.picture)),
+        identified: Counted::of(
+            judged
+                .iter()
+                .flat_map(|j| &j.identities)
+                .map(Identity::identified),
+        ),
+        own_shown: Counted::of(
+            judged
+                .iter()
+                .flat_map(|j| &j.person_clauses)
+                .filter_map(|v| v.own),
+        ),
+        bleeds: Counted::of(
+            judged
+                .iter()
+                .flat_map(|j| &j.person_clauses)
+                .flat_map(|v| v.elsewhere.iter().flatten().copied()),
+        ),
         clauses_drawn: Counted::of(verdicts().filter_map(|v| match (v.base, v.picture) {
             (Some(false), Some(shown)) => Some(shown),
             _ => None,
@@ -321,6 +675,19 @@ pub fn caption(j: &Judgement) -> Vec<String> {
     }
     if let Some(l) = j.layout_similarity {
         lines.push(format!("layout {l:.2}"));
+    }
+    if !j.identities.is_empty() {
+        let found = j.identities.iter().filter(|i| i.identified()).count();
+        let bled = j
+            .person_clauses
+            .iter()
+            .flat_map(|v| v.elsewhere.iter().flatten())
+            .filter(|b| **b)
+            .count();
+        lines.push(format!(
+            "identified {found}/{} · bleed {bled}",
+            j.identities.len()
+        ));
     }
     if let Some(r) = j.roles.as_ref().and_then(|r| r.as_str()) {
         lines.push(format!("roles {r}"));
@@ -421,7 +788,11 @@ mod tests {
                 at: String::new(),
                 look: String::new(),
             }]),
-            people: vec![person("reading a map", ""), person("", "a red scarf")],
+            people: vec![
+                person("reading a map", ""),
+                person("", "a red scarf"),
+                person("", crate::picture::WEARING_UNSAID),
+            ],
             people_known: true,
             ..Scene::default()
         };
@@ -520,6 +891,80 @@ mod tests {
             None,
             "a rate over nothing"
         );
+    }
+
+    /// Faces go to people for the greatest total similarity, not each
+    /// person's first choice, and a face goes to one person only.
+    #[test]
+    fn faces_are_assigned_for_the_best_total() {
+        // Person 0 likes face 0 a little more, but person 1 has no one else.
+        let sim = vec![vec![0.70, 0.65], vec![0.68, 0.10]];
+        assert_eq!(assign(&sim), vec![Some(1), Some(0)]);
+        // More people than faces: one goes without.
+        let sim = vec![vec![0.9], vec![0.5]];
+        assert_eq!(assign(&sim), vec![Some(0), None]);
+        // No faces at all.
+        assert_eq!(assign(&[vec![], vec![]]), vec![None, None]);
+    }
+
+    /// A person's crop is around their face, reaching down for the body,
+    /// and inside the picture.
+    #[test]
+    fn a_persons_crop_is_around_them_and_inside_the_picture() {
+        let (x, y, w, h) = person_crop([100.0, 100.0, 140.0, 150.0], 1000, 1000);
+        assert_eq!((x, y), (56, 70));
+        assert_eq!(w, 128);
+        assert_eq!(h, 430);
+        let (x, y, w, h) = person_crop([0.0, 0.0, 60.0, 60.0], 200, 300);
+        assert!(x + w <= 200 && y + h <= 300, "{x} {y} {w} {h}");
+        assert_eq!((x, y), (0, 0));
+    }
+
+    /// The identity judge's counts: identified over the people compared,
+    /// a person's own clauses on their own crop, and a bleed when another
+    /// person's crop shows it.
+    #[test]
+    fn identity_and_bleed_are_counted() {
+        let clause = |field: &str| Clause {
+            field: field.into(),
+            person: Some(0),
+            text: "a green raincoat".into(),
+        };
+        let j = Judgement {
+            identities: vec![
+                Identity {
+                    person: 0,
+                    who: "a".into(),
+                    face: Some(0),
+                    similarity: Some(0.6),
+                },
+                Identity {
+                    person: 1,
+                    who: "b".into(),
+                    face: Some(1),
+                    similarity: Some(0.2),
+                },
+            ],
+            person_clauses: vec![PersonVerdict {
+                clause: clause("wearing"),
+                own: Some(true),
+                elsewhere: vec![Some(true)],
+            }],
+            ..Judgement::default()
+        };
+        let s = summarise(std::slice::from_ref(&j));
+        assert_eq!((s.identified.hits, s.identified.of), (1, 2));
+        assert_eq!((s.own_shown.hits, s.own_shown.of), (1, 1));
+        assert_eq!(
+            (s.bleeds.hits, s.bleeds.of),
+            (1, 1),
+            "drawn on the wrong person"
+        );
+        assert!(caption(&j).iter().any(|l| l == "identified 1/2 · bleed 1"));
+        assert!(clause("wearing").bleeds() && !clause("expression").bleeds());
+        assert!(clause("wearing")
+            .crop_question()
+            .starts_with("Is the person in the middle of this picture wearing"));
     }
 
     /// The sheet keeps each picture's own shape and escapes what it prints.

@@ -56,6 +56,11 @@ pub struct Face {
     pub x1: f32,
     pub y1: f32,
     pub score: f32,
+    /// The five landmarks RetinaFace's landmark head places, (x, y) each:
+    /// the left eye, the right eye, the nose tip, and the mouth's left and
+    /// right corners, as the picture shows them. What `face_id` aligns a
+    /// face by before it is compared.
+    pub points: [[f32; 2]; 5],
 }
 
 impl Face {
@@ -121,8 +126,8 @@ impl Detector {
                 v[c * h * w + y as usize * w + x as usize] = p[c] as f32 - MEAN[c];
             }
         }
-        let (loc, conf) = self.net.forward(&Map { c: 3, h, w, v });
-        Ok(decode(&loc, &conf, w, h))
+        let (loc, conf, landm) = self.net.forward(&Map { c: 3, h, w, v });
+        Ok(decode(&loc, &conf, &landm, w, h))
     }
 }
 
@@ -353,11 +358,12 @@ fn make_private_dir(dir: &Path) -> Result<()> {
         .with_context(|| format!("creating {}", dir.display()))
 }
 
-/// Anchors, decoded boxes, NMS: py-feat's `generate_priors`, `decode_boxes`
-/// and post-processing, on one image. `loc` is four regressions per anchor
-/// and `conf` the face probability per anchor, in the order the heads emit
+/// Anchors, decoded boxes and landmarks, NMS: py-feat's `generate_priors`,
+/// `decode_boxes`, `decode_landm` and post-processing, on one image. `loc` is
+/// four regressions per anchor, `conf` the face probability per anchor and
+/// `landm` ten landmark regressions per anchor, in the order the heads emit
 /// them.
-fn decode(loc: &[[f32; 4]], conf: &[f32], w: usize, h: usize) -> Vec<Face> {
+fn decode(loc: &[[f32; 4]], conf: &[f32], landm: &[[f32; 10]], w: usize, h: usize) -> Vec<Face> {
     let pri = priors(h, w);
     let mut found: Vec<Face> = Vec::new();
     for (i, p) in pri.iter().enumerate().take(loc.len().min(conf.len())) {
@@ -368,12 +374,24 @@ fn decode(loc: &[[f32; 4]], conf: &[f32], w: usize, h: usize) -> Vec<Face> {
         let l = &loc[i];
         let (cx, cy) = (p[0] + l[0] * 0.1 * p[2], p[1] + l[1] * 0.1 * p[3]);
         let (bw, bh) = (p[2] * (l[2] * 0.2).exp(), p[3] * (l[3] * 0.2).exp());
+        // A landmark is the anchor's centre moved by its regression scaled
+        // by the anchor's size and the 0.1 variance, as a box centre is.
+        let mut points = [[0f32; 2]; 5];
+        if let Some(m) = landm.get(i) {
+            for (k, pt) in points.iter_mut().enumerate() {
+                *pt = [
+                    (p[0] + m[2 * k] * 0.1 * p[2]) * w as f32,
+                    (p[1] + m[2 * k + 1] * 0.1 * p[3]) * h as f32,
+                ];
+            }
+        }
         found.push(Face {
             x0: (cx - bw / 2.0) * w as f32,
             y0: (cy - bh / 2.0) * h as f32,
             x1: (cx + bw / 2.0) * w as f32,
             y1: (cy + bh / 2.0) * h as f32,
             score,
+            points,
         });
     }
     found.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -419,6 +437,7 @@ fn iou(a: &Face, b: &Face) -> f32 {
         x1: a.x1.min(b.x1),
         y1: a.y1.min(b.y1),
         score: 0.0,
+        points: [[0.0; 2]; 5],
     }
     .area();
     inter / (a.area() + b.area() - inter)
@@ -432,7 +451,7 @@ fn iou(a: &Face, b: &Face) -> f32 {
 /// length, a JSON header of `{name: {dtype, shape, data_offsets}}`, then the
 /// little-endian data. Other dtypes (BatchNorm's `num_batches_tracked`) are
 /// skipped.
-fn read_safetensors(bytes: &[u8]) -> Result<Tensors> {
+pub(crate) fn read_safetensors(bytes: &[u8]) -> Result<Tensors> {
     let len = u64::from_le_bytes(
         bytes
             .get(..8)
@@ -474,11 +493,11 @@ fn read_safetensors(bytes: &[u8]) -> Result<Tensors> {
 
 /// One image's feature map: channels × height × width, row-major.
 #[derive(Debug, Clone, PartialEq)]
-struct Map {
-    c: usize,
-    h: usize,
-    w: usize,
-    v: Vec<f32>,
+pub(crate) struct Map {
+    pub(crate) c: usize,
+    pub(crate) h: usize,
+    pub(crate) w: usize,
+    pub(crate) v: Vec<f32>,
 }
 
 impl Map {
@@ -487,7 +506,7 @@ impl Map {
         self
     }
 
-    fn add(mut self, other: &Map) -> Map {
+    pub(crate) fn add(mut self, other: &Map) -> Map {
         debug_assert_eq!((self.c, self.h, self.w), (other.c, other.h, other.w));
         self.v.iter_mut().zip(&other.v).for_each(|(a, b)| *a += b);
         self
@@ -553,15 +572,15 @@ impl Map {
 }
 
 /// The weights `take` has not yet claimed, by name.
-type Tensors = HashMap<String, (Vec<usize>, Vec<f32>)>;
+pub(crate) type Tensors = HashMap<String, (Vec<usize>, Vec<f32>)>;
 
-fn take(t: &mut Tensors, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
+pub(crate) fn take(t: &mut Tensors, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
     t.remove(name)
         .ok_or_else(|| anyhow!("the weights have no `{name}`"))
 }
 
 /// A convolution with its batch norm folded in, and an optional ReLU.
-struct Conv {
+pub(crate) struct Conv {
     cout: usize,
     cin: usize,
     k: usize,
@@ -581,7 +600,7 @@ const COLS_BUDGET: usize = 1 << 22;
 impl Conv {
     /// `conv` (weights, and `bias` if it has one), followed by the batch
     /// norm `bn` if there is one, folded: `w·γ/σ` and `β − μ·γ/σ`.
-    fn load(
+    pub(crate) fn load(
         t: &mut Tensors,
         conv: &str,
         bn: Option<&str>,
@@ -637,7 +656,7 @@ impl Conv {
         })
     }
 
-    fn run(&self, x: &Map) -> Map {
+    pub(crate) fn run(&self, x: &Map) -> Map {
         self.run_in(x, COLS_BUDGET)
     }
 
@@ -835,6 +854,7 @@ struct Net {
     ssh: [Ssh; 3],
     bbox: Vec<Conv>,
     class: Vec<Conv>,
+    landm: Vec<Conv>,
 }
 
 impl Net {
@@ -869,7 +889,7 @@ impl Net {
                 .map(|i| Conv::load(t, &format!("{name}._convs.{i}"), None, 1, false))
                 .collect()
         };
-        let (bbox, class) = (head("BboxHead")?, head("ClassHead")?);
+        let (bbox, class, landm) = (head("BboxHead")?, head("ClassHead")?, head("LandmarkHead")?);
         Ok(Net {
             conv1: Conv::load(t, "body.conv1", Some("body.bn1"), 2, true)?,
             layers,
@@ -883,12 +903,14 @@ impl Net {
             ],
             bbox,
             class,
+            landm,
         })
     }
 
-    /// Box regressions and face probabilities, one per anchor in the order
-    /// the heads emit them: level, row, column, anchor.
-    fn forward(&self, x: &Map) -> (Vec<[f32; 4]>, Vec<f32>) {
+    /// Box regressions, face probabilities and landmark regressions, one per
+    /// anchor in the order the heads emit them: level, row, column, anchor.
+    #[allow(clippy::type_complexity)]
+    fn forward(&self, x: &Map) -> (Vec<[f32; 4]>, Vec<f32>, Vec<[f32; 10]>) {
         let mut y = self.conv1.run(x).max_pool();
         let mut taps = Vec::new();
         for (i, layer) in self.layers.iter().enumerate() {
@@ -909,9 +931,13 @@ impl Net {
             self.ssh[1].run(&o2),
             self.ssh[2].run(&o3),
         ];
-        let (mut loc, mut conf) = (Vec::new(), Vec::new());
-        for (f, (b, c)) in features.iter().zip(self.bbox.iter().zip(&self.class)) {
-            let (bm, cm) = (b.run(f), c.run(f));
+        let (mut loc, mut conf, mut landm) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, f) in features.iter().enumerate() {
+            let (bm, cm, lm) = (
+                self.bbox[i].run(f),
+                self.class[i].run(f),
+                self.landm[i].run(f),
+            );
             let plane = f.h * f.w;
             for pos in 0..plane {
                 for a in 0..2 {
@@ -919,10 +945,11 @@ impl Net {
                     loc.push([at(&bm, 4, 0), at(&bm, 4, 1), at(&bm, 4, 2), at(&bm, 4, 3)]);
                     // Softmax over (not face, face), as its second half.
                     conf.push(1.0 / (1.0 + (at(&cm, 2, 0) - at(&cm, 2, 1)).exp()));
+                    landm.push(std::array::from_fn(|j| at(&lm, 10, j)));
                 }
             }
         }
-        (loc, conf)
+        (loc, conf, landm)
     }
 }
 
@@ -1129,9 +1156,18 @@ mod tests {
         loc[1] = [0.0, 0.0, half, half];
         // Alone, but under 0.5 after NMS.
         conf[n - 1] = 0.4;
-        let faces = decode(&loc, &conf, w, h);
+        // The kept face's first landmark moved one variance-scaled anchor
+        // width right of the anchor's centre, and its fifth left alone.
+        let mut landm = vec![[0.0; 10]; n];
+        landm[0][0] = 1.0;
+        let faces = decode(&loc, &conf, &landm, w, h);
         assert_eq!(faces.len(), 1, "{faces:?}");
         assert!((faces[0].score - 0.9).abs() < 1e-6);
+        let p = priors(h, w)[0];
+        let want = [(p[0] + 0.1 * p[2]) * w as f32, p[1] * h as f32];
+        assert!((faces[0].points[0][0] - want[0]).abs() < 1e-4, "{faces:?}");
+        assert!((faces[0].points[0][1] - want[1]).abs() < 1e-4, "{faces:?}");
+        assert!((faces[0].points[4][0] - p[0] * w as f32).abs() < 1e-4);
     }
 
     #[test]
@@ -1142,6 +1178,7 @@ mod tests {
             x1: 200.0,
             y1: 180.0,
             score: 1.0,
+            points: [[0.0; 2]; 5],
         };
         let (x, y, side) = crop_square(face, 1.0, 1024, 1024);
         // CROP_SCALE times the larger side (130), centred 5% of the height
@@ -1155,6 +1192,7 @@ mod tests {
             x1: 100.0,
             y1: 100.0,
             score: 1.0,
+            points: [[0.0; 2]; 5],
         };
         assert_eq!(crop_square(edge, 1.0, 400, 300), (0, 0, 112));
         // Found on a half-size copy: mapped back to the picture's pixels.
@@ -1164,6 +1202,7 @@ mod tests {
             x1: 100.0,
             y1: 90.0,
             score: 1.0,
+            points: [[0.0; 2]; 5],
         };
         assert_eq!(
             crop_square(half, 0.5, 1024, 1024),

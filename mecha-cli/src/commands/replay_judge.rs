@@ -18,7 +18,6 @@ use crate::follow::Follower;
 use crate::setup::PersonaUse;
 use crate::GlobalOpts;
 use anyhow::{bail, Context, Result};
-use mecha_core::face::FaceAnchors;
 use mecha_core::persona::replay_judge::{self as rj, Judgement, Verdict};
 use mecha_core::quarantine::{QuarantinedPass, Shown};
 use serde_json::Value;
@@ -156,6 +155,11 @@ pub async fn execute(
             .chain([sheet.clone()])
             .collect::<Vec<_>>(),
     )?;
+    // The judges read pictures image generation drew, and the identity
+    // judge's models are image generation's own: off, nothing is fetched or
+    // judged (owner, 2026-10-11).
+    super::features::require(mecha_core::feature::Feature::Image)?;
+    let faces = load_faces().await?;
     let follower = Follower::start(global.clone(), Box::new(|_| {})).await?;
     let router = follower.router_base();
     let model = follower.current().model.clone();
@@ -209,12 +213,17 @@ pub async fn execute(
                 .flatten()
                 .filter_map(Value::as_str)
                 .filter(|p| manifest_of(render, Path::new(p)).is_some())
+                // And only one inside the sample's own folder: a picture's
+                // path is read on the samples file's word, as the scratch
+                // folder is (review of #652).
+                .filter(|p| in_scratch(render, Path::new(p)))
                 .collect();
             for picture in pictures {
                 let j = judge_one(
                     &follower,
                     router.as_deref(),
                     &pass,
+                    faces.as_ref(),
                     &arm.persona,
                     index,
                     render,
@@ -279,6 +288,18 @@ fn scratch_of(render: &Value) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Whether `picture` lies inside the sample's own folder, by its parts:
+/// no `..` and no other root.
+fn in_scratch(render: &Value, picture: &Path) -> bool {
+    let Some(scratch) = scratch_of(render) else {
+        return false;
+    };
+    picture.strip_prefix(&scratch).is_ok_and(|rest| {
+        rest.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    })
+}
+
 /// What a sample's manifests say of `picture`: the one whose `image` names
 /// it.
 fn manifest_of<'a>(render: &'a Value, picture: &Path) -> Option<&'a Value> {
@@ -303,6 +324,43 @@ fn prompt_of(render: &Value, picture: &Path) -> Option<String> {
                 .is_some_and(|i| Path::new(i).file_name() == picture.file_name())
         })
         .and_then(|l| l["prompt"].as_str().map(str::to_string))
+}
+
+/// The face detector and ArcFace, loaded once for the run, ArcFace fetched
+/// the first time it is needed with its licence said (owner, 2026-10-11:
+/// ArcFace, fetched on a judge's first use and never by a feature's
+/// install). `None` when the face detector is not installed: faces and
+/// identity are then not judged, and that is said.
+async fn load_faces() -> Result<Option<std::sync::Arc<rj::IdentityJudge>>> {
+    use mecha_core::{face, face_id};
+    let Some(detector) = face::weights()? else {
+        eprintln!(
+            "note: the face detector is not installed (`{}`), so faces and identity are not \
+             judged",
+            face::INSTALL_HINT
+        );
+        return Ok(None);
+    };
+    let arcface = match face_id::weights()? {
+        Some(p) => p,
+        None => {
+            eprintln!("fetching {}", face_id::LICENCE);
+            let total = face_id::WEIGHTS.bytes;
+            let mut shown = 0u64;
+            face_id::install(&mut |got| {
+                if got >= shown + total / 10 || got == total {
+                    shown = got;
+                    eprintln!("  {} of {} MB", got / 1_000_000, total / 1_000_000);
+                }
+            })
+            .await?
+        }
+    };
+    let library = mecha_core::imagelib::Library::default_dir()?;
+    let judge =
+        tokio::task::spawn_blocking(move || rj::IdentityJudge::load(&detector, &arcface, &library))
+            .await??;
+    Ok(Some(std::sync::Arc::new(judge)))
 }
 
 /// One question, answered or not: the answer's text, or why there is none.
@@ -387,6 +445,7 @@ async fn judge_one(
     follower: &Follower,
     router: Option<&str>,
     pass: &QuarantinedPass,
+    faces: Option<&std::sync::Arc<rj::IdentityJudge>>,
     persona: &str,
     sample: usize,
     render: &Value,
@@ -434,29 +493,32 @@ async fn judge_one(
     // the slot that owns its layout; a record that does not read is said
     // as that, not as none (review of #644).
     let slot = mecha_core::scene::persona_slot(&scratch.join("personas"), persona, "");
-    let clauses = match slot.lookup_said(&bytes) {
-        Ok(Some(s)) => {
-            j.people_recorded = s.people_known.then_some(s.people.len());
-            rj::clauses(&s)
-        }
+    let scene = match slot.lookup_said(&bytes) {
+        Ok(Some(s)) => Some(s),
         Ok(None) => {
             j.errors.push("the picture has no scene record".into());
-            Vec::new()
+            None
         }
         Err(e) => {
             j.errors.push(e);
-            Vec::new()
+            None
         }
     };
+    if let Some(s) = &scene {
+        j.people_recorded = s.people_known.then_some(s.people.len());
+    }
+    let clauses = scene.as_ref().map(rj::clauses).unwrap_or_default();
     // The detector and the picture's rendering for the model are CPU work:
     // off the runtime, as `imagegen` keeps the detector, and each picture
     // rendered once for all its questions.
-    let (faces, shown, shown_base, layout) = {
+    let (seen, shown, shown_base, layout) = {
         let bytes = bytes.clone();
         let base_bytes = base_bytes.clone();
+        let faces = faces.cloned();
+        let scene = scene.clone();
         tokio::task::spawn_blocking(move || {
             (
-                mecha_core::face::CachedRetinaFace.faces_in(&bytes),
+                faces.map(|f| f.identify(&bytes, scene.as_ref())),
                 Shown::of(&bytes),
                 base_bytes.as_deref().map(Shown::of),
                 base_bytes
@@ -467,10 +529,19 @@ async fn judge_one(
         .await?
     };
     j.layout_similarity = layout;
-    match faces {
-        Ok(n) => j.faces = Some(n),
-        Err(e) => j.errors.push(e),
-    }
+    let crops = match seen {
+        Some(seen) => {
+            j.faces = seen.faces;
+            j.identities = seen.identities;
+            j.errors.extend(seen.errors);
+            seen.crops
+        }
+        None => {
+            j.errors
+                .push("the face detector is not installed, so faces were not judged".into());
+            Vec::new()
+        }
+    };
     let shown = match shown {
         Ok(s) => s,
         Err(e) => {
@@ -522,6 +593,37 @@ async fn judge_one(
             clause,
             picture: picture_says,
             base: base_says,
+        });
+    }
+    // Each identified person's own clauses on their own crop, and their
+    // doing and wearing on everyone else's: drawn on the wrong person.
+    for clause in scene.as_ref().map(rj::clauses).unwrap_or_default() {
+        let Some(person) = clause.person else {
+            continue;
+        };
+        let Some((_, own_crop)) = crops.iter().find(|(p, _)| *p == person) else {
+            continue;
+        };
+        let question = clause.crop_question();
+        let own = verdict(
+            ask_of(provider.as_ref(), pass, own_crop, &question).await,
+            rj::yes_no,
+            &mut j,
+        );
+        let mut elsewhere = Vec::new();
+        if clause.bleeds() {
+            for (_, other) in crops.iter().filter(|(p, _)| *p != person) {
+                elsewhere.push(verdict(
+                    ask_of(provider.as_ref(), pass, other, &question).await,
+                    rj::yes_no,
+                    &mut j,
+                ));
+            }
+        }
+        j.person_clauses.push(rj::PersonVerdict {
+            clause,
+            own,
+            elsewhere,
         });
     }
     drop(held);
@@ -670,6 +772,26 @@ mod tests {
             "a new picture has no base and nothing to say"
         );
         let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// Only a picture inside the sample's own folder is judged (review of
+    /// #652).
+    #[test]
+    fn only_a_picture_in_the_samples_folder_is_judged() {
+        let render = serde_json::json!({"scratch": "/r/c.work/sample-000"});
+        assert!(in_scratch(
+            &render,
+            Path::new("/r/c.work/sample-000/work/images/a.png")
+        ));
+        assert!(!in_scratch(
+            &render,
+            Path::new("/r/c.work/sample-001/work/images/a.png")
+        ));
+        assert!(!in_scratch(
+            &render,
+            Path::new("/r/c.work/sample-000/../x/a.png")
+        ));
+        assert!(!in_scratch(&serde_json::json!({}), Path::new("/r/a.png")));
     }
 
     /// A sample that names no folder, or a relative one, is judged on
