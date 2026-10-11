@@ -2900,15 +2900,15 @@ fn doing_words(p: &crate::scene::Person, together: bool) -> String {
     parts.join(", ")
 }
 
-/// The words that say someone's clothing state: what they have on, or that
-/// they have nothing on. Never a word that names an occasion or a task with
-/// clothes in it (a gala, a suitcase being packed), which beside the
-/// outfit given is one outfit, not two (review of #647, passes 3 and 4).
-/// Matched as whole words, so a clothesline is not one.
-const STATE_WORDS: &[&str] = &[
-    "wearing",
-    "wears",
-    "wore",
+/// The words that say what someone has on. Never a word that names an
+/// occasion or a task with clothes in it (a gala, a suitcase being packed),
+/// which beside the outfit given is one outfit, not two (review of #647,
+/// passes 3 and 4). Matched as whole words, so a clothesline is not one.
+const WEAR_WORDS: &[&str] = &["wearing", "wears", "wore"];
+
+/// The words that say someone has nothing on: always a clothing state,
+/// whatever else the clause names.
+const UNDRESS_WORDS: &[&str] = &[
     "undressed",
     "naked",
     "nude",
@@ -2983,6 +2983,27 @@ const ACCESSORIES: &[&str] = &[
     "flowers",
 ];
 
+/// What else a person is said to be "wearing" that is no outfit: an
+/// expression, or their hair (review of #647, pass 9).
+const NOT_OUTFIT: &[&str] = &[
+    "smile",
+    "smiles",
+    "grin",
+    "grins",
+    "smirk",
+    "frown",
+    "scowl",
+    "pout",
+    "expression",
+    "look",
+    "hair",
+    "braid",
+    "braids",
+    "ponytail",
+    "bun",
+    "curls",
+];
+
 /// Garments, which make a clause an outfit even beside an accessory
 /// ("wearing a parka and a beanie").
 const GARMENTS: &[&str] = &[
@@ -3055,21 +3076,14 @@ const GARMENTS: &[&str] = &[
 ];
 
 /// Whether `text` states a clothing state. An undress word always does. A
-/// clause with a wear word ([`STATE_WORDS`], or "dressed in" / "clothed in")
-/// does unless it names an accessory and no garment, with no "only" or
-/// "nothing" to make the accessory the whole outfit. An item neither list
-/// knows counts as clothing: that keeps the measured "wearing a wetsuit peeled to
-/// the waist" case, and a missing garment errs toward the record's outfit.
+/// clause with a wear word ([`WEAR_WORDS`], or "dressed in" / "clothed in")
+/// does unless everything it names that is worn is an accessory, an
+/// expression or hair, with no garment and no "only" or "nothing" to make
+/// that the whole outfit. An item none of the lists knows counts as
+/// clothing: that keeps an outfit in a state ("a wetsuit peeled to the
+/// waist"), the shape mecha-a3 measured, and a garment missing from the list
+/// errs toward leaving the record's outfit out.
 fn states_clothing(text: &str) -> bool {
-    const UNDRESS: &[&str] = &[
-        "undressed",
-        "naked",
-        "nude",
-        "topless",
-        "shirtless",
-        "bottomless",
-        "unclothed",
-    ];
     text.to_lowercase()
         .split([',', ';', '.', ':'])
         .any(|clause| {
@@ -3077,17 +3091,19 @@ fn states_clothing(text: &str) -> bool {
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|w| !w.is_empty())
                 .collect();
-            if words.iter().any(|w| UNDRESS.contains(w)) {
+            if words.iter().any(|w| UNDRESS_WORDS.contains(w)) {
                 return true;
             }
-            let wears = words.iter().any(|w| STATE_WORDS.contains(w))
+            let wears = words.iter().any(|w| WEAR_WORDS.contains(w))
                 || words
                     .windows(2)
                     .any(|w| matches!(w[0], "dressed" | "clothed") && w[1] == "in");
-            let only_accessories = words.iter().any(|w| ACCESSORIES.contains(w))
+            let no_outfit = words
+                .iter()
+                .any(|w| ACCESSORIES.contains(w) || NOT_OUTFIT.contains(w))
                 && !words.iter().any(|w| GARMENTS.contains(w))
                 && !words.iter().any(|w| matches!(*w, "only" | "nothing"));
-            wears && !only_accessories
+            wears && !no_outfit
         })
 }
 
@@ -9373,6 +9389,18 @@ mod tests {
             "an unknown item with a state"
         );
         assert!(act(&maya, "wearing a dirndl", None), "unknown items count");
+        // Nor an expression or hair (review of #647, pass 9).
+        assert!(!act(
+            &maya,
+            "wearing a wide smile, leaning on the rail",
+            None
+        ));
+        assert!(!act(&maya, "wearing her hair in a braid", None));
+        assert!(!act(
+            &maya,
+            "",
+            Some("both of them wearing big grins, laughing")
+        ));
         assert!(!act(&maya, "dressed for the gala, dancing", None));
         assert!(!act(&maya, "showing off her new outfit", None));
         // A retouch pasted into the same prompt is a shared text too.
