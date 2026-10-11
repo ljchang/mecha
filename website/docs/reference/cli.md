@@ -1481,6 +1481,29 @@ mecha setup [FEATURE] [--json] [--write] [--minimal] [--undecline <STEP_ID>]
 | `--minimal` | Decline every optional step still outstanding, in one pass — the light install. Writes declines, never config; `mecha features enable <id>` turns any one on later. |
 | `--undecline <STEP_ID>` | Ask about a step you said `never` to again. `all` clears every one. Says so when the id was never declined, rather than reporting an undo it did not perform. |
 
+**At a terminal, `mecha setup` is one guided pass.** It writes the starter
+config if there is none, then asks:
+
+1. **The chat model**, when nothing answers prompts yet: the model recommended
+   for this machine (with its download), a GGUF you already have, a hosted
+   model (Anthropic) instead, or skip. A server that answers but that the
+   config does not describe is one question: write what it reports. Installing
+   a model here needs Linux and `:8080` free; elsewhere the menu offers what
+   can be done.
+2. **Each feature that is off**, as yes, no or `never`, with what it does,
+   what it would download, and what else a yes switches on. `never` is
+   recorded at once, as in the step loop; `mecha setup --undecline <id>`
+   undoes it.
+3. **Once**, with everything listed and one total: *Start?* Then it installs
+   the chat model, switches on and installs the features, and runs any sign-in
+   a feature still needs while you are there. Anything else a feature still
+   needs — a binary to build, say — is named, not run.
+
+What it does not cover — the charter, the scheduler, a feature switched on but
+not working — is offered after it, a step at a time. Naming a feature, a flag,
+or running without a terminal skips the guided pass. `mecha setup chat` and
+`mecha features enable` are still how to change one thing later.
+
 `--json`, `--write`, `--minimal` and `--undecline` are mutually exclusive: each
 is a different verb, and a pair used to resolve by whichever branch came first —
 `--json --write` printed a plan, exited 1 and wrote nothing. The parser refuses
@@ -1752,6 +1775,9 @@ mecha system sample [--json]
   (`gpu`, `pressure.memory`), or all of them when none is named. A rate
   (`disk.read_rate`, `cpu.busy`) comes from the newest recorded minute. A
   reading that cannot be had says so, and why; it is never shown as zero.
+  Work in flight is read the same way: `runs.live`, `holds.live`,
+  `jobs.live`, `triggers.missed` and the rest are counts, never names, and
+  `voice.live` says whether a call is live in any chat.
 - **`admit`** asks the memory floor whether something needing `SIZE`
   (`24G`, `512M`, or a number of MB) may start now: the need plus
   `[system] memory_reserve_mb` must be available, and memory pressure must

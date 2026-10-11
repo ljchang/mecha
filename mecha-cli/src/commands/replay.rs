@@ -28,7 +28,10 @@ use tokio_util::sync::CancellationToken;
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Session id, unique prefix, or a path to a transcript file.
-    #[arg(required_unless_present = "persona", conflicts_with = "persona")]
+    #[arg(
+        required_unless_present_any = ["persona", "judge"],
+        conflicts_with_all = ["persona", "judge"]
+    )]
     pub session: Option<String>,
 
     /// A persona chat to sample from one of its turns instead: its id, or
@@ -38,6 +41,17 @@ pub struct Args {
 
     #[command(flatten)]
     pub sample: super::replay_persona::SampleArgs,
+
+    /// Judge a persona replay's renders instead: each picture's people,
+    /// faces and clauses against its scene record, with a contact sheet
+    /// whose rows are the files named, one per arm.
+    #[arg(long, value_name = "FILE", num_args = 1.., conflicts_with = "persona")]
+    pub judge: Vec<PathBuf>,
+
+    /// Where the judges' contact sheet goes (HTML, 0600). Default: beside
+    /// the first file judged.
+    #[arg(long, value_name = "FILE", requires = "judge")]
+    pub sheet: Option<PathBuf>,
 
     /// What to do when the replay departs from the recording.
     ///
@@ -54,6 +68,10 @@ pub struct Args {
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+    if !args.judge.is_empty() {
+        return super::replay_judge::execute(global, &args.judge, args.sheet.as_deref(), args.json)
+            .await;
+    }
     if let Some(persona) = &args.persona {
         return super::replay_persona::execute(global, persona, &args.sample, args.json).await;
     }

@@ -6,6 +6,7 @@
 // `npm test` in web/. Plain node, as `generated-image.mjs`: the grouping lives
 // in `picture.js`, so this exercises the text that ships.
 import { pictureVersions, shownVersion } from '../src/lib/picture.js';
+import { emptyRun, applyEvent } from '../src/lib/persona.js';
 
 let passed = 0;
 let failed = 0;
@@ -70,6 +71,17 @@ const folded = (v) => Object.fromEntries(v.folded);
   const viewed = { kind: 'tool', name: 'image_view', is_error: false, preview: 'image: images/a.png' };
   const v = pictureVersions([drawn('images/a.png'), viewed]);
   is(folded(v), {}, 'a picture shown twice is a repeat, not a version');
+}
+
+{
+  // Live (review of #634): the harness's Regenerate call carries
+  // `version_of`, so the card folds as the stream draws it, with no re-read.
+  let run = emptyRun([drawn('images/a.png')]);
+  run = applyEvent(run, { type: 'tool', id: 'harness_1', name: 'image_generate', version_of: 'images/a.png' });
+  run = applyEvent(run, { type: 'tool_result', id: 'harness_1', name: 'image_generate', is_error: false, preview: 'image: images/b.png' });
+  is(groups(pictureVersions(run.entries)), { 'images/a.png': ['images/a.png', 'images/b.png'] }, 'a live Regenerate lands as a version');
+  run = applyEvent(run, { type: 'tool', id: 't2', name: 'image_generate' });
+  is('version_of' in run.entries.at(-1), false, 'a call without it is no version');
 }
 
 {
