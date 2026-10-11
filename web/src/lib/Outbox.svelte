@@ -841,6 +841,36 @@
             </div>
           {/if}
         {:else}
+          {#if detail.preview}
+            <!-- A dashboard publish is reviewed as its page with real numbers
+                 in it, on the preview origin — never this one — and beside
+                 each query it releases (LIVE-DASHBOARD-DESIGN.md §6.3, §6.5). -->
+            <div class="card col">
+              <div class="kicker pad">the page as it will be released — real numbers, shown only here</div>
+              <iframe
+                class="previewframe"
+                src={detail.preview}
+                title="dashboard preview"
+                sandbox="allow-scripts allow-same-origin"
+                referrerpolicy="no-referrer"
+              ></iframe>
+            </div>
+            {#if detail.loaders?.length}
+              <div class="card pad col">
+                <div class="kicker">what each refresh will run and publish, unreviewed, after this release</div>
+                {#each detail.loaders as l (l.name)}
+                  <div class="loader">
+                    <div class="hrow">
+                      <span class="hkey">{l.name}</span>
+                      <span class="hval">from {l.source}, {l.schedule}{#if l.changed_since_staged}<span class="chip warnchip">changed since staged</span>{/if}</span>
+                    </div>
+                    <pre class="query">{l.query}</pre>
+                    <div class="hint">{l.columns.map((c) => `${c.name} (${c.type})`).join(', ')}</div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/if}
           {#if doc}
             <div class="card pad col">
               <div class="kicker">every “{doc.find}” in the document{doc.matchCase ? ', matching case' : ''}, becomes</div>
@@ -1103,4 +1133,8 @@
     .btn { min-height: 46px; }
     .bar .btn:not(.big) { flex: 1; }
   }
+  .previewframe { width: 100%; height: 70vh; border: 0; border-radius: 0 0 var(--radius, 8px) var(--radius, 8px); background: #161826; }
+  .loader { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; border-top: 1px solid #2a2a38; }
+  .loader:first-of-type { border-top: 0; }
+  .query { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; padding: 8px 10px; border-radius: var(--radius-chip, 6px); background: var(--void); }
 </style>

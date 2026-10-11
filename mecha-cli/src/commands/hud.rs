@@ -206,7 +206,7 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
             println!("nothing due");
         }
     }
-    let unpushed = push_published(store, &refreshed_ids)?;
+    let unpushed = push_published(store, &refreshed_ids, json)?;
     if broken + failed + unpushed > 0 {
         bail!(
             "{} board(s) did not load, {failed} loader(s) did not refresh, \
@@ -249,12 +249,8 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
         .join(format!("{id}-{}", Utc::now().format("%Y%m%dT%H%M%S")));
     publish::assemble(&installed, &assets.join(publish::RENDERER_DIR), &out)?;
     let bundle = publish::bundle_id(id);
-    let outbox = match cfg.outbox.dir.clone() {
-        Some(dir) => mecha_core::outbox::OutboxStore::open(dir)?,
-        None => {
-            mecha_core::outbox::OutboxStore::open(mecha_core::outbox::OutboxStore::default_root()?)?
-        }
-    };
+    // The store `mecha outbox show` and `send` open, resolved the same way.
+    let outbox = crate::commands::outbox::open_store()?;
     let item = outbox.stage_publish_by_harness(
         &tool,
         serde_json::json!({
@@ -266,16 +262,17 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
     )?;
     publish::mark_published(&store.board_path(id)?, &bundle)?;
     println!(
-        "staged {:?} for the factory as `{bundle}` ({}) — outbox item {}
-         review it: mecha outbox show {}
-         release it: mecha outbox send {}
-         after the release, every refresh pushes its datasets",
+        "staged {:?} for the factory as `{bundle}` ({}) — outbox item {}",
         installed.spec().title(),
         if public { "public" } else { "private" },
-        item.id,
-        item.id,
         item.id
     );
+    println!(
+        "  review it:  the web outbox, or `mecha outbox show {}`",
+        item.id
+    );
+    println!("  release it: mecha outbox send {}", item.id);
+    println!("  after the release, every refresh pushes its datasets");
     Ok(())
 }
 
@@ -283,9 +280,17 @@ fn publish(store: &Store, id: &str, public: bool) -> Result<()> {
 /// How many could not be pushed — refused, or failed in a way worth retrying
 /// next tick. A board not yet released is skipped quietly: its outbox item is
 /// still waiting on the owner.
-fn push_published(store: &Store, ids: &[String]) -> Result<usize> {
+fn push_published(store: &Store, ids: &[String], json: bool) -> Result<usize> {
     use mecha_core::hud::publish::{self, Plan, Pushed};
-    let bundles = publish::bundles_root()?;
+    let bundles = mecha_core::work::bundles_root()?;
+    // `--json`'s stdout is the refresh outcomes and nothing else.
+    let say = |line: String| {
+        if json {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    };
     let mut unpushed = 0usize;
     for id in ids {
         let Ok(dir) = store.board_path(id) else {
@@ -307,7 +312,18 @@ fn push_published(store: &Store, ids: &[String]) -> Result<usize> {
             Ok(installed) => installed,
             Err(_) => continue,
         };
-        let mut pushed = Pushed::read(&dir);
+        let mut pushed = match Pushed::read(&dir) {
+            Ok(pushed) => pushed,
+            Err(e) => {
+                eprintln!(
+                    "{id}: the record of what was pushed is unreadable, so nothing is pushed \
+                     ({e:#}); if it is lost, `factory-publish dataset reset {}` starts over",
+                    published.bundle
+                );
+                unpushed += 1;
+                continue;
+            }
+        };
         for name in installed.loaders().keys() {
             let Some(dataset) = store.dataset(id, name)? else {
                 continue;
@@ -342,15 +358,24 @@ fn push_published(store: &Store, ids: &[String]) -> Result<usize> {
                 Ok(outcome) => match outcome["outcome"].as_str() {
                     Some("stored") | Some("unchanged") => {
                         pushed.record(release.version, name, dataset.generation);
-                        println!("{id}/{name}: pushed, generation {}", dataset.generation);
+                        say(format!(
+                            "{id}/{name}: pushed, generation {}",
+                            dataset.generation
+                        ));
                     }
-                    // The alias moved past this release: what home recorded
-                    // is behind. Dropped, never retried.
-                    Some("stale") => eprintln!(
-                        "{id}/{name}: release {} is no longer current on the factory: {}",
-                        release.version,
-                        outcome["message"].as_str().unwrap_or_default()
-                    ),
+                    // The factory's release moved past the one home recorded
+                    // (released from another machine, or the account page):
+                    // the box drops the push, and the dashboard would freeze
+                    // behind a timer that looked fine, so it counts.
+                    Some("stale") => {
+                        eprintln!(
+                            "{id}/{name}: the factory is past release {} — publish again \
+                             (`mecha hud publish {id}`) so home records the current one: {}",
+                            release.version,
+                            outcome["message"].as_str().unwrap_or_default()
+                        );
+                        unpushed += 1;
+                    }
                     _ => {
                         eprintln!(
                             "{id}/{name}: the factory refused the push ({}): {}",

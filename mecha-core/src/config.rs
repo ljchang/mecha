@@ -1795,6 +1795,15 @@ pub struct WebConfig {
     /// Directory holding the built web app (`web/dist`). Unset serves the
     /// API routes only, which is what tests and a headless box want.
     pub assets: Option<PathBuf>,
+    /// Port bound on 127.0.0.1 for the outbox's dashboard previews — a
+    /// **separate origin**, so a staged dashboard's page runs in a frame that
+    /// cannot touch the page holding the outbox's send button
+    /// (`LIVE-DASHBOARD-DESIGN.md` §6.5, R17). Unset: no preview listener.
+    pub preview_port: Option<u16>,
+    /// The origin `tailscale serve` exposes `preview_port` at
+    /// (`https://<host>.<tailnet>.ts.net:8444`). The app's CSP names exactly
+    /// it in `frame-src`, and nothing broader. Unset: no preview is framed.
+    pub preview_origin: Option<String>,
 }
 
 impl Default for WebConfig {
@@ -1804,6 +1813,8 @@ impl Default for WebConfig {
             port: 63242,
             owner_login: None,
             assets: None,
+            preview_port: None,
+            preview_origin: None,
         }
     }
 }
@@ -1821,6 +1832,8 @@ struct WebLayer {
     port: Option<u16>,
     owner_login: Option<String>,
     assets: Option<PathBuf>,
+    preview_port: Option<u16>,
+    preview_origin: Option<String>,
     /// Moved to `[voice] voices_dir` (FEATURES-DESIGN.md §5). Read for one
     /// release and applied *into* `[voice]`, so there is one runtime answer;
     /// `[voice]`'s own value wins where both are set. Named apart from
@@ -2486,6 +2499,12 @@ impl ConfigLayer {
             }
             if x.assets.is_some() {
                 t.assets = x.assets;
+            }
+            if x.preview_port.is_some() {
+                t.preview_port = x.preview_port;
+            }
+            if x.preview_origin.is_some() {
+                t.preview_origin = x.preview_origin;
             }
             // The one-release alias: into `[voice]`, unless this file also
             // sets `[voice] voices_dir`, which wins (applied below).
