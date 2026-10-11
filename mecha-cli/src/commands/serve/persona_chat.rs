@@ -125,6 +125,9 @@ pub struct PersonaChats {
     /// `[image] steps`: what a standard picture with no steps of its own
     /// takes, for the settings page's estimate.
     image_steps: u32,
+    /// The chat's picture settings (`sampling::chat_path`): the layer a
+    /// persona's unset fields show and draw with. Unset (tests), none.
+    chat_settings: Option<PathBuf>,
 }
 
 /// A spoken turn's other end (§11): the voice facade's tap on the run's
@@ -787,6 +790,7 @@ impl PersonaChats {
             next_regenerate: std::sync::atomic::AtomicU64::new(1),
             jobs: Default::default(),
             image_steps: mecha_core::imagegen::ImageConfig::default().steps,
+            chat_settings: None,
         }
     }
 
@@ -798,28 +802,46 @@ impl PersonaChats {
         self
     }
 
-    /// A persona's picture settings as the page shows them: what the owner
-    /// set, what each unset field resolves to, and about how long a picture
-    /// takes.
+    /// The chat's picture settings, where they are kept: the layer a
+    /// persona's unset fields fall to.
+    pub fn with_chat_settings(mut self, path: PathBuf) -> Self {
+        self.chat_settings = Some(path);
+        self
+    }
+
+    fn chat_tuning(&self) -> mecha_core::sampling::Tuning {
+        self.chat_settings
+            .as_deref()
+            .map(mecha_core::sampling::chat)
+            .unwrap_or_default()
+    }
+
+    /// A persona's picture settings as the page shows them, over the chat's.
     fn image_view(&self, tuning: &mecha_core::sampling::Tuning) -> serde_json::Value {
-        let s = tuning.resolve(self.image_steps);
-        // What each field is when left unset, for this model.
-        let d = mecha_core::sampling::Tuning {
-            model: tuning.model,
-            ..Default::default()
-        }
-        .resolve(self.image_steps);
+        picture_view(tuning, Some(&self.chat_tuning()), self.image_steps)
+    }
+
+    /// The chat's picture settings as Settings → Images shows them.
+    pub fn chat_picture(&self) -> serde_json::Value {
         serde_json::json!({
-            "set": tuning,
-            "defaults": {"steps": d.steps, "cfg": d.cfg, "sampler": d.sampler, "scheduler": d.scheduler},
-            "model": s.model,
-            "steps": s.steps,
-            "cfg": s.cfg,
-            "sampler": s.sampler,
-            "scheduler": s.scheduler,
-            "negative": !s.negative.is_empty(),
-            "estimate_secs": mecha_core::sampling::estimate_secs(&s),
+            "image": picture_view(&self.chat_tuning(), None, self.image_steps),
+            "image_options": image_options(),
         })
+    }
+
+    /// Set the chat's picture settings: the owner's page the one writer,
+    /// each field held to its range or list first.
+    pub fn set_chat_picture(
+        &self,
+        tuning: mecha_core::sampling::Tuning,
+    ) -> Result<serde_json::Value, Refusal> {
+        let path = self
+            .chat_settings
+            .as_deref()
+            .ok_or_else(|| Refusal::Bad("this server keeps no chat picture settings".into()))?;
+        let tuning = mecha_core::sampling::set_chat(path, tuning)
+            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        Ok(serde_json::json!({ "image": picture_view(&tuning, None, self.image_steps) }))
     }
 
     /// For the assistant's chat tests, which build a `ChatState` but never
@@ -1545,15 +1567,7 @@ impl PersonaChats {
         // itself. A locked page reads exactly like one with nothing locked.
         serde_json::json!({
             "personas": rows,
-            // What the picture settings may be set to, from the one list the
-            // door checks against.
-            "image_options": {
-                "samplers": mecha_core::sampling::SAMPLERS,
-                "schedulers": mecha_core::sampling::SCHEDULERS,
-                "cfg": [mecha_core::sampling::CFG_MIN, mecha_core::sampling::CFG_MAX,
-                        mecha_core::sampling::CFG_STEP],
-                "steps": [mecha_core::sampling::STEPS_MIN, mecha_core::sampling::STEPS_MAX],
-            },
+            "image_options": image_options(),
             "unlocked": unlocked,
             "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
         })
@@ -4829,13 +4843,70 @@ pub async fn image_touching(
     )
 }
 
-/// The picture settings: a model from the closed set (an unknown one is a
-/// 400 here, where the stored table reads it as standard), and the rest
-/// held to their ranges by `image_settings`.
+/// What the picture settings may be set to, from the one list the door
+/// checks against.
+fn image_options() -> serde_json::Value {
+    serde_json::json!({
+        "samplers": mecha_core::sampling::SAMPLERS,
+        "schedulers": mecha_core::sampling::SCHEDULERS,
+        "cfg": [mecha_core::sampling::CFG_MIN, mecha_core::sampling::CFG_MAX,
+                mecha_core::sampling::CFG_STEP],
+        "steps": [mecha_core::sampling::STEPS_MIN, mecha_core::sampling::STEPS_MAX],
+    })
+}
+
+/// Picture settings as a page shows them: what the owner set here, what
+/// each field left unset is — the chat's where `base` is the chat's (a
+/// persona's page), else the model's own — what is drawn, and about how
+/// long a picture takes.
+fn picture_view(
+    own: &mecha_core::sampling::Tuning,
+    base: Option<&mecha_core::sampling::Tuning>,
+    steps: u32,
+) -> serde_json::Value {
+    // Which layer an unset field falls to: the page's word for it.
+    let inherits = if base.is_some() { "chat" } else { "default" };
+    let none = mecha_core::sampling::Tuning::default();
+    let base = base.unwrap_or(&none);
+    let s = own.over(base).resolve(steps);
+    // Each field as it would be unset, on the model this page draws with —
+    // the chat's numbers only where the model is the chat's (`Tuning::over`).
+    let d = mecha_core::sampling::Tuning {
+        model: own.model,
+        ..Default::default()
+    }
+    .over(base)
+    .resolve(steps);
+    serde_json::json!({
+        "set": own,
+        "inherits": inherits,
+        "defaults": {
+            "model": base.model.unwrap_or_default(),
+            "steps": d.steps,
+            "cfg": d.cfg,
+            "sampler": d.sampler,
+            "scheduler": d.scheduler,
+            "negative": !d.negative.is_empty(),
+        },
+        "model": s.model,
+        "steps": s.steps,
+        "cfg": s.cfg,
+        "sampler": s.sampler,
+        "scheduler": s.scheduler,
+        "negative": !s.negative.is_empty(),
+        "estimate_secs": mecha_core::sampling::estimate_secs(&s),
+    })
+}
+
+/// The picture settings: each field optional — unset is the layer below
+/// (the chat's, for a persona) — a model from the closed set (an unknown
+/// one is a 400 here, where the stored table reads it as unset), and the
+/// rest held to their ranges by `image_settings`.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageSettingsBody {
-    model: ModelValue,
+    #[serde(default)]
+    model: Option<ModelValue>,
     #[serde(default)]
     cfg: Option<f64>,
     #[serde(default)]
@@ -4845,9 +4916,26 @@ pub struct ImageSettingsBody {
     #[serde(default)]
     scheduler: Option<String>,
     #[serde(default)]
-    negative: bool,
+    negative: Option<bool>,
     #[serde(default)]
     unlock: Option<String>,
+}
+
+impl ImageSettingsBody {
+    fn tuning(self) -> (mecha_core::sampling::Tuning, Option<String>) {
+        let tuning = mecha_core::sampling::Tuning {
+            model: self.model.map(|m| match m {
+                ModelValue::Standard => mecha_core::sampling::Model::Standard,
+                ModelValue::Turbo => mecha_core::sampling::Model::Turbo,
+            }),
+            cfg: self.cfg,
+            steps: self.steps,
+            sampler: self.sampler,
+            scheduler: self.scheduler,
+            negative: self.negative,
+        };
+        (tuning, self.unlock)
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -4867,21 +4955,34 @@ pub async fn image_settings(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let tuning = mecha_core::sampling::Tuning {
-        model: match body.model {
-            ModelValue::Standard => mecha_core::sampling::Model::Standard,
-            ModelValue::Turbo => mecha_core::sampling::Model::Turbo,
-        },
-        cfg: body.cfg,
-        steps: body.steps,
-        sampler: body.sampler,
-        scheduler: body.scheduler,
-        negative: body.negative,
-    };
+    let (tuning, unlock) = body.tuning();
     respond(
         chat.personas
-            .image_settings(&state.library, &name, tuning, body.unlock.as_deref()),
+            .image_settings(&state.library, &name, tuning, unlock.as_deref()),
     )
+}
+
+/// GET /api/settings/images: the chat's picture settings.
+pub async fn chat_image_settings(State(state): Web) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    Json(chat.personas.chat_picture()).into_response()
+}
+
+/// POST /api/settings/images: set them. The same body as a persona's, with
+/// no unlock — the chat's settings are behind no lock.
+pub async fn chat_image_settings_save(
+    State(state): Web,
+    Json(body): Json<ImageSettingsBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let (tuning, _) = body.tuning();
+    respond(chat.personas.set_chat_picture(tuning))
 }
 
 /// POST /api/personas/{name}/frame
@@ -8249,6 +8350,71 @@ mod tests {
         assert_eq!(row(Some(&token))["touching"], "single");
     }
 
+    /// The chat's picture settings (the owner, 2026-10-11): set and read
+    /// back through Settings → Images, held to the door, and the layer a
+    /// persona's unset fields show — and a persona on another model shows
+    /// that model's own numbers, not the chat's.
+    #[test]
+    fn the_chat_picture_settings_are_the_layer_under_a_persona() {
+        use mecha_core::sampling::{Model, Tuning};
+        let dir = std::env::temp_dir().join(format!("mecha-chatpic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let none = PersonaChats::for_tests();
+        assert!(matches!(
+            none.set_chat_picture(Tuning::default()),
+            Err(Refusal::Bad(_))
+        ));
+        let p = PersonaChats::for_tests().with_chat_settings(mecha_core::sampling::chat_path(&dir));
+        let guided = Tuning {
+            cfg: Some(3.0),
+            steps: Some(30),
+            negative: Some(true),
+            ..Tuning::default()
+        };
+        let set = p.set_chat_picture(guided.clone()).unwrap();
+        let read = p.chat_picture();
+        let refused = p.set_chat_picture(Tuning {
+            steps: Some(99),
+            ..Tuning::default()
+        });
+        let persona = p.image_view(&Tuning::default());
+        let own = p.image_view(&Tuning {
+            cfg: Some(2.0),
+            negative: Some(false),
+            ..Tuning::default()
+        });
+        let turbo = p.image_view(&Tuning {
+            model: Some(Model::Turbo),
+            ..Tuning::default()
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(set["image"]["cfg"], 3.0);
+        assert_eq!(read["image"]["inherits"], "default");
+        assert_eq!(read["image"]["steps"], 30);
+        assert!(read["image_options"]["samplers"].is_array());
+        assert!(matches!(refused, Err(Refusal::Bad(_))));
+        // Nothing of its own: the chat's, said as the chat's.
+        assert_eq!(persona["inherits"], "chat");
+        assert_eq!(
+            (&persona["cfg"], &persona["steps"], &persona["negative"]),
+            (
+                &serde_json::json!(3.0),
+                &serde_json::json!(30),
+                &serde_json::json!(true)
+            )
+        );
+        assert_eq!(persona["defaults"]["cfg"], 3.0);
+        // Its own wins, an explicit off included.
+        assert_eq!(
+            (&own["cfg"], &own["negative"]),
+            (&serde_json::json!(2.0), &serde_json::json!(false))
+        );
+        assert_eq!(own["defaults"]["cfg"], 3.0, "unset, it would be the chat's");
+        // Another model: that model's numbers.
+        assert_eq!(turbo["steps"], mecha_core::sampling::TURBO_STEPS);
+        assert_eq!(turbo["cfg"], 1.0);
+    }
+
     /// The picture settings: set from the page and carried by the list with
     /// what each unset field resolves to and the estimate, read by the host
     /// each turn, refused out of range or off the lists, behind the lock like
@@ -8282,7 +8448,7 @@ mod tests {
             steps: Some(30),
             sampler: Some("res_multistep".into()),
             scheduler: Some("beta".into()),
-            negative: true,
+            negative: Some(true),
             ..Tuning::default()
         };
         let set = w
@@ -8291,11 +8457,12 @@ mod tests {
             .unwrap();
         assert_eq!(set["image"]["steps"], 30);
         assert_eq!(set["image"]["negative"], true);
+        assert_eq!(set["image"]["inherits"], "chat");
         assert_eq!(row(None)["set"]["sampler"], "res_multistep");
         assert_eq!(mecha_core::persona::tuning(&w.store(), "mara"), guided);
         // Turbo's own steps where none are set.
         let turbo = Tuning {
-            model: Model::Turbo,
+            model: Some(Model::Turbo),
             ..Tuning::default()
         };
         let set = w
@@ -8325,7 +8492,7 @@ mod tests {
         }
         assert_eq!(
             mecha_core::persona::tuning(&w.store(), "mara").model,
-            Model::Turbo
+            Some(Model::Turbo)
         );
         for body in [
             serde_json::json!({"model": "hyper"}),

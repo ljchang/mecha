@@ -504,18 +504,37 @@ presets carry; the six-call replay set gates the build.
 
 ### 16.1 What may be set
 
-`sampling::Tuning`, in `state.toml`'s `[image]` table beside `touching`. It
-is written only by the settings page's route and read fresh each turn, like
-the switch:
+`sampling::Tuning`, in two layers since the owner's ruling of 2026-10-11
+("fall back to chat, but personas can override"):
 
-| Field | Range | Unset means |
-|---|---|---|
-| `model` | `standard`, `turbo` | standard (`[image] diffusion_model`) |
-| `steps` | 4–60 | `[image] steps` (40); 8 for turbo |
-| `cfg` | 1–5 in steps of 0.5 | 1 (guidance off) |
-| `sampler` | KSampler's list at the pinned ComfyUI | `euler` |
-| `scheduler` | KSampler's list at the pinned ComfyUI | `simple` |
-| `negative` | on or off | off |
+- **The chat's**, in `~/.mecha/picture-settings.toml` (`sampling::chat_path`),
+  set on Settings → Images (`/api/settings/images`).
+- **A persona's**, in `state.toml`'s `[image]` table beside `touching`, set
+  on its page.
+
+Each is written only by its page's route. `ImageGenerate` reads the chat's
+file on every call (`with_chat_settings`, given by setup to every surface
+that names itself, and never to eval, batch or a persona replay, whose arm
+names every field) and draws with the turn's settings over it
+(`Tuning::over`). Every field is optional, and an unset one is the layer
+below:
+
+| Field | Range | Unset in a persona | Unset in the chat |
+|---|---|---|---|
+| `model` | `standard`, `turbo` | the chat's | standard (`[image] diffusion_model`) |
+| `steps` | 4–60 | the chat's | `[image] steps` (40); 8 for turbo |
+| `cfg` | 1–5 in steps of 0.5 | the chat's | 1 (guidance off) |
+| `sampler` | KSampler's list at the pinned ComfyUI | the chat's | `euler` |
+| `scheduler` | KSampler's list at the pinned ComfyUI | the chat's | `simple` |
+| `negative` | on or off | the chat's | off |
+
+- **A persona on another model takes none of the chat's numbers.** They were
+  chosen for the chat's model: turbo inheriting a guided chat's 30 steps and
+  cfg 3 would undo it.
+- **An explicit default is written.** A persona's `model = "standard"` or
+  `negative = false` overrides a chat that chose otherwise, so only an unset
+  field is left out of the file, and a damaged `model` line reads as unset
+  — the chat's — never as a standard override.
 
 - **The negative prompt is fixed in code** (`sampling::NEGATIVE`). The owner
   turns it on or off, never writes it, and no model does. At cfg 1 the

@@ -69,10 +69,18 @@ assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
   });
   assert.equal(imageSettingsBody(set, { cfg: null }, null).cfg, undefined);
   assert.equal(imageSettingsBody(set, { cfg: '2.5' }, null).cfg, 2.5, 'a select sends a string');
-  assert.equal(imageSettingsBody({}, { model: 'hyper' }, null).model, 'standard');
+  assert.equal(imageSettingsBody({}, { model: 'hyper' }, null).model, undefined, 'unknown is unset');
   assert.equal(imageSettingsBody(set, {}, 'tok').unlock, 'tok');
+  // Unset is the layer below; an explicit default is sent as itself, since
+  // it overrides a chat that chose otherwise (the owner, 2026-10-11).
+  assert.equal(imageSettingsBody(set, { model: null }, null).model, undefined);
+  assert.equal(imageSettingsBody(set, { negative: null }, null).negative, undefined);
+  assert.equal(imageSettingsBody(set, { negative: false }, null).negative, false);
+  assert.equal(imageSettingsBody({}, { model: 'standard' }, null).model, 'standard');
+  const none = presetBody('default', null);
+  assert.deepEqual(Object.values(none).filter((v) => v !== undefined), [], 'the default preset sets nothing');
   const turbo = presetBody('turbo', null);
-  assert.deepEqual([turbo.model, turbo.cfg, turbo.steps, turbo.negative], ['turbo', undefined, undefined, false]);
+  assert.deepEqual([turbo.model, turbo.cfg, turbo.steps, turbo.negative], ['turbo', undefined, undefined, undefined]);
   const guided = presetBody('guided', null);
   assert.deepEqual([guided.cfg, guided.steps, guided.sampler, guided.scheduler, guided.negative], [3, 30, 'res_multistep', 'beta', true]);
   assert.deepEqual(Object.keys(IMAGE_PRESETS), ['default', 'guided', 'turbo']);
