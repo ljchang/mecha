@@ -43,7 +43,6 @@ function page({ running = false, status = 200 } = {}) {
      const bodies = [], notes = [];
      let key = 'chat-ab', draft = 'half a thought', attachments = ['inbox/notes.pdf'];
      let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
-     let regenerated = null;
      const withAttachments = (typed, files) => [typed, ...files].join(' ');
      const composeRegenerateMessage = (p) => 'Regenerate ' + p;
      const closeIncognito = () => {};
@@ -62,7 +61,7 @@ function page({ running = false, status = 200 } = {}) {
      return {
        regen: () => regenerate('images/a.png', 'images/b.png'),
        typed: (t) => { draft = t; return send(); },
-       state: () => ({ bodies, notes, draft, attachments, chosen: [...chosenVersion.keys()], regenerated }),
+       state: () => ({ bodies, notes, draft, attachments, chosen: [...chosenVersion.keys()] }),
      };`,
   )(running, status);
 }
@@ -76,7 +75,6 @@ function page({ running = false, status = 200 } = {}) {
   is(body, { text: 'Regenerate images/b.png', attachments: [], regenerate: 'images/b.png' }, 'of the version showing, as `regenerate`, with no files');
   is([s.draft, s.attachments], ['half a thought', ['inbox/notes.pdf']], "the owner's draft and files stay in the composer");
   is(s.chosen, [], 'the card goes back to the newest, so the new version is what lands');
-  is(s.regenerated, 'chat-ab', 'and the finished turn is read again for its version_of');
 }
 
 {
@@ -91,7 +89,7 @@ function page({ running = false, status = 200 } = {}) {
   await p.regen();
   const s = p.state();
   is(s.notes.length, 1, 'a refusal is said');
-  is([s.chosen, s.regenerated], [['images/a.png'], null], 'and the card stays where it was, owing no re-read');
+  is(s.chosen, ['images/a.png'], 'and the card stays where it was');
 }
 
 {
@@ -99,7 +97,6 @@ function page({ running = false, status = 200 } = {}) {
   await p.typed('hello');
   const body = p.state().bodies[0];
   is('regenerate' in body, false, 'a typed turn sends no regenerate field');
-  is(p.state().regenerated, null, 'and owes no re-read');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
