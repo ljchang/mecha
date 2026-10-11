@@ -461,15 +461,15 @@ pub(super) fn child_cwd() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
-/// The whole surface, auth included, as a value — which is what lets the
-/// guard be tested by driving the router directly instead of binding a port.
 /// The app with no preview origin — what the tests drive.
 #[cfg(test)]
 fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
     router_with_preview(state, assets, None)
 }
 
-/// [`router`], with the app's `frame-src` naming the outbox's preview origin.
+/// The whole surface, auth included, as a value — which is what lets the
+/// guard be tested by driving the router directly instead of binding a port.
+/// The app's `frame-src` names the outbox's preview origin, when there is one.
 fn router_with_preview(
     state: WebState,
     assets: Option<&std::path::Path>,
