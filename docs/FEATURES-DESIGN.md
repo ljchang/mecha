@@ -75,12 +75,17 @@
 > speech-to-text server from nothing (its own uv environment from a hash
 > lock, the Parakeet tarball by its pin, the server script held equal to
 > `scripts/voice/`, one rendered unit) — is built, and so is 7d-2, the voice
-> worker the same way. 7b-2 — the build fallback: the pin's commit fetched
-> blobless by git and built here with the release's own `$ORIGIN` flags, for
-> a driver too old for any CUDA release or an architecture none covers,
-> after a toolchain check that names every missing piece — is built (CPU and
-> CUDA builds measured on the GB10, 2026-10-10). 7e, 7f and step 8 are
-> unbuilt (step 7 redesigned in §10). The
+> worker the same way. 7e — `comfyui_unit.rs`, the image server from
+> nothing (ComfyUI fetched by its commit, torch for CUDA 13 from one hash
+> lock per architecture with torch by direct URL, the image slot's three
+> pinned models fetched into the hub and linked, one rendered unit, checked
+> by asking `/object_info` for every node and model mecha sends) — is built.
+> 7b-2 — the build fallback: the pin's commit fetched blobless by git and
+> built here with the release's own `$ORIGIN` flags, for a driver too old
+> for any CUDA release or an architecture none covers, after a toolchain
+> check that names every missing piece — is built (CPU and CUDA builds
+> measured on the GB10, 2026-10-10). 7f and step 8 are unbuilt (step 7
+> redesigned in §10). The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1255,7 +1260,7 @@ model, not mecha's own, that a feature needs running.
 | embeddings server | `graph`, persona file search | the always-on unit is box only; `install-embed.sh` converts it to on demand and refuses to run without it | the launcher and the on-demand units |
 | OCR server | `ocr` | `scripts/llama/install.sh` | **yes** — units, launcher, `--remove`; the model is a comment, unpinned |
 | layout | `layout` | `scripts/layout/install.sh` | **yes** — hash-pinned requirements, model pinned by revision and sha256 |
-| ComfyUI, ComfyUI-GGUF, three model files | `image` | `git clone` at `88ab4a06` and `6ea2651`, a venv with torch cu130; downloads in a box-local `dl-logs/download.sh` | file names only; no unit, no requirements, no URLs |
+| ComfyUI, three model files (ComfyUI-GGUF only for an owner's `.gguf`) | `image` | `git clone` at `88ab4a06` (and ComfyUI-GGUF at `6ea2651`), a venv with torch cu130; downloads in a box-local `dl-logs/download.sh` | file names only; no unit, no requirements, no URLs — since 7e, `comfyui_unit.rs` pins the commit, `locks/comfyui-cu130-*.txt` the environment, and the image slot the three int8-default files |
 | voice venv (pipecat, sherpa-onnx) and Parakeet | `voice`, `dictate`, `calls` | `python3 -m venv`, unpinned; the Parakeet tarball by hand | the servers' source; units that name `/home/ljchang` |
 | Chatterbox | `calls`, read-aloud | a Docker image built by hand from `nvcr.io/nvidia/pytorch`, recipe in prose (`VOICE-RESEARCH.md`), mounting the live checkout | the server's source only |
 
@@ -1664,7 +1669,26 @@ Step 7 becomes these, each a PR that leaves every feature working:
   lets through, while a page's direct request is refused — so the install
   needs no hostname. Its real-machine test installs one beside the live
   worker and checks a page's preflight is refused (measured 2026-10-10).
-- **7e.** ComfyUI, ComfyUI-GGUF and the image models.
+- **7e.** ComfyUI and the image models, built (`comfyui_unit.rs`): the
+  pinned commit fetched by git and checked, its `.git` dropped; torch
+  2.14.0+cu130 and ComfyUI's requirements from one lock per architecture,
+  torch and torchvision as direct URLs to one wheel each so no second index
+  is consulted for anything else (uv's dependency-confusion rule); the image
+  slot's three files fetched into the hub and linked into ComfyUI's
+  `models/`, the plan reading an installed ComfyUI's models from the hub so
+  a cleared cache is offered again (a hand-built one still holds its own); `mecha-comfyui.service` with its temp
+  directory under the install's tree, so `enable` can write `[image]
+  server_temp_dir` where there is no `[image]` table. The check asks
+  `/object_info` for every node type `imagegen.rs` sends (a test holds the
+  two lists equal) and for the three files by name — no picture, which would
+  load ~19 GiB of the pool the chat model shares. CUDA 13 machines only (a
+  580 driver); ComfyUI-GGUF is not installed, since the default is int8 through
+  the core loader (#560). The environment's ~3.6 GiB is priced in the plan.
+  The real-machine test installs one beside the live server on a free port,
+  its hub seeded with hard links to the live models, and removes it
+  (measured 2026-10-11, 324 s). Owed: the idle reset
+  (`scripts/comfyui/comfyui-idle-reset` and its timer) for the installed
+  unit, as 7e-2.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
   default since 2026-10-03, built from a pinned commit with its model
   converted at install. (This step was Chatterbox, with a venv lock and a

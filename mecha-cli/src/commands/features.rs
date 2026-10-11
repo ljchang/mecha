@@ -184,6 +184,26 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
         } else {
             false
         };
+        // A machine the image server's pinned torch cannot run on is not
+        // offered it — and not refused the switch either: images may come
+        // from a ComfyUI the owner runs, stopped right now, and the switch
+        // is what turned them on before ComfyUI had an installer (review of
+        // #645).
+        if todo
+            .iter()
+            .any(|(id, ..)| *id == mecha_core::comfyui_unit::ID)
+        {
+            if let Err(why) = mecha_core::comfyui_unit::fits(
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                read_nvidia(),
+            ) {
+                println!(
+                    "ComfyUI is not installed: {why}. Images switch on for one you run yourself."
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
+            }
+        }
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
             let list = names.join(", ");
@@ -249,7 +269,27 @@ pub(super) async fn enable(ids: &[String], no_install: bool, yes: bool) -> Resul
             }
         }
     }
-    set(ids, true)
+    set(ids, true)?;
+    if features.contains(&Feature::Image) {
+        image_table()?;
+    }
+    Ok(())
+}
+
+/// `image` reads off with no `[image]` table, whatever the switch says, and
+/// only an install writes one — so a server used as it is (`--no-install`,
+/// or one already on `:8188` that was left alone) would leave images off.
+/// Written here on its defaults where there is none (review of #645).
+fn image_table() -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    if mecha_core::comfyui_unit::write_image_table(&path, None)? {
+        println!(
+            "Wrote an [image] table into {} on its defaults — ComfyUI at 127.0.0.1:8188. An \
+             incognito chat also needs its server_temp_dir.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn set(ids: &[String], on: bool) -> Result<()> {
@@ -964,9 +1004,9 @@ mod tests {
                     bytes: None,
                 },
                 PlannedSidecar {
-                    id: "comfyui",
-                    label: "ComfyUI",
-                    state: SidecarState::Missing { step: "7e" },
+                    id: "speech",
+                    label: "the speech server",
+                    state: SidecarState::Missing { step: "7f" },
                     bytes: None,
                 },
                 PlannedSidecar {
@@ -1023,7 +1063,7 @@ mod tests {
         let text = render_plan(&p, true);
         for want in [
             "provided — x on PATH; left alone",
-            "not here — its installer arrives in step 7e",
+            "not here — its installer arrives in step 7f",
             "unknown — denied; nothing is offered over it",
             "no recommended model",
             "no model is recommended for this machine's tier",

@@ -119,7 +119,9 @@ pub fn category_of(unit: &str) -> Category {
         "llama-local" => Category::ChatModel,
         "llama-embed" | "llama-embed-proxy" => Category::Embeddings,
         "llama-ocr" | "llama-ocr-proxy" => Category::Ocr,
-        "comfyui" | "mecha-comfyui-idle-reset" => Category::ImageGen,
+        // `mecha-comfyui` is the unit `features enable image` installs
+        // (review of #645).
+        "comfyui" | "mecha-comfyui" | "mecha-comfyui-idle-reset" => Category::ImageGen,
         "mecha-parakeet" => Category::Voice,
         n if n.starts_with("mecha-breeze-") || n.starts_with("mecha-voice-") => Category::Voice,
         n if n.starts_with("mecha-") => Category::Mecha,
