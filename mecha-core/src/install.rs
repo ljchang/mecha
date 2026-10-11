@@ -207,6 +207,9 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     let mut nvidia = move || -> crate::engine::Nvidia {
         *seen.get_or_insert_with(|| read.take().map_or(crate::engine::Nvidia::None, |f| f()))
     };
+    // Missing here and needed — installable or not: a machine its installer
+    // does not run on (macOS) is not offered it either, and its `fits` says
+    // why, so what it would fetch is unpriced there too (review of #649).
     let wanted = |plan: &Plan, id: &str| {
         plan.sidecars.iter().any(|s| {
             s.id == id
@@ -214,7 +217,6 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
                     s.state,
                     SidecarState::Missing { .. } | SidecarState::Incomplete
                 )
-                && installable(s.id)
                 && not_needed(s.id, feature, chat_here).is_none()
         })
     };
@@ -223,17 +225,7 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     // nothing it fetches goes uncounted (review of #649). A machine
     // `speech_unit::fits` refuses is not offered the server, so neither the
     // clip nor the slot's model is its plan's (review of #649).
-    // Asked of every machine it is missing on, installable or not: macOS is
-    // not offered it either, and is told why (review of #649).
-    let speech_missing = plan.sidecars.iter().any(|s| {
-        s.id == crate::speech_unit::ID
-            && matches!(
-                s.state,
-                SidecarState::Missing { .. } | SidecarState::Incomplete
-            )
-            && not_needed(s.id, feature, chat_here).is_none()
-    });
-    if speech_missing {
+    if wanted(plan, crate::speech_unit::ID) {
         match crate::speech_unit::fits(std::env::consts::OS, nvidia()) {
             Ok(_) => {
                 let bytes: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
@@ -974,19 +966,21 @@ mod tests {
             download_bytes: 105,
             nothing_to_do: false,
         };
-        // No NVIDIA device: `speech_unit::fits` refuses, whatever the OS.
+        // `fits` refuses on either platform — no NVIDIA device on Linux, no
+        // systemd on macOS — so the row is unpriced either way, with why.
         price(&mut p, true, || crate::engine::Nvidia::None);
-        if installable(crate::speech_unit::ID) {
-            assert_eq!(p.sidecars[0].bytes, None);
-            assert_eq!(p.download_bytes, 5);
-            assert!(
-                matches!(&p.files[0].state, FileState::NotOffered { why } if why.contains("NVIDIA")),
-                "{:?}",
-                p.files[0].state
-            );
+        assert_eq!(p.sidecars[0].bytes, None);
+        assert_eq!(p.download_bytes, 5);
+        let why_says = if cfg!(target_os = "linux") {
+            "NVIDIA"
         } else {
-            assert_eq!(p.download_bytes, 105, "not offered at all: untouched");
-        }
+            "launchd"
+        };
+        assert!(
+            matches!(&p.files[0].state, FileState::NotOffered { why } if why.contains(why_says)),
+            "{:?}",
+            p.files[0].state
+        );
     }
 
     fn install_ids(p: &Plan, chat_here: bool) -> Vec<&'static str> {
