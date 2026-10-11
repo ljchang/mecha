@@ -260,8 +260,23 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
         // been tested more): fetched into an install of mecha's — a fresh
         // one, or one already here, reinstalled to link it — and only said
         // for a ComfyUI someone else runs.
-        let mut fetch_turbo: Option<String> = None;
+        // (why, what it downloads)
+        let mut fetch_turbo: Option<(String, u64)> = None;
         if features.contains(&Feature::Image) {
+            // `--turbo` fetches the pinned file, which a picture loads only
+            // when `[image] turbo_model` names it (review of #650).
+            if let Some(own) = cfg
+                .image
+                .as_ref()
+                .map(|i| i.turbo_model.as_str())
+                .filter(|t| turbo && *t != mecha_core::sampling::TURBO_MODEL)
+            {
+                println!(
+                    "[image] turbo_model is {own}, so a turbo picture loads that, not the {} \
+                     this fetches.",
+                    mecha_core::sampling::TURBO_MODEL
+                );
+            }
             let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
             // Linked to a blob still in the hub: a link whose blob is gone
             // is re-offered, or the refusal naming this command would name
@@ -306,25 +321,26 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     if installing || matches!(state, SidecarState::Installed) =>
                 {
                     let download = if cached { 0 } else { comfy::TURBO_FILE.bytes };
-                    // The guided setup listed its downloads before its one
-                    // yes (ruling F14): nothing it did not list is fetched.
-                    if yes && !turbo && download > 0 {
-                        println!(
-                            "The turbo model is not fetched by this setup ({why}); \
-                             `mecha features enable image` fetches it ({}).",
-                            bytes_text(download)
-                        );
-                    } else {
-                        match todo.iter_mut().find(|(id, ..)| *id == comfy::ID) {
-                            Some((.., bytes)) => *bytes = bytes.map(|b| b + download),
-                            None => todo.push((
-                                comfy::ID,
-                                label,
-                                Feature::Image,
-                                (download > 0).then_some(download),
-                            )),
+                    // The guided setup listed its downloads and installs
+                    // before its one yes (ruling F14): nothing it did not
+                    // list is fetched, and no server it did not list is
+                    // reinstalled — a restart — to link one.
+                    if yes && !turbo && (download > 0 || !installing) {
+                        if download > 0 {
+                            println!(
+                                "The turbo model is not fetched by this setup ({why}); \
+                                 `mecha features enable image` fetches it ({}).",
+                                bytes_text(download)
+                            );
                         }
-                        fetch_turbo = Some(why);
+                    } else {
+                        // Its size rides on its own clause, not the row's
+                        // total: a row re-offered for a lost model carries
+                        // none (review of #650).
+                        if !installing {
+                            todo.push((comfy::ID, label, Feature::Image, None));
+                        }
+                        fetch_turbo = Some((why, download));
                     }
                 }
                 (Some(why), Some((_, SidecarState::Provided { by }))) => println!(
@@ -363,10 +379,14 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                  server, its systemd user units, started once to check them:",
                 ids.join(" ")
             );
-            let turbo_line = fetch_turbo
-                .as_ref()
-                .map(|why| format!(", with the turbo model ({why})"))
-                .unwrap_or_default();
+            let turbo_line = match &fetch_turbo {
+                Some((why, 0)) => format!(", with the turbo model ({why}; in the cache)"),
+                Some((why, download)) => format!(
+                    ", with the turbo model ({} to fetch; {why})",
+                    bytes_text(*download)
+                ),
+                None => String::new(),
+            };
             for (id, label, _, bytes) in &todo {
                 // A build here is said as one: its download is the source,
                 // and the compile is the wait (review of #643).

@@ -1697,7 +1697,8 @@ Step 7 becomes these, each a PR that leaves every feature working:
   `--turbo`, for an install that already links it, or for a persona whose
   picture settings choose it (`turbo_wanted`); `[image] turbo_model` is
   never a reason, since it has a default. The guided setup never downloads
-  it, because its one yes was to the downloads it listed (F14). Owed: the idle reset
+  it, nor reinstalls a server to link it, because its one yes was to what
+  it listed (F14). Owed: the idle reset
   (`scripts/comfyui/comfyui-idle-reset` and its timer) for the installed
   unit, as 7e-2.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
