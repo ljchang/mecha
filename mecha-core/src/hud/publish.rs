@@ -290,7 +290,14 @@ impl Pushed {
 }
 
 fn write_atomic(path: &Path, text: &str) -> Result<()> {
-    let tmp = path.with_extension("json.tmp");
+    // A name of its own per write: two overlapping refreshes (the timer and a
+    // hand-run one) must not share a temp file and tear the record, which
+    // `Pushed::read` then refuses (review of #651).
+    let tmp = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)?;
     Ok(())

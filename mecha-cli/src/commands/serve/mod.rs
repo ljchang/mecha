@@ -1924,6 +1924,26 @@ mod tests {
         )
     }
 
+    /// `test_router`'s state, for a test that builds its own router.
+    fn test_state() -> WebState {
+        WebState {
+            owner_login: Arc::new("owner@example.com".into()),
+            chat: None,
+            offer_target: None,
+            voices_dir: None,
+            stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
+            library: library::state_for_tests(
+                std::env::temp_dir().join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+            ),
+            features_at_start: Arc::default(),
+            gate: Arc::new(gate::Gate::default()),
+            review: Arc::new(review::ReviewState {
+                outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
+                sessions_dir: None,
+            }),
+        }
+    }
+
     /// Every route is added through `api()`'s `.at`, with its owner — none
     /// through a bare `.route`, which would add one with no owner and so no
     /// guard (FEATURES-DESIGN.md "every route belongs to exactly one feature
@@ -2333,6 +2353,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// With a preview origin, the app's policy names exactly it in
+    /// `frame-src` and nothing else changes: still framed by nobody, still
+    /// `script-src 'self'` (review of #651).
+    #[tokio::test]
+    async fn a_preview_origin_is_named_in_frame_src_and_nowhere_else() {
+        let csp = |preview: Option<&str>| {
+            let app = router_with_preview(test_state(), None, preview);
+            async move {
+                let response = app
+                    .oneshot(request(Some("owner@example.com")))
+                    .await
+                    .unwrap();
+                response.headers()["content-security-policy"]
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            }
+        };
+        let plain = csp(None).await;
+        let framed = csp(Some("https://box.tail.ts.net:8444")).await;
+        assert_eq!(
+            framed,
+            format!("{plain}; frame-src https://box.tail.ts.net:8444")
+        );
+        assert!(framed.contains("frame-ancestors 'none'"));
+        assert_eq!(framed.matches("https:").count(), 1, "{framed}");
     }
 
     #[tokio::test]
