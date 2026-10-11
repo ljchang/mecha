@@ -13,6 +13,9 @@ import { mount } from 'svelte';
 import Dashboard from './lib/hud/Dashboard.svelte';
 import './hud-page.css';
 
+// No web font is bundled: a published page carries no font bytes, so the
+// stack falls back to `system-ui` where the app has Inter loaded.
+
 /** Datasets as files beside the page, revalidated by ETag. */
 export function filesSource(base) {
   return {

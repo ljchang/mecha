@@ -74,12 +74,21 @@ function replay(userText, request_id) {
 export const ROUTES = [
   ['GET', /^\/api\/ping$/, () => ({ ok: true })],
   ['GET', /^\/api\/hud$/, () => fx.hudBoards],
-  ['GET', /^\/api\/hud\/lab_week$/, () => fx.hudBoard],
+  // Any id, as the server takes any: the one board the demo has is
+  // `lab_week`, and any other is the server's 404.
   [
     'GET',
-    /^\/api\/hud\/lab_week\/data\/([a-z_]+)$/,
-    (_url, [name]) =>
-      fx.hudData[name] ?? new Response(`"${name}" has not been produced yet`, { status: 404 }),
+    /^\/api\/hud\/([^/]+)$/,
+    (_url, [id]) =>
+      id === fx.hudBoard.id ? fx.hudBoard : new Response(`no dashboard "${id}"`, { status: 404 }),
+  ],
+  [
+    'GET',
+    /^\/api\/hud\/([^/]+)\/data\/([^/]+)$/,
+    (_url, [id, name]) =>
+      id === fx.hudBoard.id && fx.hudData[name]
+        ? fx.hudData[name]
+        : new Response(`"${name}" has not been produced yet`, { status: 404 }),
   ],
   ['GET', /^\/api\/summary$/, () => fx.summary],
   ['GET', /^\/api\/today$/, () => ({
