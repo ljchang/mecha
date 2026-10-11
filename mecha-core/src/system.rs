@@ -280,6 +280,17 @@ pub fn collect(
     let cores = parse_cores(&stat);
     let (load1, tasks_total) = reader.loadavg().ok().unzip();
 
+    // The named readings before any fork this function makes: in
+    // `reading_order`, everything that runs no command comes first, and a
+    // fork below that wedges must not spend the deadline those readings
+    // share (review of #641). The GPU query this starts is the one the
+    // per-category fold reuses.
+    let mut now: Vec<(Measurement, Reading)> = reading_order()
+        .into_iter()
+        .map(|m| (m, reader.now(m)))
+        .collect();
+    now.sort_by_key(|(m, _)| *m);
+
     let units = unit_counters(&user_app_slice())?;
     let gpu = reader.gpu().unwrap_or_default();
     let gpu_apps = source::nvidia_smi("--query-compute-apps=pid,used_memory", reader.budget())
@@ -297,12 +308,6 @@ pub fn collect(
                 })
                 .collect::<Vec<_>>()
         });
-
-    let mut now: Vec<(Measurement, Reading)> = reading_order()
-        .into_iter()
-        .map(|m| (m, reader.now(m)))
-        .collect();
-    now.sort_by_key(|(m, _)| *m);
 
     Ok(Sample {
         at,
