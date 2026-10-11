@@ -12,7 +12,9 @@
 
   let boards = $state(null);
   let listError = $state(null);
-  let board = $state(null);
+  // Raw: a spec is data handed to the renderer, never edited here, and a
+  // deep proxy of it is what a chart's copy would have to see through.
+  let board = $state.raw(null);
   let boardError = $state(null);
 
   async function text(res) {
@@ -34,15 +36,20 @@
     }
   }
 
+  // Which board load is current: an answer for a board the page has since
+  // left must not be drawn against the new board's data route.
+  let loading = 0;
   async function loadBoard(id) {
+    const mine = ++loading;
     board = null;
     boardError = null;
     try {
       const res = await apiFetch(`/api/hud/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error((await text(res)) || `HTTP ${res.status}`);
-      board = await res.json();
+      const got = await res.json();
+      if (mine === loading) board = got;
     } catch (e) {
-      boardError = String(e?.message ?? e);
+      if (mine === loading) boardError = String(e?.message ?? e);
     }
   }
 
@@ -78,6 +85,19 @@
   function staleCount(b) {
     return (b.loaders ?? []).filter((l) => l.stale).length;
   }
+
+  /** Datasets whose file could not be read: a finding, not a healthy board. */
+  function unreadable(b) {
+    return (b.loaders ?? []).filter((l) => l.dataset_error).length;
+  }
+
+  /** The newest `generated_at` of a board's datasets, as the page shows it. */
+  function updated(b) {
+    const times = (b.loaders ?? []).map((l) => l.generated_at).filter(Boolean).sort();
+    if (times.length === 0) return 'no data yet';
+    const d = new Date(times[times.length - 1]);
+    return `updated ${d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+  }
 </script>
 
 {#if initial}
@@ -98,6 +118,7 @@
 {:else}
   <main class="list">
     <h1>Dashboards</h1>
+    <p class="intro">Installed with <code>mecha hud install</code>; each dataset refreshes on its own schedule, with no model involved.</p>
     {#if listError}
       <p class="bad">The dashboards could not be read: {listError}</p>
     {:else if boards === null}
@@ -111,7 +132,7 @@
             <button onclick={() => navigate(`hud/${b.id}`)} disabled={b.refusals?.length > 0}>
               <span class="title">{b.title ?? b.id}</span>
               <span class="meta">
-                {b.loaders?.length ?? 0} datasets{#if staleCount(b)} · <span class="warn">{staleCount(b)} stale</span>{/if}
+                {b.loaders?.length ?? 0} datasets · {updated(b)}{#if staleCount(b)} · <span class="warn">{staleCount(b)} stale</span>{/if}{#if unreadable(b)} · <span class="warn">{unreadable(b)} unreadable</span>{/if}
               </span>
             </button>
             {#if b.refusals?.length}<p class="bad small">{b.refusals.join('; ')}</p>{/if}
@@ -135,7 +156,9 @@
     cursor: pointer;
   }
   .list { padding: 20px var(--gutter, 20px); max-width: var(--measure, 880px); }
-  h1 { margin: 0 0 14px; font-size: 20px; font-weight: 600; }
+  h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+  .intro { margin: 0 0 14px; font-size: 13px; color: var(--text-muted); }
+  .intro code { font-family: var(--mono); font-size: 12px; }
   ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   li button {
     width: 100%;

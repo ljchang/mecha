@@ -862,6 +862,11 @@ board with a filter, each in light and dark, at desktop and phone widths.
 - **The proposals pane's store** (step 4's second half). A pending
   dashboard exists only once a model drafts one (step 6); viewing an
   installed board needs none of it.
+- **The standalone build trusts the spec beside it.** It reads `hud.json` off
+  the page's own origin, so there `chartRefusal` is the only check in the
+  browser, not the second behind `vegalite.rs`. No producer ships that path
+  yet; whatever does (step 5's publish) must write only a spec that passed
+  the server's walker.
 - **Polling period from the loader.** The page polls every minute (never
   under the 30 s floor); reading each loader's schedule waits for a route
   that carries it.

@@ -178,7 +178,9 @@ export function chartRefusal(view) {
  * panel's width; a composed one keeps its own sizing.
  */
 export function viewFor(chart, rowsByName, height = 220) {
-  const view = structuredClone(chart);
+  // A JSON copy, not `structuredClone`: the spec may arrive as a Svelte state
+  // proxy, which cannot be cloned, and a spec is JSON by definition.
+  const view = JSON.parse(JSON.stringify(chart));
   const datasets = {};
   for (const name of datasetsNamed(chart)) datasets[name] = rowsByName[name] ?? [];
   view.datasets = datasets;
