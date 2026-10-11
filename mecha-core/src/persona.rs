@@ -3120,7 +3120,7 @@ mod tests {
     /// table.
     #[test]
     fn the_picture_settings_are_stored_beside_the_switch() {
-        use crate::sampling::{Model, Tuning};
+        use crate::sampling::Tuning;
         let dir = scratch();
         create(&dir, &no_lib(), new("mara")).unwrap();
         set_touching(&dir, "mara", Touching::Precise).unwrap();
@@ -3129,7 +3129,7 @@ mod tests {
             steps: Some(30),
             sampler: Some("res_multistep".into()),
             scheduler: Some("beta".into()),
-            negative: true,
+            negative: Some(true),
             ..Tuning::default()
         };
         set_tuning(&dir, "mara", guided.clone()).unwrap();
@@ -3166,7 +3166,7 @@ mod tests {
         set_touching(&dir, "mara", Touching::Single).unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(!text.contains("[image]"), "{text}");
-        assert_eq!(tuning(&dir, "mara").model, Model::Standard);
+        assert_eq!(tuning(&dir, "mara").model, None, "unset: the chat's");
         std::fs::remove_dir_all(dir).ok();
     }
 

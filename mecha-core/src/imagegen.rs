@@ -2170,6 +2170,12 @@ pub struct ImageGenerate {
     /// forms when they are next built: a restart, or a persona's agent rebuilt
     /// on an edit or a rebinding (serve caches it per persona version).
     description: String,
+    /// The chat's picture settings (`sampling::chat_path`), read on every
+    /// call so a change on the settings page is the next picture's: the
+    /// layer a persona's own settings lie over. Unset — replays, evals,
+    /// tests — there is no chat layer, so an arm measures only what it
+    /// names.
+    chat_settings: Option<std::path::PathBuf>,
 }
 
 /// The description a form is built with: [`DESCRIPTION`], then the styles
@@ -2248,7 +2254,24 @@ impl ImageGenerate {
             seeds: false,
             reference_pixels: MAX_REFERENCE_PIXELS,
             faces: Arc::new(crate::face::CachedRetinaFace),
+            chat_settings: None,
         })
+    }
+
+    /// Lay the turn's settings over the chat's, read from `path` on every
+    /// call (`ImageGenerate::chat_settings`).
+    pub fn with_chat_settings(mut self, path: std::path::PathBuf) -> Self {
+        self.chat_settings = Some(path);
+        self
+    }
+
+    /// The settings this picture is drawn with: the turn's — a persona's,
+    /// or none for the assistant's chat — over the chat's.
+    fn tuning(&self, ctx: &ToolCtx) -> crate::sampling::Tuning {
+        match &self.chat_settings {
+            Some(path) => ctx.image_tuning.over(&crate::sampling::chat(path)),
+            None => ctx.image_tuning.clone(),
+        }
     }
 
     /// Resolve `cast` and `style` against this library instead of the one in
@@ -2296,6 +2319,10 @@ impl ImageGenerate {
             // Read afresh whenever a persona's agent is built (serve caches
             // one per persona version and binding, not per chat).
             description: described(self.library_dir.as_deref()),
+            // The layer a persona's unset settings fall to (the owner,
+            // 2026-10-11): a persona form without it would draw an unset
+            // field at the model's default, not the chat's.
+            chat_settings: self.chat_settings.clone(),
         }
     }
 
@@ -3453,7 +3480,9 @@ impl Tool for ImageGenerate {
         }
         // Before reading anything: references are a cost on the pool this
         // guards.
-        if let Err(why) = self.memory_guard(ctx.image_tuning.model).await {
+        // Read once, so the guard and the request agree on the model.
+        let tuning = self.tuning(ctx);
+        if let Err(why) = self.memory_guard(tuning.model.unwrap_or_default()).await {
             return Ok(refused(why));
         }
         // The picture being changed, read once: its bytes key its record and
@@ -3610,7 +3639,7 @@ impl Tool for ImageGenerate {
         let mut req = Request {
             prompt: String::new(),
             size: None,
-            sampling: ctx.image_tuning.resolve(self.cfg.steps),
+            sampling: tuning.resolve(self.cfg.steps),
             seed: match plan.seed {
                 crate::picture::Seed::Fresh => draw_seed(ctx),
                 crate::picture::Seed::Base(s) | crate::picture::Seed::Given(s) => s,
@@ -5669,7 +5698,7 @@ mod tests {
             steps: Some(30),
             sampler: Some("res_multistep".into()),
             scheduler: Some("beta".into()),
-            negative: true,
+            negative: Some(true),
             ..Default::default()
         };
         let req = |sampling| Request {
@@ -5697,7 +5726,7 @@ mod tests {
         );
         assert_eq!(g["unet"]["inputs"]["unet_name"], cfg.diffusion_model);
         let turbo = crate::sampling::Tuning {
-            model: crate::sampling::Model::Turbo,
+            model: Some(crate::sampling::Model::Turbo),
             ..Default::default()
         };
         let g = comfy_graph(&cfg, &req(turbo.resolve(cfg.steps)), &[], None);
@@ -9679,7 +9708,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         cx.image_tuning = crate::sampling::Tuning {
-            model: crate::sampling::Model::Turbo,
+            model: Some(crate::sampling::Model::Turbo),
             ..Default::default()
         };
         let out = t.call(call.clone(), &cx).await.unwrap();
@@ -9701,6 +9730,69 @@ mod tests {
         assert_eq!(sent(&seen), ["free", "prompt", "free", "prompt", "prompt"]);
     }
 
+    /// The chat's settings, read from their file on each call, are what a
+    /// picture with no settings of its own is drawn with — through the
+    /// persona form too — and a persona's own fields win (the owner,
+    /// 2026-10-11). Without the layer (replay, eval), the turn's alone.
+    #[tokio::test]
+    async fn the_chat_settings_lie_under_every_picture() {
+        let (url, seen) = distinct(4).await;
+        let (dir, store) = (tempdir(), tempdir());
+        let path = crate::sampling::chat_path(&tempdir());
+        crate::sampling::set_chat(
+            &path,
+            crate::sampling::Tuning {
+                cfg: Some(3.0),
+                steps: Some(30),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sampled = |seen: &Arc<Mutex<Vec<String>>>| {
+            let line = last_prompt(seen);
+            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
+            let k = &body["prompt"]["sample"]["inputs"];
+            (k["cfg"].as_f64().unwrap(), k["steps"].as_u64().unwrap())
+        };
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        let t = tool(&url).with_chat_settings(path.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(sampled(&seen), (3.0, 30), "the chat's");
+        // A persona's own field wins; the rest are the chat's.
+        let persona = t.persona_form(None);
+        cx.image_tuning = crate::sampling::Tuning {
+            cfg: Some(2.0),
+            ..Default::default()
+        };
+        let out = persona.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            sampled(&seen),
+            (2.0, 30),
+            "the persona's cfg over the chat's steps"
+        );
+        // A change on the page is the next picture's: read per call.
+        crate::sampling::set_chat(&path, Default::default()).unwrap();
+        cx.image_tuning = Default::default();
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(sampled(&seen), (1.0, ImageConfig::default().steps as u64));
+        // No layer: the turn's alone.
+        crate::sampling::set_chat(
+            &path,
+            crate::sampling::Tuning {
+                cfg: Some(3.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let out = tool(&url).call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(sampled(&seen).0, 1.0, "no chat layer");
+    }
+
     /// The pinned turbo model missing from the server is refused naming the
     /// command that fetches it — turbo is fetched on demand (the owner,
     /// 2026-10-11) — before anything is sent. A configured `turbo_model`
@@ -9710,7 +9802,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_turbo_model_is_refused_naming_the_fetch() {
         let turbo = crate::sampling::Tuning {
-            model: crate::sampling::Model::Turbo,
+            model: Some(crate::sampling::Model::Turbo),
             ..Default::default()
         };
         let call = json!({"scene": {"setting": "a lighthouse at dusk"}});

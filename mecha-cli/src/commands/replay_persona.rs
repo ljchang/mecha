@@ -580,15 +580,16 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     let render = !args.no_render && probe.registry().get(IMAGE_TOOL).is_some();
     // The arm's picture settings, held to the settings page's door.
     let image_tuning = mecha_core::sampling::Tuning {
-        model: match args.image_model.as_deref() {
+        // An arm names every field: no chat layer lies under it.
+        model: Some(match args.image_model.as_deref() {
             Some("turbo") => mecha_core::sampling::Model::Turbo,
             _ => mecha_core::sampling::Model::Standard,
-        },
+        }),
         cfg: args.cfg,
         steps: args.steps,
         sampler: args.sampler.clone(),
         scheduler: args.scheduler.clone(),
-        negative: args.negative,
+        negative: Some(args.negative),
     }
     .checked()?;
     if !args.no_render && !render {

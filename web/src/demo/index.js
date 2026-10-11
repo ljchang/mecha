@@ -193,6 +193,7 @@ export const ROUTES = [
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
   ['GET', /^\/api\/library\/voices$/, () => fx.voices],
   ['GET', /^\/api\/settings\/lock$/, () => fx.lockSettings],
+  ['GET', /^\/api\/settings\/images$/, () => fx.chatImages],
 
   // Personas: their own door, as on the server (`persona_chat.rs`).
   ['GET', /^\/api\/personas$/, () => fx.personas],
@@ -364,6 +365,7 @@ export const ROUTES = [
           'library/voices/sample',
           'speak',
           'settings/lock',
+          'settings/images',
           'model/(use|cancel)',
           'resume',
           'sessions/[^/]+(/(archive|unarchive))?',

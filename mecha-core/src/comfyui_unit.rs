@@ -230,6 +230,11 @@ pub fn turbo_wanted(mecha_home: &Path, asked: bool, configured: Option<&str>) ->
     if configured.is_some_and(|c| c != crate::sampling::TURBO_MODEL) {
         return None;
     }
+    // The chat's settings are every persona's that leaves the model unset.
+    let chat = crate::sampling::chat(&crate::sampling::chat_path(mecha_home));
+    if chat.model == Some(crate::sampling::Model::Turbo) {
+        return Some("the chat's picture settings choose it".into());
+    }
     let personas = mecha_home.join("personas");
     // An unreadable store is said, never read as one where no persona
     // chooses turbo (review of #650); a missing one is no personas.
@@ -251,7 +256,7 @@ pub fn turbo_wanted(mecha_home: &Path, asked: bool, configured: Option<&str>) ->
         .flatten()
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|name| {
-            crate::persona::tuning(&personas, name).model == crate::sampling::Model::Turbo
+            crate::persona::tuning(&personas, name).model == Some(crate::sampling::Model::Turbo)
         })
         .collect();
     names.sort();
@@ -692,6 +697,17 @@ mod tests {
         persona("bea", "model = \"turbo\"");
         let chosen = turbo_wanted(&home, false, pinned);
         let untabled = turbo_wanted(&home, false, None);
+        // The chat's settings choosing turbo are every unset persona's.
+        crate::sampling::set_chat(
+            &crate::sampling::chat_path(&home),
+            crate::sampling::Tuning {
+                model: Some(crate::sampling::Model::Turbo),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let by_chat = turbo_wanted(&home, false, pinned);
+        std::fs::remove_file(crate::sampling::chat_path(&home)).unwrap();
         // Another configured file is what a turbo picture loads: fetching
         // the pinned one for it would supply nothing.
         let elsewhere = turbo_wanted(&home, false, Some("my-turbo.gguf"));
@@ -717,6 +733,10 @@ mod tests {
             Some("the picture settings of bea, cleo choose it")
         );
         assert_eq!(untabled, chosen);
+        assert_eq!(
+            by_chat.as_deref(),
+            Some("the chat's picture settings choose it")
+        );
         assert_eq!(elsewhere, None);
         assert!(
             linked.unwrap().contains("before"),
