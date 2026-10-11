@@ -366,6 +366,10 @@ fn make_private_dir(dir: &Path) -> Result<()> {
 fn decode(loc: &[[f32; 4]], conf: &[f32], landm: &[[f32; 10]], w: usize, h: usize) -> Vec<Face> {
     let pri = priors(h, w);
     let mut found: Vec<Face> = Vec::new();
+    // One landmark set per anchor, as one box and one score: the heads are
+    // read three levels each (`Net::load`), and `all_claimed` refuses a
+    // file holding fewer.
+    debug_assert_eq!(landm.len(), loc.len(), "a landmark set per anchor");
     for (i, p) in pri.iter().enumerate().take(loc.len().min(conf.len())) {
         let score = conf[i];
         if score <= 0.02 {

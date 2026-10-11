@@ -194,13 +194,32 @@ pub fn person_crop(face: [f32; 4], width: u32, height: u32) -> (u32, u32, u32, u
     let right = (cx + 1.6 * fw).clamp(0.0, width as f32);
     let top = (y0 - 0.6 * fh).clamp(0.0, height as f32);
     let bottom = (y1 + 7.0 * fh).clamp(0.0, height as f32);
-    let (x, y) = (left as u32, top as u32);
+    // At least a pixel, inside the picture even for a face decoded beyond
+    // its edge (review of #655).
+    let x = (left as u32).min(width.saturating_sub(1));
+    let y = (top as u32).min(height.saturating_sub(1));
     (
         x,
         y,
-        ((right - left) as u32).max(1).min(width - x),
-        ((bottom - top) as u32).max(1).min(height - y),
+        ((right - left) as u32).clamp(1, (width - x).max(1)),
+        ((bottom - top) as u32).clamp(1, (height - y).max(1)),
     )
+}
+
+/// Whether the record gives `other` the same `clause` text in the same
+/// field: then reading it on their crop is the record's own word, never a
+/// bleed, and is not asked (review of #655).
+pub fn shared(scene: &Scene, clause: &Clause, other: usize) -> bool {
+    let Some(p) = scene.people.get(other) else {
+        return false;
+    };
+    let theirs = match clause.field.as_str() {
+        "doing" => &p.doing,
+        "wearing" => &p.wearing,
+        "expression" => &p.expression,
+        _ => return false,
+    };
+    theirs.trim().eq_ignore_ascii_case(clause.text.trim())
 }
 
 /// The identity judge's models and the library its cast is read from: the
@@ -951,6 +970,12 @@ mod tests {
         let (x, y, w, h) = person_crop([0.0, 0.0, 60.0, 60.0], 200, 300);
         assert!(x + w <= 200 && y + h <= 300, "{x} {y} {w} {h}");
         assert_eq!((x, y), (0, 0));
+        // A face decoded wholly beyond the picture still gives a pixel in it.
+        let (x, y, w, h) = person_crop([500.0, 500.0, 560.0, 560.0], 200, 300);
+        assert!(
+            w >= 1 && h >= 1 && x + w <= 200 && y + h <= 300,
+            "{x} {y} {w} {h}"
+        );
     }
 
     /// The identity judge's counts: identified over the people compared,
@@ -995,6 +1020,25 @@ mod tests {
         );
         assert!(caption(&j).iter().any(|l| l == "identified 1/2 · bleed 1"));
         assert!(clause("wearing").bleeds() && !clause("expression").bleeds());
+        // Two people the record dresses alike: the other's crop is not asked.
+        let mut a = Person {
+            who: Who::Library("a".into()),
+            at: None,
+            wearing: "A Green Raincoat".into(),
+            doing: String::new(),
+            expression: String::new(),
+            origin: Origin::Clean,
+        };
+        let scene = Scene {
+            people: vec![a.clone(), {
+                a.wearing = "a green raincoat ".into();
+                a
+            }],
+            ..Scene::default()
+        };
+        assert!(shared(&scene, &clause("wearing"), 1));
+        assert!(!shared(&scene, &clause("doing"), 1));
+        assert!(!shared(&scene, &clause("wearing"), 7));
         assert!(clause("wearing")
             .crop_question()
             .starts_with("Is the person in the middle of this picture wearing"));

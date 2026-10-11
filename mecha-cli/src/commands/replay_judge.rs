@@ -614,7 +614,11 @@ async fn judge_one(
         );
         let mut elsewhere = Vec::new();
         if clause.bleeds() {
-            for (_, other) in crops.iter().filter(|(p, _)| *p != person) {
+            // Not of someone the record gives the same words: a yes there is
+            // the record's own, not a bleed (review of #655).
+            for (_, other) in crops.iter().filter(|(p, _)| {
+                *p != person && !scene.as_ref().is_some_and(|s| rj::shared(s, &clause, *p))
+            }) {
                 elsewhere.push(verdict(
                     ask_of(provider.as_ref(), pass, other, &question).await,
                     rj::yes_no,
