@@ -63,9 +63,11 @@ A persona's page can switch its pictures to the turbo model. It draws in
 about 8 steps instead of 40, so a picture takes 10 to 15 seconds, but it is
 weaker on two people acting together. Turbo needs one more file from the
 same repository, `qwen_image_2.1_turbo_int8_convrot.safetensors`, also under
-`models/diffusion_models/` (`[image] turbo_model` names it). A persona set
-to Turbo on a server without the file is refused with a message that names
-the setting, and the setting stays until you change it. Switching between
+`models/diffusion_models/` (`[image] turbo_model` names it). The install does
+not fetch it unless asked: `mecha features enable image --turbo` does, and so
+does `mecha features enable image` once a persona's picture settings choose
+turbo. A persona set to Turbo on a server without the file is refused with a
+message naming that command, and the setting stays until you change it. Switching between
 the two models unloads the one not in use, and the first picture after a
 switch pays the load.
 
