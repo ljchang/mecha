@@ -606,6 +606,17 @@ pub(super) async fn run(
              source downloads, it compiles: minutes for the CPU, longer for CUDA."
         );
     }
+    // The speech server, when a yes brings it, is said before the one yes
+    // too: a build, and weights licensed for non-commercial use only — what
+    // `features enable` says, and only there after this question (review of
+    // #649).
+    if brings_speech(&questions, &chosen) {
+        println!(
+            "  the speech server is built on this machine from its pinned commit (about seven \
+             minutes on a GB10). {}",
+            mecha_core::speech_unit::NOTICE
+        );
+    }
     if !ask_start(read)? {
         println!("Nothing was installed or switched on. `mecha setup` asks again.");
         guided.settled.extend(settled_features(asked, &chosen, &[]));
@@ -803,6 +814,15 @@ fn pieces(p: &mecha_core::sidecar::Plan) -> Vec<(String, u64)> {
     sidecars.chain(files).collect()
 }
 
+/// Whether a yes installs the speech server: a chosen feature's plan prices
+/// it, which `install::price` does only where it is offered.
+fn brings_speech(questions: &[Question], chosen: &[Feature]) -> bool {
+    let key = format!("sidecar:{}", mecha_core::speech_unit::ID);
+    questions
+        .iter()
+        .any(|q| chosen.contains(&q.feature) && q.pieces.iter().any(|(k, _)| *k == key))
+}
+
 /// The chosen features' downloads, each piece counted once however many plans
 /// name it — llama.cpp and a shared model file alike (review of #631) — and
 /// the engine not at all when the chat install already brings it.
@@ -939,6 +959,27 @@ mod tests {
         assert_eq!(step.status, Status::Missing);
         assert!(step.detail.contains("MY_KEY"), "{}", step.detail);
         assert!(step.remedy.is_none() && !step.optional);
+    }
+
+    /// The speech server's notice is owed only where a yes brings it.
+    #[test]
+    fn the_speech_notice_follows_a_yes_that_installs_it() {
+        let q = |feature, pieces: Vec<(String, u64)>| Question {
+            feature,
+            bytes: None,
+            pieces,
+        };
+        let voice = q(Feature::Voice, vec![("sidecar:speech".into(), 391_661)]);
+        let quiet = q(Feature::Voice, vec![("sidecar:stt".into(), 1)]);
+        assert!(brings_speech(
+            std::slice::from_ref(&voice),
+            &[Feature::Voice]
+        ));
+        assert!(!brings_speech(&[voice], &[Feature::Web]), "not chosen");
+        assert!(
+            !brings_speech(&[quiet], &[Feature::Voice]),
+            "not offered here"
+        );
     }
 
     /// A GGUF must be a file; asked again until it is, Enter to give up.
