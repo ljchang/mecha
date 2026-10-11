@@ -369,23 +369,34 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
 /// `"(default)"` — so two halves of one arm could run on two models and be
 /// paired (review of #637). Refused before anything runs.
 ///
-/// Only the default provider is checked, and that is enough: an environment
-/// file may not set `default_provider` or `providers` (`MACHINE_TABLES`), and
-/// a principal may not carry `--model` (`PRINCIPAL_BLOCKED_OPTIONS`), so
-/// every trial runs the operator's default. Widen this if either changes.
-fn refuse_an_unnamed_model(cfg: &mecha_core::config::Config) -> Result<()> {
-    let name = &cfg.default_provider;
-    if cfg
-        .providers
-        .get(name)
-        .is_some_and(mecha_core::provider::router::asks_its_server)
-    {
-        anyhow::bail!(
-            "[providers.{name}] names no `model`, so each trial would run on whatever its server \
-             has loaded when it starts, and the condition hash could not say which — an \
-             experiment must name the model it measures. Set `model` in [providers.{name}] \
-             (`mecha setup --write` writes it from the server)."
-        );
+/// Every arm is checked against the provider it runs on — its own, or the
+/// operator's default — and an arm that names its `model` passes whatever
+/// that provider says (review of #637). An environment file may not set
+/// `default_provider` or `providers` (`MACHINE_TABLES`), and a principal may
+/// not carry `--model` (`PRINCIPAL_BLOCKED_OPTIONS`), so these are the only
+/// doors. Widen this if either changes.
+fn refuse_an_unnamed_model(
+    cfg: &mecha_core::config::Config,
+    arms: &std::collections::BTreeMap<String, mecha_core::experiment::Arm>,
+) -> Result<()> {
+    for (arm, a) in arms {
+        if a.model.is_some() {
+            continue;
+        }
+        let name = a.provider.as_deref().unwrap_or(&cfg.default_provider);
+        if cfg
+            .providers
+            .get(name)
+            .is_some_and(mecha_core::provider::router::asks_its_server)
+        {
+            anyhow::bail!(
+                "arm `{arm}` runs on [providers.{name}], which names no `model`, so each trial \
+                 would run on whatever its server has loaded when it starts, and the condition \
+                 hash could not say which — an experiment must name the model it measures. Set \
+                 `model` in [providers.{name}] (`mecha setup --write` writes it from the \
+                 server) or in the arm."
+            );
+        }
     }
     Ok(())
 }
@@ -437,7 +448,7 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
     );
     let cases = cases_for(&manifest).await?;
     let loaded = mecha_core::config::Config::load_global()?;
-    refuse_an_unnamed_model(&loaded)?;
+    refuse_an_unnamed_model(&loaded, &manifest.arms)?;
     let (provider, model) = provider_and_model(&loaded)?;
     let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
     // The manifest's paths resolve against the checkout `exp run` starts
@@ -2995,18 +3006,40 @@ mod tests {
                 ..Default::default()
             },
         );
-        let e = refuse_an_unnamed_model(&cfg).unwrap_err().to_string();
-        assert!(e.contains("names no `model`"), "{e}");
+        use mecha_core::experiment::Arm;
+        let arms = |a: Arm| std::collections::BTreeMap::from([("x".to_string(), a)]);
+        let plain = arms(Arm::default());
+        let e = refuse_an_unnamed_model(&cfg, &plain)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("names no `model`") && e.contains("arm `x`"),
+            "{e}"
+        );
+        // An arm that names its model passes whatever its provider says.
+        let named = arms(Arm {
+            model: Some("qwen".into()),
+            ..Arm::default()
+        });
+        assert!(refuse_an_unnamed_model(&cfg, &named).is_ok());
         cfg.providers.get_mut("local").unwrap().model = Some("qwen".into());
-        assert!(refuse_an_unnamed_model(&cfg).is_ok());
+        assert!(refuse_an_unnamed_model(&cfg, &plain).is_ok());
         // The built-in default asks too — it is what a machine with no config
         // file runs on (review of #637) — and a hosted default does not.
-        assert!(refuse_an_unnamed_model(&mecha_core::config::Config::default()).is_err());
+        let builtin = mecha_core::config::Config::default();
+        assert!(refuse_an_unnamed_model(&builtin, &plain).is_err());
         let hosted = mecha_core::config::Config {
             default_provider: "anthropic".into(),
             ..Default::default()
         };
-        assert!(refuse_an_unnamed_model(&hosted).is_ok());
+        assert!(refuse_an_unnamed_model(&hosted, &plain).is_ok());
+        // ...but an arm that runs on the model-less local entry is refused
+        // on a hosted default (review of #637).
+        let on_local = arms(Arm {
+            provider: Some("local".into()),
+            ..Arm::default()
+        });
+        assert!(refuse_an_unnamed_model(&hosted, &on_local).is_err());
     }
 
     /// A position whose home could not be rendered leaves the principal's
