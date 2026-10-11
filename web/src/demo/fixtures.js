@@ -1663,15 +1663,34 @@ export const learningReport = {
 // Characters the owner writes and talks to, apart from the assistant
 // (`persona_chat.rs`). Fiction twice over: invented people, playing parts.
 
+// A persona's picture settings as the list carries them
+// (`PersonaChats::image_view`): what the owner set, what each field resolves
+// to, and the estimate.
+const imageDefault = {
+  set: {}, defaults: { steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple' },
+  model: 'standard', steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: false, estimate_secs: 37,
+};
+const imageGuided = {
+  set: { cfg: 3, steps: 30, sampler: 'res_multistep', scheduler: 'beta', negative: true },
+  defaults: { steps: 40, cfg: 1, sampler: 'euler', scheduler: 'simple' },
+  model: 'standard', steps: 30, cfg: 3, sampler: 'res_multistep', scheduler: 'beta', negative: true, estimate_secs: 53,
+};
+
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     // Proposed from the main chat and waiting on the owner (the Waiting
     // section): the review below is what its page reads.
-    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
+    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
+  image_options: {
+    samplers: ['euler', 'euler_ancestral', 'heun', 'dpmpp_2m', 'dpmpp_2m_sde', 'res_multistep', 'uni_pc'],
+    schedulers: ['simple', 'sgm_uniform', 'karras', 'exponential', 'beta', 'normal'],
+    cfg: [1, 5, 0.5],
+    steps: [4, 60],
+  },
   unlocked: false,
   has_password: false,
 };

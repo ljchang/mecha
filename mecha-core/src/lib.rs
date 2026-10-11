@@ -131,6 +131,7 @@ pub mod router_unit;
 pub mod runlog;
 pub mod runmarker;
 pub mod sample;
+pub mod sampling;
 pub mod sandbox;
 pub mod scene;
 pub mod search;

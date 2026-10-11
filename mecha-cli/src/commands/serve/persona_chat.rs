@@ -122,6 +122,9 @@ pub struct PersonaChats {
     /// key. A finished one comes back through `delivered`, drained by the
     /// task the first turn starts (`start_delivery`).
     jobs: super::late::Jobs,
+    /// `[image] steps`: what a standard picture with no steps of its own
+    /// takes, for the settings page's estimate.
+    image_steps: u32,
 }
 
 /// A spoken turn's other end (§11): the voice facade's tap on the run's
@@ -783,7 +786,40 @@ impl PersonaChats {
             call_regenerates: StdMutex::new(HashMap::new()),
             next_regenerate: std::sync::atomic::AtomicU64::new(1),
             jobs: Default::default(),
+            image_steps: mecha_core::imagegen::ImageConfig::default().steps,
         }
+    }
+
+    /// The configured `[image] steps`, when there is an `[image]`.
+    pub fn with_image_steps(mut self, steps: Option<u32>) -> Self {
+        if let Some(steps) = steps {
+            self.image_steps = steps;
+        }
+        self
+    }
+
+    /// A persona's picture settings as the page shows them: what the owner
+    /// set, what each unset field resolves to, and about how long a picture
+    /// takes.
+    fn image_view(&self, tuning: &mecha_core::sampling::Tuning) -> serde_json::Value {
+        let s = tuning.resolve(self.image_steps);
+        // What each field is when left unset, for this model.
+        let d = mecha_core::sampling::Tuning {
+            model: tuning.model,
+            ..Default::default()
+        }
+        .resolve(self.image_steps);
+        serde_json::json!({
+            "set": tuning,
+            "defaults": {"steps": d.steps, "cfg": d.cfg, "sampler": d.sampler, "scheduler": d.scheduler},
+            "model": s.model,
+            "steps": s.steps,
+            "cfg": s.cfg,
+            "sampler": s.sampler,
+            "scheduler": s.scheduler,
+            "negative": !s.negative.is_empty(),
+            "estimate_secs": mecha_core::sampling::estimate_secs(&s),
+        })
     }
 
     /// For the assistant's chat tests, which build a `ChatState` but never
@@ -1405,6 +1441,27 @@ impl PersonaChats {
         Ok(serde_json::json!({ "touching": state.image.touching }))
     }
 
+    /// Set how this persona's pictures are sampled: the owner's settings,
+    /// each field held to its range or list (`sampling::Tuning::checked`),
+    /// written to `state.toml` and nowhere else.
+    pub fn image_settings(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        tuning: mecha_core::sampling::Tuning,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let tuning = tuning
+            .checked()
+            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        let state =
+            mecha_core::persona::set_tuning(&self.store, &p.name, tuning).map_err(failed)?;
+        Ok(serde_json::json!({ "image": self.image_view(&state.image.tuning) }))
+    }
+
     /// The personas a browsing surface may list, with what is wrong with each.
     /// `tz` is `[agent] timezone`; `None` is the machine's own zone, as
     /// `Config::timezone` documents — not UTC (review of #418).
@@ -1454,6 +1511,7 @@ impl PersonaChats {
                     // page's default framing.
                     "frame": p.state.frame,
                     "touching": p.state.image.touching,
+                    "image": self.image_view(&p.state.image.tuning),
                     "version": p.state.version,
                     "approved": p.state.status == mecha_core::persona::Status::Approved,
                     // Waiting on the owner — the page's Waiting section —
@@ -1487,6 +1545,15 @@ impl PersonaChats {
         // itself. A locked page reads exactly like one with nothing locked.
         serde_json::json!({
             "personas": rows,
+            // What the picture settings may be set to, from the one list the
+            // door checks against.
+            "image_options": {
+                "samplers": mecha_core::sampling::SAMPLERS,
+                "schedulers": mecha_core::sampling::SCHEDULERS,
+                "cfg": [mecha_core::sampling::CFG_MIN, mecha_core::sampling::CFG_MAX,
+                        mecha_core::sampling::CFG_STEP],
+                "steps": [mecha_core::sampling::STEPS_MIN, mecha_core::sampling::STEPS_MAX],
+            },
             "unlocked": unlocked,
             "has_password": mecha_core::imagelib::has_lock_password(&library.dir),
         })
@@ -3882,6 +3949,8 @@ impl PersonaChats {
                 layers: mecha_core::persona::touching(&self.store, &name)
                     == mecha_core::persona::Touching::Precise,
                 layers_posed: false,
+                // The owner's picture settings, read fresh this turn.
+                image_tuning: mecha_core::persona::tuning(&self.store, &name),
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -4757,6 +4826,61 @@ pub async fn image_touching(
     respond(
         chat.personas
             .touching(&state.library, &name, touching, body.unlock.as_deref()),
+    )
+}
+
+/// The picture settings: a model from the closed set (an unknown one is a
+/// 400 here, where the stored table reads it as standard), and the rest
+/// held to their ranges by `image_settings`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSettingsBody {
+    model: ModelValue,
+    #[serde(default)]
+    cfg: Option<f64>,
+    #[serde(default)]
+    steps: Option<u32>,
+    #[serde(default)]
+    sampler: Option<String>,
+    #[serde(default)]
+    scheduler: Option<String>,
+    #[serde(default)]
+    negative: bool,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ModelValue {
+    Standard,
+    Turbo,
+}
+
+/// POST /api/personas/{name}/image-settings
+pub async fn image_settings(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ImageSettingsBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let tuning = mecha_core::sampling::Tuning {
+        model: match body.model {
+            ModelValue::Standard => mecha_core::sampling::Model::Standard,
+            ModelValue::Turbo => mecha_core::sampling::Model::Turbo,
+        },
+        cfg: body.cfg,
+        steps: body.steps,
+        sampler: body.sampler,
+        scheduler: body.scheduler,
+        negative: body.negative,
+    };
+    respond(
+        chat.personas
+            .image_settings(&state.library, &name, tuning, body.unlock.as_deref()),
     )
 }
 
@@ -8123,6 +8247,106 @@ mod tests {
             .touching(&w.library, "mara", Touching::Single, Some(&token))
             .unwrap();
         assert_eq!(row(Some(&token))["touching"], "single");
+    }
+
+    /// The picture settings: set from the page and carried by the list with
+    /// what each unset field resolves to and the estimate, read by the host
+    /// each turn, refused out of range or off the lists, behind the lock like
+    /// every write, and an unknown model or field refused at the door
+    /// (IMAGE-DESIGN.md §16).
+    #[tokio::test]
+    async fn the_picture_settings_are_set_listed_read_and_locked() {
+        use mecha_core::sampling::{Model, Tuning};
+        let w = world();
+        let listed =
+            |token: Option<&str>| w.personas().list(&w.library, token, Some(chrono_tz::UTC));
+        let row = |token: Option<&str>| listed(token)["personas"][0]["image"].clone();
+        let image = row(None);
+        assert_eq!(
+            image["set"],
+            serde_json::json!({}),
+            "nothing set until the owner sets it"
+        );
+        assert_eq!(
+            (image["cfg"].as_f64(), image["sampler"].as_str()),
+            (Some(1.0), Some("euler"))
+        );
+        assert_eq!(image["defaults"]["steps"], 40);
+        assert!(listed(None)["image_options"]["samplers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "res_multistep"));
+        let guided = Tuning {
+            cfg: Some(3.0),
+            steps: Some(30),
+            sampler: Some("res_multistep".into()),
+            scheduler: Some("beta".into()),
+            negative: true,
+            ..Tuning::default()
+        };
+        let set = w
+            .personas()
+            .image_settings(&w.library, "mara", guided.clone(), None)
+            .unwrap();
+        assert_eq!(set["image"]["steps"], 30);
+        assert_eq!(set["image"]["negative"], true);
+        assert_eq!(row(None)["set"]["sampler"], "res_multistep");
+        assert_eq!(mecha_core::persona::tuning(&w.store(), "mara"), guided);
+        // Turbo's own steps where none are set.
+        let turbo = Tuning {
+            model: Model::Turbo,
+            ..Tuning::default()
+        };
+        let set = w
+            .personas()
+            .image_settings(&w.library, "mara", turbo, None)
+            .unwrap();
+        assert_eq!(set["image"]["steps"], mecha_core::sampling::TURBO_STEPS);
+        assert_eq!(
+            set["image"]["defaults"]["steps"],
+            mecha_core::sampling::TURBO_STEPS
+        );
+        // Out of range, off the list: refused, and nothing written.
+        for bad in [
+            Tuning {
+                cfg: Some(7.0),
+                ..Tuning::default()
+            },
+            Tuning {
+                sampler: Some("made_up".into()),
+                ..Tuning::default()
+            },
+        ] {
+            assert!(matches!(
+                w.personas().image_settings(&w.library, "mara", bad, None),
+                Err(Refusal::Bad(_))
+            ));
+        }
+        assert_eq!(
+            mecha_core::persona::tuning(&w.store(), "mara").model,
+            Model::Turbo
+        );
+        for body in [
+            serde_json::json!({"model": "hyper"}),
+            serde_json::json!({"model": "standard", "seed": 4}),
+        ] {
+            assert!(
+                serde_json::from_value::<ImageSettingsBody>(body.clone()).is_err(),
+                "{body}"
+            );
+        }
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(
+            w.personas()
+                .image_settings(&w.library, "mara", Tuning::default(), None),
+            Err(Refusal::NotFound)
+        ));
+        let token = w.library.grant_for_tests();
+        w.personas()
+            .image_settings(&w.library, "mara", Tuning::default(), Some(&token))
+            .unwrap();
+        assert_eq!(row(Some(&token))["set"], serde_json::json!({}));
     }
 
     /// A proposal from the main chat, read and approved where personas live
