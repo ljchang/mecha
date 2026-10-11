@@ -622,6 +622,11 @@ pub struct Plan {
     pub route: &'static str,
     /// Said in the result: e.g. why a restage became an edit.
     pub said: Option<String>,
+    /// Where a newcomer's clothes came from, by the name the result uses:
+    /// said after `said` unless the prompt left that person's outfit out
+    /// (`imagegen::clothes_in_act`), when the sentence would be false
+    /// (review of #647, pass 4).
+    pub clothes_said: Vec<(String, String)>,
     /// A `retouch` given beside a scene change (or for a new picture): one
     /// more line of the render, folded in rather than refused (G1b: 13 of
     /// 65 shape refusals were this).
@@ -788,6 +793,7 @@ pub fn plan(
     // say what its people do together (`imagegen::doing_words`). Stored, it
     // could not be told from one the owner wrote, and came back beside a
     // later `together` (review of #608).
+    let mut clothes_said: Vec<(String, String)> = Vec::new();
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
@@ -800,12 +806,15 @@ pub fn plan(
         if p.wearing.trim().is_empty() {
             match (worn(key), &p.who) {
                 (Some((w, from)), _) => {
-                    notes.push(format!(
-                        // Never the recorded words themselves: they may be
-                        // untrusted, and a tool result is not marked from
-                        // outside (review of #597, pass 5).
-                        "{} is wearing what this chat last drew them in.",
-                        shown(&p.who)
+                    clothes_said.push((
+                        shown(&p.who),
+                        format!(
+                            // Never the recorded words themselves: they may be
+                            // untrusted, and a tool result is not marked from
+                            // outside (review of #597, pass 5).
+                            "{} is wearing what this chat last drew them in.",
+                            shown(&p.who)
+                        ),
                     ));
                     p.wearing = w;
                     // Copied words keep where they came from: an untrusted
@@ -818,10 +827,13 @@ pub fn plan(
                 (None, Who::Library(_)) => {
                     // Absorbed, and said (mecha-a3's G1: a refusal here was
                     // the panel's most common one on a picture with no record).
-                    notes.push(format!(
-                        "{} had no clothes given or on record, so they wear clothes that suit \
+                    clothes_said.push((
+                        shown(&p.who),
+                        format!(
+                            "{} had no clothes given or on record, so they wear clothes that suit \
                          the scene.",
-                        shown(&p.who)
+                            shown(&p.who)
+                        ),
                     ));
                     p.wearing = "clothes that suit the scene".into();
                 }
@@ -943,6 +955,7 @@ pub fn plan(
         delta: delta.clone(),
         route: "new",
         said: (!notes.is_empty()).then(|| notes.join(" ")),
+        clothes_said,
         also: call
             .retouch
             .clone()
@@ -1404,7 +1417,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.next.people[0].wearing, "clothes that suit the scene");
-        assert!(p.said.unwrap().contains("John had no clothes given"));
+        assert!(p.clothes_said[0].1.contains("John had no clothes given"));
     }
 
     /// Review of #597, pass 6: a name the record carries is read as the
@@ -1810,7 +1823,10 @@ mod tests {
             (john.wearing.as_str(), john.doing.as_str()),
             ("an apron", "")
         );
-        assert!(p.said.unwrap().contains("what this chat last drew them in"));
+        assert!(p
+            .clothes_said
+            .iter()
+            .any(|(who, note)| who == "John" && note.contains("what this chat last drew them in")));
         // With `together` saying what they do, nobody is given a pose of
         // their own beside it (mecha-a3: "standing naturally" beside a kneel
         // drew her twice).

@@ -2696,31 +2696,11 @@ fn doing_words(p: &crate::scene::Person, together: bool) -> String {
     parts.join(", ")
 }
 
-/// Words that say what someone has on, or has not, in their own act ("dressed
-/// in a parka"). Matched as whole words, so a clothesline is not one.
-const DRESSING_WORDS: &[&str] = &[
-    "wearing",
-    "wears",
-    "wore",
-    "worn",
-    "dressed",
-    "undressed",
-    "naked",
-    "nude",
-    "topless",
-    "shirtless",
-    "bottomless",
-    "clothed",
-    "unclothed",
-    "clothes",
-    "clothing",
-    "outfit",
-];
-
-/// The narrower set a shared act must carry: a clothing state, never
-/// "dressed for the gala" or "soaked through their clothes", which beside a
-/// red dress is one outfit, not two (review of #647, pass 3). A shared act
-/// can reach the whole cast, so it is held to what is unambiguous.
+/// The words that say someone's clothing state: what they have on, or that
+/// they have nothing on. Never a word that names an occasion or a task with
+/// clothes in it (a gala, a suitcase being packed), which beside the
+/// outfit given is one outfit, not two (review of #647, passes 3 and 4).
+/// Matched as whole words, so a clothesline is not one.
 const STATE_WORDS: &[&str] = &[
     "wearing",
     "wears",
@@ -2735,16 +2715,29 @@ const STATE_WORDS: &[&str] = &[
     "unclothed",
 ];
 
-fn says_any(text: &str, words: &[&str]) -> bool {
-    text.to_lowercase()
+/// Whether `text` states a clothing state: one of [`STATE_WORDS`], or
+/// "dressed in" / "clothed in", which name the clothes ("dressed in a
+/// parka").
+fn states_clothing(text: &str) -> bool {
+    let words: Vec<String> = text
+        .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
-        .any(|w| words.contains(&w))
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    words.iter().any(|w| STATE_WORDS.contains(&w.as_str()))
+        || words
+            .windows(2)
+            .any(|w| matches!(w[0].as_str(), "dressed" | "clothed") && w[1] == "in")
 }
 
-/// Whether a person's act already says what they have on: their own words
-/// (`doing`, a split part included), or the shared act when it names them
-/// or names nobody in the picture. Then the prompt states no outfit beside
-/// it. Whatever filled `wearing` (the call, the reader, the record, or a
+/// Whether a person's act already says what they have on. That is their own
+/// words (`doing`, a split part included, never their expression), or a
+/// shared text when it names them or names nobody in the picture: the
+/// `together`, and a retouch pasted into the same prompt. Then the prompt
+/// states no outfit beside it.
+///
+/// Whatever filled `wearing` (the call, the reader, the record, or a
 /// newcomer's default), a second outfit beside "wearing jeans pulled down"
 /// is a dressed and an undressed person in one sentence, which the image
 /// model drew as two (mecha-a3, 2026-10-11, on a94a0a076). The record keeps
@@ -2752,11 +2745,13 @@ fn says_any(text: &str, words: &[&str]) -> bool {
 ///
 /// Except an outfit the call itself gave this turn (`asked`): the call's
 /// own words are kept, so only a field refilled by the reader, the record
-/// or a default yields to the act (review of #647, pass 3).
+/// or a default yields to the act (review of #647, pass 3). A shared act
+/// naming two people holds back both: which person a clause dresses is not
+/// attempted, and the lost outfit is the cheaper mistake than two figures.
 fn clothes_in_act(
     p: &crate::scene::Person,
-    doing: &str,
-    together: Option<&str>,
+    own: &str,
+    shared: &[Option<&str>],
     everyone: &[&crate::scene::Person],
     asked: &std::collections::BTreeSet<String>,
 ) -> bool {
@@ -2768,10 +2763,11 @@ fn clothes_in_act(
             .iter()
             .any(|n| !crate::layers::word_spans(t, n).is_empty())
     };
-    says_any(doing, DRESSING_WORDS)
-        || together.is_some_and(|t| {
-            says_any(t, STATE_WORDS) && (named(t, p) || everyone.iter().all(|q| !named(t, q)))
-        })
+    states_clothing(own)
+        || shared
+            .iter()
+            .flatten()
+            .any(|t| states_clothing(t) && (named(t, p) || everyone.iter().all(|q| !named(t, q))))
 }
 
 /// A person as an edit prompt states them: name, library description,
@@ -3384,7 +3380,13 @@ impl Tool for ImageGenerate {
                     let shared = words.together.as_ref().map(|f| f.value.as_str());
                     for p in people {
                         let doing = doing_words(p, together);
-                        let kept = clothes_in_act(p, &doing, shared, &everyone, &asked_wearing);
+                        let kept = clothes_in_act(
+                            p,
+                            &p.doing,
+                            &[shared, plan.also.as_deref()],
+                            &everyone,
+                            &asked_wearing,
+                        );
                         // Library people only: a described person's name is
                         // their description, and the manifest never carries
                         // scene words (review of #647, pass 3).
@@ -3877,8 +3879,11 @@ impl Tool for ImageGenerate {
                         .unwrap_or_default();
                     let in_act = clothes_in_act(
                         p,
-                        &doing_words(p, together),
-                        plan.next.together.as_ref().map(|f| f.value.as_str()),
+                        &p.doing,
+                        &[
+                            plan.next.together.as_ref().map(|f| f.value.as_str()),
+                            plan.also.as_deref(),
+                        ],
                         &everyone,
                         &asked_wearing,
                     );
@@ -4439,6 +4444,15 @@ impl Tool for ImageGenerate {
             if let Some(said) = &plan.said {
                 text.push(' ');
                 text.push_str(said);
+            }
+            // Where a newcomer's clothes came from, unless the prompt left
+            // them out: then the sentence would tell the model something the
+            // picture does not show (review of #647, pass 4).
+            for (who, note) in &plan.clothes_said {
+                if layered.is_some() || !clothes_said.contains(who) {
+                    text.push(' ');
+                    text.push_str(note);
+                }
             }
             for d in &dropped {
                 text.push(' ');
@@ -8858,7 +8872,8 @@ mod tests {
         let (maya, john) = (person("maya"), person("john"));
         let both = [&maya, &john];
         let none = std::collections::BTreeSet::new();
-        let act = |p, doing, together| clothes_in_act(p, doing, together, &both, &none);
+        let act =
+            |p, doing, together: Option<&str>| clothes_in_act(p, doing, &[together], &both, &none);
         assert!(act(&maya, "wearing her raincoat unbuttoned", None));
         assert!(
             act(&maya, "dressed in a parka, waving", None),
@@ -8882,12 +8897,25 @@ mod tests {
             Some("they are dressed for the gala, dancing")
         ));
         assert!(!act(&maya, "", Some("both soaked through their clothes")));
+        // The same in a person's own act: a task or an occasion is not a
+        // clothing state (review of #647, pass 4).
+        assert!(!act(&maya, "folding clothes into a suitcase", None));
+        assert!(!act(&maya, "dressed for the gala, dancing", None));
+        assert!(!act(&maya, "showing off her new outfit", None));
+        // A retouch pasted into the same prompt is a shared text too.
+        assert!(clothes_in_act(
+            &maya,
+            "",
+            &[None, Some("she is topless now")],
+            &both,
+            &none
+        ));
         // An outfit the call itself gave this turn is never left out.
         let asked = std::collections::BTreeSet::from(["maya".to_string()]);
         assert!(!clothes_in_act(
             &maya,
             "wearing her raincoat unbuttoned",
-            None,
+            &[None],
             &both,
             &asked
         ));
@@ -8900,7 +8928,7 @@ mod tests {
     /// `wearing` whatever the act said (review of #647).
     #[tokio::test]
     async fn an_act_that_dresses_its_person_draws_one_outfit_and_says_so() {
-        let (url, seen) = distinct(4).await;
+        let (url, seen) = distinct(5).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -8928,6 +8956,13 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["clothes_in_act"],
             json!(["Maya"])
+        );
+        // The result never tells the model she wears the default the prompt
+        // left out (review of #647, pass 4).
+        assert!(
+            !out.content.contains("Maya had no clothes given"),
+            "{}",
+            out.content
         );
 
         // On the record in a raincoat, then an act that dresses her: the
@@ -8987,6 +9022,25 @@ mod tests {
         assert!(prompt.contains("soaked overcoat"), "{prompt}");
         assert!(!prompt.contains("clothes that suit the scene"), "{prompt}");
         assert!(manifest_of(&dir, &out.content)["clothes_in_act"].is_null());
+
+        // A retouch in the same prompt that states a clothing state is a
+        // shared act too (review of #647, pass 4).
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a sunny terrace", "people": [
+                    {"who": "maya", "doing": "stretching"}]},
+                       "retouch": "she is topless now"}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let prompt = last_prompt(&seen);
+        assert!(!prompt.contains("clothes that suit the scene"), "{prompt}");
+        assert_eq!(
+            manifest_of(&dir, &out.content)["clothes_in_act"],
+            json!(["Maya"])
+        );
     }
 
     /// A reader that answers as told, standing in for the persona host's.
