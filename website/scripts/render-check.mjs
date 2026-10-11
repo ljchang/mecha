@@ -85,6 +85,9 @@ const ROUTES = [
   'settings/charter',
   'settings/learning',
   'settings/voice',
+  // A dashboard is a hash suffix too, and it is where the renderer lives;
+  // `#hud` alone draws only the list.
+  'hud/lab_week',
 ];
 
 // Enough that a shell-plus-nav crash cannot clear it. The nav alone is about

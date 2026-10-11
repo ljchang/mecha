@@ -5950,6 +5950,26 @@ the owner's rulings; this section is the invariants a change to
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
   joined, and an installed id is never overwritten.
+- **The renderer is ours, and nothing agent-authored executes in it**
+  (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
+  inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
+  Dataset values reach the DOM as text only, tooltips included (our handler
+  writes text nodes; vega-tooltip's assigns HTML). Text panels go through
+  `mail-markdown.js` with a link rendered as its words. `vega-embed` always
+  runs with `actions: false` (its menu posts the spec, rows included, to
+  another site) and `ast: true` (the interpreter, never `Function`).
+- **Filters narrow rows in the host** (`applyFilters`), so a chart obeys a
+  filter without naming it; rows reach Vega before compile through the
+  view's `datasets`, which only the host fills.
+- **One component, two builds.** The app loads the renderer on `#hud` only
+  (Vega is a lazy chunk); `npm run build:hud` makes the standalone `hud.js`
+  + `hud.css` a page serves beside `hud.json` and `data/<name>.json`. The
+  page owns `html`/`body`, the component only itself.
+- **The routes are read-only, and a URL segment reaches no path on its own
+  say-so** (`serve/hud.rs`): `{id}` must be a board the store lists and
+  `{name}` a dataset the loaded, checked spec declares. A spec edited by hand
+  into a refusal is a 422, never drawn. A dataset carries an `ETag` of its
+  generation and `generated_at`, so a poll costs a 304.
 
 ## System state
 
