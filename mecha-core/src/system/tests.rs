@@ -58,6 +58,7 @@ fn units_map_to_categories_and_anything_else_is_other() {
         ("llama-embed-proxy.service", Category::Embeddings),
         ("llama-ocr.service", Category::Ocr),
         ("comfyui.service", Category::ImageGen),
+        ("mecha-comfyui.service", Category::ImageGen),
         ("mecha-comfyui-idle-reset.service", Category::ImageGen),
         ("mecha-breeze-tts.service", Category::Voice),
         ("mecha-voice-worker.service", Category::Voice),

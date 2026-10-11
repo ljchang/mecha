@@ -468,7 +468,7 @@ fn listed_models(info: &serde_json::Value) -> Vec<String> {
 /// the install serves. A table the owner wrote is never edited: `Ok(false)`,
 /// and the caller says the one line to add. In place through `toml_edit`, so
 /// the file's comments stay (`feature::write_switches`' reason).
-pub fn write_image_table(path: &Path, mecha_home: &Path) -> Result<bool> {
+pub fn write_image_table(path: &Path, temp: Option<&Path>) -> Result<bool> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -480,11 +480,15 @@ pub fn write_image_table(path: &Path, mecha_home: &Path) -> Result<bool> {
     if doc.contains_key("image") {
         return Ok(false);
     }
+    // An empty table registers the tool on its defaults (`:8188`); the temp
+    // dir is named only where it is known — this install's (review of #645).
     let mut table = toml_edit::Table::new();
-    table.insert(
-        "server_temp_dir",
-        toml_edit::value(server_temp_dir(mecha_home).display().to_string()),
-    );
+    if let Some(temp) = temp {
+        table.insert(
+            "server_temp_dir",
+            toml_edit::value(temp.display().to_string()),
+        );
+    }
     doc.insert("image", toml_edit::Item::Table(table));
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -740,11 +744,11 @@ mod tests {
         let path = root.join("config.toml");
         let home = root.join(".mecha");
         std::fs::write(&path, "# mine\ndefault_provider = \"local\"\n").unwrap();
-        let wrote = write_image_table(&path, &home).unwrap();
+        let wrote = write_image_table(&path, Some(&server_temp_dir(&home))).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let owned = root.join("owned.toml");
         std::fs::write(&owned, "[image]\nurl = \"http://127.0.0.1:9000\"\n").unwrap();
-        let left = write_image_table(&owned, &home).unwrap();
+        let left = write_image_table(&owned, Some(&server_temp_dir(&home))).unwrap();
         let owned_text = std::fs::read_to_string(&owned).unwrap();
         let _ = std::fs::remove_dir_all(&root);
         assert!(wrote && !left);
