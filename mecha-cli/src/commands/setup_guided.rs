@@ -597,6 +597,15 @@ pub(super) async fn run(
         return Ok(guided);
     }
     print!("{}", summary(&chat, chat_bytes, &chosen, total));
+    // A build here is said before the yes, as `setup chat` and `features
+    // enable` say it: the figure above is its source, and the compile is the
+    // wait (review of #643).
+    if engine_for_chat > 0 && ready.as_ref().is_some_and(|r| r.engine_built) {
+        println!(
+            "  llama.cpp is built on this machine — no release build fits it — so after its \
+             source downloads, it compiles: minutes for the CPU, longer for CUDA."
+        );
+    }
     if !ask_start(read)? {
         println!("Nothing was installed or switched on. `mecha setup` asks again.");
         guided.settled.extend(settled_features(asked, &chosen, &[]));
