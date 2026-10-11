@@ -252,7 +252,10 @@ pub struct Summary {
     /// picture was read as showing: what the edit drew.
     pub clauses_drawn: Counted,
     pub roles_applied: Counted,
+    /// Over the edits only (a new picture has no base), so with how many:
+    /// two arms with different mixes of edits are read by both numbers.
     pub layout_similarity_mean: Option<f64>,
+    pub layouts: usize,
 }
 
 pub fn summarise(judged: &[Judgement]) -> Summary {
@@ -280,6 +283,7 @@ pub fn summarise(judged: &[Judgement]) -> Summary {
         roles_applied: Counted::of(judged.iter().filter_map(Judgement::roles_applied)),
         layout_similarity_mean: (!layouts.is_empty())
             .then(|| layouts.iter().sum::<f64>() / layouts.len() as f64),
+        layouts: layouts.len(),
     }
 }
 
@@ -485,6 +489,7 @@ mod tests {
         assert_eq!((s.clauses_drawn.hits, s.clauses_drawn.of), (1, 2));
         assert_eq!((s.roles_applied.hits, s.roles_applied.of), (1, 2));
         assert!((s.layout_similarity_mean.unwrap() - 0.7).abs() < 1e-9);
+        assert_eq!(s.layouts, 2);
         assert_eq!(
             summarise(&[]).clauses_shown.rate,
             None,
