@@ -58,6 +58,9 @@ mod preview;
 mod proposals;
 mod questions;
 mod review;
+// The terminal review of a dashboard publish prints the same loader rows the
+// web outbox shows, from the same producer (review of #651).
+pub(crate) use review::dashboard_loaders;
 mod settings;
 
 #[derive(clap::Args, Debug)]

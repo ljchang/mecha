@@ -668,17 +668,40 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
         // opening the page, so lead with where it is; the arguments follow as
         // the smaller half rather than as the thing under review.
         OutboxKind::Publish => {
+            let dashboard = item.args["id"]
+                .as_str()
+                .and_then(|i| i.strip_prefix("hud-"))
+                .filter(|b| {
+                    !b.is_empty()
+                        && mecha_core::outbox::Author::parse(&item.author)
+                            == mecha_core::outbox::Author::Harness
+                });
             for (label, path) in local_paths(&item.args, item.workspace.as_deref()) {
                 println!("\n{label}: {}", path.display());
                 if let Some(entry) = entry_point(&path) {
                     println!("open  {}", entry.display());
                 }
                 if !path.exists() {
-                    println!(
-                        "  ⚠ gone — this was rendered into a run's work directory, \
-                         which retention may since have swept. Re-render before \
-                         releasing."
-                    );
+                    match dashboard {
+                        Some(board) => println!(
+                            "  ⚠ gone — the staged bundle was removed. \
+                             `mecha hud publish {board}` stages a new one; reject this."
+                        ),
+                        None => println!(
+                            "  ⚠ gone — this was rendered into a run's work directory, \
+                             which retention may since have swept. Re-render before \
+                             releasing."
+                        ),
+                    }
+                }
+            }
+            // A dashboard releases more than a page: every refresh after it
+            // pushes these queries' rows unreviewed, so the queries and their
+            // marks are the review, here as in the web outbox (TRIFECTA.md,
+            // "Scheduled pushes").
+            if dashboard.is_some() {
+                for line in loader_lines(&crate::commands::serve::dashboard_loaders(&item)) {
+                    println!("{line}");
                 }
             }
             println!("\nwhat a release would publish:");
@@ -730,6 +753,40 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A dashboard publish's loaders as the terminal shows them: what each
+/// refresh will run and publish after the release, with the web outbox's two
+/// marks. Unreadable is said, never an empty list.
+fn loader_lines(loaders: &serde_json::Value) -> Vec<String> {
+    let Some(loaders) = loaders.as_array() else {
+        return vec![
+            "\n⚠ the queries this releases could not be read — check the board with \
+             `mecha hud list` before releasing"
+                .to_string(),
+        ];
+    };
+    let mut lines = vec![
+        "\nwhat each refresh will run and publish, unreviewed, after this release:".to_string(),
+    ];
+    for l in loaders {
+        let mut head = format!(
+            "  {}  from {}, {}",
+            l["name"].as_str().unwrap_or("?"),
+            l["source"].as_str().unwrap_or("?"),
+            l["schedule"].as_str().unwrap_or("?"),
+        );
+        // Unknown is third-party, as the producer already decided.
+        if l["external"].as_bool() != Some(false) {
+            head.push_str("  ⚠ THIRD-PARTY CONTENT: published under your name as is");
+        }
+        if l["changed_since_staged"].as_bool() != Some(false) {
+            head.push_str("  ⚠ CHANGED SINCE STAGED: never pushed to this release");
+        }
+        lines.push(head);
+        lines.push(indent(l["query"].as_str().unwrap_or("")));
+    }
+    lines
 }
 
 /// What the draft is answering, or nothing when it cannot be found.
@@ -1578,6 +1635,36 @@ fn indent(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The terminal review of a dashboard carries the web outbox's marks,
+    /// and an unknown mark or an unreadable list is never a clean one.
+    #[test]
+    fn a_dashboards_terminal_review_shows_each_query_and_its_marks() {
+        let lines = super::loader_lines(&serde_json::json!([
+            {"name": "visits", "source": "lab", "schedule": "0 * * * *",
+             "query": "SELECT n FROM visits", "external": false, "changed_since_staged": false},
+            {"name": "posts", "source": "feed", "schedule": "*/5 * * * *",
+             "query": "SELECT title FROM posts", "external": true, "changed_since_staged": true},
+            {"name": "odd", "source": "x", "schedule": "y", "query": "z"},
+        ]))
+        .join("\n");
+        assert!(lines.contains("SELECT n FROM visits"), "{lines}");
+        let marked = |name: &str| {
+            lines
+                .lines()
+                .find(|l| l.trim_start().starts_with(name))
+                .unwrap()
+                .to_string()
+        };
+        assert!(!marked("visits").contains('⚠'), "{lines}");
+        assert!(marked("posts").contains("THIRD-PARTY"), "{lines}");
+        assert!(marked("posts").contains("CHANGED SINCE STAGED"), "{lines}");
+        assert!(
+            marked("odd").contains("THIRD-PARTY"),
+            "unknown is third-party"
+        );
+        assert!(super::loader_lines(&serde_json::Value::Null)[0].contains("could not be read"));
+    }
+
     /// The drafting line counts structurally — a run's shell can approve its
     /// own draft unchanged — so it never reads as the owner's approval
     /// ("sent as drafted" did; review of #352).

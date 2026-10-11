@@ -353,9 +353,13 @@ fn push_published(
         let mut pushed = match Pushed::read(&dir) {
             Ok(pushed) => pushed,
             Err(e) => {
+                // Both halves, or the next tick finds the same torn file: the
+                // local record, then the box's counters (review of #651).
                 eprintln!(
                     "{id}: the record of what was pushed is unreadable, so nothing is pushed \
-                     ({e:#}); if it is lost, `factory-publish dataset reset {}` starts over",
+                     ({e:#}); to start over, `rm {}` and then \
+                     `factory-publish dataset reset {}`",
+                    dir.join("pushed.json").display(),
                     published.bundle
                 );
                 unpushed += 1;
