@@ -1906,6 +1906,7 @@ for (let d = 0; d < 7; d++) {
   });
 }
 export const hudBoards = {
+  proposals: [],
   boards: [
     {
       id: 'lab_week',

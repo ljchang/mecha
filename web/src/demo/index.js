@@ -90,6 +90,9 @@ export const ROUTES = [
         ? fx.hudData[name]
         : new Response(`"${name}" has not been produced yet`, { status: 404 }),
   ],
+  // Proposed boards (`hud_propose`): the demo has none, and keeps no accept.
+  ['GET', /^\/api\/hud-proposals\/([^/]+)(\/data\/[^/]+)?$/, (_url, [id]) => new Response(`no proposal "${id}"`, { status: 404 })],
+  ['POST', /^\/api\/hud-proposals\/[^/]+\/[^/]+$/, () => new Response('the demo installs no dashboards', { status: 501 })],
   ['GET', /^\/api\/summary$/, () => fx.summary],
   ['GET', /^\/api\/today$/, () => ({
     as_of: new Date().toISOString(),

@@ -4890,6 +4890,9 @@ impl Agent {
         // *blocks* a send, never marks the conversation — the real taint is
         // still recorded from what actually came back.
         let mut turn_taint = *taint;
+        // What was recorded before this batch: authorship, not reach
+        // (`ToolCtx::recorded_taint`).
+        let recorded_taint = *taint;
         // And a job still out from an earlier turn (`JobSink::pending_tools`):
         // its result has not arrived, so its declared reach gates this turn's
         // sends as the result would — and arms nothing, since it may come back
@@ -5769,6 +5772,7 @@ impl Agent {
                 let tool_ctx = Arc::new(ToolCtx {
                     call_id: Some(id.clone()),
                     taint: Some(turn_taint),
+                    recorded_taint: Some(recorded_taint),
                     context,
                     work: Some(work),
                     ..(*cx.tools).clone()
@@ -6933,6 +6937,82 @@ mod tests {
                 "the prefix compaction and the miner key on: {content}"
             ),
             other => panic!("expected a tool result, got {other:?}"),
+        }
+    }
+
+    /// A proposal records what the conversation had read when the model wrote
+    /// it — not the turn's conservative union, which folds in the reach of
+    /// every tool in the batch, a preview beside it included. Through the
+    /// real loop, because a hand-built `ToolCtx` cannot show which value the
+    /// loop stamps where (review of #659, pass 3).
+    #[tokio::test]
+    async fn a_proposals_origin_is_what_the_conversation_had_read_before_the_turn() {
+        use crate::hud::Store;
+        use crate::imagelib::Origin;
+        use crate::tool::hud::{HudPreview, HudPropose};
+
+        for (tainted, expect) in [(false, Origin::ModelClean), (true, Origin::ModelUntrusted)] {
+            let root =
+                std::env::temp_dir().join(format!("mecha-hud-origin-{}", uuid::Uuid::new_v4()));
+            let hud = root.join("hud");
+            std::fs::create_dir_all(&hud).unwrap();
+            let db = root.join("lab.sqlite");
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .execute_batch("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1);")
+                .unwrap();
+            std::fs::write(
+                hud.join("sources.toml"),
+                format!(
+                    "[source.lab]\nkind = \"sqlite\"\npath = \"{}\"\ncontent = \"owner\"\n",
+                    db.display()
+                ),
+            )
+            .unwrap();
+            let store = Store::at(&hud);
+            let draft = json!({
+                "id": "lab",
+                "spec": {"version": 1, "title": "Lab", "datasets": ["n"],
+                         "panels": [{"type": "kpi", "title": "N", "dataset": "n",
+                                     "value": {"op": "sum", "field": "n"}}]},
+                "loaders": {"n": "source = \"lab\"\nschedule = \"* * * * *\"\nmax_rows = 10\n\
+                    query = \"SELECT n FROM t\"\n[[column]]\nname = \"n\"\ntype = \"integer\"\n"}
+            });
+            let (agent, _) = agent_with_tools(
+                vec![
+                    assistant(
+                        vec![
+                            Block::ToolUse {
+                                id: "p1".into(),
+                                name: "hud_preview".into(),
+                                input: draft.clone(),
+                            },
+                            Block::ToolUse {
+                                id: "p2".into(),
+                                name: "hud_propose".into(),
+                                input: draft.clone(),
+                            },
+                        ],
+                        StopReason::ToolUse,
+                    ),
+                    assistant(vec![Block::text("proposed")], StopReason::EndTurn),
+                ],
+                vec![
+                    Arc::new(HudPreview::new(store.clone())),
+                    Arc::new(HudPropose::new(store.clone())),
+                ],
+                PermissionMode::ReadOnly,
+            );
+            let mut convo = Conversation::from(vec![Message::user("draft a board")]);
+            convo.taint.untrusted = tainted;
+            agent.run(&mut convo, None).await.unwrap();
+            let p = store
+                .proposal("lab")
+                .unwrap()
+                .expect("proposed in a read-only run")
+                .unwrap();
+            assert_eq!(p.meta.origin, expect, "conversation tainted: {tainted}");
+            let _ = std::fs::remove_dir_all(&root);
         }
     }
 
