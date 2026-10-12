@@ -15,6 +15,7 @@ pub mod persona_propose;
 pub mod profile;
 pub mod recall;
 pub mod skill;
+pub mod system_read;
 pub mod todo;
 
 use crate::config::{PermissionMode, SecurityConfig, ToolsConfig};

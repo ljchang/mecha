@@ -1144,6 +1144,7 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         "incognito",
         "frontdoor",
         "messages",
+        "system",
     ];
     let plan = steps(&mecha(&home, &["setup", "--json"]));
     for id in features {
@@ -1241,6 +1242,7 @@ fn the_closing_note_names_each_way_back() {
         "frontdoor",
         // Once a `false` here read as unanswered and stayed outstanding.
         "messages",
+        "system",
     ]
     .iter()
     .map(|id| format!("{id} = false\n"))
@@ -1271,5 +1273,21 @@ fn the_closing_note_names_each_way_back() {
     assert!(
         lines[at - 1].trim().is_empty(),
         "set apart from `Next:`, not a fourth item of it:\n{text}"
+    );
+}
+
+/// `mecha system read` with a name that is not a measurement says so on
+/// stdout and exits non-zero. Its answer has no trailing newline and
+/// `exit_with` skips main's flush, so it once printed nothing (review of #660).
+#[test]
+fn a_refused_system_read_prints_why() {
+    let home = Home::new("system-read-refused");
+    let out = mecha(&home, &["system", "read", "disk.free"]);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("No measurement is named"), "stdout: {text:?}");
+    assert!(
+        text.contains("disk.root.used"),
+        "the names are listed: {text}"
     );
 }
