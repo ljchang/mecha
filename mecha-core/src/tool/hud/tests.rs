@@ -464,11 +464,12 @@ async fn a_clean_draft_is_drawn_and_attached() {
         mecha: built_mecha.unwrap(),
         ..crate::hud::render::Renderer::find().unwrap()
     };
-    let png = f
+    let shot = f
         .store
         .picture(&draft, &preview, &renderer, &with, chrono::Utc::now())
         .unwrap();
-    let img = image::load_from_memory(&png).unwrap();
+    assert!(!shot.cut, "a one-panel board fits");
+    let img = image::load_from_memory(&shot.png).unwrap();
     assert_eq!(img.width(), crate::hud::render::WIDTH);
     assert!(img.height() > 100, "the board was drawn, not a blank page");
 }

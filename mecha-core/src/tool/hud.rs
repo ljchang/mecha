@@ -615,11 +615,19 @@ impl Tool for HudPreview {
                         "(No picture until the draft passes and every loader runs.)\n",
                     ),
                     (Some(look), true) => match draw(&store, &draft, &preview, look) {
-                        Ok(block) => {
+                        Ok((block, cut)) => {
                             out.push_str(
                                 "The dashboard as drawn is attached: check every panel shows \
                                  what it should.\n",
                             );
+                            if cut {
+                                let _ = writeln!(
+                                    out,
+                                    "! The board is taller than the {} px picture: panels \
+                                     below it are cut off and not shown.",
+                                    crate::hud::render::HEIGHT
+                                );
+                            }
                             picture = Some(block);
                         }
                         Err(why) => {
@@ -657,7 +665,7 @@ fn draw(
     draft: &Draft,
     preview: &Preview,
     look: &Look,
-) -> std::result::Result<crate::message::Block, String> {
+) -> std::result::Result<(crate::message::Block, bool), String> {
     let with = crate::hud::render::Renderer::find()?;
     if !look.renderer.join("hud.js").is_file() {
         return Err(format!(
@@ -665,11 +673,12 @@ fn draw(
             look.renderer.display()
         ));
     }
-    let png = store
+    let shot = store
         .picture(draft, preview, &look.renderer, &with, chrono::Utc::now())
         .map_err(|e| format!("it could not be drawn: {e:#}"))?;
-    crate::image::rendered_block(&png, Some(format!("{}.png", draft.id())))
-        .map_err(|e| format!("the screenshot could not be attached: {e:#}"))
+    let block = crate::image::rendered_block(&shot.png, Some(format!("{}.png", draft.id())))
+        .map_err(|e| format!("the screenshot could not be attached: {e:#}"))?;
+    Ok((block, shot.cut))
 }
 
 /// The draft under `id`: a waiting proposal first, else the installed board.

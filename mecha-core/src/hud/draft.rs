@@ -447,7 +447,7 @@ impl Store {
         renderer: &Path,
         with: &super::render::Renderer,
         now: DateTime<Utc>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<super::render::Cropped> {
         anyhow::ensure!(preview.is_clean(), "only a clean preview is drawn");
         let scratch = Scratch::new(self)?;
         let dir = scratch.0.join("draft").join(draft.id());
