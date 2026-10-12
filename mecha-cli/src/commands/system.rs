@@ -203,7 +203,8 @@ fn sample(json: bool) -> Result<()> {
             .flatten()
             .collect::<Vec<_>>()
             .join(", ");
-            println!("  {:<17} {mem:>11}  {what}  {speed}", m.kind);
+            let line = format!("  {:<17} {mem:>11}  {what}  {speed}", m.kind);
+            println!("{}", line.trim_end());
         }
     }
     Ok(())

@@ -127,7 +127,10 @@ pub const SERVERS: [Server; 6] = [
     Server {
         kind: ModelKind::TextToSpeech,
         units: &["mecha-breeze-tts"],
-        name: NameFrom::Env("BREEZE_GGUF"),
+        // `--model`, which both the hand-installed unit (through
+        // `${BREEZE_GGUF}`) and the one `features enable voice` ships pass;
+        // only the first sets the variable (review of #658).
+        name: NameFrom::ModelArg,
     },
     Server {
         kind: ModelKind::Image,
@@ -212,7 +215,7 @@ pub struct ModelLoad {
 /// length. Empty is `None`.
 pub fn clean_name(raw: &str) -> Option<String> {
     let base = raw.trim().trim_end_matches('/');
-    let base = base.rsplit('/').next().unwrap_or(base);
+    let base = base.rsplit('/').next().unwrap_or_default();
     let base = [".gguf", ".safetensors", ".onnx", ".bin"]
         .iter()
         .find_map(|ext| base.strip_suffix(ext))
@@ -335,7 +338,10 @@ pub fn router_view(body: Option<&str>) -> RouterView {
                 .position(|a| a == "--port")
                 .and_then(|i| args.get(i + 1).map(String::as_str))
                 .or_else(|| args.iter().find_map(|a| a.strip_prefix("--port=")))
-                .and_then(|p| p.parse().ok());
+                .and_then(|p| p.parse().ok())
+                // `--port 0` is a preset asking for an ephemeral port, not
+                // the one its lines are prefixed with (review of #658).
+                .filter(|p: &u16| *p != 0);
             Some((clean_name(&m.id)?, port))
         })
         .collect();
@@ -574,6 +580,10 @@ pub fn collect(
             let mut ports: Option<Vec<u16>> = None;
             let mut unattributable = false;
             let mut known = true;
+            // A stopped router's lines belong to no model this row names.
+            if server.name == NameFrom::Router && !st.running {
+                unattributable = true;
+            }
             let model = if !st.running {
                 None
             } else {
