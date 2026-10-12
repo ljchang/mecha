@@ -1570,30 +1570,36 @@ async fn prepare_tools_carrying(
     // anything. The store is global only (`~/.mecha/hud`), as the library's
     // is. `[tools]` narrows them like any builtin: `hud_propose` writes into
     // the mecha home with no approver, so its off switch must work.
-    if let Ok(store) = mecha_core::hud::Store::open() {
-        let has_source = matches!(store.sources(), Ok(Ok(s)) if s.names().next().is_some());
-        if has_source {
-            use mecha_core::tool::hud::{HudPreview, HudPropose, HudSources};
-            let asked = |name: &str| {
-                (opts.tools.is_empty() || asked_for(name)) && cfg.tools.registers(name)
-            };
-            if asked("hud_sources") {
-                registry.insert(Arc::new(HudSources::new(store.clone())));
-            }
-            if asked("hud_preview") {
-                registry.insert(Arc::new(HudPreview::new(store.clone())));
-            }
-            if asked("hud_propose") {
-                registry.insert(Arc::new(HudPropose::new(store)));
-            }
-        } else if ["hud_sources", "hud_preview", "hud_propose"]
-            .iter()
-            .any(|t| asked_for(t))
-        {
-            eprintln!(
-                "mecha: the dashboard tools are not registered — no source is registered in \
+    let hud_named = ["hud_sources", "hud_preview", "hud_propose"]
+        .iter()
+        .any(|t| asked_for(t));
+    match mecha_core::hud::Store::open() {
+        Err(e) if hud_named => {
+            eprintln!("mecha: the dashboard tools are not registered — {e:#}")
+        }
+        Err(_) => {}
+        Ok(store) => {
+            let has_source = matches!(store.sources(), Ok(Ok(s)) if s.names().next().is_some());
+            if has_source {
+                use mecha_core::tool::hud::{HudPreview, HudPropose, HudSources};
+                let asked = |name: &str| {
+                    (opts.tools.is_empty() || asked_for(name)) && cfg.tools.registers(name)
+                };
+                if asked("hud_sources") {
+                    registry.insert(Arc::new(HudSources::new(store.clone())));
+                }
+                if asked("hud_preview") {
+                    registry.insert(Arc::new(HudPreview::new(store.clone())));
+                }
+                if asked("hud_propose") {
+                    registry.insert(Arc::new(HudPropose::new(store)));
+                }
+            } else if hud_named {
+                eprintln!(
+                    "mecha: the dashboard tools are not registered — no source is registered in \
                  ~/.mecha/hud/sources.toml"
-            );
+                );
+            }
         }
     }
     // `image_view` reaches no server, so it is not `[image]`'s: it is how any

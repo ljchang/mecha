@@ -613,10 +613,10 @@ impl Store {
         };
         std::fs::remove_dir_all(&dir)
             .with_context(|| format!("clearing the accepted proposal {id:?}"))?;
-        let refreshed = match self.refresh(id, now, Which::All)? {
-            Ok(outcomes) => outcomes,
-            Err(r) => return Ok(Err(r)),
-        };
+        // Installed now, whatever the refresh says: a board that does not
+        // load here is the refresh's finding (`mecha hud list`), never a
+        // refusal of an accept that already landed (review of #659).
+        let refreshed = self.refresh(id, now, Which::All)?.unwrap_or_default();
         Ok(Ok(Accepted {
             installed,
             replaced: proposal.replaces,
@@ -657,6 +657,11 @@ impl Store {
             std::fs::remove_dir_all(&staging)?;
         }
         crate::create_private_dir(&staging.join("loaders"))?;
+        // The lock a refresh takes is a file in the board's directory, so
+        // once `staging` is renamed into place a refresh would lock a fresh
+        // file there: lock the one that travels with it too, and hold both
+        // until the replacement is recorded (review of #659).
+        let _new_lock = super::store::lock(&staging)?;
         std::fs::copy(draft.join("hud.json"), staging.join("hud.json"))?;
         for name in installed.loaders().keys() {
             let file = format!("{name}.toml");

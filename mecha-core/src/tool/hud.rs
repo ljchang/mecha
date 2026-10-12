@@ -45,6 +45,12 @@ const QUERY_MAX_ROWS: u32 = 1000;
 const MAX_TABLES: usize = 40;
 /// A sample value is cut at this many characters.
 const VALUE_CHARS: usize = 80;
+/// Each sample query's own limit, and the whole overview's: past the budget
+/// the remaining tables show their schema without rows. Every table is two
+/// queries at most, and a view's `LIMIT` bounds rows, not work (review of
+/// #659).
+const SAMPLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const OVERVIEW_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The sources a dashboard can read, their tables and a few rows of each,
 /// the boards installed and waiting, and the drafting guide.
@@ -135,6 +141,7 @@ impl Tool for HudSources {
 
 /// The overview: sources and their tables, boards, proposals, the guide.
 fn overview(store: &Store) -> ToolOutput {
+    let deadline = std::time::Instant::now() + OVERVIEW_BUDGET;
     let mut out = String::new();
     let mut external = false;
     match store.sources() {
@@ -165,7 +172,7 @@ fn overview(store: &Store) -> ToolOutput {
                 match &source.kind {
                     SourceKind::Sqlite { path } => {
                         let _ = writeln!(out, "# Source `{name}` (SQLite, {whose})\n");
-                        tables(&mut out, path);
+                        tables(&mut out, path, deadline);
                     }
                 }
             }
@@ -213,13 +220,13 @@ fn overview(store: &Store) -> ToolOutput {
 
 /// Each table and view of one SQLite source: its `CREATE` text, as SQLite
 /// keeps it, and its most recent rows — the cheapest way to show a format.
-fn tables(out: &mut String, path: &std::path::Path) {
+fn tables(out: &mut String, path: &std::path::Path, deadline: std::time::Instant) {
     let listed = run_sqlite(
         path,
         "SELECT type, name, sql FROM sqlite_schema \
          WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
         500,
-        QUERY_TIMEOUT,
+        SAMPLE_TIMEOUT,
     );
     let listed = match listed {
         Ok(listed) => listed,
@@ -238,6 +245,10 @@ fn tables(out: &mut String, path: &std::path::Path) {
             continue;
         };
         let _ = writeln!(out, "```sql\n{}\n```", sql.trim());
+        if std::time::Instant::now() >= deadline {
+            out.push_str("(rows not sampled: the overview ran out of time; query it directly)\n\n");
+            continue;
+        }
         let quoted = format!("\"{}\"", name.replace('"', "\"\""));
         // Newest first where the table has a rowid; a view or a WITHOUT
         // ROWID table has none, and shows its first rows instead.
@@ -247,7 +258,7 @@ fn tables(out: &mut String, path: &std::path::Path) {
                     path,
                     &format!("SELECT * FROM {quoted} ORDER BY rowid DESC LIMIT {TABLE_SAMPLE}"),
                     TABLE_SAMPLE as u32,
-                    QUERY_TIMEOUT,
+                    SAMPLE_TIMEOUT,
                 )
                 .ok()
             })
@@ -257,7 +268,7 @@ fn tables(out: &mut String, path: &std::path::Path) {
                 path,
                 &format!("SELECT * FROM {quoted} LIMIT {TABLE_SAMPLE}"),
                 TABLE_SAMPLE as u32,
-                QUERY_TIMEOUT,
+                SAMPLE_TIMEOUT,
             )
         });
         match sample {
@@ -549,13 +560,21 @@ impl Tool for HudPreview {
 /// draft — then the installed board.
 fn current(store: &Store, id: &str) -> Result<ToolOutput> {
     let waiting = match store.proposal(id) {
-        Ok(Some(Ok(p))) => Some(p.draft),
+        Ok(Some(Ok(p))) => Some((p.draft, p.meta.origin)),
         _ => None,
     };
-    let (draft, what) = match waiting {
-        Some(d) => (Some(d), "proposed, waiting for the owner"),
+    // A waiting proposal's text is whatever the proposing conversation
+    // wrote; one staged from a tainted conversation (or with an unreadable
+    // record, which loads untrusted) carries that taint into this one. An
+    // installed board passed the owner's review.
+    let (draft, what, outside) = match waiting {
+        Some((d, origin)) => (
+            Some(d),
+            "proposed, waiting for the owner",
+            origin != Origin::ModelClean,
+        ),
         None => match store.board_draft(id) {
-            Ok(d) => (d, "installed"),
+            Ok(d) => (d, "installed", false),
             Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
         },
     };
@@ -573,7 +592,12 @@ fn current(store: &Store, id: &str) -> Result<ToolOutput> {
     for (name, text) in draft.loaders() {
         let _ = writeln!(out, "\nloaders.{name}:\n```toml\n{}\n```", text.trim());
     }
-    Ok(ToolOutput::ok(out))
+    let result = ToolOutput::ok(out);
+    Ok(if outside {
+        result.from_outside()
+    } else {
+        result
+    })
 }
 
 #[async_trait]
@@ -598,8 +622,12 @@ impl Tool for HudPropose {
         true
     }
 
+    /// As `hud_preview`'s: a draft refused for one broken loader is described
+    /// with the rows its other loaders returned, and taint keys off the
+    /// declared capability — a `from_outside` on an undeclared tool arms
+    /// nothing (review of #659).
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities::default().private().untrusted()
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
