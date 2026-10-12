@@ -221,9 +221,12 @@
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .span-3, .span-4 { grid-column: span 2; }
   }
+  /* On a phone a one-column panel — a figure, a dial — stays two to a row,
+     and anything wider takes the row: a stack of full-width figures was a
+     long scroll for a line of numbers (2026-10-12). */
   @media (max-width: 560px) {
     .hud { padding: 12px; }
-    .grid { grid-template-columns: minmax(0, 1fr); }
-    .span-2, .span-3, .span-4 { grid-column: span 1; }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .span-2, .span-3, .span-4, .text-panel { grid-column: span 2; }
   }
 </style>
