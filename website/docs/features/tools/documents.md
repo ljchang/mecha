@@ -118,6 +118,13 @@ too.
 
 ## The tools
 
+**The tools need the `docs` switch in [`[features]`](/docs/reference/configuration#features)
+as well as an `[[mcp]]` entry** — an absent switch is off, and with it off the
+server is not started however it is configured. `mecha features enable docs`
+writes the switch (or say yes when `mecha setup` offers it); the binary
+(`cargo install mecha-mail --locked` installs `mecha-docs` with the mail
+servers), the entry below and `mecha-docs auth` stay yours.
+
 ```toml
 [[mcp]]
 name = "docs"
@@ -220,7 +227,14 @@ scope — so a `drive.file` credential living there would be reported as a
 broken mail account, a finding that names the wrong subsystem. Share the type,
 never the namespace.
 
-## Setting up the Cloud project
+## Using your own Drive client
+
+**Optional.** `mecha-docs auth` signs in with mecha's own Drive client, so a
+first sign-in needs no Cloud project at all. This section is for anyone who
+would rather consent to a client they registered themselves, then pass it with
+`--client-json` (or `--client-id` and `--client-secret`). Keep the
+*(user, client)* rule above in mind: a grant through your own client cannot
+reach files you picked through mecha's, and the reverse.
 
 One project, one **Desktop-app** OAuth client, `drive.file` as its only scope,
 published to production. Because the scope is non-sensitive, publishing needs

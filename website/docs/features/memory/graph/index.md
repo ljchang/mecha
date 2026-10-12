@@ -33,14 +33,23 @@ cargo install mecha-graph-mcp      # the MCP server
 
 Embeddings come from a second llama-server on `127.0.0.1:8081`, serving
 `harrier-oss-v1-0.6b` — its own port, because one llama-server holds one
-model and the chat model's port must not answer embedding requests. The
-launcher's source is `scripts/llama/mecha-embed-server` in a mecha
-checkout, and what runs is a copy of it in `~/.local/bin`, never the
-checkout's own file (a `git checkout` would otherwise change a running
-service). On the machine these docs were written on it runs on demand (the port is held from
-boot, the model loads on the first request and stops after ten idle
-minutes). On a machine without that socket unit, start it by hand. First
-fetch the model — `hf download mradermacher/harrier-oss-v1-0.6b-GGUF
+model and the chat model's port must not answer embedding requests.
+
+**On Linux, `mecha features enable graph` sets that server up from nothing**
+and writes the `graph` switch in [`[features]`](/docs/reference/configuration#features)
+— an absent switch is off, and with it off mecha starts no graph server and
+the graph verbs refuse. It shows the plan and, on one yes, installs what this
+machine lacks: the llama.cpp engine if none is here, the pinned model, a
+launcher under `~/.mecha/sidecars/bin/`, and three systemd user units that hold
+the port from boot, load the model on the first request and stop it after ten
+idle minutes; the install starts it once to check it answers. An embeddings
+server this machine already runs is left alone and used. `mecha setup` offers the same
+step. It does not install `mecha-graph` or write the `[[mcp]]` entry below —
+those stay yours.
+
+By hand — on macOS, or a server you would rather run yourself — the
+launcher's source is `scripts/llama/mecha-embed-server` in a mecha checkout.
+First fetch the model — `hf download mradermacher/harrier-oss-v1-0.6b-GGUF
 harrier-oss-v1-0.6b.f16.gguf` — since the script looks for it in the
 Hugging Face cache and starts with no model if it is missing; then run the
 script with `MECHA_EMBED_PORT=8081`
@@ -50,9 +59,7 @@ flags: `-m` the model, `--alias harrier-oss-v1-0.6b` (the name mecha-graph
 asks for), `--host 127.0.0.1 --port 8081 -ngl 999 -c 32768`, and
 `--embeddings --pooling last --embd-normalize 2`. `--pooling last` is not
 optional for this model: the default pooling returns plausible vectors that
-retrieve worse, with nothing to say so. The repository has no installer that sets the server up
-from nothing yet; `scripts/llama/install-embed.sh` only moves an existing
-always-on one to on demand.
+retrieve worse, with nothing to say so.
 What it costs is under [Beside the chat
 model](/docs/getting-started/hardware#beside-the-chat-model).
 To point it elsewhere, set `[llm] embed_url` in mecha-graph's config or
