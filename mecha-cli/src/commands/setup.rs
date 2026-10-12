@@ -517,7 +517,26 @@ fn offer_with(
 ) -> Result<()> {
     let mut already_run: Vec<&[String]> = Vec::new();
     for s in steps {
-        let Some(remedy) = &s.remedy else { continue };
+        let Some(remedy) = &s.remedy else {
+            // A step named but never run — the charter, whose writing is a
+            // sitting of its own — can still be answered `never`, or it would
+            // be outstanding for good for anyone who does not want one
+            // (review of #663). Nothing is run either way.
+            if s.optional && s.status == Status::Missing {
+                println!("\n{}", s.title);
+                print!("later, or never? [N/never] ");
+                std::io::stdout().flush()?;
+                let mut line = String::new();
+                let never = matches!(read.read_line(&mut line), Ok(n) if n > 0)
+                    && matches!(line.trim().to_ascii_lowercase().as_str(), "never" | "n!");
+                if never {
+                    record_never(home, s);
+                } else {
+                    println!("later — asked again next time");
+                }
+            }
+            continue;
+        };
         // Already satisfied by a command answered `y` earlier in this pass.
         // Not asked again, because there is nothing left to ask: the thing it
         // would install is installed.
@@ -571,25 +590,28 @@ fn offer_with(
                 }
             }
             Answer::Skip => println!("skipped — asked again next time"),
-            Answer::Never => match onboarding::decline(home, &s.id) {
-                // Said with the undo in the same breath: a decision nobody
-                // can find their way back out of is one people are right to
-                // hesitate over.
-                Ok(wrote) => {
-                    println!(
-                        "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
-                        s.id, s.id
-                    );
-                    report_salvage(wrote.salvaged);
-                }
-                // A store that could not be written must not read as a
-                // recorded answer, or the question silently comes back and
-                // the person believes they already settled it.
-                Err(e) => println!("could not record that: {e} — it will be offered again"),
-            },
+            Answer::Never => record_never(home, s),
         }
     }
     Ok(())
+}
+
+/// Record a `never`, said with the undo in the same breath: a decision nobody
+/// can find their way back out of is one people are right to hesitate over.
+fn record_never(home: &std::path::Path, s: &Step) {
+    match onboarding::decline(home, &s.id) {
+        Ok(wrote) => {
+            println!(
+                "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
+                s.id, s.id
+            );
+            report_salvage(wrote.salvaged);
+        }
+        // A store that could not be written must not read as a recorded
+        // answer, or the question silently comes back and the person believes
+        // they already settled it.
+        Err(e) => println!("could not record that: {e} — it will be offered again"),
+    }
 }
 
 /// The registry's rows against the global configuration — empty when it does
@@ -1584,6 +1606,51 @@ mod tests {
             onboarding::read_declined(&home).unwrap().is_empty(),
             "one successful install satisfies both, so nothing was declined"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A step setup names but never runs — the charter — can still be
+    /// declined, or it is outstanding for good for anyone who does not want
+    /// one; Enter and end of input are "later" (review of #663).
+    #[test]
+    fn a_step_that_runs_nothing_can_still_be_declined() {
+        let mut charter = step_with("charter", &["unused"], true);
+        charter.remedy = None;
+        let home = scratch_home(line!());
+        offer_with(
+            &[&charter],
+            &home,
+            &mut std::io::Cursor::new(b"\n".to_vec()),
+            &|_| {},
+        )
+        .unwrap();
+        offer_with(
+            &[&charter],
+            &home,
+            &mut std::io::Cursor::new(Vec::new()),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(onboarding::read_declined(&home).unwrap().is_empty());
+        offer_with(
+            &[&charter],
+            &home,
+            &mut std::io::Cursor::new(b"never\n".to_vec()),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(onboarding::read_declined(&home)
+            .unwrap()
+            .contains("charter"));
+        let _ = std::fs::remove_dir_all(&home);
+        // A required step with nothing to run is not asked at all.
+        let mut required = step_with("timezone", &["unused"], false);
+        required.remedy = None;
+        let home = scratch_home(line!());
+        let mut input = std::io::Cursor::new(b"never\n".to_vec());
+        offer_with(&[&required], &home, &mut input, &|_| {}).unwrap();
+        assert_eq!(input.position(), 0, "nothing was asked");
+        assert!(onboarding::read_declined(&home).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 

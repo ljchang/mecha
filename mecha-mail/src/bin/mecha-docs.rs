@@ -46,7 +46,7 @@ enum Command {
         #[arg(long, env = "MECHA_DOCS_CLIENT_SECRET")]
         client_secret: Option<String>,
         /// Read the client id and secret from a downloaded client JSON.
-        #[arg(long, conflicts_with_all = ["client_id", "client_secret"])]
+        #[arg(long)]
         client_json: Option<std::path::PathBuf>,
         #[command(flatten)]
         capture: Capture,
@@ -119,10 +119,15 @@ async fn main() -> Result<()> {
                     cli.account
                 )
             })?;
+            // The shipped client picks with this build's secret, as it signs
+            // in and refreshes (`builtin::secret_for`; review of #663).
+            let secret = mecha_mail::builtin::secret_for(&stored.client_id)
+                .map(str::to_string)
+                .unwrap_or_else(|| stored.client_secret.clone());
             consent(
                 &cli.account,
                 stored.client_id.clone(),
-                stored.client_secret.clone(),
+                secret,
                 true,
                 &capture,
             )
