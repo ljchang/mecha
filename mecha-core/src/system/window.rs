@@ -73,6 +73,8 @@ pub struct Bucket {
     pub start: String,
     /// The mean of the minutes in it that held a value; `None` when none did.
     pub mean: Option<f64>,
+    /// Their sum — what a stretch of a per-minute count shows.
+    pub sum: Option<f64>,
 }
 
 /// One measurement (or one category of one) over a window.
@@ -102,6 +104,9 @@ pub struct Summary {
 pub enum Windowed {
     One(Summary),
     ByCategory(Vec<(&'static str, Summary)>),
+    /// The series predates the table this measurement is kept in: said, not
+    /// an error (as `system::latest` says it).
+    OlderSampler,
 }
 
 fn ts(t: DateTime<Utc>) -> String {
@@ -158,6 +163,7 @@ fn summarise(
         .map(|(i, (sum, c))| Bucket {
             start: ts(start + width * i as i32),
             mean: (c > 0).then(|| sum / c as f64),
+            sum: (c > 0).then_some(sum),
         })
         .collect();
     s
@@ -194,6 +200,10 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
     let start = now - span;
     let from = ts(start);
     if m.how() != How::ByCategory {
+        // A series from before S2a has no `reading_minute` (review of #660).
+        if !has_table(&conn, "reading_minute")? {
+            return Ok(Some(Windowed::OlderSampler));
+        }
         // Every measurement, `Now` ones included, is recorded each minute
         // under its number (§7.3).
         let mut stmt = conn.prepare(
@@ -287,7 +297,7 @@ pub struct ModelWindow {
 /// Each kind's speed column, named and never defaulted: embeddings has
 /// none, and a kind this build does not know reads none rather than a
 /// neighbour's (review of #660).
-fn speed_column(kind: u8) -> Option<&'static str> {
+pub(crate) fn speed_column(kind: u8) -> Option<&'static str> {
     use super::models::ModelKind;
     match ModelKind::from_u8(kind)? {
         ModelKind::Chat | ModelKind::Ocr => Some("gen_tps"),
@@ -322,9 +332,11 @@ pub fn models_now(
         return Ok(Some(Vec::new()));
     };
     let mut stmt = conn.prepare(
-        "SELECT m.kind, k.label, m.running, m.model, m.model_known, CAST(m.mem_bytes AS REAL)
-         FROM model_minute m JOIN model_kinds k ON k.id = m.kind
-         WHERE m.at = ?1 ORDER BY m.kind",
+        // No join on `model_kinds`: the label is the closed enum's
+        // (`kind_label`), and an inner join would only drop a row whose kind
+        // the lookup lacks (review of #660).
+        "SELECT m.kind, '', m.running, m.model, m.model_known, CAST(m.mem_bytes AS REAL)
+         FROM model_minute m WHERE m.at = ?1 ORDER BY m.kind",
     )?;
     let rows: Vec<NowRow> = stmt
         .query_map(params![newest], |r| {
