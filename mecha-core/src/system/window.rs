@@ -249,13 +249,24 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
             .query_map(params![m as u16, from], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         // No row at all while the sampler was writing minutes: the machine
-        // does not have it, which `record_readings` writes as no row.
+        // does not have it, which `record_readings` writes as no row — but
+        // only if that sampler knew the measurement; one it did not know is
+        // an older sampler's, not this machine's lack (review of #660).
         if rows.is_empty() && sampled_in(&conn, &from)? {
-            return Ok(Some(Windowed::NotHere));
+            return Ok(Some(if known_to_sampler(&conn, m)? {
+                Windowed::NotHere
+            } else {
+                Windowed::OlderSampler
+            }));
         }
         return Ok(Some(Windowed::One(summarise(&rows, start, span, width))));
     }
-    if m != Measurement::CategoryOomKills && !has_table(&conn, "category_minute")? {
+    let table = if m == Measurement::CategoryOomKills {
+        "category_reading_minute"
+    } else {
+        "category_minute"
+    };
+    if !has_table(&conn, table)? {
         return Ok(Some(Windowed::OlderSampler));
     }
     let mut out = Vec::new();
@@ -305,6 +316,19 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
         rows: out,
         withheld,
     }))
+}
+
+/// Whether the sampler that wrote this series listed `m` in its
+/// `measurements` table: every id it knew, whether or not it read one.
+fn known_to_sampler(conn: &Connection, m: Measurement) -> Result<bool> {
+    if !has_table(conn, "measurements")? {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT count(*) > 0 FROM measurements WHERE id = ?1",
+        params![m as u16],
+        |r| r.get(0),
+    )?)
 }
 
 /// Whether the sampler wrote any minute in the window — what tells "this
