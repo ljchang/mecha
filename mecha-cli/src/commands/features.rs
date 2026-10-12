@@ -447,7 +447,77 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
     if features.contains(&Feature::Image) {
         image_table()?;
     }
+    for f in &features {
+        if let Some(wiring) = feature::mcp_wiring(*f) {
+            mcp_entry(*f, &wiring)?;
+        }
+    }
     Ok(())
+}
+
+/// A server feature's switch alone leaves it off — `server_state` wants an
+/// `[[mcp]]` entry running the program — so `mecha setup`'s yes to mail ended
+/// at "add an [[mcp]] entry" instead of a sign-in page (the owner, 2026-10-12).
+/// Written here where none runs it, the program found on PATH (or in
+/// `~/.cargo/bin`) and recorded by its absolute path, so a unit's short PATH
+/// still finds it.
+fn mcp_entry(f: Feature, wiring: &feature::McpWiring) -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    let Some(command) = find_program(wiring.program) else {
+        let install = match f {
+            Feature::Graph => "cargo install mecha-graph mecha-graph-mcp --locked",
+            _ => "cargo install mecha-mail --locked",
+        };
+        println!(
+            "`{}` is not installed, so no [[mcp]] entry was written — `{install}`, then `mecha \
+             features enable {}` again writes it",
+            wiring.program,
+            f.id()
+        );
+        return Ok(());
+    };
+    match feature::write_mcp_entry(&path, wiring, &command)? {
+        feature::McpWrite::AlreadyWired => {}
+        feature::McpWrite::Wrote { outbox_missing } => {
+            println!(
+                "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
+                wiring.name,
+                command.display(),
+                path.display()
+            );
+            if !wiring.outbox.is_empty() && outbox_missing.is_empty() {
+                println!(
+                    "  {}'s sends and calendar changes are staged in the outbox for you to \
+                     review (`mecha outbox`)",
+                    wiring.name
+                );
+            }
+            if !outbox_missing.is_empty() {
+                println!(
+                    "  your [outbox] table is left as it is — for {}'s sends to be staged for \
+                     review rather than run, add to its tools: {}",
+                    wiring.name,
+                    outbox_missing.join(", ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A program's absolute path: the first on PATH, else `~/.cargo/bin`, where
+/// `cargo install` puts it and a fresh shell may not have it on PATH yet.
+fn find_program(name: &str) -> Option<std::path::PathBuf> {
+    let on_path = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(name))
+            .find(|f| f.is_file())
+    });
+    on_path.or_else(|| {
+        dirs::home_dir()
+            .map(|h| h.join(".cargo/bin").join(name))
+            .filter(|f| f.is_file())
+    })
 }
 
 /// What `enable` knows when it decides about the turbo model.

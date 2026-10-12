@@ -929,6 +929,155 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
     Ok(wanted)
 }
 
+/// What a feature that is an MCP server needs written beside its switch: the
+/// program its `[[mcp]]` entry runs, whether its tools keep the server's
+/// prefix, and — mail only — the calls staged in the outbox rather than run.
+pub struct McpWiring {
+    pub name: &'static str,
+    pub program: &'static str,
+    pub prefix_tools: bool,
+    pub outbox: &'static [&'static str],
+}
+
+/// The wiring `features enable` writes for a feature, where it has one: the
+/// shape the docs have always given (`mail.md`, `documents.md`, the graph
+/// page), so a yes in `mecha setup` ends at a sign-in page rather than at "add
+/// an [[mcp]] entry" (the owner, 2026-10-12: sends staged).
+pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
+    Some(match f {
+        Feature::Mail => McpWiring {
+            name: "mail",
+            program: "mecha-mail",
+            prefix_tools: true,
+            outbox: &[
+                "mail__mail_send",
+                "mail__mail_reply",
+                "mail__calendar_create_event",
+                "mail__calendar_update_event",
+                "mail__calendar_delete_event",
+            ],
+        },
+        Feature::Docs => McpWiring {
+            name: "docs",
+            program: "mecha-docs",
+            prefix_tools: true,
+            outbox: &[],
+        },
+        Feature::Graph => McpWiring {
+            name: "graph",
+            program: "mecha-graph-mcp",
+            prefix_tools: false,
+            outbox: &[],
+        },
+        _ => return None,
+    })
+}
+
+/// What [`write_mcp_entry`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpWrite {
+    /// An entry already runs the program (enabled or not): left as it is.
+    AlreadyWired,
+    /// Written. `outbox_missing` is the routing the owner's own `[outbox]`
+    /// table lacks — never edited, so the caller says the lines to add.
+    Wrote { outbox_missing: Vec<String> },
+}
+
+/// Write `wiring`'s `[[mcp]]` entry, running `command`, into the global
+/// config where no entry runs that program, with `untrusted_input` forced on
+/// — every one of these servers carries other people's words — and, for mail,
+/// its sends staged in the outbox when there is no `[outbox]` table yet. An
+/// `[outbox]` the owner wrote is never edited (`comfyui_unit::write_image_table`'s
+/// rule); what it lacks is returned. In place through `toml_edit`, comments
+/// kept, written beside and renamed.
+pub fn write_mcp_entry(
+    path: &Path,
+    wiring: &McpWiring,
+    command: &Path,
+) -> anyhow::Result<McpWrite> {
+    use anyhow::Context;
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    let runs = |t: &toml_edit::Table| {
+        t.get("command")
+            .and_then(|c| c.as_str())
+            .and_then(|c| Path::new(c).file_name().map(|n| n == wiring.program))
+            .unwrap_or(false)
+    };
+    if let Some(servers) = doc.get("mcp").and_then(|m| m.as_array_of_tables()) {
+        if servers.iter().any(runs) {
+            return Ok(McpWrite::AlreadyWired);
+        }
+    }
+    let mut entry = toml_edit::Table::new();
+    entry.insert("name", toml_edit::value(wiring.name));
+    entry.insert("command", toml_edit::value(command.display().to_string()));
+    if !wiring.prefix_tools {
+        entry.insert("prefix_tools", toml_edit::value(false));
+    }
+    let mut caps = toml_edit::Table::new();
+    caps.insert("untrusted_input", toml_edit::value(true));
+    entry.insert("capabilities", toml_edit::Item::Table(caps));
+    match doc.get_mut("mcp") {
+        Some(item) => item
+            .as_array_of_tables_mut()
+            .context("[mcp] in the config is not an array of [[mcp]] tables; nothing was changed")?
+            .push(entry),
+        None => {
+            let mut servers = toml_edit::ArrayOfTables::new();
+            servers.push(entry);
+            doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
+        }
+    }
+    let mut outbox_missing = Vec::new();
+    if !wiring.outbox.is_empty() {
+        match doc.get("outbox") {
+            None => {
+                let mut tools = toml_edit::Array::new();
+                for t in wiring.outbox {
+                    tools.push(*t);
+                }
+                let mut table = toml_edit::Table::new();
+                table.insert("tools", toml_edit::value(tools));
+                doc.insert("outbox", toml_edit::Item::Table(table));
+            }
+            Some(outbox) => {
+                let routed: Vec<String> = outbox
+                    .get("tools")
+                    .and_then(|t| t.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                outbox_missing = wiring
+                    .outbox
+                    .iter()
+                    .filter(|t| !routed.iter().any(|r| r == *t))
+                    .map(|t| t.to_string())
+                    .collect();
+            }
+        }
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.mcp-tmp");
+    std::fs::write(&tmp, doc.to_string()).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(McpWrite::Wrote { outbox_missing })
+}
+
 /// Write switches into the `[features]` table of the config file at `path`,
 /// editing in place.
 ///
@@ -1295,6 +1444,89 @@ fn own_state(facts: &Facts, f: Feature) -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `enable mail` writes the entry the docs give, untrusted, with its sends
+    /// staged where there is no `[outbox]`; an entry already running the
+    /// program is left; an owner's `[outbox]` is never edited and what it
+    /// lacks is returned; the graph's tools keep their own names; and the
+    /// written file loads as a config whose mail feature now reads its
+    /// account, not its missing entry (the owner, 2026-10-12).
+    #[test]
+    fn enable_writes_a_server_feature_its_entry() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let bin = Path::new("/opt/bin/mecha-mail");
+        let mail = mcp_wiring(Feature::Mail).unwrap();
+
+        let fresh = root.join("fresh.toml");
+        std::fs::write(&fresh, "# mine\n[features]\nmail = true\n").unwrap();
+        let wrote = write_mcp_entry(&fresh, &mail, bin).unwrap();
+        let text = std::fs::read_to_string(&fresh).unwrap();
+        // Written twice is written once.
+        let again = write_mcp_entry(&fresh, &mail, bin).unwrap();
+
+        let owned = root.join("owned.toml");
+        std::fs::write(&owned, "[outbox]\ntools = [\"mail__mail_send\"]\n").unwrap();
+        let partial = write_mcp_entry(&owned, &mail, bin).unwrap();
+        let owned_text = std::fs::read_to_string(&owned).unwrap();
+
+        let graph = root.join("graph.toml");
+        std::fs::write(&graph, "").unwrap();
+        write_mcp_entry(
+            &graph,
+            &mcp_wiring(Feature::Graph).unwrap(),
+            Path::new("/b/mecha-graph-mcp"),
+        )
+        .unwrap();
+        let graph_text = std::fs::read_to_string(&graph).unwrap();
+
+        let cfg = crate::config::Config::load_layers(Some(&fresh), None);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(
+            wrote,
+            McpWrite::Wrote {
+                outbox_missing: vec![]
+            }
+        );
+        assert_eq!(again, McpWrite::AlreadyWired);
+        assert!(text.starts_with("# mine"), "{text}");
+        let parsed: toml::Value = toml::from_str(&text).unwrap();
+        let entry = &parsed["mcp"][0];
+        assert_eq!(entry["name"].as_str(), Some("mail"));
+        assert_eq!(entry["command"].as_str(), Some("/opt/bin/mecha-mail"));
+        assert_eq!(
+            entry["capabilities"]["untrusted_input"].as_bool(),
+            Some(true)
+        );
+        let routed: Vec<&str> = parsed["outbox"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(routed, mail.outbox);
+
+        assert_eq!(
+            partial,
+            McpWrite::Wrote {
+                outbox_missing: mail.outbox[1..].iter().map(|t| t.to_string()).collect()
+            }
+        );
+        assert!(
+            owned_text.starts_with("[outbox]\ntools = [\"mail__mail_send\"]\n"),
+            "{owned_text}"
+        );
+
+        let g: toml::Value = toml::from_str(&graph_text).unwrap();
+        assert_eq!(g["mcp"][0]["prefix_tools"].as_bool(), Some(false));
+        assert!(g.get("outbox").is_none());
+
+        let cfg = cfg.expect("the written file loads");
+        let m = &cfg.mcp[0];
+        assert!(m.capabilities.untrusted_input);
+        assert_eq!(cfg.outbox.tools, mail.outbox);
+    }
 
     fn mcp(name: &str, command: &str) -> McpServerConfig {
         let mut m: McpServerConfig =
