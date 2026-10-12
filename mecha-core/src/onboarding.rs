@@ -701,6 +701,8 @@ fn charter_step(state: &CharterState) -> Step {
         "every run's prompt. Order is rank: when two conflict, the higher one wins ",
         "outright. mecha never writes a line of it."
     );
+    const WHERE: &str = "Write it when you have a few minutes: `mecha charter edit`, or \
+                         Settings → Charter in the web app.";
     match state {
         CharterState::Lines(n) => Step::new(
             "charter",
@@ -715,31 +717,27 @@ fn charter_step(state: &CharterState) -> Step {
         // are "nothing rides in the prompt", and both are fixed by the same
         // command, but only one of them is a half-finished edit somebody
         // should be told about rather than a fresh install.
+        //
+        // **Said, never run.** Setup used to offer `mecha charter edit`, which
+        // hands the terminal to `$EDITOR` in the middle of setup — and, the
+        // charter being last, setup ended wherever the editor left it (the
+        // owner, 2026-10-12). Writing priorities is a sitting of its own, so
+        // the step names where to do it and setup carries on.
         CharterState::Empty => Step::new(
             "charter",
             "Your charter",
             Status::Missing,
             format!(
                 "The file exists with no `[[line]]` entries yet, so nothing from it rides \
-                 in any prompt. {WHY}"
+                 in any prompt. {WHY} {WHERE}"
             ),
-        )
-        .with(
-            "Open the charter in $EDITOR.",
-            &["mecha", "charter", "edit"],
-            true,
         )
         .optional(),
         CharterState::Absent => Step::new(
             "charter",
             "Your charter",
             Status::Missing,
-            format!("Nothing written yet — every run is proceeding un-chartered. {WHY}"),
-        )
-        .with(
-            "Create it from a commented template and open it in $EDITOR.",
-            &["mecha", "charter", "edit"],
-            true,
+            format!("Nothing written yet — every run is proceeding un-chartered. {WHY} {WHERE}"),
         )
         .optional(),
         // `Wrong`, not `Missing`: there is a document and it disagrees with
@@ -753,13 +751,8 @@ fn charter_step(state: &CharterState) -> Step {
             format!(
                 "{e}
 
-Every run is starting un-chartered until this parses."
+Every run is starting un-chartered until this parses. Fix it with `mecha charter edit`."
             ),
-        )
-        .with(
-            "Open the charter in $EDITOR and fix it.",
-            &["mecha", "charter", "edit"],
-            true,
         ),
         CharterState::Unknown => Step::new(
             "charter",
@@ -891,7 +884,17 @@ fn with_next(mut step: Step, next: Option<&str>) -> Step {
     match runnable(next) {
         Some((argv, needs_terminal)) => {
             let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-            step.with(&format!("Run `{}`.", argv.join(" ")), &argv, needs_terminal)
+            // A sign-in says where it goes: the question is "open a sign-in
+            // page?", and a bare command line does not say that it is.
+            let description = if argv.contains(&"auth") {
+                format!(
+                    "Sign in — `{}` opens the sign-in page in your browser.",
+                    argv.join(" ")
+                )
+            } else {
+                format!("Run `{}`.", argv.join(" "))
+            };
+            step.with(&description, &argv, needs_terminal)
         }
         None => {
             step.detail = format!("{} Next: {next}.", step.detail);
@@ -1494,10 +1497,9 @@ mod tests {
             .remedy
             .clone()
             .expect("the auth is runnable");
-        assert_eq!(
-            remedy.argv,
-            ["mecha-mail", "auth", "personal", "--provider", "google"]
-        );
+        // Bare: `mecha-mail auth` asks Google or Outlook and a name itself,
+        // so setup's yes is a sign-in page for either (the owner, 2026-10-12).
+        assert_eq!(remedy.argv, ["mecha-mail", "auth"]);
         assert!(remedy.needs_terminal);
     }
 
@@ -1587,11 +1589,13 @@ mod tests {
         let steps = plan(&cfg, "local", &f);
         let charter = step(&steps, "charter");
         assert_eq!(charter.status, Status::Missing);
-        let remedy = charter.remedy.as_ref().expect("a fresh charter is offered");
-        assert_eq!(remedy.argv, ["mecha", "charter", "edit"]);
+        // Named, never run: an editor in the middle of setup ended setup
+        // wherever the editor left it (the owner, 2026-10-12).
+        assert!(charter.remedy.is_none(), "setup never opens an editor");
         assert!(
-            remedy.needs_terminal,
-            "handing over $EDITOR needs a keyboard"
+            charter.detail.contains("`mecha charter edit`"),
+            "{}",
+            charter.detail
         );
         // The offer must not put words in anyone's mouth: the *only* text
         // this module supplies about a charter is a description of what one

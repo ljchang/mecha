@@ -35,10 +35,12 @@ enum Command {
     /// Sign an account in and add it to the registry.
     Auth {
         /// Account name the model will use (lowercase, digits, - and _).
-        name: String,
-        /// google (loopback OAuth) or outlook (device code).
+        /// Asked for at a terminal when left out.
+        name: Option<String>,
+        /// google (loopback OAuth) or outlook (device code). Asked for at a
+        /// terminal when left out.
         #[arg(long)]
-        provider: Provider,
+        provider: Option<Provider>,
         /// OAuth client id (Google Desktop app / Entra application id).
         /// Env: GMAIL_CLIENT_ID / OUTLOOK_CLIENT_ID per provider. Without
         /// one, the whole client config is taken from this account's stored
@@ -64,6 +66,10 @@ enum Command {
         /// which already works headless.
         #[arg(long)]
         paste: bool,
+        /// A Google Desktop client's downloaded JSON, in place of
+        /// --client-id and --client-secret. Google only.
+        #[arg(long)]
+        client_json: Option<std::path::PathBuf>,
     },
     /// Download a span of mail for analysis — envelope and preview only.
     ///
@@ -203,13 +209,17 @@ async fn run(cli: Cli) -> Result<()> {
             tenant,
             port,
             paste,
+            client_json,
         }) => {
             auth(
                 name,
                 provider,
-                client_id,
-                client_secret,
-                tenant,
+                OwnClient {
+                    id: client_id,
+                    secret: client_secret,
+                    tenant,
+                    json: client_json,
+                },
                 port,
                 paste,
             )
@@ -1144,6 +1154,204 @@ fn month_windows(since: &str) -> Result<Vec<(String, String)>> {
 
 /// Load the registry, or start an empty one — `auth` and `import` are how
 /// the file comes to exist.
+/// A Google Desktop client's downloaded JSON as a client configuration.
+fn google_client_file(path: &std::path::Path) -> Result<ClientConfig> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let (client_id, client_secret) = mecha_mail::wizard::read_google_client_json(&text)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    Ok(ClientConfig {
+        client_id,
+        client_secret,
+        tenant: None,
+    })
+}
+
+/// Walk a person through registering their own sign-in app, one console page
+/// at a time, and come back with its client configuration: Google's from the
+/// JSON the last step downloads, Outlook's from the two ids pasted. `open`
+/// opens a page (the browser, or nothing in a test).
+fn register_own_app(
+    read: &mut impl std::io::BufRead,
+    provider: Provider,
+    downloads: Option<&std::path::Path>,
+    open: &dyn Fn(&str),
+) -> Result<ClientConfig> {
+    use mecha_mail::wizard;
+    use std::io::Write;
+    let mut line = |prompt: &str| -> Result<String> {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+        let mut s = String::new();
+        // End of input, or `q`, stops: nothing is signed in.
+        if read.read_line(&mut s)? == 0 || s.trim().eq_ignore_ascii_case("q") {
+            eprintln!();
+            bail!("stopped — nothing was signed in; `mecha-mail auth` starts again");
+        }
+        Ok(s.trim().to_string())
+    };
+    let started = std::time::SystemTime::now();
+    let (intro, steps) = match provider {
+        Provider::Google => (
+            "mecha does not ship a Gmail sign-in app: you register your own, once, and it \
+             signs in every Google account you add. About five minutes; each page opens in \
+             your browser.",
+            wizard::GOOGLE,
+        ),
+        Provider::Outlook => (
+            "mecha does not ship an Outlook sign-in app: you register your own in Microsoft \
+             Entra, once. A work or school account may need an administrator's approval.",
+            wizard::MICROSOFT,
+        ),
+    };
+    eprintln!("\n{intro}\n");
+    let mut last_url = "";
+    for (i, step) in steps.iter().enumerate() {
+        eprintln!("{}. {}", i + 1, step.what);
+        // The same page twice is not opened twice.
+        if step.url != last_url {
+            eprintln!("   {}", step.url);
+            open(step.url);
+            last_url = step.url;
+        }
+        line("   Enter when done (q to stop): ")?;
+    }
+    match provider {
+        Provider::Google => loop {
+            if let Some(path) = downloads.and_then(|d| wizard::find_client_json(d, started)) {
+                eprintln!("Found {}", path.display());
+                let client = google_client_file(&path)?;
+                eprintln!(
+                    "(mecha keeps what it needs with the sign-in; that file can be deleted.)"
+                );
+                return Ok(client);
+            }
+            let answer = line(
+                "No downloaded client file yet. Enter once it has downloaded, or paste its \
+                 path: ",
+            )?;
+            if !answer.is_empty() {
+                match google_client_file(std::path::Path::new(&answer)) {
+                    Ok(client) => return Ok(client),
+                    Err(e) => eprintln!("{e:#}"),
+                }
+            }
+        },
+        Provider::Outlook => {
+            let client_id = loop {
+                let a = line("Application (client) ID: ")?;
+                match wizard::entra_id(&a, false) {
+                    Some(id) => break id,
+                    None => eprintln!("that is not an id like 1a2b3c4d-…; copy it from Overview"),
+                }
+            };
+            let tenant = loop {
+                let a = line(
+                    "Directory (tenant) ID, or Enter for `common` (any organisation and \
+                     personal accounts): ",
+                )?;
+                let a = if a.is_empty() {
+                    "common".to_string()
+                } else {
+                    a
+                };
+                match wizard::entra_id(&a, true) {
+                    Some(t) => break t,
+                    None => eprintln!("that is not an id like 1a2b3c4d-…, or `common`"),
+                }
+            };
+            Ok(ClientConfig {
+                client_id,
+                client_secret: String::new(),
+                tenant: Some(tenant),
+            })
+        }
+    }
+}
+
+/// Ask, at a terminal, whichever of the provider and the name was not given.
+/// The default name is one a person would choose and the file does not
+/// already hold for another provider.
+fn ask_account(
+    read: &mut impl std::io::BufRead,
+    file: &accounts::AccountsFile,
+    name: Option<String>,
+    provider: Option<Provider>,
+) -> Result<(String, Provider)> {
+    use std::io::Write;
+    let mut line = |prompt: &str| -> Result<Option<String>> {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+        let mut s = String::new();
+        // End of input is not Enter: nothing is signed in on a Ctrl-D.
+        if read.read_line(&mut s)? == 0 {
+            eprintln!();
+            return Ok(None);
+        }
+        Ok(Some(s.trim().to_string()))
+    };
+    let provider = match provider {
+        Some(p) => p,
+        None => {
+            eprintln!("Which kind of account?");
+            eprintln!("  1. Google — Gmail and Google Calendar");
+            eprintln!("  2. Outlook — Microsoft 365, Outlook.com and Hotmail");
+            loop {
+                match line("Choose [1]: ")?.as_deref() {
+                    None => bail!("nothing was signed in"),
+                    Some("" | "1" | "g" | "google") => break Provider::Google,
+                    Some("2" | "o" | "outlook") => break Provider::Outlook,
+                    Some(_) => eprintln!("1 or 2"),
+                }
+            }
+        }
+    };
+    let name = match name {
+        Some(n) => n,
+        None => {
+            let free = |n: &&str| {
+                file.accounts
+                    .iter()
+                    .all(|a| a.name != *n || a.provider == provider)
+            };
+            let first = match provider {
+                Provider::Google => ["personal", "gmail"],
+                Provider::Outlook => ["work", "outlook"],
+            };
+            // A default is a name nothing holds yet: defaulting to an existing
+            // account would sign that one in again, not add a new one.
+            let default = first
+                .into_iter()
+                .find(|n| file.accounts.iter().all(|a| a.name != *n))
+                .unwrap_or("");
+            eprintln!(
+                "Name it — the word you will use for it, like `personal` or `work` (lowercase \
+                 letters, digits, - and _)."
+            );
+            loop {
+                let prompt = if default.is_empty() {
+                    "Name: ".to_string()
+                } else {
+                    format!("Name [{default}]: ")
+                };
+                let Some(answer) = line(&prompt)? else {
+                    bail!("nothing was signed in")
+                };
+                let answer = if answer.is_empty() {
+                    default.to_string()
+                } else {
+                    answer.to_lowercase()
+                };
+                if accounts::valid_name(&answer) && free(&answer.as_str()) {
+                    break answer;
+                }
+                eprintln!("that name is taken by another provider, or has a character it cannot");
+            }
+        }
+    };
+    Ok((name, provider))
+}
+
 fn load_or_empty() -> Result<accounts::AccountsFile> {
     match accounts::file_path()?.exists() {
         true => accounts::load(),
@@ -1205,7 +1413,7 @@ fn resolve_client(
     client_id: Option<String>,
     client_secret: Option<String>,
     tenant: Option<String>,
-) -> Result<ClientConfig> {
+) -> Result<Option<ClientConfig>> {
     // The legacy binaries' env names, per provider on purpose: one shared
     // variable would feed a Google client id to the Entra flow.
     let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
@@ -1227,11 +1435,11 @@ fn resolve_client(
             })?),
             Provider::Google => None,
         };
-        return Ok(ClientConfig {
+        return Ok(Some(ClientConfig {
             client_id,
             client_secret: explicit_secret,
             tenant,
-        });
+        }));
     }
 
     // No explicit id: take the whole registration from one stored login —
@@ -1252,25 +1460,48 @@ fn resolve_client(
                     .filter(|c| consistent_with(c, provider))
             })
     };
-    let source = stored
-        .or_else(sibling)
-        .with_context(|| format!("no client id: pass --client-id or set {id_env}"))?;
-    Ok(ClientConfig {
+    // Nothing named and nothing stored: `None`, and the caller walks a
+    // person through registering their own app. Mail ships no client of
+    // mecha's (`mecha_mail::builtin`'s doc says why).
+    Ok(stored.or_else(sibling).map(|source| ClientConfig {
         client_id: source.client_id,
         client_secret: source.client_secret,
         tenant: source.tenant,
-    })
+    }))
+}
+
+/// The sign-in app a person named on the command line, if any.
+struct OwnClient {
+    id: Option<String>,
+    secret: Option<String>,
+    tenant: Option<String>,
+    json: Option<std::path::PathBuf>,
 }
 
 async fn auth(
-    name: String,
-    provider: Provider,
-    client_id: Option<String>,
-    client_secret: Option<String>,
-    tenant: Option<String>,
+    name: Option<String>,
+    provider: Option<Provider>,
+    own: OwnClient,
     port: u16,
     paste: bool,
 ) -> Result<()> {
+    let mut file = load_or_empty()?;
+    // `mecha-mail auth` alone asks which kind and what to call it — what
+    // `mecha setup` runs, so a yes there leads to a sign-in page rather than
+    // to a command line to complete (the owner, 2026-10-12).
+    let (name, provider) = match (name, provider) {
+        (Some(n), Some(p)) => (n, p),
+        (name, provider) => {
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                bail!(
+                    "name the account and its provider: `mecha-mail auth <name> --provider \
+                     google|outlook`"
+                );
+            }
+            ask_account(&mut std::io::stdin().lock(), &file, name, provider)?
+        }
+    };
     // Said rather than silently ignored: a person who passed `--paste` is
     // telling us they have no browser here, and letting that pass unmentioned
     // on a flow that never needed one invites them to think it did something.
@@ -1280,10 +1511,45 @@ async fn auth(
              which already needs no browser on this machine."
         );
     }
-    let mut file = load_or_empty()?;
     register(&mut file, &name, provider)?;
     let path = accounts::credentials_path(&name)?;
-    let client = resolve_client(provider, &name, &file, client_id, client_secret, tenant)?;
+    let client = match own.json {
+        Some(path) => {
+            anyhow::ensure!(
+                provider == Provider::Google,
+                "--client-json is a Google client file; Outlook takes --client-id and --tenant"
+            );
+            google_client_file(&path)?
+        }
+        None => match resolve_client(provider, &name, &file, own.id, own.secret, own.tenant)? {
+            Some(client) => client,
+            // Nothing named and nothing stored: a person registers their own
+            // app, walked through it, rather than being handed a flag to go
+            // and find (the owner, 2026-10-12).
+            None => {
+                use std::io::IsTerminal;
+                if !std::io::stdin().is_terminal() {
+                    bail!(
+                        "no sign-in app for {provider} yet: run `mecha-mail auth` at a terminal \
+                         to register one (a few minutes, once), or pass --client-id{}",
+                        match provider {
+                            Provider::Google => " and --client-secret, or --client-json",
+                            Provider::Outlook => " and --tenant",
+                        }
+                    );
+                }
+                let downloads = mecha_mail::wizard::downloads_dir();
+                register_own_app(
+                    &mut std::io::stdin().lock(),
+                    provider,
+                    downloads.as_deref(),
+                    &|url| {
+                        mecha_mail::builtin::open_browser(url);
+                    },
+                )?
+            }
+        },
+    };
 
     let creds = match provider {
         Provider::Google => {
@@ -1461,5 +1727,155 @@ mod tests {
             "a slot free on the event's account but busy on another must still collide"
         );
         assert_eq!(reverify_scope(None), None);
+    }
+
+    fn entry(name: &str, provider: Provider) -> AccountEntry {
+        AccountEntry {
+            name: name.into(),
+            provider,
+            grant_lifetime_days: None,
+        }
+    }
+
+    /// `mecha-mail auth` alone: Enter twice is a Google account called
+    /// `personal`, the second kind defaults to `work`, a default never names
+    /// an account that exists, and end of input signs nothing in.
+    #[test]
+    fn a_bare_auth_asks_the_kind_and_a_name() {
+        let empty = accounts::AccountsFile::default();
+        let ask = |input: &str, file: &accounts::AccountsFile| {
+            ask_account(
+                &mut std::io::Cursor::new(input.to_string()),
+                file,
+                None,
+                None,
+            )
+        };
+        assert_eq!(
+            ask("\n\n", &empty).unwrap(),
+            ("personal".into(), Provider::Google)
+        );
+        assert_eq!(
+            ask("2\n\n", &empty).unwrap(),
+            ("work".into(), Provider::Outlook)
+        );
+        let mut file = accounts::AccountsFile::default();
+        file.accounts.push(entry("personal", Provider::Google));
+        assert_eq!(
+            ask("1\n\n", &file).unwrap(),
+            ("gmail".into(), Provider::Google)
+        );
+        // A name another provider holds is refused, and asked again.
+        assert_eq!(
+            ask("2\npersonal\nCampus\n", &file).unwrap(),
+            ("campus".into(), Provider::Outlook)
+        );
+        assert!(ask("", &empty).is_err());
+        assert!(ask("1\n", &empty).is_err());
+        // Whatever was given on the command line is not asked.
+        assert_eq!(
+            ask_account(
+                &mut std::io::Cursor::new(String::new()),
+                &empty,
+                Some("home".into()),
+                Some(Provider::Google)
+            )
+            .unwrap(),
+            ("home".into(), Provider::Google)
+        );
+    }
+
+    /// With nothing named and nothing stored there is no client — mail ships
+    /// none — and the wizard runs; an explicit id still wins.
+    #[test]
+    fn a_first_account_has_no_client_until_one_is_registered() {
+        if ["GMAIL_CLIENT_ID", "OUTLOOK_CLIENT_ID"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some())
+        {
+            return;
+        }
+        let empty = accounts::AccountsFile::default();
+        let name = "nobody-signed-in-as-this";
+        for provider in [Provider::Google, Provider::Outlook] {
+            assert!(resolve_client(provider, name, &empty, None, None, None)
+                .unwrap()
+                .is_none());
+        }
+        let own = resolve_client(
+            Provider::Google,
+            name,
+            &empty,
+            Some("mine.apps.googleusercontent.com".into()),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(own.client_id, "mine.apps.googleusercontent.com");
+    }
+
+    /// Google: every page is opened in order, and the client comes from the
+    /// file the last step downloaded — or from a path pasted when the
+    /// download is somewhere else.
+    #[test]
+    fn the_google_wizard_ends_at_the_downloaded_client() {
+        let dir = std::env::temp_dir().join(format!("mecha-wiz-g-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let opened = std::cell::RefCell::new(Vec::new());
+        let open = |u: &str| opened.borrow_mut().push(u.to_string());
+        let steps = mecha_mail::wizard::GOOGLE.len();
+        // Nothing in Downloads: Enter once (still nothing), then a path.
+        let file = dir.join("elsewhere.json");
+        std::fs::write(
+            &file,
+            r#"{"installed":{"client_id":"9-z.apps.googleusercontent.com","client_secret":"s"}}"#,
+        )
+        .unwrap();
+        let input = format!("{}\n{}\n", "\n".repeat(steps), file.display());
+        let empty_downloads = dir.join("dl");
+        std::fs::create_dir_all(&empty_downloads).unwrap();
+        let got = register_own_app(
+            &mut std::io::Cursor::new(input),
+            Provider::Google,
+            Some(&empty_downloads),
+            &open,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let got = got.unwrap();
+        assert_eq!(got.client_id, "9-z.apps.googleusercontent.com");
+        assert_eq!(got.tenant, None);
+        assert_eq!(opened.borrow().len(), steps);
+        // `q` stops, and so does end of input.
+        let stop = |input: &str| {
+            register_own_app(
+                &mut std::io::Cursor::new(input.to_string()),
+                Provider::Google,
+                None,
+                &|_| {},
+            )
+            .is_err()
+        };
+        assert!(stop("q\n"));
+        assert!(stop("\n"));
+    }
+
+    /// Outlook: two ids pasted, a malformed one asked again, and Enter for
+    /// the directory is `common`.
+    #[test]
+    fn the_outlook_wizard_takes_two_ids() {
+        let steps = mecha_mail::wizard::MICROSOFT.len();
+        let id = "12345678-0000-4000-8000-0123456789ab";
+        let input = format!("{}not-an-id\n{id}\n\n", "\n".repeat(steps));
+        let got = register_own_app(
+            &mut std::io::Cursor::new(input),
+            Provider::Outlook,
+            None,
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(got.client_id, id);
+        assert_eq!(got.tenant.as_deref(), Some("common"));
+        assert!(got.client_secret.is_empty());
     }
 }

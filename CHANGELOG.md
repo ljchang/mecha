@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Signing in is a page in your browser.** `mecha-docs auth` signs in with
+  mecha's own Drive app, so Google Docs needs no Cloud console project.
+  `mecha-mail auth` with nothing after it asks Google or Outlook and a name,
+  and, the first time, walks you through registering your own sign-in app
+  (mail ships none: a shared Gmail client would be a phishing kit under mecha's
+  name), opening each console page in turn and picking up Google's downloaded
+  client file; `--client-json` takes that file directly. `mecha setup` runs it
+  on a yes. Sign-in pages now open on macOS too (`open`; it used `xdg-open`
+  only), and Outlook's device-code page opens in the browser where there is one.
+
 - **Picture settings for chat.** Settings → Images sets how pictures are
   drawn in every chat: model, steps, guidance, sampler, scheduler and the
   negative prompt. A persona's picture settings now fall back to these
@@ -58,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you already run on `:7860` is left alone and used as it is.
 
 ### Changed
+
+- **`mecha setup` no longer opens an editor for the charter.** A yes
+  ran `mecha charter edit`, which took over the terminal mid-setup and ended
+  setup wherever the editor left it. The step now says where to write it
+  (`mecha charter edit`, or Settings → Charter) and setup carries on.
 
 - **A local provider with no `model` asks for what its server serves.** A
   `[providers.local]` on this machine that names no `model` used to send

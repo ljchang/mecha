@@ -13,6 +13,7 @@
 
 pub mod accounts;
 pub mod bookings;
+pub mod builtin;
 pub mod freebusy;
 pub mod google;
 pub mod http;
@@ -24,6 +25,7 @@ pub mod time;
 pub mod token;
 pub mod types;
 pub mod unified;
+pub mod wizard;
 
 /// Logging to **stderr only** — stdout belongs to the MCP transport, and a
 /// stray log line there is a protocol error.

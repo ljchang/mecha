@@ -142,9 +142,10 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Resolve client credentials: explicit flags, then a downloaded client JSON,
+/// Resolve client credentials: a downloaded client JSON, then explicit flags,
 /// then whatever the stored grant already used — so re-authenticating after a
-/// revoked grant needs no flags, the rule the mail binaries already follow.
+/// revoked grant needs no flags, the rule the mail binaries already follow —
+/// and last mecha's own Drive client, so a first sign-in needs nothing.
 fn resolve_client(
     account: &str,
     client_id: Option<String>,
@@ -154,32 +155,19 @@ fn resolve_client(
     if let Some(path) = client_json {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let json: serde_json::Value = serde_json::from_str(&raw)?;
-        anyhow::ensure!(
-            json.get("web").is_none(),
-            "that is a Web-application client. The picker and the loopback \
-             redirect both require a Desktop-app client."
-        );
-        let cfg = json.get("installed").unwrap_or(&json);
-        let id = cfg["client_id"]
-            .as_str()
-            .context("no client_id in the client JSON")?;
-        return Ok((
-            id.to_string(),
-            cfg["client_secret"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        ));
+        return mecha_mail::wizard::read_google_client_json(&raw)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()));
     }
-    let stored = token::load(&docs::store_path(account)?).ok();
-    let id = client_id
-        .or_else(|| stored.as_ref().map(|c| c.client_id.clone()))
-        .context("no client id: pass --client-id, --client-json, or set MECHA_DOCS_CLIENT_ID")?;
-    let secret = client_secret
-        .or_else(|| stored.as_ref().map(|c| c.client_secret.clone()))
-        .unwrap_or_default();
-    Ok((id, secret))
+    // An explicit id, then the stored grant's own client (a re-sign-in keeps
+    // its registration), then mecha's own — never a mix of two clients' halves.
+    if let Some(id) = client_id {
+        return Ok((id, client_secret.unwrap_or_default()));
+    }
+    if let Ok(stored) = token::load(&docs::store_path(account)?) {
+        return Ok((stored.client_id, stored.client_secret));
+    }
+    let builtin = mecha_mail::builtin::GOOGLE_DOCS;
+    Ok((builtin.id.to_string(), builtin.secret.to_string()))
 }
 
 /// The one browser leg, shared by `auth` and `pick` because they differ only
@@ -252,14 +240,9 @@ async fn consent(
              or re-run with --paste and no tunnel is needed.\n",
             p = capture.port
         );
-        // Headless boxes have no DISPLAY, and xdg-open says so on stderr —
-        // which reads as this command failing when it has not. The URL above
-        // is the real interface; opening a browser is a convenience.
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        // The URL above is the real interface; opening a browser is a
+        // convenience, and on macOS it is `open`, not `xdg-open`.
+        mecha_mail::builtin::open_browser(&url);
         docs::wait_for_picker_redirect(capture.port, capture.timeout).await?
     };
 
