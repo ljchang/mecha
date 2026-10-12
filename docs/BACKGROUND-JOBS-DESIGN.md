@@ -588,6 +588,11 @@ nothing on the persona's surfaces that assumes the work is a picture.
   experiment file. Off by default, so no server's tools reach a persona until the owner says
   so. Each persona still names the tools it wants, and the persona registry still refuses a
   `Chosen` one.
+- **Read-only, as a persona's run is.** The persona agent's approver is read-only, so the
+  persona registry refuses, by name, any form that says it changes things, rather than offering
+  a tool every call of which is then blocked. Every built-in persona tool already declares
+  read-only. A server's tool must declare `readOnlyHint` to be given to a persona, as
+  `image_generate` declares read-only for writing a new picture into the chat's own folder.
 - **The persona form says who is asking.** `McpTool::for_persona_as` clones the tool with the
   `PersonaSelf`, and its background calls carry `_meta["mecha-factory.ai/persona"]`: the
   persona's folder name and its linked library character, never its prompt, its display name

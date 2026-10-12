@@ -1987,7 +1987,7 @@ impl PersonaChats {
         let pinned = persona_agent::load_version(&self.store, &p.name, &pin.digest)
             .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
         let bound = chat.follower.current();
-        let (_, refused) = self.agent_for(&bound, &pinned).map_err(failed)?;
+        let (agent, refused) = self.agent_for(&bound, &pinned).map_err(failed)?;
         // A goal set at open and never sent — the chat was opened and left.
         let goal = pin.goal.filter(|_| conversation.messages.is_empty());
         // A chat picked back up re-anchors on its first turn.
@@ -2020,12 +2020,13 @@ impl PersonaChats {
         // A picture still "being made" when the server stopped: no job is
         // behind it now (a chat leaves this map only with the process), so
         // the result is settled by what the workspace holds.
-        // Over the install's pool, the persona's tools' source: a picture
+        // Over the persona's own registry, the one its runs call: a picture
         // always, a deferring tool such as an MCP server's background tool
-        // (§9), and one a restart removed (review of #666).
-        let bound = chat.follower.current();
+        // (§9), and one a restart removed (review of #666) — while the tools
+        // only a persona has (its files, its memory) keep their words, which
+        // the assistant's pool would have taken for orphans (review of #668).
         super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
-            super::late::may_be_orphan(bound.agent.registry(), name)
+            super::late::may_be_orphan(agent.registry(), name)
         });
         sessions.insert(
             key.clone(),
@@ -9956,13 +9957,13 @@ mod tests {
             let mut sessions = w.chat.personas.sessions.lock().await;
             let ps = sessions.get_mut(&key).unwrap();
             let turn = vec![
-                // A tool the pool still holds, and that does not defer: only
+                // A tool the persona's own registry holds, and that does not defer: only
                 // then are its words its own (an unregistered one may be a
                 // restart's orphan, review of #666).
                 Message::user("echo it"),
                 Message::assistant(vec![Block::ToolUse {
                     id: "s1".into(),
-                    name: "fs_read".into(),
+                    name: "file_read".into(),
                     input: serde_json::json!({}),
                 }]),
                 Message::tool_results(vec![Block::ToolResult {

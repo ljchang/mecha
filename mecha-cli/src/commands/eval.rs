@@ -1235,6 +1235,17 @@ fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>
                     path.display()
                 );
             }
+            // `personas` vouches too, that the server reads no private store
+            // (BACKGROUND-JOBS-DESIGN.md §9): same door, same rule (review of
+            // #668).
+            if std::mem::take(&mut server.personas) {
+                eprintln!(
+                    "note: `{}` in {} sets personas, which is ignored — \
+                     only the global config may offer a server to personas",
+                    server.name,
+                    path.display()
+                );
+            }
             server
         })
         .collect())
@@ -2060,12 +2071,15 @@ mod tests {
         let toml_path = scratch.0.join("mcp.toml");
         std::fs::write(
             &toml_path,
-            "[[mcp]]\nname = \"mail\"\ncommand = \"python3\"\ntrust_result_claims = true\n",
+            "[[mcp]]\nname = \"mail\"\ncommand = \"python3\"\ntrust_result_claims = true\npersonas = true\n",
         )
         .unwrap();
         let servers = load_mcp_file(&toml_path).unwrap();
         assert_eq!(servers.len(), 1, "the server itself still loads");
         assert!(!servers[0].trust_result_claims);
+        // Nor offer one to personas (BACKGROUND-JOBS-DESIGN.md §9, review of
+        // #668).
+        assert!(!servers[0].personas);
     }
 
     #[test]

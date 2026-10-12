@@ -56,6 +56,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // unknown, and `--json` says `null` rather than a `false` a script would
     // read as "no" (review of #290 — a dash is never zero).
     let unattributable = vouched.iter().any(|s| s.prefix_tools == Some(false));
+    // Servers offered to persona chats (`[[mcp]] personas`), named for the
+    // same reason: the switch is the owner vouching that a server reads no
+    // private store (BACKGROUND-JOBS-DESIGN.md §9).
+    let offered: Vec<&mecha_core::config::McpServerConfig> = prepared
+        .config
+        .mcp
+        .iter()
+        .filter(|s| s.personas && !s.disabled)
+        .collect();
+    let offered_to_personas = |name: &str| {
+        offered
+            .iter()
+            .any(|s| s.prefix_tools != Some(false) && name.starts_with(&format!("{}__", s.name)))
+    };
+    let offered_unattributable = offered.iter().any(|s| s.prefix_tools == Some(false));
 
     if args.json {
         let specs: Vec<_> = registry
@@ -76,6 +91,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "result_claims_believed": if claims_believed(t.name()) {
                         serde_json::Value::Bool(true)
                     } else if unattributable {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::Bool(false)
+                    },
+                    // A persona chat may be given this tool, on the owner's
+                    // word about its server — see `[[mcp]] personas`.
+                    "offered_to_personas": if offered_to_personas(t.name()) {
+                        serde_json::Value::Bool(true)
+                    } else if offered_unattributable {
                         serde_json::Value::Null
                     } else {
                         serde_json::Value::Bool(false)
@@ -115,7 +139,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         );
     }
-    if !vouched.is_empty() {
+    for s in &offered {
+        println!(
+            "offered to persona chats: `{}` (personas){}",
+            s.name,
+            if s.prefix_tools == Some(false) {
+                " — its tools are unprefixed, so not marked below"
+            } else {
+                ""
+            }
+        );
+    }
+    if !vouched.is_empty() || !offered.is_empty() {
         println!();
     }
 
