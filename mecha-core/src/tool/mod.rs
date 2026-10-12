@@ -8,6 +8,7 @@ pub mod ask;
 pub mod builtin;
 pub mod document;
 pub mod goal_context;
+pub mod hud;
 pub mod image_library;
 pub mod image_view;
 pub mod persona_propose;
@@ -653,6 +654,17 @@ pub struct ToolCtx {
     /// tainted): a subagent's context, or any run wired outside the loop,
     /// must never pass as a clean sender by omission.
     pub taint: Option<crate::agent::Taint>,
+    /// The conversation's taint as recorded *before* this turn's batch ran:
+    /// what the model had read when it wrote this turn's calls. Every record
+    /// of authorship reads this — the `Origin` of a proposed board, persona,
+    /// character or style (`hud_propose`, `persona_propose`,
+    /// `image_library_propose`) — because `taint` above
+    /// folds in what the batch *can* return, including the calling tool's
+    /// own declaration, so a proposer that declares `untrusted_input` would
+    /// otherwise always record itself untrusted (review of #659). Never a
+    /// send gate: that is `taint`'s job. `None` is unstamped, and a reader
+    /// fails closed.
+    pub recorded_taint: Option<crate::agent::Taint>,
     /// What the next request is predicted to cost, as of this turn.
     ///
     /// Run-scoped state a tool may read, like `taint` and `call_id` — and like
@@ -986,6 +998,7 @@ impl Default for ToolCtx {
             withheld: std::sync::Arc::from(Vec::new()),
             call_id: None,
             taint: None,
+            recorded_taint: None,
             context: None,
             work: None,
             compact_requested: None,

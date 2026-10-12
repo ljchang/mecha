@@ -42,6 +42,24 @@ pub enum Cmd {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Boards a conversation proposed (`hud_propose`), waiting for the
+    /// owner: each one's title, datasets, queries, and what to accept it by.
+    Proposals {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a proposed board — or replace the board installed under its
+    /// id — exactly as `proposals` showed it: `--shown` is the digest it
+    /// printed, so a revision made since is refused rather than installed
+    /// unseen. The board is refreshed straight after.
+    Accept {
+        id: String,
+        /// The digest `mecha hud proposals` printed for it (12+ characters).
+        #[arg(long)]
+        shown: String,
+    },
+    /// Set a proposed board aside.
+    Reject { id: String },
     /// Stage a board's release on the factory in the outbox: the page, the
     /// renderer, the checked spec and each loader's columns and digest. The
     /// owner's release is the review (`mecha outbox show`, then `send`);
@@ -96,6 +114,16 @@ pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
             }
             Err(r) => refused(&r),
         },
+        Cmd::Proposals { json } => proposals(&store, json),
+        Cmd::Accept { id, shown } => accept(&store, &id, &shown),
+        Cmd::Reject { id } => {
+            if store.reject(&id)? {
+                println!("rejected the proposal {id:?}");
+                Ok(())
+            } else {
+                bail!("no proposal {id:?} is waiting (`mecha hud proposals`)")
+            }
+        }
         Cmd::Publish { id, public } => publish(&store, &id, public),
         Cmd::Refresh { id, due, json } => refresh(&store, id, due, json),
     }
@@ -115,6 +143,139 @@ fn id_for(dir: &std::path::Path, id: Option<String>) -> Result<String> {
 fn refused(r: &Refusals) -> Result<()> {
     eprintln!("{r}");
     bail!("refused: {} problem(s)", r.0.len())
+}
+
+/// The short digest a proposal is accepted by: long enough that two
+/// revisions never share it by chance, short enough to type.
+const SHOWN_CHARS: usize = 12;
+
+fn proposals(store: &Store, json: bool) -> Result<()> {
+    let ids = store.proposal_ids()?;
+    let mut rows = Vec::new();
+    for id in &ids {
+        match store.proposal(id)? {
+            None => {}
+            Some(Err(r)) => rows.push(serde_json::json!({
+                "id": id, "refusals": r.0.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+            })),
+            Some(Ok(p)) => {
+                let loaders: Vec<_> = p
+                    .installed
+                    .loaders()
+                    .iter()
+                    .map(|(name, l)| {
+                        serde_json::json!({
+                            "name": name, "source": l.source(), "query": l.query(),
+                        })
+                    })
+                    .collect();
+                rows.push(serde_json::json!({
+                    "id": id,
+                    "title": p.installed.spec().title(),
+                    "replaces": p.replaces,
+                    "proposed_at": p.meta.proposed_at,
+                    "origin": p.meta.origin,
+                    "digest": p.draft.digest(),
+                    "loaders": loaders,
+                }));
+            }
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("no proposals waiting");
+        return Ok(());
+    }
+    for r in rows {
+        let id = r["id"].as_str().unwrap_or_default();
+        if let Some(refusals) = r["refusals"].as_array() {
+            println!("{id}  (does not pass its checks)");
+            for x in refusals {
+                println!("    {}", x.as_str().unwrap_or_default());
+            }
+            continue;
+        }
+        let replaces = if r["replaces"] == true {
+            " — replaces the installed board"
+        } else {
+            ""
+        };
+        let untrusted = if r["origin"] == "model_untrusted" {
+            " — drafted in a conversation that had read third-party content"
+        } else {
+            ""
+        };
+        println!(
+            "{id}  {}{replaces}{untrusted}",
+            r["title"].as_str().unwrap_or_default()
+        );
+        for l in r["loaders"].as_array().into_iter().flatten() {
+            println!(
+                "    {} (from {}):",
+                l["name"].as_str().unwrap_or_default(),
+                l["source"].as_str().unwrap_or_default()
+            );
+            for line in l["query"].as_str().unwrap_or_default().trim().lines() {
+                println!("        {line}");
+            }
+        }
+        let digest = r["digest"].as_str().unwrap_or_default();
+        println!(
+            "    accept: mecha hud accept {id} --shown {}   ·   reject: mecha hud reject {id}",
+            &digest[..SHOWN_CHARS.min(digest.len())]
+        );
+    }
+    Ok(())
+}
+
+fn accept(store: &Store, id: &str, shown: &str) -> Result<()> {
+    if shown.len() < SHOWN_CHARS {
+        bail!("--shown takes the {SHOWN_CHARS}-character digest `mecha hud proposals` printed");
+    }
+    // The prefix the owner read, widened to the digest it names now — and
+    // to nothing, so the store refuses, if the proposal moved since.
+    let digest = match store.proposal(id)? {
+        Some(Ok(p)) if p.draft.digest().starts_with(shown) => p.draft.digest(),
+        _ => String::new(),
+    };
+    match store.accept(id, &digest, Utc::now())? {
+        Ok(accepted) => {
+            let verb = if accepted.replaced {
+                "replaced"
+            } else {
+                "installed"
+            };
+            println!("{verb} {:?} as {id}", accepted.installed.spec().title());
+            for o in &accepted.refreshed {
+                print_outcome(o);
+            }
+            Ok(())
+        }
+        Err(r) => refused(&r),
+    }
+}
+
+fn print_outcome(o: &Outcome) {
+    match &o.event {
+        Event::Refreshed {
+            rows, generation, ..
+        } => {
+            println!(
+                "{}/{}: {rows} row(s), generation {generation}",
+                o.board, o.loader
+            )
+        }
+        Event::Refused { reason, .. } => {
+            println!("{}/{}: REFUSED — {reason}", o.board, o.loader)
+        }
+        Event::Failed { reason, .. } => {
+            println!("{}/{}: FAILED — {reason}", o.board, o.loader)
+        }
+        Event::Installed => {}
+    }
 }
 
 fn list(store: &Store, json: bool) -> Result<()> {
@@ -183,23 +344,7 @@ fn refresh(store: &Store, id: Option<String>, due: bool, json: bool) -> Result<(
         println!("{}", serde_json::to_string_pretty(&outcomes)?);
     } else {
         for o in &outcomes {
-            match &o.event {
-                Event::Refreshed {
-                    rows, generation, ..
-                } => {
-                    println!(
-                        "{}/{}: {rows} row(s), generation {generation}",
-                        o.board, o.loader
-                    )
-                }
-                Event::Refused { reason, .. } => {
-                    println!("{}/{}: REFUSED — {reason}", o.board, o.loader)
-                }
-                Event::Failed { reason, .. } => {
-                    println!("{}/{}: FAILED — {reason}", o.board, o.loader)
-                }
-                Event::Installed => {}
-            }
+            print_outcome(o);
         }
         if outcomes.is_empty() && broken == 0 && due {
             // The timer's common case, said once so a journal reader knows it ran.
