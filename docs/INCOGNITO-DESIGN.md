@@ -56,7 +56,7 @@ build order is §9.
 machine holds anything derived from it** — its text, its tool inputs or
 outputs, its uploads, its images, its title, or the fact that it happened.
 
-Three limits, stated because a promise that overreaches is the
+Its limits, stated because a promise that overreaches is the
 silently-degrading guard in another costume:
 
 - **Other parties see what they see.** A web search reaches the search engine;
@@ -68,6 +68,12 @@ silently-degrading guard in another costume:
   copied out, a reply downloaded as a file, a screenshot.
 - **llama-server's cache holds the conversation in RAM** until its slot is
   reused or the server restarts — a process, not a file (§6.2).
+- **What the owner keeps on purpose under R3 outlives the chat.** A persona
+  proposed from the room, and an image-library character or style proposed
+  or saved from it, are written to the mecha home, always locked — a
+  character with its portrait, so that picture's bytes survive the close.
+  Unlike a download this is a server-side write, which is why each door is
+  named in R3 and §3.3 and nothing else is.
 
 ---
 
@@ -80,7 +86,7 @@ silently-degrading guard in another costume:
 | **R3** | **Local + read my data:** mail, calendar and graph reads are allowed; writes of any kind outside the chat's own folder are refused. *One exception, ruled 2026-10-01 (owner): `persona_propose` may stage a persona — "these will likely be locked profiles". It is staged behind the library lock (`ToolCtx::stage_locked`) and reaches no prompt until the owner approves it on the Personas page, so it is a write the owner keeps on purpose, not a trace of the chat. A second, ruled 2026-10-12 (owner): the image library, both doors always locked whatever the model or the box says. `image_library_propose` stages a candidate on exactly persona_propose's terms — hidden until unlocked, in no prompt until approved — so a persona proposed here can have a portrait. The chat card's Save to library is the owner's own act and, as from any chat, approved on creation: the lock hides it while browsing, but the lock is a browse filter (IMAGE-COMPILER-DESIGN §1), so the saved character's name and description are in the next chat's `image_library` and its portrait in generation. A character carries its portrait, so the picture's bytes leave the room with it, kept on purpose. A canary scan of the whole mecha home after an incognito run (§8) has these legitimate paths out of the room* |
 | **R4** | **Web search allowed, with a notice** shown before the first search |
 | **R5** | **Idle timeout: 30 minutes** |
-| **R6** | Images are deleted from disk when the session closes — including the image server's copies and the browser's cache |
+| **R6** | Images are deleted from disk when the session closes — including the image server's copies and the browser's cache. *Except a portrait the owner keeps in the image library under R3's second exception (2026-10-12), which is the library's from then on, locked (§1's limits)* |
 
 ---
 

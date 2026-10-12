@@ -841,10 +841,10 @@ pub struct SaveBody {
 /// it is open, so a pointer would not survive), the seed read from its
 /// manifest, and `mecha imagelib add-character` does the rest. The owner's
 /// own act, so the entry is approved on creation — locked when it comes from
-/// an incognito chat ([`save_locked`]). Every answer is `no-store`, as
-/// `source`'s answer is: the key rides in the body, so the middleware's
-/// incognito path needle never sees it, and a reply names the entry
-/// (INCOGNITO-DESIGN §8: `no-store` on every incognito route).
+/// an incognito chat ([`save_locked`]). Every answer is `no-store` (`source`
+/// marks its own answer the same way): the key rides in the body, so the
+/// middleware's incognito path needle never sees it, and a reply names the
+/// entry (INCOGNITO-DESIGN §8: `no-store` on every incognito route).
 pub async fn save(state: St, body: Json<SaveBody>) -> Response {
     no_store(save_unmarked(state, body).await)
 }
