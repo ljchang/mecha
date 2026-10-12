@@ -1591,6 +1591,48 @@ async fn prepare_tools_carrying(
             Err(e) => eprintln!("mecha: system_read not registered — {e:#}"),
         }
     }
+    // The dashboard tools (LIVE-DASHBOARD-DESIGN.md §5.3, the owner's ruling
+    // R18): all three read-only, so a web chat drafts in its default mode.
+    // Only where a source is registered — with none, no dashboard can read
+    // anything. The store is global only (`~/.mecha/hud`), as the library's
+    // is. `[tools]` narrows them like any builtin: `hud_propose` writes into
+    // the mecha home with no approver, so its off switch must work.
+    let hud_named = ["hud_sources", "hud_preview", "hud_propose"]
+        .iter()
+        .any(|t| asked_for(t));
+    match mecha_core::hud::Store::open() {
+        Err(e) if hud_named => {
+            eprintln!("mecha: the dashboard tools are not registered — {e:#}")
+        }
+        Err(_) => {}
+        Ok(store) => {
+            let has_source = matches!(store.sources(), Ok(Ok(s)) if s.names().next().is_some());
+            if has_source {
+                use mecha_core::tool::hud::{HudPreview, HudPropose, HudSources};
+                let asked = |name: &str| {
+                    (opts.tools.is_empty() || asked_for(name)) && cfg.tools.registers(name)
+                };
+                if asked("hud_sources") {
+                    registry.insert(Arc::new(HudSources::new(store.clone())));
+                }
+                if asked("hud_preview") {
+                    registry.insert(Arc::new(HudPreview::new(store.clone())));
+                }
+                if asked("hud_propose") {
+                    registry.insert(Arc::new(HudPropose::new(store)));
+                }
+            } else if hud_named {
+                // Why, as the store says it: a file that does not load is not
+                // an absent one (review of #659, pass 5).
+                let why = match store.sources() {
+                    Ok(Ok(_)) => "no source is registered in ~/.mecha/hud/sources.toml".to_string(),
+                    Ok(Err(r)) => format!("~/.mecha/hud/sources.toml does not load: {r}"),
+                    Err(e) => format!("~/.mecha/hud/sources.toml could not be read: {e:#}"),
+                };
+                eprintln!("mecha: the dashboard tools are not registered — {why}");
+            }
+        }
+    }
     // `image_view` reaches no server, so it is not `[image]`'s: it is how any
     // model with eyes looks at a workspace picture — a result, or an
     // attachment it was not shown (found on review of #365). Only for such a

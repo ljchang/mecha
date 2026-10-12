@@ -120,7 +120,13 @@ impl Tool for PersonaPropose {
             .unwrap_or_default()
             .trim()
             .to_lowercase();
-        let (origin, locked) = (Origin::of_proposal(ctx.taint.as_ref()), ctx.stage_locked);
+        // What the conversation had read before this turn's batch
+        // (`ToolCtx::recorded_taint`), not the send gate's union of the
+        // batch's reach (review of #659).
+        let (origin, locked) = (
+            Origin::of_proposal(ctx.recorded_taint.as_ref()),
+            ctx.stage_locked,
+        );
         let (dir, library) = (self.dir.clone(), self.library.clone());
         let made = tokio::task::spawn_blocking(move || {
             // A key the call sent, as a string — `None` when it was left
@@ -221,6 +227,7 @@ mod tests {
     fn ctx(taint: Option<Taint>, stage_locked: bool) -> ToolCtx {
         ToolCtx {
             taint,
+            recorded_taint: taint,
             stage_locked,
             ..Default::default()
         }

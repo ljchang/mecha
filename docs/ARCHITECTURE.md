@@ -5976,7 +5976,22 @@ the owner's rulings; this section is the invariants a change to
 - **Never in layered config.** Boards live in `~/.mecha/hud/boards/<id>/`; a
   loader is a cron slot over private data, and a cloned repository must not
   bring one. Installing is the owner's act; the id is checked before it is
-  joined, and an installed id is never overwritten.
+  joined, and an installed id is never overwritten except by the owner
+  accepting a proposed replacement.
+- **A conversation drafts through read-only tools, and only the owner
+  installs** (`tool/hud.rs`, `hud/draft.rs`, R18). The draft is the tools'
+  input, never workspace files, so a read-only web chat can draft. A preview
+  is checked by `Installed::load_dir` and run by `draft::fetch`, the refresh's
+  own path, so a draft that previews clean is one that installs and
+  refreshes; keep them one path. `hud_propose` stages in
+  `~/.mecha/hud/proposals/` and never touches `boards/`. It returns no
+  source value and declares no reach, and it records its `Origin` from
+  `ToolCtx::recorded_taint`. `ToolCtx::taint` is the send gate's union,
+  which includes the proposer's own declaration and would mark every
+  proposal untrusted. An accept names the
+  digest the owner was shown, recomputed from the files, so a revision in
+  between is refused. A replacement carries the ledger, which keeps publish
+  generations monotonic, and the publish markers.
 - **The renderer is ours, and nothing agent-authored executes in it**
   (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
   inline `style=`, no link: `web/test/hud.mjs` scans the source for each.

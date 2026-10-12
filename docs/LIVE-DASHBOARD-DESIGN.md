@@ -39,6 +39,7 @@ Not to be re-asked.
 | R15 | **The name is `hud`.** `mecha serve` already calls its whole web surface "the dashboard", so every identifier this feature owns is `hud`: the CLI (`mecha hud …`), the route (`#hud/<id>`, `/api/hud`), the store (`~/.mecha/hud/`), the module (`mecha_core::hud`), the tool (`hud_preview`), the spec file (`hud.json`) and the factory template (`hud/`). "Dashboard" stays the plain-English noun in prose. (Ruled 2026-10-09.) |
 | R16 | **A private page that outlives its grant asks for sign-in again.** The factory's view grant covers `/b/{id}/data/` as well as the version the page loaded; when it expires the page keeps the last numbers, marks them stale and says "sign in again". No refresh path and no new token type: a shared link never outlives its 60 minutes (§6.4, §10 item 2). (Ruled 2026-10-11.) |
 | R17 | **The web outbox previews a dashboard publish in this arc** — §6.5's separate preview origin and sandboxed frame are built with step 5, not deferred, so a release can be reviewed from the phone. (Ruled 2026-10-11.) |
+| R18 | **A conversation drafts a board with tools that work in a read-only chat.** The draft is the tools' *input* — the spec and each loader's TOML — never files in a workspace: `hud_sources` (each registered source's tables, a few recent rows of each, the boards, and the drafting guide; with a query, its rows), `hud_preview` (every check, and every loader run once, returning row counts, shapes and first rows), and `hud_propose` (stages the draft for the owner's one-tap install on the Dashboards page, on `persona_propose`'s footing). The screenshot preview of §5.3 follows as its own PR. The owner: "the whole point of this feature is that there is a tool for the agent to draft boards itself." (Ruled 2026-10-12; amends §5.3.) |
 
 ---
 
@@ -570,6 +571,47 @@ batch runs, when nothing yet knows which sources a spec will name:
   itself must reach nothing — which step 6 pins with a loopback-only origin
   and no other network (§8).
 
+**How a draft actually arrives (R18, 2026-10-12).** The paragraphs above
+assumed the model writes `hud.json` and `loaders/` with the file tools. A web
+chat starts read-only, where `fs_write` is refused, and the first attempt on
+2026-10-12 also had no way to learn a source's tables: it spent its whole
+budget searching the web for a table that exists only on this machine. So the
+draft is the tools' input instead, and three read-only tools carry it
+(`mecha-core/src/tool/hud.rs`):
+
+- **`hud_sources`** — each registered source's tables, as SQLite keeps their
+  `CREATE` text, with each table's two newest rows (the cheapest way to show a
+  format, such as `at` being `YYYY-MM-DD HH:MM:SS`); the boards installed and
+  proposed; and the drafting guide (`hud/authoring.md`, whose worked example a
+  test checks and runs). With `source` and `query`, one query's first 20 rows.
+- **`hud_preview`** — `id`, `spec` and `loaders`, written to a scratch
+  directory under the store and checked by `Installed::load_dir`, the same
+  path an installed board takes; then each loader runs once through
+  `draft::fetch`, which is the refresh's own path, refactored out of it. It
+  returns every refusal by name, or each dataset's row count, columns and
+  first rows, with a warning for an empty dataset or an all-NULL column. With
+  `id` alone it returns that board's current files — a waiting proposal first,
+  else the installed board — so a conversation can revise one.
+- **`hud_propose`** — the same input; it must preview clean. It stages the
+  draft in `~/.mecha/hud/proposals/<id>/` with each dataset's rows at that
+  moment and `proposal.json` (when, the conversation's recorded taint as an
+  `Origin`, and the draft's digest). The same id again revises it, and at most
+  `draft::MAX_PENDING` wait. An installed board's id proposes a replacement.
+
+`hud_sources` and `hud_preview` declare `private` and `untrusted` and mark a
+result `from_outside` when a source it read is external; egress stays `None`
+because every runnable source is a local file. `hud_propose` returns nothing
+read from a source: a staged draft is named by its datasets, a refused one by
+its refusals and each loader's reason, which never carry a value. So it
+declares no reach. That is what keeps its record honest. The proposal's
+`Origin` comes from `ToolCtx::recorded_taint`, the conversation as recorded
+*before* the turn's batch, not from `ToolCtx::taint`. The latter is the
+send gate's conservative union and folds in every batched tool's declared
+reach, so a proposal read from it was always "untrusted" (review of #659). A
+waiting proposal read back by `hud_preview` is marked `from_outside` unless
+its origin is clean. None of the three is in an incognito chat's
+allowlist.
+
 **Installing is the owner's act.** `mecha hud install <dir>` copies a
 draft into `~/.mecha/hud/boards/<id>/` and enables its loaders. The `<id>` is
 the draft directory's own name unless the owner passes `--id`, and it is
@@ -597,7 +639,20 @@ readout is a closed enum (§3.1), so neither has an effect to review.
 
 The proposals pane is laid out for three stores ("short enough to sit
 three-across on a phone"); a fourth means revisiting that layout, not only
-adding a store.
+adding a store. **As built (R18), a proposed board is reviewed on the
+Dashboards page instead** (`#hud/proposed:<id>`), because the reviewable
+object is the board itself: it is drawn there with the rows it had when
+proposed, beside each query and a warning when the conversation had read
+outside text, with Install (or Replace) and Reject. Install posts back the
+digest the page was given, and the store recomputes it from the files, so a
+proposal revised after the owner looked is refused (409) and reloaded, never
+installed unseen. `mecha hud proposals` / `accept <id> --shown <digest>` /
+`reject <id>` are the same from a terminal. Accepting a replacement keeps
+the board's ledger, so generations keep counting for a publish's pushes, and
+its publish markers; it drops the old datasets and refreshes at once. A
+published board's changed loaders are not pushed until it is republished
+(`Plan::LoaderChanged`, which the timer reports by name). The proposals pane, `backlog.rs` and `/queues` do not
+list board proposals yet.
 
 ---
 
@@ -755,7 +810,7 @@ after the factory path is proven.
 | 3 ⧗ | The renderer, both builds (web app and standalone) — *built, §8.3* | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
 | 4 ⧗ | *Routes and `#hud` built with step 3 (§8.3); the proposals store waits for authoring.* Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
-| 6 | `hud_preview` and the visual loop | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
+| 6 ⧗ | `hud_preview` and the visual loop — *the text half built (R18): `hud_sources`, `hud_preview`, `hud_propose`, the proposals store and the Dashboards review; the headless screenshot is still to come* | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `hud_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `hud_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
