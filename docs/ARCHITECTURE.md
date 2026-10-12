@@ -10213,7 +10213,9 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       (a published crate cannot reach `scripts/`). A test holds each one
       byte-equal to the hand install's copy (`the_shipped_*_is_the_scripts_copy`,
       `the_shipped_units_are_the_scripts`), so a fix made in one reaches the
-      other or fails.
+      other or fails. A unit that must be renamed or placeholdered cannot be
+      byte-equal, so its test compares the parts that must agree instead
+      (`the_idle_units_keep_the_hand_installs_schedule_and_path`).
     - Rendered from placeholders into absolute paths under the mecha home.
       Nothing names a checkout or a home directory.
     - Every file goes through `llama_units::write_owned`, which refuses a
