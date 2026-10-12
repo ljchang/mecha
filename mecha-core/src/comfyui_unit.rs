@@ -454,16 +454,22 @@ pub async fn install(
     // the install — here, before anything is started or checked, so the
     // caller's later steps (the `[image]` table) are left for a re-run rather
     // than skipped behind a running server (review of #661). A reinstall's
-    // server was enabled by the install before, so it is disabled: a boot
-    // must not bring back a server with no reset (review of #661, pass 2). A
+    // server was enabled and may be running, so it is stopped and disabled:
+    // neither now nor at boot does a server run with no reset (review of
+    // #661, passes 2 and 3). A
     // tick before the server answers finds nothing to release.
     let timer = format!("{idle}.timer");
     if let Err(e) = crate::engine_gate::systemctl("enable", &["--now", &timer]) {
-        let _ = crate::engine_gate::systemctl("disable", &[&service]);
+        // `--now`: a reinstall's server may be running, and a running server
+        // with no reset is the state this branch exists to refuse (review of
+        // #661, pass 3).
+        let stopped = match crate::engine_gate::systemctl("disable", &["--now", &service]) {
+            Ok(()) => format!("{service} was stopped and disabled"),
+            Err(stop) => format!("{service} could NOT be stopped ({stop:#})"),
+        };
         return Err(e).context(format!(
             "{timer}, the idle reset, could not be started, so a loaded model would stay in \
-             memory — nothing was started and {service} will not start at boot; run \
-             `systemctl --user status {timer}` to see why"
+             memory — {stopped}; run `systemctl --user status {timer}` to see why"
         ));
     }
     crate::engine_gate::systemctl("enable", &[&service])?;
