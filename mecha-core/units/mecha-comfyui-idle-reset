@@ -90,7 +90,7 @@ esac
 # is the server's own state (often a restart in progress), so it is said,
 # not failed.
 if ! queue=$(curl -s --max-time 5 "$url/queue"); then say "holds ${held} MiB but $url/queue did not answer: left alone"; exit 0; fi
-if ! python3 -c '
+if ! python3 -I -c '
 import json, sys
 q = json.loads(sys.argv[1])
 # The keys are required: a reply that parses but is not a queue (a proxy'"'"'s

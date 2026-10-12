@@ -472,7 +472,12 @@ pub async fn install(
              memory — {stopped}; run `systemctl --user status {timer}` to see why"
         ));
     }
-    crate::engine_gate::systemctl("enable", &[&service])?;
+    if let Err(e) = crate::engine_gate::systemctl("enable", &[&service]) {
+        // Every exit agrees: no timer ticks across reboots against a server
+        // that never starts (review of #661, pass 4).
+        let _ = crate::engine_gate::systemctl("disable", &["--now", &timer]);
+        return Err(e);
+    }
     // A restart, not `enable --now`, so a reinstall reaches a running server;
     // a failed restart or check stops it before the install says so (#639).
     let checked = match crate::engine_gate::systemctl("restart", &[&service]) {
@@ -1011,6 +1016,34 @@ mod tests {
     fn the_shipped_idle_reset_is_the_scripts_copy() {
         let script = include_str!("../../scripts/comfyui/comfyui-idle-reset");
         assert_eq!(IDLE_RESET, script);
+    }
+
+    /// The units beside the script are renamed and placeholdered, so they
+    /// cannot be byte-equal to the hand install's — but what must agree does:
+    /// the `[Timer]` schedule, and the `PATH` the script's `nvidia-smi`,
+    /// `curl`, `ss` and `python3` resolve through (review of #661, pass 4).
+    #[test]
+    fn the_idle_units_keep_the_hand_installs_schedule_and_path() {
+        let timer_body = |t: &str| -> String {
+            t.lines()
+                .skip_while(|l| l.trim() != "[Timer]")
+                .take_while(|l| !l.starts_with("[Install]"))
+                .filter(|l| !l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let path_line = |t: &str| -> String {
+            t.lines()
+                .find(|l| l.starts_with("Environment=PATH="))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let hand_timer = include_str!("../../scripts/comfyui/mecha-comfyui-idle-reset.timer");
+        let hand_service = include_str!("../../scripts/comfyui/mecha-comfyui-idle-reset.service");
+        assert!(timer_body(hand_timer).contains("OnUnitActiveSec="));
+        assert_eq!(timer_body(IDLE_TIMER), timer_body(hand_timer));
+        assert!(!path_line(hand_service).is_empty());
+        assert_eq!(path_line(IDLE_SERVICE), path_line(hand_service));
     }
 
     /// The timer runs the script under this home against this unit and port,
