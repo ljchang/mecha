@@ -269,9 +269,14 @@ impl TokenManager {
     /// (a re-auth between two reads would pair one login's address with
     /// another's tokens).
     pub fn with_credentials(path: PathBuf, creds: StoredCredentials) -> Self {
+        // The shipped client refreshes with this build's secret, so a rotation
+        // reaches grants saved before it (`builtin::secret_for`).
+        let secret = crate::builtin::secret_for(&creds.client_id)
+            .map(str::to_string)
+            .unwrap_or_else(|| creds.client_secret.clone());
         let config = crate::google::auth::google_oauth_config(
             creds.client_id.clone(),
-            creds.client_secret.clone(),
+            secret,
             crate::google::auth::DEFAULT_REDIRECT_PORT,
         );
         TokenManager {
@@ -398,6 +403,34 @@ impl TokenManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grant made with the shipped client refreshes with this build's
+    /// secret, not the stale copy saved beside it — the rotation `builtin`'s
+    /// doc promises, measured (review of #663). Any other client keeps its own.
+    #[test]
+    fn the_shipped_client_refreshes_with_this_builds_secret() {
+        let creds = |id: &str| StoredCredentials {
+            client_id: id.into(),
+            client_secret: "GOCSPX-stale".into(),
+            tenant: None,
+            access_token: String::new(),
+            refresh_token: "r".into(),
+            expires_at: 0,
+            account: None,
+            granted_scopes: None,
+            granted_at: None,
+        };
+        let secret =
+            |id: &str| match TokenManager::with_credentials("/x".into(), creds(id)).refresher {
+                Refresher::Google(c) => c.client_secret,
+                Refresher::Microsoft { .. } => unreachable!(),
+            };
+        assert_eq!(
+            secret(crate::builtin::GOOGLE_DOCS.id),
+            crate::builtin::GOOGLE_DOCS.secret
+        );
+        assert_eq!(secret("mine.apps.googleusercontent.com"), "GOCSPX-stale");
+    }
 
     fn creds() -> StoredCredentials {
         StoredCredentials {

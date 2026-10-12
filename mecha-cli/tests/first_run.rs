@@ -448,9 +448,14 @@ fn a_fresh_install_is_told_about_its_charter() {
     let charter = step(&steps(&mecha(&home, &["setup", "--json"])), "charter").clone();
 
     assert_eq!(charter["status"], "missing");
-    assert_eq!(
-        charter["remedy"]["argv"],
-        serde_json::json!(["mecha", "charter", "edit"])
+    // Named, never run: setup opens no editor for it (an editor mid-setup
+    // ended setup wherever the editor left it, 2026-10-12).
+    assert!(charter["remedy"].is_null(), "{charter}");
+    assert!(
+        charter["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("mecha charter edit")),
+        "{charter}"
     );
     // The offer describes what a charter is; it must not read as a
     // suggested priority. A priority mecha proposed is one a model could

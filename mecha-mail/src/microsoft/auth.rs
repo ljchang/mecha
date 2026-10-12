@@ -286,11 +286,17 @@ pub async fn device_flow(
     let device = request_device_code(&tenant, &client_id, &client).await?;
 
     // The whole point of device code: the human signs in wherever they have a
-    // browser, which need not be this machine.
+    // browser, which need not be this machine — but where this machine has
+    // one, the page is opened for them and only the code is left to type.
     eprintln!(
         "\nTo sign in, open {} on any device\nand enter this code:\n\n    {}\n",
         device.verification_uri, device.user_code
     );
+    // What launched is said, not what appeared: `open` succeeds on a Mac
+    // reached over SSH, where no browser shows (review of #663).
+    if crate::builtin::open_browser(&device.verification_uri) {
+        eprintln!("(asked your browser to open it — if it did, enter the code there)\n");
+    }
 
     let mut last_line = 0i64;
     let tokens = poll_for_token(&tenant, &client_id, &device, &client, |remaining| {
