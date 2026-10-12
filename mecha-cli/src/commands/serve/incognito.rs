@@ -287,7 +287,7 @@ fn runtime_rooms() -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_tmpfs(path: &Path) -> Result<bool> {
+pub(super) fn is_tmpfs(path: &Path) -> Result<bool> {
     use std::os::unix::ffi::OsStrExt;
     const TMPFS_MAGIC: i64 = 0x0102_1994;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
@@ -301,7 +301,7 @@ fn is_tmpfs(path: &Path) -> Result<bool> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn is_tmpfs(_: &Path) -> Result<bool> {
+pub(super) fn is_tmpfs(_: &Path) -> Result<bool> {
     // No portable way to know here; refusing is the honest answer.
     Ok(false)
 }

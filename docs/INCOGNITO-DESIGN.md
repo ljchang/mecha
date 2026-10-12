@@ -135,7 +135,7 @@ mark, not in this design.
 | `http_fetch` | The request reaches whatever host the model named | Allowed, and refused by the interlock once the chat holds private and untrusted content (§5.1) |
 | `persona_propose` | A candidate persona under `~/.mecha/personas/<name>/`: the model's `identity.md`, `motivation.md` and `persona.toml`, and its `state.toml` | Allowed, staged locked (R3's exception, 2026-10-01): nothing reaches a prompt before the owner approves it as shown |
 | `image_library_propose` | A candidate under `~/.mecha/imagelib/`: its entry file, and a character's portrait blob | Allowed, staged locked (R3's second exception, 2026-10-12): a candidate is never compiled into a prompt nor listed to the model, and the Library tab hides it until unlocked |
-| Save to library (the chat card) | An approved character under `~/.mecha/imagelib/`, with the picture as its portrait | Allowed, always locked (R3's second exception, 2026-10-12): the owner's own act, so approved on creation; `serve/library.rs::save_locked` locks it whatever the box sends |
+| Save to library (the chat card) | An approved character under `~/.mecha/imagelib/`, with the picture as its portrait | Allowed, always locked (R3's second exception, 2026-10-12): the owner's own act, so approved on creation; `serve/library.rs::save_locked` locks it whatever the box sends. The copy the save stages for its child goes in the room, never the host temp directory (`/tmp` may be a disk), and a room that is not tmpfs refuses the save (`scratch_parent`) |
 | Hooks | `pre_tool`/`post_tool` receive tool input and output; `session_end` runs `distill` | Not run — and a configured `pre_tool` hook refuses the chat, since skipping a deny gate would widen it |
 
 ### 3.4 Other processes

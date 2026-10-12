@@ -842,9 +842,9 @@ pub struct SaveBody {
 /// manifest, and `mecha imagelib add-character` does the rest. The owner's
 /// own act, so the entry is approved on creation — locked when it comes from
 /// an incognito chat ([`save_locked`]). Every answer is `no-store`, as
-/// `source`'s is: the key rides in the body, so the middleware's incognito
-/// path needle never sees it, and a reply names the entry (INCOGNITO-DESIGN
-/// §8: `no-store` on every incognito route).
+/// `source`'s answer is: the key rides in the body, so the middleware's
+/// incognito path needle never sees it, and a reply names the entry
+/// (INCOGNITO-DESIGN §8: `no-store` on every incognito route).
 pub async fn save(state: St, body: Json<SaveBody>) -> Response {
     no_store(save_unmarked(state, body).await)
 }
@@ -863,6 +863,10 @@ async fn save_unmarked(State(state): St, Json(body): Json<SaveBody>) -> Response
     let ws = match super::chat::attachment_workspace(&state, &body.key, false).await {
         Ok(ws) => ws,
         Err(response) => return *response,
+    };
+    let scratch = match scratch_parent(&body.key, &ws) {
+        Ok(dir) => dir,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{why}\n")).into_response(),
     };
     let path = body.path.clone();
     enum Staged {
@@ -890,7 +894,7 @@ async fn save_unmarked(State(state): St, Json(body): Json<SaveBody>) -> Response
             )))
         };
         match read() {
-            Ok(Some((bytes, seed))) => match tempdir::Dir::new()
+            Ok(Some((bytes, seed))) => match tempdir::Dir::new_in(&scratch)
                 .and_then(|d| std::fs::write(d.file(), &bytes).map(|_| d))
             {
                 Ok(dir) => Staged::Ready(dir, seed),
@@ -946,6 +950,28 @@ async fn save_unmarked(State(state): St, Json(body): Json<SaveBody>) -> Response
     response
 }
 
+/// Where a save stages its copy of the picture for the child. An incognito
+/// chat's goes in its room — beside the jail, never in it, and removed with
+/// the room — and only while the room is RAM: the host temp directory is
+/// commonly a disk (this machine's `/tmp` is ext4), where an unlinked copy
+/// stays recoverable after the room is gone, and R3's exception covers the
+/// library entry, not a scratch copy (review of #657, pass 3). A room that
+/// is not tmpfs refuses the save rather than falling through to the disk,
+/// as `incognito::images_forgettable` withholds `image_generate`. Any other
+/// chat stages in the host temp directory, as before.
+fn scratch_parent(key: &str, ws: &std::path::Path) -> Result<PathBuf, &'static str> {
+    if !super::incognito::is_incognito_key(key) {
+        return Ok(std::env::temp_dir());
+    }
+    let room = ws
+        .parent()
+        .ok_or("this incognito chat has no room to stage the picture in")?;
+    match super::incognito::is_tmpfs(room) {
+        Ok(true) => Ok(room.to_path_buf()),
+        _ => Err("this incognito chat's room is not in RAM, so the picture was not staged"),
+    }
+}
+
 /// A private scratch directory for one staged portrait, removed on drop.
 mod tempdir {
     use std::path::{Path, PathBuf};
@@ -954,7 +980,12 @@ mod tempdir {
 
     impl Dir {
         pub fn new() -> std::io::Result<Dir> {
-            let dir = std::env::temp_dir().join(format!("mecha-libsave-{}", uuid::Uuid::new_v4()));
+            Dir::new_in(&std::env::temp_dir())
+        }
+
+        /// One under `parent`, which must already exist.
+        pub fn new_in(parent: &Path) -> std::io::Result<Dir> {
+            let dir = parent.join(format!("mecha-libsave-{}", uuid::Uuid::new_v4()));
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
@@ -1584,6 +1615,37 @@ mod route_tests {
         assert!(save_locked("main", true));
     }
 
+    #[test]
+    fn an_incognito_save_never_stages_on_the_host_temp_dir() {
+        let incognito = "incognito-0123456789abcdef012345";
+        assert_eq!(
+            scratch_parent("main", std::path::Path::new("/anywhere/main")),
+            Ok(std::env::temp_dir())
+        );
+        // A room wherever this machine's temp directory is: staged in it
+        // only when that is RAM, and refused — never the host temp
+        // directory — when it is not.
+        let room = std::env::temp_dir().join(format!("mecha-room-{}", uuid::Uuid::new_v4()));
+        let ws = room.join(incognito);
+        std::fs::create_dir_all(&ws).unwrap();
+        let got = scratch_parent(incognito, &ws);
+        match super::super::incognito::is_tmpfs(&room) {
+            Ok(true) => assert_eq!(got, Ok(room.clone())),
+            _ => assert!(got.is_err(), "{got:?}"),
+        }
+        assert_ne!(got, Ok(std::env::temp_dir()));
+        std::fs::remove_dir_all(&room).ok();
+        // And a room that is RAM stages in it, where one can be made.
+        let shm = std::path::Path::new("/dev/shm");
+        if super::super::incognito::is_tmpfs(shm).unwrap_or(false) {
+            let room = shm.join(format!("mecha-room-{}", uuid::Uuid::new_v4()));
+            let ws = room.join(incognito);
+            std::fs::create_dir_all(&ws).unwrap();
+            assert_eq!(scratch_parent(incognito, &ws), Ok(room.clone()));
+            std::fs::remove_dir_all(&room).ok();
+        }
+    }
+
     #[tokio::test]
     async fn an_incognito_key_reaches_the_save_and_source_routes() {
         // No such chat is open, so each answers as any unknown chat does —
@@ -1606,6 +1668,24 @@ mod route_tests {
                 .and_then(|v| v.to_str().ok()),
             Some("no-store"),
             "the key rides in the body, out of the middleware's sight"
+        );
+        let incognito_body = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        // The same answer an ordinary chat that is not open gets: unknown,
+        // never refused for being incognito.
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/save",
+                serde_json::json!({"key": "notopen", "path": "images/a.png",
+                                   "name": "x", "description": "y"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap(),
+            incognito_body
         );
         let r = f
             .app
