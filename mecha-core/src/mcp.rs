@@ -1197,6 +1197,10 @@ for line in sys.stdin:
 
     impl Slow {
         async fn start(name: &str) -> Slow {
+            Slow::start_with(name, false).await
+        }
+
+        async fn start_with(name: &str, personas: bool) -> Slow {
             let root =
                 std::env::temp_dir().join(format!("mecha-mcp-slow-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
@@ -1210,6 +1214,7 @@ for line in sys.stdin:
                 command: "python3".into(),
                 args: vec![script.display().to_string(), log.display().to_string()],
                 prefix_tools: Some(false),
+                personas,
                 ..Default::default()
             };
             let client = McpClient::connect(&cfg, &unconfined(), &root)
@@ -1477,6 +1482,50 @@ for line in sys.stdin:
         assert!(late.is_error);
         assert!(late.content.starts_with("not made:"), "{}", late.content);
         assert!(!late.external, "the harness's words, quoting nothing");
+    }
+
+    /// A persona is offered a server's tools only on the owner's word
+    /// (`personas` in its `[[mcp]]` entry), never on the server's; and its
+    /// form tells a background call which persona is asking, so `self` can
+    /// mean its character (BACKGROUND-JOBS-DESIGN.md §9).
+    #[tokio::test]
+    async fn a_persona_gets_a_servers_tools_only_on_the_owners_word() {
+        let who = crate::tool::PersonaSelf {
+            name: "mara".into(),
+            display: "Mara".into(),
+            character: Some("maya".into()),
+        };
+        let closed = Slow::start_with("persona-closed", false).await;
+        assert!(closed.tool("render").for_persona_as(&who).is_none());
+        assert!(closed.tool("render").for_persona().is_none());
+
+        let open = Slow::start_with("persona-open", true).await;
+        let form = open.tool("render").for_persona_as(&who).expect("offered");
+        assert_eq!(form.name(), "render", "the persona form keeps its name");
+        assert!(form.defers());
+        let out = form
+            .call(json!({"mode": "ok"}), &open.ctx(open.root.join("chat-1")))
+            .await
+            .unwrap();
+        crate::jobs::run_inline(&out.deferred.unwrap(), None).await;
+        let meta = &open.calls()[0]["params"]["_meta"];
+        assert_eq!(meta[PERSONA_META]["name"], "mara");
+        assert_eq!(meta[PERSONA_META]["character"], "maya");
+        assert!(
+            meta[PERSONA_META].get("display").is_none(),
+            "who is asking, never more"
+        );
+
+        // The assistant's own form says nothing about a persona.
+        let out = open
+            .tool("render")
+            .call(json!({"mode": "ok"}), &open.ctx(open.root.join("chat-1")))
+            .await
+            .unwrap();
+        crate::jobs::run_inline(&out.deferred.unwrap(), None).await;
+        assert!(open.calls()[1]["params"]["_meta"]
+            .get(PERSONA_META)
+            .is_none());
     }
 
     #[test]
