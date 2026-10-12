@@ -1,5 +1,11 @@
 # Features — design
 
+> **Status (2026-10-12):** step 7 is built through 7e-2: the installed
+> ComfyUI gets the hand install's idle reset. **Step 8 is written:**
+> `ARCHITECTURE.md` §Features → *Adding a feature* holds the checklist, and
+> `CLAUDE.md` holds one bullet pointing at it. What is still owed is the
+> clean-container test under "How to know it works".
+>
 > **Status (2026-10-10):** 7c-2 merged as #618; F12 (a local default) and F13
 > (`enable` never installs the chat model) are one PR (#627), and F14 — the
 > guided setup, §11 — is built on it. The status below is as of 2026-10-05.
@@ -89,7 +95,7 @@
 > commit, the converted weights and a default voice fetched by sha256 from
 > their published repository, the adapter from a hash lock, two rendered
 > units, checked by speaking a sentence) — is built. Step 8 is unbuilt
-> (step 7 redesigned in §10). The
+> (step 7 redesigned in §10); both are done as of the 2026-10-12 status above. The
 > feature set rides on the session record and, since the owner's ruling
 > of 2026-10-01, in every experiment row's condition hash —
 > the environment's digest held every switch but `search`, which follows
@@ -1698,9 +1704,18 @@ Step 7 becomes these, each a PR that leaves every feature working:
   picture settings choose it (`turbo_wanted`); `[image] turbo_model` is
   never a reason, since it has a default. The guided setup never downloads
   it, nor reinstalls a server to link it, because its one yes was to what
-  it listed (F14). Owed: the idle reset
-  (`scripts/comfyui/comfyui-idle-reset` and its timer) for the installed
-  unit, as 7e-2.
+  it listed (F14). **7e-2, the idle reset, built:** the install also writes
+  `scripts/comfyui/comfyui-idle-reset` (a copy in the binary, held
+  byte-equal by a test) and `mecha-comfyui-idle.{service,timer}` pointed at
+  its own unit and port. It starts the timer before the server, so a timer
+  that cannot start stops the install before anything runs, and a failed
+  check stops both; `comfyui_unit::remove` stops the timer before the
+  server. The name differs from the hand install's
+  `mecha-comfyui-idle-reset` so both can sit on one machine. An install
+  made before 7e-2 reads complete, so `enable` does not re-run it, and
+  nothing reports the missing timer (`doctor` sees only *failed* units).
+  None is known: 7e merged on 2026-10-11 and this machine runs the
+  hand-built server. If one turns up, reinstalling it brings the timer.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
   default since 2026-10-03 — built (`speech_unit.rs`). The owner ruled on
   2026-10-11 to publish both halves, so neither is converted at install:
