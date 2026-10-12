@@ -210,10 +210,12 @@ fifteen-minute unload timer lives in the mecha process that drew the picture, so
 one-shot `mecha run`, or a `mecha serve` restarted inside the window, exits
 before it fires — on the GB10, 11.9 GiB was still held nine hours after a
 picture drawn just before a restart — and on unified memory its `/free` only
-moves the weights into ComfyUI's process memory. `scripts/comfyui/install.sh`
-installs a one-minute timer that restarts an idle ComfyUI holding a model,
-which brings it to ~1.1 GB; the next picture reloads the model in ~15–22 s.
-Without it, count image generation's peak if you use it at all.
+moves the weights into ComfyUI's process memory. `mecha features enable image`
+does this for you: beside the server it installs, `mecha-comfyui-idle.timer`
+checks every minute and restarts ComfyUI once it has held a model unused for
+15 minutes, which brings it to ~1.1 GB; the next picture reloads the model in
+~15–22 s. A hand install gets the same timer from `scripts/comfyui/install.sh`.
+Without one, count image generation's peak if you use it at all.
 
 By default `image_generate` refuses to start with less than 28 GiB available
 when ComfyUI holds no model: `[image] min_available_mb` (20 GiB) plus the
@@ -253,7 +255,10 @@ you a picture.
 ### A Mac
 
 A Mac mini or Studio with generous unified memory is a reasonable dedicated
-box, and llama.cpp's Metal backend is well supported.
+box, and llama.cpp's Metal backend is well supported. mecha's own installers
+are Linux-only, though: on a Mac you start `llama-server` yourself, and the
+image and voice servers are yours to run too — see
+[Installation](/docs/getting-started/installation#on-a-mac).
 
 :::note Unmeasured here
 No Mac measurements exist in this project — every throughput number on this
@@ -274,8 +279,10 @@ Two Mac-specific notes that do transfer:
 
 ## What to do once you have chosen
 
-Do not type the numbers from this page into your config. Start the server, then
-let mecha read them back:
+Do not type the numbers from this page into your config. On Linux,
+`mecha setup chat` installs the model recommended for this machine's memory
+and writes its settings for you. With a server you started yourself, let
+mecha read them back:
 
 ```bash
 mecha setup --write

@@ -57,7 +57,8 @@ you. And that is precisely the assistant it is most dangerous to build.
 
 Context is the whole differentiator, so it is worth being concrete about where
 it comes from. None of this is required — mecha is useful with none of it — and
-each is wired in separately.
+each is wired in separately, as a feature that stays off until you switch it on
+(`mecha setup` asks about each).
 
 | | What it gives the model | How |
 |---|---|---|
@@ -185,7 +186,9 @@ web app on your tailnet, bound to loopback and opened by your network identity
 rather than a password. That is the one that runs on a phone, where most
 reviewing actually happens, and it is the only door
 [voice](/docs/features/interfaces/voice) opens through: a call speaks into the
-conversation already on screen. There is a live, clickable copy of it on
+conversation already on screen. The web app is built from a git checkout
+rather than installed with the binary, and mecha installs voice's speech
+server only on Linux with an NVIDIA GPU. There is a live, clickable copy of it on
 [the web surface page](/docs/features/interfaces/web).
 
 **The pilot — you.** Anything the agent would send passes through
@@ -214,7 +217,8 @@ A few more pieces that the rest of the documentation covers in full:
   your turn, for a model that can see.
 - **[Image generation](/docs/features/tools/image-generation)** — pictures
   drawn by an image model on your own machine, saved into the conversation's
-  workspace.
+  workspace. mecha installs the image server on Linux with an NVIDIA GPU;
+  elsewhere you run your own.
 - **[Incognito chat](/docs/features/interfaces/incognito)** — a web chat that
   leaves no transcript, no title and no file once it closes, and runs only on
   the local model.
@@ -227,9 +231,12 @@ A few more pieces that the rest of the documentation covers in full:
 ## Keeping track of unfinished work
 
 [Today and workflows](/docs/features/automation/workflows) connect a delegated task to its
-conversation, questions, drafts, and completion checks. Today groups urgent
-items, decisions, verified results, and waiting work on the web home screen;
-`mecha workflow today` reads the same priorities from the terminal.
+conversation, questions, drafts, and completion checks. The web home is
+counts, not lists: *Waiting on you* counts the mail that needs you, the drafts
+in the outbox, the questions a run is waiting on and your open tasks, and
+*Review queues* counts everything else waiting for a decision. The workflows
+themselves live under Tasks, and `mecha workflow today` groups their urgent
+items, decisions, verified results and waiting work in the terminal.
 
 A draft is not a delivery, and a final answer is not proof that a task finished.
 You can require an artifact check or confirmed outbox delivery before closing a
@@ -322,12 +329,12 @@ or edits your charter.
   you, and recommended configurations by tier.
 - [Setting up](/docs/getting-started/setting-up) — point it at a model, and let
   `mecha setup` read the settings back off the server rather than typing them.
-- [First run](/docs/getting-started/first-run) — one-shot, a REPL, and
-  full-screen.
+- [First run](/docs/getting-started/first-run) — one-shot, a REPL,
+  full-screen, and the browser.
 - [The web surface](/docs/features/interfaces/web) — `mecha serve` on your tailnet, live
   on the page and clickable.
 - [Voice](/docs/features/interfaces/voice) — talking to it out loud, and why that door is
-  narrow.
+  narrow. Its installer needs Linux and an NVIDIA GPU.
 - [Configuration](/docs/getting-started/configuration) — the layered TOML, and
   the settings that matter early.
 - [Security model](/docs/features/security) — read this before giving an agent

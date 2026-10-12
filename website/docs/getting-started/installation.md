@@ -1,7 +1,7 @@
 ---
 title: Installation
 sidebar_position: 1
-description: Install mecha from crates.io with cargo, build it from source, and add the optional dependencies for the sandbox and the eval fixtures.
+description: Install mecha from crates.io with cargo, switch on what you want with mecha setup, know which parts are Linux-only, and add the optional dependencies for the sandbox and the eval fixtures.
 ---
 
 # Installation
@@ -34,23 +34,26 @@ at build time. Nothing else is required to build.
 ## Installing
 
 ```bash
-cargo install mecha-cli --locked      # installs `mecha` into ~/.cargo/bin
+cargo install mecha-cli mecha-mail --locked   # installs into ~/.cargo/bin
 ```
 
-The crate is `mecha-cli`; the binary it installs is named `mecha`, and that is
-the name every command in these docs uses. `--locked` builds against the
-dependency versions the release was tested with rather than resolving fresh
-ones.
+`mecha-cli` installs the binary named `mecha`, which is the name every command
+in these docs uses. `mecha-mail` installs the mail, calendar and documents
+servers (`mecha-mail`, `mecha-google`, `mecha-outlook`, `mecha-docs`); nothing
+else needs them, so leave the crate off if you will never want mail or Google
+Docs. `--locked` builds against the dependency versions the release was tested
+with rather than resolving fresh ones.
 
-Mail and calendar tools come from a second crate, and are optional — nothing
-else needs it:
+The knowledge graph is a separate project with its own crates, and is not part
+of that command:
 
 ```bash
-cargo install mecha-mail --locked     # mecha-mail, mecha-google, mecha-outlook, mecha-docs
+cargo install mecha-graph mecha-graph-mcp --locked   # the CLI, and the MCP server mecha talks to
 ```
 
-See [Mail and calendar](/docs/features/tools/mail) and
-[Documents](/docs/features/tools/documents) for setup.
+See [Mail and calendar](/docs/features/tools/mail),
+[Documents](/docs/features/tools/documents) and [Memory](/docs/features/memory)
+for what each needs after it is installed.
 
 Check what landed:
 
@@ -59,11 +62,68 @@ mecha --version
 mecha tools            # runs without any provider configured
 ```
 
+## Then run `mecha setup`
+
+```bash
+mecha setup
+```
+
+At a terminal, `mecha setup` is one guided pass: the chat model first, then
+each optional feature with what it does and what it downloads, answered `y`,
+`N` or `never`, then one summary of everything you said yes to and one
+`Start?`, then the sign-ins those features need. Nothing is downloaded or
+switched on before that `Start?`. [Setting up](/docs/getting-started/setting-up#3-mecha-setup)
+walks through it.
+
+**Every optional feature starts switched off.** Mail, documents, the graph,
+web search, PDF extraction, image generation, voice, the web app and the rest
+each have a switch in the `[features]` table of `~/.mecha/config.toml`, and a
+switch that is absent reads as off. `mecha setup` writes the ones you say yes
+to; `mecha features` lists them all with what each still needs, and
+`mecha features enable <id>` switches one on later. A project's `mecha.toml`
+cannot switch a feature on — only your global file can.
+
+## On a Mac
+
+mecha builds and runs on macOS, but the parts of it that install or supervise
+other programs are Linux-only today. What that means on a Mac:
+
+- **The local-model installer is Linux-only.** `mecha setup chat` installs
+  llama.cpp's router as a systemd user unit and refuses elsewhere. On a Mac,
+  start `llama-server` yourself and run `mecha setup --write` (see
+  [below](#a-local-model)), or use a hosted model.
+- **The sandbox is Docker only.** `[sandbox] kind = "bwrap"` and `"landlock"`
+  are Linux kernel features; on a Mac, `kind = "docker"` is the backend that
+  confines `shell`.
+- **No systemd user units.** The trigger runner, `mecha serve` as a service,
+  the Slack connector and the on-demand embeddings and OCR servers are shipped
+  as systemd units. On a Mac, run those commands yourself.
+- **The image and voice installers need Linux and an NVIDIA GPU.**
+  `mecha features enable image` and `mecha features enable voice` install
+  their servers only there; on a Mac each switches on for a server you start
+  yourself.
+- **The web app needs a git checkout and an npm build**, on any platform: the
+  pages are a build artifact and do not come with `cargo install` (see
+  [the web surface](/docs/features/interfaces/web#installing-the-app-itself)).
+
 ## Updating an existing install
 
-Repeat `cargo install mecha-cli --locked` (and `mecha-mail` if installed), then
-check `mecha --version` and `mecha <command> --help`. To install a specific
-release, add `--version <VERSION>` using the version you intend to run.
+Repeat `cargo install mecha-cli mecha-mail --locked` (leave off `mecha-mail` if
+you never installed it), then check `mecha --version` and
+`mecha <command> --help`. To install a specific release, add
+`--version <VERSION>` using the version you intend to run.
+
+:::note Upgrading to 0.1.23: switch on what you use
+Since 0.1.23 every optional feature has a switch in `[features]`, and an
+install from before then has none written, so each reads as off. Until you
+switch them on, mail and calendar, Google Docs, the knowledge graph, web
+search, PDF extraction, image generation, Slack, personas, voice and
+`mecha serve` stop working: their tools are not registered, their servers are
+not started and their commands refuse, each naming the command that fixes it.
+Run `mecha setup` and answer each, or `mecha features enable <id>` for the
+ones you want. A session's start also prints one line per feature this install
+had set up whose switch is still unanswered.
+:::
 
 These docs track the repository's main branch and can describe work listed as
 [Unreleased](/docs/changelog). If an option is absent from your binary's help,
@@ -149,8 +209,9 @@ a supervised CLI on a machine where the alternatives may not be installed.
 Confinement is opt-in through `[sandbox] kind`, and needs one of:
 
 ```bash
-sudo apt install bubblewrap      # kind = "bwrap"
-# or use Docker                  # kind = "docker"
+sudo apt install bubblewrap      # kind = "bwrap"     (Linux)
+# nothing to install             # kind = "landlock"  (Linux, kernel 6.2 or later)
+# or use Docker                  # kind = "docker"    (the only one on a Mac)
 ```
 
 `bwrap` uses unprivileged user namespaces and costs a few milliseconds per
@@ -159,7 +220,7 @@ user namespaces are locked down.
 
 On Ubuntu 23.10 and later, `bwrap` fails even when it is installed and
 `kernel.unprivileged_userns_clone=1`, because AppArmor gained a separate switch
-(`kernel.apparmor_restrict_unprivileged_userns=1`). Use `docker` there, or
+(`kernel.apparmor_restrict_unprivileged_userns=1`). Use `landlock` or `docker` there, or
 install an AppArmor profile.
 
 A configured sandbox that does not work is a startup failure, not a warning:
@@ -191,44 +252,42 @@ knowledge graph. The real one answers from live machine-local data, and a case
 graded against that measures nothing repeatable. See
 [Evaluation](/docs/features/experiments/evaluation).
 
-### A local model, if you want one
+### A local model
 
-mecha talks to any OpenAI-compatible endpoint, so this is optional — an
-Anthropic key is enough to start. If you want the model on your own machine,
-there are two pieces and the second is the one people miss.
-
-**The server.** [`llama.cpp`](https://github.com/ggml-org/llama.cpp) is what
-these docs assume; vLLM and Ollama also work. Build it or take a release
-binary, and check `llama-server --version` runs.
-
-**The weights, and the projector.** Model files are GGUFs from Hugging Face.
-Fetch one, and — if the model is multimodal — **fetch its `mmproj-*.gguf`
-too**, from the same repository:
+The default provider is a model on this machine: `mecha config init` (and
+`mecha setup`, which seeds the same file) writes `default_provider = "local"`
+and a `[providers.local]` table pointing at `http://127.0.0.1:8080`. Something
+has to be serving there, and on Linux mecha installs it:
 
 ```bash
-REPO=unsloth/Qwen3.6-35B-A3B-MTP-GGUF        # whatever you chose
-curl -L -O "https://huggingface.co/$REPO/resolve/main/mmproj-BF16.gguf"
+mecha setup chat
 ```
 
-That second file is the vision tower, it is not inside the weights, and
-without it the server runs happily and the model simply says it cannot see
-images. [Images](/docs/features/interfaces/images) is the whole story; if you only
-remember one thing, remember that a multimodal model is two files.
+That installs llama.cpp from a pinned release if the machine has no
+`llama-server` (building it where no release fits), fetches the model recommended for this machine's memory —
+or takes a GGUF you already have — and installs the router that serves it on
+`:8080` as a systemd user unit. It then reads the model's settings back off
+the server into `[providers.local]`. The guided `mecha setup` asks the same
+question first, so you rarely run it on its own. A server you already run on
+`:8080` is left alone.
 
-Then start it and let mecha read the settings off it rather than typing them:
+**Bringing your own server** — on a Mac, or with vLLM or Ollama — start it,
+then let mecha read the settings off it rather than typing them:
 
 ```bash
 llama-server -m model.gguf --mmproj mmproj-BF16.gguf --host 127.0.0.1 --port 8080 --jinja
 mecha setup --write        # writes model, context_window and vision from /props
 ```
 
-That last line writes a new `[providers.local]` only when the config has no
-local provider yet and the default provider has no API key — the case where
-nothing else could answer. If you already have, say, `ANTHROPIC_API_KEY`
-exported, `mecha setup --write` says no local server was checked; add
-`[providers.local]` with `kind = "local"` and `base_url =
-"http://127.0.0.1:8080"`, then run `mecha setup --write --provider local`. See
-[Setting up](/docs/getting-started/setting-up#if-a-server-is-already-running).
+If the model is multimodal, **fetch its `mmproj-*.gguf` too**, from the same
+Hugging Face repository as the weights. That second file is the vision tower,
+it is not inside the weights, and without it the server runs happily and the
+model simply says it cannot see images. [Images](/docs/features/interfaces/images)
+is the whole story.
+
+A hosted model needs no server: set `ANTHROPIC_API_KEY` and choose it in
+`mecha setup`, or see [Setting up](/docs/getting-started/setting-up#anthropic).
+Whatever a run sends then goes to Anthropic.
 
 [Serving a local model](/docs/features/models/serving) covers slots, what `-c`
 actually divides, and how to measure whether a restart made things slower.
@@ -243,6 +302,5 @@ the [configuration reference](/docs/reference/configuration).
 
 - [Choosing hardware](/docs/getting-started/hardware) — if you are still
   deciding what to run the model on, or what will fit in the memory you have.
-- [Setting up](/docs/getting-started/setting-up) — point mecha at a model, let
-  it read the settings back off the server, and wire in the context you want it
-  to have.
+- [Setting up](/docs/getting-started/setting-up) — the guided `mecha setup`
+  in full: the chat model, the features, and the context you want it to have.
