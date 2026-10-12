@@ -130,7 +130,7 @@
     {#each spec?.panels ?? [] as panel, i (i)}
       {@const st = stateOf(panel)}
       {@const fresh = freshness(panel)}
-      <section class="panel span-{spanOf(panel)}" class:text-panel={panel.type === 'text'} class:kpi-panel={panel.type === 'kpi'}>
+      <section class="panel span-{spanOf(panel)}" class:text-panel={panel.type === 'text'} class:kpi-panel={panel.type === 'kpi'} class:table-panel={panel.type === 'table'}>
         {#if panel.title}<h2>{panel.title}</h2>{/if}
         {#if panel.type === 'text'}
           <Text markdown={panel.markdown} />
@@ -211,7 +211,9 @@
   .span-3 { grid-column: span 3; }
   .span-4 { grid-column: span 4; }
   h2 { margin: 0; font-size: 13px; font-weight: 500; color: var(--hud-muted); }
-  .figure { margin: 0; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* A figure may be text (`last` over a string column): it wraps rather than
+     spilling into the panel beside it (review of #664). */
+  .figure { margin: 0; font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .note { margin: 0; font-size: 13px; color: var(--hud-muted); }
   .signin { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--hud-warn); color: var(--hud-warn); font-size: 13px; }
   .bad { color: var(--hud-bad); }
@@ -227,6 +229,7 @@
   @media (max-width: 560px) {
     .hud { padding: 12px; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .span-2, .span-3, .span-4, .text-panel { grid-column: span 2; }
+    /* A table is never a half-width strip (review of #664). */
+    .span-2, .span-3, .span-4, .text-panel, .table-panel { grid-column: span 2; }
   }
 </style>
