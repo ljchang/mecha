@@ -291,7 +291,10 @@
     padding: 4px 0;
     cursor: pointer;
   }
-  .list { padding: 20px var(--gutter, 20px); max-width: var(--measure, 880px); }
+  /* No max-width of its own: `--gutter` already centres the reading measure
+     on a wide window, and capping the box as well left the padding to eat
+     nearly all of it (a 140 px list on a 2000 px screen, 2026-10-12). */
+  .list { padding: 20px var(--gutter, 20px); box-sizing: border-box; width: 100%; }
   h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
   .intro { margin: 0 0 14px; font-size: 13px; color: var(--text-muted); }
   .intro code { font-family: var(--mono); font-size: 12px; }
