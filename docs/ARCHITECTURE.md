@@ -3205,6 +3205,22 @@ deployments should wire** — every account in `~/.mecha/mail/` behind one
 provider-neutral surface (`unified.rs`), so no mecha-core or mecha-cli code
 knows Google or Microsoft exists, and neither does the model.
 
+**Mail ships no sign-in client; each person registers their own, walked
+through it** (the owner, 2026-10-12). A shipped client is public by nature
+(§Documents), and for Gmail's *restricted* scope a public one is a phishing
+kit under mecha's name (an attacker's consent link, the victim pasting back
+the `localhost` address), a 100-user lifetime cap anyone can spend, and one
+suspension away from signing every user out at once — the owner's own mail
+included, if it were the owner's project. So when nothing names a client and
+no stored login has one, `mecha-mail auth` runs `mecha_mail::wizard`: Google
+Cloud's five console pages opened in turn, ending at the `client_secret_*.json`
+it picks up from Downloads (or `--client-json`; a file from the last day is
+offered first, so a sign-in that timed out is not the walk again), or Entra's
+registration ending at two pasted ids. The steps are data and the checks are
+functions, so what a person is told is tested; `every_step_has_a_page` holds
+the Entra permission list to `microsoft::auth::SCOPES`. Every later account
+reuses the registration through the stored-login fallback.
+
 **The model names an account, never a provider.** `accounts.toml` maps short
 names (`campus`, `personal`) to providers, `mecha-mail auth <name>
 --provider ...` adds one (`import` copies a legacy per-provider login in),
@@ -3393,6 +3409,30 @@ alternatives were priced and refused — `documents`/`spreadsheets`/
 `presentations` are *sensitive* (review, and no publishing until it passes),
 `drive` is *restricted* (annual paid assessment). `docs/DOCS-RESEARCH.md`
 carries the measurements.
+
+**One client ships, public by nature, and PKCE is what makes that
+survivable** (the owner, 2026-10-12). `mecha_mail::builtin::GOOGLE_DOCS` is
+the Drive project's Desktop client, used when nothing names one and no grant
+exists, so a first `mecha-docs auth` is a consent page and nothing more. A
+desktop client cannot keep a secret — every copy carries it, and Google's own
+installed-app guidance says so — so the secret is treated as public and the
+protection is elsewhere: the person's consent in their own browser, a redirect
+only this machine receives, and **PKCE on both legs** (`auth` and `pick`; the
+verifier kept in `PendingConsent`, its S256 in the URL), without which a code
+seen in transit would be redeemable by anyone holding the published id and
+secret. Three rules keep it honest:
+
+- **A grant that exists is never passed over.** A store that will not load is
+  a refusal, not a first sign-in: a grant under another client would drop
+  every picked document out of reach, since a grant is per *(user, client)*.
+  An explicit id without its secret is refused before the browser leg, not
+  as `invalid_client` after it.
+- **For the shipped id, this build's secret is authoritative**
+  (`builtin::secret_for`), never the copy saved beside a grant — at refresh
+  (`TokenManager::with_credentials`), sign-in and `pick`. Rotation is then a
+  release: add the new secret in the console, ship it, disable the old.
+  Signed-in accounts carry on; an older build stops refreshing until updated.
+- **Nothing else ships.** Mail's reasons are in §mecha-mail.
 
 **Not a fifth crate.** A crate here exists to make an invariant checkable in
 `Cargo.toml` (the `mecha-slack` rule); this one would enforce none while

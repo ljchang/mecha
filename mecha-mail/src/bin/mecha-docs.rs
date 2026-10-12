@@ -109,7 +109,8 @@ async fn main() -> Result<()> {
             client_json,
             capture,
         }) => {
-            let (id, secret) = resolve_client(&cli.account, client_id, client_secret, client_json)?;
+            let store = docs::store_path(&cli.account)?;
+            let (id, secret) = resolve_client(&store, client_id, client_secret, client_json)?;
             consent(&cli.account, id, secret, false, &capture).await
         }
         Some(Command::Pick { capture }) => {
@@ -151,8 +152,11 @@ async fn main() -> Result<()> {
 /// then whatever the stored grant already used — so re-authenticating after a
 /// revoked grant needs no flags, the rule the mail binaries already follow —
 /// and last mecha's own Drive client, so a first sign-in needs nothing.
+///
+/// `path` is the account's grant (`docs::store_path`), passed in so every arm
+/// is testable against a scratch directory.
 fn resolve_client(
-    account: &str,
+    path: &std::path::Path,
     client_id: Option<String>,
     client_secret: Option<String>,
     client_json: Option<std::path::PathBuf>,
@@ -165,9 +169,8 @@ fn resolve_client(
     }
     // An explicit id, then the stored grant's own client (a re-sign-in keeps
     // its registration), then mecha's own.
-    let path = docs::store_path(account)?;
     let stored = || {
-        token::load(&path).with_context(|| {
+        token::load(path).with_context(|| {
             format!(
                 "{} is there but does not load, so whose client it was cannot be said — and \
                  a grant under another client would drop every picked document out of reach; \
@@ -183,7 +186,19 @@ fn resolve_client(
         // whole browser leg (review of #663).
         return match client_secret {
             Some(secret) => Ok((id, secret)),
-            None if path.exists() && stored()?.client_id == id => Ok((id, stored()?.client_secret)),
+            None if path.exists() => {
+                let s = stored()?;
+                anyhow::ensure!(
+                    s.client_id == id,
+                    "--client-id needs its --client-secret (or use --client-json)"
+                );
+                // The shipped client's secret is this build's, here as on
+                // every other path (`builtin::secret_for`; review of #663).
+                let secret = mecha_mail::builtin::secret_for(&s.client_id)
+                    .map(str::to_string)
+                    .unwrap_or(s.client_secret);
+                Ok((id, secret))
+            }
             None => bail!("--client-id needs its --client-secret (or use --client-json)"),
         };
     }
@@ -289,31 +304,36 @@ fn begin(
     picker: bool,
     capture: &Capture,
 ) -> Result<String> {
-    // PKCE, so a code seen in transit is worth nothing without the verifier
-    // this attempt keeps: the client's id and secret are public (review of
-    // #663). State pairs the callback with the attempt besides.
+    let (url, pending) = mint(client_id, client_secret, picker, capture.port);
+    docs::save_pending(account, &pending)?;
+    Ok(url)
+}
+
+/// The authorization URL and the record that will finish it. PKCE, so a code
+/// seen in transit is worth nothing without the verifier this attempt keeps:
+/// the client's id and secret are public (review of #663). State pairs the
+/// callback with the attempt besides, and is a separate draw.
+fn mint(
+    client_id: String,
+    client_secret: String,
+    picker: bool,
+    port: u16,
+) -> (String, docs::PendingConsent) {
     let pkce = mecha_mail::google::auth::generate_pkce();
     let state = mecha_mail::google::auth::generate_pkce().code_verifier;
-    let url = docs::build_auth_url(
-        &client_id,
-        capture.port,
-        &state,
-        picker,
-        &pkce.code_challenge,
-    );
-    docs::save_pending(
-        account,
-        &docs::PendingConsent {
+    let url = docs::build_auth_url(&client_id, port, &state, picker, &pkce.code_challenge);
+    (
+        url,
+        docs::PendingConsent {
             state,
             picker,
             client_id,
             client_secret,
-            port: capture.port,
+            port,
             started_at: chrono::Utc::now().to_rfc3339(),
             code_verifier: pkce.code_verifier,
         },
-    )?;
-    Ok(url)
+    )
 }
 
 /// Verify the pairing, exchange the code, save the grant, and report what the
@@ -488,4 +508,112 @@ async fn list(account: &str, json: bool) -> Result<()> {
         None => eprintln!("\n{} file(s) in scope for account {account:?}", files.len()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The verifier the record keeps is the one whose S256 is in the URL,
+    /// and the state is a different draw — a swap here breaks every Docs
+    /// sign-in at the exchange with nothing else failing (review of #663).
+    #[test]
+    fn the_kept_verifier_is_the_one_the_url_challenges() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        use sha2::{Digest, Sha256};
+        for picker in [false, true] {
+            let (url, pending) = mint(
+                "c.apps.googleusercontent.com".into(),
+                "s".into(),
+                picker,
+                8765,
+            );
+            let challenge = url
+                .split(['?', '&'])
+                .find_map(|kv| kv.strip_prefix("code_challenge="))
+                .expect("a challenge in the URL");
+            let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(pending.code_verifier.as_bytes()));
+            assert_eq!(challenge, expected);
+            assert_ne!(pending.state, pending.code_verifier);
+            assert_eq!(pending.picker, picker);
+        }
+    }
+
+    fn grant(dir: &std::path::Path, id: &str, secret: &str) -> std::path::PathBuf {
+        let path = dir.join("oauth.json");
+        let creds = token::StoredCredentials {
+            client_id: id.into(),
+            client_secret: secret.into(),
+            tenant: None,
+            access_token: String::new(),
+            refresh_token: "r".into(),
+            expires_at: 0,
+            account: None,
+            granted_scopes: None,
+            granted_at: None,
+        };
+        std::fs::write(&path, serde_json::to_string(&creds).unwrap()).unwrap();
+        path
+    }
+
+    /// Every arm of the ladder, against a scratch store: none goes to the
+    /// shipped client over a grant that exists, a grant that will not load
+    /// is refused, an id needs its secret unless the grant is that client,
+    /// and the shipped client always signs in with this build's secret.
+    #[test]
+    fn the_client_ladder_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("mecha-docs-ladder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shipped = mecha_mail::builtin::GOOGLE_DOCS;
+
+        // No store: the shipped client.
+        let none = dir.join("absent.json");
+        assert_eq!(
+            resolve_client(&none, None, None, None).unwrap(),
+            (shipped.id.to_string(), shipped.secret.to_string())
+        );
+        // An id without its secret and no store: refused up front.
+        assert!(resolve_client(&none, Some("x".into()), None, None).is_err());
+
+        // A grant under the user's own client is kept, never replaced.
+        let own = grant(&dir, "own.apps.googleusercontent.com", "GOCSPX-own");
+        assert_eq!(
+            resolve_client(&own, None, None, None).unwrap(),
+            ("own.apps.googleusercontent.com".into(), "GOCSPX-own".into())
+        );
+        // Its id alone takes its own stored secret; another id alone is refused.
+        assert_eq!(
+            resolve_client(
+                &own,
+                Some("own.apps.googleusercontent.com".into()),
+                None,
+                None
+            )
+            .unwrap()
+            .1,
+            "GOCSPX-own"
+        );
+        assert!(resolve_client(&own, Some("other".into()), None, None).is_err());
+
+        // A grant under the shipped client signs in with this build's secret,
+        // by either arm, however stale the stored copy.
+        let old = grant(&dir, shipped.id, "GOCSPX-stale");
+        assert_eq!(
+            resolve_client(&old, None, None, None).unwrap().1,
+            shipped.secret
+        );
+        assert_eq!(
+            resolve_client(&old, Some(shipped.id.into()), None, None)
+                .unwrap()
+                .1,
+            shipped.secret
+        );
+
+        // A grant that will not load is a refusal, not a first sign-in.
+        std::fs::write(dir.join("oauth.json"), "{ torn").unwrap();
+        let err = resolve_client(&dir.join("oauth.json"), None, None, None).unwrap_err();
+        assert!(format!("{err:#}").contains("does not load"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
