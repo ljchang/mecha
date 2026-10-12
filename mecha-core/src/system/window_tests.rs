@@ -68,7 +68,9 @@ fn no_series_is_said_and_now_is_not_a_window() {
         .unwrap()
         .is_none());
     assert!(read(&db, Measurement::CpuBusy, Window::Now, now).is_err());
-    assert!(models_now(&db, now).unwrap().is_none());
+    assert!(models_now(&db, now, |_| Duration::hours(24))
+        .unwrap()
+        .is_none());
 }
 
 /// By kind of work, one summary per category, read from its named column.
@@ -131,7 +133,9 @@ fn model_rows_show_what_is_loaded_and_each_switch() {
     row(10, 1, "big-model", Some(40.0), 3);
     row(10, 5, "voice-model", None, 1);
 
-    let now_rows = models_now(&db, now).unwrap().unwrap();
+    let now_rows = models_now(&db, now, |_| Duration::hours(24))
+        .unwrap()
+        .unwrap();
     let chat = now_rows.iter().find(|r| r.kind_id == 1).unwrap();
     assert_eq!(chat.model.as_deref(), Some("big-model"));
     assert_eq!(chat.speed.as_ref().map(|s| s.1), Some(40.0));

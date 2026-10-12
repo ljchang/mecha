@@ -112,6 +112,54 @@ fn speech_models_are_now_only() {
     );
 }
 
+/// R7 on the now path (review of #660): a speech kind's speed exists only in
+/// a minute it spoke, so "now" must not reach back a day and print when the
+/// last call was. It says only whether it is speaking now, with no time.
+#[test]
+fn a_speech_models_now_never_says_when_the_last_call_was() {
+    let (db, now) = series();
+    let c = Connection::open(&db).unwrap();
+    let at = |m: i64| {
+        (now - Duration::minutes(m))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    };
+    // Spoke eleven hours ago, silent since.
+    c.execute(
+        "INSERT INTO model_minute (at, kind, model, model_known, running, mem_bytes, rtf)
+         VALUES (?1, 5, 'some-model', 1, 1, 1073741824, 0.24)",
+        params![at(660)],
+    )
+    .unwrap();
+    let out = answer(&db, None, None, Some("models"), Window::Now, false, now).unwrap();
+    assert!(!out.content.contains("0.24"), "{}", out.content);
+    assert!(
+        out.content
+            .contains("text to speech: running, some-model, 1.0 GiB; not speaking now"),
+        "{}",
+        out.content
+    );
+    // Speaking within the last minutes: said, with no time.
+    c.execute(
+        "UPDATE model_minute SET rtf = 0.31 WHERE kind = 4 AND at = ?1",
+        params![at(10)],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO model_minute (at, kind, model, model_known, running, mem_bytes, rtf)
+         VALUES (?1, 4, 'some-model', 1, 1, 1073741824, 0.31)",
+        params![at(1)],
+    )
+    .unwrap();
+    let out = answer(&db, None, None, Some("models"), Window::Now, false, now).unwrap();
+    assert!(
+        out.content
+            .contains("speech to text: running, some-model, 1.0 GiB; speaking now, RTF 0.31\n"),
+        "{}",
+        out.content
+    );
+}
+
 /// A level reads as latest/min/mean/max with its stretches; a per-minute
 /// count is totalled.
 #[test]
