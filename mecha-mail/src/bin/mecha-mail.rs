@@ -1228,8 +1228,8 @@ fn register_own_app(
                     match google_client_file(&path) {
                         Ok(client) => {
                             eprintln!(
-                                "(mecha keeps what it needs with the sign-in; that file can be \
-                                 deleted.)"
+                                "(once you are signed in, mecha keeps what it needs with the \
+                                 account; that file can then be deleted.)"
                             );
                             return Ok(client);
                         }
