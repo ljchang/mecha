@@ -464,43 +464,39 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
 fn mcp_entry(f: Feature, wiring: &feature::McpWiring) -> Result<()> {
     let path = Config::global_path().context("no mecha home to find config.toml in")?;
     let Some(command) = find_program(wiring.program) else {
-        let install = match f {
-            Feature::Graph => "cargo install mecha-graph mecha-graph-mcp --locked",
-            _ => "cargo install mecha-mail --locked",
-        };
         println!(
-            "`{}` is not installed, so no [[mcp]] entry was written — `{install}`, then `mecha \
+            "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
              features enable {}` again writes it",
             wiring.program,
+            wiring.install,
             f.id()
         );
         return Ok(());
     };
-    match feature::write_mcp_entry(&path, wiring, &command)? {
-        feature::McpWrite::AlreadyWired => {}
-        feature::McpWrite::Wrote { outbox_missing } => {
-            println!(
-                "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
-                wiring.name,
-                command.display(),
-                path.display()
-            );
-            if !wiring.outbox.is_empty() && outbox_missing.is_empty() {
-                println!(
-                    "  {}'s sends and calendar changes are staged in the outbox for you to \
-                     review (`mecha outbox`)",
-                    wiring.name
-                );
-            }
-            if !outbox_missing.is_empty() {
-                println!(
-                    "  your [outbox] table is left as it is — for {}'s sends to be staged for \
-                     review rather than run, add to its tools: {}",
-                    wiring.name,
-                    outbox_missing.join(", ")
-                );
-            }
-        }
+    let done = feature::write_mcp_entry(&path, wiring, &command)?;
+    if done.wrote_entry {
+        println!(
+            "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
+            wiring.name,
+            command.display(),
+            path.display()
+        );
+    }
+    if done.wrote_outbox {
+        println!(
+            "  {}'s calls that send or write ({}) are staged in the outbox for you to review \
+             (`mecha outbox`)",
+            wiring.name,
+            wiring.outbox.join(", ")
+        );
+    }
+    if !done.outbox_missing.is_empty() {
+        println!(
+            "  your [outbox] table is left as it is — for {}'s sends to be staged for review \
+             rather than run, add to its tools: {}",
+            wiring.name,
+            done.outbox_missing.join(", ")
+        );
     }
     Ok(())
 }
@@ -508,8 +504,12 @@ fn mcp_entry(f: Feature, wiring: &feature::McpWiring) -> Result<()> {
 /// A program's absolute path: the first on PATH, else `~/.cargo/bin`, where
 /// `cargo install` puts it and a fresh shell may not have it on PATH yet.
 fn find_program(name: &str) -> Option<std::path::PathBuf> {
+    // Absolute only: a relative PATH entry (or an empty one, the cwd) would
+    // write a relative `command`, the failure this exists to prevent (review
+    // of #669).
     let on_path = std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p)
+            .filter(|d| d.is_absolute())
             .map(|d| d.join(name))
             .find(|f| f.is_file())
     });
