@@ -103,11 +103,43 @@ pub struct Summary {
 #[serde(untagged)]
 pub enum Windowed {
     One(Summary),
-    ByCategory(Vec<(&'static str, Summary)>),
+    /// One summary per kind of work, and the kinds withheld (R7).
+    ByCategory {
+        rows: Vec<(&'static str, Summary)>,
+        withheld: Vec<&'static str>,
+    },
     /// The series predates the table this measurement is kept in: said, not
     /// an error (as `system::latest` says it).
     OlderSampler,
+    /// The sampler ran and recorded no row for it: this machine does not
+    /// have it (a GPU, Wi-Fi). Kept apart from a sampler that did not run,
+    /// as a `Now` read keeps `NotHere` apart (review of #660).
+    NotHere,
+    /// Readable now only, never over a window (R7): its history is a record
+    /// of when calls happened.
+    Withheld,
 }
+
+/// R7, in the type rather than a formatter: what moves with a call is never
+/// read over a window — `voice.live`, the voice category, the speech
+/// models' rows. Every caller of this module gets it, so a later `--json`
+/// or a second reader cannot leak call timing by forgetting (review of #660).
+pub fn withheld_over_a_window(m: Measurement) -> bool {
+    m == Measurement::VoiceLive
+}
+
+/// A model kind whose rows move with a call (R7).
+pub fn is_speech(kind: u8) -> bool {
+    use super::models::ModelKind;
+    matches!(
+        ModelKind::from_u8(kind),
+        Some(ModelKind::SpeechToText | ModelKind::TextToSpeech)
+    )
+}
+
+/// How far back a speech kind's "now" speed may be found: `voice.live`'s
+/// three minutes, so it can only ever say "speaking now".
+const SPEAKING_NOW: Duration = Duration::minutes(3);
 
 fn ts(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -199,6 +231,9 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
     };
     let start = now - span;
     let from = ts(start);
+    if withheld_over_a_window(m) {
+        return Ok(Some(Windowed::Withheld));
+    }
     if m.how() != How::ByCategory {
         // A series from before S2a has no `reading_minute` (review of #660).
         if !has_table(&conn, "reading_minute")? {
@@ -213,10 +248,23 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
         let rows: Vec<(String, Option<f64>)> = stmt
             .query_map(params![m as u16, from], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        // No row at all while the sampler was writing minutes: the machine
+        // does not have it, which `record_readings` writes as no row.
+        if rows.is_empty() && sampled_in(&conn, &from)? {
+            return Ok(Some(Windowed::NotHere));
+        }
         return Ok(Some(Windowed::One(summarise(&rows, start, span, width))));
     }
+    if m != Measurement::CategoryOomKills && !has_table(&conn, "category_minute")? {
+        return Ok(Some(Windowed::OlderSampler));
+    }
     let mut out = Vec::new();
+    let mut withheld = Vec::new();
     for cat in Category::ALL {
+        if cat == Category::Voice {
+            withheld.push(cat.label());
+            continue;
+        }
         let rows: Vec<(String, Option<f64>)> = if m == Measurement::CategoryOomKills {
             if !has_table(&conn, "category_reading_minute")? {
                 Vec::new()
@@ -253,7 +301,23 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
         };
         out.push((cat.label(), summarise(&rows, start, span, width)));
     }
-    Ok(Some(Windowed::ByCategory(out)))
+    Ok(Some(Windowed::ByCategory {
+        rows: out,
+        withheld,
+    }))
+}
+
+/// Whether the sampler wrote any minute in the window — what tells "this
+/// machine has no such thing" from "nothing was recorded".
+fn sampled_in(conn: &Connection, from: &str) -> Result<bool> {
+    if !has_table(conn, "system_minute")? {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT count(*) > 0 FROM system_minute WHERE at >= ?1",
+        params![from],
+        |r| r.get(0),
+    )?)
 }
 
 /// One model server's row as the series holds it (`model_minute`, R6).
@@ -268,9 +332,11 @@ pub struct ModelNow {
     pub model: Option<String>,
     pub model_known: bool,
     pub mem_bytes: Option<f64>,
-    /// The last minute within the caller's lookback that measured a speed,
-    /// and it: tokens/s for chat and OCR, RTF for speech, seconds per
-    /// picture. `None` for a kind with no speed column (embeddings).
+    /// The last minute in the day that measured a speed, and it: tokens/s
+    /// for chat and OCR, RTF for speech, seconds per picture. `None` for a
+    /// kind with no speed column (embeddings). For a speech kind (R7) it is
+    /// only the last three minutes', and its time is empty: it can say
+    /// "speaking now", never when.
     pub speed: Option<(String, f64)>,
 }
 
@@ -312,14 +378,8 @@ pub(crate) fn speed_column(kind: u8) -> Option<&'static str> {
 type NowRow = (u8, String, bool, Option<String>, bool, Option<f64>);
 
 /// Each model server's newest row. Empty when the series has none (an older
-/// sampler, or none yet). `lookback` says, per kind, how far back its last
-/// measured speed may be found — a day for most, and minutes for a kind
-/// whose speed is a record of when it was used (R7, review of #660).
-pub fn models_now(
-    db: &Path,
-    now: DateTime<Utc>,
-    lookback: impl Fn(u8) -> Duration,
-) -> Result<Option<Vec<ModelNow>>> {
+/// sampler, or none yet).
+pub fn models_now(db: &Path, now: DateTime<Utc>) -> Result<Option<Vec<ModelNow>>> {
     let Some(conn) = open(db)? else {
         return Ok(None);
     };
@@ -352,7 +412,13 @@ pub fn models_now(
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for (kind_id, label, running, model, model_known, mem_bytes) in rows {
-        let since = ts(now - lookback(kind_id));
+        let speech = is_speech(kind_id);
+        let since = ts(now
+            - if speech {
+                SPEAKING_NOW
+            } else {
+                Duration::hours(24)
+            });
         let speed: Option<(String, f64)> = speed_column(kind_id).and_then(|col| {
             conn.query_row(
                 &format!(
@@ -365,6 +431,8 @@ pub fn models_now(
             )
             .ok()
         });
+        // R7: a speech kind's speed carries no time.
+        let speed = speed.map(|(at, v)| (if speech { String::new() } else { at }, v));
         out.push(ModelNow {
             at: newest.clone(),
             kind: kind_label(kind_id, &label),
@@ -384,13 +452,9 @@ fn kind_label(id: u8, _stored: &str) -> &'static str {
     super::models::ModelKind::from_u8(id).map_or("unknown kind", |k| k.label())
 }
 
-/// Each model server over `w`, for the kinds `keep` admits.
-pub fn models_window(
-    db: &Path,
-    w: Window,
-    now: DateTime<Utc>,
-    keep: impl Fn(u8) -> bool,
-) -> Result<Option<Vec<ModelWindow>>> {
+/// Each model server over `w`, but the speech kinds, which are readable now
+/// only (R7).
+pub fn models_window(db: &Path, w: Window, now: DateTime<Utc>) -> Result<Option<Vec<ModelWindow>>> {
     let Some((span, width)) = w.span() else {
         anyhow::bail!("`now` is a probe, not a window");
     };
@@ -405,7 +469,7 @@ pub fn models_window(
     let mut out = Vec::new();
     for kind in super::models::ModelKind::ALL {
         let id = kind as u8;
-        if !keep(id) {
+        if is_speech(id) {
             continue;
         }
         let col = speed_column(id).unwrap_or("NULL");
