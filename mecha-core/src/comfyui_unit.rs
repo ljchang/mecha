@@ -449,20 +449,24 @@ pub async fn install(
     )?;
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     let service = format!("{}.service", naming.unit);
-    crate::engine_gate::systemctl("enable", &[&service])?;
-    // The timer before the server starts: without it a loaded server holds
-    // its memory for good, so a timer that cannot start fails the install —
-    // and failing here, before anything is started or checked, leaves the
-    // caller's later steps (the `[image]` table) for a re-run rather than
-    // skipping them behind a running server (review of #661). A tick before
-    // the server answers finds nothing to release.
+    // The timer before the server is enabled or started: without it a loaded
+    // server holds its memory for good, so a timer that cannot start fails
+    // the install — here, before anything is started or checked, so the
+    // caller's later steps (the `[image]` table) are left for a re-run rather
+    // than skipped behind a running server (review of #661). A reinstall's
+    // server was enabled by the install before, so it is disabled: a boot
+    // must not bring back a server with no reset (review of #661, pass 2). A
+    // tick before the server answers finds nothing to release.
     let timer = format!("{idle}.timer");
-    crate::engine_gate::systemctl("enable", &["--now", &timer]).with_context(|| {
-        format!(
+    if let Err(e) = crate::engine_gate::systemctl("enable", &["--now", &timer]) {
+        let _ = crate::engine_gate::systemctl("disable", &[&service]);
+        return Err(e).context(format!(
             "{timer}, the idle reset, could not be started, so a loaded model would stay in \
-             memory — nothing was started; run `systemctl --user status {timer}` to see why"
-        )
-    })?;
+             memory — nothing was started and {service} will not start at boot; run \
+             `systemctl --user status {timer}` to see why"
+        ));
+    }
+    crate::engine_gate::systemctl("enable", &[&service])?;
     // A restart, not `enable --now`, so a reinstall reaches a running server;
     // a failed restart or check stops it before the install says so (#639).
     let checked = match crate::engine_gate::systemctl("restart", &[&service]) {
