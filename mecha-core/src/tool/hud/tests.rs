@@ -251,8 +251,59 @@ fn the_tools_declare_what_they_return() {
     let preview = HudPreview::new(store.clone());
     let propose = HudPropose::new(store);
     assert!(sources.read_only() && preview.read_only() && propose.read_only());
-    for caps in [sources.capabilities(), preview.capabilities()] {
+    // `hud_propose` too: a refused draft is described with the rows its
+    // other loaders returned (review of #659).
+    for caps in [
+        sources.capabilities(),
+        preview.capabilities(),
+        propose.capabilities(),
+    ] {
         assert!(caps.private_data && caps.untrusted_input);
         assert_eq!(caps.egress, crate::tool::Egress::None);
+    }
+}
+
+/// A waiting proposal read back carries the proposing conversation's taint:
+/// text staged from a tainted chat must not reach a clean one unmarked
+/// (review of #659). An installed board passed the owner's review.
+#[tokio::test]
+async fn a_proposal_read_back_carries_its_origin() {
+    for (taint, outside) in [
+        (
+            Some(Taint {
+                untrusted: true,
+                ..Taint::default()
+            }),
+            true,
+        ),
+        (Some(Taint::default()), false),
+    ] {
+        let f = Fixture::new("owner");
+        HudPropose::new(f.store.clone())
+            .call(draft_input("speed"), &ctx(taint))
+            .await
+            .unwrap();
+        let back = HudPreview::new(f.store.clone())
+            .call(json!({"id": "speed"}), &ctx(None))
+            .await
+            .unwrap();
+        assert!(!back.is_error, "{}", back.content);
+        assert_eq!(back.external, outside, "{taint:?}");
+
+        let p = f.store.proposal("speed").unwrap().unwrap().unwrap();
+        f.store
+            .accept("speed", &p.draft.digest(), chrono::Utc::now())
+            .unwrap()
+            .unwrap();
+        let installed = HudPreview::new(f.store.clone())
+            .call(json!({"id": "speed"}), &ctx(None))
+            .await
+            .unwrap();
+        assert!(
+            installed.content.contains("(installed)"),
+            "{}",
+            installed.content
+        );
+        assert!(!installed.external, "the owner accepted it");
     }
 }

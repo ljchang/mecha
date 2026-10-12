@@ -418,13 +418,7 @@ impl Store {
             )?;
         }
         std::fs::rename(&staging, &target).with_context(|| format!("installing board {id:?}"))?;
-        self.append(
-            &id,
-            &Entry {
-                at: now,
-                event: Event::Installed,
-            },
-        )?;
+        self.record_installed(&id, now)?;
         Ok(Ok(installed))
     }
 
