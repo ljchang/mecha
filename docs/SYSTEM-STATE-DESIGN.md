@@ -807,8 +807,9 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   lists as resident — read through the provider's own `RouterModel`, so
   resident means loaded, loading or sleeping, and a listing with a status
   this build does not know is unread, never "nothing resident" (that call names no model, so it cannot load one; rule
-  3); for the others, the `-m` argument or one environment variable of the
-  running process, read from `/proc/<pid>` and reduced to a file name; for
+  3); for the others, the `-m`/`--model` argument (embeddings, OCR, text
+  to speech) or one environment variable (speech to text) of the running
+  process, read from `/proc/<pid>` and reduced to a file name; for
   image generation, `[image] diffusion_model`. A stopped server has no
   name: NULL. `model_known` tells a NULL that is a finding (stopped, or
   the router has nothing resident) from one that is not (a running server

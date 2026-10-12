@@ -1687,6 +1687,11 @@ mod model_rows {
             model_arg(b"srv\0--model=/m/fictional-ocr.gguf\0").as_deref(),
             Some("fictional-ocr")
         );
+        // The speech engine as both of its units start it: the model is a
+        // `--model` argument followed by `--codec`, never the codec.
+        let tts = b"/x/engine/tts-server\0--model\0/x/models/fictional-tts-Q6_K.gguf\0\
+                    --codec\0/x/models/fictional-codec.gguf\0--port\08886\0";
+        assert_eq!(model_arg(tts).as_deref(), Some("fictional-tts-Q6_K"));
         let env = b"PATH=/usr/bin\0FICTIONAL_DIR=/m/fictional-asr\0";
         assert_eq!(
             env_name(env, "FICTIONAL_DIR").as_deref(),
@@ -1749,6 +1754,10 @@ mod model_rows {
                 "{unread:?} supports no claim about what is resident"
             );
         }
+
+        let ephemeral =
+            r#"{"data":[{"id":"fictional-b","status":{"value":"loading","args":["--port","0"]}}]}"#;
+        assert_eq!(view(ephemeral).ports, None, "port 0 prefixes no line");
 
         let portless = r#"{"data":[{"id":"fictional-b","status":{"value":"loaded","args":[]}}]}"#;
         let v = view(portless);
