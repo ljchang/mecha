@@ -298,7 +298,9 @@ The decisions that are this design's rather than the owner's:
   picture's manifest names a locked character (`GET /api/library/source`).
   From an incognito chat the save is always locked — the box shows checked
   and fixed, and `save_locked` locks it whatever the box sends (the owner's
-  ruling, 2026-10-12; until then both routes refused an incognito key).
+  ruling, 2026-10-12; until then both routes refused an incognito key). An
+  incognito save stages its scratch copy in the chat's RAM room, not the host
+  temp directory, and refuses where the room is not tmpfs.
 - **Add and edit from the tab (2026-09-29, the owner's ask).** An *Add
   character* tile takes an uploaded portrait, a name and a description; *Add
   style* takes a name and text; *Edit* on an approved entry takes a new
