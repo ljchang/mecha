@@ -967,9 +967,12 @@ The owner's condition is absolute — no detail about any process beyond a
 generic category — so it is not enforced by the loader, the spec, or review.
 **It is enforced by what is ever written down.** A sampler aggregates at the
 moment of sampling into a row whose type holds only numbers and closed enums;
-a process name, command line, pid, path, model name or unit name never reaches
+a process name, command line, pid, path or unit name never reaches
 a store, so no query, loader or publish downstream can leak one. The same
-shape as `situation.rs`: a record built from closed sets only.
+shape as `situation.rs`: a record built from closed sets only. **Amended
+2026-10-12:** the owner moved model names inside the line — the series'
+per-model rows name the model each server runs (`SYSTEM-STATE-DESIGN.md`
+§7.4, R6).
 
 ```rust
 #[repr(u8)]

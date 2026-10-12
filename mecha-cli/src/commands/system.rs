@@ -179,6 +179,26 @@ fn sample(json: bool) -> Result<()> {
             });
             println!("  {:<17} {mem:>11}  cpu {pct}", c.category);
         }
+        for m in &recorded.models {
+            let mem = m.mem_bytes.map_or("—".to_string(), |b| {
+                format!("{:.2} GiB", b as f64 / 1073741824.0)
+            });
+            let what = match (&m.model, m.running) {
+                (_, false) => "stopped".to_string(),
+                (Some(name), true) => name.clone(),
+                (None, true) => "running, no model loaded".to_string(),
+            };
+            let speed = [
+                m.gen_tps.map(|t| format!("{t:.1} tok/s")),
+                m.rtf.map(|r| format!("RTF {r:.2}")),
+                m.job_secs.map(|s| format!("{s:.0} s/picture")),
+            ]
+            .into_iter()
+            .flatten()
+            .next()
+            .unwrap_or_default();
+            println!("  {:<17} {mem:>11}  {what}  {speed}", m.kind);
+        }
     }
     Ok(())
 }
