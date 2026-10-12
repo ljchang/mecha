@@ -766,31 +766,9 @@ pub async fn install(
             // #645's rule). Said, never fatal: the server is installed.
             let path = m.mecha_home.join("config.toml");
             let voices = crate::speech_unit::voices_dir(&m.mecha_home);
-            match crate::speech_unit::write_voices_dir(&path, &voices) {
-                Ok(crate::speech_unit::VoicesDir::Wrote) => say(&format!(
-                    "wrote [voice] voices_dir = \"{}\" into {}",
-                    voices.display(),
-                    path.display()
-                )),
-                Ok(crate::speech_unit::VoicesDir::AlreadyNamed(dir)) if dir != voices => {
-                    say(&format!(
-                        "[voice] voices_dir names {}, but the installed speech server reads {} — \
-                     recorded voices will not reach it until they agree",
-                        dir.display(),
-                        voices.display()
-                    ))
-                }
-                Ok(crate::speech_unit::VoicesDir::AlreadyNamed(_)) => {}
-                Ok(crate::speech_unit::VoicesDir::OwnersTable) => say(&format!(
-                    "your [voice] table is left as it is — for recording and cloning to reach \
-                     the speech server, it needs voices_dir = \"{}\"",
-                    voices.display()
-                )),
-                Err(e) => say(&format!(
-                    "[voice] voices_dir was not written ({e:#}) — add voices_dir = \"{}\" \
-                     under [voice]",
-                    voices.display()
-                )),
+            let outcome = crate::speech_unit::write_voices_dir(&path, &voices);
+            if let Some(line) = crate::speech_unit::voices_dir_said(&outcome, &voices, &path) {
+                say(&line);
             }
             Ok(())
         }

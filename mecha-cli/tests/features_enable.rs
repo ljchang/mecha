@@ -131,3 +131,79 @@ fn an_installed_layout_whose_model_is_gone_is_offered_again() {
     );
     assert!(err.contains("layout"), "{err}");
 }
+
+/// `features enable mail docs` wires both servers through the real binary:
+/// an `[[mcp]]` entry each, running the program by its absolute path, with
+/// `untrusted_input` forced — and one `[outbox]` staging both features' calls
+/// (the owner, 2026-10-12; review of #669). A program found only through a
+/// relative PATH entry is never recorded. The negative is not vacuous: the
+/// same programs on an absolute PATH entry are wired.
+#[test]
+fn enable_wires_mail_and_docs_with_one_outbox() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("wire");
+    let bin = home.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for name in ["mecha-mail", "mecha-docs"] {
+        let p = bin.join(name);
+        std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let run = |path: &str, cwd: &std::path::Path| {
+        Command::new(env!("CARGO_BIN_EXE_mecha"))
+            .args(["features", "enable", "mail", "docs", "--no-install"])
+            .env("MECHA_HOME", home.0.join("home"))
+            .env("HOME", home.0.join("home"))
+            .env("PATH", path)
+            .env("MECHA_SESSION_KIND", "test")
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    // Relative only: found nowhere absolute, so nothing is written.
+    let out = run("bin:/usr/bin:/bin", &home.0);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!home.config().contains("[[mcp]]"), "{}", home.config());
+
+    // Absolute: both wired, one outbox.
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let out = run(&path, &home.0);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cfg: toml::Value = toml::from_str(&home.config()).unwrap();
+    let servers = cfg["mcp"].as_array().expect("[[mcp]] entries");
+    for (name, program) in [("mail", "mecha-mail"), ("docs", "mecha-docs")] {
+        let e = servers
+            .iter()
+            .find(|e| e["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("no {name} entry: {cfg}"));
+        assert_eq!(
+            e["command"].as_str(),
+            Some(bin.join(program).to_str().unwrap())
+        );
+        assert_eq!(e["capabilities"]["untrusted_input"].as_bool(), Some(true));
+    }
+    let tools: Vec<&str> = cfg["outbox"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    for t in [
+        "mail__mail_send",
+        "mail__mail_reply",
+        "docs__docs_append",
+        "docs__sheets_write",
+    ] {
+        assert!(tools.contains(&t), "{t} not staged: {tools:?}");
+    }
+}

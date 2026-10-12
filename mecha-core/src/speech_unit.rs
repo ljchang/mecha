@@ -117,6 +117,40 @@ pub fn voices_dir(mecha_home: &Path) -> PathBuf {
     dir(mecha_home).join("voices")
 }
 
+/// What to say about a [`write_voices_dir`] outcome — one wording for the
+/// installer and for `features enable voice`, which reaches an install that
+/// already has the speech server and so never runs the installer (review of
+/// #669). `None` when there is nothing to say.
+pub fn voices_dir_said(
+    outcome: &anyhow::Result<VoicesDir>,
+    voices: &Path,
+    config: &Path,
+) -> Option<String> {
+    Some(match outcome {
+        Ok(VoicesDir::Wrote) => format!(
+            "wrote [voice] voices_dir = \"{}\" into {}",
+            voices.display(),
+            config.display()
+        ),
+        Ok(VoicesDir::AlreadyNamed(dir)) if dir != voices => format!(
+            "[voice] voices_dir names {}, but the installed speech server reads {} — recorded \
+             voices will not reach it until they agree",
+            dir.display(),
+            voices.display()
+        ),
+        Ok(VoicesDir::AlreadyNamed(_)) => return None,
+        Ok(VoicesDir::OwnersTable) => format!(
+            "your [voice] table is left as it is — for recording and cloning to reach the speech \
+             server, it needs voices_dir = \"{}\"",
+            voices.display()
+        ),
+        Err(e) => format!(
+            "[voice] voices_dir was not written ({e:#}) — add voices_dir = \"{}\" under [voice]",
+            voices.display()
+        ),
+    })
+}
+
 /// What [`write_voices_dir`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoicesDir {
@@ -145,11 +179,19 @@ pub fn write_voices_dir(path: &Path, voices: &Path) -> Result<VoicesDir> {
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    // Expanded as the loader expands it (`Config::expand_home`), so a `~/`
+    // form naming the right directory is not taken for another (review of
+    // #669).
     let named = |table: &str| {
         doc.get(table)
             .and_then(|t| t.get("voices_dir"))
             .and_then(|v| v.as_str())
-            .map(PathBuf::from)
+            .map(|v| match v.strip_prefix("~/") {
+                Some(rest) => dirs::home_dir()
+                    .map(|h| h.join(rest))
+                    .unwrap_or_else(|| PathBuf::from(v)),
+                None => PathBuf::from(v),
+            })
     };
     if let Some(dir) = named("voice").or_else(|| named("web")) {
         return Ok(VoicesDir::AlreadyNamed(dir));
@@ -791,6 +833,7 @@ mod tests {
         let (named, named_text) = case("named.toml", "[voice]\nvoices_dir = \"/srv/v\"\n");
         let (legacy, _) = case("legacy.toml", "[web]\nvoices_dir = \"/srv/old\"\n");
         let (owned, owned_text) = case("owned.toml", "[voice]\nstt_url = \"http://x\"\n");
+        let (tilde, _) = case("tilde.toml", "[voice]\nvoices_dir = \"~/v\"\n");
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(fresh, VoicesDir::Wrote);
         assert!(text.starts_with("# mine"), "{text}");
@@ -801,6 +844,11 @@ mod tests {
         assert_eq!(named_text, "[voice]\nvoices_dir = \"/srv/v\"\n");
         assert_eq!(legacy, VoicesDir::AlreadyNamed("/srv/old".into()));
         assert_eq!(owned, VoicesDir::OwnersTable);
+        // `~/` is expanded as the loader expands it.
+        assert_eq!(
+            tilde,
+            VoicesDir::AlreadyNamed(dirs::home_dir().unwrap().join("v"))
+        );
         assert_eq!(owned_text, "[voice]\nstt_url = \"http://x\"\n");
     }
 

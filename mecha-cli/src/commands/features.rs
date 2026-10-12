@@ -447,10 +447,29 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
     if features.contains(&Feature::Image) {
         image_table()?;
     }
-    for f in &features {
-        if let Some(wiring) = feature::mcp_wiring(*f) {
-            mcp_entry(*f, &wiring)?;
-        }
+    mcp_entries(&features)?;
+    if features.contains(&Feature::Voice) {
+        voices_dir()?;
+    }
+    Ok(())
+}
+
+/// `[voice] voices_dir` for a speech server already installed: the installer
+/// writes it, but an install that has the server never runs the installer
+/// again, so `enable voice` writes it too — `image_table`'s two halves
+/// (review of #669). Nothing where no speech server is installed.
+fn voices_dir() -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    let Some(home) = path.parent() else {
+        return Ok(());
+    };
+    let voices = mecha_core::speech_unit::voices_dir(home);
+    if !voices.is_dir() {
+        return Ok(());
+    }
+    let outcome = mecha_core::speech_unit::write_voices_dir(&path, &voices);
+    if let Some(line) = mecha_core::speech_unit::voices_dir_said(&outcome, &voices, &path) {
+        println!("{line}");
     }
     Ok(())
 }
@@ -458,45 +477,68 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
 /// A server feature's switch alone leaves it off — `server_state` wants an
 /// `[[mcp]]` entry running the program — so `mecha setup`'s yes to mail ended
 /// at "add an [[mcp]] entry" instead of a sign-in page (the owner, 2026-10-12).
-/// Written here where none runs it, the program found on PATH (or in
-/// `~/.cargo/bin`) and recorded by its absolute path, so a unit's short PATH
-/// still finds it.
-fn mcp_entry(f: Feature, wiring: &feature::McpWiring) -> Result<()> {
+/// Written here where none runs it, every feature of the command in one write
+/// so one `[outbox]` decision covers them all (review of #669), each program
+/// found on PATH (or in `~/.cargo/bin`) and recorded by its absolute path, so
+/// a unit's short PATH still finds it.
+fn mcp_entries(features: &[Feature]) -> Result<()> {
     let path = Config::global_path().context("no mecha home to find config.toml in")?;
-    let Some(command) = find_program(wiring.program) else {
-        println!(
-            "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
-             features enable {}` again writes it",
-            wiring.program,
-            wiring.install,
-            f.id()
-        );
+    let mut items = Vec::new();
+    for f in features {
+        let Some(wiring) = feature::mcp_wiring(*f) else {
+            continue;
+        };
+        match find_program(wiring.program) {
+            Some(command) => items.push((*f, wiring, command)),
+            None => println!(
+                "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
+                 features enable {}` again writes it",
+                wiring.program,
+                wiring.install,
+                f.id()
+            ),
+        }
+    }
+    if items.is_empty() {
         return Ok(());
-    };
-    let done = feature::write_mcp_entry(&path, wiring, &command)?;
-    if done.wrote_entry {
-        println!(
-            "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
-            wiring.name,
-            command.display(),
-            path.display()
-        );
     }
-    if done.wrote_outbox {
-        println!(
-            "  {}'s calls that send or write ({}) are staged in the outbox for you to review \
-             (`mecha outbox`)",
-            wiring.name,
-            wiring.outbox.join(", ")
-        );
-    }
-    if !done.outbox_missing.is_empty() {
-        println!(
-            "  your [outbox] table is left as it is — for {}'s sends to be staged for review \
-             rather than run, add to its tools: {}",
-            wiring.name,
-            done.outbox_missing.join(", ")
-        );
+    let refs: Vec<(&feature::McpWiring, &std::path::Path)> =
+        items.iter().map(|(_, w, c)| (w, c.as_path())).collect();
+    let done = feature::write_mcp_entries(&path, &refs)?;
+    for ((_, wiring, command), done) in items.iter().zip(done) {
+        if done.wrote_entry {
+            println!(
+                "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
+                wiring.name,
+                command.display(),
+                path.display()
+            );
+        }
+        if done.untrusted_missing {
+            println!(
+                "  your [[mcp]] entry running {} is left as it is — it needs \
+                 [mcp.capabilities] untrusted_input = true, or what it reads never arms the \
+                 interlock",
+                wiring.program
+            );
+        }
+        if done.wrote_outbox {
+            println!(
+                "  {}'s calls that send or write ({}) are staged in the outbox for you to review \
+                 (`mecha outbox`) — held for you rather than refused when a run has read \
+                 something untrusted",
+                wiring.name,
+                wiring.outbox.join(", ")
+            );
+        }
+        if !done.outbox_missing.is_empty() {
+            println!(
+                "  your [outbox] table is left as it is — for {}'s sends to be staged for review \
+                 rather than run, add to its tools: {}",
+                wiring.name,
+                done.outbox_missing.join(", ")
+            );
+        }
     }
     Ok(())
 }
