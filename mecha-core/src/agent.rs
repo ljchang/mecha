@@ -8738,45 +8738,48 @@ mod tests {
         go.notify_one();
     }
 
+    /// A deferring tool that is not a picture: its job carries its own closing
+    /// lines (`DeferredJob::with_closings`), as an MCP background tool's does.
+    struct Clip(Arc<tokio::sync::Notify>);
+    #[async_trait]
+    impl Tool for Clip {
+        fn name(&self) -> &str {
+            "clip"
+        }
+        fn description(&self) -> &str {
+            "Make a clip."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            let go = Arc::clone(&self.0);
+            let cancel = CancellationToken::new();
+            let token = cancel.clone();
+            let job = crate::jobs::DeferredJob::new(
+                async move {
+                    tokio::select! {
+                        _ = go.notified() => ToolOutput::ok("video: videos/a.mp4"),
+                        _ = token.cancelled() => ToolOutput::err("not made: stopped"),
+                    }
+                },
+                cancel,
+                "Not run: the line is full.",
+            )
+            .with_closings(WORK_ON_ITS_WAY, WORK_STILL_RUNNING);
+            Ok(ToolOutput::deferred("being made: `clip` is running.", job))
+        }
+    }
+
     /// A job that is not a picture closes its run on its own lines: two
     /// calls of a background tool in one batch, in the assistant's chat,
     /// never tell the model or the owner a picture is coming (review of
     /// #666, pass 3). The picture's measured lines stay the picture's.
     #[tokio::test]
     async fn a_job_that_is_not_a_picture_closes_on_its_own_lines() {
-        struct Clip(Arc<tokio::sync::Notify>);
-        #[async_trait]
-        impl Tool for Clip {
-            fn name(&self) -> &str {
-                "clip"
-            }
-            fn description(&self) -> &str {
-                "Make a clip."
-            }
-            fn input_schema(&self) -> Value {
-                json!({"type": "object"})
-            }
-            fn read_only(&self) -> bool {
-                true
-            }
-            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
-                let go = Arc::clone(&self.0);
-                let cancel = CancellationToken::new();
-                let token = cancel.clone();
-                let job = crate::jobs::DeferredJob::new(
-                    async move {
-                        tokio::select! {
-                            _ = go.notified() => ToolOutput::ok("video: videos/a.mp4"),
-                            _ = token.cancelled() => ToolOutput::err("not made: stopped"),
-                        }
-                    },
-                    cancel,
-                    "Not run: the line is full.",
-                )
-                .with_closings(WORK_ON_ITS_WAY, WORK_STILL_RUNNING);
-                Ok(ToolOutput::deferred("being made: `clip` is running.", job))
-            }
-        }
         let go = Arc::new(tokio::sync::Notify::new());
         let queue = crate::jobs::JobQueue::new(|_| {});
         let clip = |id: &str| Block::ToolUse {
@@ -8926,6 +8929,64 @@ mod tests {
         let mut convo = Conversation::user("draw it again");
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         assert_eq!(outcome.text, PICTURE_NOT_STARTED_REPLY);
+        hold.notify_one();
+        go.notify_one();
+    }
+
+    /// The busy side of the same: a non-picture job refused because the line
+    /// is full closes on its own "still being made" line and reply, never
+    /// the picture's (review of #666, pass 4).
+    #[tokio::test]
+    async fn a_busy_close_for_work_that_is_not_a_picture_says_so() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let call = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "c1".into(),
+                    name: "clip".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![call(), call()],
+            vec![Arc::new(Clip(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let held = Arc::clone(&hold);
+        let earlier = crate::jobs::DeferredJob::new(
+            async move {
+                held.notified().await;
+                ToolOutput::ok("video: videos/earlier.mp4")
+            },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "e1", "clip", earlier).unwrap();
+        for n in 0..crate::jobs::MAX_WAITING {
+            let wait = crate::jobs::DeferredJob::new(
+                async { ToolOutput::ok("video: videos/later.mp4") },
+                CancellationToken::new(),
+                "busy",
+            );
+            queue
+                .submit("chat", 0, &format!("w{n}"), "clip", wait)
+                .unwrap();
+        }
+        let mut convo = Conversation::user("another clip");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            let tail = tail_text(seen.last().unwrap());
+            assert!(tail.ends_with(WORK_STILL_BEING_MADE), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_NOT_STARTED_REPLY);
         hold.notify_one();
         go.notify_one();
     }

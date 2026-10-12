@@ -4872,8 +4872,7 @@ invariants:
 **An MCP server's tool can defer too** (§8 of the design). The server opts a
 tool in with `_meta: {"mecha-factory.ai/background": true}` on its
 `tools/list` entry, and `McpTool` does the rest:
-- every word the harness adds is its own: ``being made: `<tool>` is running. Its
-  result reaches the owner here when it is done.``, a busy refusal naming the
+- every word the harness adds is its own: ``being made: `<tool>` is running. Its result reaches the owner here when it is done.``, a busy refusal naming the
   tool, and the run's closing lines (`WORK_ON_ITS_WAY`, never the picture's);
 - the late result is built by the inline conversion, so it stays `external`;
 - the job races the call against its own token and tells the server

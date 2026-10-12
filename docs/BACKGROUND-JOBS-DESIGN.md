@@ -501,9 +501,11 @@ or reach getting any trust they do not already have?
 
 - **The opt-in is the server's `_meta`.** Its `tools/list` entry carries
   `"_meta": {"mecha-factory.ai/background": true}`. Nothing in config can turn it on, and the
-  capability derivation is unchanged (`openWorldHint` still means `Chosen`). A `Chosen` tool is
-  never deferred anyway: the loop's "a sender is never deferred" rule awaits it inline. So the
-  opt-in can only move work off the turn. It can never move a send past the interlock.
+  capability derivation is unchanged (`openWorldHint` still means `Chosen`). A tool whose reach
+  is `Chosen`, by its own hint or the config's forced capabilities, is never made a background
+  tool, whatever its `_meta` says. It keeps the ordinary 120 s request, the same rule as the
+  loop's "a sender is never deferred". So the opt-in can only move work off the turn. It can
+  never move a send past the interlock, and it never gives a sender a two-hour wait.
 - **`McpTool::call` returns `ToolOutput::deferred`.** The `now` text is the harness's:
   `being made: \`<tool>\` is running…`. It uses the same `being made: ` first line every reader
   already treats as still out. The job's busy refusal is a fixed harness sentence naming the
@@ -560,8 +562,9 @@ or reach getting any trust they do not already have?
   not an oversight; `mecha eval` drops MCP entirely.
 - **A clip plays where the call is.** `picture.js` gains a matcher as strict as `PICTURE`. It
   reads only a deferring tool's first line, `video: <path>.mp4`, a relative path inside the
-  chat. The assistant chat fetches the file through the chat's files route as a blob and plays
-  it from an object URL, revoked when the row unmounts or the clip changes. `files.rs` keeps
+  chat. The clip is fetched only when the owner presses play, since the transcript renders whole
+  and a clip can be tens of megabytes. It comes through the chat's files route as a blob and
+  plays from an object URL, revoked when the row unmounts or the clip changes. `files.rs` keeps
   "only images render inline", and no Range support is needed for the phone.
 - **Incognito is unchanged.** MCP tools are withheld there (`ALLOWED_BUILTINS`), so no MCP job
   reaches a RAM room.
