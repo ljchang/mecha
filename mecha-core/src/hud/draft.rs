@@ -478,9 +478,16 @@ impl Store {
         }
 
         crate::create_private_dir(&self.proposals())?;
-        let staging =
-            self.proposals()
-                .join(format!(".stage-{}-{}", draft.id(), std::process::id()));
+        // Per call, not per process: `serve` holds many chats, and two
+        // proposing one id at once must not share a staging directory
+        // (review of #659).
+        static STAGE_N: AtomicU64 = AtomicU64::new(0);
+        let staging = self.proposals().join(format!(
+            ".stage-{}-{}-{}",
+            draft.id(),
+            std::process::id(),
+            STAGE_N.fetch_add(1, Ordering::Relaxed)
+        ));
         if staging.exists() {
             std::fs::remove_dir_all(&staging)?;
         }

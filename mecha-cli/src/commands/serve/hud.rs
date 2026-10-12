@@ -237,6 +237,13 @@ pub(super) fn accept_at(store: &Store, id: &str, shown: &str) -> Response {
     if let Some(r) = unproposed(store, id) {
         return r;
     }
+    // Revised since it was shown is a conflict; any other refusal (a source
+    // unregistered since, files that no longer pass) is not, and says so
+    // under its own status (review of #659).
+    let revised = match store.proposal(id) {
+        Ok(Some(Ok(p))) => p.draft.digest() != shown,
+        _ => false,
+    };
     match store.accept(id, shown, Utc::now()) {
         Ok(Ok(a)) => {
             let failed = a
@@ -253,8 +260,8 @@ pub(super) fn accept_at(store: &Store, id: &str, shown: &str) -> Response {
             }
             Json(serde_json::json!({ "ok": true, "id": id, "output": output })).into_response()
         }
-        // A revision since it was shown, or a board that no longer passes.
-        Ok(Err(r)) => fail(StatusCode::CONFLICT, r.to_string()),
+        Ok(Err(r)) if revised => fail(StatusCode::CONFLICT, r.to_string()),
+        Ok(Err(r)) => fail(StatusCode::UNPROCESSABLE_ENTITY, r.to_string()),
         Err(e) => fail(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("the proposal {id:?} could not be installed: {e:#}"),
@@ -678,6 +685,15 @@ mod tests {
             accept_at(&store, "trend", "0123").status(),
             StatusCode::CONFLICT
         );
+        // Shown as it is, but its source unregistered since: not a conflict.
+        let sources = store.root().join("sources.toml");
+        let kept = std::fs::read_to_string(&sources).unwrap();
+        std::fs::write(&sources, "").unwrap();
+        assert_eq!(
+            accept_at(&store, "trend", &draft.digest()).status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        std::fs::write(&sources, kept).unwrap();
         assert_eq!(
             accept_at(&store, "trend", "").status(),
             StatusCode::CONFLICT

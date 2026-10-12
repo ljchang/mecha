@@ -559,9 +559,23 @@ impl Tool for HudPreview {
 /// A dashboard's current files: a waiting proposal first — it is the newer
 /// draft — then the installed board.
 fn current(store: &Store, id: &str) -> Result<ToolOutput> {
+    // A proposal that is waiting but unreadable is a finding, never "none
+    // waiting": answering with the installed board instead would have the
+    // model revise the wrong text and overwrite the proposal (review of #659).
     let waiting = match store.proposal(id) {
         Ok(Some(Ok(p))) => Some((p.draft, p.meta.origin)),
-        _ => None,
+        Ok(None) => None,
+        Ok(Some(Err(r))) => {
+            return Ok(ToolOutput::err(format!(
+                "A proposal `{id}` is waiting but no longer passes its checks:\n{r}\n\
+                 Propose it again with the same id to replace it."
+            )))
+        }
+        Err(e) => {
+            return Ok(ToolOutput::err(format!(
+                "The proposal `{id}` could not be read: {e:#}"
+            )))
+        }
     };
     // A waiting proposal's text is whatever the proposing conversation
     // wrote; one staged from a tainted conversation (or with an unreadable
@@ -661,13 +675,21 @@ impl Tool for HudPropose {
                         _ => d.name.clone(),
                     })
                     .collect();
-                ToolOutput::ok(format!(
+                let result = ToolOutput::ok(format!(
                     "{verb} the dashboard `{}` ({title}){replaces}. It waits for the owner on \
                      the Dashboards page, under Proposed, drawn with the rows it has now \
                      ({}); nothing is installed until they accept it. Tell them it is there.",
                     preview.id,
                     rows.join(", ")
-                ))
+                ));
+                // The row counts came out of the sources the preview ran, so
+                // the result is marked exactly as `hud_preview`'s is (review
+                // of #659).
+                if preview.external() {
+                    result.from_outside()
+                } else {
+                    result
+                }
             }
             Proposed::NotClean(preview) => {
                 let result = ToolOutput::err(format!(
