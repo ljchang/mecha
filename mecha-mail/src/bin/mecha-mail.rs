@@ -1203,6 +1203,29 @@ fn register_own_app(
             wizard::MICROSOFT,
         ),
     };
+    // A client file from the last day is offered before the walk: a sign-in
+    // that timed out after the wizard (Google waits two minutes, and its
+    // "unverified app" screen is a pause) must not cost the five pages again,
+    // nor hide the file it just downloaded (review of #663).
+    if provider == Provider::Google {
+        let recent = started.checked_sub(std::time::Duration::from_secs(24 * 3600));
+        if let Some(path) =
+            recent.and_then(|since| downloads.and_then(|d| wizard::find_client_json(d, since)))
+        {
+            eprintln!("\nFound a client file from earlier: {}", path.display());
+            if line("Use it? [Y/n] ")?
+                .to_ascii_lowercase()
+                .starts_with('n')
+            {
+                eprintln!("Registering a new one, then.");
+            } else {
+                match google_client_file(&path) {
+                    Ok(client) => return Ok(client),
+                    Err(e) => eprintln!("{e:#} — registering a new one, then."),
+                }
+            }
+        }
+    }
     eprintln!("\n{intro}\n");
     let mut last_url = "";
     for (i, step) in steps.iter().enumerate() {
@@ -1920,6 +1943,31 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(got.unwrap().client_id, "2-d.apps.googleusercontent.com");
+    }
+
+    /// A client file downloaded earlier — a sign-in that timed out after the
+    /// wizard — is offered before the five pages, and taken on Enter
+    /// (review of #663).
+    #[test]
+    fn a_client_file_from_earlier_is_offered_first() {
+        let dir = std::env::temp_dir().join(format!("mecha-wiz-e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("client_secret_earlier.json"),
+            r#"{"installed":{"client_id":"3-e.apps.googleusercontent.com","client_secret":"s"}}"#,
+        )
+        .unwrap();
+        let opened = std::cell::Cell::new(0);
+        let got = register_own_app(
+            &mut std::io::Cursor::new(b"\n".to_vec()),
+            Provider::Google,
+            Some(&dir),
+            std::time::SystemTime::now(),
+            &|_| opened.set(opened.get() + 1),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got.unwrap().client_id, "3-e.apps.googleusercontent.com");
+        assert_eq!(opened.get(), 0, "no page walked again");
     }
 
     /// Outlook: two ids pasted, a malformed one asked again, and Enter for
