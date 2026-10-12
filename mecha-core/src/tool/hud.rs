@@ -713,15 +713,29 @@ fn refused(p: &Preview) -> String {
     } else {
         out.push_str("Not proposed: not every loader runs.\n");
         for d in &p.datasets {
+            // SQLite's own message can name a table or column from the
+            // source's schema, and a third-party source's schema is someone
+            // else's text; this tool declares none, so for an external source
+            // the reason is withheld and `hud_preview` (declared untrusted)
+            // is where it is read (review of #659, pass 6).
+            let why = |why: &str| {
+                if d.external {
+                    "its source holds text written by others, so the reason is shown by \
+                     hud_preview"
+                        .to_string()
+                } else {
+                    why.to_string()
+                }
+            };
             match &d.fetch {
                 Fetch::Rows { .. } => {
                     let _ = writeln!(out, "- {}: runs", d.name);
                 }
-                Fetch::Refused(why) => {
-                    let _ = writeln!(out, "- {}: refused — {why}", d.name);
+                Fetch::Refused(r) => {
+                    let _ = writeln!(out, "- {}: refused — {}", d.name, why(r));
                 }
-                Fetch::Failed(why) => {
-                    let _ = writeln!(out, "- {}: failed — {why}", d.name);
+                Fetch::Failed(r) => {
+                    let _ = writeln!(out, "- {}: failed — {}", d.name, why(r));
                 }
             }
         }
