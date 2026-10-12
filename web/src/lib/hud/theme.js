@@ -77,6 +77,9 @@ export function vegaConfig(mode, narrow = false) {
     title: { color: p.text, font: FONT, fontWeight: 500 },
     range: { category: p.category },
     mark: { color: p.category[0] },
+    // A text mark draws in Vega's default near-black unless told: on the dark
+    // page a status board or a gauge's figure was unreadable (2026-10-12).
+    text: { color: p.text },
     line: { strokeWidth: 2 },
     area: { fillOpacity: 0.85, line: false },
     bar: { cornerRadiusEnd: 2 },
