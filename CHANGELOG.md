@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Switching on mail, documents or the graph finishes wiring them.**
+  `mecha features enable mail` (and `docs`, `graph`) wrote only the switch,
+  so the feature still read off with "add an [[mcp]] entry" — and `mecha
+  setup`'s yes to mail stopped there instead of opening the sign-in. It now
+  writes the `[[mcp]]` entry the docs give where none runs the program,
+  with its results read as untrusted and the program by its absolute path;
+  for mail, its sends, replies and calendar changes are staged in the outbox
+  when you have no `[outbox]` table yet. An `[outbox]` you wrote is never
+  edited: enable names the routing it lacks. A program that is not installed
+  is named with its install command.
+- **Voice recording and cloning work after `mecha features enable voice`.**
+  The installed speech server reads voices from
+  `~/.mecha/sidecars/speech/voices`, but nothing named that directory in
+  `[voice] voices_dir`, so recording a voice said "not configured" after a
+  complete install. The install now writes it where there is no `[voice]`
+  table, says the line to add to one you wrote, and warns when the one named
+  differs from what the server reads. The "not configured" message names the
+  installed path.
+
 ## [0.1.23] - 2026-10-12
 
 ### Added
