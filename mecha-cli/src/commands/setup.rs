@@ -484,10 +484,11 @@ enum Answer {
 /// `doctor`'s: silence is not consent.
 ///
 /// `never` records the step id in `~/.mecha/setup-declined.json` so the
-/// question stops being asked. It is only ever offered for a step that has
-/// one: a broken charter or a server that disagrees with its config is a
-/// fault rather than an optional extra, and there is nothing coherent to
-/// decline about being told.
+/// question stops being asked. It is offered only for an optional step that
+/// is absent — including one setup names but never runs, like the charter,
+/// which is asked "later, or never?" alone: a broken charter or a server
+/// that disagrees with its config is a fault rather than an optional extra,
+/// and there is nothing coherent to decline about being told.
 ///
 /// **The de-duplication is on what has been *run*, not on what has been
 /// asked**, and the difference is a bug that shipped. `mail` and `docs` carry

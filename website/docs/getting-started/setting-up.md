@@ -157,10 +157,11 @@ and asks before it downloads anything:
    and `y`, `N` or `never`. A feature that needs another says so.
 3. **One summary and one `Start?`**: everything you said yes to and the total
    download. Nothing is fetched or switched on before that yes.
-4. **Sign-ins.** A feature that needs an account opens its sign-in page in
-   your browser. Google Docs signs in straight away. Mail and calendar first
-   walk you through registering your own sign-in app, once (see
-   [Mail and calendar](/docs/features/tools/mail#signing-in)).
+4. **Sign-ins.** Google Docs opens its sign-in page in your browser straight
+   away. Mail and calendar first walk you through registering your own
+   sign-in app, once (see
+   [Mail and calendar](/docs/features/tools/mail#signing-in)), then open
+   theirs. Slack takes its two tokens from your shell (`mecha slack auth`).
 5. **Whatever is still open**, with the command for each.
 
 What it looks like, trimmed:
