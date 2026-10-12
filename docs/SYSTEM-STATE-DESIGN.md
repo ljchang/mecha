@@ -799,15 +799,18 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   router, embeddings, document OCR, speech to text, text to speech and
   image generation. Each kind's number is a wire format, labelled through a
   `model_kinds` table rewritten on every sample, as `categories` is.
-- **Running** is the unit's `ActiveState`, from one `systemctl show` for
-  every server. The on-demand servers read stopped between uses, which is
-  the truth, and nothing connects to their sockets (rule 3).
+- **Running** is the unit's `ActiveState` (`active` or `reloading`), from
+  one `systemctl show` for every server. The on-demand servers read stopped
+  between uses, and a cold start caught mid-way (`activating`) reads stopped
+  too: it is not serving yet. Nothing connects to their sockets (rule 3).
 - **The model's name** (R6): for the chat router, every model `GET /models`
   lists as loaded (that call names no model, so it cannot load one; rule
   3); for the others, the `-m` argument or one environment variable of the
   running process, read from `/proc/<pid>` and reduced to a file name; for
   image generation, `[image] diffusion_model`. A stopped server has no
-  name: NULL.
+  name: NULL. `model_known` tells a NULL that is a finding (stopped, or
+  the router has nothing resident) from one that is not (a running server
+  whose name could not be read).
 - **Memory, CPU and GPU memory** are the unit's, by the categories' rules:
   on unified memory a server's GPU allocations are added to its cgroup's,
   and unknown when the GPU did not answer. CPU is a delta of the unit's
@@ -825,9 +828,13 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   instance prefixes its lines with its port, `GET /models` gives the loaded
   instance's port, and lines from an instance unloaded since are left out
   of a row that does not name their model.
-- **Unknown stays unknown** (rule 1): a journal that could not be read
-  writes NULL in every speed column; a quiet minute writes zero requests
-  and NULL rates.
+- **Unknown stays unknown** (rule 1): a journal that could not be read,
+  or a router whose listing did not answer or named a loaded instance
+  without its port, writes NULL in every speed column; a quiet minute
+  writes zero requests and NULL rates.
+- **The kernel-log read goes first.** The OOM counts share the sample's
+  deadline, and the model rows' commands and connect come after them, so
+  a slow journal costs the newer rows, not the older finding.
 - **Not built here**: `model.slots.*`, `image.*` and the model-load floor
   (S2b proper), and a fifteen-minute rollup of these rows, which keep seven
   days like every minute table.

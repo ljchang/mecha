@@ -317,6 +317,10 @@ pub fn collect(
                 .collect::<Vec<_>>()
         });
 
+    // The kernel-log read before the model rows: the OOM counts are the
+    // older finding with readers, and the model rows' commands and connect
+    // must not spend the deadline it shares (#641's shape; review of #658).
+    let counters = read_counters(&reader, since);
     let models = models::collect(&units, gpu_apps.as_deref(), journal_since, at, cfg, || {
         reader.budget()
     });
@@ -332,7 +336,7 @@ pub fn collect(
         disk: reader.disk(),
         by_category: fold(&units, gpu_apps.as_deref()),
         now,
-        counters: read_counters(&reader, since),
+        counters,
         models,
     })
 }
@@ -586,7 +590,8 @@ CREATE TABLE IF NOT EXISTS category_reading_minute (
   PRIMARY KEY (at, measurement, category));
 CREATE TABLE IF NOT EXISTS model_kinds (id INTEGER PRIMARY KEY, label TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS model_minute (
-  at TEXT NOT NULL, kind INTEGER NOT NULL, model TEXT, running INTEGER NOT NULL,
+  at TEXT NOT NULL, kind INTEGER NOT NULL, model TEXT, model_known INTEGER NOT NULL,
+  running INTEGER NOT NULL,
   mem_bytes INTEGER, cpu_pct REAL, gpu_mib INTEGER,
   requests INTEGER, prompt_tokens INTEGER, gen_tokens INTEGER,
   prompt_tps REAL, gen_tps REAL, rtf REAL, job_secs REAL,
@@ -609,10 +614,14 @@ pub struct Recorded {
 pub struct ModelRecorded {
     pub kind: &'static str,
     pub model: Option<String>,
+    pub model_known: bool,
     pub running: bool,
     pub mem_bytes: Option<u64>,
     pub cpu_pct: Option<f64>,
+    pub gpu_mib: Option<u64>,
     pub requests: Option<u64>,
+    pub prompt_tokens: Option<u64>,
+    pub gen_tokens: Option<u64>,
     pub prompt_tps: Option<f64>,
     pub gen_tps: Option<f64>,
     pub rtf: Option<f64>,
@@ -871,13 +880,15 @@ fn record_models(
             .map(|((usec, secs), n)| usec as f64 / (secs * 1e6 * n) * 100.0);
         let p = m.perf;
         tx.execute(
-            "INSERT OR REPLACE INTO model_minute (at, kind, model, running, mem_bytes, cpu_pct,
-               gpu_mib, requests, prompt_tokens, gen_tokens, prompt_tps, gen_tps, rtf, job_secs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT OR REPLACE INTO model_minute (at, kind, model, model_known, running, mem_bytes,
+               cpu_pct, gpu_mib, requests, prompt_tokens, gen_tokens, prompt_tps, gen_tps, rtf,
+               job_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 at,
                 m.kind as u8,
                 m.model,
+                m.model_known,
                 m.running,
                 mem.map(|b| b as i64),
                 cpu_pct,
@@ -894,10 +905,14 @@ fn record_models(
         out.push(ModelRecorded {
             kind: m.kind.label(),
             model: m.model.clone(),
+            model_known: m.model_known,
             running: m.running,
             mem_bytes: mem,
             cpu_pct,
+            gpu_mib: m.gpu_mib,
             requests: p.map(|p| p.requests),
+            prompt_tokens: p.map(|p| p.prompt_tokens),
+            gen_tokens: p.map(|p| p.gen_tokens),
             prompt_tps: p.and_then(|p| p.prompt_tps()),
             gen_tps: p.and_then(|p| p.gen_tps()),
             rtf: p.and_then(|p| p.rtf()),

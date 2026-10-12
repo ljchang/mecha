@@ -1712,6 +1712,16 @@ mod model_rows {
         );
         assert_eq!(parse_router_models("not json"), None, "unread, not empty");
         assert_eq!(parse_router_models(r#"{"error":"busy"}"#), None);
+        let eq = r#"{"data":[{"id":"fictional-c","status":{"value":"loaded","args":["--port=45001"]}},
+                              {"id":"fictional-d","status":{"value":"loaded","args":[]}}]}"#;
+        assert_eq!(
+            parse_router_models(eq),
+            Some(vec![
+                ("fictional-c".to_string(), Some(45001)),
+                ("fictional-d".to_string(), None)
+            ]),
+            "a portless instance is kept, so collect can mark the row's speed unknown"
+        );
     }
 
     #[test]
@@ -1769,6 +1779,7 @@ mod model_rows {
         ModelLoad {
             kind,
             model: model.map(str::to_string),
+            model_known: true,
             running: model.is_some(),
             mem_bytes: 1_000,
             cpu_usec: 0,
@@ -1840,7 +1851,12 @@ mod model_rows {
         assert_eq!(label, "text to speech");
         drop(conn);
 
-        let bytes = std::fs::read(&db).unwrap();
+        let mut bytes = std::fs::read(&db).unwrap();
+        for side in ["-journal", "-wal"] {
+            if let Ok(more) = std::fs::read(s.0.join(format!("series.sqlite{side}"))) {
+                bytes.extend(more);
+            }
+        }
         let hay = String::from_utf8_lossy(&bytes);
         assert!(
             hay.contains("fictional-chat-35b"),
