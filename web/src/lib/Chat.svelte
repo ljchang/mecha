@@ -1435,16 +1435,19 @@
   // default and the fallback are the same side (review of #385). Save waits
   // until the answer is in. A password is optional: without one the Library
   // tab's lock is a plain toggle, so locking here always has a way back.
+  // An incognito chat's save is always locked (INCOGNITO-DESIGN.md R3, the
+  // owner's ruling of 2026-10-12): the box shows checked and fixed, and the
+  // server locks it whatever the box sends (`library.rs::save_locked`).
   let saving = $state(null);
   async function startSave(path) {
-    saving = { path, name: '', description: '', locked: false, busy: false, msg: null, ready: false, inherited: false };
+    saving = { path, name: '', description: '', locked: incognito, busy: false, msg: null, ready: false, inherited: false };
     try {
       const res = await fetch(`/api/library/source?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
       if (saving?.path !== path) return;
       if (!res.ok) throw new Error((await res.text()).trim());
       const src = await res.json();
       saving.inherited = !!src.suggest_locked;
-      saving.locked = saving.inherited;
+      saving.locked = saving.inherited || incognito;
     } catch (e) {
       if (saving?.path !== path) return;
       saving.locked = true;
@@ -2140,24 +2143,24 @@
           <button class="genedit" disabled={running} title={running ? 'A reply is running' : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>
           <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
           {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
-          {#if !incognito}
-            <!-- Not in an incognito chat: saving writes outside the room. -->
-            <button class="genedit" onclick={() => (saving?.path === shown ? (saving = null) : startSave(shown))}>Save to library</button>
-            {#if saving?.path === shown}
-              <form class="libsave" onsubmit={(e) => { e.preventDefault(); saveToLibrary(); }}>
-                {#if !saving.done}
-                  <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
-                  <textarea rows="2" placeholder="a short description — include build and height" bind:value={saving.description}></textarea>
-                  <label class="libsave-lock">
-                    <input type="checkbox" bind:checked={saving.locked} />
-                    lock (hide while browsing)
-                    {#if saving.inherited}<span class="libsave-why">— made from a locked character</span>{/if}
-                  </label>
-                  <button class="genedit" disabled={!saving.ready || saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>
-                {/if}
-                {#if saving.msg}<div class="libsave-msg">{saving.msg}</div>{/if}
-              </form>
-            {/if}
+          <!-- In an incognito chat too, where the save is always locked
+               (INCOGNITO-DESIGN.md R3's exception, 2026-10-12). -->
+          <button class="genedit" onclick={() => (saving?.path === shown ? (saving = null) : startSave(shown))}>Save to library</button>
+          {#if saving?.path === shown}
+            <form class="libsave" onsubmit={(e) => { e.preventDefault(); saveToLibrary(); }}>
+              {#if !saving.done}
+                <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
+                <textarea rows="2" placeholder="a short description — include build and height" bind:value={saving.description}></textarea>
+                <label class="libsave-lock">
+                  <input type="checkbox" bind:checked={saving.locked} disabled={incognito} />
+                  lock (hide while browsing)
+                  {#if incognito}<span class="libsave-why">— always, from an incognito chat</span>
+                  {:else if saving.inherited}<span class="libsave-why">— made from a locked character</span>{/if}
+                </label>
+                <button class="genedit" disabled={!saving.ready || saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>
+              {/if}
+              {#if saving.msg}<div class="libsave-msg">{saving.msg}</div>{/if}
+            </form>
           {/if}
         {:else if picture && fold}
           <!-- Drawn again (IMAGE-DESIGN.md §5.4): the picture shows on the
