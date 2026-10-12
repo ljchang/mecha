@@ -482,6 +482,11 @@ re-deriving the rule. Each has at least one named incident in
   `scripts/check-private.py` (pre-commit, commit-msg and pre-push) compares
   added text against the conversations in `~/.mecha` and refuses a match;
   `CHECK_PRIVATE_REQUIRE=1` makes a missing store a refusal.
+- **A new optional feature starts at `ARCHITECTURE.md` §Features → *Adding a
+  feature*.** It touches a dozen places across core, the CLI, the server and
+  the web app, and most of them only a test or a review finds missing. #654
+  missed one entry (`PANE_FEATURE`), and a deep link with the feature off
+  showed a raw error until review caught it.
 - **A new field on `Config` is two edits, not one** — `Config` and
   `ConfigLayer` — or its TOML table becomes a startup parse error while every
   unit test stays green, which is exactly how hooks shipped unreachable.

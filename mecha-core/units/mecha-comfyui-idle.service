@@ -1,0 +1,19 @@
+# The idle reset for mecha's image server, as `mecha features enable image`
+# installs it beside @UNIT@.service (mecha-core/src/comfyui_unit.rs). The
+# script is scripts/comfyui/comfyui-idle-reset byte for byte; a hand install
+# runs the same script under mecha-comfyui-idle-reset, so this one has its own
+# name and both can sit on one machine. Rendered at install: the placeholders
+# become the script's absolute path under this mecha home, the unit and the port.
+
+[Unit]
+Description=Restart @UNIT@ when it has held a model unused for 15 minutes
+
+[Service]
+Type=oneshot
+# nvidia-smi, curl, ss and python3 are system binaries; a user manager's PATH
+# without a login is not to be trusted (2026-09-05).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=COMFY_UNIT=@UNIT@
+Environment=COMFY_URL=http://127.0.0.1:@PORT@
+Environment=COMFY_PORT=@PORT@
+ExecStart=@RESET@
