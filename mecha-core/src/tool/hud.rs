@@ -45,8 +45,9 @@ const QUERY_MAX_ROWS: u32 = 1000;
 const MAX_TABLES: usize = 40;
 /// A sample value is cut at this many characters.
 const VALUE_CHARS: usize = 80;
-/// Each sample query's own limit, and the whole overview's: past the budget
-/// the remaining tables show their schema without rows. Every table is two
+/// Each sample query's own limit, and the whole overview's — across every
+/// source together, not per source: past the budget the remaining tables,
+/// whichever source they are in, show their schema without rows. Every table is two
 /// queries at most, and a view's `LIMIT` bounds rows, not work (review of
 /// #659).
 const SAMPLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

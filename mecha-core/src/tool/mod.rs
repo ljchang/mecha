@@ -655,8 +655,10 @@ pub struct ToolCtx {
     /// must never pass as a clean sender by omission.
     pub taint: Option<crate::agent::Taint>,
     /// The conversation's taint as recorded *before* this turn's batch ran:
-    /// what the model had read when it wrote this turn's calls. A record of
-    /// authorship reads this — a proposal's `Origin` — because `taint` above
+    /// what the model had read when it wrote this turn's calls. Every record
+    /// of authorship reads this — the `Origin` of a proposed board, persona,
+    /// character or style (`hud_propose`, `persona_propose`,
+    /// `image_library_propose`) — because `taint` above
     /// folds in what the batch *can* return, including the calling tool's
     /// own declaration, so a proposer that declares `untrusted_input` would
     /// otherwise always record itself untrusted (review of #659). Never a

@@ -198,7 +198,8 @@
         {#if proposal.origin !== 'model_clean'}
           <p class="warn small">Drafted in a conversation that had read text from outside — read the queries before installing.</p>
         {/if}
-        <details>
+        <!-- Open: reading the queries is the review (review of #659). -->
+        <details open>
           <summary>{proposal.loaders.length} {proposal.loaders.length === 1 ? 'query' : 'queries'}, run on a schedule once installed</summary>
           {#each proposal.loaders as l (l.name)}
             <p class="qname">{l.name} <span class="muted-inline">from {l.source}</span></p>
@@ -340,7 +341,8 @@
     font-size: 12px;
     background: var(--bg, #15161e);
     border-radius: 6px;
-    white-space: pre;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .qname { margin: 8px 0 0; font-family: var(--mono); font-size: 12px; }
   .muted-inline { color: var(--text-muted); font-family: inherit; }
