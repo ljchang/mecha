@@ -1597,6 +1597,9 @@ mod model_rows {
 
     /// The router's instances prefix their lines with their port; only the
     /// loaded instance's lines count, and a progress line is not a request.
+    /// The line shapes are copied from this machine's journal (llama.cpp as
+    /// pinned on 2026-10-12), where prompt eval and eval arrive as separate
+    /// messages — which is why `fold_perf` takes them as `if … else if`.
     #[test]
     fn the_chat_rows_speed_is_its_loaded_instances_and_no_others() {
         let log = lines(&[
@@ -1700,9 +1703,15 @@ mod model_rows {
         ]}"#;
         assert_eq!(
             parse_router_models(json),
-            vec![("fictional-b".to_string(), Some(44035))]
+            Some(vec![("fictional-b".to_string(), Some(44035))])
         );
-        assert!(parse_router_models("not json").is_empty());
+        assert_eq!(
+            parse_router_models(r#"{"data":[]}"#),
+            Some(vec![]),
+            "nothing resident"
+        );
+        assert_eq!(parse_router_models("not json"), None, "unread, not empty");
+        assert_eq!(parse_router_models(r#"{"error":"busy"}"#), None);
     }
 
     #[test]
@@ -1738,6 +1747,24 @@ mod model_rows {
         assert_eq!(j["mecha-breeze-tts"].len(), 1);
     }
 
+    /// The next window starts where this sample's ended — its own instant,
+    /// to the microsecond — not at the kernel-log cursor, which is stamped
+    /// after the sample's reads (review of #658).
+    #[test]
+    fn the_journal_window_starts_at_the_previous_samples_own_instant() {
+        let s = Scratch::new();
+        let db = s.0.join("series.sqlite");
+        assert_eq!(
+            journal_cursor(&db),
+            None,
+            "no store: the first window looks back a minute"
+        );
+        let mut s1 = sample(0, &[], 0, 0);
+        s1.at += chrono::Duration::microseconds(123_456);
+        record(&db, &s1).unwrap();
+        assert_eq!(journal_cursor(&db), Some(s1.at));
+    }
+
     fn load(kind: ModelKind, model: Option<&str>, perf: Option<Perf>) -> ModelLoad {
         ModelLoad {
             kind,
@@ -1745,7 +1772,6 @@ mod model_rows {
             running: model.is_some(),
             mem_bytes: 1_000,
             cpu_usec: 0,
-            tasks: 3,
             gpu_mib: Some(2),
             perf,
         }

@@ -195,7 +195,6 @@ pub struct ModelLoad {
     /// Cumulative CPU time of the unit; a percentage needs the previous
     /// sample, which the store keeps.
     pub cpu_usec: u64,
-    pub tasks: u64,
     /// `None` when the GPU did not answer.
     pub gpu_mib: Option<u64>,
     /// `None` when the log could not be read.
@@ -283,15 +282,14 @@ pub fn parse_unit_states(text: &str) -> BTreeMap<String, UnitState> {
 }
 
 /// The router's loaded models: each one's alias and the port its instance
-/// listens on (the prefix on that instance's log lines).
-pub fn parse_router_models(json: &str) -> Vec<(String, Option<u16>)> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
+/// listens on (the prefix on that instance's log lines). `None` when the
+/// answer is not the router's listing at all — unread, which is not the
+/// same finding as an empty list (no model resident).
+pub fn parse_router_models(json: &str) -> Option<Vec<(String, Option<u16>)>> {
+    let v = serde_json::from_str::<serde_json::Value>(json).ok()?;
     let mut out: Vec<(String, Option<u16>)> = v["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
+        .as_array()?
+        .iter()
         .filter(|m| m["status"]["value"] == "loaded")
         .filter_map(|m| {
             let id = clean_name(m["id"].as_str()?)?;
@@ -310,7 +308,7 @@ pub fn parse_router_models(json: &str) -> Vec<(String, Option<u16>)> {
         })
         .collect();
     out.sort();
-    out
+    Some(out)
 }
 
 /// `journalctl -o json` lines to each unit's messages. A message journald
@@ -443,14 +441,16 @@ pub fn loopback_get(port: u16, path: &str, timeout: Duration) -> Option<String> 
 }
 
 /// Each server's row, from the unit counters and GPU memory the sample
-/// already read, the units' states, and their journals since `since`.
+/// already read, the units' states, and their journals since
+/// `journal_since` — the previous sample's own instant ([`super::journal_cursor`]),
+/// so consecutive windows meet with nothing between them.
 ///
 /// `units` and `gpu_apps` carry unit names; this is the last place they are
 /// held, and nothing returned names a unit.
 pub fn collect(
     units: &[super::UnitCounters],
     gpu_apps: Option<&[(String, u64)]>,
-    since: Option<DateTime<Utc>>,
+    journal_since: Option<DateTime<Utc>>,
     at: DateTime<Utc>,
     cfg: Option<&crate::config::Config>,
     budget: impl Fn() -> Duration,
@@ -480,11 +480,13 @@ pub fn collect(
         })
         .collect();
 
-    // One journal read for every server's lines since the previous sample;
+    // One journal read for every server's lines since the previous sample's
+    // own instant, to the microsecond, so no line falls between two windows;
     // the first sample, or one after a long gap, looks back one minute.
-    let from = since
-        .filter(|s| at - *s <= chrono::Duration::minutes(10))
+    let from = journal_since
+        .filter(|s| *s < at && at - *s <= chrono::Duration::minutes(10))
         .unwrap_or(at - chrono::Duration::minutes(1));
+    let stamp = |t: DateTime<Utc>| format!("@{}.{:06}", t.timestamp(), t.timestamp_subsec_micros());
     let mut jargs: Vec<String> = vec![
         "--user".into(),
         "-q".into(),
@@ -492,8 +494,8 @@ pub fn collect(
         "-o".into(),
         "json".into(),
         "--output-fields=MESSAGE,_SYSTEMD_USER_UNIT".into(),
-        format!("--since=@{}", from.timestamp()),
-        format!("--until=@{}", at.timestamp()),
+        format!("--since={}", stamp(from)),
+        format!("--until={}", stamp(at)),
     ];
     for (_, unit, _) in &present {
         jargs.push("-u".into());
@@ -511,12 +513,11 @@ pub fn collect(
     present
         .into_iter()
         .map(|(server, unit, st)| {
-            let (mut mem, mut cpu, mut tasks) = (0, 0, 0);
-            for (u, m, c, t) in units {
+            let (mut mem, mut cpu) = (0, 0);
+            for (u, m, c, _) in units {
                 if strip(u) == unit {
                     mem += m;
                     cpu += c;
-                    tasks += t;
                 }
             }
             let gpu_mib = gpu_apps.map(|apps| {
@@ -530,20 +531,32 @@ pub fn collect(
                     .then(|| std::fs::read(format!("/proc/{}/{f}", st.pid)).ok())
                     .flatten()
             };
-            let mut ports = None;
+            let mut ports: Option<Vec<u16>> = None;
+            let mut router_unread = false;
             let model = if !st.running {
                 None
             } else {
                 match server.name {
                     NameFrom::Router => {
                         let port = crate::router_unit::Naming::shipped().port;
-                        let loaded =
-                            loopback_get(port, "/models", budget().min(Duration::from_secs(3)))
-                                .map(|b| parse_router_models(&b))
-                                .unwrap_or_default();
-                        ports = Some(loaded.iter().filter_map(|(_, p)| *p).collect::<Vec<u16>>());
-                        let names: Vec<String> = loaded.into_iter().map(|(n, _)| n).collect();
-                        (!names.is_empty()).then(|| names.join(" + "))
+                        // Unanswered is not "nothing loaded": without the
+                        // listing no line can be attributed, so the row's
+                        // model and speed are unknown, never a quiet minute
+                        // (review of #658).
+                        match loopback_get(port, "/models", budget().min(Duration::from_secs(3)))
+                            .and_then(|b| parse_router_models(&b))
+                        {
+                            Some(loaded) => {
+                                ports = Some(loaded.iter().filter_map(|(_, p)| *p).collect());
+                                let names: Vec<String> =
+                                    loaded.into_iter().map(|(n, _)| n).collect();
+                                (!names.is_empty()).then(|| names.join(" + "))
+                            }
+                            None => {
+                                router_unread = true;
+                                None
+                            }
+                        }
                     }
                     NameFrom::ModelArg => proc_file("cmdline").and_then(|c| model_arg(&c)),
                     NameFrom::Env(key) => proc_file("environ").and_then(|e| env_name(&e, key)),
@@ -553,7 +566,7 @@ pub fn collect(
                     }
                 }
             };
-            let perf = journal.as_ref().map(|j| {
+            let perf = journal.as_ref().filter(|_| !router_unread).map(|j| {
                 let lines = j.get(unit).map(Vec::as_slice).unwrap_or(&[]);
                 fold_perf(server.kind, lines, ports.as_deref())
             });
@@ -563,7 +576,6 @@ pub fn collect(
                 running: st.running,
                 mem_bytes: mem,
                 cpu_usec: cpu,
-                tasks,
                 gpu_mib,
                 perf,
             }

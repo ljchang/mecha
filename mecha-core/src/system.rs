@@ -273,6 +273,7 @@ fn reading_order() -> Vec<Measurement> {
 pub fn collect(
     at: DateTime<Utc>,
     since: Option<DateTime<Utc>>,
+    journal_since: Option<DateTime<Utc>>,
     cfg: Option<&crate::config::Config>,
 ) -> Result<Sample> {
     let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET).configured(cfg);
@@ -316,7 +317,7 @@ pub fn collect(
                 .collect::<Vec<_>>()
         });
 
-    let models = models::collect(&units, gpu_apps.as_deref(), since, at, cfg, || {
+    let models = models::collect(&units, gpu_apps.as_deref(), journal_since, at, cfg, || {
         reader.budget()
     });
 
@@ -850,6 +851,12 @@ fn record_models(
             params![k as u8, k.label()],
         )?;
     }
+    // Where the next sample's journal window starts: this sample's own
+    // instant, which is where this one's ended (`journal_cursor`).
+    tx.execute(
+        "INSERT OR REPLACE INTO counter_state (key, value, ident, at) VALUES (?1, ?2, 0, ?3)",
+        params![JOURNAL_CURSOR, s.at.timestamp_micros(), ts(s.at)],
+    )?;
     let ncpu = s.cores.map(|n| n as f64);
     let mut out = Vec::new();
     for m in &s.models {
@@ -1092,6 +1099,26 @@ pub fn last_sample_at(db: &Path) -> Option<DateTime<Utc>> {
     chrono::NaiveDateTime::parse_from_str(&at, "%Y-%m-%d %H:%M:%S")
         .ok()
         .map(|t| t.and_utc())
+}
+
+/// The `counter_state` key holding where the model rows' journal window
+/// ended, in microseconds.
+const JOURNAL_CURSOR: &str = "model.journal";
+
+/// Where the next sample's journal window starts: the previous sample's own
+/// instant, to the microsecond. Not [`last_sample_at`], which is stamped
+/// after the sample's reads and would leave the time they took in no window
+/// (review of #658). Read-only; `None` without a previous sample.
+pub fn journal_cursor(db: &Path) -> Option<DateTime<Utc>> {
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let micros: i64 = conn
+        .query_row(
+            "SELECT value FROM counter_state WHERE key = ?1",
+            params![JOURNAL_CURSOR],
+            |r| r.get(0),
+        )
+        .ok()?;
+    DateTime::from_timestamp_micros(micros)
 }
 
 /// What a probe found: one reading, or one per category.
