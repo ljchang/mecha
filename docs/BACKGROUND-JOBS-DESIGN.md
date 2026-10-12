@@ -519,8 +519,10 @@ or reach getting any trust they do not already have?
   inline, linked to the run's Stop, under that same cap.
 - **The result keeps its provenance.** The late output is built by the same conversion as an
   inline MCP result, so it is `external` (errors too). `jobs::settle` then wraps it and arms
-  taint exactly as an inline call would. The stopped and timed-out outputs are the harness's
-  words, recorded not external.
+  taint exactly as an inline call would. A failed call is marked from outside too, a timeout
+  included, as the inline path marks it: the error can carry the server's own `error.message`,
+  and one rule for every failure is the one that cannot be argued down. Only `not made:
+  stopped`, the harness's answer to a Stop, is recorded not external.
 - **The call says which chat it is for.** Servers are spawned once, rooted at the host's
   producer directory, and every chat's jail is a subdirectory of it (Slack's limit,
   `ARCHITECTURE.md`). A background call's `params._meta` carries

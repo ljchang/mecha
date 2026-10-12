@@ -1700,9 +1700,9 @@ fn ensure_session_as<'a>(
         }
         // A picture still "being made" when the server stopped has no job
         // behind it now: settled from what the workspace holds (`late`).
-        let defers = super::late::deferring(chat.follower.current().agent.registry());
+        let bound = chat.follower.current();
         super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
-            defers.contains(name)
+            super::late::may_be_orphan(bound.agent.registry(), name)
         });
         let late = super::late::LateState::of_file(&session.path);
         sessions.insert(
@@ -4200,9 +4200,9 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         routes.insert(key.clone(), (questions.clone(), events.clone(), park));
     }
     let mut conversation = conversation;
-    let defers = super::late::deferring(chat.follower.current().agent.registry());
+    let bound = chat.follower.current();
     super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
-        defers.contains(name)
+        super::late::may_be_orphan(bound.agent.registry(), name)
     });
     let late = super::late::LateState::of_file(&session.path);
     sessions.insert(

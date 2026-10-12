@@ -603,21 +603,31 @@ pub const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 
 /// The chat's workspace relative to the server's root, or `None` when it is
 /// not under it — which refuses the call rather than letting the server
-/// write where the chat cannot see (§8). Compared as given, then
-/// canonicalized, since either side may arrive through a symlink.
+/// write where the chat cannot see (§8). Canonical paths first, since either
+/// side may arrive through a symlink; the paths as given only when one does
+/// not resolve. Either way the answer is plain segments: a `..` anywhere is
+/// not "under the root", whatever `strip_prefix` makes of it.
 fn chat_folder(root: &Path, workspace: &Path) -> Option<String> {
-    let relative = |root: &Path, ws: &Path| {
-        ws.strip_prefix(root).ok().map(|r| {
-            let r = r.to_string_lossy().to_string();
-            if r.is_empty() {
-                ".".to_string()
-            } else {
-                r
-            }
+    use std::path::Component;
+    let relative = |root: &Path, ws: &Path| -> Option<String> {
+        let rest = ws.strip_prefix(root).ok()?;
+        if !rest
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        {
+            return None;
+        }
+        let rest = rest.to_string_lossy().to_string();
+        Some(if rest.is_empty() {
+            ".".to_string()
+        } else {
+            rest
         })
     };
-    relative(root, workspace)
-        .or_else(|| relative(&root.canonicalize().ok()?, &workspace.canonicalize().ok()?))
+    match (root.canonicalize(), workspace.canonicalize()) {
+        (Ok(root), Ok(ws)) => relative(&root, &ws),
+        _ => relative(root, workspace),
+    }
 }
 
 struct McpTool {
@@ -1319,5 +1329,14 @@ for line in sys.stdin:
         assert_eq!(chat_folder(root, root).as_deref(), Some("."));
         assert_eq!(chat_folder(root, Path::new("/srv/mecha/work/webby")), None);
         assert_eq!(chat_folder(root, Path::new("/elsewhere")), None);
+        // Lexically under the root and really beside it (review of #666).
+        assert_eq!(
+            chat_folder(root, Path::new("/srv/mecha/work/web/../other")),
+            None
+        );
+        assert_eq!(
+            chat_folder(root, Path::new("/srv/mecha/work/web/chat-1/../../x")),
+            None
+        );
     }
 }

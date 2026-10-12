@@ -254,8 +254,19 @@ pub(super) fn land(
     state.notes.push(note);
 }
 
+/// Whether a `being made:` result of `name`'s may be an orphan the restart
+/// repair settles: a picture always (#583's guarantee, which holds whatever
+/// the image feature reads now), a tool that defers, and a tool this
+/// registry no longer holds — a skipped MCP server, a feature switched off —
+/// since a restart is exactly what removes one, and an orphan it leaves would
+/// sit "being made" for good, a dead Stop on the page (review of #666). Only
+/// a tool still registered and known not to defer keeps its words.
+pub(super) fn may_be_orphan(registry: &mecha_core::tool::Registry, name: &str) -> bool {
+    name == "image_generate" || registry.get(name).is_none_or(|t| t.defers())
+}
+
 /// The names of the tools in `registry` whose calls defer (`Tool::defers`),
-/// for [`repair_orphans`] and the page's still-out rows (§8).
+/// for the page's still-out rows (§8).
 pub(super) fn deferring(
     registry: &mecha_core::tool::Registry,
 ) -> std::collections::HashSet<String> {
@@ -405,6 +416,44 @@ mod tests {
     /// tool (§8) — has nothing the harness can check after a restart, so its
     /// orphan reads the harness's own words, recorded not external. Keyed on
     /// the call: the same words from a tool that does not defer stay.
+    /// A restart can remove the very tool whose job it lost: a registry
+    /// without it still lets its orphan be settled, and a picture is settled
+    /// whatever the registry holds (review of #666).
+    #[test]
+    fn a_tool_the_registry_no_longer_holds_may_still_leave_an_orphan() {
+        let empty = mecha_core::tool::Registry::new();
+        assert!(may_be_orphan(&empty, "video_generate"));
+        assert!(may_be_orphan(&empty, "image_generate"));
+        let mut registry = mecha_core::tool::Registry::new();
+        registry.insert(std::sync::Arc::new(Plain));
+        assert!(
+            !may_be_orphan(&registry, "plain"),
+            "registered, does not defer"
+        );
+    }
+
+    struct Plain;
+
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for Plain {
+        fn name(&self) -> &str {
+            "plain"
+        }
+        fn description(&self) -> &str {
+            "a tool that answers at once"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &mecha_core::tool::ToolCtx,
+        ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+            Ok(mecha_core::tool::ToolOutput::ok("done"))
+        }
+    }
+
     #[test]
     fn a_deferring_tools_orphan_is_settled_and_another_tools_words_are_not() {
         let (session, dir) = scratch_session("orphan");

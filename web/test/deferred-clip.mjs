@@ -40,6 +40,12 @@ is(clipOf(row('video: .hidden/a.mp4')), null, 'never a dot segment');
 is(clipOf(row('video: clips/a.mov')), null, 'only mp4');
 is(clipOf(row('here is video: clips/a.mp4')), null, 'only a line that is the fact itself');
 is(clipOf(row(making)), null, 'nothing while it is being made');
+is(
+  clipOf(row('<untrusted-content source="render">\nvideo: videos/v1.mp4\nmade in 2 min\n</untrusted-content>')),
+  'videos/v1.mp4',
+  'the settled, wrapped result plays as the live one did'
+);
+is(clipOf(row('<untrusted-content source="render">video: videos/v1.mp4')), null, 'only the envelope the loop writes, line and all');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
