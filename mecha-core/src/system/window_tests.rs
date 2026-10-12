@@ -174,6 +174,18 @@ fn voice_is_withheld_and_absence_is_not_here() {
         read(&db, Measurement::VoiceLive, Window::H1, now).unwrap(),
         Some(Windowed::Withheld)
     );
+    // Not listed by the sampler that wrote the series: an older sampler's,
+    // not this machine's lack.
+    assert_eq!(
+        read(&db, Measurement::GpuTemperature, Window::H1, now).unwrap(),
+        Some(Windowed::OlderSampler)
+    );
+    // Listed, and still no row while it sampled: not on this machine.
+    c.execute(
+        "INSERT INTO measurements (id, name, unit) VALUES (?1, 'gpu.temperature', 'celsius')",
+        params![Measurement::GpuTemperature as u16],
+    )
+    .unwrap();
     assert_eq!(
         read(&db, Measurement::GpuTemperature, Window::H1, now).unwrap(),
         Some(Windowed::NotHere)

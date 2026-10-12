@@ -1981,7 +1981,17 @@ impl Arm {
         }
         let mut on = Vec::new();
         for name in &self.levers_on {
-            on.push(parse(name)?);
+            let lever = parse(name)?;
+            // Its switch ships off and has no config field here to force
+            // (`config_switch` is `None`), and a trial's home has no series:
+            // forced on, the arm would run as the control under a matching
+            // condition hash — `resolve_forced_on`'s own incident (review of
+            // #660).
+            anyhow::ensure!(
+                lever != Lever::SystemRead,
+                "`system_read` cannot be forced on in an experiment: it reads this machine's own series, which a trial's home does not have (SYSTEM-STATE-DESIGN.md R3)"
+            );
+            on.push(lever);
         }
         Ok(Lever::ALL
             .into_iter()
@@ -4045,6 +4055,19 @@ rationale = "no notice, fewer turns"
             ..Arm::default()
         };
         assert!(bad.resolve_levers().is_err());
+        // Forcing `system_read` on would run as the control under a matching
+        // hash: refused by name. Off stays allowed (review of #660).
+        let forced = Arm {
+            levers_on: vec!["system_read".into()],
+            ..Arm::default()
+        };
+        let why = forced.resolve_levers().unwrap_err().to_string();
+        assert!(why.contains("system_read"), "{why}");
+        let off = Arm {
+            levers_off: vec!["system_read".into()],
+            ..Arm::default()
+        };
+        assert_eq!(off.resolve_levers().unwrap(), vec![Lever::SystemRead]);
     }
 
     /// A lever named on is on in the child's config even where the
