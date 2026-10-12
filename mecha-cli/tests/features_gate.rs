@@ -114,7 +114,9 @@ MECHA_FIXTURE_DIR = {board:?}
 fn a_feature_registers_only_when_its_switch_is_on() {
     let home = Home::new("gate");
     let off = tools(&home, "");
-    for name in ["web_search", "image_generate"] {
+    // `system_read` registers whether or not the series exists, so its
+    // switch is the only variable here (review of #660).
+    for name in ["web_search", "image_generate", "system_read"] {
         assert!(
             !off.iter().any(|t| t == name),
             "{name} registered with its switch absent: {off:?}"
@@ -129,9 +131,9 @@ fn a_feature_registers_only_when_its_switch_is_on() {
 
     let on = tools(
         &home,
-        "[features]\nsearch = true\nimage = true\ngraph = true",
+        "[features]\nsearch = true\nimage = true\ngraph = true\nsystem = true",
     );
-    for name in ["web_search", "image_generate"] {
+    for name in ["web_search", "image_generate", "system_read"] {
         assert!(
             on.iter().any(|t| t == name),
             "{name} missing with its switch on: {on:?}"
@@ -140,6 +142,13 @@ fn a_feature_registers_only_when_its_switch_is_on() {
     assert!(
         on.iter().any(|t| t.starts_with("kg_task")),
         "the graph server did not connect with its switch on: {on:?}"
+    );
+
+    // `--no-system-read` (eval's lever) withholds it with the switch on.
+    let (withheld, _) = tools_with(&home, "[features]\nsystem = true", &["--no-system-read"]);
+    assert!(
+        !withheld.iter().any(|t| t == "system_read"),
+        "--no-system-read is honoured, not only emitted: {withheld:?}"
     );
 
     // An explicit `false` is as off as an absent key.
