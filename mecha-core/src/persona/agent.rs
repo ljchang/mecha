@@ -268,6 +268,17 @@ pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaT
             refused.push(refuse("a persona may never have it"));
             continue;
         };
+        // A persona's run is read-only (`setup::persona_agent`'s approver),
+        // so a form that says it changes things would be offered and then
+        // blocked at every call. Said here, by name, instead (review of
+        // #668: an MCP tool without `readOnlyHint` was exactly that).
+        if !form.read_only() {
+            refused.push(refuse(
+                "a persona's chat is read-only, and this tool says it changes things \
+                 (an MCP server's tool must declare readOnlyHint)",
+            ));
+            continue;
+        }
         let caps = form.capabilities();
         // `>=`, not `==`: exact today, and still exact if a class is ever
         // added above `Chosen`.
@@ -454,6 +465,10 @@ mod tests {
         fn capabilities(&self) -> Capabilities {
             self.caps
         }
+        // As every real persona tool is: a persona's run is read-only.
+        fn read_only(&self) -> bool {
+            true
+        }
         fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
             self.eligible.then_some(self as Arc<dyn Tool>)
         }
@@ -475,6 +490,9 @@ mod tests {
         }
         fn input_schema(&self) -> Value {
             json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
         }
         fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
             Some(self as Arc<dyn Tool>)
@@ -515,6 +533,42 @@ mod tests {
         s.character = Some("  ".into());
         registry_as(&pool, "maya", &s);
         assert_eq!(asks.0.lock().unwrap().as_ref().unwrap().character, None);
+    }
+
+    /// A persona's run is read-only, so a form that says it changes things
+    /// is refused by name when the registry is built, not offered and then
+    /// blocked at every call (review of #668).
+    #[test]
+    fn a_tool_that_changes_things_is_refused_with_why() {
+        struct Writes;
+        #[async_trait]
+        impl Tool for Writes {
+            fn name(&self) -> &str {
+                "writes"
+            }
+            fn description(&self) -> &str {
+                "changes things"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+                Some(self as Arc<dyn Tool>)
+            }
+            async fn call(&self, _: Value, _: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ok"))
+            }
+        }
+        let mut pool = Registry::new();
+        pool.insert(Arc::new(Writes));
+        let built = registry_for(&pool, &settings(&["writes"], Answers::Open));
+        assert!(names(&built.registry).is_empty());
+        assert_eq!(built.refused.len(), 1);
+        assert!(
+            built.refused[0].why.contains("read-only"),
+            "{}",
+            built.refused[0].why
+        );
     }
 
     fn settings(allow: &[&str], answers: Answers) -> Settings {

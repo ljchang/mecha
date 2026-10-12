@@ -701,7 +701,12 @@ impl Tool for McpTool {
     /// none of the owner's stores — is exactly what a remote server could
     /// claim falsely.
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
-        self.for_persona_as(&crate::tool::PersonaSelf::default())
+        // No persona named: the form says nothing about one, as
+        // `image_generate`'s does for the same question (review of #668).
+        if !self.client.personas {
+            return None;
+        }
+        Some(Arc::new((*self).clone()))
     }
 
     /// The same, knowing which persona: a background call tells the server

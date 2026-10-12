@@ -79,6 +79,11 @@ is(makingText({ name: 'video_generate' }), 'working on it…', 'anything else is
   ]);
   is(lines[0]?.text, 'working on it…', 'the call screen says a clip is being made, not a picture');
   is(lines[1]?.text, 'a clip, in the chat', 'and where a finished clip is');
+  const twice = historyLines([
+    row('video: videos/v2.mp4', { id: 'v2', name: 'video_generate' }),
+    row('video: videos/v2.mp4', { id: 'v3', name: 'video_generate' }),
+  ]);
+  is(twice.length, 1, 'one clip is noted once');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

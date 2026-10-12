@@ -2282,7 +2282,7 @@
       ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
       making={callEntries.some(stillOut)}
-      makingLabel={makingText(callEntries.find(stillOut))}
+      makingLabel={makingText(callEntries.filter(stillOut).find((e) => e.name === 'image_generate') ?? callEntries.find(stillOut))}
       onstoppicture={() => stopPicture()}
       ondownload={savePicture}
       onedit={editInCall}
