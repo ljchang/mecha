@@ -1695,32 +1695,96 @@ mod model_rows {
         assert_eq!(env_name(env, "MISSING"), None);
     }
 
+    /// The router's listing, read as the provider reads it: resident is
+    /// loaded, loading or sleeping, and a listing it cannot fully read is no
+    /// claim at all (review of #658).
     #[test]
-    fn the_routers_loaded_models_come_with_their_ports() {
-        let json = r#"{"data":[
+    fn the_routers_listing_is_read_by_the_providers_rules() {
+        let view = |body: &str| router_view(Some(body));
+        let loaded = r#"{"data":[
             {"id":"fictional-a","status":{"value":"unloaded"}},
-            {"id":"fictional-b","status":{"value":"loaded","args":["llama-server","--port","44035","--alias","fictional-b"]}}
+            {"id":"fictional-b","status":{"value":"loaded","args":["llama-server","--port","44035"]}}
         ]}"#;
         assert_eq!(
-            parse_router_models(json),
-            Some(vec![("fictional-b".to_string(), Some(44035))])
+            view(loaded),
+            RouterView {
+                model: Some("fictional-b".into()),
+                known: true,
+                ports: Some(vec![44035])
+            }
         );
+        let sleeping = r#"{"data":[{"id":"fictional-b","status":{"value":"sleeping","args":["--port=44035"]}}]}"#;
         assert_eq!(
-            parse_router_models(r#"{"data":[]}"#),
-            Some(vec![]),
-            "nothing resident"
+            view(sleeping).model.as_deref(),
+            Some("fictional-b"),
+            "asleep is resident"
         );
-        assert_eq!(parse_router_models("not json"), None, "unread, not empty");
-        assert_eq!(parse_router_models(r#"{"error":"busy"}"#), None);
-        let eq = r#"{"data":[{"id":"fictional-c","status":{"value":"loaded","args":["--port=45001"]}},
-                              {"id":"fictional-d","status":{"value":"loaded","args":[]}}]}"#;
+        assert_eq!(view(sleeping).ports, Some(vec![44035]));
+
+        let idle = r#"{"data":[{"id":"fictional-a","status":{"value":"unloaded"}}]}"#;
         assert_eq!(
-            parse_router_models(eq),
-            Some(vec![
-                ("fictional-c".to_string(), Some(45001)),
-                ("fictional-d".to_string(), None)
-            ]),
-            "a portless instance is kept, so collect can mark the row's speed unknown"
+            view(idle),
+            RouterView {
+                model: None,
+                known: true,
+                ports: Some(vec![])
+            },
+            "nothing resident is a finding: zero requests, not unknown"
+        );
+
+        let unknown_status = r#"{"data":[{"id":"fictional-a","status":{"value":"thawing"}}]}"#;
+        for unread in [
+            Some(unknown_status),
+            Some("not json"),
+            Some(r#"{"data":[]}"#),
+            None,
+        ] {
+            assert_eq!(
+                router_view(unread),
+                RouterView {
+                    model: None,
+                    known: false,
+                    ports: None
+                },
+                "{unread:?} supports no claim about what is resident"
+            );
+        }
+
+        let portless = r#"{"data":[{"id":"fictional-b","status":{"value":"loaded","args":[]}}]}"#;
+        let v = view(portless);
+        assert_eq!((v.model.as_deref(), v.known), (Some("fictional-b"), true));
+        assert_eq!(
+            v.ports, None,
+            "its lines cannot be attributed: speed unknown"
+        );
+    }
+
+    /// A minute whose journal could not be read does not move the window,
+    /// so the next sample counts its requests (review of #658).
+    #[test]
+    fn an_unread_journal_leaves_its_window_for_the_next_sample() {
+        let s = Scratch::new();
+        let db = s.0.join("series.sqlite");
+        let row = |perf: Option<Perf>| ModelLoad {
+            kind: ModelKind::Chat,
+            model: None,
+            model_known: true,
+            running: true,
+            mem_bytes: 0,
+            cpu_usec: 0,
+            gpu_mib: None,
+            perf,
+        };
+        let mut s1 = sample(0, &[], 0, 0);
+        s1.models = vec![row(Some(Perf::default()))];
+        record(&db, &s1).unwrap();
+        let mut s2 = sample(1, &[], 0, 0);
+        s2.models = vec![row(None)];
+        record(&db, &s2).unwrap();
+        assert_eq!(
+            journal_cursor(&db),
+            Some(s1.at),
+            "the lost window is read next time"
         );
     }
 

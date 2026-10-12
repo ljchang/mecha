@@ -285,35 +285,68 @@ pub fn parse_unit_states(text: &str) -> BTreeMap<String, UnitState> {
     out
 }
 
-/// The router's loaded models: each one's alias and the port its instance
-/// listens on (the prefix on that instance's log lines). `None` when the
-/// answer is not the router's listing at all — unread, which is not the
-/// same finding as an empty list (no model resident).
-pub fn parse_router_models(json: &str) -> Option<Vec<(String, Option<u16>)>> {
-    let v = serde_json::from_str::<serde_json::Value>(json).ok()?;
-    let mut out: Vec<(String, Option<u16>)> = v["data"]
-        .as_array()?
+/// What the router's `/models` listing says, for the chat row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterView {
+    /// The resident model(s), when any is.
+    pub model: Option<String>,
+    /// Whether `model` is a finding: false when the listing was unanswered
+    /// or not one this build can fully read.
+    pub known: bool,
+    /// The resident instances' ports, which their log lines are prefixed
+    /// with. `None` when a line cannot be attributed — the listing was not
+    /// read, or a resident instance's port is not in it — so the row's speed
+    /// is unknown, never a quiet minute.
+    pub ports: Option<Vec<u16>>,
+}
+
+/// Read a `/models` answer through the provider's own types and rules, so
+/// this reader agrees with the other four: resident is
+/// [`RouterModel::is_resident`] (`loaded`, `loading`, `sleeping`), and a
+/// listing with a status this build does not know supports no conclusion
+/// ([`crate::provider::router::readable`]) — "nothing resident" is a claim
+/// (review of #658).
+pub fn router_view(body: Option<&str>) -> RouterView {
+    use crate::provider::router::{readable, RouterModel};
+    #[derive(serde::Deserialize)]
+    struct Listing {
+        #[serde(default)]
+        data: Vec<RouterModel>,
+    }
+    let unread = RouterView {
+        model: None,
+        known: false,
+        ports: None,
+    };
+    let Some(models) = body
+        .and_then(|b| serde_json::from_str::<Listing>(b).ok())
+        .map(|l| l.data)
+        .filter(|m| readable(m))
+    else {
+        return unread;
+    };
+    let mut resident: Vec<(String, Option<u16>)> = models
         .iter()
-        .filter(|m| m["status"]["value"] == "loaded")
+        .filter(|m| m.is_resident())
         .filter_map(|m| {
-            let id = clean_name(m["id"].as_str()?)?;
-            let args: Vec<&str> = m["status"]["args"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|a| a.as_str())
-                .collect();
+            let args = &m.status.args;
             let port = args
                 .iter()
-                .position(|a| *a == "--port")
-                .and_then(|i| args.get(i + 1).copied())
+                .position(|a| a == "--port")
+                .and_then(|i| args.get(i + 1).map(String::as_str))
                 .or_else(|| args.iter().find_map(|a| a.strip_prefix("--port=")))
                 .and_then(|p| p.parse().ok());
-            Some((id, port))
+            Some((clean_name(&m.id)?, port))
         })
         .collect();
-    out.sort();
-    Some(out)
+    resident.sort();
+    let ports: Option<Vec<u16>> = resident.iter().map(|(_, p)| *p).collect();
+    let names: Vec<String> = resident.into_iter().map(|(n, _)| n).collect();
+    RouterView {
+        model: (!names.is_empty()).then(|| names.join(" + ")),
+        known: true,
+        ports,
+    }
 }
 
 /// `journalctl -o json` lines to each unit's messages. A message journald
@@ -536,38 +569,25 @@ pub fn collect(
                     .then(|| std::fs::read(format!("/proc/{}/{f}", st.pid)).ok())
                     .flatten()
             };
+            // Only the router filters its lines by instance; for it, `None`
+            // means no line can be attributed (`RouterView::ports`).
             let mut ports: Option<Vec<u16>> = None;
-            // The router's lines can be attributed only when it answered
-            // and every loaded instance's port is known; otherwise the
-            // row's speed is unknown, never a quiet minute (review of #658).
             let mut unattributable = false;
-            let mut listed_empty = false;
+            let mut known = true;
             let model = if !st.running {
                 None
             } else {
                 match server.name {
                     NameFrom::Router => {
                         let port = crate::router_unit::Naming::shipped().port;
-                        // Unanswered is not "nothing loaded": without the
-                        // listing no line can be attributed, so the row's
-                        // model and speed are unknown, never a quiet minute
-                        // (review of #658).
-                        match loopback_get(port, "/models", budget().min(Duration::from_secs(3)))
-                            .and_then(|b| parse_router_models(&b))
-                        {
-                            Some(loaded) => {
-                                unattributable = loaded.iter().any(|(_, p)| p.is_none());
-                                listed_empty = loaded.is_empty();
-                                ports = Some(loaded.iter().filter_map(|(_, p)| *p).collect());
-                                let names: Vec<String> =
-                                    loaded.into_iter().map(|(n, _)| n).collect();
-                                (!names.is_empty()).then(|| names.join(" + "))
-                            }
-                            None => {
-                                unattributable = true;
-                                None
-                            }
-                        }
+                        let view = router_view(
+                            loopback_get(port, "/models", budget().min(Duration::from_secs(3)))
+                                .as_deref(),
+                        );
+                        unattributable = view.ports.is_none();
+                        ports = view.ports;
+                        known = view.known;
+                        view.model
                     }
                     NameFrom::ModelArg => proc_file("cmdline").and_then(|c| model_arg(&c)),
                     NameFrom::Env(key) => proc_file("environ").and_then(|e| env_name(&e, key)),
@@ -577,7 +597,8 @@ pub fn collect(
                     }
                 }
             };
-            let model_known = !st.running || model.is_some() || listed_empty;
+            let model_known =
+                !st.running || model.is_some() || (server.name == NameFrom::Router && known);
             let perf = journal.as_ref().filter(|_| !unattributable).map(|j| {
                 let lines = j.get(unit).map(Vec::as_slice).unwrap_or(&[]);
                 fold_perf(server.kind, lines, ports.as_deref())

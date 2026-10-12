@@ -861,11 +861,16 @@ fn record_models(
         )?;
     }
     // Where the next sample's journal window starts: this sample's own
-    // instant, which is where this one's ended (`journal_cursor`).
-    tx.execute(
-        "INSERT OR REPLACE INTO counter_state (key, value, ident, at) VALUES (?1, ?2, 0, ?3)",
-        params![JOURNAL_CURSOR, s.at.timestamp_micros(), ts(s.at)],
-    )?;
+    // instant, which is where this one's ended (`journal_cursor`). Not
+    // moved when no row's journal was read, so the next sample reads the
+    // window this one lost rather than dropping its requests (still capped
+    // at ten minutes; review of #658).
+    if s.models.is_empty() || s.models.iter().any(|m| m.perf.is_some()) {
+        tx.execute(
+            "INSERT OR REPLACE INTO counter_state (key, value, ident, at) VALUES (?1, ?2, 0, ?3)",
+            params![JOURNAL_CURSOR, s.at.timestamp_micros(), ts(s.at)],
+        )?;
+    }
     let ncpu = s.cores.map(|n| n as f64);
     let mut out = Vec::new();
     for m in &s.models {
