@@ -3736,6 +3736,13 @@ impl Agent {
                     pictures.started_now = false;
                     pictures.busy = false;
                     pictures.busy_again = false;
+                    // Per turn, as the flags they decide beside: a picture in
+                    // an earlier turn must not word a later turn's clip
+                    // (review of #666, pass 5).
+                    pictures.started_closing = None;
+                    pictures.started_picture = false;
+                    pictures.busy_closing = None;
+                    pictures.busy_picture = false;
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
                     // after every sibling's work, through the same guards as any call.
@@ -8931,6 +8938,51 @@ mod tests {
         assert_eq!(outcome.text, PICTURE_NOT_STARTED_REPLY);
         hold.notify_one();
         go.notify_one();
+    }
+
+    /// The choice is per turn: a picture an earlier turn started does not
+    /// word a later turn's clips (review of #666, pass 5).
+    #[tokio::test]
+    async fn an_earlier_turns_picture_does_not_word_a_later_turns_clip() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let use_ = |id: &str, name: &str| Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: json!({}),
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![use_("d1", "draw")], StopReason::ToolUse),
+                assistant(
+                    vec![use_("c1", "clip"), use_("c2", "clip")],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=clip></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![
+                Arc::new(Later(Arc::clone(&go))),
+                Arc::new(Clip(Arc::clone(&go))),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("a picture, then two clips");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            let tail = tail_text(&seen[2]);
+            assert!(tail.ends_with(WORK_STARTED), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_STARTED_REPLY);
+        go.notify_waiters();
     }
 
     /// The busy side of the same: a non-picture job refused because the line
