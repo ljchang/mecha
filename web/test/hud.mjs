@@ -158,6 +158,9 @@ assert.deepEqual(tooltipLines(null), []);
 assert.equal(scheme('light'), 'light');
 assert.equal(scheme('anything'), 'dark');
 assert.equal(vegaConfig('dark').background, null);
+// Text marks read on the page: the scheme's text colour, never Vega's black.
+assert.equal(vegaConfig('dark').text.color, '#e9e9ed');
+assert.notEqual(vegaConfig('light').text.color, vegaConfig('dark').text.color);
 assert.equal(vegaConfig('dark', true).legend.columns, 3);
 assert.equal(vegaConfig('dark').legend.columns, undefined);
 assert.notDeepEqual(vegaConfig('light').range.category, vegaConfig('dark').range.category);
