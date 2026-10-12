@@ -609,8 +609,11 @@ workspace**. Six decisions, each a bug if undone:
   reload), and the larger is asked.
 - **Idle memory is released beside the server, not by mecha.** A loaded
   ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
-  user timer, installed by `scripts/comfyui/install.sh`) restarts
-  `comfyui.service` once it has held a model for 15 idle minutes with an
+  user timer: `mecha-comfyui-idle-reset` from `scripts/comfyui/install.sh`
+  for a hand-built `comfyui.service`, and `mecha-comfyui-idle` written by
+  `features enable image` beside `mecha-comfyui.service`, from a copy in the
+  binary a test holds byte-equal) restarts the server
+  once it has held a model for 15 idle minutes with an
   empty queue and no open connection, leaving a 1.1 GB process with its port
   up; below 4 GB of `MemFree` it sends `/free` instead, because a new CUDA
   context failed to come up there. A restart also empties the server's temp
@@ -10130,8 +10133,9 @@ in five different ways. The design and its open steps are
 
 ### Adding a feature
 
-What a new optional feature needs today. `FEATURES-DESIGN.md` §9 step 8 is
-the full checklist this grows into as each build step lands.
+What a new optional feature needs, written by the steps that learned each
+line (`FEATURES-DESIGN.md` §9 step 8). Most items are held by a test or by an
+exhaustive `match`, so the build asks; the ones that are not say so.
 
 1. A `Feature` variant: `id`, `label`, `part_of`, `requires`, placed in
    `Feature::ALL` after everything it needs. `every_variant_is_in_all` will
@@ -10199,6 +10203,64 @@ the full checklist this grows into as each build step lands.
    that does not fetch its models is never re-offered because one is missing
    (`install::fetches_models`, which no longer names the router), or it
    would be offered, change nothing, and be offered again on every enable.
+10. **Its installer is one `<id>_unit.rs`, in the shape the step-7 ones
+    share** (`stt_unit`, `voice_worker_unit`, `speech_unit`, `comfyui_unit`):
+    - A `Naming` (unit name and port) with a `shipped()`, and a test that the
+      shipped port is the config default the client reads. An `#[ignore]`d
+      real-machine test installs under another name on a free port, beside
+      the live server, and removes it.
+    - Units and scripts ship in the binary as copies under `mecha-core/units/`
+      (a published crate cannot reach `scripts/`). A test holds each one
+      byte-equal to the hand install's copy (`the_shipped_*_is_the_scripts_copy`,
+      `the_shipped_units_are_the_scripts`), so a fix made in one reaches the
+      other or fails. A unit that must be renamed or placeholdered cannot be
+      byte-equal, so its test compares the parts that must agree instead
+      (`the_idle_units_keep_the_hand_installs_schedule_and_path`).
+    - Rendered from placeholders into absolute paths under the mecha home.
+      Nothing names a checkout or a home directory.
+    - Every file goes through `llama_units::write_owned`, which refuses a
+      file mecha did not write.
+    - `someone_elses` refuses to install over a server mecha did not install
+      on the port. That one is provided, and used as it is.
+    - The server gets `restart`, not `enable --now`, so a reinstall reaches
+      a running server. A failed health check stops and disables what it
+      started (#639). A timer is the exception: `enable --now` is right
+      there, because the oneshot it fires reads its unit afresh on every
+      tick after `daemon-reload`.
+    - **Everything the hand install runs beside the server ships with it.**
+      7e shipped ComfyUI without the hand install's idle reset, so an
+      installed server held ~13.6 GB after a picture for good until 7e-2
+      added `mecha-comfyui-idle.timer`. A companion unit needs its own name
+      where the hand install's could share the machine.
+11. **It asks the way `enable` asks.** Without a terminal, `features enable`
+    installs nothing and says how to proceed (`--no-install` writes the
+    switch alone). The guided `mecha setup` lists every download and install
+    with its size and asks once (ruling F14), so an installer must not fetch
+    or restart anything that list did not name. Turbo's on-demand fetch
+    (#650) is gated there by `features::turbo_step`, a pure function with a
+    table test.
+12. **Its settings live in one place, chosen.**
+    - A `[table]` in config is four edits: `Config`, `ConfigLayer`, `apply`,
+      and a decision in `merge_text` whether a project file may set it. Two
+      tests catch the first three:
+      `every_field_of_config_is_reachable_from_a_file` and
+      `every_field_a_nested_layer_can_read_is_a_field_apply_reads`.
+    - It also takes a decision on `trial_env`'s lists: `OPERATOR_ONLY_TABLES`
+      (a checkout may never name it: a destination, a credential, a
+      mailbox), `MACHINE_TABLES` (the operator's copy is used), or neither (an
+      environment may declare it).
+    - Settings the owner changes from the web live in a file under the mecha
+      home, never in layered config, written by one owner-gated route. An
+      example is `sampling::chat_path`, behind `/api/settings/images`.
+    - Two things no test catches without an edit:
+      - The route goes in the hand-kept list of
+        `the_settings_routes_sit_behind_the_owner_guard`.
+      - Its Settings pane goes in `PANE_FEATURE`. #654 missed the pane, so a
+        deep link to Settings → Images with images off showed a raw error
+        instead of the declined line, until review.
+13. **A config switch a `harness::Lever` reads moves with the feature.** If
+    the feature replaces such a switch, the lever reads the feature instead,
+    so `mecha eval`'s bare run still turns it off.
 
 ## Context, and knowing how much is left
 

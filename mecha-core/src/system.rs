@@ -123,7 +123,9 @@ pub fn category_of(unit: &str) -> Category {
         "llama-ocr" | "llama-ocr-proxy" => Category::Ocr,
         // `mecha-comfyui` is the unit `features enable image` installs
         // (review of #645).
-        "comfyui" | "mecha-comfyui" | "mecha-comfyui-idle-reset" => Category::ImageGen,
+        "comfyui" | "mecha-comfyui" | "mecha-comfyui-idle-reset" | "mecha-comfyui-idle" => {
+            Category::ImageGen
+        }
         "mecha-parakeet" => Category::Voice,
         n if n.starts_with("mecha-breeze-") || n.starts_with("mecha-voice-") => Category::Voice,
         n if n.starts_with("mecha-") => Category::Mecha,
