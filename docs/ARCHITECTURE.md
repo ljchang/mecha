@@ -6021,9 +6021,12 @@ was ever deployed.
 
 - **Numbers and categories, nothing else.** Per-unit counters come from the
   user manager's cgroups and GPU memory from `nvidia-smi`, folded into a
-  closed `Category` whose numbers are a wire format; a unit, process or model
+  closed `Category` whose numbers are a wire format; a unit or process
   name never reaches the series, and a test greps the file's bytes — and its
-  `-journal`/`-wal` sidecars — to prove it.
+  `-journal`/`-wal` sidecars — to prove it. The one name it holds is a
+  model's (R6, 2026-10-12): `system::models` writes a row per model server
+  — running, model, memory, CPU, and speed read as numbers from the
+  server's own log — and keeps the unit that runs it out.
 - **Unknown stays unknown.** A sample whose `/proc/meminfo` or cgroup tree
   cannot be read is refused, not recorded as an idle machine (`Other` is a
   remainder and would absorb the whole box); the doctor reports a sampler
