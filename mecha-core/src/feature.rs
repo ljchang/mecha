@@ -935,6 +935,8 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
 pub struct McpWiring {
     pub name: &'static str,
     pub program: &'static str,
+    /// What installs the program — the one answer `server_state` gives too.
+    pub install: &'static str,
     pub prefix_tools: bool,
     pub outbox: &'static [&'static str],
 }
@@ -948,6 +950,7 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
         Feature::Mail => McpWiring {
             name: "mail",
             program: "mecha-mail",
+            install: "cargo install mecha-mail --locked",
             prefix_tools: true,
             outbox: &[
                 "mail__mail_send",
@@ -960,12 +963,21 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
         Feature::Docs => McpWiring {
             name: "docs",
             program: "mecha-docs",
+            install: "cargo install mecha-mail --locked",
             prefix_tools: true,
-            outbox: &[],
+            // Writing into a document a third party can read is a send
+            // (`documents.md`): the three verbs that write into an existing
+            // file stage for review (review of #669).
+            outbox: &[
+                "docs__docs_append",
+                "docs__docs_replace",
+                "docs__sheets_write",
+            ],
         },
         Feature::Graph => McpWiring {
             name: "graph",
             program: "mecha-graph-mcp",
+            install: "cargo install mecha-graph-mcp --locked",
             prefix_tools: false,
             outbox: &[],
         },
@@ -973,14 +985,25 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
     })
 }
 
+/// What installs a server feature's program: one answer for `server_state`'s
+/// next step and `features enable`'s (review of #669).
+fn installs(f: Feature) -> &'static str {
+    mcp_wiring(f).map(|w| w.install).unwrap_or_default()
+}
+
 /// What [`write_mcp_entry`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum McpWrite {
-    /// An entry already runs the program (enabled or not): left as it is.
-    AlreadyWired,
-    /// Written. `outbox_missing` is the routing the owner's own `[outbox]`
-    /// table lacks — never edited, so the caller says the lines to add.
-    Wrote { outbox_missing: Vec<String> },
+pub struct McpWrite {
+    /// Whether the `[[mcp]]` entry was written; false when one already runs
+    /// the program (enabled or not), which is left as it is.
+    pub wrote_entry: bool,
+    /// Whether an `[outbox]` table was written, where there was none.
+    pub wrote_outbox: bool,
+    /// The routing the owner's own `[outbox]` lacks — never edited, so the
+    /// caller says the lines to add. Checked whether or not the entry was
+    /// written: a hand-wired install is the one most likely to lack it
+    /// (review of #669).
+    pub outbox_missing: Vec<String>,
 }
 
 /// Write `wiring`'s `[[mcp]]` entry, running `command`, into the global
@@ -1010,32 +1033,36 @@ pub fn write_mcp_entry(
             .and_then(|c| Path::new(c).file_name().map(|n| n == wiring.program))
             .unwrap_or(false)
     };
-    if let Some(servers) = doc.get("mcp").and_then(|m| m.as_array_of_tables()) {
-        if servers.iter().any(runs) {
-            return Ok(McpWrite::AlreadyWired);
+    let wired = doc
+        .get("mcp")
+        .and_then(|m| m.as_array_of_tables())
+        .is_some_and(|servers| servers.iter().any(runs));
+    if !wired {
+        let mut entry = toml_edit::Table::new();
+        entry.insert("name", toml_edit::value(wiring.name));
+        entry.insert("command", toml_edit::value(command.display().to_string()));
+        if !wiring.prefix_tools {
+            entry.insert("prefix_tools", toml_edit::value(false));
         }
-    }
-    let mut entry = toml_edit::Table::new();
-    entry.insert("name", toml_edit::value(wiring.name));
-    entry.insert("command", toml_edit::value(command.display().to_string()));
-    if !wiring.prefix_tools {
-        entry.insert("prefix_tools", toml_edit::value(false));
-    }
-    let mut caps = toml_edit::Table::new();
-    caps.insert("untrusted_input", toml_edit::value(true));
-    entry.insert("capabilities", toml_edit::Item::Table(caps));
-    match doc.get_mut("mcp") {
-        Some(item) => item
-            .as_array_of_tables_mut()
-            .context("[mcp] in the config is not an array of [[mcp]] tables; nothing was changed")?
-            .push(entry),
-        None => {
-            let mut servers = toml_edit::ArrayOfTables::new();
-            servers.push(entry);
-            doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
+        let mut caps = toml_edit::Table::new();
+        caps.insert("untrusted_input", toml_edit::value(true));
+        entry.insert("capabilities", toml_edit::Item::Table(caps));
+        match doc.get_mut("mcp") {
+            Some(item) => item
+                .as_array_of_tables_mut()
+                .context(
+                    "[mcp] in the config is not an array of [[mcp]] tables; nothing was changed",
+                )?
+                .push(entry),
+            None => {
+                let mut servers = toml_edit::ArrayOfTables::new();
+                servers.push(entry);
+                doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
+            }
         }
     }
     let mut outbox_missing = Vec::new();
+    let mut wrote_outbox = false;
     if !wiring.outbox.is_empty() {
         match doc.get("outbox") {
             None => {
@@ -1046,6 +1073,7 @@ pub fn write_mcp_entry(
                 let mut table = toml_edit::Table::new();
                 table.insert("tools", toml_edit::value(tools));
                 doc.insert("outbox", toml_edit::Item::Table(table));
+                wrote_outbox = true;
             }
             Some(outbox) => {
                 let routed: Vec<String> = outbox
@@ -1066,6 +1094,14 @@ pub fn write_mcp_entry(
             }
         }
     }
+    let done = McpWrite {
+        wrote_entry: !wired,
+        wrote_outbox,
+        outbox_missing,
+    };
+    if !done.wrote_entry && !done.wrote_outbox {
+        return Ok(done);
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -1075,7 +1111,7 @@ pub fn write_mcp_entry(
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
     }
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-    Ok(McpWrite::Wrote { outbox_missing })
+    Ok(done)
 }
 
 /// Write switches into the `[features]` table of the config file at `path`,
@@ -1220,7 +1256,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts,
             "mecha-mail",
             facts.has_mail_binary,
-            "cargo install mecha-mail --locked",
+            installs(Feature::Mail),
             Some(facts.mail_accounts),
             "mecha-mail auth",
         ),
@@ -1228,7 +1264,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts,
             "mecha-docs",
             facts.has_docs_binary,
-            "cargo install mecha-mail --locked",
+            installs(Feature::Docs),
             Some(facts.docs_accounts),
             "mecha-docs auth",
         ),
@@ -1236,7 +1272,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts,
             "mecha-graph-mcp",
             facts.has_graph_binary,
-            "cargo install mecha-graph-mcp --locked",
+            installs(Feature::Graph),
             None,
             "",
         ),
@@ -1446,50 +1482,62 @@ mod tests {
     use super::*;
 
     /// `enable mail` writes the entry the docs give, untrusted, with its sends
-    /// staged where there is no `[outbox]`; an entry already running the
-    /// program is left; an owner's `[outbox]` is never edited and what it
-    /// lacks is returned; the graph's tools keep their own names; and the
-    /// written file loads as a config whose mail feature now reads its
-    /// account, not its missing entry (the owner, 2026-10-12).
+    /// staged where there is no `[outbox]`; a second write changes nothing; an
+    /// owner's `[outbox]` is never edited and what it lacks is returned — on a
+    /// hand-wired install too; docs stages its write verbs; the graph keeps
+    /// its tools' own names; and the written file loads as a config (the
+    /// owner, 2026-10-12; review of #669).
     #[test]
     fn enable_writes_a_server_feature_its_entry() {
         let root = std::env::temp_dir().join(format!("mecha-mcp-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let bin = Path::new("/opt/bin/mecha-mail");
         let mail = mcp_wiring(Feature::Mail).unwrap();
-
-        let fresh = root.join("fresh.toml");
-        std::fs::write(&fresh, "# mine\n[features]\nmail = true\n").unwrap();
-        let wrote = write_mcp_entry(&fresh, &mail, bin).unwrap();
-        let text = std::fs::read_to_string(&fresh).unwrap();
-        // Written twice is written once.
-        let again = write_mcp_entry(&fresh, &mail, bin).unwrap();
-
-        let owned = root.join("owned.toml");
-        std::fs::write(&owned, "[outbox]\ntools = [\"mail__mail_send\"]\n").unwrap();
-        let partial = write_mcp_entry(&owned, &mail, bin).unwrap();
-        let owned_text = std::fs::read_to_string(&owned).unwrap();
-
-        let graph = root.join("graph.toml");
-        std::fs::write(&graph, "").unwrap();
-        write_mcp_entry(
-            &graph,
+        let lacking: Vec<String> = mail.outbox[1..].iter().map(|t| t.to_string()).collect();
+        let write = |name: &str, text: &str, w: &McpWiring, cmd: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, text).unwrap();
+            let done = write_mcp_entry(&p, w, Path::new(cmd)).unwrap();
+            (done, std::fs::read_to_string(&p).unwrap(), p)
+        };
+        let (fresh, text, fresh_path) = write(
+            "fresh.toml",
+            "# mine\n[features]\nmail = true\n",
+            &mail,
+            "/opt/bin/mecha-mail",
+        );
+        let again = write_mcp_entry(&fresh_path, &mail, bin).unwrap();
+        let owned_before = "[outbox]\ntools = [\"mail__mail_send\"]\n";
+        let (partial, owned_text, _) =
+            write("owned.toml", owned_before, &mail, "/opt/bin/mecha-mail");
+        let hand_before = "[[mcp]]\nname = \"mail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n\n\
+                           [outbox]\ntools = [\"mail__mail_send\"]\n";
+        let (hand, hand_text, _) = write("hand.toml", hand_before, &mail, "/opt/bin/mecha-mail");
+        let (_, graph_text, _) = write(
+            "graph.toml",
+            "",
             &mcp_wiring(Feature::Graph).unwrap(),
-            Path::new("/b/mecha-graph-mcp"),
-        )
-        .unwrap();
-        let graph_text = std::fs::read_to_string(&graph).unwrap();
-
-        let cfg = crate::config::Config::load_layers(Some(&fresh), None);
+            "/b/mecha-graph-mcp",
+        );
+        let (_, docs_text, _) = write(
+            "docs.toml",
+            "",
+            &mcp_wiring(Feature::Docs).unwrap(),
+            "/b/mecha-docs",
+        );
+        let cfg = crate::config::Config::load_layers(Some(&fresh_path), None);
         let _ = std::fs::remove_dir_all(&root);
 
-        assert_eq!(
-            wrote,
-            McpWrite::Wrote {
-                outbox_missing: vec![]
-            }
-        );
-        assert_eq!(again, McpWrite::AlreadyWired);
+        let tools = |v: &toml::Value| -> Vec<String> {
+            v["outbox"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_string))
+                .collect()
+        };
+        // Fresh: entry and routing written, comments kept.
+        assert!(fresh.wrote_entry && fresh.wrote_outbox && fresh.outbox_missing.is_empty());
         assert!(text.starts_with("# mine"), "{text}");
         let parsed: toml::Value = toml::from_str(&text).unwrap();
         let entry = &parsed["mcp"][0];
@@ -1499,32 +1547,33 @@ mod tests {
             entry["capabilities"]["untrusted_input"].as_bool(),
             Some(true)
         );
-        let routed: Vec<&str> = parsed["outbox"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert_eq!(routed, mail.outbox);
-
-        assert_eq!(
-            partial,
-            McpWrite::Wrote {
-                outbox_missing: mail.outbox[1..].iter().map(|t| t.to_string()).collect()
-            }
-        );
-        assert!(
-            owned_text.starts_with("[outbox]\ntools = [\"mail__mail_send\"]\n"),
-            "{owned_text}"
-        );
-
+        assert_eq!(tools(&parsed), mail.outbox);
+        // Again: nothing.
+        assert!(!again.wrote_entry && !again.wrote_outbox && again.outbox_missing.is_empty());
+        // An owner's partial [outbox]: the entry, not the table; the gap said.
+        assert!(partial.wrote_entry && !partial.wrote_outbox);
+        assert_eq!(partial.outbox_missing, lacking);
+        assert!(owned_text.starts_with(owned_before), "{owned_text}");
+        // Hand-wired: nothing written, the gap still said.
+        assert!(!hand.wrote_entry && !hand.wrote_outbox);
+        assert_eq!(hand.outbox_missing, lacking);
+        assert_eq!(hand_text, hand_before);
+        // Graph keeps its names and stages nothing; docs stages its writes.
         let g: toml::Value = toml::from_str(&graph_text).unwrap();
         assert_eq!(g["mcp"][0]["prefix_tools"].as_bool(), Some(false));
         assert!(g.get("outbox").is_none());
-
+        let d: toml::Value = toml::from_str(&docs_text).unwrap();
+        assert_eq!(
+            tools(&d),
+            [
+                "docs__docs_append",
+                "docs__docs_replace",
+                "docs__sheets_write"
+            ]
+        );
+        // The written file loads.
         let cfg = cfg.expect("the written file loads");
-        let m = &cfg.mcp[0];
-        assert!(m.capabilities.untrusted_input);
+        assert!(cfg.mcp[0].capabilities.untrusted_input);
         assert_eq!(cfg.outbox.tools, mail.outbox);
     }
 
