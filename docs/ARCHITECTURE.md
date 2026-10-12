@@ -1248,11 +1248,11 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
   a trusted session.
 - **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
   ignores it. Incognito chats may call `image_library` and generate with a
-  cast; `image_library_propose` writes outside the room and is withheld.
-  `persona_propose` is the one deliberate exception (the owner's ruling,
-  2026-10-01): it writes outside the room, staged locked
-  (`ToolCtx::stage_locked`), and nothing it writes reaches a prompt before
-  the owner approves it.
+  cast. Two writers reach outside the room on purpose, both staged locked
+  (`ToolCtx::stage_locked`) so nothing they write reaches a prompt before the
+  owner approves it: `persona_propose` (the owner's ruling, 2026-10-01) and
+  `image_library_propose` (2026-10-12). The chat card's Save to library is
+  allowed there too, always locked (`serve/library.rs::save_locked`).
 - **The same-seed rule, narrowed.** An edit still always samples fresh; a
   cast generation keeps the model's seed — that is how a scene is revised with
   its composition — except a cast member's `source_seed`, which is replaced
