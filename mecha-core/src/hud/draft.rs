@@ -435,6 +435,52 @@ impl Store {
         })
     }
 
+    /// The draft drawn headless (`render`): its bundle assembled as a publish
+    /// assembles it — the renderer from `renderer`, the checked spec — with
+    /// the preview's rows beside it as `./data/`, where a standalone page
+    /// reads them. Only a clean preview is drawn: a picture of refusals
+    /// teaches nothing the refusals do not say.
+    pub fn picture(
+        &self,
+        draft: &Draft,
+        preview: &Preview,
+        renderer: &Path,
+        with: &super::render::Renderer,
+        now: DateTime<Utc>,
+    ) -> Result<super::render::Cropped> {
+        anyhow::ensure!(preview.is_clean(), "only a clean preview is drawn");
+        let scratch = Scratch::new(self)?;
+        let dir = scratch.0.join("draft").join(draft.id());
+        draft.write(&dir)?;
+        let installed = match Installed::load_dir(&dir, draft.id())? {
+            Ok(installed) => installed,
+            Err(r) => anyhow::bail!("the draft no longer passes its checks: {r}"),
+        };
+        let bundle = scratch.0.join("bundle");
+        super::publish::assemble(&installed, renderer, &bundle)?;
+        let data = bundle.join("data");
+        crate::create_private_dir(&data)?;
+        for d in &preview.datasets {
+            let Fetch::Rows { columns, rows } = &d.fetch else {
+                continue;
+            };
+            let dataset = Dataset {
+                name: d.name.clone(),
+                generated_at: now,
+                generation: 1,
+                loader_digest: d.loader_digest.clone(),
+                columns: columns.clone(),
+                rows: rows.clone(),
+                external: d.external,
+            };
+            std::fs::write(
+                data.join(format!("{}.json", d.name)),
+                serde_json::to_vec(&dataset)?,
+            )?;
+        }
+        with.render(&bundle, &scratch.0)
+    }
+
     /// An installed board's files, as a draft to revise.
     pub fn board_draft(&self, id: &str) -> Result<Option<Draft>> {
         let dir = self.board_path(id)?;

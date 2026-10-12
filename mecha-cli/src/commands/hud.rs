@@ -60,6 +60,18 @@ pub enum Cmd {
     },
     /// Set a proposed board aside.
     Reject { id: String },
+    /// Internal: serve a bundle on loopback and screenshot it. Run only
+    /// inside the render's network-less sandbox (`hud::render`), never by
+    /// hand — outside it the browser would have this machine's network.
+    #[command(hide = true)]
+    RenderInside {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        browser: PathBuf,
+    },
     /// Stage a board's release on the factory in the outbox: the page, the
     /// renderer, the checked spec and each loader's columns and digest. The
     /// owner's release is the review (`mecha outbox show`, then `send`);
@@ -84,6 +96,16 @@ pub enum Cmd {
 }
 
 pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
+    // Inside the render's sandbox there is no mecha home to open, and the
+    // store is not needed: answer before touching it.
+    if let Cmd::RenderInside {
+        bundle,
+        out,
+        browser,
+    } = &args.cmd
+    {
+        return mecha_core::hud::render::serve_and_shoot(bundle, out, browser);
+    }
     let store = Store::open()?;
     match args.cmd {
         Cmd::List { json } => list(&store, json),
@@ -114,6 +136,7 @@ pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
             }
             Err(r) => refused(&r),
         },
+        Cmd::RenderInside { .. } => unreachable!("answered above"),
         Cmd::Proposals { json } => proposals(&store, json),
         Cmd::Accept { id, shown } => accept(&store, &id, &shown),
         Cmd::Reject { id } => {

@@ -34,6 +34,19 @@ pub const BUNDLE_RENDERER_DIR: &str = "renderer";
 /// The file a release declares its datasets in — the factory's
 /// `mecha_manifest::hud::DATASETS_FILE`.
 pub const DATASETS_FILE: &str = "datasets.json";
+
+/// The interactive class's policy (§6.1): the page's own scripts, styles and
+/// data, nothing from anywhere else, and no `eval`. One definition for the
+/// two places home draws a bundle — the outbox's preview origin, framed by
+/// this machine's doors, and the headless render, framed by nothing.
+pub fn interactive_csp(frame_ancestors: Option<&str>) -> String {
+    format!(
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+         font-src 'self'; connect-src 'self'; frame-ancestors {}; \
+         base-uri 'none'; form-action 'none'",
+        frame_ancestors.unwrap_or("'none'")
+    )
+}
 /// Beside a board: which bundle it is published as.
 const PUBLISHED_FILE: &str = "published.json";
 /// Beside a board: the generation last pushed per dataset, and under which
