@@ -1572,7 +1572,9 @@ async fn prepare_tools_carrying(
     // `system_read` (SYSTEM-STATE-DESIGN.md §5, R3): the machine's state for
     // the owner's questions, behind its own switch, and thrown off by
     // `--no-system-read`, which `mecha eval` forces — its readings are this
-    // box's. Never on a persona's list: `persona_agent` builds its own pool.
+    // box's. Never on a persona's list: `persona::registry_as` admits only a
+    // tool whose `Tool::for_persona` answers, and `SystemRead` keeps the
+    // default `None` (review of #660).
     // Registered whether or not the series exists yet, so the tool list does
     // not move with the sampler's uptime; the tool says "no series" per call.
     if !feature_on(Feature::System) {
