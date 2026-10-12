@@ -262,6 +262,14 @@ rebuilds a child's registry today — but the allowlist is intersected with an
   characters, shared on purpose — §8.6), `document_read` over the chat's own
   workspace (D24), the file tools over the persona's `files/` roots (§10.2),
   and the persona's own memory tools (§9).
+- **An MCP server's tools, only on the owner's word** (2026-10-12,
+  BACKGROUND-JOBS-DESIGN.md §9). What a persona form declares — "reads none of
+  the owner's private stores" — is exactly what a remote server could claim
+  falsely, so no server declares it of itself. The owner's own config does,
+  per server: `personas = true` in its `[[mcp]]` entry, honoured only from the
+  global layer (a project or experiment file has it stripped, loudly). It
+  admits nothing alone: the persona still names each tool it wants, and the
+  egress check above still refuses a `Chosen` one.
 - **`web_search` in a persona chat is always the blind path**
   (`SearchChain::search_blind`: blind backends only, at quick depth),
   whatever the conversation's taint (found on review). Egress is declared

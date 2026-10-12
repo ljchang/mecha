@@ -565,3 +565,43 @@ or reach getting any trust they do not already have?
   "only images render inline", and no Range support is needed for the phone.
 - **Incognito is unchanged.** MCP tools are withheld there (`ALLOWED_BUILTINS`), so no MCP job
   reaches a RAM room.
+
+## 9. A persona's background work (2026-10-12)
+
+**Status:** owner's ruling, 2026-10-12 ("let's go ahead and work on wiring into personas too").
+Built on §8 in `agent/persona-mcp-jobs`.
+
+**The question:** §8 gave the assistant's chat a server's slow tool as a job. A persona chat is
+a narrower surface (`PERSONA-DESIGN.md` §3.3), lives under another producer directory, closes
+its run once its work is queued (`end_after_deferral`), and has a call screen with a picture
+slot. What has to change so the same tool can be a persona's?
+
+**The answer:** eligibility on the owner's word, a persona form that says who is asking, and
+nothing on the persona's surfaces that assumes the work is a picture.
+
+- **Eligible only on the owner's word.** `McpServerConfig::personas`: the owner's statement
+  that the server reads none of the owner's private stores, the one thing a persona form
+  declares. Global layer only, like `trust_result_claims`, and stripped loudly from a project or
+  experiment file. Off by default, so no server's tools reach a persona until the owner says
+  so. Each persona still names the tools it wants, and the persona registry still refuses a
+  `Chosen` one.
+- **The persona form says who is asking.** `McpTool::for_persona_as` clones the tool with the
+  `PersonaSelf`, and its background calls carry `_meta["mecha-factory.ai/persona"]`: the
+  persona's folder name and its linked library character, never its prompt, its display name
+  or anything it said. A server may read that character as `self`.
+- **The chat's folder is absolute** (§8), which is what lets a persona's chat, under
+  `work/persona`, be named to a server spawned under `work/web`.
+- **The run closes on the job's own lines** (§8's `with_closings`): a persona that queued a
+  clip says "what this turn asked for is being made", never that a picture is.
+- **The persona host keys on the call, as the assistant's does.** The restart repair uses
+  `may_be_orphan` over the install's pool. The transcript a settle re-reads marks a deferring
+  tool's rows. The run's live result events are marked from the persona agent's own registry.
+- **The persona page and the call screen.** The live fold keeps the server's `deferred` mark
+  (`persona.js` `applyEvent`). A still-out row says `makingText`: a picture keeps "drawing a
+  picture…", and anything else reads "working on it…". A finished clip plays under its row
+  (`ClipPlayer`, through the chat's file route, unlock token and all). On a call, the slot says
+  the same words, and a finished clip is noted in the call's transcript as "a clip, in the chat".
+  The call screen draws pictures, not clips.
+- **Incognito is unchanged.** An incognito room's folder is not a kept chat's, and the server
+  must refuse it. The private video server does, writing only under `work/web` or `work/persona`.
+
