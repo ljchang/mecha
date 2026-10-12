@@ -804,7 +804,9 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   between uses, and a cold start caught mid-way (`activating`) reads stopped
   too: it is not serving yet. Nothing connects to their sockets (rule 3).
 - **The model's name** (R6): for the chat router, every model `GET /models`
-  lists as loaded (that call names no model, so it cannot load one; rule
+  lists as resident — read through the provider's own `RouterModel`, so
+  resident means loaded, loading or sleeping, and a listing with a status
+  this build does not know is unread, never "nothing resident" (that call names no model, so it cannot load one; rule
   3); for the others, the `-m` argument or one environment variable of the
   running process, read from `/proc/<pid>` and reduced to a file name; for
   image generation, `[image] diffusion_model`. A stopped server has no
@@ -824,6 +826,11 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   nothing, so `parakeet_server.py` now prints the same `[Perf]` shape —
   numbers only, never the words. The parsers keep sums; rates are computed
   as total tokens over total time, never a mean of per-request rates.
+  **They are answer speed, not throughput**: llama-server's own timings
+  exclude queue wait, and concurrent requests' times overlap, so a board
+  must not read `gen_tps` as the server's capacity ("throughput is wall
+  clock", CLAUDE.md). A window whose journal could not be read is not
+  dropped: the cursor stays, and the next sample reads it.
 - **A model switch inside a minute** is read correctly: each router
   instance prefixes its lines with its port, `GET /models` gives the loaded
   instance's port, and lines from an instance unloaded since are left out
