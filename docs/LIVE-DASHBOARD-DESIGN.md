@@ -931,7 +931,12 @@ board with a filter, each in light and dark, at desktop and phone widths.
   `actions: false` as well there is no menu to style, and nothing was
   injected. Step 5's probe still counts it, against the real template.
 - On a phone a legend wraps into columns and a time axis asks for fewer
-  ticks; both came from the screenshots.
+  ticks; both came from the screenshots. Since 2026-10-12 (#664) a
+  one-column chart or figure on a phone sits two to a row. A table, a text
+  panel and anything wider take the row, so a row of dials is not a long
+  scroll. A text figure wraps rather than spilling. Every chart's text marks
+  take the scheme's text colour, because Vega's default near-black was
+  unreadable on the dark page.
 
 **What waits, and why:**
 - **Owner-written themes** (§4.4). One built-in `default`, light and dark,
