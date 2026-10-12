@@ -269,9 +269,14 @@ impl TokenManager {
     /// (a re-auth between two reads would pair one login's address with
     /// another's tokens).
     pub fn with_credentials(path: PathBuf, creds: StoredCredentials) -> Self {
+        // The shipped client refreshes with this build's secret, so a rotation
+        // reaches grants saved before it (`builtin::secret_for`).
+        let secret = crate::builtin::secret_for(&creds.client_id)
+            .map(str::to_string)
+            .unwrap_or_else(|| creds.client_secret.clone());
         let config = crate::google::auth::google_oauth_config(
             creds.client_id.clone(),
-            creds.client_secret.clone(),
+            secret,
             crate::google::auth::DEFAULT_REDIRECT_PORT,
         );
         TokenManager {

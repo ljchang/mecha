@@ -292,8 +292,10 @@ pub async fn device_flow(
         "\nTo sign in, open {} on any device\nand enter this code:\n\n    {}\n",
         device.verification_uri, device.user_code
     );
+    // What launched is said, not what appeared: `open` succeeds on a Mac
+    // reached over SSH, where no browser shows (review of #663).
     if crate::builtin::open_browser(&device.verification_uri) {
-        eprintln!("(opened in your browser — enter the code there)\n");
+        eprintln!("(asked your browser to open it — if it did, enter the code there)\n");
     }
 
     let mut last_line = 0i64;
