@@ -7,28 +7,35 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 /// The render's `Egress::None` rests on these: every namespace unshared, the
-/// network's included, and nothing of the home bound — the bundle, the
-/// browser and this binary read-only, one output directory writable.
+/// network's included, and of the home exactly the four binds the module
+/// names — the browser's directory, the bundle, the output directory and this
+/// binary — with home-rooted paths as they really are (Playwright's browser
+/// under `~/.cache`, the scratch under `~/.mecha`), so the check is not of
+/// its own literals (review of #662).
 #[test]
-fn the_sandbox_has_no_network_and_no_home() {
-    let a = sandbox_args(
-        Path::new("/opt/browser"),
-        Path::new("/scratch/bundle"),
-        Path::new("/scratch/out"),
-        Path::new("/usr/local/bin/mecha"),
-    );
+fn the_sandbox_has_no_network_and_binds_only_its_four_paths() {
+    let home = PathBuf::from("/home/someone");
+    let browser = home.join(".cache/ms-playwright/chromium_headless_shell-1/chrome");
+    let bundle = home.join(".mecha/hud/.scratch/1-0/bundle");
+    let out = home.join(".mecha/hud/.scratch/1-0/out");
+    let mecha = home.join(".cargo/bin/mecha");
+    let a = sandbox_args(&browser, &bundle, &out, &mecha);
     assert_eq!(a[0], "--unshare-all", "{a:?}");
     assert!(!a.iter().any(|x| x == "--share-net"), "{a:?}");
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
+    let allowed = [&browser, &bundle, &out, &mecha].map(|p| p.to_string_lossy().into_owned());
+    let mut from_home = Vec::new();
     for (i, x) in a.iter().enumerate() {
         if x == "--bind" || x == "--ro-bind" {
             let src = &a[i + 1];
-            assert!(
-                !src.starts_with(&home) || src.starts_with("/scratch"),
-                "binds from the home: {src}"
-            );
+            if src.starts_with("/home") {
+                from_home.push(src.clone());
+            }
         }
     }
+    from_home.sort();
+    let mut expected = allowed.to_vec();
+    expected.sort();
+    assert_eq!(from_home, expected, "nothing else of the home is bound");
     let writable: Vec<&String> = a
         .iter()
         .enumerate()
