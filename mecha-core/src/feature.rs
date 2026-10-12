@@ -1064,7 +1064,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts.has_mail_binary,
             "cargo install mecha-mail --locked",
             Some(facts.mail_accounts),
-            "mecha-mail auth <name> --provider google",
+            "mecha-mail auth",
         ),
         Feature::Docs => server_state(
             facts,

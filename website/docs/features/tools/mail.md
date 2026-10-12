@@ -752,11 +752,48 @@ failure is next tried.
 
 ## Signing in
 
+```bash
+mecha-mail auth
+```
+
+On its own, `auth` asks which kind of account (Google or Outlook) and what to
+call it, then opens the sign-in page in your browser. This is what `mecha setup`
+runs when you say yes to mail. `mecha-mail auth <name> --provider
+google|outlook` skips the questions, and without a terminal the two are
+required.
+
+**You register your own sign-in app, once.** mecha ships none for mail. A
+desktop app's client id and "secret" are public by nature, since every copy of
+the program carries them, and for Gmail, whose permission Google classes as
+*restricted*, a shared one would be a phishing kit under mecha's name, a
+100-user lifetime cap anyone could spend, and one suspension away from signing
+every user out at once. So when nothing names a client and no account has one
+yet, `mecha-mail auth` walks you through registering your own:
+
+- **Google:** create a project, enable the Gmail and Calendar APIs, set up the
+  sign-in screen, publish it (left in *Testing*, Google signs you out every
+  seven days), and create a *Desktop app* client. Each page opens in your
+  browser in turn. When the last step downloads the client file, `auth` finds
+  it in your Downloads folder and goes straight to the sign-in.
+- **Outlook:** register an app in Microsoft Entra, allow public client flows,
+  add the four Graph permissions below, and paste its application and
+  directory ids. A work or school directory may need an administrator to
+  approve the permissions.
+
+Every account you add after that reuses the same app. To name one directly,
+pass `--client-json` with Google's downloaded file, or `--client-id` and
+`--client-secret` (Google) or `--client-id` and `--tenant` (Outlook), or set
+`GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` and `OUTLOOK_CLIENT_ID` /
+`OUTLOOK_TENANT_ID`.
+
 ### Microsoft: device code
 
 ```bash
 mecha-mail auth campus --provider outlook --tenant <tenant-id>
 ```
+
+Where this machine has a browser, it opens the sign-in page for you and the
+code is all you type.
 
 ```
 To sign in, open https://microsoft.com/devicelogin on any device
@@ -793,8 +830,10 @@ organisation — with the raw description kept beside it.
 
 ### Google: browser loopback
 
-`mecha-mail auth personal --provider google` opens a browser sign-in that
-returns to `127.0.0.1:8924` (`--port` to change it) and waits two minutes.
+`mecha-mail auth personal --provider google` opens a browser sign-in (with
+`open` on macOS, `xdg-open` on Linux) that returns to `127.0.0.1:8924`
+(`--port` to change it) and waits two minutes. Over SSH, `--paste` prints the
+address to open anywhere and reads back the one the browser lands on.
 Four scopes: `gmail.modify`, `gmail.send`, `calendar`, `calendar.events` —
 stopping short of `https://mail.google.com/`, so permanent deletion is never
 granted.

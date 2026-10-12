@@ -144,51 +144,80 @@ you want `mecha model use` to be followed.
 mecha setup
 ```
 
-It reports what this install still needs and the one command that fixes each.
-For a local provider it asks the server what it is *actually* serving and
-compares that against your config:
+On a fresh install, at a terminal, setup walks through everything in one pass
+and asks before it downloads anything:
+
+1. **The chat model.** If something already answers on `:8080`, setup offers
+   to write down what it serves. Otherwise it offers the model recommended for
+   this machine's memory, a GGUF you already have, or a hosted model
+   (Anthropic, with `ANTHROPIC_API_KEY` set in your shell). Installing a local
+   model needs Linux; on a Mac choose the hosted model, or start your own
+   server and run `mecha setup --write`.
+2. **Each optional feature**, one at a time: what it does, what it downloads,
+   and `y`, `N` or `never`. A feature that needs another says so.
+3. **One summary and one `Start?`**: everything you said yes to and the total
+   download. Nothing is fetched or switched on before that yes.
+4. **Sign-ins.** A feature that needs an account opens its sign-in page in
+   your browser. Google Docs signs in straight away. Mail and calendar first
+   walk you through registering your own sign-in app, once (see
+   [Mail and calendar](/docs/features/tools/mail#signing-in)).
+5. **Whatever is still open**, with the command for each.
+
+What it looks like, trimmed:
+
+```text
+Chat model
+  1) Use the recommended model: <the model for this machine> (<size> download)
+  2) Use a GGUF I already have
+  3) Use a hosted model instead (Anthropic — needs ANTHROPIC_API_KEY)
+  4) Skip for now
+  Which? [1]
+
+Features — enable each? (all can be changed later with `mecha features`)
+  Mail and calendar
+    Mail and calendar, behind one server that names an account, never a provider.
+    Enable? [y/N/never] y
+  Google Docs, Sheets and Slides
+    Google Docs, Sheets and Slides — only files it made or you hand it in Google's picker.
+    Enable? [y/N/never] y
+  Image generation (16.8 GiB download)
+    Making pictures on a local image server, with a character and style library.
+    Enable? [y/N/never] n
+  …
+
+Start? [Y/n]
+```
+
+Your charter is the one thing setup never writes for you and never opens an
+editor for: it says where to write it (`mecha charter edit`, or Settings →
+Charter in the web app) and carries on.
+
+**Run without a terminal** (piped, or from a script), setup only reports. It
+prints what this install still needs with the one command that fixes each, and
+exits 1 while anything is outstanding:
 
 ```
 ! The config disagrees with what is served  [disagrees]
     [providers.local] context_window = 32768, but the server is serving 262144
     tokens per slot. The server has 4 slots and divides `-c` evenly across them,
     so the value to write down is `-c / 4` and not `-c`. …
-
-    [providers.local] is serving a vision model — the projector is loaded and
-    paid for in memory — but `vision` is not set, so no image will ever be sent
-    to it. Set `vision = true`.
-
-    [providers.local] model = "qwen3-14b", but the server is serving
-    "qwen3.6-35b-a3b". llama-server ignores the request's `model` field, so this
-    does not change which weights answer — it changes what every session record
-    and scorecard says answered.
     → mecha setup --write
 
 · Mail and calendar  [not set up]
-    → mecha-mail auth personal --provider google
+    → mecha-mail auth
 
 · Google Docs, Sheets and Slides  [not set up]
     → mecha-docs auth
 
-· Slack as a remote control  [not set up]
-    → mecha slack auth
-
-✓ The personal knowledge graph  [ok]
-
-· The owner's timezone  [not set up]
-    No [agent] timezone, so an MCP server is handed no MECHA_TZ, and the mail
-    servers refuse `today`, `tomorrow` and the other relative windows …
-
 · Your charter  [not set up]
-    → mecha charter edit
+    Nothing written yet — every run is proceeding un-chartered. …
 
-6 step(s) outstanding.
+4 step(s) outstanding.
 ```
 
-That closing count is what you see when stdin is not a terminal — piped, or run
-from a script — and it exits 1. At a terminal it instead offers each fix as a
-`y/N`; anything you decline is simply skipped. `--json` prints the plan and never prompts, and exits 1 while anything
-is outstanding, so a script can act on it.
+`--json` prints the same plan and never prompts. For a local provider, setup
+always asks the server what it is *actually* serving and compares that with
+your config, as the first entry shows.
 
 ### Letting it write the settings
 
@@ -289,18 +318,21 @@ my mail is broken" is not one a setup tool should be able to record.
 
 | | What it gives you | Start with |
 |---|---|---|
-| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha-mail auth personal --provider google` |
+| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha-mail auth` (asks Google or Outlook, and a name) |
 | **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha-docs auth` (the account is `--account`, default `personal`) |
 | **Slack** | A remote control: watch a run from a phone, approve sends, pass files both ways. | `mecha slack auth` |
 | **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `cargo install mecha-graph-mcp` |
 
 Three things worth knowing before you start:
 
-- **The first mail account needs an OAuth client.** On a fresh install there is
-  no stored login to borrow one from, so pass `--client-id` (and, for Google,
-  `--client-secret`) or set `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` —
-  `OUTLOOK_CLIENT_ID` and `OUTLOOK_TENANT_ID` for Outlook. A second mailbox on
-  the same registration needs no flags.
+- **Mail and calendar sign in with an app you register yourself, once.**
+  mecha does not ship one for Gmail or Outlook: a mail sign-in app published
+  with an open-source program can be copied by anyone, which turns it into a
+  phishing kit under mecha's name. `mecha-mail auth` walks you through
+  registering your own, opening each page of Google Cloud or Microsoft Entra in
+  turn (about five minutes), then signs you in. Google Docs needs none of this:
+  it signs in with mecha's own Drive app, which can only reach files mecha made
+  or you pick.
 - **Mail and documents are separate crates.** `cargo install mecha-mail`
   installs `mecha-mail`, `mecha-docs`, `mecha-google` and `mecha-outlook`.
 - **The knowledge graph's own sources** — ambient conversations, a calendar
