@@ -100,10 +100,17 @@ export function stillOut(entry) {
 // on a row the server marked `deferred`, so no other tool's text is ever
 // taken for a file to fetch.
 const CLIP = /^video: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.mp4)$/;
+//
+// The live result is the tool's own words, and the transcript's is the
+// settled result, which the loop wraps in its `<untrusted-content
+// source="…">` envelope when the tool's declared reach says so: the line read
+// is the first inside that envelope, or the clip would show live and vanish
+// on the reload (review of #666).
+const ENVELOPE = /^<untrusted-content source="[^"\n]*">\n/;
 export function clipOf(entry) {
   if (entry?.kind !== 'tool' || entry.deferred !== true) return null;
   if (entry.pending || entry.is_error || entry.blocked) return null;
-  const first = (entry.preview ?? '').split('\n', 1)[0];
+  const first = String(entry.preview ?? '').replace(ENVELOPE, '').split('\n', 1)[0];
   const m = CLIP.exec(first);
   return m ? m[1] : null;
 }
