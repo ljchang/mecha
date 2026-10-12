@@ -641,10 +641,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     if body.locked {
         args.push("--locked");
     }
-    // `no-store` by hand, as `source` is: the key rides in the body, so the
-    // middleware's incognito path needle never sees it, and the reply names
-    // the entry (§8: `no-store` on every incognito route).
-    let response = no_store(super::review::verb(&state, &args).await);
+    let response = super::review::verb(&state, &args).await;
     drop(staged);
     response
 }
@@ -844,8 +841,15 @@ pub struct SaveBody {
 /// it is open, so a pointer would not survive), the seed read from its
 /// manifest, and `mecha imagelib add-character` does the rest. The owner's
 /// own act, so the entry is approved on creation — locked when it comes from
-/// an incognito chat ([`save_locked`]).
-pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
+/// an incognito chat ([`save_locked`]). Every answer is `no-store`, as
+/// `source`'s is: the key rides in the body, so the middleware's incognito
+/// path needle never sees it, and a reply names the entry (INCOGNITO-DESIGN
+/// §8: `no-store` on every incognito route).
+pub async fn save(state: St, body: Json<SaveBody>) -> Response {
+    no_store(save_unmarked(state, body).await)
+}
+
+async fn save_unmarked(State(state): St, Json(body): Json<SaveBody>) -> Response {
     if let Some(refusal) = refuse_bad_key(&body.key) {
         return refusal;
     }
@@ -1596,6 +1600,13 @@ mod route_tests {
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            r.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "the key rides in the body, out of the middleware's sight"
+        );
         let r = f
             .app
             .clone()
