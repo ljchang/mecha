@@ -11,7 +11,8 @@ the loaders to the tools.
 2. `hud_preview` with `id`, `spec` and `loaders` — checks everything, runs
    every query once, and returns each dataset's row count and first rows, or
    every error by name. Fix and preview again until it is clean. With `id`
-   alone it returns an installed board's spec and loaders, to revise.
+   alone it returns that board's spec and loaders, to revise — a proposal
+   still waiting for the owner first, else the installed board.
 3. `hud_propose` with the same three — stages the board for the owner, who
    sees it drawn with real data and installs it with one tap. Proposing an
    installed board's id proposes a replacement. Nothing is installed until the

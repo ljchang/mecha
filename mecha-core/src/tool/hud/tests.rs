@@ -119,6 +119,35 @@ async fn a_third_party_source_marks_every_result_from_outside() {
         .unwrap();
     assert!(!preview.is_error, "{}", preview.content);
     assert!(preview.external);
+    // A proposal's row counts came out of the same source (review of #659).
+    let propose = HudPropose::new(f.store.clone())
+        .call(draft_input("speed"), &ctx(None))
+        .await
+        .unwrap();
+    assert!(!propose.is_error, "{}", propose.content);
+    assert!(propose.external);
+}
+
+/// A proposal that is waiting but no longer passes its checks is said, not
+/// read as "none waiting" with the installed board answered instead.
+#[tokio::test]
+async fn a_broken_waiting_proposal_is_a_finding_not_absent() {
+    let f = Fixture::new("owner");
+    HudPropose::new(f.store.clone())
+        .call(draft_input("speed"), &ctx(None))
+        .await
+        .unwrap();
+    std::fs::write(f.store.root().join("proposals/speed/hud.json"), "{").unwrap();
+    let back = HudPreview::new(f.store.clone())
+        .call(json!({"id": "speed"}), &ctx(None))
+        .await
+        .unwrap();
+    assert!(back.is_error, "{}", back.content);
+    assert!(
+        back.content.contains("no longer passes"),
+        "{}",
+        back.content
+    );
 }
 
 /// A query runs through the confined runner: rows back, a write refused, an
