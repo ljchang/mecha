@@ -1605,6 +1605,7 @@ async fn prepare_tools_carrying(
                     let tool = match assets.filter(|_| sees) {
                         Some(assets) => tool.with_look(mecha_core::tool::hud::Look {
                             renderer: assets.join(mecha_core::hud::publish::RENDERER_DIR),
+                            timezone: cfg.agent.timezone().map(|t| t.name().to_string()),
                         }),
                         None => tool,
                     };

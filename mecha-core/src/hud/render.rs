@@ -100,6 +100,8 @@ pub struct Renderer {
     pub bwrap: PathBuf,
     /// This binary, which serves the bundle inside the sandbox.
     pub mecha: PathBuf,
+    /// An IANA zone for the browser's clock (`TZ`), or UTC.
+    pub timezone: Option<String>,
 }
 
 impl Renderer {
@@ -119,6 +121,7 @@ impl Renderer {
             browser,
             bwrap,
             mecha,
+            timezone: None,
         })
     }
 
@@ -133,29 +136,35 @@ impl Renderer {
             .parent()
             .context("the browser binary has a directory")?;
         let mut cmd = Command::new(&self.bwrap);
-        cmd.args(sandbox_args(browser_dir, bundle, &out, &self.mecha))
-            .args([
-                "/mecha",
-                "hud",
-                "render-inside",
-                "--bundle",
-                "/bundle",
-                "--out",
-                "/out/shot.png",
-                "--browser",
-            ])
-            .arg(
-                Path::new("/browser").join(
-                    self.browser
-                        .binary
-                        .file_name()
-                        .context("the browser binary has a name")?,
-                ),
-            )
-            .env_clear()
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+        cmd.args(sandbox_args(
+            browser_dir,
+            bundle,
+            &out,
+            &self.mecha,
+            self.timezone.as_deref(),
+        ))
+        .args([
+            "/mecha",
+            "hud",
+            "render-inside",
+            "--bundle",
+            "/bundle",
+            "--out",
+            "/out/shot.png",
+            "--browser",
+        ])
+        .arg(
+            Path::new("/browser").join(
+                self.browser
+                    .binary
+                    .file_name()
+                    .context("the browser binary has a name")?,
+            ),
+        )
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
         let mut child = cmd.spawn().context("starting the render's sandbox")?;
         // Drained while it runs: a chatty browser filling an unread pipe
         // blocks, and a working render would read as a timeout (review of
@@ -201,7 +210,13 @@ impl Renderer {
 /// only the sandbox's own loopback remains), the system read-only, the
 /// browser, the bundle and this binary read-only, and one writable output
 /// directory. Nothing of the home is bound.
-pub fn sandbox_args(browser_dir: &Path, bundle: &Path, out: &Path, mecha: &Path) -> Vec<String> {
+pub fn sandbox_args(
+    browser_dir: &Path,
+    bundle: &Path,
+    out: &Path,
+    mecha: &Path,
+    timezone: Option<&str>,
+) -> Vec<String> {
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = [
         "--unshare-all",
@@ -269,8 +284,17 @@ pub fn sandbox_args(browser_dir: &Path, bundle: &Path, out: &Path, mecha: &Path)
         "--setenv".into(),
         "MECHA_HOME".into(),
         "/tmp/mecha".into(),
-        "--".into(),
     ]);
+    // Only a zone name of the IANA shape: it is passed to the browser's
+    // clock and nothing else (zoneinfo is under /usr, which is bound).
+    if let Some(tz) = timezone.filter(|t| {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/_-+".contains(c))
+    }) {
+        a.extend(["--setenv".into(), "TZ".into(), tz.into()]);
+    }
+    a.push("--".into());
     a
 }
 
