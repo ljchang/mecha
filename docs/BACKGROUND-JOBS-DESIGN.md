@@ -484,3 +484,66 @@ Incognito needs no step of its own: it is the absence of one. Its run is simply 
   Speech never stops a picture, and hanging up does not either.
 - **Q3. One job per conversation.** ComfyUI still renders one job at a time, so a second chat's
   picture waits its turn in ComfyUI's queue rather than being refused.
+
+## 8. An MCP tool defers (2026-10-12)
+
+**Status:** owner's ruling, 2026-10-12. Clips from a local video server should queue like
+pictures, and the plumbing should be generic and public. The server stays private. Built in
+`agent/mcp-background-jobs`. The constraints below are the review mecha-05 and mecha-7e gave
+before the build, kept as rules.
+
+**The question:** a tool on an MCP server can take minutes: a video clip, say. `McpClient::request`
+gives every call 120 s, and the job machinery above is reached only by a builtin returning
+`ToolOutput::deferred`. How does a server's slow tool become a job, without the server's words
+or reach getting any trust they do not already have?
+
+**The answer:** the server opts in, per tool, and the harness does everything else.
+
+- **The opt-in is the server's `_meta`.** Its `tools/list` entry carries
+  `"_meta": {"mecha-factory.ai/background": true}`. Nothing in config can turn it on, and the
+  capability derivation is unchanged (`openWorldHint` still means `Chosen`). A `Chosen` tool is
+  never deferred anyway: the loop's "a sender is never deferred" rule awaits it inline. So the
+  opt-in can only move work off the turn. It can never move a send past the interlock.
+- **`McpTool::call` returns `ToolOutput::deferred`.** The `now` text is the harness's:
+  `being made: \`<tool>\` is running…`. It uses the same `being made: ` first line every reader
+  already treats as still out. The job's busy refusal is a fixed harness sentence naming the
+  tool, never the server's words, because `ToolOutput::refusal` enters unwrapped and untainted.
+  The queue's line is labelled with the tool's registered name.
+- **The job owns its parts and nothing of the run.** That means an `Arc<McpClient>` plus the
+  owned call parameters. No `ToolCtx`, and above all not its `events` sender.
+- **The job races the call against its own token.** On Stop it returns `not made: stopped` at
+  once, whatever the server does. It sends `notifications/cancelled` for the request
+  best-effort, so a server that ignores the notice never holds the conversation's one slot.
+- **Bounded either way.** A background call waits up to `BACKGROUND_TIMEOUT` (2 h), not
+  `REQUEST_TIMEOUT`. Without a sink (the CLI, a subagent, an eval, a batch) the job is awaited
+  inline, linked to the run's Stop, under that same cap.
+- **The result keeps its provenance.** The late output is built by the same conversion as an
+  inline MCP result, so it is `external` (errors too). `jobs::settle` then wraps it and arms
+  taint exactly as an inline call would. The stopped and timed-out outputs are the harness's
+  words, recorded not external.
+- **The call says which chat it is for.** Servers are spawned once, rooted at the host's
+  producer directory, and every chat's jail is a subdirectory of it (Slack's limit,
+  `ARCHITECTURE.md`). A background call's `params._meta` carries
+  `"mecha-factory.ai/workspace"`: `ToolCtx::workspace` relative to the server's root, never
+  anything the model supplied. **A workspace not under that root refuses the call** with an
+  error saying so. It is not silently omitted, which would let the server write where the chat
+  cannot see (the silently-degrading guard). The server re-proves containment on its side.
+- **A tool that defers says so.** `Tool::defers()`: `image_generate` and a background
+  `McpTool`. The hosts read it for the two things that must key on the call, never the words:
+  - the **restart repair** (`late.rs`): a deferring tool's orphaned `being made:` result is
+    settled. `image_generate` keeps its manifest repair. Any other becomes the harness's
+    `not made: the server restarted`, recorded not external (§2.3's rule for that branch);
+  - the **page's still-out state**: a transcript row and a live result event carry `deferred`
+    when the tool defers. `picture.js` `stillOut` accepts `image_generate`, or a `deferred` row,
+    and in both cases still requires the `being made: ` first line, so a finished result never
+    reads as out. Read back from the transcript, not only from the live event, so the state
+    survives the reload every settle does.
+- **Wording follows the tool.** A still-out `image_generate` row keeps "drawing a picture…" and
+  "Stop the picture". Any other deferred row reads "running…" and "Stop".
+- **A clip plays where the call is.** `picture.js` gains a matcher as strict as `PICTURE`. It
+  reads only a deferring tool's first line, `video: <path>.mp4`, a relative path inside the
+  chat. The assistant chat fetches the file through the chat's files route as a blob and plays
+  it from an object URL, revoked when the row unmounts or the clip changes. `files.rs` keeps
+  "only images render inline", and no Range support is needed for the phone.
+- **Incognito is unchanged.** MCP tools are withheld there (`ALLOWED_BUILTINS`), so no MCP job
+  reaches a RAM room.
