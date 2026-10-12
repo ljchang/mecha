@@ -321,6 +321,12 @@ impl Tool for ReplayTool {
     /// recorded result, so the call now consumes it and the model reads back
     /// exactly the refusal it read then. `private_data` stays, as everywhere —
     /// and under `Live`, where the tool genuinely runs, nothing narrows.
+    /// Delegated with the rest of what only the live tool knows (review of
+    /// #666, pass 5): `false` would be the silently wrong default.
+    fn defers(&self) -> bool {
+        self.inner.defers()
+    }
+
     fn capabilities(&self) -> Capabilities {
         let caps = self.inner.capabilities();
         match self.mode {
