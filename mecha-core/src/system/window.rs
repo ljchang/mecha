@@ -253,8 +253,9 @@ pub struct ModelNow {
     pub model: Option<String>,
     pub model_known: bool,
     pub mem_bytes: Option<f64>,
-    /// The last minute in the day before `at` that measured a speed, and it:
-    /// tokens/s for chat and OCR, RTF for speech, seconds per picture.
+    /// The last minute within the caller's lookback that measured a speed,
+    /// and it: tokens/s for chat and OCR, RTF for speech, seconds per
+    /// picture. `None` for a kind with no speed column (embeddings).
     pub speed: Option<(String, f64)>,
 }
 
@@ -276,11 +277,16 @@ pub struct ModelWindow {
     pub speed: Summary,
 }
 
-fn speed_column(kind: u8) -> &'static str {
-    match kind {
-        1 | 3 => "gen_tps",
-        4 | 5 => "rtf",
-        _ => "job_secs",
+/// Each kind's speed column, named and never defaulted: embeddings has
+/// none, and a kind this build does not know reads none rather than a
+/// neighbour's (review of #660).
+fn speed_column(kind: u8) -> Option<&'static str> {
+    use super::models::ModelKind;
+    match ModelKind::from_u8(kind)? {
+        ModelKind::Chat | ModelKind::Ocr => Some("gen_tps"),
+        ModelKind::SpeechToText | ModelKind::TextToSpeech => Some("rtf"),
+        ModelKind::Image => Some("job_secs"),
+        ModelKind::Embeddings => None,
     }
 }
 
@@ -289,8 +295,14 @@ fn speed_column(kind: u8) -> &'static str {
 type NowRow = (u8, String, bool, Option<String>, bool, Option<f64>);
 
 /// Each model server's newest row. Empty when the series has none (an older
-/// sampler, or none yet).
-pub fn models_now(db: &Path, now: DateTime<Utc>) -> Result<Option<Vec<ModelNow>>> {
+/// sampler, or none yet). `lookback` says, per kind, how far back its last
+/// measured speed may be found — a day for most, and minutes for a kind
+/// whose speed is a record of when it was used (R7, review of #660).
+pub fn models_now(
+    db: &Path,
+    now: DateTime<Utc>,
+    lookback: impl Fn(u8) -> Duration,
+) -> Result<Option<Vec<ModelNow>>> {
     let Some(conn) = open(db)? else {
         return Ok(None);
     };
@@ -302,7 +314,6 @@ pub fn models_now(db: &Path, now: DateTime<Utc>) -> Result<Option<Vec<ModelNow>>
     let Some(newest) = newest else {
         return Ok(Some(Vec::new()));
     };
-    let day = ts(now - Duration::hours(24));
     let mut stmt = conn.prepare(
         "SELECT m.kind, k.label, m.running, m.model, m.model_known, CAST(m.mem_bytes AS REAL)
          FROM model_minute m JOIN model_kinds k ON k.id = m.kind
@@ -322,18 +333,19 @@ pub fn models_now(db: &Path, now: DateTime<Utc>) -> Result<Option<Vec<ModelNow>>
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for (kind_id, label, running, model, model_known, mem_bytes) in rows {
-        let speed: Option<(String, f64)> = conn
-            .query_row(
+        let since = ts(now - lookback(kind_id));
+        let speed: Option<(String, f64)> = speed_column(kind_id).and_then(|col| {
+            conn.query_row(
                 &format!(
                     "SELECT at, {col} FROM model_minute
                      WHERE kind = ?1 AND at >= ?2 AND {col} IS NOT NULL
-                     ORDER BY at DESC LIMIT 1",
-                    col = speed_column(kind_id)
+                     ORDER BY at DESC LIMIT 1"
                 ),
-                params![kind_id, day],
+                params![kind_id, since],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .ok();
+            .ok()
+        });
         out.push(ModelNow {
             at: newest.clone(),
             kind: kind_label(kind_id, &label),
@@ -377,10 +389,10 @@ pub fn models_window(
         if !keep(id) {
             continue;
         }
+        let col = speed_column(id).unwrap_or("NULL");
         let mut stmt = conn.prepare(&format!(
             "SELECT at, running, model, CAST(mem_bytes AS REAL), requests, {col}
-             FROM model_minute WHERE kind = ?1 AND at >= ?2 ORDER BY at",
-            col = speed_column(id)
+             FROM model_minute WHERE kind = ?1 AND at >= ?2 ORDER BY at"
         ))?;
         #[allow(clippy::type_complexity)]
         let rows: Vec<(

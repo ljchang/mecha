@@ -58,6 +58,15 @@ const OVERVIEW: &[Measurement] = &[
 /// speech (`system::models::ModelKind`).
 const SPEECH_KINDS: [u8; 2] = [4, 5];
 
+/// How far back a speech kind's "now" looks: `voice.live`'s three minutes.
+const SPEAKING_NOW: chrono::Duration = chrono::Duration::minutes(3);
+
+/// A model row older than this is said to be stale.
+const STALE_MINUTES: i64 = 5;
+
+/// What one `now` read may spend on the machine's commands, together.
+const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// The machine's state, read from the series and the machine.
 pub struct SystemRead {
     db: PathBuf,
@@ -163,8 +172,10 @@ pub fn answer(
     now: DateTime<Utc>,
 ) -> Result<ToolOutput> {
     let mut out = String::new();
+    // Said under the heading it qualifies, not above it (review of #660).
+    let mut note: Option<String> = None;
     let wanted: Vec<Measurement> = match query {
-        Some("models") => return models(db, tz, window, now),
+        Some("models") => return models(db, tz, window, now, by_category),
         None => {
             let mut list = OVERVIEW.to_vec();
             if by_category {
@@ -198,11 +209,10 @@ pub fn answer(
             .filter(|m| m.how() == How::ByCategory)
             .collect();
         if split.is_empty() {
-            let _ = writeln!(
-                out,
+            note = Some(format!(
                 "(`by: category` applies to the category.* measurements; showing {} as a whole)",
                 query.unwrap_or_default()
-            );
+            ));
             wanted
         } else {
             split
@@ -212,8 +222,13 @@ pub fn answer(
     };
 
     if window == Window::Now {
-        let reader = Reader::new().configured(config);
+        // One budget for the whole read, as the sampler has: a fork-heavy
+        // group must not cost a bound per command (review of #660).
+        let reader = Reader::until(std::time::Instant::now() + READ_BUDGET).configured(config);
         let _ = writeln!(out, "Now ({}):", clock(now, tz));
+        if let Some(n) = &note {
+            let _ = writeln!(out, "{n}");
+        }
         for m in wanted {
             match system::probe(&reader, db, m, now) {
                 Probed::One(r) => {
@@ -229,7 +244,7 @@ pub fn answer(
         }
         if query.is_none() {
             out.push('\n');
-            out.push_str(&models(db, tz, Window::Now, now)?.content);
+            out.push_str(&models(db, tz, Window::Now, now, false)?.content);
         }
         return Ok(ToolOutput::ok(out));
     }
@@ -240,6 +255,9 @@ pub fn answer(
         window.name(),
         zone_name(tz)
     );
+    if let Some(n) = &note {
+        let _ = writeln!(out, "{n}");
+    }
     let mut refused = Vec::new();
     for m in wanted {
         if m == Measurement::VoiceLive {
@@ -285,10 +303,24 @@ fn models(
     tz: Option<chrono_tz::Tz>,
     window: Window,
     now: DateTime<Utc>,
+    by_category: bool,
 ) -> Result<ToolOutput> {
     let mut out = String::new();
+    if by_category {
+        out.push_str("(`by: category` does not apply to `models`: each server is its own row)\n");
+    }
     if window == Window::Now {
-        let Some(rows) = window::models_now(db, now)? else {
+        // A speech kind's speed exists only in a minute it spoke, so a day's
+        // lookback would print when the last call was. Its "now" looks back
+        // as far as `voice.live` does, and says no time (R7, review of #660).
+        let lookback = |k: u8| {
+            if SPEECH_KINDS.contains(&k) {
+                SPEAKING_NOW
+            } else {
+                chrono::Duration::hours(24)
+            }
+        };
+        let Some(rows) = window::models_now(db, now, lookback)? else {
             return Ok(ToolOutput::ok(
                 "Model servers: the series does not exist yet.",
             ));
@@ -299,6 +331,16 @@ fn models(
             ));
         }
         let _ = writeln!(out, "Model servers (as of {}):", stamp(&rows[0].at, tz));
+        // A dead sampler leaves a week-old row reading like a fresh one.
+        if let Ok(t) = NaiveDateTime::parse_from_str(&rows[0].at, "%Y-%m-%d %H:%M:%S") {
+            let age = (now - t.and_utc()).num_minutes();
+            if age > STALE_MINUTES {
+                let _ = writeln!(
+                    out,
+                    "(the newest reading is {age} minutes old: is mecha-system-sample.timer running?)"
+                );
+            }
+        }
         for r in &rows {
             let _ = writeln!(out, "- {}", model_now(r, tz));
         }
@@ -338,13 +380,17 @@ fn model_now(r: &ModelNow, tz: Option<chrono_tz::Tz>) -> String {
     let mem = r.mem_bytes.map_or("memory unknown".to_string(), |b| {
         format!("{:.1} GiB", b / GIB)
     });
-    let speed = match &r.speed {
-        Some((at, v)) => format!(
+    let speed = match (&r.speed, SPEECH_KINDS.contains(&r.kind_id)) {
+        // Now only, and no time: a time would say when the call was (R7).
+        (Some((_, v)), true) => format!("; speaking now, {}", speed_text(r.kind_id, *v)),
+        (None, true) => "; not speaking now".into(),
+        (Some((at, v)), false) => format!(
             "; latest speed {} at {}",
             speed_text(r.kind_id, *v),
             stamp(at, tz)
         ),
-        None => "; no measured speed in the last day".into(),
+        (None, false) if r.kind_id == 2 => String::new(),
+        (None, false) => "; no measured speed in the last day".into(),
     };
     format!("{}: {state}, {model}, {mem}{speed}", r.kind)
 }
