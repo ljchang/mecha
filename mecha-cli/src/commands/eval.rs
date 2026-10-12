@@ -1626,6 +1626,8 @@ mod tests {
             // The one that was missed. It changes the *tool list*, which is
             // the front of the cached prefix, not merely what a run may do.
             ("the compact tool", opts.no_compact_tool),
+            // This machine's readings: a scorecard must not carry them.
+            ("system_read", opts.no_system_read),
             // Off by default, but a machine's own config.toml could still
             // turn it on — a scorecard must not depend on that either.
             ("step escalation", opts.no_step_escalation),
@@ -1979,10 +1981,11 @@ mod tests {
                 Lever::GoalGuidance,
                 Lever::SituationBrief,
                 Lever::PastAppraisals,
-                Lever::SuccessExamples
+                Lever::SuccessExamples,
+                Lever::SystemRead
             ],
             "messaging, step escalation, goal guidance, the brief's delivery, past \
-             appraisals and success examples ship off"
+             appraisals, success examples and system_read (its feature switch) ship off"
         );
     }
 

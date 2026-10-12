@@ -130,6 +130,7 @@ These come with a feature, and exist only when it does:
 | `recall` | the session can hold its history: `chat`, the TUI, a resumed `run` — see [Sessions and replay](/docs/features/memory/sessions-and-replay#recall-the-record-is-searchable) | nothing — what it returns already entered the conversation |
 | `skill` | at least one skill is installed and `--no-skills` was not passed — see [Skills](/docs/features/learning/skills) | nothing |
 | `ask_user` | a front end with someone to ask or a place to park the question: the TUI, web chat, a delegated task, `mecha questions answer` — see [Delegated tasks](/docs/features/automation/tasks#parked-questions) | nothing |
+| `system_read` | `[features] system` is on and not `--no-system-read` (`mecha eval` withholds it) — this machine's memory, disk, CPU, GPU, pressure, network and model servers, now or over a window; voice is readable now only | private |
 | `message_send` | `[messages] enabled` and not `--no-messages` — writes to another of this machine's agents; see [Messages between agents](/docs/features/automation/messages) | nothing; taint travels with the message |
 | `show_file` | the TUI — it works only while the session is mirrored to a Slack thread; see [Slack](/docs/features/interfaces/slack#remote-control-one-session-two-places) | private |
 | a subagent profile | one `[[subagent]]` entry each — see [Subagents](#subagents) | derived from the child's tools |

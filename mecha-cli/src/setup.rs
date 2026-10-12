@@ -913,6 +913,10 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::SituationBrief => !agent.situation_brief,
             Lever::PastAppraisals => !agent.past_appraisals,
             Lever::SuccessExamples => !agent.success_examples,
+            Lever::SystemRead => {
+                opts.no_system_read
+                    || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
+            }
         })
         .collect()
 }
@@ -933,6 +937,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::Skills => opts.no_skills = true,
         Lever::Charter => opts.no_charter = true,
         Lever::CompactTool => opts.no_compact_tool = true,
+        Lever::SystemRead => opts.no_system_read = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
         Lever::StepChecks => opts.no_step_checks = true,
         Lever::GoalGuidance => opts.no_goal_guidance = true,
@@ -1564,6 +1569,28 @@ async fn prepare_tools_carrying(
     } else {
         switched_off(Feature::Personas, "persona_propose");
     }
+    // `system_read` (SYSTEM-STATE-DESIGN.md §5, R3): the machine's state for
+    // the owner's questions, behind its own switch, and thrown off by
+    // `--no-system-read`, which `mecha eval` forces — its readings are this
+    // box's. Never on a persona's list: `persona::registry_as` admits only a
+    // tool whose `Tool::for_persona` answers, and `SystemRead` keeps the
+    // default `None` (review of #660).
+    // Registered whether or not the series exists yet, so the tool list does
+    // not move with the sampler's uptime; the tool says "no series" per call.
+    if !feature_on(Feature::System) {
+        switched_off(Feature::System, "system_read");
+    } else if !opts.no_system_read
+        && (opts.tools.is_empty() || asked_for("system_read"))
+        && cfg.tools.registers("system_read")
+    {
+        match mecha_core::system::db_path() {
+            Ok(db) => registry.insert(Arc::new(mecha_core::tool::system_read::SystemRead::new(
+                db,
+                Some(cfg.clone()),
+            ))),
+            Err(e) => eprintln!("mecha: system_read not registered — {e:#}"),
+        }
+    }
     // The dashboard tools (LIVE-DASHBOARD-DESIGN.md §5.3, the owner's ruling
     // R18): all three read-only, so a web chat drafts in its default mode.
     // Only where a source is registered — with none, no dashboard can read
@@ -1589,7 +1616,27 @@ async fn prepare_tools_carrying(
                     registry.insert(Arc::new(HudSources::new(store.clone())));
                 }
                 if asked("hud_preview") {
-                    registry.insert(Arc::new(HudPreview::new(store.clone())));
+                    // `look` (a screenshot) only for a model that can see
+                    // one, on `image_view`'s rule; the renderer is the one a
+                    // publish vendors, beside the web app's assets.
+                    let sees = cfg
+                        .provider(opts.provider.as_deref())
+                        .ok()
+                        .is_some_and(|(_, p)| p.vision_enabled());
+                    let assets = cfg.web.assets.clone().or_else(|| {
+                        mecha_core::work::mecha_home()
+                            .ok()
+                            .map(|h| h.join("web").join("dist"))
+                    });
+                    let tool = HudPreview::new(store.clone());
+                    let tool = match assets.filter(|_| sees) {
+                        Some(assets) => tool.with_look(mecha_core::tool::hud::Look {
+                            renderer: assets.join(mecha_core::hud::publish::RENDERER_DIR),
+                            timezone: cfg.agent.timezone().map(|t| t.name().to_string()),
+                        }),
+                        None => tool,
+                    };
+                    registry.insert(Arc::new(tool));
                 }
                 if asked("hud_propose") {
                     registry.insert(Arc::new(HudPropose::new(store)));

@@ -108,6 +108,7 @@ pub const FEATURES_STARTER: &str = r#"
 # incognito = false  # a web chat that leaves no trace
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
+# system = false     # the assistant reads this machine's state (system_read)
 "#;
 
 /// A commented starting point rather than a dump of defaults — the point of the

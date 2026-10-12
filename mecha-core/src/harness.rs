@@ -208,6 +208,11 @@ pub enum Lever {
     /// for the reason [`Lever::PastAppraisals`] does; nothing reaches the
     /// prefix either way.
     SuccessExamples,
+    /// `--no-system-read`, or `[features] system` not on: the `system_read`
+    /// tool is not registered (`SYSTEM-STATE-DESIGN.md` §5, R3). A lever so
+    /// `mecha eval` forces it off: its readings are this machine's, and a
+    /// scorecard must not vary with the box that produced it.
+    SystemRead,
 }
 
 impl Lever {
@@ -221,7 +226,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 20] = [
+    pub const ALL: [Lever; 21] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -242,6 +247,7 @@ impl Lever {
         Lever::SituationBrief,
         Lever::PastAppraisals,
         Lever::SuccessExamples,
+        Lever::SystemRead,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -270,6 +276,7 @@ impl Lever {
             Lever::SituationBrief => "situation_brief",
             Lever::PastAppraisals => "past_appraisals",
             Lever::SuccessExamples => "success_examples",
+            Lever::SystemRead => "system_read",
         }
     }
 
@@ -1213,7 +1220,8 @@ mod tests {
                 | Lever::CarriedState
                 | Lever::SituationBrief
                 | Lever::PastAppraisals
-                | Lever::SuccessExamples => {}
+                | Lever::SuccessExamples
+                | Lever::SystemRead => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();

@@ -219,7 +219,7 @@ runlog.rs    the run-quality corpus: every recorded outcome, read back across se
 homeostat.rs the conditions a run happened under, recorded beside what it did
 system.rs    the machine's state, read in one place: a per-minute series of numbers
              and closed categories, plus a model's name (R6) and never a unit's;
-             unknown is refused, never zero
+             unknown is refused, never zero; a model reads it through `system_read`
 backlog.rs   what waits on the owner across five stores; one walk, three readers
 doctor.rs    every store's distress, read in one pass — no network, no model
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
