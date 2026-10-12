@@ -20,7 +20,18 @@ fn the_sandbox_has_no_network_and_binds_only_its_four_paths() {
     let bundle = home.join(".mecha/hud/.scratch/1-0/bundle");
     let out = home.join(".mecha/hud/.scratch/1-0/out");
     let mecha = home.join(".cargo/bin/mecha");
-    let a = sandbox_args(&browser, &bundle, &out, &mecha);
+    let a = sandbox_args(&browser, &bundle, &out, &mecha, Some("America/New_York"));
+    assert!(
+        a.windows(3)
+            .any(|w| w == ["--setenv", "TZ", "America/New_York"]),
+        "{a:?}"
+    );
+    assert!(
+        !sandbox_args(&browser, &bundle, &out, &mecha, Some("$(x)"))
+            .iter()
+            .any(|x| x == "TZ"),
+        "a non-zone is never set"
+    );
     assert_eq!(a[0], "--unshare-all", "{a:?}");
     assert!(!a.iter().any(|x| x == "--share-net"), "{a:?}");
     // Nothing of the caller's environment rides in: keys live there.
@@ -230,7 +241,7 @@ fn the_sandbox_cannot_reach_the_network() {
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::create_dir_all(&out).unwrap();
     let inside = Command::new(&bwrap)
-        .args(sandbox_args(&root, &bundle, &out, &bash))
+        .args(sandbox_args(&root, &bundle, &out, &bash, None))
         .args(["/usr/bin/bash", "-c", probe])
         .output()
         .unwrap();

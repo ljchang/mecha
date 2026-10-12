@@ -387,6 +387,7 @@ async fn look_is_offered_only_where_given_and_says_why_not() {
 
     let seeing = HudPreview::new(f.store.clone()).with_look(Look {
         renderer: std::path::PathBuf::from("/nonexistent/hud-renderer"),
+        timezone: None,
     });
     assert!(seeing.input_schema()["properties"].get("look").is_some());
     let mut broken = input.clone();
