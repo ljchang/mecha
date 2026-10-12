@@ -348,6 +348,7 @@ fn sample(min: u32, units: &[UnitCounters], busy: u64, total: u64) -> Sample {
         by_category: fold(units, Some(&[("llama-local.service".to_string(), 6000)])),
         now: Vec::new(),
         counters: Counters::default(),
+        models: Vec::new(),
     }
 }
 
@@ -1582,4 +1583,245 @@ fn a_call_is_live_when_the_speech_engine_logged_a_sentence() {
     ));
     assert!(!source::spoke("loading the model\nready on :8094\n"));
     assert!(!source::spoke(""));
+}
+
+// ---- model servers (`models`) ----
+
+mod model_rows {
+    use super::super::models::*;
+    use super::*;
+
+    fn lines(text: &[&str]) -> Vec<String> {
+        text.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The router's instances prefix their lines with their port; only the
+    /// loaded instance's lines count, and a progress line is not a request.
+    #[test]
+    fn the_chat_rows_speed_is_its_loaded_instances_and_no_others() {
+        let log = lines(&[
+            "[44035] 1.2.3 I slot print_timing: id  1 | task 9 | n_gen =    870, tg =  96.03 t/s, tg_3s =  95.70 t/s",
+            "[44035] 1.2.3 I slot print_timing: id  1 | task 9 | prompt eval time =     200.00 ms /   100 tokens (    2.00 ms per token,   500.00 tokens per second)",
+            "[44035] 1.2.3 I slot print_timing: id  1 | task 9 |        eval time =   10000.00 ms /  1000 tokens (   10.00 ms per token,   100.00 tokens per second)",
+            "[44035] 1.2.3 I slot print_timing: id  1 | task 10 | prompt eval time =     300.00 ms /   200 tokens (    1.50 ms per token,   666.67 tokens per second)",
+            "[44035] 1.2.3 I slot print_timing: id  1 | task 10 |        eval time =   10000.00 ms /   500 tokens (   20.00 ms per token,    50.00 tokens per second)",
+            "[51111] 1.2.3 I slot print_timing: id  0 | task 1 |        eval time =   100.00 ms /   900 tokens (    0.1 ms per token, 9000.00 tokens per second)",
+        ]);
+        let p = fold_perf(ModelKind::Chat, &log, Some(&[44035]));
+        assert_eq!(
+            p.requests, 2,
+            "two finished requests; the progress line is not one"
+        );
+        assert_eq!((p.prompt_tokens, p.gen_tokens), (300, 1500));
+        assert_eq!(p.prompt_tps(), Some(600.0));
+        assert_eq!(
+            p.gen_tps(),
+            Some(75.0),
+            "tokens over time, not a mean of rates"
+        );
+        let none = fold_perf(ModelKind::Chat, &log, Some(&[]));
+        assert_eq!(none, Perf::default(), "no instance loaded: no line is ours");
+    }
+
+    #[test]
+    fn each_kind_reads_its_own_servers_line() {
+        let ocr = lines(&[
+            "1.26.140.964 I slot print_timing: id  0 | task 451 |        eval time =      50.00 ms /    10 tokens (    5.00 ms per token,   200.00 tokens per second)",
+        ]);
+        assert_eq!(fold_perf(ModelKind::Ocr, &ocr, None).gen_tps(), Some(200.0));
+
+        let embed = lines(&[
+            "0.02.796.093 I slot      release: id  3 | task 2 | stop processing: n_tokens = 30, truncated = 0",
+            "0.02.796.093 I slot      release: id  2 | task 3 | stop processing: n_tokens = 12, truncated = 0",
+        ]);
+        let e = fold_perf(ModelKind::Embeddings, &embed, None);
+        assert_eq!((e.requests, e.prompt_tokens), (2, 42));
+
+        let speech = lines(&[
+            "[Perf] Total 1000.0 ms (34 frames, 33.51 ms/frame AR, audio 2.00 s, RTF 0.500)",
+            "[Perf] Total 500.0 ms (audio 3.00 s, RTF 0.167)",
+        ]);
+        for kind in [ModelKind::TextToSpeech, ModelKind::SpeechToText] {
+            let s = fold_perf(kind, &speech, None);
+            assert_eq!(s.requests, 2);
+            assert_eq!(s.rtf(), Some(0.3), "work over audio, both lines");
+        }
+
+        let image = lines(&[
+            "\u{1b}[32m[INFO]\u{1b}[0m \u{1b}[32mPrompt executed in 70.00 seconds\u{1b}[0m",
+            "  3%|▎         | 1/30 [00:02<01:17,  2.68s/it]",
+            "\u{1b}[32m[INFO]\u{1b}[0m \u{1b}[32mPrompt executed in 30.00 seconds\u{1b}[0m",
+        ]);
+        let i = fold_perf(ModelKind::Image, &image, None);
+        assert_eq!((i.requests, i.job_secs()), (2, Some(50.0)));
+
+        let quiet = fold_perf(ModelKind::Image, &[], None);
+        assert_eq!(quiet.requests, 0);
+        assert_eq!(
+            quiet.job_secs(),
+            None,
+            "no picture is no rate, never zero seconds"
+        );
+    }
+
+    #[test]
+    fn a_models_name_is_its_file_name_and_never_its_path() {
+        assert_eq!(
+            clean_name("/home/someone/models/fictional-tts-Q6_K.gguf").as_deref(),
+            Some("fictional-tts-Q6_K")
+        );
+        assert_eq!(
+            clean_name("/opt/models/fictional-asr-0.6b-int8/").as_deref(),
+            Some("fictional-asr-0.6b-int8")
+        );
+        assert_eq!(clean_name("a b<script>").as_deref(), Some("abscript"));
+        assert_eq!(clean_name("  "), None);
+
+        let cmd =
+            b"llama-server\0-m\0/hub/snap/fictional-embed.f16.gguf\0--port\0\x31\x38\x30\x38\x31\0";
+        assert_eq!(model_arg(cmd).as_deref(), Some("fictional-embed.f16"));
+        assert_eq!(
+            model_arg(b"srv\0--model=/m/fictional-ocr.gguf\0").as_deref(),
+            Some("fictional-ocr")
+        );
+        let env = b"PATH=/usr/bin\0FICTIONAL_DIR=/m/fictional-asr\0";
+        assert_eq!(
+            env_name(env, "FICTIONAL_DIR").as_deref(),
+            Some("fictional-asr")
+        );
+        assert_eq!(env_name(env, "MISSING"), None);
+    }
+
+    #[test]
+    fn the_routers_loaded_models_come_with_their_ports() {
+        let json = r#"{"data":[
+            {"id":"fictional-a","status":{"value":"unloaded"}},
+            {"id":"fictional-b","status":{"value":"loaded","args":["llama-server","--port","44035","--alias","fictional-b"]}}
+        ]}"#;
+        assert_eq!(
+            parse_router_models(json),
+            vec![("fictional-b".to_string(), Some(44035))]
+        );
+        assert!(parse_router_models("not json").is_empty());
+    }
+
+    #[test]
+    fn unit_states_and_journal_lines_are_read_per_unit() {
+        let show = "Id=llama-embed.service\nLoadState=loaded\nActiveState=inactive\nMainPID=0\n\n\
+                    Id=llama-local.service\nLoadState=loaded\nActiveState=active\nMainPID=42\n\n\
+                    Id=mecha-comfyui.service\nLoadState=not-found\nActiveState=inactive\nMainPID=0\n";
+        let st = parse_unit_states(show);
+        assert_eq!(
+            st["llama-local"],
+            UnitState {
+                installed: true,
+                running: true,
+                pid: 42
+            }
+        );
+        assert!(!st["llama-embed"].running && st["llama-embed"].installed);
+        assert!(!st["mecha-comfyui"].installed);
+
+        // A message journald stored as bytes (ANSI colour) arrives as numbers.
+        let bytes: Vec<String> = "\u{1b}[32mPrompt executed in 5.00 seconds"
+            .bytes()
+            .map(|b| b.to_string())
+            .collect();
+        let journal = format!(
+            "{{\"_SYSTEMD_USER_UNIT\":\"comfyui.service\",\"MESSAGE\":[{}]}}\n\
+             {{\"_SYSTEMD_USER_UNIT\":\"mecha-breeze-tts.service\",\"MESSAGE\":\"[Perf] Total 1.0 ms (audio 1.00 s, RTF 0.001)\"}}\n\
+             not json\n",
+            bytes.join(",")
+        );
+        let j = parse_journal(&journal);
+        assert_eq!(fold_perf(ModelKind::Image, &j["comfyui"], None).requests, 1);
+        assert_eq!(j["mecha-breeze-tts"].len(), 1);
+    }
+
+    fn load(kind: ModelKind, model: Option<&str>, perf: Option<Perf>) -> ModelLoad {
+        ModelLoad {
+            kind,
+            model: model.map(str::to_string),
+            running: model.is_some(),
+            mem_bytes: 1_000,
+            cpu_usec: 0,
+            tasks: 3,
+            gpu_mib: Some(2),
+            perf,
+        }
+    }
+
+    /// The owner's ruling of 2026-10-12, on the artifact: a model's name
+    /// reaches the series; a unit's still never does. Unknown speed is NULL,
+    /// a quiet minute is zero requests.
+    #[test]
+    fn a_model_row_names_its_model_and_never_its_unit() {
+        let s = Scratch::new();
+        let db = s.0.join("series.sqlite");
+        let units = vec![("llama-local.service".to_string(), 300_000, 1, 10)];
+        let mut s1 = sample(0, &units, 0, 0);
+        s1.models = vec![
+            load(
+                ModelKind::Chat,
+                Some("fictional-chat-35b"),
+                Some(Perf {
+                    requests: 1,
+                    gen_tokens: 100,
+                    gen_ms: 1000.0,
+                    ..Perf::default()
+                }),
+            ),
+            load(ModelKind::Embeddings, None, Some(Perf::default())),
+            load(ModelKind::Image, Some("fictional-image"), None),
+        ];
+        let rec = record(&db, &s1).unwrap();
+        assert_eq!(rec.models.len(), 3);
+
+        let conn = Connection::open(&db).unwrap();
+        let row = |kind: u8| -> (Option<String>, bool, Option<i64>, Option<i64>, Option<f64>) {
+            conn.query_row(
+                "SELECT model, running, mem_bytes, requests, gen_tps FROM model_minute WHERE kind = ?1",
+                [kind],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            row(1),
+            (
+                Some("fictional-chat-35b".into()),
+                true,
+                Some(1_000),
+                Some(1),
+                Some(100.0)
+            )
+        );
+        assert_eq!(
+            row(2),
+            (None, false, Some(1_000), Some(0), None),
+            "quiet: zero, no rate"
+        );
+        assert_eq!(
+            row(6).3,
+            None,
+            "an unread log is unknown, never zero requests"
+        );
+        let label: String = conn
+            .query_row("SELECT label FROM model_kinds WHERE id = 5", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(label, "text to speech");
+        drop(conn);
+
+        let bytes = std::fs::read(&db).unwrap();
+        let hay = String::from_utf8_lossy(&bytes);
+        assert!(
+            hay.contains("fictional-chat-35b"),
+            "the model's name is recorded"
+        );
+        for name in ["llama-local", ".service"] {
+            assert!(!hay.contains(name), "{name:?} reached the database file");
+        }
+    }
 }

@@ -457,8 +457,11 @@ the next turn's KV growth. Its size is R5.
    - A minute it cannot fully attribute is recorded with NULLs, never with
      a figure that looks complete.
 2. **Names stop at the fold.**
-   - The series holds numbers and closed labels. A unit, process, pid or
-     model name never reaches it.
+   - The series holds numbers and closed labels. A unit, process, pid,
+     path or command line never reaches it.
+   - **One exception, ruled (R6):** a model server's row names the *model*
+     it serves (§7.4) — the router's alias, or the file name it was started
+     with, through `models::clean_name`. Never the unit that runs it.
    - #630's byte-grep test (`no_unit_name_ever_reaches_the_database_file`)
      moves with the store and covers every measurement.
    - A measurement whose value is a name is probe-only: it never reaches
@@ -785,6 +788,50 @@ who holds a seat. Rule 2 keeps names out of this layer. So the two layers
 share the store's own reader, which leaves one parser per store. They do
 not share the measurement.
 
+### 7.4 Per-model rows (R6, 2026-10-12)
+
+The owner asked to see which models are running, what each holds, how fast
+each answers, and which chat model is loaded as the router switches. That
+is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
+
+- **One row per model server per minute** (`system::models`,
+  `model_minute`), for a closed list in code (`models::SERVERS`): the chat
+  router, embeddings, document OCR, speech to text, text to speech and
+  image generation. Each kind's number is a wire format, labelled through a
+  `model_kinds` table rewritten on every sample, as `categories` is.
+- **Running** is the unit's `ActiveState`, from one `systemctl show` for
+  every server. The on-demand servers read stopped between uses, which is
+  the truth, and nothing connects to their sockets (rule 3).
+- **The model's name** (R6): for the chat router, every model `GET /models`
+  lists as loaded (that call names no model, so it cannot load one; rule
+  3); for the others, the `-m` argument or one environment variable of the
+  running process, read from `/proc/<pid>` and reduced to a file name; for
+  image generation, `[image] diffusion_model`. A stopped server has no
+  name: NULL.
+- **Memory, CPU and GPU memory** are the unit's, by the categories' rules:
+  on unified memory a server's GPU allocations are added to its cgroup's,
+  and unknown when the GPU did not answer. CPU is a delta of the unit's
+  counter, kept per kind in `counter_state`.
+- **Speed comes from each server's own log**, one `journalctl -o json`
+  read for every server over the window since the previous sample (capped
+  at ten minutes; the first sample looks back one): llama-server's
+  per-request timing lines (chat, OCR), its slot releases (embeddings,
+  which print no timing), the speech engines' `[Perf] Total … audio … s`
+  lines, and ComfyUI's `Prompt executed in … seconds`. Parakeet printed
+  nothing, so `parakeet_server.py` now prints the same `[Perf]` shape —
+  numbers only, never the words. The parsers keep sums; rates are computed
+  as total tokens over total time, never a mean of per-request rates.
+- **A model switch inside a minute** is read correctly: each router
+  instance prefixes its lines with its port, `GET /models` gives the loaded
+  instance's port, and lines from an instance unloaded since are left out
+  of a row that does not name their model.
+- **Unknown stays unknown** (rule 1): a journal that could not be read
+  writes NULL in every speed column; a quiet minute writes zero requests
+  and NULL rates.
+- **Not built here**: `model.slots.*`, `image.*` and the model-load floor
+  (S2b proper), and a fifteen-minute rollup of these rows, which keep seven
+  days like every minute table.
+
 ## 8. Deliberately out of scope
 
 - **Acting on readings.** No alerts, no automatic throttling, and no
@@ -839,6 +886,12 @@ not share the measurement.
   reclaimed and slowed inside their own cgroups before the global OOM
   killer chooses a victim. It is applied once S1 has been recording for a
   while, so that its effect is measured against a before, not assumed.
+- **R6. Model names in the series — ruled 2026-10-12:** the owner wants
+  to see "what models are active and how much RAM they are using and also
+  their speed", and "which model is loaded as some change periodically".
+  A model server's row names its model (§7.4). Unit, process, pid, path
+  and command line stay out (rule 2), and the byte-grep test still pins
+  the unit names.
 - **R4. The homeostat reads the series — ruled 2026-10-10:** yes, "so we
   have a unified system measurement". The homeostat stops probing `/proc`
   itself and reads `system`, and a run's record carries the minutes it ran
