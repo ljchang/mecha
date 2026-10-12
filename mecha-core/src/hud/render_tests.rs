@@ -15,7 +15,8 @@ fn scratch(tag: &str) -> PathBuf {
 #[test]
 fn the_sandbox_has_no_network_and_binds_only_its_four_paths() {
     let home = PathBuf::from("/home/someone");
-    let browser = home.join(".cache/ms-playwright/chromium_headless_shell-1/chrome");
+    // The directory production binds: the browser binary's parent.
+    let browser = home.join(".cache/ms-playwright/chromium_headless_shell-1/chrome-linux");
     let bundle = home.join(".mecha/hud/.scratch/1-0/bundle");
     let out = home.join(".mecha/hud/.scratch/1-0/out");
     let mecha = home.join(".cargo/bin/mecha");
@@ -67,6 +68,17 @@ fn a_screenshot_is_cropped_to_its_content() {
         .unwrap();
     let shot = crop(&png).unwrap();
     assert!(!shot.cut);
+    assert_eq!(shot.scaled_width(), None, "a short picture is not scaled");
+    let tall = Cropped {
+        png: Vec::new(),
+        cut: false,
+        width: 1280,
+        height: 2352,
+    };
+    assert_eq!(
+        tall.scaled_width(),
+        Some(1280 * crate::image::MAX_EDGE / 2352)
+    );
     let cropped = image::load_from_memory(&shot.png).unwrap();
     assert_eq!(cropped.height(), 50 + 24);
     assert_eq!(cropped.width(), 40);
