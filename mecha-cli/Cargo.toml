@@ -65,3 +65,6 @@ tower = { version = "0.5", features = ["util"] }
 # Only to write a real PNG for the drag-and-drop tests. Decoding belongs to
 # mecha-core; nothing in the CLI needs it at runtime.
 image.workspace = true
+# Only to write a source with rows for the dashboard proposal routes' tests.
+# Querying belongs to mecha-core's confined runner.
+rusqlite.workspace = true

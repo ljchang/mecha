@@ -1699,6 +1699,7 @@ dependencies = [
  "mecha-slack",
  "ratatui",
  "reqwest",
+ "rusqlite",
  "rustyline",
  "serde",
  "serde_json",

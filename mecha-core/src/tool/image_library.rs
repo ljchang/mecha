@@ -313,7 +313,13 @@ impl Tool for ImageLibraryPropose {
             (Kind::Style, Some(_)) => return Ok(ToolOutput::err("A style has no portrait.")),
             (Kind::Style, None) => None,
         };
-        let (origin, locked) = (Origin::of_proposal(ctx.taint.as_ref()), ctx.stage_locked);
+        // What the conversation had read before this turn's batch
+        // (`ToolCtx::recorded_taint`), not the send gate's union of the
+        // batch's reach (review of #659).
+        let (origin, locked) = (
+            Origin::of_proposal(ctx.recorded_taint.as_ref()),
+            ctx.stage_locked,
+        );
         let made = imagelib::create(
             &self.dir,
             NewEntry {
@@ -370,6 +376,7 @@ mod tests {
         ToolCtx {
             workspace: workspace.to_path_buf(),
             taint,
+            recorded_taint: taint,
             ..Default::default()
         }
     }
