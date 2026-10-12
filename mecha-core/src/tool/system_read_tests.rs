@@ -272,3 +272,32 @@ fn an_older_series_is_said_not_failed() {
     assert!(out.content.contains("older sampler"), "{}", out.content);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A series from before the model rows is said as such over a window, not
+/// read as a window in which no server ran (review of #660).
+#[test]
+fn models_from_an_older_series_are_said_not_empty() {
+    let dir = std::env::temp_dir().join(format!("mecha-system-read-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("series.sqlite");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE system_minute (at TEXT PRIMARY KEY);")
+        .unwrap();
+    let out = answer(
+        &db,
+        None,
+        None,
+        Some("models"),
+        Window::H1,
+        false,
+        Utc::now(),
+    )
+    .unwrap();
+    assert!(
+        out.content.contains("older than the model rows"),
+        "{}",
+        out.content
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

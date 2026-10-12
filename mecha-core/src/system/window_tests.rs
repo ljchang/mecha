@@ -142,7 +142,9 @@ fn model_rows_show_what_is_loaded_and_each_switch() {
     assert_eq!(chat.model.as_deref(), Some("big-model"));
     assert_eq!(chat.speed.as_ref().map(|s| s.1), Some(40.0));
 
-    let w = models_window(&db, Window::H1, now).unwrap().unwrap();
+    let Some(ModelRows::Rows { servers: w }) = models_window(&db, Window::H1, now).unwrap() else {
+        panic!("rows")
+    };
     assert_eq!(w.len(), 1, "a speech kind is not read over a window (R7)");
     assert_eq!(
         w[0].models,
