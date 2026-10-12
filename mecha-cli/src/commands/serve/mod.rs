@@ -781,6 +781,24 @@ fn api() -> gate::Owned {
         .at("/api/hud", Owner::Core, get(hud::list))
         .at("/api/hud/{id}", Owner::Core, get(hud::board))
         .at("/api/hud/{id}/data/{name}", Owner::Core, get(hud::data))
+        // Boards a conversation proposed (`hud_propose`, §5.3, R18): read,
+        // and the owner's accept or reject — the one HUD write over the web.
+        .at("/api/hud-proposals/{id}", Owner::Core, get(hud::proposal))
+        .at(
+            "/api/hud-proposals/{id}/data/{name}",
+            Owner::Core,
+            get(hud::proposal_data),
+        )
+        .at(
+            "/api/hud-proposals/{id}/accept",
+            Owner::Core,
+            axum::routing::post(hud::accept),
+        )
+        .at(
+            "/api/hud-proposals/{id}/reject",
+            Owner::Core,
+            axum::routing::post(hud::reject),
+        )
         .at("/api/model", Owner::Core, get(model::state))
         .at(
             "/api/model/use",
@@ -2517,6 +2535,10 @@ mod tests {
             ("GET", "/api/hud"),
             ("GET", "/api/hud/host"),
             ("GET", "/api/hud/host/data/now"),
+            ("GET", "/api/hud-proposals/x"),
+            ("GET", "/api/hud-proposals/x/data/y"),
+            ("POST", "/api/hud-proposals/x/accept"),
+            ("POST", "/api/hud-proposals/x/reject"),
         ] {
             let response = test_router()
                 .oneshot(

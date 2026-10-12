@@ -36,6 +36,7 @@
 //! are plain identifiers: under `SELECT *` they come from a schema someone
 //! else may control.
 
+pub mod draft;
 pub mod loader;
 pub mod publish;
 pub mod runner;
@@ -50,10 +51,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+pub use draft::{Draft, Fetch, Preview, Proposed};
 pub use loader::{Column, ColumnType, Loader, ShapeRefusal};
 pub use source::{Source, Sources};
 pub use spec::{Panel, Spec};
 pub use store::{Dataset, Store};
+
+/// How a model drafts a board: what `hud_sources` hands it, beside the
+/// sources themselves. Its worked example is checked by a test.
+pub const AUTHORING_GUIDE: &str = include_str!("authoring.md");
 
 /// Proof that a value came out of its checks. Its field is private to this
 /// module, so a `Spec` or `Loader` — each of which carries one — cannot be
