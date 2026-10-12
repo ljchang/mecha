@@ -217,7 +217,8 @@ session.rs   append-only JSONL transcripts; a rewrite record when compaction edi
 runlog.rs    the run-quality corpus: every recorded outcome, read back across sessions
 homeostat.rs the conditions a run happened under, recorded beside what it did
 system.rs    the machine's state, read in one place: a per-minute series of numbers
-             and closed categories, never a name; unknown is refused, never zero
+             and closed categories, plus a model's name (R6) and never a unit's;
+             unknown is refused, never zero
 backlog.rs   what waits on the owner across five stores; one walk, three readers
 doctor.rs    every store's distress, read in one pass — no network, no model
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate

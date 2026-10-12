@@ -349,6 +349,7 @@ fn sample(min: u32, units: &[UnitCounters], busy: u64, total: u64) -> Sample {
         now: Vec::new(),
         counters: Counters::default(),
         models: Vec::new(),
+        model_window_read: true,
     }
 }
 
@@ -1789,6 +1790,7 @@ mod model_rows {
         record(&db, &s1).unwrap();
         let mut s2 = sample(1, &[], 0, 0);
         s2.models = vec![row(None)];
+        s2.model_window_read = false;
         record(&db, &s2).unwrap();
         assert_eq!(
             journal_cursor(&db),
@@ -1846,6 +1848,32 @@ mod model_rows {
         s1.at += chrono::Duration::microseconds(123_456);
         record(&db, &s1).unwrap();
         assert_eq!(journal_cursor(&db), Some(s1.at));
+    }
+
+    /// The kinds' numbers are a wire format, as `Category`'s are: pinned
+    /// here, and a number this build does not know is `None`.
+    #[test]
+    fn the_kind_numbers_are_pinned_and_an_unknown_one_is_none() {
+        let pinned: Vec<(u8, &str)> = ModelKind::ALL
+            .iter()
+            .map(|k| (*k as u8, k.label()))
+            .collect();
+        assert_eq!(
+            pinned,
+            vec![
+                (1, "chat"),
+                (2, "embeddings"),
+                (3, "document ocr"),
+                (4, "speech to text"),
+                (5, "text to speech"),
+                (6, "image generation"),
+            ]
+        );
+        for k in ModelKind::ALL {
+            assert_eq!(ModelKind::from_u8(k as u8), Some(k));
+        }
+        assert_eq!(ModelKind::from_u8(0), None);
+        assert_eq!(ModelKind::from_u8(7), None);
     }
 
     fn load(kind: ModelKind, model: Option<&str>, perf: Option<Perf>) -> ModelLoad {
