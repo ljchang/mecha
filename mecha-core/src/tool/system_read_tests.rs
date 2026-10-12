@@ -86,7 +86,9 @@ fn the_voice_category_is_left_out_of_a_window() {
 fn speech_models_are_now_only() {
     let window = ask(Some("models"), Window::H1, false);
     assert!(
-        window.content.contains("chat: ran 1 of 1 minutes"),
+        window
+            .content
+            .contains("chat: ran 1 of the window's 60 minutes (recorded for 1)"),
         "{}",
         window.content
     );
@@ -171,7 +173,8 @@ fn a_window_reads_as_a_summary_in_its_unit() {
         disk.content
     );
     assert!(
-        disk.content.contains("(3 of 3 minutes known)"),
+        disk.content
+            .contains("(3 of the window's 60 minutes known; 57 not recorded)"),
         "{}",
         disk.content
     );

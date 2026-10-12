@@ -78,6 +78,10 @@ pub struct Bucket {
 /// One measurement (or one category of one) over a window.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Summary {
+    /// The window's length in minutes — the denominator: a sampler that was
+    /// down records fewer rows, and that gap is said, never folded away
+    /// (review of #660).
+    pub window_minutes: usize,
     /// Minutes the series has a row for in the window.
     pub minutes: usize,
     /// Of those, the minutes whose value was unknown.
@@ -115,6 +119,7 @@ fn summarise(
     let n = (span.num_seconds() / width.num_seconds().max(1)).max(1) as usize;
     let mut sums = vec![(0.0_f64, 0usize); n];
     let mut s = Summary {
+        window_minutes: span.num_minutes().max(0) as usize,
         minutes: rows.len(),
         unknown: 0,
         latest: None,
@@ -264,6 +269,8 @@ pub struct ModelNow {
 pub struct ModelWindow {
     pub kind: &'static str,
     pub kind_id: u8,
+    /// The window's length in minutes.
+    pub window_minutes: usize,
     /// Minutes the series has a row for, and of those, minutes it ran.
     pub minutes: usize,
     pub running: usize,
@@ -432,6 +439,7 @@ pub fn models_window(
         out.push(ModelWindow {
             kind: kind.label(),
             kind_id: id,
+            window_minutes: span.num_minutes().max(0) as usize,
             minutes: rows.len(),
             running: rows.iter().filter(|r| r.1).count(),
             models,

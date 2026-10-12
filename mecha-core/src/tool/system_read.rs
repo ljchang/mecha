@@ -34,6 +34,7 @@ use std::path::PathBuf;
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::system::measure::{How, Measurement, Unit};
+use crate::system::models::ModelKind;
 use crate::system::window::{self, Bucket, ModelNow, ModelWindow, Summary, Window, Windowed};
 use crate::system::{self, Category, Probed, Reader, Reading};
 use anyhow::Result;
@@ -56,7 +57,13 @@ const OVERVIEW: &[Measurement] = &[
 
 /// The model kinds whose rows move with a call: speech to text and text to
 /// speech (`system::models::ModelKind`).
-const SPEECH_KINDS: [u8; 2] = [4, 5];
+const SPEECH_KINDS: [ModelKind; 2] = [ModelKind::SpeechToText, ModelKind::TextToSpeech];
+
+/// Whether a stored kind number is a speech kind — through `ModelKind`, never
+/// a restated literal (review of #660).
+fn is_speech(kind: u8) -> bool {
+    ModelKind::from_u8(kind).is_some_and(|k| SPEECH_KINDS.contains(&k))
+}
 
 /// How far back a speech kind's "now" looks: `voice.live`'s three minutes.
 const SPEAKING_NOW: chrono::Duration = chrono::Duration::minutes(3);
@@ -314,7 +321,7 @@ fn models(
         // lookback would print when the last call was. Its "now" looks back
         // as far as `voice.live` does, and says no time (R7, review of #660).
         let lookback = |k: u8| {
-            if SPEECH_KINDS.contains(&k) {
+            if is_speech(k) {
                 SPEAKING_NOW
             } else {
                 chrono::Duration::hours(24)
@@ -346,7 +353,7 @@ fn models(
         }
         return Ok(ToolOutput::ok(out));
     }
-    let Some(rows) = window::models_window(db, window, now, |k| !SPEECH_KINDS.contains(&k))? else {
+    let Some(rows) = window::models_window(db, window, now, |k| !is_speech(k))? else {
         return Ok(ToolOutput::ok(
             "Model servers: the series does not exist yet.",
         ));
@@ -380,7 +387,7 @@ fn model_now(r: &ModelNow, tz: Option<chrono_tz::Tz>) -> String {
     let mem = r.mem_bytes.map_or("memory unknown".to_string(), |b| {
         format!("{:.1} GiB", b / GIB)
     });
-    let speed = match (&r.speed, SPEECH_KINDS.contains(&r.kind_id)) {
+    let speed = match (&r.speed, is_speech(r.kind_id)) {
         // Now only, and no time: a time would say when the call was (R7).
         (Some((_, v)), true) => format!("; speaking now, {}", speed_text(r.kind_id, *v)),
         (None, true) => "; not speaking now".into(),
@@ -424,16 +431,17 @@ fn model_window(r: &ModelWindow, tz: Option<chrono_tz::Tz>) -> String {
         _ => String::new(),
     };
     format!(
-        "{}: ran {} of {} minutes; {models}; {mem}; {requests}{speed}",
-        r.kind, r.running, r.minutes
+        "{}: ran {} of the window's {} minutes (recorded for {}); {models}; {mem}; {requests}{speed}",
+        r.kind, r.running, r.window_minutes, r.minutes
     )
 }
 
 fn speed_text(kind: u8, v: f64) -> String {
-    match kind {
-        1 | 3 => format!("{v:.0} tokens/s"),
-        4 | 5 => format!("RTF {v:.2}"),
-        _ => format!("{v:.0} s per picture"),
+    match ModelKind::from_u8(kind) {
+        Some(ModelKind::Chat | ModelKind::Ocr) => format!("{v:.0} tokens/s"),
+        Some(ModelKind::SpeechToText | ModelKind::TextToSpeech) => format!("RTF {v:.2}"),
+        Some(ModelKind::Image) => format!("{v:.0} s per picture"),
+        Some(ModelKind::Embeddings) | None => format!("{v}"),
     }
 }
 
@@ -475,7 +483,18 @@ fn summary(m: Measurement, s: &Summary, tz: Option<chrono_tz::Tz>) -> String {
             )
         }
     };
-    let _ = write!(text, " ({known} of {} minutes known)", s.minutes);
+    // Against the window's own length: a sampler that was down leaves
+    // minutes with no row, and they are said (review of #660).
+    let _ = write!(
+        text,
+        " ({known} of the window's {} minutes known",
+        s.window_minutes
+    );
+    let missing = s.window_minutes.saturating_sub(s.minutes);
+    if missing > 0 {
+        let _ = write!(text, "; {missing} not recorded");
+    }
+    text.push(')');
     if !matches!(unit, Unit::Label(_)) {
         let _ = write!(text, "\n      by stretch: {}", buckets(m, &s.buckets, tz));
     }
