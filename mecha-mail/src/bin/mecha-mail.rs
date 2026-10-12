@@ -1170,11 +1170,13 @@ fn google_client_file(path: &std::path::Path) -> Result<ClientConfig> {
 /// Walk a person through registering their own sign-in app, one console page
 /// at a time, and come back with its client configuration: Google's from the
 /// JSON the last step downloads, Outlook's from the two ids pasted. `open`
-/// opens a page (the browser, or nothing in a test).
+/// opens a page (the browser, or nothing in a test); a client file counts as
+/// downloaded when it was written at or after `started`.
 fn register_own_app(
     read: &mut impl std::io::BufRead,
     provider: Provider,
     downloads: Option<&std::path::Path>,
+    started: std::time::SystemTime,
     open: &dyn Fn(&str),
 ) -> Result<ClientConfig> {
     use mecha_mail::wizard;
@@ -1190,7 +1192,6 @@ fn register_own_app(
         }
         Ok(s.trim().to_string())
     };
-    let started = std::time::SystemTime::now();
     let (intro, steps) = match provider {
         Provider::Google => (
             "mecha does not ship a Gmail sign-in app: you register your own, once, and it \
@@ -1217,26 +1218,44 @@ fn register_own_app(
         line("   Enter when done (q to stop): ")?;
     }
     match provider {
-        Provider::Google => loop {
-            if let Some(path) = downloads.and_then(|d| wizard::find_client_json(d, started)) {
-                eprintln!("Found {}", path.display());
-                let client = google_client_file(&path)?;
-                eprintln!(
-                    "(mecha keeps what it needs with the sign-in; that file can be deleted.)"
-                );
-                return Ok(client);
-            }
-            let answer = line(
-                "No downloaded client file yet. Enter once it has downloaded, or paste its \
-                 path: ",
-            )?;
-            if !answer.is_empty() {
-                match google_client_file(std::path::Path::new(&answer)) {
-                    Ok(client) => return Ok(client),
-                    Err(e) => eprintln!("{e:#}"),
+        Provider::Google => {
+            // A file found and refused (a Web client, the likeliest mistake)
+            // is said and waited past, never the end of the walk (review of
+            // #663): the five pages are not walked again for one download.
+            let mut refused: Option<std::path::PathBuf> = None;
+            loop {
+                let found = downloads.and_then(|d| wizard::find_client_json(d, started));
+                if let Some(path) = found.filter(|p| refused.as_ref() != Some(p)) {
+                    eprintln!("Found {}", path.display());
+                    match google_client_file(&path) {
+                        Ok(client) => {
+                            eprintln!(
+                                "(mecha keeps what it needs with the sign-in; that file can be \
+                                 deleted.)"
+                            );
+                            return Ok(client);
+                        }
+                        Err(e) => {
+                            eprintln!("{e:#}");
+                            refused = Some(path);
+                        }
+                    }
+                }
+                let prompt = if refused.is_some() {
+                    "Download a Desktop app client's file and press Enter, or paste its path: "
+                } else {
+                    "No downloaded client file yet. Enter once it has downloaded, or paste its \
+                     path: "
+                };
+                let answer = line(prompt)?;
+                if !answer.is_empty() {
+                    match google_client_file(std::path::Path::new(&answer)) {
+                        Ok(client) => return Ok(client),
+                        Err(e) => eprintln!("{e:#}"),
+                    }
                 }
             }
-        },
+        }
         Provider::Outlook => {
             let client_id = loop {
                 let a = line("Application (client) ID: ")?;
@@ -1543,6 +1562,7 @@ async fn auth(
                     &mut std::io::stdin().lock(),
                     provider,
                     downloads.as_deref(),
+                    std::time::SystemTime::now(),
                     &|url| {
                         mecha_mail::builtin::open_browser(url);
                     },
@@ -1839,25 +1859,67 @@ mod tests {
             &mut std::io::Cursor::new(input),
             Provider::Google,
             Some(&empty_downloads),
+            std::time::SystemTime::now(),
             &open,
         );
         let _ = std::fs::remove_dir_all(&dir);
         let got = got.unwrap();
         assert_eq!(got.client_id, "9-z.apps.googleusercontent.com");
         assert_eq!(got.tenant, None);
-        assert_eq!(opened.borrow().len(), steps);
+        // Every page, once each, in the order the steps give.
+        assert_eq!(
+            *opened.borrow(),
+            mecha_mail::wizard::GOOGLE
+                .iter()
+                .map(|s| s.url.to_string())
+                .collect::<Vec<_>>()
+        );
         // `q` stops, and so does end of input.
         let stop = |input: &str| {
             register_own_app(
                 &mut std::io::Cursor::new(input.to_string()),
                 Provider::Google,
                 None,
+                std::time::SystemTime::now(),
                 &|_| {},
             )
             .is_err()
         };
         assert!(stop("q\n"));
         assert!(stop("\n"));
+    }
+
+    /// A Web client's file in Downloads — the likeliest mistake — is said
+    /// and waited past, not the end of the walk; a good file pasted after it
+    /// is taken (review of #663).
+    #[test]
+    fn a_refused_download_is_waited_past() {
+        let dir = std::env::temp_dir().join(format!("mecha-wiz-r-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("client_secret_web.json"),
+            r#"{"web":{"client_id":"1-w.apps.googleusercontent.com"}}"#,
+        )
+        .unwrap();
+        let good = dir.join("good.json");
+        std::fs::write(
+            &good,
+            r#"{"installed":{"client_id":"2-d.apps.googleusercontent.com","client_secret":"s"}}"#,
+        )
+        .unwrap();
+        let steps = mecha_mail::wizard::GOOGLE.len();
+        // Enter once past the refusal (the same file is not tried again),
+        // then the good file's path.
+        let input = format!("{}\n{}\n", "\n".repeat(steps), good.display());
+        let got = register_own_app(
+            &mut std::io::Cursor::new(input),
+            Provider::Google,
+            Some(&dir),
+            std::time::UNIX_EPOCH,
+            &|_| {},
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got.unwrap().client_id, "2-d.apps.googleusercontent.com");
     }
 
     /// Outlook: two ids pasted, a malformed one asked again, and Enter for
@@ -1871,6 +1933,7 @@ mod tests {
             &mut std::io::Cursor::new(input),
             Provider::Outlook,
             None,
+            std::time::SystemTime::now(),
             &|_| {},
         )
         .unwrap();
