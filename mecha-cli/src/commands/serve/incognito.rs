@@ -48,8 +48,9 @@ pub fn new_key() -> String {
 }
 
 /// Builtins an incognito chat may call. Everything that writes stays in the
-/// room but the two proposers at the end, which stage locked; search reaches a search engine, which the page says before the
-/// first search (R4). `shell` and `image_generate` are here conditionally
+/// room, but for the two proposers at the end, which stage locked; search
+/// reaches a search engine, which the page says before the first search
+/// (R4). `shell` and `image_generate` are here conditionally
 /// ([`withheld`]): each only where what it leaves outside the room can be
 /// taken back.
 const ALLOWED_BUILTINS: &[&str] = &[

@@ -77,7 +77,7 @@ silently-degrading guard in another costume:
 |---|---|
 | **R1** | Strictly invisible: no transcript, **no content-free counts**, no replay, no learning. Invisibility to `reflect`, `distill`, `runlog`, `harness ruminate` and the rest is the point, not a gap |
 | **R2** | No "save this conversation" escape hatch. Live-only affordances (retry, branch) are fine; they die with the session. *Refined 2026-10-01 (owner): a reply's Download is allowed — "there just won't be a trace on the server". The file is made in the browser from the reply on the page, never fetched, so it is the owner's act on the device (§1), not a server-side save* |
-| **R3** | **Local + read my data:** mail, calendar and graph reads are allowed; writes of any kind outside the chat's own folder are refused. *One exception, ruled 2026-10-01 (owner): `persona_propose` may stage a persona — "these will likely be locked profiles". It is staged behind the library lock (`ToolCtx::stage_locked`) and reaches no prompt until the owner approves it on the Personas page, so it is a write the owner keeps on purpose, not a trace of the chat. A canary scan of the whole mecha home after an incognito run (§8) has this one legitimate path out of the room. A second, ruled 2026-10-12 (owner), on the same terms: the image library — `image_library_propose` stages a candidate character or style, and the chat card's Save to library saves an approved one, both locked whatever the model or the box says, so a persona proposed here can have a portrait. A character carries its portrait, so the picture's bytes leave the room with it; the owner keeps them on purpose, hidden until unlocked* |
+| **R3** | **Local + read my data:** mail, calendar and graph reads are allowed; writes of any kind outside the chat's own folder are refused. *One exception, ruled 2026-10-01 (owner): `persona_propose` may stage a persona — "these will likely be locked profiles". It is staged behind the library lock (`ToolCtx::stage_locked`) and reaches no prompt until the owner approves it on the Personas page, so it is a write the owner keeps on purpose, not a trace of the chat. A second, ruled 2026-10-12 (owner): the image library, both doors always locked whatever the model or the box says. `image_library_propose` stages a candidate on exactly persona_propose's terms — hidden until unlocked, in no prompt until approved — so a persona proposed here can have a portrait. The chat card's Save to library is the owner's own act and, as from any chat, approved on creation: the lock hides it while browsing, but the lock is a browse filter (IMAGE-COMPILER-DESIGN §1), so the saved character's name and description are in the next chat's `image_library` and its portrait in generation. A character carries its portrait, so the picture's bytes leave the room with it, kept on purpose. A canary scan of the whole mecha home after an incognito run (§8) has these legitimate paths out of the room* |
 | **R4** | **Web search allowed, with a notice** shown before the first search |
 | **R5** | **Idle timeout: 30 minutes** |
 | **R6** | Images are deleted from disk when the session closes — including the image server's copies and the browser's cache |
@@ -469,6 +469,12 @@ that fails against a hand-written list); the
 cloud-provider refusal **and the absence of a failover wrapper on the
 incognito provider**; the tmpfs check; the crash sweep, including the image
 server's history clear; `no-store` on every incognito route.
+
+R3's exceptions are the scan's only sanctioned hits under the mecha home: a
+persona under `personas/` and a library entry under `imagelib/`, each locked,
+and each only where the run called the tool or pressed the button. The scan
+must not exempt those directories wholesale — the canary text in any other
+file there is still a failure.
 
 ---
 
