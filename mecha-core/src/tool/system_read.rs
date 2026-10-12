@@ -254,7 +254,21 @@ pub fn answer(
     }
     let mut refused = Vec::new();
     for m in wanted {
-        match window::read(db, m, window, now)? {
+        // A series locked by the minute's sample, or otherwise unreadable,
+        // is said for this measurement, as a `now` read says `Unread` —
+        // never a failed tool call (review of #660).
+        let read = match window::read(db, m, window, now) {
+            Ok(read) => read,
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "- {}: unknown — the series could not be read: {e:#}",
+                    m.name()
+                );
+                continue;
+            }
+        };
+        match read {
             None => {
                 out.push_str(
                     "The series does not exist yet: is mecha-system-sample.timer running?\n",
