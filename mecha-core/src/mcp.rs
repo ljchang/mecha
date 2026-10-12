@@ -742,7 +742,14 @@ impl McpTool {
             "Not run: this conversation's line of background work is full, so `{name}` was not \
              started. Ask again once one of them has finished."
         );
-        let job = crate::jobs::DeferredJob::new(job, cancel, busy).with_label(name.clone());
+        let job = crate::jobs::DeferredJob::new(job, cancel, busy)
+            .with_label(name.clone())
+            // Whatever a server makes, it is not the picture the measured
+            // closing lines name (§8).
+            .with_closings(
+                crate::agent::WORK_ON_ITS_WAY,
+                crate::agent::WORK_STILL_RUNNING,
+            );
         ToolOutput::deferred(
             format!(
                 "{}`{name}` is running. Its result reaches the owner here when it is done.",
@@ -1388,7 +1395,21 @@ for line in sys.stdin:
                 }
             }
         });
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Wait until the flood is really stuck: a write blocked on the full
+        // pipe, holding the lock the notice needs. Without this the test
+        // could pass on a pipe that never filled (review of #666, pass 3).
+        let mut stuck = false;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            if slow.client.stdin.try_lock().is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if slow.client.stdin.try_lock().is_err() {
+                    stuck = true;
+                    break;
+                }
+            }
+        }
+        assert!(stuck, "the flood never blocked, so this run proves nothing");
         token.cancel();
         let late = tokio::time::timeout(std::time::Duration::from_secs(5), running)
             .await
