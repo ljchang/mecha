@@ -450,8 +450,12 @@ pub struct ModelWindow {
     /// a switch shows as two entries.
     pub models: Vec<(String, usize)>,
     pub mem: Summary,
-    /// Requests finished in the window; `None` when no minute could be read.
+    /// Requests finished in the minutes whose count could be read; `None`
+    /// when none could. A partial total says how many it covers
+    /// (`requests_minutes`) rather than read as the window's (review of #660).
     pub requests: Option<f64>,
+    /// How many recorded minutes the request count was read in.
+    pub requests_minutes: usize,
     /// The kind's speed (as [`ModelNow::speed`]) over its minutes with requests.
     pub speed: Summary,
 }
@@ -626,6 +630,7 @@ pub fn models_window(db: &Path, w: Window, now: DateTime<Utc>) -> Result<Option<
             models,
             mem: summarise(&mem, start, span, width),
             requests: (!read.is_empty()).then(|| read.iter().sum()),
+            requests_minutes: read.len(),
             speed: summarise(&speed, start, span, width),
         });
     }

@@ -435,9 +435,17 @@ fn model_window(r: &ModelWindow, tz: Option<chrono_tz::Tz>) -> String {
         }
         _ => "memory unknown".into(),
     };
-    let requests = r.requests.map_or("requests unknown".to_string(), |n| {
-        format!("{n:.0} requests")
-    });
+    // A total over only the minutes whose count was read says so: an
+    // unreadable minute is not a quiet one (review of #660).
+    let requests = match r.requests {
+        None => "requests unknown".to_string(),
+        Some(n) if r.requests_minutes < r.minutes => format!(
+            "{n:.0} requests in the {} minutes read ({} unknown)",
+            r.requests_minutes,
+            r.minutes - r.requests_minutes
+        ),
+        Some(n) => format!("{n:.0} requests"),
+    };
     let speed = match (r.speed.mean, &r.speed.latest) {
         (Some(mean), Some((at, v))) => format!(
             "; speed mean {}, latest {} at {}",
