@@ -101,8 +101,9 @@ pub struct Server {
 }
 
 /// The model servers mecha runs, in code: a change here is a review's to
-/// see. The same units [`super::category_of`] maps; the socket proxies in
-/// front of the on-demand servers hold no model and are left out.
+/// see. Units [`super::category_of`] also maps; the ones that hold no model
+/// — the socket proxies in front of the on-demand servers, and ComfyUI's
+/// idle-reset oneshot — are left out.
 pub const SERVERS: [Server; 6] = [
     Server {
         kind: ModelKind::Chat,
@@ -218,7 +219,7 @@ pub struct ModelLoad {
 /// length. Empty is `None`.
 pub fn clean_name(raw: &str) -> Option<String> {
     let base = raw.trim().trim_end_matches('/');
-    let base = base.rsplit('/').next().unwrap_or_default();
+    let base = base.rsplit('/').next().unwrap_or(base);
     let base = [".gguf", ".safetensors", ".onnx", ".bin"]
         .iter()
         .find_map(|ext| base.strip_suffix(ext))
@@ -628,10 +629,16 @@ pub fn collect(
                     }
                     NameFrom::ModelArg => proc_file("cmdline").and_then(|c| model_arg(&c)),
                     NameFrom::Env(key) => proc_file("environ").and_then(|e| env_name(&e, key)),
-                    NameFrom::ImageConfig => {
-                        let image = cfg.and_then(|c| c.image.clone()).unwrap_or_default();
-                        clean_name(&image.diffusion_model)
-                    }
+                    // A config that did not load is not a reading: the default
+                    // is what mecha *would* ask for, not what this server was
+                    // told to hold. With no `[image]` table the default is
+                    // what mecha does ask for (review of #658).
+                    NameFrom::ImageConfig => cfg.and_then(|c| match &c.image {
+                        Some(image) => clean_name(&image.diffusion_model),
+                        None => {
+                            clean_name(&crate::imagegen::ImageConfig::default().diffusion_model)
+                        }
+                    }),
                 }
             };
             let model_known =
