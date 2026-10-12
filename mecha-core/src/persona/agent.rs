@@ -315,6 +315,9 @@ pub fn levers_off(
             | Lever::Outbox
             | Lever::Messages
             | Lever::Fallback => true,
+            // Not on a persona's tool list (`SYSTEM-STATE-DESIGN.md` R3):
+            // personas have no use for the machine's state.
+            Lever::SystemRead => true,
             Lever::StepEscalation => !cfg.step_escalation,
             Lever::StepChecks => !cfg.step_checks,
             Lever::GoalGuidance => !cfg.goal_guidance,

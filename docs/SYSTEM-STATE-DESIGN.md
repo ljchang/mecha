@@ -565,9 +565,9 @@ one by deleting a copy.
 | **S1** | The probe API, `Reading`, and the `File` and `Fork` tiers, including pressure, OOM kills, temperatures, uptime, disk I/O and network throughput. The homeostat, imagegen and recommend switch to the shared parsers, and the four `/proc/meminfo` parsers become one. | S0 |
 | **S2a** | The `Scan` tier and the call: `runs.live`, `tasks.running`, `holds.live`, `permits.live`, `jobs.live` with its marker, `voice.live`, `triggers.*` and `messages.unread`, all recorded (§7.3). | S1 |
 | **S2b** | The `Loopback` tier and the hourly walks: `model.*`, `image.*`, `tasks.open`, `store.*`, and model loads gated by the memory floor (§7.2). | S2a |
-| **S3** | The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2a |
+| **S3** | *`read` built with S5 (§7.5).* The rest of the CLI (`read`, `probe`, prefixes), the doctor's unread-measurement finding, and the scripts moved onto `--json`. | S2a |
 | **S4** | The homeostat reads the series (§3.1), so run records carry per-category conditions. | S3 |
-| **S5** | `system_read`, behind its switch and in `harness::Lever`. | S3 |
+| **S5** ✓ | `system_read`, behind its switch and in `harness::Lever`. *Built (§7.5).* | S3 |
 | **S6** | The memory floor (§3.7): `system::admit` and `mecha system admit --need`, with image generation, model loads, background admission and the build scripts all calling it. The image tool's `memory_verdict` becomes a caller of `admit`, not a second implementation. | R5; S1 (it needs `memory.available` and `pressure.memory`, nothing more) |
 
 ### 7.1 What S1 built, and where it differs from §2
@@ -851,6 +851,42 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   (S2b proper), and a fifteen-minute rollup of these rows, which keep seven
   days like every minute table.
 
+### 7.5 What S5 built: `system_read` (R3, R3b, R7; 2026-10-12)
+
+The owner noticed that agents did not know they could read the disk or any
+other system metric: nothing exposed it to a model. S5 was designed (§5)
+and not built, and S3's `read`-over-a-window half was not built either.
+This builds both.
+
+- **`system::window`** is S3's `read`. It summarises one measurement over
+  `1h`, `6h`, `24h` or `7d` as the latest value with its minute, min, mean,
+  max and sum, the minutes known and unknown, and a dozen-or-so stretch
+  means. It reads `reading_minute`, where every measurement, `Now` ones
+  included, is recorded each minute (§7.3); `category_minute` by its named
+  column; and `model_minute` (§7.4). A NULL minute is unknown and stays out
+  of every statistic, and a stretch with no value is `None`, not 0.
+  `mecha system read [name] --window 24h [--by-category]` prints exactly
+  what the tool returns, through one formatter.
+- **`system_read`** (`tool/system_read.rs`). Its schema is closed:
+  `measurement` (a name, a group, `models`, or nothing for an overview of
+  memory, disk, CPU, GPU, pressure and the model servers), `window` and
+  `by`. It declares `private` and nothing else (R3b), is read-only, so a
+  read-only web chat can ask, and shows times in the owner's
+  `[agent] timezone`.
+- **R3 as built.** It sits behind its own switch, `[features] system`
+  (`Feature::System`, off until the owner turns it on). `--no-system-read`
+  is `Lever::SystemRead`, which `mecha eval`'s bare arm throws. It is not in
+  a persona's pool, and persona levers record it off. It is not in an
+  incognito chat's allowlist. It is registered whether or not the series
+  exists, so the tool list does not move with the sampler's uptime; a
+  missing series is said per call.
+- **R7 as built: voice is readable now, never over a window.** Over a
+  window, `voice.live`, the voice category's rows and the speech models'
+  rows (speech to text, text to speech) are refused by name in the result.
+  They are never dropped in silence, and never read: each is, in effect, a
+  log of when calls happened, and a result lands in a transcript. `now`
+  answers all three. This is also the answer to the question §7.3 left S5.
+
 ## 8. Deliberately out of scope
 
 - **Acting on readings.** No alerts, no automatic throttling, and no
@@ -911,6 +947,12 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   A model server's row names its model (§7.4). Unit, process, pid, path
   and command line stay out (rule 2), and the byte-grep test still pins
   the unit names.
+- **R7. `system_read` next, and voice is readable now only — ruled
+  2026-10-12:** the owner, after noticing that agents could not see disk
+  space: build S5. A window over voice (`voice.live`, the voice category,
+  the speech models) is refused, while `now` answers, so call timing
+  (incognito calls' included) never reaches a transcript through the tool
+  (§7.5).
 - **R4. The homeostat reads the series — ruled 2026-10-10:** yes, "so we
   have a unified system measurement". The homeostat stops probing `/proc`
   itself and reads `system`, and a run's record carries the minutes it ran

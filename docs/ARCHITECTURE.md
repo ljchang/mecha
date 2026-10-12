@@ -6086,6 +6086,15 @@ was ever deployed.
 - **A rate never spans a reset or a switch.** `delta` returns `None` when
   a counter fell or its `ident` (device number, interface index) changed.
   Interfaces are keyed by index, so a name never enters the series.
+- **The model reads the machine through `system_read` only (S5, R3, R7).**
+  It has a closed schema (a name, a group, `models`, a window, a
+  breakdown), no SQL and no path, and it declares `private` and nothing
+  else. It sits behind `[features] system` and `Lever::SystemRead`, which
+  eval throws, and is on no persona's list and in no incognito allowlist.
+  Over a window, the voice measurements, the voice category and the speech
+  models are refused by name, because they log when calls happened; `now`
+  answers them. `mecha system read` prints the tool's own text, so the two
+  share one formatter.
 - **The memory floor refuses before allocating (S6).** `system::floor::admit`
   is a pure function of two readings and a stated need. The floor is the
   need plus `[system] memory_reserve_mb`, and the pressure ceiling refuses

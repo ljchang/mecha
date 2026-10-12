@@ -60,6 +60,7 @@ pub mod floor;
 pub mod measure;
 pub mod models;
 pub mod source;
+pub mod window;
 
 pub use measure::{Measurement, Reader, Reading};
 pub use source::{
@@ -567,7 +568,9 @@ fn ts(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-const SCHEMA: &str = "
+/// The series' tables. `pub(crate)` so a reader's tests build the real
+/// schema rather than a copy of it.
+pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY, label TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS category_minute (
   at TEXT NOT NULL, category INTEGER NOT NULL,
