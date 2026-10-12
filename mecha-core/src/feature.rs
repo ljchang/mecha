@@ -1004,20 +1004,35 @@ pub struct McpWrite {
     /// written: a hand-wired install is the one most likely to lack it
     /// (review of #669).
     pub outbox_missing: Vec<String>,
+    /// An existing entry that does not force `untrusted_input = true`: never
+    /// edited, named by the caller (review of #669).
+    pub untrusted_missing: bool,
 }
 
-/// Write `wiring`'s `[[mcp]]` entry, running `command`, into the global
-/// config where no entry runs that program, with `untrusted_input` forced on
-/// — every one of these servers carries other people's words — and, for mail,
-/// its sends staged in the outbox when there is no `[outbox]` table yet. An
-/// `[outbox]` the owner wrote is never edited (`comfyui_unit::write_image_table`'s
-/// rule); what it lacks is returned. In place through `toml_edit`, comments
-/// kept, written beside and renamed.
+/// Write one feature's wiring — [`write_mcp_entries`] with a single item.
 pub fn write_mcp_entry(
     path: &Path,
     wiring: &McpWiring,
     command: &Path,
 ) -> anyhow::Result<McpWrite> {
+    Ok(write_mcp_entries(path, &[(wiring, command)])?.remove(0))
+}
+
+/// Write each feature's `[[mcp]]` entry, running its command, into the global
+/// config where no entry runs that program, with `untrusted_input` forced on —
+/// every one of these servers carries other people's words — and their staged
+/// calls in one `[outbox]` when there is none yet. One call decides the
+/// outbox for every feature in it, so `enable mail docs` routes both rather
+/// than the second finding the first's fresh table and leaving it (review of
+/// #669). An entry or `[outbox]` the owner wrote is never edited; what an
+/// existing entry lacks of the forced capability, and what an existing
+/// `[outbox]` lacks of the routing, is returned for the caller to name. In
+/// place through `toml_edit`, comments kept, written beside and renamed, and
+/// not written at all when nothing changed.
+pub fn write_mcp_entries(
+    path: &Path,
+    items: &[(&McpWiring, &Path)],
+) -> anyhow::Result<Vec<McpWrite>> {
     use anyhow::Context;
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -1027,80 +1042,102 @@ pub fn write_mcp_entry(
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
-    let runs = |t: &toml_edit::Table| {
-        t.get("command")
-            .and_then(|c| c.as_str())
-            .and_then(|c| Path::new(c).file_name().map(|n| n == wiring.program))
-            .unwrap_or(false)
-    };
-    let wired = doc
-        .get("mcp")
-        .and_then(|m| m.as_array_of_tables())
-        .is_some_and(|servers| servers.iter().any(runs));
-    if !wired {
-        let mut entry = toml_edit::Table::new();
-        entry.insert("name", toml_edit::value(wiring.name));
-        entry.insert("command", toml_edit::value(command.display().to_string()));
-        if !wiring.prefix_tools {
-            entry.insert("prefix_tools", toml_edit::value(false));
-        }
-        let mut caps = toml_edit::Table::new();
-        caps.insert("untrusted_input", toml_edit::value(true));
-        entry.insert("capabilities", toml_edit::Item::Table(caps));
-        match doc.get_mut("mcp") {
-            Some(item) => item
-                .as_array_of_tables_mut()
-                .context(
-                    "[mcp] in the config is not an array of [[mcp]] tables; nothing was changed",
-                )?
-                .push(entry),
-            None => {
-                let mut servers = toml_edit::ArrayOfTables::new();
-                servers.push(entry);
-                doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
+    let outbox_existed = doc.contains_key("outbox");
+    let mut results = Vec::new();
+    let mut changed = false;
+    for (wiring, command) in items {
+        let runs = |t: &toml_edit::Table| {
+            t.get("command")
+                .and_then(|c| c.as_str())
+                .and_then(|c| Path::new(c).file_name().map(|n| n == wiring.program))
+                .unwrap_or(false)
+        };
+        let existing = doc
+            .get("mcp")
+            .and_then(|m| m.as_array_of_tables())
+            .and_then(|servers| servers.iter().find(|t| runs(t)).cloned());
+        // An entry the owner wrote that does not force the capability: named,
+        // never edited. It is the stronger gap — a mail read declares only
+        // `readOnlyHint`, so without it a mail body never arms the untrusted
+        // leg of the interlock (review of #669).
+        let untrusted_missing = existing.as_ref().is_some_and(|t| {
+            t.get("capabilities")
+                .and_then(|c| c.get("untrusted_input"))
+                .and_then(|v| v.as_bool())
+                != Some(true)
+        });
+        if existing.is_none() {
+            let mut entry = toml_edit::Table::new();
+            entry.insert("name", toml_edit::value(wiring.name));
+            entry.insert("command", toml_edit::value(command.display().to_string()));
+            if !wiring.prefix_tools {
+                entry.insert("prefix_tools", toml_edit::value(false));
             }
-        }
-    }
-    let mut outbox_missing = Vec::new();
-    let mut wrote_outbox = false;
-    if !wiring.outbox.is_empty() {
-        match doc.get("outbox") {
-            None => {
-                let mut tools = toml_edit::Array::new();
-                for t in wiring.outbox {
-                    tools.push(*t);
+            let mut caps = toml_edit::Table::new();
+            caps.insert("untrusted_input", toml_edit::value(true));
+            entry.insert("capabilities", toml_edit::Item::Table(caps));
+            match doc.get_mut("mcp") {
+                Some(item) => item
+                    .as_array_of_tables_mut()
+                    .context(
+                        "[mcp] in the config is not an array of [[mcp]] tables; nothing was changed",
+                    )?
+                    .push(entry),
+                None => {
+                    let mut servers = toml_edit::ArrayOfTables::new();
+                    servers.push(entry);
+                    doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
                 }
-                let mut table = toml_edit::Table::new();
-                table.insert("tools", toml_edit::value(tools));
-                doc.insert("outbox", toml_edit::Item::Table(table));
-                wrote_outbox = true;
             }
-            Some(outbox) => {
-                let routed: Vec<String> = outbox
-                    .get("tools")
-                    .and_then(|t| t.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                outbox_missing = wiring
-                    .outbox
-                    .iter()
-                    .filter(|t| !routed.iter().any(|r| r == *t))
-                    .map(|t| t.to_string())
-                    .collect();
+            changed = true;
+        }
+        results.push(McpWrite {
+            wrote_entry: existing.is_none(),
+            wrote_outbox: false,
+            outbox_missing: Vec::new(),
+            untrusted_missing,
+        });
+    }
+    let wanted: Vec<&str> = items
+        .iter()
+        .flat_map(|(w, _)| w.outbox.iter().copied())
+        .collect();
+    if !outbox_existed {
+        if !wanted.is_empty() {
+            let mut tools = toml_edit::Array::new();
+            for t in &wanted {
+                tools.push(*t);
+            }
+            let mut table = toml_edit::Table::new();
+            table.insert("tools", toml_edit::value(tools));
+            doc.insert("outbox", toml_edit::Item::Table(table));
+            changed = true;
+            for ((w, _), r) in items.iter().zip(results.iter_mut()) {
+                r.wrote_outbox = !w.outbox.is_empty();
             }
         }
+    } else {
+        let routed: Vec<String> = doc
+            .get("outbox")
+            .and_then(|o| o.get("tools"))
+            .and_then(|t| t.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for ((w, _), r) in items.iter().zip(results.iter_mut()) {
+            r.outbox_missing = w
+                .outbox
+                .iter()
+                .filter(|t| !routed.iter().any(|x| x == *t))
+                .map(|t| t.to_string())
+                .collect();
+        }
     }
-    let done = McpWrite {
-        wrote_entry: !wired,
-        wrote_outbox,
-        outbox_missing,
-    };
-    if !done.wrote_entry && !done.wrote_outbox {
-        return Ok(done);
+    if !changed {
+        return Ok(results);
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -1111,7 +1148,7 @@ pub fn write_mcp_entry(
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
     }
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-    Ok(done)
+    Ok(results)
 }
 
 /// Write switches into the `[features]` table of the config file at `path`,
@@ -1481,6 +1518,39 @@ fn own_state(facts: &Facts, f: Feature) -> State {
 mod tests {
     use super::*;
 
+    /// One command decides the outbox once: `enable mail docs` stages both
+    /// features' calls in the `[outbox]` it writes, in either order, rather
+    /// than the second finding the first's fresh table (review of #669).
+    #[test]
+    fn one_enable_routes_every_feature_it_wires() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-u-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mail = mcp_wiring(Feature::Mail).unwrap();
+        let docs = mcp_wiring(Feature::Docs).unwrap();
+        let mut seen = Vec::new();
+        for (name, order) in [("md.toml", [&mail, &docs]), ("dm.toml", [&docs, &mail])] {
+            let p = root.join(name);
+            let items: Vec<(&McpWiring, &Path)> =
+                order.iter().map(|w| (*w, Path::new("/b/x"))).collect();
+            let done = write_mcp_entries(&p, &items).unwrap();
+            assert!(done
+                .iter()
+                .all(|d| d.wrote_entry && d.wrote_outbox && d.outbox_missing.is_empty()));
+            let v: toml::Value = toml::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            let mut tools: Vec<String> = v["outbox"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_string))
+                .collect();
+            tools.sort();
+            seen.push(tools);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(seen[0].len(), mail.outbox.len() + docs.outbox.len());
+        assert_eq!(seen[0], seen[1], "order does not decide what is staged");
+    }
+
     /// `enable mail` writes the entry the docs give, untrusted, with its sends
     /// staged where there is no `[outbox]`; a second write changes nothing; an
     /// owner's `[outbox]` is never edited and what it lacks is returned — on a
@@ -1573,6 +1643,9 @@ mod tests {
         );
         // The written file loads.
         let cfg = cfg.expect("the written file loads");
+        assert!(!fresh.untrusted_missing);
+        // The hand-wired entry above forces nothing: that is said.
+        assert!(hand.untrusted_missing);
         assert!(cfg.mcp[0].capabilities.untrusted_input);
         assert_eq!(cfg.outbox.tools, mail.outbox);
     }
