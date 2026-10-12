@@ -164,7 +164,11 @@ fn sample(json: bool) -> Result<()> {
     // `[messages] dir` and `[agent] timezone`, so the scans read what their
     // owners read; a config that does not load keeps the defaults.
     let cfg = mecha_core::config::Config::load_global().ok();
-    let recorded = system::record(&db, &system::collect(Utc::now(), since, cfg.as_ref())?)?;
+    let journal_since = system::journal_cursor(&db);
+    let recorded = system::record(
+        &db,
+        &system::collect(Utc::now(), since, journal_since, cfg.as_ref())?,
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&recorded)?);
     } else {
@@ -189,14 +193,15 @@ fn sample(json: bool) -> Result<()> {
                 (None, true) => "running, no model loaded".to_string(),
             };
             let speed = [
-                m.gen_tps.map(|t| format!("{t:.1} tok/s")),
+                m.prompt_tps.map(|t| format!("prompt {t:.0} tok/s")),
+                m.gen_tps.map(|t| format!("generation {t:.1} tok/s")),
                 m.rtf.map(|r| format!("RTF {r:.2}")),
                 m.job_secs.map(|s| format!("{s:.0} s/picture")),
             ]
             .into_iter()
             .flatten()
-            .next()
-            .unwrap_or_default();
+            .collect::<Vec<_>>()
+            .join(", ");
             println!("  {:<17} {mem:>11}  {what}  {speed}", m.kind);
         }
     }
