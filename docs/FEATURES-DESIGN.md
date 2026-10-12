@@ -731,6 +731,7 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
 | ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` (parent) | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
+| `system` | The machine's state for the assistant (`SYSTEM-STATE-DESIGN.md` §5) | — (the series `mecha-system-sample.timer` writes; a missing one is said per call) | — | `system_read` |
 
 **Not every surface belongs to a feature.** A `requires` edge means
 *cannot work without*, never *shares a subsystem*: `questions`, `workflow`
