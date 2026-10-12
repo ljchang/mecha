@@ -39,6 +39,14 @@ further step. This is the common case and it costs nothing.
 mecha-docs auth            # consent once
 ```
 
+`auth` opens Google's consent page in your browser. With no `--client-id` it
+signs in with mecha's own Drive app, a Google project separate from the mail
+one, so revoking documents never takes mail with it, and the reverse. It asks
+only for `drive.file`, which Google classes as non-sensitive. If Google ever
+shows an "unverified app" screen, choose **Advanced**, then continue. Your own
+Desktop-app client still wins: `--client-json` with its
+downloaded file, or `--client-id` and `--client-secret`.
+
 Every `mecha-docs` command takes `--account <NAME>`, which grant to use —
 `personal` when you leave it out. There is no positional account name:
 `mecha-docs auth --account work` is a second, separate grant stored under

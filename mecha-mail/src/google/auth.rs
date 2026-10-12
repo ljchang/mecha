@@ -353,7 +353,7 @@ pub async fn interactive_flow(
             );
             // Only here: there is no browser to open on the headless path,
             // and spawning one would be a stray process on somebody's server.
-            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            crate::builtin::open_browser(&url);
             wait_for_oauth_redirect(port).await?
         }
         Capture::Paste => {
