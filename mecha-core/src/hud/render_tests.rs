@@ -22,6 +22,8 @@ fn the_sandbox_has_no_network_and_binds_only_its_four_paths() {
     let a = sandbox_args(&browser, &bundle, &out, &mecha);
     assert_eq!(a[0], "--unshare-all", "{a:?}");
     assert!(!a.iter().any(|x| x == "--share-net"), "{a:?}");
+    // Nothing of the caller's environment rides in: keys live there.
+    assert!(a.iter().any(|x| x == "--clearenv"), "{a:?}");
     // The ELF interpreter's directory as this machine has it: /lib64 on
     // x86-64, /lib on aarch64 (review of #662).
     for dir in ["/lib", "/lib64"] {

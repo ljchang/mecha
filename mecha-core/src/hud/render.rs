@@ -205,6 +205,11 @@ pub fn sandbox_args(browser_dir: &Path, bundle: &Path, out: &Path, mecha: &Path)
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = [
         "--unshare-all",
+        // In the argv, not left to the caller's `env_clear()`, as
+        // `Sandbox::bwrap_args` does: keys live in the environment, and a
+        // test over these arguments must be able to see that none is
+        // inherited (review of #662).
+        "--clearenv",
         "--die-with-parent",
         "--new-session",
         "--ro-bind",
@@ -255,6 +260,9 @@ pub fn sandbox_args(browser_dir: &Path, bundle: &Path, out: &Path, mecha: &Path)
         "--bind".into(),
         s(out),
         "/out".into(),
+        "--setenv".into(),
+        "PATH".into(),
+        "/usr/bin:/bin".into(),
         "--setenv".into(),
         "HOME".into(),
         "/tmp".into(),
