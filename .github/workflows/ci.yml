@@ -448,9 +448,11 @@ jobs:
           jq -e '.[] | select(.id == "provider-credential") | .detail
                  | test("ANTHROPIC_API_KEY") and test("never the key itself")' hosted.json
 
-          # The charter is offered, and the offer hands over an editor rather
-          # than composing anything.
-          jq -e 'any(.[]; .id == "charter" and .remedy.argv == ["mecha","charter","edit"])' steps.json
+          # The charter is named, never run: setup says where to write it and
+          # opens no editor (an editor mid-setup ended setup wherever it left
+          # off, 2026-10-12), and it composes nothing.
+          jq -e 'any(.[]; .id == "charter" and .remedy == null
+                          and (.detail | test("mecha charter edit")))' steps.json
 
           # And each one says something about itself and carries a status.
           jq -e 'all(.[]; (.title | length > 0) and (.detail | length > 0)
