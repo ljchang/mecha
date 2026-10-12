@@ -484,7 +484,7 @@ impl ChatState {
         // letting go of it first would leave the result "being made" for
         // good (review of #583).
         if !self.jobs.queue.pending_tools(&key).is_empty() {
-            return Err("a picture is being made in this conversation — stop it first");
+            return Err("a picture or other background work is still being made in this conversation — stop it first");
         }
         let ws = sessions.remove(&key).expect("found above");
         ws.questions.shutdown();
@@ -1485,7 +1485,7 @@ pub(super) async fn release_task_conversation(
     // reopen would settle it as never made (review of #583).
     if !chat.jobs.queue.pending_tools(&key).is_empty() {
         anyhow::bail!(
-            "a picture is being made in it right now — let it finish, or stop it first, then hand it over"
+            "a picture or other background work is being made in it right now — let it finish, or stop it first, then hand it over"
         );
     }
     let id = ws.session.id().to_string();

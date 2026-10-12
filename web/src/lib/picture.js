@@ -80,13 +80,32 @@ export function picturesSince(entries, before) {
 // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1): its result came back at once as
 // `being made: <path>`, `is_error: false`, and the finished one replaces it
 // when the job ends. Neither drawn nor failed — still out.
+//
+// Any other tool that defers is still out the same way
+// (`docs/BACKGROUND-JOBS-DESIGN.md` §8): the server marks its rows
+// `deferred`, from the tool and never from the words, and the `being made: `
+// first line is still required, so its finished result never reads as out.
 export function stillOut(entry) {
   return (
     entry?.kind === 'tool' &&
-    entry.name === 'image_generate' &&
+    (entry.name === 'image_generate' || entry.deferred === true) &&
     entry.is_error === false &&
     String(entry.preview ?? '').startsWith('being made: ')
   );
+}
+
+// A clip under its tool row (§8): read off the first line of a deferring
+// tool's finished result, `video: <path>.mp4`, as strictly as `PICTURE` — a
+// chat-relative path of plain segments, none starting with a dot — and only
+// on a row the server marked `deferred`, so no other tool's text is ever
+// taken for a file to fetch.
+const CLIP = /^video: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.mp4)$/;
+export function clipOf(entry) {
+  if (entry?.kind !== 'tool' || entry.deferred !== true) return null;
+  if (entry.pending || entry.is_error || entry.blocked) return null;
+  const first = (entry.preview ?? '').split('\n', 1)[0];
+  const m = CLIP.exec(first);
+  return m ? m[1] : null;
 }
 
 // The pictures still out that wait their turn, as indices into `entries`.

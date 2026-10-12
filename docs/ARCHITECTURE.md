@@ -4869,6 +4869,24 @@ picture takes a minute, and on a call that minute was silence the owner
 talked into, which cancelled the render, which the model retried. The
 invariants:
 
+**An MCP server's tool can defer too** (§8 of the design). The server opts a
+tool in with `_meta: {"mecha-factory.ai/background": true}` on its
+`tools/list` entry, and `McpTool` does the rest:
+- every word the harness adds is its own: `being made: \`tool\` is running…`,
+  and a busy refusal naming the tool;
+- the late result is built by the inline conversion, so it stays `external`;
+- the job races the call against its own token and tells the server
+  `notifications/cancelled`, so a server that ignores the notice cannot hold
+  the line;
+- the call carries the chat's folder relative to the server's root
+  (`mecha-factory.ai/workspace`), and a chat outside that root is refused,
+  never sent without it.
+
+`Tool::defers` is what the hosts key on, never the words: the restart repair
+(a non-picture orphan reads `not made: the server restarted`, not external),
+and the `deferred` mark on a transcript row and a live result event, from
+which the page's still-out state and its clip player read.
+
 - **Who runs the job is the run's business, never the tool's.** A chat host
   gives the run a `JobSink` (`RunContext::jobs`); every other path — the CLI,
   a subagent, an eval, a batch, incognito — has none, and the loop awaits
