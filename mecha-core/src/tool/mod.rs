@@ -779,7 +779,8 @@ pub struct ToolCtx {
     /// Whatever this run stages for the owner's approval is hidden behind
     /// the library lock from the start. Stamped by the front-end from the
     /// chat's own mode — an incognito chat's proposals are (the owner's
-    /// ruling, 2026-10-01) — and never from anything a model sent. A
+    /// rulings: personas 2026-10-01, the image library 2026-10-12) — and
+    /// never from anything a model sent. A
     /// proposing tool may only add the lock with it, never remove one.
     pub stage_locked: bool,
     /// Where this chat's scene lives (`scene::SceneSlot`), stamped by a
