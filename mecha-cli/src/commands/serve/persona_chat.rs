@@ -9956,10 +9956,13 @@ mod tests {
             let mut sessions = w.chat.personas.sessions.lock().await;
             let ps = sessions.get_mut(&key).unwrap();
             let turn = vec![
+                // A tool the pool still holds, and that does not defer: only
+                // then are its words its own (an unregistered one may be a
+                // restart's orphan, review of #666).
                 Message::user("echo it"),
                 Message::assistant(vec![Block::ToolUse {
                     id: "s1".into(),
-                    name: "shell".into(),
+                    name: "fs_read".into(),
                     input: serde_json::json!({}),
                 }]),
                 Message::tool_results(vec![Block::ToolResult {
@@ -9979,6 +9982,44 @@ mod tests {
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains(r#""record":"late_result""#), "{text}");
+    }
+
+    /// A clip in flight when serve restarted: its tool is not the picture,
+    /// and the pool may not even hold it now (a skipped server), so the
+    /// resume settles it in the harness's words rather than leave a dead
+    /// Stop on the page (BACKGROUND-JOBS-DESIGN.md §9, review of #666).
+    #[tokio::test]
+    async fn a_resumed_persona_chat_settles_a_clip_the_restart_left() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let (path, id) = {
+            let mut sessions = w.chat.personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            let turn = vec![
+                Message::user("make a clip"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "v1".into(),
+                    name: "video_generate".into(),
+                    input: serde_json::json!({}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "v1".into(),
+                    content: "being made: `video_generate` is running.".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("It is on its way.")]),
+            ];
+            ps.session.append_messages(&turn).unwrap();
+            (ps.session.path.clone(), ps.session.meta.id.clone())
+        };
+        w.chat.personas.sessions.lock().await.clear();
+        w.personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""record":"late_result""#), "{text}");
+        assert!(text.contains(super::super::late::RESTARTED), "{text}");
     }
 
     /// A chat resumed after a restart holds a "being made" result with no
