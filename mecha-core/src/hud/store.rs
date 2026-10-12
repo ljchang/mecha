@@ -34,9 +34,9 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::draft::{fetch, Fetch};
 use super::loader::{Column, Loader};
-use super::runner::{run_sqlite, RunError, QUERY_TIMEOUT};
-use super::source::{SourceKind, Sources};
+use super::source::Sources;
 use super::{is_identifier, Installed, Refusal, Refusals};
 
 /// One loader's latest output, as written to `data/<name>.json`.
@@ -428,6 +428,18 @@ impl Store {
         Ok(Ok(installed))
     }
 
+    /// The ledger's `installed` line — at a first install, and again when a
+    /// proposal replaces the board (the first one stays the board's anchor).
+    pub(super) fn record_installed(&self, id: &str, now: DateTime<Utc>) -> Result<()> {
+        self.append(
+            id,
+            &Entry {
+                at: now,
+                event: Event::Installed,
+            },
+        )
+    }
+
     /// Refresh one board's loaders. `Ok(Err)` when the board itself does not
     /// load — every loader is then unrunnable, and the refusals say why.
     pub fn refresh(
@@ -493,51 +505,22 @@ impl Store {
         now: DateTime<Utc>,
     ) -> Result<Event> {
         let name = loader.name().to_string();
-        let Some(source) = sources.get(loader.source()) else {
-            return Ok(Event::Failed {
-                loader: name,
-                slot,
-                reason: format!(
-                    "source {:?} is not registered in sources.toml",
-                    loader.source()
-                ),
-            });
-        };
-        let fetched = match &source.kind {
-            SourceKind::Sqlite { path } => {
-                run_sqlite(path, loader.query(), loader.max_rows(), QUERY_TIMEOUT)
-            }
-        };
-        let fetched = match fetched {
-            Ok(fetched) => fetched,
-            Err(e) => {
-                let reason = e.to_string();
-                return Ok(match e {
-                    RunError::MultipleStatements
-                    | RunError::NotAllowed(_)
-                    | RunError::NotReadOnly
-                    | RunError::Unrepresentable { .. }
-                    | RunError::TooManyRows { .. }
-                    | RunError::TooLarge { .. } => Event::Refused {
-                        loader: name,
-                        slot,
-                        reason,
-                    },
-                    RunError::Open(_) | RunError::Sql(_) | RunError::Timeout => Event::Failed {
-                        loader: name,
-                        slot,
-                        reason,
-                    },
-                });
-            }
-        };
-        let rows = match loader.shape(&fetched.columns, fetched.rows) {
-            Ok(rows) => rows,
-            Err(e) => {
+        // The preview's path exactly (`draft::fetch`): what a draft previewed
+        // clean against is what its refresh runs.
+        let (rows, external) = match fetch(loader, sources) {
+            (Fetch::Rows { rows, .. }, external) => (rows, external),
+            (Fetch::Refused(reason), _) => {
                 return Ok(Event::Refused {
                     loader: name,
                     slot,
-                    reason: e.to_string(),
+                    reason,
+                })
+            }
+            (Fetch::Failed(reason), _) => {
+                return Ok(Event::Failed {
+                    loader: name,
+                    slot,
+                    reason,
                 })
             }
         };
@@ -550,7 +533,7 @@ impl Store {
             loader_digest: loader.digest(),
             columns: loader.columns().to_vec(),
             rows,
-            external: source.external(),
+            external,
         };
         // A dataset that cannot be written is the environment's failure and
         // gets its ledger line like any other — never an error that leaves
@@ -676,11 +659,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// The board's writer lock: two refreshes of one board — the timer's and a
 /// hand-run one — take turns, so generations never collide.
-struct BoardLock {
+pub(super) struct BoardLock {
     _file: std::fs::File,
 }
 
-fn lock(board: &Path) -> Result<BoardLock> {
+pub(super) fn lock(board: &Path) -> Result<BoardLock> {
     use std::os::unix::io::AsRawFd;
     let file = std::fs::OpenOptions::new()
         .create(true)

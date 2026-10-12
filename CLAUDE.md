@@ -185,7 +185,8 @@ clock.rs     what time it is, asked per turn: a trait object, so nothing can
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 hud/         dashboards: a spec that names no destinations, loaders confined to
-             one read of one owner-registered file, a ledger answered backwards
+             one read of one owner-registered file, a ledger answered backwards;
+             a conversation drafts through read-only tools, the owner installs
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
 permit.rs    how many background runs may hold the model at once — seats on
              llama-server, as files in a directory; a latency control, not memory
