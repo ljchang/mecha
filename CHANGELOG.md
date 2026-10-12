@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The installed image server gives its memory back.** `mecha features
+  enable image` now also installs `mecha-comfyui-idle.timer`, which restarts
+  `mecha-comfyui.service` once it has held a model unused for 15 minutes,
+  as the hand-built server's `mecha-comfyui-idle-reset` already did. A
+  loaded server holds ~13.6 GB; a restarted one, ~1.1 GB.
+
 - **Picture settings for chat.** Settings → Images sets how pictures are
   drawn in every chat: model, steps, guidance, sampler, scheduler and the
   negative prompt. A persona's picture settings now fall back to these

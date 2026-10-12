@@ -25,8 +25,10 @@ Qwen-Image 2.1, with the diffusion model as the int8 file from
 **On Linux with an NVIDIA driver 580 or newer, `mecha features enable image`
 installs it**: ComfyUI at a pinned commit, torch for CUDA 13 from a
 hash-pinned lock (about 3.6 GiB), the three model files by their pinned
-sha256 (about 14 GB), and `mecha-comfyui.service` on `:8188`, under
-`~/.mecha/sidecars/comfyui/`. The install checks that the server has every
+sha256 (about 14 GB) under `~/.mecha/sidecars/comfyui/`, and two user units:
+`mecha-comfyui.service` on `:8188`, and `mecha-comfyui-idle.timer`, which
+gives the server's memory back when it sits unused (below). The install
+checks that the server has every
 node and model mecha's pictures use, and writes an `[image]` table naming the
 server's temp directory if your config has none. A ComfyUI you already run on
 `:8188` is left alone and used.
@@ -202,10 +204,12 @@ versions of them) it used.
   (8 GB by default) and declines while the machine is already stalling on
   memory. When it declines it says why, and which kinds of work hold the most
   memory; try again once a large build or another model has finished.
-  After fifteen idle minutes it asks the server to unload its models. On a
-  machine running the `mecha-comfyui-idle-reset` timer (`scripts/comfyui/install.sh`),
-  the server is also restarted after fifteen idle minutes, which returns nearly
-  all of its memory, and a picture asked for during a restart waits for it
+  After fifteen idle minutes it asks the server to unload its models. A
+  server `mecha features enable image` installed has a timer,
+  `mecha-comfyui-idle`, that also restarts it after fifteen idle minutes; a
+  hand-built one gets the same timer, `mecha-comfyui-idle-reset`, from
+  `scripts/comfyui/install.sh`. The restart returns nearly all of its
+  memory, and a picture asked for during a restart waits for it
   instead of failing. An open ComfyUI page in a browser keeps a connection to
   the server and counts as use, so close it to let the memory go.
 - **Leaving copies on the image server.** The server's record of each job
