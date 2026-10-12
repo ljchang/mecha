@@ -1275,3 +1275,19 @@ fn the_closing_note_names_each_way_back() {
         "set apart from `Next:`, not a fourth item of it:\n{text}"
     );
 }
+
+/// `mecha system read` with a name that is not a measurement says so on
+/// stdout and exits non-zero. Its answer has no trailing newline and
+/// `exit_with` skips main's flush, so it once printed nothing (review of #660).
+#[test]
+fn a_refused_system_read_prints_why() {
+    let home = Home::new("system-read-refused");
+    let out = mecha(&home, &["system", "read", "disk.free"]);
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("No measurement is named"), "stdout: {text:?}");
+    assert!(
+        text.contains("disk.root.used"),
+        "the names are listed: {text}"
+    );
+}

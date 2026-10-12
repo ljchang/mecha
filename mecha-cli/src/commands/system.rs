@@ -247,6 +247,13 @@ fn read(name: Option<&str>, window: &str, by_category: bool) -> Result<()> {
         Utc::now(),
     )?;
     print!("{}", out.content);
+    if !out.content.ends_with('\n') {
+        println!();
+    }
+    // `exit_with` ends the process without main's flush: what was printed
+    // must be out first, or a refused name prints nothing (review of #660).
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
     if out.is_error {
         crate::exit_with(1);
     }
