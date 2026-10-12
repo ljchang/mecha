@@ -1152,6 +1152,9 @@ fn strip_voice_preamble(text: &str) -> &str {
     }
 }
 
+/// [`transcript_entries_with`] marking nothing: what a test reads when
+/// whether a tool defers is not its question. Every host marks (§8, §9).
+#[cfg(test)]
 pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
     transcript_entries_with(messages, &|_| false)
 }
