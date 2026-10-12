@@ -527,13 +527,14 @@ or reach getting any trust they do not already have?
   included, as the inline path marks it: the error can carry the server's own `error.message`,
   and one rule for every failure is the one that cannot be argued down. Only `not made:
   stopped`, the harness's answer to a Stop, is recorded not external.
-- **The call says which chat it is for.** Servers are spawned once, rooted at the host's
-  producer directory, and every chat's jail is a subdirectory of it (Slack's limit,
-  `ARCHITECTURE.md`). A background call's `params._meta` carries
-  `"mecha-factory.ai/workspace"`: `ToolCtx::workspace` relative to the server's root, never
-  anything the model supplied. **A workspace not under that root refuses the call** with an
-  error saying so. It is not silently omitted, which would let the server write where the chat
-  cannot see (the silently-degrading guard). The server re-proves containment on its side.
+- **The call says which chat it is for.** Servers are spawned once, in one directory, and the
+  chats they serve live under more than one: the assistant's under `work/web`, a persona's under
+  `work/persona`. So a background call's `params._meta` carries `"mecha-factory.ai/workspace"`:
+  `ToolCtx::workspace` as an absolute, canonical path, never anything the model supplied. **A
+  workspace that does not resolve refuses the call** with an error saying so. It is not
+  silently omitted, which would let the server write where the chat cannot see (the
+  silently-degrading guard). The server proves the folder is one it may write to. A confined
+  server sees only its mount, so a folder outside it fails there, loudly.
 - **A tool that defers says so.** `Tool::defers()`: `image_generate` and a background
   `McpTool`. The hosts read it for the two things that must key on the call, never the words:
   - the **restart repair** (`late.rs`): a deferring tool's orphaned `being made:` result is

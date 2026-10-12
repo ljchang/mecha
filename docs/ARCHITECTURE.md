@@ -4878,9 +4878,9 @@ tool in with `_meta: {"mecha-factory.ai/background": true}` on its
 - the job races the call against its own token and tells the server
   `notifications/cancelled`, so a server that ignores the notice cannot hold
   the line;
-- the call carries the chat's folder relative to the server's root
-  (`mecha-factory.ai/workspace`), and a chat outside that root is refused,
-  never sent without it.
+- the call carries the chat's folder, absolute and canonical, from the jail
+  (`mecha-factory.ai/workspace`), and a folder that does not resolve is
+  refused, never sent without it; the server proves it may write there.
 
 `Tool::defers` is what the hosts key on, never the words: the restart repair
 (a non-picture orphan reads `not made: the server restarted`, not external),

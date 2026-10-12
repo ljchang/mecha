@@ -599,7 +599,10 @@ enum Answer {
 pub const BACKGROUND_META: &str = "mecha-factory.ai/background";
 
 /// The `_meta` key a background call carries: the calling chat's workspace,
-/// relative to the directory the server was started in.
+/// as an absolute, canonical path. Absolute rather than relative to where the
+/// server was started: the assistant's chats live under one producer
+/// directory and a persona's under another, and a server spawned once has
+/// one root. The server proves the folder is somewhere it may write.
 pub const WORKSPACE_META: &str = "mecha-factory.ai/workspace";
 
 /// How long a background call may take before it is given up on, hosted as
@@ -610,33 +613,13 @@ pub const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// How long a Stop waits to tell the server, before it answers anyway.
 const CANCEL_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The chat's workspace relative to the server's root, or `None` when it is
-/// not under it — which refuses the call rather than letting the server
-/// write where the chat cannot see (§8). Canonical paths first, since either
-/// side may arrive through a symlink; the paths as given only when one does
-/// not resolve. Either way the answer is plain segments: a `..` anywhere is
-/// not "under the root", whatever `strip_prefix` makes of it.
-fn chat_folder(root: &Path, workspace: &Path) -> Option<String> {
-    use std::path::Component;
-    let relative = |root: &Path, ws: &Path| -> Option<String> {
-        let rest = ws.strip_prefix(root).ok()?;
-        if !rest
-            .components()
-            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
-        {
-            return None;
-        }
-        let rest = rest.to_string_lossy().to_string();
-        Some(if rest.is_empty() {
-            ".".to_string()
-        } else {
-            rest
-        })
-    };
-    match (root.canonicalize(), workspace.canonicalize()) {
-        (Ok(root), Ok(ws)) => relative(&root, &ws),
-        _ => relative(root, workspace),
-    }
+/// The chat's workspace as the call carries it (§8): canonical, from the
+/// jail. `None` when it does not resolve, which refuses the call rather than
+/// sending one the server could only guess a folder for.
+fn chat_folder(workspace: &Path) -> Option<String> {
+    let real = workspace.canonicalize().ok()?;
+    real.is_absolute()
+        .then(|| real.to_string_lossy().to_string())
 }
 
 struct McpTool {
@@ -711,13 +694,12 @@ impl McpTool {
     /// parameters, and nothing of the run.
     fn deferred_call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
         let name = self.local_name.clone();
-        // From the jail, never from the model's arguments; and a chat the
-        // server cannot reach is refused, never quietly sent without it.
-        let Some(folder) = chat_folder(&self.client.workspace, &ctx.workspace) else {
+        // From the jail, never from the model's arguments; and a chat whose
+        // folder does not resolve is refused, never quietly sent without it.
+        let Some(folder) = chat_folder(&ctx.workspace) else {
             return ToolOutput::err(format!(
-                "Not run: `{name}` writes into this chat's folder, and this chat's folder is not \
-                 inside the one its server was started in, so its result could not reach this \
-                 chat."
+                "Not run: `{name}` writes into this chat's folder, and this chat's folder could \
+                 not be found, so its result could not reach this chat."
             ));
         };
         let params = json!({
@@ -1259,19 +1241,38 @@ for line in sys.stdin:
         let calls = slow.calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(
-            calls[0]["params"]["_meta"][WORKSPACE_META], "chat-1",
-            "the chat's folder, relative to the server's root"
+            calls[0]["params"]["_meta"][WORKSPACE_META],
+            slow.root.join("chat-1").to_string_lossy().as_ref(),
+            "the chat's folder, absolute and canonical, from the jail"
         );
         assert_eq!(calls[0]["params"]["name"], "render");
     }
 
+    /// A folder outside the server's root still travels — a persona's chats
+    /// live under another producer directory — and one that does not resolve
+    /// is refused before anything is sent.
     #[tokio::test]
-    async fn a_chat_outside_the_servers_root_is_refused_and_nothing_is_sent() {
+    async fn a_chat_folder_that_does_not_resolve_is_refused_and_nothing_is_sent() {
         let slow = Slow::start("outside").await;
-        let elsewhere = std::env::temp_dir();
+        let elsewhere = std::env::temp_dir().canonicalize().unwrap();
         let out = slow
             .tool("render")
-            .call(json!({"mode": "ok"}), &slow.ctx(elsewhere))
+            .call(json!({"mode": "ok"}), &slow.ctx(elsewhere.clone()))
+            .await
+            .unwrap();
+        let job = out
+            .deferred
+            .expect("a folder outside the root is still a folder");
+        crate::jobs::run_inline(&job, None).await;
+        assert_eq!(
+            slow.calls()[0]["params"]["_meta"][WORKSPACE_META],
+            elsewhere.to_string_lossy().as_ref()
+        );
+
+        let gone = slow.root.join("no-such-chat");
+        let out = slow
+            .tool("render")
+            .call(json!({"mode": "ok"}), &slow.ctx(gone))
             .await
             .unwrap();
         assert!(
@@ -1280,7 +1281,7 @@ for line in sys.stdin:
         );
         assert!(out.deferred.is_none());
         assert!(out.content.starts_with("Not run:"), "{}", out.content);
-        assert!(slow.calls().is_empty());
+        assert_eq!(slow.calls().len(), 1, "only the first call was sent");
     }
 
     #[tokio::test]
@@ -1417,23 +1418,12 @@ for line in sys.stdin:
     }
 
     #[test]
-    fn a_chat_folder_is_relative_to_the_root_or_nothing() {
-        let root = Path::new("/srv/mecha/work/web");
-        assert_eq!(
-            chat_folder(root, Path::new("/srv/mecha/work/web/chat-9")).as_deref(),
-            Some("chat-9")
-        );
-        assert_eq!(chat_folder(root, root).as_deref(), Some("."));
-        assert_eq!(chat_folder(root, Path::new("/srv/mecha/work/webby")), None);
-        assert_eq!(chat_folder(root, Path::new("/elsewhere")), None);
-        // Lexically under the root and really beside it (review of #666).
-        assert_eq!(
-            chat_folder(root, Path::new("/srv/mecha/work/web/../other")),
-            None
-        );
-        assert_eq!(
-            chat_folder(root, Path::new("/srv/mecha/work/web/chat-1/../../x")),
-            None
-        );
+    fn a_chat_folder_is_canonical_or_nothing() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let sub = root.join(format!("mecha-chat-folder-{}", std::process::id()));
+        std::fs::create_dir_all(&sub).unwrap();
+        let dotted = sub.join("..");
+        assert_eq!(chat_folder(&dotted).as_deref(), root.to_str());
+        assert_eq!(chat_folder(&root.join("mecha-no-such-dir-at-all")), None);
     }
 }
