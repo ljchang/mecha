@@ -6,8 +6,12 @@
 //! owner's renderer drawing a model-drafted spec over the owner's rows, and a
 //! spec that slipped a destination past the walker must still have nowhere
 //! to send it. So the browser runs inside `bwrap --unshare-all`: no network
-//! namespace but its own loopback, no home, no `~/.mecha`, the bundle
-//! read-only and one output directory. Inside, `mecha hud render-inside`
+//! namespace but its own loopback, and of this machine's files only four
+//! binds — the browser's own directory (Playwright's, under the home, when
+//! that is where it is), the bundle read-only and one output directory (both
+//! in the store's scratch space), and this binary — beside the read-only
+//! system. Nothing else of the home, so no `~/.mecha`, no keys, no
+//! transcripts. Inside, `mecha hud render-inside`
 //! serves the bundle on that loopback under the interactive class's CSP and
 //! runs the browser at it — the factory's policy, so what renders here is
 //! what a published page renders. Chromium's own sandbox is off inside
@@ -153,6 +157,17 @@ impl Renderer {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         let mut child = cmd.spawn().context("starting the render's sandbox")?;
+        // Drained while it runs: a chatty browser filling an unread pipe
+        // blocks, and a working render would read as a timeout (review of
+        // #662).
+        let stderr = child.stderr.take().map(|mut e| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = e.read_to_end(&mut buf);
+                let keep = buf.len().saturating_sub(16 * 1024);
+                String::from_utf8_lossy(&buf[keep..]).into_owned()
+            })
+        });
         let started = Instant::now();
         let status = loop {
             if let Some(status) = child.try_wait()? {
@@ -165,10 +180,7 @@ impl Renderer {
             }
             std::thread::sleep(Duration::from_millis(100));
         };
-        let mut err = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.by_ref().take(16 * 1024).read_to_string(&mut err);
-        }
+        let err = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
         let shot = out.join("shot.png");
         if !status.success() || !shot.is_file() {
             let tail: String = err

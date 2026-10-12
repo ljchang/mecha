@@ -567,9 +567,16 @@ impl Tool for HudPreview {
             // waiting proposal first, else the installed one — which is what
             // a model that has just checked a draft asks for (2026-10-12
             // trial). `id` alone returns its files, to revise.
+            // A waiting proposal drawn by id carries the taint of the
+            // conversation that wrote it, as `current()` carries it for its
+            // text (review of #662).
+            let mut proposed_outside = false;
             let draft = if only_id && wants_look && look.is_some() {
                 match draft_by_id(&store, &id) {
-                    Ok(Some(draft)) => draft,
+                    Ok(Some((draft, outside))) => {
+                        proposed_outside = outside;
+                        draft
+                    }
                     Ok(None) => {
                         return Ok(ToolOutput::err(format!(
                             "No dashboard or proposal named {id:?} to draw; pass `spec` and \
@@ -632,7 +639,7 @@ impl Tool for HudPreview {
                 Some(block) => result.with_image(block),
                 None => result,
             };
-            Ok(if preview.external() {
+            Ok(if preview.external() || proposed_outside {
                 result.from_outside()
             } else {
                 result
@@ -666,9 +673,12 @@ fn draw(
 }
 
 /// The draft under `id`: a waiting proposal first, else the installed board.
-fn draft_by_id(store: &Store, id: &str) -> std::result::Result<Option<Draft>, String> {
+/// The bool is whether its text came from outside — a proposal not from a
+/// clean conversation (an unreadable record loads untrusted); an installed
+/// board passed the owner's review.
+fn draft_by_id(store: &Store, id: &str) -> std::result::Result<Option<(Draft, bool)>, String> {
     match store.proposal(id) {
-        Ok(Some(Ok(p))) => return Ok(Some(p.draft)),
+        Ok(Some(Ok(p))) => return Ok(Some((p.draft, p.meta.origin != Origin::ModelClean))),
         Ok(Some(Err(r))) => {
             return Err(format!(
                 "A proposal `{id}` is waiting but no longer passes its checks:\n{r}"
@@ -677,7 +687,10 @@ fn draft_by_id(store: &Store, id: &str) -> std::result::Result<Option<Draft>, St
         Ok(None) => {}
         Err(e) => return Err(format!("The proposal `{id}` could not be read: {e:#}")),
     }
-    store.board_draft(id).map_err(|e| format!("{e:#}"))
+    store
+        .board_draft(id)
+        .map(|d| d.map(|d| (d, false)))
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// A dashboard's current files: a waiting proposal first — it is the newer

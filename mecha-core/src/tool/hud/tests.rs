@@ -425,6 +425,12 @@ async fn look_is_offered_only_where_given_and_says_why_not() {
         "a preview of the waiting proposal: {}",
         out.content
     );
+    // The proposal above ran with no taint record, which loads untrusted, so
+    // its drawing carries that origin as `id` alone does (review of #662).
+    assert!(
+        out.external,
+        "a proposal not from a clean conversation is from outside"
+    );
     assert!(out.content.contains("(No picture: "), "{}", out.content);
 }
 

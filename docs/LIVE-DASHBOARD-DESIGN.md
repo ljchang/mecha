@@ -605,8 +605,10 @@ the door as `image_view`'s are. It is offered only to a model that can see:
 other model the schema has no `look`. The render (`hud::render`) assembles
 the draft as a publish does — the vendored renderer and the checked spec —
 with the preview's rows as `./data/`. It runs the browser inside
-`bwrap --unshare-all`: no network but the sandbox's own loopback, nothing of
-the home bound, the bundle and this binary read-only, one output directory.
+`bwrap --unshare-all`: no network but the sandbox's own loopback. Of the
+home it binds only four paths: the browser's own directory, the bundle
+read-only, one output directory, and this binary. Nothing else, so no
+`~/.mecha` as a whole, no keys and no transcripts.
 Inside, the hidden `mecha hud render-inside` serves the bundle on that
 loopback under the interactive CSP (`publish::interactive_csp`, the one
 definition the outbox's preview origin also uses) and runs

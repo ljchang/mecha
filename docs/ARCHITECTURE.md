@@ -5994,8 +5994,10 @@ the owner's rulings; this section is the invariants a change to
   generations monotonic, and the publish markers.
 - **A preview's picture is drawn with no network, by the kernel**
   (`hud::render`, step 6). The browser runs inside `bwrap --unshare-all`,
-  served the bundle on the sandbox's own loopback under the interactive CSP,
-  with nothing of the home bound. Without `bwrap` or a browser there is no
+  served the bundle on the sandbox's own loopback under the interactive CSP.
+  Of the home it binds only the browser's own directory, the bundle and the
+  output directory (both in the store's scratch space) and this binary;
+  never `~/.mecha` as a whole, keys or transcripts. Without `bwrap` or a browser there is no
   picture, said; there is never an unconfined fallback. `look` is offered
   only to a model that can see, on `image_view`'s rule.
 - **The renderer is ours, and nothing agent-authored executes in it**
