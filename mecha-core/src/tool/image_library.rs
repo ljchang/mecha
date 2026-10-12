@@ -34,6 +34,13 @@
 //! is bounded instead: names cannot collide with any existing entry, and past
 //! [`crate::imagelib::MAX_PENDING`] candidates it refuses. Its `origin` is
 //! recorded from the conversation's taint, never from what the model says.
+//!
+//! In an incognito chat it stages **locked** (`ToolCtx::stage_locked`), on
+//! `persona_propose`'s footing (`docs/INCOGNITO-DESIGN.md` R3, the owner's
+//! ruling of 2026-10-12): the candidate is hidden behind the library lock
+//! until the owner unlocks it, so it is a write the owner keeps on purpose,
+//! not a trace of the room. The schema has no `locked` field, so the model
+//! cannot ask its way out of the lock — nor into one elsewhere.
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::imagelib::{self, Kind, Library, NewEntry, Origin, Status};
@@ -306,7 +313,7 @@ impl Tool for ImageLibraryPropose {
             (Kind::Style, Some(_)) => return Ok(ToolOutput::err("A style has no portrait.")),
             (Kind::Style, None) => None,
         };
-        let origin = Origin::of_proposal(ctx.taint.as_ref());
+        let (origin, locked) = (Origin::of_proposal(ctx.taint.as_ref()), ctx.stage_locked);
         let made = imagelib::create(
             &self.dir,
             NewEntry {
@@ -316,15 +323,20 @@ impl Tool for ImageLibraryPropose {
                 portrait,
                 source_seed: input.get("seed").and_then(Value::as_u64),
                 origin,
-                locked: false,
+                locked,
             },
         );
         match made {
             Ok(entry) => {
                 debug_assert_eq!(entry.status, Status::Candidate);
+                let hidden = if entry.locked {
+                    " It is hidden behind the library lock until unlocked."
+                } else {
+                    ""
+                };
                 Ok(ToolOutput::ok(format!(
                     "Proposed the {} `{}`. It waits for the owner's approval (`mecha imagelib \
-                     approve {}`, or the web library) and cannot be used until then.",
+                     approve {}`, or the web library) and cannot be used until then.{hidden}",
                     kind.label(),
                     entry.name,
                     entry.name
@@ -383,6 +395,8 @@ mod tests {
         assert_eq!(e.status, Status::Candidate);
         assert_eq!(e.origin, Origin::ModelClean);
         assert_eq!(e.source_seed, Some(42));
+        assert!(!e.locked, "an ordinary chat stages unlocked");
+        assert!(!out.content.contains("library lock"), "{}", out.content);
 
         let list = ImageLibrary::new(lib.clone())
             .call(json!({}), &ctx(&ws, None))
@@ -407,6 +421,48 @@ mod tests {
             !list.external,
             "the owner's own text is not third-party content"
         );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    #[tokio::test]
+    async fn an_incognito_proposal_stages_locked() {
+        let lib = scratch();
+        let ws = scratch();
+        std::fs::create_dir_all(ws.join("images")).unwrap();
+        std::fs::write(ws.join("images/p.png"), png()).unwrap();
+        let propose = ImageLibraryPropose::new(lib.clone());
+        let incognito = ToolCtx {
+            stage_locked: true,
+            ..ctx(&ws, None)
+        };
+        // A `locked: false` the model sends is not a field the tool reads.
+        let out = propose
+            .call(
+                json!({"kind": "character", "name": "noor", "text": "noor, short and wiry",
+                       "portrait": "images/p.png", "locked": false}),
+                &incognito,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("library lock"), "{}", out.content);
+        let out = propose
+            .call(
+                json!({"kind": "style", "name": "dusk", "text": "low warm light"}),
+                &incognito,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let (loaded, _) = Library::load(&lib);
+        for (kind, name) in [(Kind::Character, "noor"), (Kind::Style, "dusk")] {
+            let e = loaded.get(kind, name).unwrap();
+            assert!(e.locked, "{name} staged unlocked");
+            assert_eq!(e.status, Status::Candidate);
+            // An unstamped taint is untrusted.
+            assert_eq!(e.origin, Origin::ModelUntrusted);
+        }
         std::fs::remove_dir_all(lib).ok();
         std::fs::remove_dir_all(ws).ok();
     }
