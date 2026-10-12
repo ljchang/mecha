@@ -768,19 +768,19 @@ fn read_manifest(ws: &std::path::Path, png: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&text).ok()
 }
 
-/// Refuse a key the library must not be written from: an incognito room
-/// writes nothing outside itself, and saving to the library would.
-fn refuse_incognito(key: &str) -> Option<Response> {
-    if !super::chat::valid_key(key) {
-        return Some((StatusCode::BAD_REQUEST, "bad session key\n").into_response());
-    }
-    super::incognito::is_incognito_key(key).then(|| {
-        (
-            StatusCode::FORBIDDEN,
-            "an incognito chat cannot save to the library\n",
-        )
-            .into_response()
-    })
+/// Refuse a key that is not a session key at all.
+fn refuse_bad_key(key: &str) -> Option<Response> {
+    (!super::chat::valid_key(key))
+        .then(|| (StatusCode::BAD_REQUEST, "bad session key\n").into_response())
+}
+
+/// Whether a save lands locked. An incognito chat's always does, whatever
+/// the box said (`docs/INCOGNITO-DESIGN.md` R3, the owner's ruling of
+/// 2026-10-12): the character is the owner's to keep, hidden behind the
+/// library lock until unlocked, as `persona_propose` stages a persona from
+/// the same room. The page shows the box checked and fixed; this is the rule.
+fn save_locked(key: &str, asked: bool) -> bool {
+    asked || super::incognito::is_incognito_key(key)
 }
 
 /// GET /api/library/source?key&path — what the save dialog starts from: the
@@ -788,7 +788,7 @@ fn refuse_incognito(key: &str) -> Option<Response> {
 /// is locked — the lock box starts checked when one is (the owner's ruling:
 /// inherited by default, overridable).
 pub async fn source(State(state): St, Query(q): Query<SourceQuery>) -> Response {
-    if let Some(refusal) = refuse_incognito(&q.key) {
+    if let Some(refusal) = refuse_bad_key(&q.key) {
         return refusal;
     }
     let ws = match super::chat::attachment_workspace(&state, &q.key, false).await {
@@ -840,9 +840,10 @@ pub struct SaveBody {
 /// copied in now through the path jail (a chat's files are served only while
 /// it is open, so a pointer would not survive), the seed read from its
 /// manifest, and `mecha imagelib add-character` does the rest. The owner's
-/// own act, so the entry is approved on creation.
+/// own act, so the entry is approved on creation — locked when it comes from
+/// an incognito chat ([`save_locked`]).
 pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
-    if let Some(refusal) = refuse_incognito(&body.key) {
+    if let Some(refusal) = refuse_bad_key(&body.key) {
         return refusal;
     }
     if imagelib::validate_name(&body.name).is_err() {
@@ -930,7 +931,7 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
     if let Some(seed) = &seed {
         args.extend(["--seed", seed]);
     }
-    if body.locked {
+    if save_locked(&body.key, body.locked) {
         args.push("--locked");
     }
     let response = super::review::verb(&state, &args).await;
@@ -1567,9 +1568,20 @@ mod route_tests {
         );
     }
 
+    #[test]
+    fn an_incognito_save_is_locked_whatever_the_box_says() {
+        let incognito = "incognito-0123456789abcdef012345";
+        assert!(save_locked(incognito, false));
+        assert!(save_locked(incognito, true));
+        assert!(!save_locked("main", false));
+        assert!(save_locked("main", true));
+    }
+
     #[tokio::test]
-    async fn an_incognito_chat_cannot_save_or_look_up_a_source() {
-        let f = fixture();
+    async fn an_incognito_key_reaches_the_save_and_source_routes() {
+        // No such chat is open, so each answers as any unknown chat does —
+        // the point is that neither refuses the key for being incognito.
+        let f = fixture_with(Some(super::super::chat::test_chat()));
         let r = f
             .app
             .clone()
@@ -1580,7 +1592,7 @@ mod route_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
         let r = f
             .app
             .clone()
@@ -1589,7 +1601,14 @@ mod route_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = f
+            .app
+            .clone()
+            .oneshot(get("/api/library/source?key=..%2Fx&path=images/a.png"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

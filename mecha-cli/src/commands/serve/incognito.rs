@@ -48,7 +48,7 @@ pub fn new_key() -> String {
 }
 
 /// Builtins an incognito chat may call. Everything that writes stays in the
-/// room; search reaches a search engine, which the page says before the
+/// room but the two proposers at the end, which stage locked; search reaches a search engine, which the page says before the
 /// first search (R4). `shell` and `image_generate` are here conditionally
 /// ([`withheld`]): each only where what it leaves outside the room can be
 /// taken back.
@@ -66,13 +66,15 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "http_fetch",
     "image_generate",
     "image_view",
-    // Reads the owner's library and writes nothing; proposing an entry
-    // (`image_library_propose`) writes outside the room, so it stays out.
+    // Reads the owner's library and writes nothing.
     "image_library",
-    // The one writer outside the room on purpose (the owner's ruling,
-    // 2026-10-01): a persona proposed here is staged locked — the chat's
-    // `ToolCtx::stage_locked` — and waits on the Personas page, hidden
-    // until unlocked. These will mostly be locked profiles.
+    // The two writers outside the room on purpose, each staging only a
+    // candidate locked — the chat's `ToolCtx::stage_locked` — that waits
+    // for the owner's approval, hidden until unlocked: a persona on the
+    // Personas page (the owner's ruling, 2026-10-01: "these will likely be
+    // locked profiles"), and a character or style in the image library
+    // (2026-10-12), so a persona proposed here can have a portrait.
+    "image_library_propose",
     "persona_propose",
 ];
 
@@ -521,8 +523,6 @@ mod tests {
                 "a_tool_added_tomorrow",
                 "docs__docs_read",
                 "http_fetch",
-                // Read-only, but it writes a candidate outside the room.
-                "image_library_propose",
                 "kg_search",
                 "mail__calendar_create_event",
                 "mail__mail_send",
