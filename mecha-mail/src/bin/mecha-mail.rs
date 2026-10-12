@@ -68,7 +68,7 @@ enum Command {
         paste: bool,
         /// A Google Desktop client's downloaded JSON, in place of
         /// --client-id and --client-secret. Google only.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["client_id", "client_secret"])]
         client_json: Option<std::path::PathBuf>,
     },
     /// Download a span of mail for analysis — envelope and preview only.
@@ -1152,8 +1152,6 @@ fn month_windows(since: &str) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-/// Load the registry, or start an empty one — `auth` and `import` are how
-/// the file comes to exist.
 /// A Google Desktop client's downloaded JSON as a client configuration.
 fn google_client_file(path: &std::path::Path) -> Result<ClientConfig> {
     let text =
@@ -1371,6 +1369,8 @@ fn ask_account(
     Ok((name, provider))
 }
 
+/// Load the registry, or start an empty one — `auth` and `import` are how
+/// the file comes to exist.
 fn load_or_empty() -> Result<accounts::AccountsFile> {
     match accounts::file_path()?.exists() {
         true => accounts::load(),
@@ -1939,6 +1939,18 @@ mod tests {
         .unwrap();
         assert_eq!(got.client_id, id);
         assert_eq!(got.tenant.as_deref(), Some("common"));
+        // The four Entra steps share one page, which is opened once.
+        let opened = std::cell::Cell::new(0);
+        let input = format!("{}{id}\n\n", "\n".repeat(steps));
+        register_own_app(
+            &mut std::io::Cursor::new(input),
+            Provider::Outlook,
+            None,
+            std::time::SystemTime::now(),
+            &|_| opened.set(opened.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(opened.get(), 1);
         assert!(got.client_secret.is_empty());
     }
 }

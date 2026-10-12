@@ -22,10 +22,12 @@
 //!
 //! **Rotating it is a release.** Google lets a client hold two secrets at
 //! once: add the new one, ship it here, then disable the old. A grant belongs
-//! to the client id, so signed-in accounts carry on; a build older than the
-//! release stops refreshing until it is updated (or is given `--client-id`
-//! and `--client-secret`). A suspended project would need a new client and a
-//! release, and every account signing in again.
+//! to the client id, and a stored grant made with this client refreshes with
+//! *this build's* secret ([`secret_for`]), never the copy saved beside it — so
+//! signed-in accounts carry on through a rotation on an updated build, and a
+//! build older than the release stops refreshing until it is updated. A
+//! suspended project would need a new client and a release, and every account
+//! signing in again.
 
 /// A Google desktop client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +41,13 @@ pub const GOOGLE_DOCS: GoogleClient = GoogleClient {
     id: "949095882298-1d4ige7ae32hihgc6k86seo4fojg13h8.apps.googleusercontent.com",
     secret: "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",
 };
+
+/// The secret to send for `client_id`: this build's, when the id is the
+/// shipped client, so a rotated secret reaches grants saved before it; `None`
+/// for any other client, whose stored secret is the only one there is.
+pub fn secret_for(client_id: &str) -> Option<&'static str> {
+    (client_id == GOOGLE_DOCS.id).then_some(GOOGLE_DOCS.secret)
+}
 
 /// Open `url` in the person's browser, if this machine has one to open.
 /// Returns whether a browser was launched. The URL is always printed by the

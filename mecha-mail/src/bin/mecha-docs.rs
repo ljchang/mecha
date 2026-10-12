@@ -46,7 +46,7 @@ enum Command {
         #[arg(long, env = "MECHA_DOCS_CLIENT_SECRET")]
         client_secret: Option<String>,
         /// Read the client id and secret from a downloaded client JSON.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["client_id", "client_secret"])]
         client_json: Option<std::path::PathBuf>,
         #[command(flatten)]
         capture: Capture,
@@ -186,7 +186,12 @@ fn resolve_client(
     // refusal, not a first sign-in (review of #663).
     if path.exists() {
         let s = stored()?;
-        return Ok((s.client_id, s.client_secret));
+        // The shipped client signs in again with this build's secret, so a
+        // rotation reaches a re-auth too (`builtin::secret_for`).
+        let secret = mecha_mail::builtin::secret_for(&s.client_id)
+            .map(str::to_string)
+            .unwrap_or(s.client_secret);
+        return Ok((s.client_id, secret));
     }
     let builtin = mecha_mail::builtin::GOOGLE_DOCS;
     Ok((builtin.id.to_string(), builtin.secret.to_string()))
@@ -279,10 +284,18 @@ fn begin(
     picker: bool,
     capture: &Capture,
 ) -> Result<String> {
-    // The picker leg carries no PKCE of its own, so state is the only thing
-    // pairing the callback with this attempt.
+    // PKCE, so a code seen in transit is worth nothing without the verifier
+    // this attempt keeps: the client's id and secret are public (review of
+    // #663). State pairs the callback with the attempt besides.
+    let pkce = mecha_mail::google::auth::generate_pkce();
     let state = mecha_mail::google::auth::generate_pkce().code_verifier;
-    let url = docs::build_auth_url(&client_id, capture.port, &state, picker);
+    let url = docs::build_auth_url(
+        &client_id,
+        capture.port,
+        &state,
+        picker,
+        &pkce.code_challenge,
+    );
     docs::save_pending(
         account,
         &docs::PendingConsent {
@@ -292,6 +305,7 @@ fn begin(
             client_secret,
             port: capture.port,
             started_at: chrono::Utc::now().to_rfc3339(),
+            code_verifier: pkce.code_verifier,
         },
     )?;
     Ok(url)
@@ -315,6 +329,7 @@ async fn finish(
         &pending.client_id,
         &pending.client_secret,
         &redirect.code,
+        &pending.code_verifier,
         pending.port,
         &mecha_mail::http::client(),
     )

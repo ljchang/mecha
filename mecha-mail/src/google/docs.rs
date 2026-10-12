@@ -139,7 +139,16 @@ pub struct TokenResponse {
 /// with any other scope** — Google rejects the request. That is why this is
 /// its own flow rather than an argument to the ordinary one, and part of why
 /// the documents grant wants its own Cloud project.
-pub fn build_auth_url(client_id: &str, port: u16, state: &str, picker: bool) -> String {
+///
+/// `code_challenge` is PKCE's S256 challenge: the client is public, so the
+/// verifier the attempt keeps is what makes an intercepted code worthless.
+pub fn build_auth_url(
+    client_id: &str,
+    port: u16,
+    state: &str,
+    picker: bool,
+    code_challenge: &str,
+) -> String {
     let redirect = format!("http://127.0.0.1:{port}/callback");
     let mut params = vec![
         ("client_id", client_id),
@@ -149,6 +158,8 @@ pub fn build_auth_url(client_id: &str, port: u16, state: &str, picker: bool) -> 
         ("redirect_uri", &redirect),
         ("scope", SCOPE),
         ("state", state),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", "S256"),
     ];
     if picker {
         params.extend([
@@ -197,6 +208,10 @@ pub struct PendingConsent {
     /// to fail that has to be kept in step with the first.
     #[serde(default)]
     pub started_at: String,
+    /// PKCE's verifier for this attempt. Empty in a record written before
+    /// PKCE, which then exchanges without one, as it began.
+    #[serde(default)]
+    pub code_verifier: String,
 }
 
 /// Where a half-finished attempt is recorded. Beside the grant it will become,
@@ -389,21 +404,22 @@ pub async fn exchange_code(
     client_id: &str,
     client_secret: &str,
     code: &str,
+    code_verifier: &str,
     port: u16,
     client: &reqwest::Client,
 ) -> Result<TokenResponse, MailError> {
     let redirect = format!("http://127.0.0.1:{port}/callback");
-    let resp = client
-        .post(TOKEN_URL)
-        .form(&[
-            ("code", code),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("redirect_uri", redirect.as_str()),
-            ("grant_type", "authorization_code"),
-        ])
-        .send()
-        .await?;
+    let mut form = vec![
+        ("code", code),
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("redirect_uri", redirect.as_str()),
+        ("grant_type", "authorization_code"),
+    ];
+    if !code_verifier.is_empty() {
+        form.push(("code_verifier", code_verifier));
+    }
+    let resp = client.post(TOKEN_URL).form(&form).send().await?;
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
     if status >= 400 {
@@ -1024,7 +1040,16 @@ mod tests {
     /// the flow outright, at the one moment a human is watching a browser.
     #[test]
     fn picker_url_requests_the_picker_and_exactly_one_scope() {
-        let url = build_auth_url("cid.apps.googleusercontent.com", 8765, "st4te", true);
+        let url = build_auth_url(
+            "cid.apps.googleusercontent.com",
+            8765,
+            "st4te",
+            true,
+            "ch4l",
+        );
+        // PKCE rides on the chooser leg too (review of #663).
+        assert!(url.contains("code_challenge=ch4l"), "{url}");
+        assert!(url.contains("code_challenge_method=S256"), "{url}");
         assert!(url.contains("trigger_onepick=true"));
         assert!(url.contains("allow_folder_selection=true"));
         assert!(url.contains("drive.file"));
@@ -1050,7 +1075,8 @@ mod tests {
     /// and `pick` would be extending a scope this token cannot see.
     #[test]
     fn consent_without_the_picker_omits_the_trigger() {
-        let url = build_auth_url("cid", 8765, "st", false);
+        let url = build_auth_url("cid", 8765, "st", false, "c");
+        assert!(url.contains("code_challenge=c&"), "{url}");
         assert!(!url.contains("trigger_onepick"));
         assert!(!url.contains("allow_folder_selection"));
         assert!(url.contains("drive.file"));
