@@ -109,7 +109,7 @@
     <div class="pqhead">In line: {items.length}</div>
     {#if running}
       <div class="pqrow on">
-        <span class="pqstate">drawing</span>
+        <span class="pqstate">{running.tool === 'image_generate' ? 'drawing' : 'running'}</span>
         <span class="pqlabel" title={running.label}>{running.label || running.tool}</span>
         <span class="pqclock">{clock((running.elapsed_ms ?? 0) + (now - seenAt))}</span>
         <button class="pqbtn stop" onclick={() => oncancel(running.call_id)} aria-label="stop this one">Stop</button>

@@ -1,15 +1,19 @@
 <script>
-  // A clip under its tool row (docs/BACKGROUND-JOBS-DESIGN.md §8). Fetched as
-  // a blob and played from an object URL: the chat's file route keeps serving
-  // only pictures inline, and a phone needs no range requests. The URL is
-  // revoked when the clip changes or the row goes, or a long chat would hold
-  // every clip it ever showed in memory.
+  // A clip under its tool row (docs/BACKGROUND-JOBS-DESIGN.md §8). Fetched
+  // only when the owner presses play: the transcript renders whole, and a
+  // clip, unlike a picture, can be tens of megabytes, so a long chat must not
+  // pull every clip in its scrollback at mount (review of #666, pass 4).
+  // Fetched as a blob and played from an object URL: the chat's file route
+  // keeps serving only pictures inline, and a phone needs no range requests.
+  // The URL is revoked when the clip changes or the row goes.
   let { src } = $props();
+  let wanted = $state(false);
   let url = $state(null);
   let failed = $state(false);
 
   $effect(() => {
     const at = src;
+    if (!wanted) return;
     let made = null;
     let live = true;
     url = null;
@@ -34,11 +38,14 @@
 
 {#if url}
   <!-- svelte-ignore a11y_media_has_caption -->
-  <video class="genclip" src={url} controls playsinline preload="metadata"></video>
+  <video class="genclip" src={url} controls playsinline autoplay></video>
 {:else if failed}
   <span class="clipnote">the clip could not be loaded</span>
-{:else}
+  <button class="clipplay" onclick={() => { wanted = false; wanted = true; }}>Try again</button>
+{:else if wanted}
   <span class="clipnote">loading the clip…</span>
+{:else}
+  <button class="clipplay" onclick={() => (wanted = true)}>▶ Play the clip</button>
 {/if}
 
 <style>
@@ -55,5 +62,16 @@
     margin: 4px 0;
     font-size: 0.85em;
     opacity: 0.7;
+  }
+  .clipplay {
+    display: block;
+    margin: 6px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
   }
 </style>

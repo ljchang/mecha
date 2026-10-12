@@ -477,7 +477,14 @@ impl McpClient {
                     .get("_meta")
                     .and_then(|m| m.get(BACKGROUND_META))
                     .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    // A tool that can send where the model says is never a
+                    // job (the loop's "a sender is never deferred"), so it is
+                    // not one here either: kept on the 120 s request a hung
+                    // sender always had, never the background bound (review
+                    // of #666, pass 4).
+                    && !hint("openWorldHint")
+                    && self.forced.egress != Egress::Chosen;
 
                 Some(Arc::new(McpTool {
                     background,
@@ -629,8 +636,11 @@ const CANCEL_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// sending one the server could only guess a folder for.
 fn chat_folder(workspace: &Path) -> Option<String> {
     let real = workspace.canonicalize().ok()?;
+    // Refused rather than handed over mangled: a lossy path names a folder
+    // that does not exist (review of #666, pass 4).
     real.is_absolute()
-        .then(|| real.to_string_lossy().to_string())
+        .then(|| real.to_str().map(str::to_string))
+        .flatten()
 }
 
 #[derive(Clone)]
@@ -1164,7 +1174,10 @@ for line in sys.stdin:
         result = {"tools": [
             {"name": "render", "description": "slow", "inputSchema": {"type": "object"},
              "_meta": {"mecha-factory.ai/background": True}},
-            {"name": "quick", "description": "fast", "inputSchema": {"type": "object"}}]}
+            {"name": "quick", "description": "fast", "inputSchema": {"type": "object"}},
+            {"name": "sender", "description": "sends", "inputSchema": {"type": "object"},
+             "annotations": {"openWorldHint": True},
+             "_meta": {"mecha-factory.ai/background": True}}]}
     elif method == "tools/call":
         mode = msg["params"].get("arguments", {}).get("mode", "ok")
         if mode == "hang":
@@ -1263,6 +1276,9 @@ for line in sys.stdin:
         let render = slow.tool("render");
         assert!(render.defers(), "the server's _meta opts the tool in");
         assert!(!slow.tool("quick").defers(), "and only that tool");
+        // A tool that can send where the model says is never a job, whatever
+        // its _meta asks: it keeps the 120 s request (review of #666, pass 4).
+        assert!(!slow.tool("sender").defers());
 
         let out = render
             .call(json!({"mode": "ok"}), &slow.ctx(slow.root.join("chat-1")))
