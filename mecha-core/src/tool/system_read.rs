@@ -341,10 +341,20 @@ fn models(
         }
         return Ok(ToolOutput::ok(out));
     }
-    let Some(rows) = window::models_window(db, window, now)? else {
-        return Ok(ToolOutput::ok(
-            "Model servers: the series does not exist yet.",
-        ));
+    let rows = match window::models_window(db, window, now)? {
+        None => {
+            return Ok(ToolOutput::ok(
+                "Model servers: the series does not exist yet.",
+            ))
+        }
+        // Kept apart from a quiet window (review of #660).
+        Some(window::ModelRows::OlderSampler) => {
+            return Ok(ToolOutput::ok(
+                "Model servers: the series was written by a sampler older than the model \
+                 rows; they are recorded from the next sample.",
+            ))
+        }
+        Some(window::ModelRows::Rows { servers }) => servers,
     };
     let _ = writeln!(
         out,
@@ -352,6 +362,9 @@ fn models(
         window.name(),
         zone_name(tz)
     );
+    if rows.is_empty() {
+        out.push_str("No model server recorded a minute in this window.\n");
+    }
     for r in &rows {
         let _ = writeln!(out, "- {}", model_window(r, tz));
     }

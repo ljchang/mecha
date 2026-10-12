@@ -98,9 +98,10 @@ pub struct Summary {
     pub buckets: Vec<Bucket>,
 }
 
-/// What a window read found.
+/// What a window read found. Tagged, so a `--json` reader can tell a
+/// refusal by name from a machine without the thing (review of #660).
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum Windowed {
     One(Summary),
     /// One summary per kind of work, and the kinds withheld (R7).
@@ -124,8 +125,79 @@ pub enum Windowed {
 /// read over a window — `voice.live`, the voice category, the speech
 /// models' rows. Every caller of this module gets it, so a later `--json`
 /// or a second reader cannot leak call timing by forgetting (review of #660).
+///
+/// Exhaustive, so a new measurement decides rather than defaulting to
+/// readable — the next one that moves with a call must be named here
+/// (review of #660).
 pub fn withheld_over_a_window(m: Measurement) -> bool {
-    m == Measurement::VoiceLive
+    match m {
+        Measurement::VoiceLive => true,
+        Measurement::MemoryTotal
+        | Measurement::MemoryAvailable
+        | Measurement::MemorySwapUsed
+        | Measurement::MemoryOomKills
+        | Measurement::MemoryOomKillsGlobal
+        | Measurement::MemoryOomKillsCapped
+        | Measurement::CpuBusy
+        | Measurement::CpuCores
+        | Measurement::CpuLoad1m
+        | Measurement::CpuTasks
+        | Measurement::CpuTemperature
+        | Measurement::PressureCpuAvg10
+        | Measurement::PressureCpuAvg60
+        | Measurement::PressureMemoryAvg10
+        | Measurement::PressureMemoryAvg60
+        | Measurement::PressureIoAvg10
+        | Measurement::PressureIoAvg60
+        | Measurement::DiskRootUsed
+        | Measurement::DiskRootTotal
+        | Measurement::DiskReadRate
+        | Measurement::DiskWriteRate
+        | Measurement::DiskBusy
+        | Measurement::GpuUtilization
+        | Measurement::GpuTemperature
+        | Measurement::GpuPower
+        | Measurement::GpuUnified
+        | Measurement::GpuThrottled
+        | Measurement::NetworkUplinkRxRate
+        | Measurement::NetworkUplinkTxRate
+        | Measurement::NetworkUplinkKind
+        | Measurement::NetworkWifiSignal
+        | Measurement::NetworkWifiBitrate
+        | Measurement::NetworkTailnetRxRate
+        | Measurement::NetworkTailnetTxRate
+        | Measurement::NetworkTailnetUp
+        | Measurement::NetworkTailnetPeersOnline
+        | Measurement::SystemUptime
+        | Measurement::ServicesFailed
+        | Measurement::RunsLive
+        | Measurement::TasksRunning
+        | Measurement::HoldsLive
+        | Measurement::PermitsLive
+        | Measurement::JobsLive
+        | Measurement::TriggersMissed
+        | Measurement::TriggersFailed
+        | Measurement::MessagesUnread
+        | Measurement::CategoryMemory
+        | Measurement::CategoryCpu
+        | Measurement::CategoryTasks
+        | Measurement::CategoryGpuMemory
+        | Measurement::CategoryOomKills => false,
+    }
+}
+
+/// The kinds of work whose load over a window is a record of calls (R7).
+/// Exhaustive, for the same reason.
+pub fn withheld_category(c: Category) -> bool {
+    match c {
+        Category::Voice => true,
+        Category::Other
+        | Category::ChatModel
+        | Category::Embeddings
+        | Category::Ocr
+        | Category::ImageGen
+        | Category::Mecha => false,
+    }
 }
 
 /// A model kind whose rows move with a call (R7).
@@ -272,7 +344,7 @@ pub fn read(db: &Path, m: Measurement, w: Window, now: DateTime<Utc>) -> Result<
     let mut out = Vec::new();
     let mut withheld = Vec::new();
     for cat in Category::ALL {
-        if cat == Category::Voice {
+        if withheld_category(cat) {
             withheld.push(cat.label());
             continue;
         }
@@ -476,9 +548,18 @@ fn kind_label(id: u8, _stored: &str) -> &'static str {
     super::models::ModelKind::from_u8(id).map_or("unknown kind", |k| k.label())
 }
 
+/// The model servers over a window: their rows, or that the series predates
+/// them — kept apart from a window in which none ran (review of #660).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ModelRows {
+    OlderSampler,
+    Rows { servers: Vec<ModelWindow> },
+}
+
 /// Each model server over `w`, but the speech kinds, which are readable now
 /// only (R7).
-pub fn models_window(db: &Path, w: Window, now: DateTime<Utc>) -> Result<Option<Vec<ModelWindow>>> {
+pub fn models_window(db: &Path, w: Window, now: DateTime<Utc>) -> Result<Option<ModelRows>> {
     let Some((span, width)) = w.span() else {
         anyhow::bail!("`now` is a probe, not a window");
     };
@@ -486,7 +567,7 @@ pub fn models_window(db: &Path, w: Window, now: DateTime<Utc>) -> Result<Option<
         return Ok(None);
     };
     if !has_table(&conn, "model_minute")? {
-        return Ok(Some(Vec::new()));
+        return Ok(Some(ModelRows::OlderSampler));
     }
     let start = now - span;
     let from = ts(start);
@@ -548,7 +629,7 @@ pub fn models_window(db: &Path, w: Window, now: DateTime<Utc>) -> Result<Option<
             speed: summarise(&speed, start, span, width),
         });
     }
-    Ok(Some(out))
+    Ok(Some(ModelRows::Rows { servers: out }))
 }
 
 #[cfg(test)]
