@@ -301,3 +301,38 @@ fn models_from_an_older_series_are_said_not_empty() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A minute the source would not answer is said as unknown, apart from
+/// minutes known and minutes not recorded — the three add up to the window
+/// (review of #660).
+#[test]
+fn unknown_minutes_are_said_apart_from_known_and_unrecorded() {
+    let (db, now) = series();
+    let c = Connection::open(&db).unwrap();
+    c.execute(
+        "INSERT INTO reading_minute VALUES (?1, ?2, NULL)",
+        params![
+            (now - Duration::minutes(5))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+            Measurement::DiskRootUsed as u16
+        ],
+    )
+    .unwrap();
+    let out = answer(
+        &db,
+        None,
+        None,
+        Some("disk.root.used"),
+        Window::H1,
+        false,
+        now,
+    )
+    .unwrap();
+    assert!(
+        out.content
+            .contains("(3 of the window's 60 minutes known; 1 unknown; 56 not recorded)"),
+        "{}",
+        out.content
+    );
+}

@@ -493,6 +493,13 @@ fn summary(m: Measurement, s: &Summary, tz: Option<chrono_tz::Tz>) -> String {
         " ({known} of the window's {} minutes known",
         s.window_minutes
     );
+    // Three counts that add up to the window: known, recorded but unknown
+    // (the source would not answer — `Reading::Unread`), and not recorded
+    // (the sampler was not running). Unknown is never folded into either
+    // neighbour (review of #660).
+    if s.unknown > 0 {
+        let _ = write!(text, "; {} unknown", s.unknown);
+    }
     let missing = s.window_minutes.saturating_sub(s.minutes);
     if missing > 0 {
         let _ = write!(text, "; {missing} not recorded");
