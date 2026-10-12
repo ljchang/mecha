@@ -692,7 +692,8 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
 /// the TUI's `/help` or finding the gear on the web page. That is the wrong
 /// way round for the one document that says what the machine is *for*.
 ///
-/// The remedy hands over `$EDITOR`; it never composes a line. See
+/// The step names where to write it and runs nothing — no `$EDITOR` mid-setup
+/// (the owner, 2026-10-12) — and it never composes a line. See
 /// [`crate::charter`]'s module doc for why that distinction, rather than the
 /// absence of a verb, is the actual invariant.
 fn charter_step(state: &CharterState) -> Step {
@@ -886,7 +887,15 @@ fn with_next(mut step: Step, next: Option<&str>) -> Step {
             let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
             // A sign-in says where it goes: the question is "open a sign-in
             // page?", and a bare command line does not say that it is.
-            let description = if argv.contains(&"auth") {
+            let description = if argv == ["mecha-mail", "auth"] {
+                // The first time, mail registers the person's own sign-in app
+                // before any sign-in page (review of #663): said, so the yes
+                // is to what happens.
+                "Sign in to a mailbox — `mecha-mail auth` walks you through registering your \
+                 own sign-in app the first time (a few minutes, once), then opens the sign-in \
+                 page in your browser."
+                    .to_string()
+            } else if argv.contains(&"auth") {
                 format!(
                     "Sign in — `{}` opens the sign-in page in your browser.",
                     argv.join(" ")

@@ -19,6 +19,13 @@
 //!
 //! An explicit `--client-id`, a downloaded client file, and a stored login's
 //! own client all come before this one.
+//!
+//! **Rotating it is a release.** Google lets a client hold two secrets at
+//! once: add the new one, ship it here, then disable the old. A grant belongs
+//! to the client id, so signed-in accounts carry on; a build older than the
+//! release stops refreshing until it is updated (or is given `--client-id`
+//! and `--client-secret`). A suspended project would need a new client and a
+//! release, and every account signing in again.
 
 /// A Google desktop client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,9 +49,10 @@ pub fn open_browser(url: &str) -> bool {
     let mut cmd = if cfg!(target_os = "macos") {
         std::process::Command::new("open")
     } else if cfg!(windows) {
-        // `start`'s first quoted argument is a window title, hence the "".
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
+        // Not `cmd /C start`: an unquoted URL is split at its first `&`, and
+        // an OAuth URL has several (review of #663).
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
         c
     } else {
         // A headless box has no display, and `xdg-open` there prints an

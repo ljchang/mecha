@@ -16,7 +16,7 @@
 //! fully visible in the address bar even when nothing is listening, so a
 //! headless box needs no tunnel and no forwarded port.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use mecha_mail::google::{docs, docs_server};
 use mecha_mail::token;
@@ -159,12 +159,34 @@ fn resolve_client(
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()));
     }
     // An explicit id, then the stored grant's own client (a re-sign-in keeps
-    // its registration), then mecha's own — never a mix of two clients' halves.
+    // its registration), then mecha's own.
+    let path = docs::store_path(account)?;
+    let stored = || {
+        token::load(&path).with_context(|| {
+            format!(
+                "{} is there but does not load, so whose client it was cannot be said — and \
+                 a grant under another client would drop every picked document out of reach; \
+                 move it aside, or pass --client-json",
+                path.display()
+            )
+        })
+    };
     if let Some(id) = client_id {
-        return Ok((id, client_secret.unwrap_or_default()));
+        // The halves of one client, never two: an id with no secret takes the
+        // stored grant's secret only when the grant is that same client, and
+        // otherwise is refused here rather than as `invalid_client` after the
+        // whole browser leg (review of #663).
+        return match client_secret {
+            Some(secret) => Ok((id, secret)),
+            None if path.exists() && stored()?.client_id == id => Ok((id, stored()?.client_secret)),
+            None => bail!("--client-id needs its --client-secret (or use --client-json)"),
+        };
     }
-    if let Ok(stored) = token::load(&docs::store_path(account)?) {
-        return Ok((stored.client_id, stored.client_secret));
+    // A store that exists is never passed over: one that will not load is a
+    // refusal, not a first sign-in (review of #663).
+    if path.exists() {
+        let s = stored()?;
+        return Ok((s.client_id, s.client_secret));
     }
     let builtin = mecha_mail::builtin::GOOGLE_DOCS;
     Ok((builtin.id.to_string(), builtin.secret.to_string()))
