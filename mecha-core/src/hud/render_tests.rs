@@ -76,6 +76,13 @@ fn a_screenshot_is_cropped_to_its_content() {
     tall.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .unwrap();
     assert!(crop(&png).unwrap().cut, "a page past the viewport is said");
+    // A uniform page drew nothing: an error, not a picture.
+    let blank = image::RgbaImage::from_pixel(40, 200, image::Rgba([240, 240, 240, 255]));
+    let mut png = Vec::new();
+    blank
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert!(crop(&png).is_err(), "a blank render is refused");
 }
 
 fn get(port: u16, path: &str) -> String {
@@ -179,5 +186,41 @@ fn a_page_is_drawn_inside_the_sandbox() {
     assert_eq!(img.width(), WIDTH);
     assert!(img.height() < HEIGHT, "cropped to the content");
     assert_eq!(img.get_pixel(10, 10).0[..3], [0, 0, 0], "the box was drawn");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The no-network guarantee, measured rather than read off the argv: inside
+/// the render's sandbox a TCP connect to an outside address fails, and the
+/// same probe outside it succeeds — so the negative is not vacuous on a
+/// machine with no network. Skipped without `bwrap` or `bash`, or offline.
+#[test]
+fn the_sandbox_cannot_reach_the_network() {
+    let require = std::env::var("MECHA_TEST_REQUIRE_BACKENDS").as_deref() == Ok("1");
+    let (Some(bwrap), Some(bash)) = (which("bwrap"), which("bash")) else {
+        assert!(!require, "no bwrap or bash");
+        eprintln!("skipped: no bwrap or bash");
+        return;
+    };
+    let probe = "timeout 3 bash -c 'echo > /dev/tcp/1.1.1.1/53' 2>/dev/null && echo YES || echo NO";
+    let outside = Command::new(&bash).args(["-c", probe]).output().unwrap();
+    if String::from_utf8_lossy(&outside.stdout).trim() != "YES" {
+        assert!(
+            !require,
+            "this machine cannot reach the network, so the test proves nothing"
+        );
+        eprintln!("skipped: no network outside the sandbox either");
+        return;
+    }
+    let root = scratch("net");
+    let (bundle, out) = (root.join("bundle"), root.join("out"));
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let inside = Command::new(&bwrap)
+        .args(sandbox_args(&root, &bundle, &out, &bash))
+        .args(["/usr/bin/bash", "-c", probe])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&inside.stdout);
+    assert_eq!(said.trim(), "NO", "reached the network from inside: {said}");
     let _ = std::fs::remove_dir_all(&root);
 }

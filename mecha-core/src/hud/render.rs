@@ -285,10 +285,15 @@ pub fn crop(png: &[u8]) -> Result<Cropped> {
         bail!("the screenshot is empty");
     }
     let bg = *img.get_pixel(0, h - 1);
-    let last = (0..h)
+    // A page with no row unlike its background drew nothing — a style the
+    // CSP refused, a dataset that did not load — and is an error, never
+    // "the dashboard as drawn" (review of #662).
+    let Some(last) = (0..h)
         .rev()
         .find(|&y| (0..w).any(|x| *img.get_pixel(x, y) != bg))
-        .unwrap_or(0);
+    else {
+        bail!("the page drew nothing: the render is blank");
+    };
     let keep = (last + 24).min(h);
     let cropped = image::imageops::crop_imm(&img, 0, 0, w, keep).to_image();
     let mut out = Vec::new();
