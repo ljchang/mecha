@@ -205,3 +205,69 @@ fn it_declares_private_and_nothing_else() {
     assert_eq!(caps.egress, crate::tool::Egress::None);
     assert!(tool.read_only());
 }
+
+/// A per-minute count's stretches are totals, as its headline is: a burst in
+/// one minute is not diluted to 0.0 across its stretch (review of #660).
+#[test]
+fn a_counts_stretches_are_totals() {
+    let (db, now) = series();
+    let c = Connection::open(&db).unwrap();
+    let at = |m: i64| {
+        (now - Duration::minutes(m))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    };
+    for m in 1..=9 {
+        c.execute(
+            "INSERT OR REPLACE INTO reading_minute VALUES (?1, ?2, 0.0)",
+            params![at(m), Measurement::MemoryOomKillsGlobal as u16],
+        )
+        .unwrap();
+    }
+    c.execute(
+        "UPDATE reading_minute SET value = 3.0 WHERE at = ?1 AND measurement = ?2",
+        params![at(2), Measurement::MemoryOomKillsGlobal as u16],
+    )
+    .unwrap();
+    let out = answer(
+        &db,
+        None,
+        None,
+        Some("memory.oom_kills.global"),
+        Window::H1,
+        false,
+        now,
+    )
+    .unwrap();
+    assert!(out.content.contains("3 in all"), "{}", out.content);
+    assert!(
+        out.content.contains(" 3 ·") || out.content.ends_with(" 3\n"),
+        "{}",
+        out.content
+    );
+}
+
+/// A series from before S2a has no `reading_minute`: said, not an error.
+#[test]
+fn an_older_series_is_said_not_failed() {
+    let dir = std::env::temp_dir().join(format!("mecha-system-read-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("series.sqlite");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE system_minute (at TEXT PRIMARY KEY);")
+        .unwrap();
+    let out = answer(
+        &db,
+        None,
+        None,
+        Some("disk.root.used"),
+        Window::H1,
+        false,
+        Utc::now(),
+    )
+    .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("older sampler"), "{}", out.content);
+    let _ = std::fs::remove_dir_all(&dir);
+}

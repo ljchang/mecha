@@ -281,6 +281,14 @@ pub fn answer(
             Some(Windowed::One(s)) => {
                 let _ = writeln!(out, "- {}: {}", m.name(), summary(m, &s, tz));
             }
+            Some(Windowed::OlderSampler) => {
+                let _ = writeln!(
+                    out,
+                    "- {}: the series was written by an older sampler; it is recorded from the \
+                     next sample",
+                    m.name()
+                );
+            }
             Some(Windowed::ByCategory(cats)) => {
                 let _ = writeln!(out, "- {}, by kind of work:", m.name());
                 for (label, s) in cats {
@@ -396,7 +404,9 @@ fn model_now(r: &ModelNow, tz: Option<chrono_tz::Tz>) -> String {
             speed_text(r.kind_id, *v),
             stamp(at, tz)
         ),
-        (None, false) if r.kind_id == 2 => String::new(),
+        // A kind with no speed column (embeddings, or one this build does
+        // not know) was never read for one: say nothing (review of #660).
+        (None, false) if window::speed_column(r.kind_id).is_none() => String::new(),
         (None, false) => "; no measured speed in the last day".into(),
     };
     format!("{}: {state}, {model}, {mem}{speed}", r.kind)
@@ -515,10 +525,13 @@ fn counts_per_minute(m: Measurement) -> bool {
 fn buckets(m: Measurement, b: &[Bucket], tz: Option<chrono_tz::Tz>) -> String {
     b.iter()
         .map(|b| {
-            let v = match b.mean {
-                None => "—".to_string(),
-                Some(v) if m.unit() == Unit::Flag => format!("{:.0}%", v * 100.0),
-                Some(v) => value_text(m.unit(), v),
+            // A per-minute count's stretch is its total, as the headline is;
+            // a mean would dilute a burst to nothing (review of #660).
+            let v = match (b.mean, b.sum) {
+                (None, _) => "—".to_string(),
+                (_, Some(sum)) if counts_per_minute(m) => value_text(m.unit(), sum),
+                (Some(v), _) if m.unit() == Unit::Flag => format!("{:.0}%", v * 100.0),
+                (Some(v), _) => value_text(m.unit(), v),
             };
             format!("{} {v}", stamp(&b.start, tz))
         })
