@@ -537,16 +537,27 @@ or reach getting any trust they do not already have?
   server sees only its mount, so a folder outside it fails there, loudly.
 - **A tool that defers says so.** `Tool::defers()`: `image_generate` and a background
   `McpTool`. The hosts read it for the two things that must key on the call, never the words:
-  - the **restart repair** (`late.rs`): a deferring tool's orphaned `being made:` result is
-    settled. `image_generate` keeps its manifest repair. Any other becomes the harness's
-    `not made: the server restarted`, recorded not external (§2.3's rule for that branch);
+  - the **restart repair** (`late.rs` `may_be_orphan`): an orphaned `being made:` result is
+    settled when its tool is `image_generate`, defers, or is no longer registered at all (a
+    skipped server, a feature switched off; a restart is what removes one). Only a tool still
+    registered and known not to defer keeps its words. `image_generate` keeps its manifest
+    repair. Any other becomes the harness's `not made: the server restarted`, recorded not
+    external (§2.3's rule for that branch);
   - the **page's still-out state**: a transcript row and a live result event carry `deferred`
     when the tool defers. `picture.js` `stillOut` accepts `image_generate`, or a `deferred` row,
     and in both cases still requires the `being made: ` first line, so a finished result never
     reads as out. Read back from the transcript, not only from the live event, so the state
     survives the reload every settle does.
 - **Wording follows the tool.** A still-out `image_generate` row keeps "drawing a picture…" and
-  "Stop the picture". Any other deferred row reads "running…" and "Stop".
+  "Stop the picture". Any other deferred row reads "running…" and "Stop". The loop's closing
+  lines follow the job too: a job may carry its own (`DeferredJob::with_closings`), and an
+  MCP tool's does (`WORK_ON_ITS_WAY`, `WORK_STILL_RUNNING`: "what this turn asked for is being
+  made…"). A job that carries none closes on the picture's measured lines, so pictures speak
+  exactly as before. A run that started a picture and other work in one turn takes the
+  picture's line.
+- **An unattended run waits for it inline.** `mecha batch` and a subagent have no sink, so a
+  background call holds the item up to `BACKGROUND_TIMEOUT`. That's the bound chosen above,
+  not an oversight; `mecha eval` drops MCP entirely.
 - **A clip plays where the call is.** `picture.js` gains a matcher as strict as `PICTURE`. It
   reads only a deferring tool's first line, `video: <path>.mp4`, a relative path inside the
   chat. The assistant chat fetches the file through the chat's files route as a blob and plays
