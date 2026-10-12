@@ -1,8 +1,10 @@
 #!/bin/bash
 # Release the memory an idle ComfyUI holds: restart it once it has sat on a
 # loaded model for COMFY_IDLE_MIN minutes with nothing queued and nobody
-# connected. Run every minute by comfyui-idle-reset.timer; installed by
-# scripts/comfyui/install.sh (docs/ARCHITECTURE.md §Image generation).
+# connected. Run every minute by a timer: mecha-comfyui-idle-reset from
+# scripts/comfyui/install.sh for a hand-built server, or mecha-comfyui-idle,
+# which `mecha features enable image` writes from a copy of this file in the
+# binary (docs/ARCHITECTURE.md §Image generation).
 #
 # A restart, not POST /free, because on this unified-memory box /free moves
 # the weights from GPU allocations into the process's RSS (6.9-8.9 GB left of
@@ -88,7 +90,7 @@ esac
 # is the server's own state (often a restart in progress), so it is said,
 # not failed.
 if ! queue=$(curl -s --max-time 5 "$url/queue"); then say "holds ${held} MiB but $url/queue did not answer: left alone"; exit 0; fi
-if ! python3 -c '
+if ! python3 -I -c '
 import json, sys
 q = json.loads(sys.argv[1])
 # The keys are required: a reply that parses but is not a queue (a proxy'"'"'s
