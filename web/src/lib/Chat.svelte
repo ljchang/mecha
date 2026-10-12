@@ -1440,14 +1440,15 @@
   // server locks it whatever the box sends (`library.rs::save_locked`).
   let saving = $state(null);
   async function startSave(path) {
-    saving = { path, name: '', description: '', locked: incognito, busy: false, msg: null, ready: false, inherited: false };
+    const fixed = incognito || key.startsWith(INCOGNITO_PREFIX);
+    saving = { path, name: '', description: '', locked: fixed, fixed, busy: false, msg: null, ready: false, inherited: false };
     try {
       const res = await fetch(`/api/library/source?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`);
       if (saving?.path !== path) return;
       if (!res.ok) throw new Error((await res.text()).trim());
       const src = await res.json();
       saving.inherited = !!src.suggest_locked;
-      saving.locked = saving.inherited || incognito;
+      saving.locked = saving.inherited || saving.fixed;
     } catch (e) {
       if (saving?.path !== path) return;
       saving.locked = true;
@@ -2152,9 +2153,9 @@
                 <input placeholder="name, e.g. maya" bind:value={saving.name} autocomplete="off" />
                 <textarea rows="2" placeholder="a short description — include build and height" bind:value={saving.description}></textarea>
                 <label class="libsave-lock">
-                  <input type="checkbox" bind:checked={saving.locked} disabled={incognito} />
+                  <input type="checkbox" bind:checked={saving.locked} disabled={saving.fixed} />
                   lock (hide while browsing)
-                  {#if incognito}<span class="libsave-why">— always, from an incognito chat</span>
+                  {#if saving.fixed}<span class="libsave-why">— always, from an incognito chat</span>
                   {:else if saving.inherited}<span class="libsave-why">— made from a locked character</span>{/if}
                 </label>
                 <button class="genedit" disabled={!saving.ready || saving.busy || !validName(tameName(saving.name)) || !saving.description.trim()}>Save</button>

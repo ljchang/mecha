@@ -641,7 +641,10 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     if body.locked {
         args.push("--locked");
     }
-    let response = super::review::verb(&state, &args).await;
+    // `no-store` by hand, as `source` is: the key rides in the body, so the
+    // middleware's incognito path needle never sees it, and the reply names
+    // the entry (§8: `no-store` on every incognito route).
+    let response = no_store(super::review::verb(&state, &args).await);
     drop(staged);
     response
 }
