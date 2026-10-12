@@ -254,30 +254,54 @@ pub(super) fn land(
     state.notes.push(note);
 }
 
+/// The names of the tools in `registry` whose calls defer (`Tool::defers`),
+/// for [`repair_orphans`] and the page's still-out rows (§8).
+pub(super) fn deferring(
+    registry: &mecha_core::tool::Registry,
+) -> std::collections::HashSet<String> {
+    registry
+        .iter()
+        .filter(|t| t.defers())
+        .map(|t| t.name().to_string())
+        .collect()
+}
+
+/// What a deferring tool's orphaned result reads once the server that held
+/// its job has restarted (§8): the harness's words, since nothing it can
+/// check says whether the work finished.
+pub(super) const RESTARTED: &str = "not made: the server restarted";
+
 /// Settle every "being made" result a resumed conversation holds, when no
 /// job can be behind it (§2.3, the restart repair): by what the workspace
 /// holds, never by the absent job (`imagegen::repair_orphan`). Recorded as
-/// late results, then one taint checkpoint covering them. Only
-/// `image_generate` writes a "being made" result, and it declares no outside
-/// reach, so its repair is recorded as not external; a deferring tool that
-/// could return untrusted content would take its declared capability here
-/// instead. No failure is booked: the run that made the call is not known
-/// from here.
-pub(super) fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Conversation) {
+/// late results, then one taint checkpoint covering them. A call is an
+/// orphan only if its tool defers (`defers`, the registry's
+/// `Tool::defers`): `image_generate` is settled from its manifest, and any
+/// other deferring tool — an MCP server's background tool (§8) — has no
+/// artifact the harness can vouch for, so it reads the harness's own
+/// `not made: the server restarted`. Every repair is the harness's words,
+/// recorded not external (§2.3's rule for that branch). No failure is
+/// booked: the run that made the call is not known from here.
+pub(super) fn repair_orphans(
+    session: &Session,
+    workspace: &Path,
+    convo: &mut Conversation,
+    defers: &dyn Fn(&str) -> bool,
+) {
     use mecha_core::message::Block;
     // The calls that could have deferred: an orphan is identified by its
     // call, never by its words, which any tool's result can carry — a shell
     // echo, a file read (review of #583, pass 6).
-    let renders: std::collections::HashSet<&str> = convo
+    let renders: std::collections::HashMap<&str, &str> = convo
         .messages
         .iter()
         .flat_map(|m| &m.content)
         .filter_map(|b| match b {
-            Block::ToolUse { id, name, .. } if name == "image_generate" => Some(id.as_str()),
+            Block::ToolUse { id, name, .. } if defers(name) => Some((id.as_str(), name.as_str())),
             _ => None,
         })
         .collect();
-    let orphans: Vec<(String, String)> = convo
+    let orphans: Vec<(String, String, String)> = convo
         .messages
         .iter()
         .filter(|m| m.role == mecha_core::message::Role::User)
@@ -287,21 +311,22 @@ pub(super) fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Co
                 tool_use_id,
                 content,
                 ..
-            } if renders.contains(tool_use_id.as_str())
-                && content.starts_with(mecha_core::imagegen::BEING_MADE) =>
-            {
-                Some((tool_use_id.clone(), content.clone()))
-            }
+            } if content.starts_with(mecha_core::imagegen::BEING_MADE) => renders
+                .get(tool_use_id.as_str())
+                .map(|name| (tool_use_id.clone(), name.to_string(), content.clone())),
             _ => None,
         })
         .collect();
     if orphans.is_empty() {
         return;
     }
-    for (id, content) in orphans {
-        let Some((settled, is_error)) =
+    for (id, name, content) in orphans {
+        let repaired = if name == "image_generate" {
             mecha_core::imagegen::repair_orphan(workspace, &id, &content)
-        else {
+        } else {
+            Some((RESTARTED.to_string(), true))
+        };
+        let Some((settled, is_error)) = repaired else {
             continue;
         };
         if let Some(index) = convo.apply_late(&id, &settled, is_error, false) {
@@ -312,7 +337,7 @@ pub(super) fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Co
                 is_error,
                 external: false,
             }) {
-                tracing::warn!("a repaired picture result was not recorded: {e:#}");
+                tracing::warn!("a repaired late result was not recorded: {e:#}");
             }
         }
     }
@@ -322,6 +347,84 @@ pub(super) fn repair_orphans(session: &Session, workspace: &Path, convo: &mut Co
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn conversation_with(tool: &str, id: &str, result: &str) -> Conversation {
+        use mecha_core::message::{Block, Message};
+        let mut convo = Conversation::user("go");
+        convo.messages.push(Message::assistant(vec![Block::ToolUse {
+            id: id.into(),
+            name: tool.into(),
+            input: serde_json::json!({}),
+        }]));
+        convo
+            .messages
+            .push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: result.into(),
+                is_error: false,
+            }]));
+        convo
+    }
+
+    fn scratch_session(name: &str) -> (Session, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mecha-late-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let session = Session::create(
+            &dir,
+            mecha_core::session::SessionMeta {
+                id: format!("20261012T000000-{name}"),
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "m".into(),
+                workspace: dir.clone(),
+                title: None,
+                kind: None,
+            },
+        )
+        .unwrap();
+        (session, dir)
+    }
+
+    fn result_of(convo: &Conversation, id: &str) -> (String, bool) {
+        convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                mecha_core::message::Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } if tool_use_id == id => Some((content.clone(), *is_error)),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// A deferring tool that is not the picture — an MCP server's background
+    /// tool (§8) — has nothing the harness can check after a restart, so its
+    /// orphan reads the harness's own words, recorded not external. Keyed on
+    /// the call: the same words from a tool that does not defer stay.
+    #[test]
+    fn a_deferring_tools_orphan_is_settled_and_another_tools_words_are_not() {
+        let (session, dir) = scratch_session("orphan");
+        let made = format!("{}`render` is running.", mecha_core::imagegen::BEING_MADE);
+        let mut convo = conversation_with("render", "r1", &made);
+        let defers = |name: &str| name == "render";
+        repair_orphans(&session, &dir, &mut convo, &defers);
+        assert_eq!(result_of(&convo, "r1"), (RESTARTED.to_string(), true));
+        let file = std::fs::read_to_string(&session.path).unwrap();
+        assert!(file.contains(r#""record":"late_result""#), "{file}");
+        assert!(
+            file.contains(r#""external":false"#),
+            "the harness's words: {file}"
+        );
+
+        let (session, dir) = scratch_session("echo");
+        let mut convo = conversation_with("shell", "s1", &made);
+        repair_orphans(&session, &dir, &mut convo, &defers);
+        assert_eq!(result_of(&convo, "s1"), (made.clone(), false));
+    }
 
     /// A failed run's notes are owed again, ahead of any that arrived while
     /// it ran.
