@@ -2020,10 +2020,12 @@ impl PersonaChats {
         // A picture still "being made" when the server stopped: no job is
         // behind it now (a chat leaves this map only with the process), so
         // the result is settled by what the workspace holds.
-        // A persona's surface holds no MCP tool, so its one deferring tool
-        // is the picture.
+        // Over the install's pool, the persona's tools' source: a picture
+        // always, a deferring tool such as an MCP server's background tool
+        // (§9), and one a restart removed (review of #666).
+        let bound = chat.follower.current();
         super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
-            name == "image_generate"
+            super::late::may_be_orphan(bound.agent.registry(), name)
         });
         sessions.insert(
             key.clone(),
@@ -2689,7 +2691,10 @@ impl PersonaChats {
             (None, Some(live)) => &live.history,
             (None, None) => &[],
         };
-        let entries = chat::transcript_entries(messages);
+        // A deferring tool's row is marked, so a clip still out keeps its
+        // state past this re-read (§9).
+        let defers = super::late::deferring(bound.agent.registry());
+        let entries = chat::transcript_entries_with(messages, &|name| defers.contains(name));
         // Checked once the lock is let go: the session file is read whole.
         let session = Arc::clone(&ps.session);
         let taint = match (&ps.conversation, &ps.live) {
@@ -4017,6 +4022,7 @@ impl PersonaChats {
             let _held = held;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let forwarder = {
+                let run_defers = super::late::deferring(agent.registry());
                 let bcast = bcast.clone();
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
@@ -4036,7 +4042,8 @@ impl PersonaChats {
                                 *slot = Some(usage.clone());
                             }
                         }
-                        if let Some(wire) = chat::wire_event(&event, context_window) {
+                        if let Some(mut wire) = chat::wire_event(&event, context_window) {
+                            chat::mark_deferred(&mut wire, &|name| run_defers.contains(name));
                             let _ = bcast.send(wire);
                         }
                     }

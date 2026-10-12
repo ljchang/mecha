@@ -53,6 +53,9 @@ pub struct McpClient {
     /// Whether this server's `_meta` claims about a result are believed.
     /// See [`McpServerConfig::trust_result_claims`].
     trust_result_claims: bool,
+    /// The owner offered this server's tools to persona chats
+    /// ([`McpServerConfig::personas`]).
+    personas: bool,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
@@ -241,6 +244,7 @@ impl McpClient {
             prefix_tools: cfg.prefix_tools.unwrap_or(true),
             forced: cfg.capabilities.into(),
             trust_result_claims: cfg.trust_result_claims,
+            personas: cfg.personas,
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
@@ -477,6 +481,7 @@ impl McpClient {
 
                 Some(Arc::new(McpTool {
                     background,
+                    persona: None,
                     // Only a forced `destructive` contradicts a read-only
                     // claim; the others are orthogonal to it and dropping the
                     // exemption for them was wrong. `untrusted_input` says the
@@ -605,6 +610,12 @@ pub const BACKGROUND_META: &str = "mecha-factory.ai/background";
 /// one root. The server proves the folder is somewhere it may write.
 pub const WORKSPACE_META: &str = "mecha-factory.ai/workspace";
 
+/// The `_meta` key a persona's background call carries: which persona is
+/// asking, by folder name, and its linked library character if it has one,
+/// so a server can take `self` to mean it (§9). Never the persona's prompt
+/// or anything it said.
+pub const PERSONA_META: &str = "mecha-factory.ai/persona";
+
 /// How long a background call may take before it is given up on, hosted as
 /// a job or awaited inline. A bound on purpose: with no sink the run itself
 /// waits, and "no upper limit" is not a decision anyone made (§8).
@@ -622,9 +633,12 @@ fn chat_folder(workspace: &Path) -> Option<String> {
         .then(|| real.to_string_lossy().to_string())
 }
 
+#[derive(Clone)]
 struct McpTool {
     /// The server asked for this tool's calls to run as background jobs.
     background: bool,
+    /// The persona this form serves, when a persona chat holds it (§9).
+    persona: Option<crate::tool::PersonaSelf>,
     read_only: bool,
     capabilities: Capabilities,
     local_name: String,
@@ -671,6 +685,26 @@ impl Tool for McpTool {
         self.background
     }
 
+    /// Offered to a persona only when the owner said so of this server
+    /// (`personas` in its `[[mcp]]` entry; §9): a server's own word is
+    /// never enough, since what a persona form declares — that it reads
+    /// none of the owner's stores — is exactly what a remote server could
+    /// claim falsely.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        self.for_persona_as(&crate::tool::PersonaSelf::default())
+    }
+
+    /// The same, knowing which persona: a background call tells the server
+    /// who is asking, so `self` can mean the persona's character.
+    fn for_persona_as(self: Arc<Self>, who: &crate::tool::PersonaSelf) -> Option<Arc<dyn Tool>> {
+        if !self.client.personas {
+            return None;
+        }
+        let mut form = (*self).clone();
+        form.persona = Some(who.clone());
+        Some(Arc::new(form))
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         if self.background {
             return Ok(self.deferred_call(input, ctx));
@@ -702,10 +736,17 @@ impl McpTool {
                  not be found, so its result could not reach this chat."
             ));
         };
+        let mut meta = json!({WORKSPACE_META: folder});
+        if let Some(who) = &self.persona {
+            meta[PERSONA_META] = json!({
+                "name": who.name,
+                "character": who.character,
+            });
+        }
         let params = json!({
             "name": self.remote_name,
             "arguments": input,
-            "_meta": {WORKSPACE_META: folder},
+            "_meta": meta,
         });
         let cancel = tokio_util::sync::CancellationToken::new();
         let token = cancel.clone();
@@ -742,7 +783,14 @@ impl McpTool {
             "Not run: this conversation's line of background work is full, so `{name}` was not \
              started. Ask again once one of them has finished."
         );
-        let job = crate::jobs::DeferredJob::new(job, cancel, busy).with_label(name.clone());
+        let job = crate::jobs::DeferredJob::new(job, cancel, busy)
+            .with_label(name.clone())
+            // Whatever a server makes, it is not the picture the measured
+            // closing lines name (§9).
+            .with_closings(
+                crate::agent::WORK_ON_ITS_WAY,
+                crate::agent::WORK_STILL_RUNNING,
+            );
         ToolOutput::deferred(
             format!(
                 "{}`{name}` is running. Its result reaches the owner here when it is done.",
