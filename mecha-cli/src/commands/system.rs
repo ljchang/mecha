@@ -3,7 +3,8 @@
 //!
 //! `sample` is what the per-minute timer runs; `probe` reads named
 //! measurements — now from the machine, or a rate from the series' newest
-//! minute. Slicing the series over time (`read`) arrives in S3.
+//! minute; `read` summarises the series over a window, printing exactly what
+//! the model's `system_read` returns (one formatter, so the two cannot drift).
 
 use anyhow::{bail, Result};
 use chrono::Utc;
@@ -38,6 +39,20 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Summarise the series over a window — what the assistant's
+    /// `system_read` tool answers, word for word: a measurement or group
+    /// (`disk`, `gpu.temperature`), `models`, or an overview when none is
+    /// named. Voice is readable now only, as in the tool (R7).
+    Read {
+        /// A measurement's name, a group prefix, or `models`.
+        name: Option<String>,
+        /// now, 1h, 6h, 24h or 7d.
+        #[arg(long, default_value = "now")]
+        window: String,
+        /// Split the category.* measurements by kind of work.
+        #[arg(long)]
+        by_category: bool,
+    },
     /// Ask the memory floor whether something needing `--need` of memory may
     /// start now: the need plus `[system] memory_reserve_mb` must be
     /// available, and memory pressure must be under its ceiling. Exits
@@ -57,6 +72,11 @@ pub async fn run(_global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Sample { json } => sample(json),
         Cmd::Probe { name, json } => probe(name.as_deref(), json),
         Cmd::Admit { need, json } => admit(&need, json),
+        Cmd::Read {
+            name,
+            window,
+            by_category,
+        } => read(name.as_deref(), &window, by_category),
     }
 }
 
@@ -207,6 +227,28 @@ fn sample(json: bool) -> Result<()> {
             let line = format!("  {:<17} {mem:>11}  {what}  {speed}", m.kind);
             println!("{}", line.trim_end());
         }
+    }
+    Ok(())
+}
+
+fn read(name: Option<&str>, window: &str, by_category: bool) -> Result<()> {
+    let Some(w) = mecha_core::system::window::Window::parse(window) else {
+        bail!("--window is one of now, 1h, 6h, 24h, 7d");
+    };
+    let cfg = mecha_core::config::Config::load_global().ok();
+    let tz = cfg.as_ref().and_then(|c| c.agent.timezone());
+    let out = mecha_core::tool::system_read::answer(
+        &system::db_path()?,
+        tz,
+        cfg.as_ref(),
+        name,
+        w,
+        by_category,
+        Utc::now(),
+    )?;
+    print!("{}", out.content);
+    if out.is_error {
+        crate::exit_with(1);
     }
     Ok(())
 }

@@ -56,6 +56,9 @@ pub enum Feature {
     Frontdoor,
     Publishing,
     Messages,
+    /// `system_read`: the machine's state for the assistant
+    /// (`SYSTEM-STATE-DESIGN.md` §5, R3).
+    System,
 }
 
 impl Feature {
@@ -81,6 +84,7 @@ impl Feature {
         Feature::Frontdoor,
         Feature::Publishing,
         Feature::Messages,
+        Feature::System,
     ];
 
     /// The name on the command line and on the wire.
@@ -107,6 +111,7 @@ impl Feature {
             Feature::Frontdoor => "frontdoor",
             Feature::Publishing => "publishing",
             Feature::Messages => "messages",
+            Feature::System => "system",
         }
     }
 
@@ -133,6 +138,7 @@ impl Feature {
             Feature::Frontdoor => "Front door (inbound requests)",
             Feature::Publishing => "Publishing tools",
             Feature::Messages => "Messages between sessions",
+            Feature::System => "Machine state for the assistant",
         }
     }
 
@@ -210,7 +216,8 @@ impl Feature {
             | Feature::Voice
             | Feature::Incognito
             | Feature::Frontdoor
-            | Feature::Messages => true,
+            | Feature::Messages
+            | Feature::System => true,
             Feature::Tasks
             | Feature::Ocr
             | Feature::Layout
@@ -251,6 +258,8 @@ impl Feature {
             | Feature::Docs
             // The operator's backends and keys (`MACHINE_TABLES`).
             | Feature::Search
+            // The operator's machine, read through its own series.
+            | Feature::System
             // `default_provider` and `providers` are machine tables.
             | Feature::Incognito
             // A manifest's `live_servers` can carry the operator's graph in,
@@ -809,7 +818,7 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
-        Feature::Incognito | Feature::Messages => false,
+        Feature::Incognito | Feature::Messages | Feature::System => false,
         Feature::Tasks
         | Feature::Ocr
         | Feature::Layout
@@ -1273,6 +1282,13 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         ),
         // Nothing to set up: past the switch, it is on.
         Feature::Messages => on("[messages] enabled"),
+        // The series `mecha-system-sample.timer` writes; a missing one is the
+        // tool's to say per call ("is the timer running?"), never a reason
+        // to withhold the tool and move the cached prefix.
+        Feature::System => match cfg.tools.registers("system_read") {
+            true => on("`system_read` over ~/.mecha/system/series.sqlite"),
+            false => tools_off("system_read"),
+        },
     }
 }
 
@@ -1350,12 +1366,13 @@ mod tests {
                 | Feature::Incognito
                 | Feature::Frontdoor
                 | Feature::Publishing
-                | Feature::Messages => {}
+                | Feature::Messages
+                | Feature::System => {}
             }
         }
-        // The match above lists 21 — raise this with it, and a variant
+        // The match above lists 22 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 21);
+        assert_eq!(Feature::ALL.len(), 22);
     }
 
     #[test]
@@ -1410,6 +1427,7 @@ mod tests {
             Feature::Incognito,
             Feature::Frontdoor,
             Feature::Messages,
+            Feature::System,
         ] {
             assert_eq!(get(&rows, f).word(), "off", "{}", f.id());
         }

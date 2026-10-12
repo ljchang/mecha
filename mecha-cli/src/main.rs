@@ -178,6 +178,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_compact_tool: bool,
 
+    /// Don't register `system_read`, the machine's state for the model.
+    /// `mecha eval` forces it: its readings are this machine's.
+    #[arg(long, global = true)]
+    pub no_system_read: bool,
+
     /// Don't run configured [[hook]] commands.
     #[arg(long, global = true)]
     pub no_hooks: bool,

@@ -913,6 +913,10 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::SituationBrief => !agent.situation_brief,
             Lever::PastAppraisals => !agent.past_appraisals,
             Lever::SuccessExamples => !agent.success_examples,
+            Lever::SystemRead => {
+                opts.no_system_read
+                    || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
+            }
         })
         .collect()
 }
@@ -933,6 +937,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::Skills => opts.no_skills = true,
         Lever::Charter => opts.no_charter = true,
         Lever::CompactTool => opts.no_compact_tool = true,
+        Lever::SystemRead => opts.no_system_read = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
         Lever::StepChecks => opts.no_step_checks = true,
         Lever::GoalGuidance => opts.no_goal_guidance = true,
@@ -1563,6 +1568,26 @@ async fn prepare_tools_carrying(
         }
     } else {
         switched_off(Feature::Personas, "persona_propose");
+    }
+    // `system_read` (SYSTEM-STATE-DESIGN.md §5, R3): the machine's state for
+    // the owner's questions, behind its own switch, and thrown off by
+    // `--no-system-read`, which `mecha eval` forces — its readings are this
+    // box's. Never on a persona's list: `persona_agent` builds its own pool.
+    // Registered whether or not the series exists yet, so the tool list does
+    // not move with the sampler's uptime; the tool says "no series" per call.
+    if !feature_on(Feature::System) {
+        switched_off(Feature::System, "system_read");
+    } else if !opts.no_system_read
+        && (opts.tools.is_empty() || asked_for("system_read"))
+        && cfg.tools.registers("system_read")
+    {
+        match mecha_core::system::db_path() {
+            Ok(db) => registry.insert(Arc::new(mecha_core::tool::system_read::SystemRead::new(
+                db,
+                Some(cfg.clone()),
+            ))),
+            Err(e) => eprintln!("mecha: system_read not registered — {e:#}"),
+        }
     }
     // `image_view` reaches no server, so it is not `[image]`'s: it is how any
     // model with eyes looks at a workspace picture — a result, or an

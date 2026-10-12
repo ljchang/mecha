@@ -959,6 +959,9 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
             "Inbound requests from strangers, polls and publishing, behind a quarantine."
         }
         Feature::Messages => "Messages between this machine's own sessions.",
+        Feature::System => {
+            "Letting the assistant read this machine's state: memory, disk, GPU, models."
+        }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Tasks
         | Feature::Ocr
@@ -2006,6 +2009,7 @@ mod tests {
                 "incognito",
                 "frontdoor",
                 "messages",
+                "system",
                 "charter"
             ]
         );

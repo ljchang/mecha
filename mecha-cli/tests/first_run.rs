@@ -1144,6 +1144,7 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         "incognito",
         "frontdoor",
         "messages",
+        "system",
     ];
     let plan = steps(&mecha(&home, &["setup", "--json"]));
     for id in features {
@@ -1241,6 +1242,7 @@ fn the_closing_note_names_each_way_back() {
         "frontdoor",
         // Once a `false` here read as unanswered and stayed outstanding.
         "messages",
+        "system",
     ]
     .iter()
     .map(|id| format!("{id} = false\n"))

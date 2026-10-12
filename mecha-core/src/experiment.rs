@@ -2082,6 +2082,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config, bool)> {
         | Lever::Skills
         | Lever::Charter
         | Lever::CompactTool
+        | Lever::SystemRead
         | Lever::ApprovalRules => None,
     }
 }
@@ -3184,6 +3185,7 @@ pub fn child_invocation(
             Lever::Skills => flags.push("--no-skills".into()),
             Lever::Charter => flags.push("--no-charter".into()),
             Lever::CompactTool => flags.push("--no-compact-tool".into()),
+            Lever::SystemRead => flags.push("--no-system-read".into()),
             Lever::ApprovalRules => unreachable!("refused at load"),
         }
     }
