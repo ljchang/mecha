@@ -366,3 +366,111 @@ async fn a_refused_proposal_carries_no_rows() {
     assert!(!out.content.contains("88.25"), "{}", out.content);
     assert!(!out.external);
 }
+
+/// `look` is offered only where it was given — a model that can see — and
+/// asked for where it was not, or on a draft that is not clean, it says why
+/// there is no picture rather than failing the preview.
+#[tokio::test]
+async fn look_is_offered_only_where_given_and_says_why_not() {
+    let f = Fixture::new("owner");
+    let blind = HudPreview::new(f.store.clone());
+    assert!(blind.input_schema()["properties"].get("look").is_none());
+    let mut input = draft_input("speed");
+    input["look"] = json!(true);
+    let out = blind.call(input.clone(), &ctx(None)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.contains("No picture: drawing is not offered"),
+        "{}",
+        out.content
+    );
+
+    let seeing = HudPreview::new(f.store.clone()).with_look(Look {
+        renderer: std::path::PathBuf::from("/nonexistent/hud-renderer"),
+        timezone: None,
+    });
+    assert!(seeing.input_schema()["properties"].get("look").is_some());
+    let mut broken = input.clone();
+    broken["spec"]["title"] = json!("");
+    broken["spec"]["datasets"] = json!(["nope"]);
+    let out = seeing.call(broken, &ctx(None)).await.unwrap();
+    assert!(out.is_error);
+    assert!(
+        out.content.contains("No picture until the draft passes"),
+        "{}",
+        out.content
+    );
+    // A clean draft with no renderer built: said, and still a clean preview.
+    let out = seeing.call(input, &ctx(None)).await.unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("(No picture: "), "{}", out.content);
+
+    // `id` and `look` alone draw the board under that id; with nothing
+    // there, it says so rather than returning a file listing.
+    let out = seeing
+        .call(json!({"id": "nothing_here", "look": true}), &ctx(None))
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(out.content.contains("to draw"), "{}", out.content);
+    HudPropose::new(f.store.clone())
+        .call(draft_input("speed"), &ctx(None))
+        .await
+        .unwrap();
+    let out = seeing
+        .call(json!({"id": "speed", "look": true}), &ctx(None))
+        .await
+        .unwrap();
+    assert!(
+        out.content.contains("passes its checks"),
+        "a preview of the waiting proposal: {}",
+        out.content
+    );
+    // The proposal above ran with no taint record, which loads untrusted, so
+    // its drawing carries that origin as `id` alone does (review of #662).
+    assert!(
+        out.external,
+        "a proposal not from a clean conversation is from outside"
+    );
+    assert!(out.content.contains("(No picture: "), "{}", out.content);
+}
+
+/// Where this machine can draw (a browser, `bwrap`, the built renderer and
+/// `mecha` beside the test binary), a clean draft comes back with its
+/// picture attached. Skipped otherwise, unless `MECHA_TEST_REQUIRE_BACKENDS=1`.
+#[tokio::test]
+async fn a_clean_draft_is_drawn_and_attached() {
+    let require = std::env::var("MECHA_TEST_REQUIRE_BACKENDS").as_deref() == Ok("1");
+    let renderer = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../web/dist")
+        .join(crate::hud::publish::RENDERER_DIR);
+    let built_mecha = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent()?.parent().map(|d| d.join("mecha")))
+        .filter(|p| p.is_file());
+    if crate::hud::render::Renderer::find().is_err()
+        || !renderer.join("hud.js").is_file()
+        || built_mecha.is_none()
+    {
+        assert!(!require, "this machine cannot draw a preview");
+        eprintln!("skipped: no browser, bwrap, built renderer or built mecha");
+        return;
+    }
+    // `Renderer::find` serves through `current_exe`, which in a test is the
+    // test binary; the tool path is exercised through the store directly.
+    let f = Fixture::new("owner");
+    let draft = draft_of(&draft_input("speed")).unwrap();
+    let preview = f.store.preview(&draft).unwrap();
+    let with = crate::hud::render::Renderer {
+        mecha: built_mecha.unwrap(),
+        ..crate::hud::render::Renderer::find().unwrap()
+    };
+    let shot = f
+        .store
+        .picture(&draft, &preview, &renderer, &with, chrono::Utc::now())
+        .unwrap();
+    assert!(!shot.cut, "a one-panel board fits");
+    let img = image::load_from_memory(&shot.png).unwrap();
+    assert_eq!(img.width(), crate::hud::render::WIDTH);
+    assert!(img.height() > 100, "the board was drawn, not a blank page");
+}
