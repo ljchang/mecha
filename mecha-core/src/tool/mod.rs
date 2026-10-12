@@ -417,6 +417,14 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Whether this tool's calls answer `being made: …` and finish later, as a
+    /// job (`ToolOutput::deferred`). The hosts key two things on it, by the
+    /// call and never the words: the restart repair of an orphaned result,
+    /// and the page's still-out state (BACKGROUND-JOBS-DESIGN.md §8).
+    fn defers(&self) -> bool {
+        false
+    }
+
     /// Tool names this tool is currently restricting the surface to, if it is
     /// restricting it at all.
     ///
