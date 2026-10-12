@@ -598,6 +598,29 @@ draft is the tools' input instead, and three read-only tools carry it
   `Origin`, and the draft's digest). The same id again revises it, and at most
   `draft::MAX_PENDING` wait. An installed board's id proposes a replacement.
 
+**The picture (step 6, 2026-10-12).** `hud_preview` with `look: true` also
+draws a clean draft and attaches the screenshot as an image block, capped at
+the door as `image_view`'s are. It is offered only to a model that can see:
+`with_look` is called at registration on `image_view`'s rule, and to any
+other model the schema has no `look`. The render (`hud::render`) assembles
+the draft as a publish does — the vendored renderer and the checked spec —
+with the preview's rows as `./data/`. It runs the browser inside
+`bwrap --unshare-all`: no network but the sandbox's own loopback. Of the
+home it binds only four paths: the browser's own directory, the bundle
+read-only, one output directory, and this binary. Nothing else, so no
+`~/.mecha` as a whole, no keys and no transcripts.
+Inside, the hidden `mecha hud render-inside` serves the bundle on that
+loopback under the interactive CSP (`publish::interactive_csp`, the one
+definition the outbox's preview origin also uses) and runs
+`chrome-headless-shell` at it. Chromium's own sandbox is off inside
+(`--no-sandbox`), because this machine's AppArmor refuses it user
+namespaces; bwrap is the boundary instead, the one the shell sandbox
+already trusts. That is what "a browser with no other network" (step 6)
+rests on, rather than browser flags. The blank below the last panel is
+cropped. With no browser, no `bwrap` or no built renderer, the result says
+so and stays a text preview; it never falls back to an unconfined browser.
+Measured 2026-10-12: about 2 s a render on the GB10.
+
 `hud_sources` and `hud_preview` declare `private` and `untrusted` and mark a
 result `from_outside` when a source it read is external; egress stays `None`
 because every runnable source is a local file. `hud_propose` returns nothing
@@ -810,7 +833,7 @@ after the factory path is proven.
 | 3 ⧗ | The renderer, both builds (web app and standalone) — *built, §8.3* | `web/src/lib/hud/` | renders the host spec in light and dark; filters link panels |
 | 4 ⧗ | *Routes and `#hud` built with step 3 (§8.3); the proposals store waits for authoring.* Serve routes and `#hud`; the proposals pane's fourth store and its layout (§5.3), **and the same store in `backlog.rs`'s walk** — a pending dashboard is owner-gated work, so `mecha review`, `/queues` and the backlog's readers must see it, the way every other store the pane shows is either walked or excluded there with its reason | `serve/`, `web/` | **rung 1: the host dashboard live on the tailnet**, installable from the phone |
 | 5 | `hud` template, the three-part gate (§6.1), dataset channel, `Data` scope, per-tenant cap, digest-pinned push, outbox preview; **a `TRIFECTA.md` channel row** for the dataset push. It is not the first standing egress grant — `mecha-slots.timer` (§3.3) already pushes unreviewed on a schedule, and has no row either, so the row covers both. What is new is that this one's **payload shape was drafted by a model**: one review authorises every future refresh of a query a model wrote | `mecha-factory-publish`, `mecha-factory`, `serve/`, `docs/` | **rung 3: the host dashboard, private, updating on the factory** — rendering correctly under the real `interactive` policy with every CSP violation accounted for (§6.1) |
-| 6 ⧗ | `hud_preview` and the visual loop — *the text half built (R18): `hud_sources`, `hud_preview`, `hud_propose`, the proposals store and the Dashboards review; the headless screenshot is still to come* | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
+| 6 ✓ | `hud_preview` and the visual loop — *built: the text half with R18 (#659), and `look`, the headless screenshot (§5.3, "The picture")* | core tool + headless render | the model fixes its own broken chart from the screenshot; **the headless render loads the bundle under the `interactive` CSP from a loopback origin that serves only that bundle and its datasets, in a browser with no other network** — `Egress::None` (§5.3) rests on this render reaching nothing, so it is not left to §2.2's string screens alone |
 | 7 | DuckDB runner (Postgres, Parquet, CSV); the one-variable environment allowlist (§3.1); install shows remote queries in full (§5.3) | core, `fetch.rs`, `sandbox.rs` (the allowlist entry is decided by the source in `sources.toml`, never a `Config` field — §1) | a Postgres loader runs confined and sees exactly one inherited variable; `hud_preview` never reaches it |
 | 8 | Sheets source over `sheets_read` | core + mecha-docs | a picked sheet refreshes a dataset; `hud_preview` never reaches it |
 | 9 | User docs | `website/docs/features/` | — |
