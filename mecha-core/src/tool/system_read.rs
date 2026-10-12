@@ -36,7 +36,7 @@ use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::system::measure::{How, Measurement, Unit};
 use crate::system::models::ModelKind;
 use crate::system::window::{self, Bucket, ModelNow, ModelWindow, Summary, Window, Windowed};
-use crate::system::{self, Category, Probed, Reader, Reading};
+use crate::system::{self, Probed, Reader, Reading};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -54,19 +54,6 @@ const OVERVIEW: &[Measurement] = &[
     Measurement::GpuPower,
     Measurement::PressureMemoryAvg10,
 ];
-
-/// The model kinds whose rows move with a call: speech to text and text to
-/// speech (`system::models::ModelKind`).
-const SPEECH_KINDS: [ModelKind; 2] = [ModelKind::SpeechToText, ModelKind::TextToSpeech];
-
-/// Whether a stored kind number is a speech kind — through `ModelKind`, never
-/// a restated literal (review of #660).
-fn is_speech(kind: u8) -> bool {
-    ModelKind::from_u8(kind).is_some_and(|k| SPEECH_KINDS.contains(&k))
-}
-
-/// How far back a speech kind's "now" looks: `voice.live`'s three minutes.
-const SPEAKING_NOW: chrono::Duration = chrono::Duration::minutes(3);
 
 /// A model row older than this is said to be stale.
 const STALE_MINUTES: i64 = 5;
@@ -267,10 +254,6 @@ pub fn answer(
     }
     let mut refused = Vec::new();
     for m in wanted {
-        if m == Measurement::VoiceLive {
-            refused.push(m.name().to_string());
-            continue;
-        }
         match window::read(db, m, window, now)? {
             None => {
                 out.push_str(
@@ -289,14 +272,19 @@ pub fn answer(
                     m.name()
                 );
             }
-            Some(Windowed::ByCategory(cats)) => {
+            Some(Windowed::NotHere) => {
+                let _ = writeln!(out, "- {}: not on this machine", m.name());
+            }
+            // R7 is the read's (`window::withheld_over_a_window`); this only
+            // says it.
+            Some(Windowed::Withheld) => refused.push(m.name().to_string()),
+            Some(Windowed::ByCategory { rows, withheld }) => {
                 let _ = writeln!(out, "- {}, by kind of work:", m.name());
-                for (label, s) in cats {
-                    if label == Category::Voice.label() {
-                        refused.push(format!("{} for {label}", m.name()));
-                        continue;
-                    }
+                for (label, s) in rows {
                     let _ = writeln!(out, "    {label}: {}", summary(m, &s, tz));
+                }
+                for label in withheld {
+                    refused.push(format!("{} for {label}", m.name()));
                 }
             }
         }
@@ -325,17 +313,9 @@ fn models(
         out.push_str("(`by: category` does not apply to `models`: each server is its own row)\n");
     }
     if window == Window::Now {
-        // A speech kind's speed exists only in a minute it spoke, so a day's
-        // lookback would print when the last call was. Its "now" looks back
-        // as far as `voice.live` does, and says no time (R7, review of #660).
-        let lookback = |k: u8| {
-            if is_speech(k) {
-                SPEAKING_NOW
-            } else {
-                chrono::Duration::hours(24)
-            }
-        };
-        let Some(rows) = window::models_now(db, now, lookback)? else {
+        // A speech kind's "now" speed is the last three minutes' and carries
+        // no time: `models_now` enforces it (R7, review of #660).
+        let Some(rows) = window::models_now(db, now)? else {
             return Ok(ToolOutput::ok(
                 "Model servers: the series does not exist yet.",
             ));
@@ -361,7 +341,7 @@ fn models(
         }
         return Ok(ToolOutput::ok(out));
     }
-    let Some(rows) = window::models_window(db, window, now, |k| !is_speech(k))? else {
+    let Some(rows) = window::models_window(db, window, now)? else {
         return Ok(ToolOutput::ok(
             "Model servers: the series does not exist yet.",
         ));
@@ -395,7 +375,7 @@ fn model_now(r: &ModelNow, tz: Option<chrono_tz::Tz>) -> String {
     let mem = r.mem_bytes.map_or("memory unknown".to_string(), |b| {
         format!("{:.1} GiB", b / GIB)
     });
-    let speed = match (&r.speed, is_speech(r.kind_id)) {
+    let speed = match (&r.speed, window::is_speech(r.kind_id)) {
         // Now only, and no time: a time would say when the call was (R7).
         (Some((_, v)), true) => format!("; speaking now, {}", speed_text(r.kind_id, *v)),
         (None, true) => "; not speaking now".into(),

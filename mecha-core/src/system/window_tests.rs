@@ -68,9 +68,7 @@ fn no_series_is_said_and_now_is_not_a_window() {
         .unwrap()
         .is_none());
     assert!(read(&db, Measurement::CpuBusy, Window::Now, now).is_err());
-    assert!(models_now(&db, now, |_| Duration::hours(24))
-        .unwrap()
-        .is_none());
+    assert!(models_now(&db, now).unwrap().is_none());
 }
 
 /// By kind of work, one summary per category, read from its named column.
@@ -89,21 +87,27 @@ fn a_category_window_reads_each_kinds_column() {
         ],
     )
     .unwrap();
-    let Some(Windowed::ByCategory(cats)) =
-        read(&db, Measurement::CategoryMemory, Window::H1, now).unwrap()
+    let Some(Windowed::ByCategory {
+        rows: cats,
+        withheld,
+    }) = read(&db, Measurement::CategoryMemory, Window::H1, now).unwrap()
     else {
         panic!("by category")
     };
+    assert_eq!(
+        withheld,
+        vec![Category::Voice.label()],
+        "R7, in the read itself"
+    );
     let chat = cats
         .iter()
         .find(|(l, _)| *l == Category::ChatModel.label())
         .unwrap();
     assert_eq!(chat.1.latest.as_ref().map(|l| l.1), Some(4096.0));
-    let voice = cats
-        .iter()
-        .find(|(l, _)| *l == Category::Voice.label())
-        .unwrap();
-    assert_eq!(voice.1.minutes, 0);
+    assert!(
+        !cats.iter().any(|(l, _)| *l == Category::Voice.label()),
+        "the voice category is never read over a window"
+    );
 }
 
 /// The model rows: the newest per kind with its last measured speed, and a
@@ -133,17 +137,13 @@ fn model_rows_show_what_is_loaded_and_each_switch() {
     row(10, 1, "big-model", Some(40.0), 3);
     row(10, 5, "voice-model", None, 1);
 
-    let now_rows = models_now(&db, now, |_| Duration::hours(24))
-        .unwrap()
-        .unwrap();
+    let now_rows = models_now(&db, now).unwrap().unwrap();
     let chat = now_rows.iter().find(|r| r.kind_id == 1).unwrap();
     assert_eq!(chat.model.as_deref(), Some("big-model"));
     assert_eq!(chat.speed.as_ref().map(|s| s.1), Some(40.0));
 
-    let w = models_window(&db, Window::H1, now, |k| k != 5)
-        .unwrap()
-        .unwrap();
-    assert_eq!(w.len(), 1, "the kind `keep` refuses is not read");
+    let w = models_window(&db, Window::H1, now).unwrap().unwrap();
+    assert_eq!(w.len(), 1, "a speech kind is not read over a window (R7)");
     assert_eq!(
         w[0].models,
         vec![("small-model".to_string(), 1), ("big-model".to_string(), 2)]
@@ -153,5 +153,29 @@ fn model_rows_show_what_is_loaded_and_each_switch() {
         w[0].speed.mean,
         Some(65.0),
         "minutes without requests are left out"
+    );
+}
+
+/// R7 in the read: `voice.live` over a window is withheld here, whatever
+/// formats it; and a measurement with no row while the sampler ran is "not on
+/// this machine", not a quiet window (review of #660).
+#[test]
+fn voice_is_withheld_and_absence_is_not_here() {
+    let db = scratch();
+    let c = Connection::open(&db).unwrap();
+    c.execute_batch(super::super::SCHEMA).unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 10, 12, 12, 0, 0).unwrap();
+    c.execute(
+        "INSERT INTO system_minute (at) VALUES (?1)",
+        params![at(now - Duration::minutes(5))],
+    )
+    .unwrap();
+    assert_eq!(
+        read(&db, Measurement::VoiceLive, Window::H1, now).unwrap(),
+        Some(Windowed::Withheld)
+    );
+    assert_eq!(
+        read(&db, Measurement::GpuTemperature, Window::H1, now).unwrap(),
+        Some(Windowed::NotHere)
     );
 }
