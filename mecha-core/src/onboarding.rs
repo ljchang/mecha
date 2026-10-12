@@ -887,21 +887,22 @@ fn with_next(mut step: Step, next: Option<&str>) -> Step {
             let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
             // A sign-in says where it goes: the question is "open a sign-in
             // page?", and a bare command line does not say that it is.
-            let description = if argv == ["mecha-mail", "auth"] {
+            // Keyed on the command, never on the word `auth`: `mecha slack
+            // auth` reads tokens from the environment and opens no browser
+            // (review of #663). Said so the yes is to what happens.
+            let description = match argv.as_slice() {
                 // The first time, mail registers the person's own sign-in app
-                // before any sign-in page (review of #663): said, so the yes
-                // is to what happens.
-                "Sign in to a mailbox — `mecha-mail auth` walks you through registering your \
-                 own sign-in app the first time (a few minutes, once), then opens the sign-in \
-                 page in your browser."
-                    .to_string()
-            } else if argv.contains(&"auth") {
-                format!(
-                    "Sign in — `{}` opens the sign-in page in your browser.",
-                    argv.join(" ")
-                )
-            } else {
-                format!("Run `{}`.", argv.join(" "))
+                // before any sign-in page.
+                ["mecha-mail", "auth"] => "Sign in to a mailbox — `mecha-mail auth` walks you \
+                                           through registering your own sign-in app the first \
+                                           time (a few minutes, once), then opens the sign-in \
+                                           page in your browser."
+                    .to_string(),
+                ["mecha-docs", "auth"] => {
+                    "Sign in — `mecha-docs auth` opens Google's sign-in page in your browser."
+                        .to_string()
+                }
+                _ => format!("Run `{}`.", argv.join(" ")),
             };
             step.with(&description, &argv, needs_terminal)
         }
@@ -1513,6 +1514,31 @@ mod tests {
         // so setup's yes is a sign-in page for either (the owner, 2026-10-12).
         assert_eq!(remedy.argv, ["mecha-mail", "auth"]);
         assert!(remedy.needs_terminal);
+    }
+
+    /// What a remedy says is what it does: the two browser sign-ins say so,
+    /// mail says it registers first, and every other command — `mecha slack
+    /// auth` included, which opens no browser — says only "Run" (review of
+    /// #663).
+    #[test]
+    fn a_remedy_says_what_its_command_does() {
+        let said = |next: &str| {
+            with_next(
+                Step::new("x", "x", Status::Missing, String::new()),
+                Some(next),
+            )
+            .remedy
+            .expect("runnable")
+            .description
+        };
+        let mail = said("mecha-mail auth");
+        assert!(mail.contains("registering your own sign-in app") && mail.contains("browser"));
+        assert!(said("mecha-docs auth").contains("browser"));
+        assert_eq!(said("mecha slack auth"), "Run `mecha slack auth`.");
+        assert_eq!(
+            said("mecha features enable web"),
+            "Run `mecha features enable web`."
+        );
     }
 
     /// `messages` is a switch like the rest: written `false` it is declined,
