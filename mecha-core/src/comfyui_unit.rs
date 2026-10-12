@@ -28,6 +28,14 @@
 //! #560 the default model is int8 safetensors through the core loader, and
 //! the GGUF node is needed only for an owner's own `.gguf`.
 //!
+//! **Idle memory goes back the way the hand install's does.** A loaded
+//! server holds ~13.6 GB until something unloads it, so the install also
+//! writes `scripts/comfyui/comfyui-idle-reset` — byte for byte, a test holds
+//! the copies equal — and a one-minute timer that runs it against this unit
+//! and port (`docs/ARCHITECTURE.md` §Image generation). The timer is enabled
+//! only once the server has passed its check, and is named `<unit>-idle` so a
+//! hand install's `mecha-comfyui-idle-reset` can sit beside it.
+//!
 //! The commit is one constant, [`COMMIT`], so a bump is that line and the
 //! locks regenerated against it (their header says how).
 //! Linux only, rendered like `stt_unit`'s, so a test installs one beside the
@@ -60,6 +68,10 @@ pub const TURBO_FILE: crate::recommend::HubFile = crate::recommend::HubFile {
 pub const COMMIT: &str = "88ab4a06566454ad89db8f0bedb970d6c08cd1b7";
 const REPO: &str = "https://github.com/comfyanonymous/ComfyUI";
 const UNIT: &str = include_str!("../units/mecha-comfyui.service");
+/// `scripts/comfyui/comfyui-idle-reset`, and the timer and service that run it.
+const IDLE_RESET: &str = include_str!("../units/mecha-comfyui-idle-reset");
+const IDLE_SERVICE: &str = include_str!("../units/mecha-comfyui-idle.service");
+const IDLE_TIMER: &str = include_str!("../units/mecha-comfyui-idle.timer");
 const LOCK_AARCH64: &str = include_str!("../locks/comfyui-cu130-aarch64.txt");
 const LOCK_X86_64: &str = include_str!("../locks/comfyui-cu130-x86_64.txt");
 /// The Python the locks were compiled for.
@@ -94,6 +106,11 @@ pub struct Naming {
 }
 
 impl Naming {
+    /// The idle reset's service and timer, without their suffixes.
+    pub fn idle(&self) -> String {
+        format!("{}-idle", self.unit)
+    }
+
     /// What `[image] url`'s default names.
     pub fn shipped() -> Naming {
         Naming {
@@ -182,6 +199,22 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@VENV@", &dir.join("venv").display().to_string())
         .replace("@TEMP@", &dir.join("tmp").display().to_string())
         .replace("@PORT@", &naming.port.to_string())
+}
+
+/// The idle reset's script under the install's tree.
+fn idle_reset_path(dir: &Path) -> PathBuf {
+    dir.join("idle-reset")
+}
+
+/// The idle reset's service and timer as installed: the script's absolute
+/// path, the server's unit and port.
+fn render_idle(dir: &Path, naming: &Naming) -> (String, String) {
+    let fill = |t: &str| {
+        t.replace("@RESET@", &idle_reset_path(dir).display().to_string())
+            .replace("@UNIT@", &naming.unit)
+            .replace("@PORT@", &naming.port.to_string())
+    };
+    (fill(IDLE_SERVICE), fill(IDLE_TIMER))
 }
 
 /// What is at the turbo model's path in this install.
@@ -394,8 +427,25 @@ pub async fn install(
             .with_context(|| format!("linking {}", link.display()))?;
     }
 
-    // --- the unit
+    // --- the unit, and the idle reset beside it
     write_owned(home, ID, &unit, &render(&dir, naming), 0o644)?;
+    let (idle_service, idle_timer) = render_idle(&dir, naming);
+    write_owned(home, ID, &idle_reset_path(&dir), IDLE_RESET, 0o755)?;
+    let idle = naming.idle();
+    write_owned(
+        home,
+        ID,
+        &units.join(format!("{idle}.service")),
+        &idle_service,
+        0o644,
+    )?;
+    write_owned(
+        home,
+        ID,
+        &units.join(format!("{idle}.timer")),
+        &idle_timer,
+        0o644,
+    )?;
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     let service = format!("{}.service", naming.unit);
     crate::engine_gate::systemctl("enable", &[&service])?;
@@ -426,6 +476,20 @@ pub async fn install(
         };
         return Err(e.context(stopped));
     }
+    // Only a checked server gets the timer: one that failed is stopped above,
+    // and a reset of a stopped unit has nothing to release. Without the timer
+    // a loaded server holds its memory for good, so a failure here fails the
+    // install, which a re-run resumes.
+    let timer = format!("{idle}.timer");
+    crate::engine_gate::systemctl("enable", &["--now", &timer]).with_context(|| {
+        format!(
+            "{service} is installed and answers, but its idle reset could not be started, so \
+             a loaded model would stay in memory — run `systemctl --user enable --now {timer}`"
+        )
+    })?;
+    say(&format!(
+        "{timer} restarts it once it has held a model unused for 15 minutes"
+    ));
     Manifest::finish(home, ID)
 }
 
@@ -625,14 +689,20 @@ pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
 pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
     let unit = format!("{}.service", naming.unit);
+    // The timer first, so no reset restarts the server being removed.
+    let timer = format!("{}.timer", naming.idle());
+    let _ = crate::engine_gate::systemctl("disable", &["--now", &timer]);
     let _ = crate::engine_gate::systemctl("disable", &["--now", &unit]);
-    let path = crate::engine_gate::unit_dir(m)?.join(&unit);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
+    for name in [timer, format!("{}.service", naming.idle()), unit] {
+        let path = units.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+        }
+        Manifest::unrecord(home, ID, &path)?;
     }
-    Manifest::unrecord(home, ID, &path)?;
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     let dir = dir(home);
     // Recorded paths first, deepest first, then the tree: a record is
@@ -921,6 +991,41 @@ mod tests {
         );
     }
 
+    /// The idle reset that runs is the hand install's script, byte for byte —
+    /// so a fix made in one reaches the other or fails here.
+    #[test]
+    fn the_shipped_idle_reset_is_the_scripts_copy() {
+        let script = include_str!("../../scripts/comfyui/comfyui-idle-reset");
+        assert_eq!(IDLE_RESET, script);
+    }
+
+    /// The timer runs the script under this home against this unit and port,
+    /// under a name a hand install's reset does not use.
+    #[test]
+    fn the_idle_reset_renders_this_home_unit_and_port() {
+        let dir = Path::new("/srv/owner/.mecha/sidecars/comfyui");
+        let naming = Naming {
+            unit: "mecha-comfyui".into(),
+            port: 9188,
+        };
+        let (service, timer) = render_idle(dir, &naming);
+        assert!(!service.contains('@'), "{service}");
+        assert!(!timer.contains('@'), "{timer}");
+        assert!(service.contains("ExecStart=/srv/owner/.mecha/sidecars/comfyui/idle-reset\n"));
+        // The script's defaults name the hand install's `comfyui` on :8188;
+        // every one of them is set here.
+        for line in [
+            "Environment=COMFY_UNIT=mecha-comfyui\n",
+            "Environment=COMFY_URL=http://127.0.0.1:9188\n",
+            "Environment=COMFY_PORT=9188\n",
+        ] {
+            assert!(service.contains(line), "{line} in {service}");
+        }
+        assert!(timer.contains("OnUnitActiveSec=1min"));
+        // `scripts/comfyui/install.sh` installs `mecha-comfyui-idle-reset`.
+        assert_eq!(Naming::shipped().idle(), "mecha-comfyui-idle");
+    }
+
     /// A config with no `[image]` gets one naming the install's temp dir,
     /// which loads; one the owner wrote is left as it is.
     #[test]
@@ -1041,7 +1146,18 @@ mod tests {
         let stamped =
             std::fs::read_to_string(dir(&m.mecha_home).join("ComfyUI").join(COMMIT_STAMP));
         let turbo = turbo_linked(&m.mecha_home);
+        let timer = format!("{}.timer", naming.idle());
+        let ticking = std::process::Command::new("systemctl")
+            .args(["--user", "is-active", "--quiet", &timer])
+            .status()
+            .is_ok_and(|s| s.success());
         let cleaned = remove(&m, &naming);
+        let units = crate::engine_gate::unit_dir(&m).unwrap().to_path_buf();
+        let left: Vec<PathBuf> = [timer.clone(), format!("{}.service", naming.idle())]
+            .into_iter()
+            .map(|n| units.join(n))
+            .filter(|p| p.exists())
+            .collect();
         eprintln!("{said:#?}");
         let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
@@ -1049,6 +1165,8 @@ mod tests {
         cleaned.unwrap();
         assert_eq!(stamped.unwrap(), COMMIT);
         assert!(turbo, "the turbo model was linked");
+        assert!(ticking, "{timer} was started");
+        assert!(left.is_empty(), "removal left {left:?}");
         let man = man.unwrap();
         assert!(
             !man.entries.iter().any(|e| e.sidecar == ID),
