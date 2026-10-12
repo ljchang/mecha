@@ -134,8 +134,10 @@ pub const SERVERS: [Server; 6] = [
     },
     Server {
         kind: ModelKind::Image,
-        // `mecha-comfyui` is the unit `features enable image` installs.
-        units: &["comfyui", "mecha-comfyui"],
+        // `mecha-comfyui` is the unit `features enable image` installs, and
+        // comes first as in `sidecar.rs` (review of #645); the running one
+        // of the two wins either way.
+        units: &["mecha-comfyui", "comfyui"],
         name: NameFrom::ImageConfig,
     },
 ];
@@ -156,7 +158,7 @@ pub struct Perf {
     pub audio_secs: f64,
     pub work_ms: f64,
     /// Pictures: seconds from queue to finished, summed.
-    pub job_secs: f64,
+    pub job_secs_total: f64,
 }
 
 impl Perf {
@@ -182,7 +184,8 @@ impl Perf {
 
     /// Mean seconds per picture.
     pub fn job_secs(&self) -> Option<f64> {
-        (self.requests > 0 && self.job_secs > 0.0).then(|| self.job_secs / self.requests as f64)
+        (self.requests > 0 && self.job_secs_total > 0.0)
+            .then(|| self.job_secs_total / self.requests as f64)
     }
 }
 
@@ -328,9 +331,9 @@ pub fn router_view(body: Option<&str>) -> RouterView {
     else {
         return unread;
     };
-    let mut resident: Vec<(String, Option<u16>)> = models
+    let residents: Vec<&RouterModel> = models.iter().filter(|m| m.is_resident()).collect();
+    let mut resident: Vec<(String, Option<u16>)> = residents
         .iter()
-        .filter(|m| m.is_resident())
         .filter_map(|m| {
             let args = &m.status.args;
             let port = args
@@ -345,6 +348,11 @@ pub fn router_view(body: Option<&str>) -> RouterView {
             Some((clean_name(&m.id)?, port))
         })
         .collect();
+    // A resident model whose name does not survive `clean_name` is still
+    // resident: dropping it would claim "nothing resident" (review of #658).
+    if resident.len() < residents.len() {
+        return unread;
+    }
     resident.sort();
     let ports: Option<Vec<u16>> = resident.iter().map(|(_, p)| *p).collect();
     let names: Vec<String> = resident.into_iter().map(|(n, _)| n).collect();
@@ -407,7 +415,9 @@ fn timing(line: &str, label: &str) -> Option<(f64, u64)> {
 /// unloaded belongs to a model this row does not name, so it is left out.
 pub fn fold_perf(kind: ModelKind, lines: &[String], ports: Option<&[u16]>) -> Perf {
     let mut p = Perf::default();
-    for line in lines {
+    // Per physical line: a message that ever carries more than one (a
+    // timing block logged at once) is read the same as separate ones.
+    for line in lines.iter().flat_map(|m| m.lines()) {
         if let Some(ports) = ports {
             let ours = ports
                 .iter()
@@ -454,7 +464,7 @@ pub fn fold_perf(kind: ModelKind, lines: &[String], ports: Option<&[u16]>) -> Pe
             ModelKind::Image => {
                 if let Some(secs) = number_before(line, "Prompt executed in", " seconds") {
                     p.requests += 1;
-                    p.job_secs += secs;
+                    p.job_secs_total += secs;
                 }
             }
         }
@@ -463,6 +473,24 @@ pub fn fold_perf(kind: ModelKind, lines: &[String], ports: Option<&[u16]>) -> Pe
 }
 
 // ---- reading the machine ----
+
+/// Which of a server's units is its row: the running one when one is, else
+/// the first installed — with both ComfyUI units installed, the one serving
+/// is the row (review of #658). `None` when none is installed here.
+pub fn pick_unit<'a>(
+    units: &[&'a str],
+    states: &BTreeMap<String, UnitState>,
+) -> Option<(&'a str, UnitState)> {
+    let installed: Vec<(&'a str, UnitState)> = units
+        .iter()
+        .filter_map(|u| states.get(*u).filter(|st| st.installed).map(|st| (*u, *st)))
+        .collect();
+    installed
+        .iter()
+        .find(|(_, st)| st.running)
+        .or_else(|| installed.first())
+        .copied()
+}
 
 /// A loopback HTTP GET, bounded: the body on a 200, `None` otherwise. Plain
 /// HTTP/1.0, so the answer is never chunked and ends when the server closes.
@@ -516,14 +544,7 @@ pub fn collect(
     // The servers here: the first of each one's units that is installed.
     let present: Vec<(&Server, &str, UnitState)> = SERVERS
         .iter()
-        .filter_map(|s| {
-            s.units.iter().find_map(|u| {
-                states
-                    .get(*u)
-                    .filter(|st| st.installed)
-                    .map(|st| (s, *u, *st))
-            })
-        })
+        .filter_map(|s| pick_unit(s.units, &states).map(|(u, st)| (s, u, st)))
         .collect();
 
     // One journal read for every server's lines since the previous sample's

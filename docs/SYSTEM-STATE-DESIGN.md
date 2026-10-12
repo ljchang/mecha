@@ -831,7 +831,11 @@ is a slice of S2b, built ahead of the rest; the rest of S2b stays parked.
   exclude queue wait, and concurrent requests' times overlap, so a board
   must not read `gen_tps` as the server's capacity ("throughput is wall
   clock", CLAUDE.md). A window whose journal could not be read is not
-  dropped: the cursor stays, and the next sample reads it.
+  dropped: the cursor stays, and the next sample reads it. A window whose
+  journal was read but whose chat lines could not be attributed (the
+  router's listing unread) *is* dropped for the chat row, deliberately:
+  the next row may name a different model, and attributing the lines there
+  would be the wrong guess.
 - **A model switch inside a minute** is read correctly: each router
   instance prefixes its lines with its port, `GET /models` gives the loaded
   instance's port, and lines from an instance unloaded since are left out

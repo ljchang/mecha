@@ -1760,6 +1760,17 @@ mod model_rows {
             r#"{"data":[{"id":"fictional-b","status":{"value":"loading","args":["--port","0"]}}]}"#;
         assert_eq!(view(ephemeral).ports, None, "port 0 prefixes no line");
 
+        let unnamable = r#"{"data":[{"id":"\u00e9\u00e8","status":{"value":"loaded","args":["--port","44035"]}}]}"#;
+        assert_eq!(
+            view(unnamable),
+            RouterView {
+                model: None,
+                known: false,
+                ports: None
+            },
+            "a resident model with no keepable name is unknown, never 'nothing resident'"
+        );
+
         let portless = r#"{"data":[{"id":"fictional-b","status":{"value":"loaded","args":[]}}]}"#;
         let v = view(portless);
         assert_eq!((v.model.as_deref(), v.known), (Some("fictional-b"), true));
@@ -1767,6 +1778,47 @@ mod model_rows {
             v.ports, None,
             "its lines cannot be attributed: speed unknown"
         );
+    }
+
+    /// With two units for one server, the running one is the row; with
+    /// neither running, the first installed; with none installed, no row.
+    #[test]
+    fn the_running_unit_is_the_servers_row() {
+        let st = |installed, running| UnitState {
+            installed,
+            running,
+            pid: 0,
+        };
+        let mut states = BTreeMap::new();
+        states.insert("unit-a".to_string(), st(true, false));
+        states.insert("unit-b".to_string(), st(true, true));
+        assert_eq!(
+            pick_unit(&["unit-a", "unit-b"], &states).map(|p| p.0),
+            Some("unit-b")
+        );
+        states.insert("unit-b".to_string(), st(true, false));
+        assert_eq!(
+            pick_unit(&["unit-a", "unit-b"], &states).map(|p| p.0),
+            Some("unit-a")
+        );
+        states.insert("unit-a".to_string(), st(false, false));
+        assert_eq!(
+            pick_unit(&["unit-a", "unit-b"], &states).map(|p| p.0),
+            Some("unit-b")
+        );
+        assert_eq!(pick_unit(&["unit-c"], &states), None);
+    }
+
+    /// A timing block logged as one message is read line by line.
+    #[test]
+    fn a_multi_line_message_is_read_per_line() {
+        let block = vec![
+            "1.1 I slot print_timing: id  0 | task 1 | prompt eval time =     100.00 ms /    50 tokens (x)\n\
+             1.1 I slot print_timing: id  0 | task 1 |        eval time =    1000.00 ms /   100 tokens (x)"
+                .to_string(),
+        ];
+        let p = fold_perf(ModelKind::Ocr, &block, None);
+        assert_eq!((p.requests, p.prompt_tokens, p.gen_tokens), (1, 50, 100));
     }
 
     /// A minute whose journal could not be read does not move the window,
