@@ -38,8 +38,8 @@ Not to be re-asked.
 | R14 | **The host dashboard may be made public — later.** For now it is private, with invites (R6); publishing it is an owner act at a time of the owner's choosing, and when it happens its factory datasets are coarsened as §11.4 says. (Ruled 2026-10-09.) |
 | R15 | **The name is `hud`.** `mecha serve` already calls its whole web surface "the dashboard", so every identifier this feature owns is `hud`: the CLI (`mecha hud …`), the route (`#hud/<id>`, `/api/hud`), the store (`~/.mecha/hud/`), the module (`mecha_core::hud`), the tool (`hud_preview`), the spec file (`hud.json`) and the factory template (`hud/`). "Dashboard" stays the plain-English noun in prose. (Ruled 2026-10-09.) |
 | R16 | **A private page that outlives its grant asks for sign-in again.** The factory's view grant covers `/b/{id}/data/` as well as the version the page loaded; when it expires the page keeps the last numbers, marks them stale and says "sign in again". No refresh path and no new token type: a shared link never outlives its 60 minutes (§6.4, §10 item 2). (Ruled 2026-10-11.) |
-| R18 | **A conversation drafts a board with tools that work in a read-only chat.** The draft is the tools' *input* — the spec and each loader's TOML — never files in a workspace: `hud_sources` (each registered source's tables, a few recent rows of each, the boards, and the drafting guide; with a query, its rows), `hud_preview` (every check, and every loader run once, returning row counts, shapes and first rows), and `hud_propose` (stages the draft for the owner's one-tap install on the Dashboards page, on `persona_propose`'s footing). The screenshot preview of §5.3 follows as its own PR. The owner: "the whole point of this feature is that there is a tool for the agent to draft boards itself." (Ruled 2026-10-12; amends §5.3.) |
 | R17 | **The web outbox previews a dashboard publish in this arc** — §6.5's separate preview origin and sandboxed frame are built with step 5, not deferred, so a release can be reviewed from the phone. (Ruled 2026-10-11.) |
+| R18 | **A conversation drafts a board with tools that work in a read-only chat.** The draft is the tools' *input* — the spec and each loader's TOML — never files in a workspace: `hud_sources` (each registered source's tables, a few recent rows of each, the boards, and the drafting guide; with a query, its rows), `hud_preview` (every check, and every loader run once, returning row counts, shapes and first rows), and `hud_propose` (stages the draft for the owner's one-tap install on the Dashboards page, on `persona_propose`'s footing). The screenshot preview of §5.3 follows as its own PR. The owner: "the whole point of this feature is that there is a tool for the agent to draft boards itself." (Ruled 2026-10-12; amends §5.3.) |
 
 ---
 
@@ -598,10 +598,19 @@ draft is the tools' input instead, and three read-only tools carry it
   `Origin`, and the draft's digest). The same id again revises it, and at most
   `draft::MAX_PENDING` wait. An installed board's id proposes a replacement.
 
-Preview and propose declare `private` and `untrusted` and mark a result
-`from_outside` when a source it read is external; egress stays `None`
-because every runnable source is a local file. None of the three is in an
-incognito chat's allowlist.
+`hud_sources` and `hud_preview` declare `private` and `untrusted` and mark a
+result `from_outside` when a source it read is external; egress stays `None`
+because every runnable source is a local file. `hud_propose` returns nothing
+read from a source: a staged draft is named by its datasets, a refused one by
+its refusals and each loader's reason, which never carry a value. So it
+declares no reach. That is what keeps its record honest. The proposal's
+`Origin` comes from `ToolCtx::recorded_taint`, the conversation as recorded
+*before* the turn's batch, not from `ToolCtx::taint`. The latter is the
+send gate's conservative union and folds in every batched tool's declared
+reach, so a proposal read from it was always "untrusted" (review of #659). A
+waiting proposal read back by `hud_preview` is marked `from_outside` unless
+its origin is clean. None of the three is in an incognito chat's
+allowlist.
 
 **Installing is the owner's act.** `mecha hud install <dir>` copies a
 draft into `~/.mecha/hud/boards/<id>/` and enables its loaders. The `<id>` is

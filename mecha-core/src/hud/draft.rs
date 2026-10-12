@@ -521,6 +521,10 @@ impl Store {
             serde_json::to_vec_pretty(&meta)?,
         )?;
         let target = self.proposal_dir(draft.id())?;
+        // The swap and an accept's check-then-install take turns, so a
+        // revision never lands between the owner's digest and the copy
+        // (review of #659, pass 3).
+        let _swap = super::store::lock(&self.proposals())?;
         if target.exists() {
             std::fs::remove_dir_all(&target)
                 .with_context(|| format!("replacing the proposal {:?}", draft.id()))?;
@@ -589,6 +593,9 @@ impl Store {
         shown: &str,
         now: DateTime<Utc>,
     ) -> Result<std::result::Result<Accepted, Refusals>> {
+        // Held from the digest check through the copy: see `propose`.
+        crate::create_private_dir(&self.proposals())?;
+        let _swap = super::store::lock(&self.proposals())?;
         let proposal = match self.proposal(id)? {
             None => {
                 return Ok(Err(Refusals(vec![Refusal::new(

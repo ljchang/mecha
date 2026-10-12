@@ -5984,7 +5984,11 @@ the owner's rulings; this section is the invariants a change to
   is checked by `Installed::load_dir` and run by `draft::fetch`, the refresh's
   own path, so a draft that previews clean is one that installs and
   refreshes; keep them one path. `hud_propose` stages in
-  `~/.mecha/hud/proposals/` and never touches `boards/`. An accept names the
+  `~/.mecha/hud/proposals/` and never touches `boards/`. It returns no
+  source value and declares no reach, and it records its `Origin` from
+  `ToolCtx::recorded_taint`. `ToolCtx::taint` is the send gate's union,
+  which includes the proposer's own declaration and would mark every
+  proposal untrusted. An accept names the
   digest the owner was shown, recomputed from the files, so a revision in
   between is refused. A replacement carries the ledger, which keeps publish
   generations monotonic, and the publish markers.

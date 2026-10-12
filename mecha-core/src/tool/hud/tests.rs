@@ -42,9 +42,13 @@ impl Drop for Fixture {
     }
 }
 
+/// A context as the loop stamps it: `taint` is the turn's conservative
+/// union, `recorded_taint` the conversation before the batch. Tests here set
+/// both alike; `agent.rs`'s loop test pins how the loop sets them apart.
 fn ctx(taint: Option<Taint>) -> ToolCtx {
     ToolCtx {
         taint,
+        recorded_taint: taint,
         ..Default::default()
     }
 }
@@ -119,13 +123,15 @@ async fn a_third_party_source_marks_every_result_from_outside() {
         .unwrap();
     assert!(!preview.is_error, "{}", preview.content);
     assert!(preview.external);
-    // A proposal's row counts came out of the same source (review of #659).
+    // A proposal returns nothing read from the source — not even a count —
+    // so it carries nothing from outside (review of #659, pass 3).
     let propose = HudPropose::new(f.store.clone())
         .call(draft_input("speed"), &ctx(None))
         .await
         .unwrap();
     assert!(!propose.is_error, "{}", propose.content);
-    assert!(propose.external);
+    assert!(!propose.external);
+    assert!(!propose.content.contains("88.25"), "{}", propose.content);
 }
 
 /// A proposal that is waiting but no longer passes its checks is said, not
@@ -280,16 +286,16 @@ fn the_tools_declare_what_they_return() {
     let preview = HudPreview::new(store.clone());
     let propose = HudPropose::new(store);
     assert!(sources.read_only() && preview.read_only() && propose.read_only());
-    // `hud_propose` too: a refused draft is described with the rows its
-    // other loaders returned (review of #659).
-    for caps in [
-        sources.capabilities(),
-        preview.capabilities(),
-        propose.capabilities(),
-    ] {
+    for caps in [sources.capabilities(), preview.capabilities()] {
         assert!(caps.private_data && caps.untrusted_input);
         assert_eq!(caps.egress, crate::tool::Egress::None);
     }
+    // `hud_propose` returns no source values, and must not declare reach:
+    // its own declaration would fold into the taint it records (review of
+    // #659, pass 3).
+    let caps = propose.capabilities();
+    assert!(!caps.private_data && !caps.untrusted_input);
+    assert_eq!(caps.egress, crate::tool::Egress::None);
 }
 
 /// A waiting proposal read back carries the proposing conversation's taint:
@@ -335,4 +341,23 @@ async fn a_proposal_read_back_carries_its_origin() {
         );
         assert!(!installed.external, "the owner accepted it");
     }
+}
+
+/// A refused draft names each loader's outcome and reason, never a value:
+/// the working loader's rows stay out of the result.
+#[tokio::test]
+async fn a_refused_proposal_carries_no_rows() {
+    let f = Fixture::new("third-party");
+    let mut input = draft_input("speed");
+    input["spec"]["datasets"] = json!(["speed", "broken"]);
+    input["loaders"]["broken"] = json!(LOADER.replace("FROM model_minute", "FROM no_such_table"));
+    let out = HudPropose::new(f.store.clone())
+        .call(input, &ctx(None))
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("broken: failed"), "{}", out.content);
+    assert!(out.content.contains("speed: runs"), "{}", out.content);
+    assert!(!out.content.contains("88.25"), "{}", out.content);
+    assert!(!out.external);
 }
