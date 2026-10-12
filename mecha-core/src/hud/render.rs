@@ -313,6 +313,8 @@ pub fn crop(png: &[u8]) -> Result<Cropped> {
     Ok(Cropped {
         png: out,
         cut: last + 1 >= h,
+        width: w,
+        height: keep,
     })
 }
 
@@ -322,6 +324,19 @@ pub fn crop(png: &[u8]) -> Result<Cropped> {
 pub struct Cropped {
     pub png: Vec<u8>,
     pub cut: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Cropped {
+    /// The width the model will see once the picture is capped at the door
+    /// (`image::MAX_EDGE`): a board taller than the cap is scaled down whole,
+    /// and small labels with it (review of #662). `None` when it fits.
+    pub fn scaled_width(&self) -> Option<u32> {
+        let edge = crate::image::MAX_EDGE;
+        let longest = self.width.max(self.height);
+        (longest > edge).then(|| (self.width as u64 * edge as u64 / longest as u64) as u32)
+    }
 }
 
 // ---- inside the sandbox -------------------------------------------------
