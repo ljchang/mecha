@@ -471,11 +471,6 @@ impl Store {
         if !preview.is_clean() {
             return Ok(Proposed::NotClean(preview));
         }
-        let waiting = self.proposal_ids()?;
-        let revised = waiting.iter().any(|w| w == draft.id());
-        if !revised && waiting.len() >= MAX_PENDING {
-            return Ok(Proposed::TooMany);
-        }
 
         crate::create_private_dir(&self.proposals())?;
         // Per call, not per process: `serve` holds many chats, and two
@@ -523,8 +518,15 @@ impl Store {
         let target = self.proposal_dir(draft.id())?;
         // The swap and an accept's check-then-install take turns, so a
         // revision never lands between the owner's digest and the copy
-        // (review of #659, pass 3).
+        // (review of #659, pass 3); the cap is counted under it too, so
+        // chats proposing at once cannot each see room for one more.
         let _swap = super::store::lock(&self.proposals())?;
+        let waiting = self.proposal_ids()?;
+        let revised = waiting.iter().any(|w| w == draft.id());
+        if !revised && waiting.len() >= MAX_PENDING {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Ok(Proposed::TooMany);
+        }
         if target.exists() {
             std::fs::remove_dir_all(&target)
                 .with_context(|| format!("replacing the proposal {:?}", draft.id()))?;
@@ -641,6 +643,9 @@ impl Store {
     /// Set a waiting proposal aside. `false` when none was waiting.
     pub fn reject(&self, id: &str) -> Result<bool> {
         let dir = self.proposal_dir(id)?;
+        // As `propose` and `accept`: never inside a revision's swap.
+        crate::create_private_dir(&self.proposals())?;
+        let _swap = super::store::lock(&self.proposals())?;
         if !dir.is_dir() {
             return Ok(false);
         }
