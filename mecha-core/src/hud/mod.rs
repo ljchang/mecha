@@ -39,6 +39,7 @@
 pub mod draft;
 pub mod loader;
 pub mod publish;
+pub mod render;
 pub mod runner;
 pub mod source;
 pub mod spec;

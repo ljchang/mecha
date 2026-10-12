@@ -5995,6 +5995,14 @@ the owner's rulings; this section is the invariants a change to
   digest the owner was shown, recomputed from the files, so a revision in
   between is refused. A replacement carries the ledger, which keeps publish
   generations monotonic, and the publish markers.
+- **A preview's picture is drawn with no network, by the kernel**
+  (`hud::render`, step 6). The browser runs inside `bwrap --unshare-all`,
+  served the bundle on the sandbox's own loopback under the interactive CSP.
+  Of the home it binds only the browser's own directory, the bundle and the
+  output directory (both in the store's scratch space) and this binary;
+  never `~/.mecha` as a whole, keys or transcripts. Without `bwrap` or a browser there is no
+  picture, said; there is never an unconfined fallback. `look` is offered
+  only to a model that can see, on `image_view`'s rule.
 - **The renderer is ours, and nothing agent-authored executes in it**
   (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
   inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
@@ -6078,6 +6086,15 @@ was ever deployed.
 - **A rate never spans a reset or a switch.** `delta` returns `None` when
   a counter fell or its `ident` (device number, interface index) changed.
   Interfaces are keyed by index, so a name never enters the series.
+- **The model reads the machine through `system_read` only (S5, R3, R7).**
+  It has a closed schema (a name, a group, `models`, a window, a
+  breakdown), no SQL and no path, and it declares `private` and nothing
+  else. It sits behind `[features] system` and `Lever::SystemRead`, which
+  eval throws, and is on no persona's list and in no incognito allowlist.
+  Over a window, the voice measurements, the voice category and the speech
+  models are refused by name, because they log when calls happened; `now`
+  answers them. `mecha system read` prints the tool's own text, so the two
+  share one formatter.
 - **The memory floor refuses before allocating (S6).** `system::floor::admit`
   is a pure function of two readings and a stated need. The floor is the
   need plus `[system] memory_reserve_mb`, and the pressure ceiling refuses

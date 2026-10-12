@@ -123,11 +123,7 @@ fn csp_for(origin: &str) -> String {
         .split(['/', ':'])
         .next()
         .unwrap_or_default();
-    format!(
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
-         font-src 'self'; connect-src 'self'; frame-ancestors https://{host}:*; \
-         base-uri 'none'; form-action 'none'"
-    )
+    mecha_core::hud::publish::interactive_csp(Some(&format!("https://{host}:*")))
 }
 
 /// A preview origin `[web] preview_origin` may name: `https://` and a host
