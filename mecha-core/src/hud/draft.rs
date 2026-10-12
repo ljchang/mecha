@@ -597,7 +597,7 @@ impl Store {
     ) -> Result<std::result::Result<Accepted, Refusals>> {
         // Held from the digest check through the copy: see `propose`.
         crate::create_private_dir(&self.proposals())?;
-        let _swap = super::store::lock(&self.proposals())?;
+        let swap = super::store::lock(&self.proposals())?;
         let proposal = match self.proposal(id)? {
             None => {
                 return Ok(Err(Refusals(vec![Refusal::new(
@@ -632,6 +632,9 @@ impl Store {
         // Installed now, whatever the refresh says: a board that does not
         // load here is the refresh's finding (`mecha hud list`), never a
         // refusal of an accept that already landed (review of #659).
+        // The proposal is settled; a refresh's queries need not hold a
+        // concurrent `propose` waiting (review of #659, pass 5).
+        drop(swap);
         let refreshed = self.refresh(id, now, Which::All)?.unwrap_or_default();
         Ok(Ok(Accepted {
             installed,

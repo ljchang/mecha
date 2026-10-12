@@ -206,9 +206,24 @@ pub(super) fn proposal_data_at(store: &Store, id: &str, name: &str) -> Response 
     if let Some(r) = unproposed(store, id) {
         return r;
     }
+    // Three answers kept apart, as `data_at` keeps them: a proposal that no
+    // longer passes is not a missing dataset, nor is a store that could not
+    // be read (review of #659, pass 5).
     let declared = match store.proposal(id) {
         Ok(Some(Ok(p))) => p.installed.spec().datasets().iter().any(|d| d == name),
-        _ => false,
+        Ok(None) => false,
+        Ok(Some(Err(refusals))) => {
+            return fail(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("the proposal {id:?} does not pass its checks: {refusals}"),
+            )
+        }
+        Err(e) => {
+            return fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the proposal {id:?} could not be read: {e:#}"),
+            )
+        }
     };
     if !declared {
         return fail(
@@ -274,7 +289,9 @@ pub(super) fn reject_at(store: &Store, id: &str) -> Response {
         return r;
     }
     match store.reject(id) {
-        Ok(_) => Json(serde_json::json!({ "ok": true, "output": "Rejected." })).into_response(),
+        Ok(true) => Json(serde_json::json!({ "ok": true, "output": "Rejected." })).into_response(),
+        // Gone between the listing and the removal: say the tap hit nothing.
+        Ok(false) => fail(StatusCode::NOT_FOUND, format!("no proposal {id:?}")),
         Err(e) => fail(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("the proposal {id:?} could not be removed: {e:#}"),
@@ -720,6 +737,13 @@ mod tests {
         let (_s, store, _) = proposed();
         assert_eq!(reject_at(&store, "trend").status(), StatusCode::OK);
         assert_eq!(reject_at(&store, "trend").status(), StatusCode::NOT_FOUND);
+        // A proposal that no longer passes is not a missing dataset.
+        let (_s2, store2, _) = proposed();
+        std::fs::write(store2.root().join("proposals/trend/hud.json"), "{").unwrap();
+        assert_eq!(
+            proposal_data_at(&store2, "trend", "visits").status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
         assert!(store.board_ids().unwrap().is_empty());
     }
 }

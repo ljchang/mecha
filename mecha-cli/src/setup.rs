@@ -1595,10 +1595,14 @@ async fn prepare_tools_carrying(
                     registry.insert(Arc::new(HudPropose::new(store)));
                 }
             } else if hud_named {
-                eprintln!(
-                    "mecha: the dashboard tools are not registered — no source is registered in \
-                 ~/.mecha/hud/sources.toml"
-                );
+                // Why, as the store says it: a file that does not load is not
+                // an absent one (review of #659, pass 5).
+                let why = match store.sources() {
+                    Ok(Ok(_)) => "no source is registered in ~/.mecha/hud/sources.toml".to_string(),
+                    Ok(Err(r)) => format!("~/.mecha/hud/sources.toml does not load: {r}"),
+                    Err(e) => format!("~/.mecha/hud/sources.toml could not be read: {e:#}"),
+                };
+                eprintln!("mecha: the dashboard tools are not registered — {why}");
             }
         }
     }
