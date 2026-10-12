@@ -79,7 +79,8 @@ pub enum Residency {
     /// Nothing until the first request; freed after ten idle minutes.
     OnDemand,
     /// Loaded on use and released by an idle timer beside the server — image
-    /// generation with `mecha-comfyui-idle-reset` installed.
+    /// generation, whose installed server brings `mecha-comfyui-idle` and
+    /// whose hand-built one takes `mecha-comfyui-idle-reset`.
     ReleasedOnIdle,
     /// Only while working.
     PerRequest,
