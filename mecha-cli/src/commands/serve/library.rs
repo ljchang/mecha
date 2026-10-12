@@ -768,19 +768,19 @@ fn read_manifest(ws: &std::path::Path, png: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&text).ok()
 }
 
-/// Refuse a key the library must not be written from: an incognito room
-/// writes nothing outside itself, and saving to the library would.
-fn refuse_incognito(key: &str) -> Option<Response> {
-    if !super::chat::valid_key(key) {
-        return Some((StatusCode::BAD_REQUEST, "bad session key\n").into_response());
-    }
-    super::incognito::is_incognito_key(key).then(|| {
-        (
-            StatusCode::FORBIDDEN,
-            "an incognito chat cannot save to the library\n",
-        )
-            .into_response()
-    })
+/// Refuse a key that is not a session key at all.
+fn refuse_bad_key(key: &str) -> Option<Response> {
+    (!super::chat::valid_key(key))
+        .then(|| (StatusCode::BAD_REQUEST, "bad session key\n").into_response())
+}
+
+/// Whether a save lands locked. An incognito chat's always does, whatever
+/// the box said (`docs/INCOGNITO-DESIGN.md` R3, the owner's ruling of
+/// 2026-10-12): the character is the owner's to keep, hidden behind the
+/// library lock until unlocked, as `persona_propose` stages a persona from
+/// the same room. The page shows the box checked and fixed; this is the rule.
+fn save_locked(key: &str, asked: bool) -> bool {
+    asked || super::incognito::is_incognito_key(key)
 }
 
 /// GET /api/library/source?key&path — what the save dialog starts from: the
@@ -788,7 +788,7 @@ fn refuse_incognito(key: &str) -> Option<Response> {
 /// is locked — the lock box starts checked when one is (the owner's ruling:
 /// inherited by default, overridable).
 pub async fn source(State(state): St, Query(q): Query<SourceQuery>) -> Response {
-    if let Some(refusal) = refuse_incognito(&q.key) {
+    if let Some(refusal) = refuse_bad_key(&q.key) {
         return refusal;
     }
     let ws = match super::chat::attachment_workspace(&state, &q.key, false).await {
@@ -840,9 +840,17 @@ pub struct SaveBody {
 /// copied in now through the path jail (a chat's files are served only while
 /// it is open, so a pointer would not survive), the seed read from its
 /// manifest, and `mecha imagelib add-character` does the rest. The owner's
-/// own act, so the entry is approved on creation.
-pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
-    if let Some(refusal) = refuse_incognito(&body.key) {
+/// own act, so the entry is approved on creation — locked when it comes from
+/// an incognito chat ([`save_locked`]). Every answer is `no-store` (`source`
+/// marks its own answer the same way): the key rides in the body, so the
+/// middleware's incognito path needle never sees it, and a reply names the
+/// entry (INCOGNITO-DESIGN §8: `no-store` on every incognito route).
+pub async fn save(state: St, body: Json<SaveBody>) -> Response {
+    no_store(save_unmarked(state, body).await)
+}
+
+async fn save_unmarked(State(state): St, Json(body): Json<SaveBody>) -> Response {
+    if let Some(refusal) = refuse_bad_key(&body.key) {
         return refusal;
     }
     if imagelib::validate_name(&body.name).is_err() {
@@ -855,6 +863,10 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
     let ws = match super::chat::attachment_workspace(&state, &body.key, false).await {
         Ok(ws) => ws,
         Err(response) => return *response,
+    };
+    let scratch = match scratch_parent(&body.key, &ws) {
+        Ok(dir) => dir,
+        Err(why) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{why}\n")).into_response(),
     };
     let path = body.path.clone();
     enum Staged {
@@ -882,7 +894,7 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
             )))
         };
         match read() {
-            Ok(Some((bytes, seed))) => match tempdir::Dir::new()
+            Ok(Some((bytes, seed))) => match tempdir::Dir::new_in(&scratch)
                 .and_then(|d| std::fs::write(d.file(), &bytes).map(|_| d))
             {
                 Ok(dir) => Staged::Ready(dir, seed),
@@ -930,12 +942,34 @@ pub async fn save(State(state): St, Json(body): Json<SaveBody>) -> Response {
     if let Some(seed) = &seed {
         args.extend(["--seed", seed]);
     }
-    if body.locked {
+    if save_locked(&body.key, body.locked) {
         args.push("--locked");
     }
     let response = super::review::verb(&state, &args).await;
     drop(staged);
     response
+}
+
+/// Where a save stages its copy of the picture for the child. An incognito
+/// chat's goes in its room — beside the jail, never in it, and removed with
+/// the room — and only while the room is RAM: the host temp directory is
+/// commonly a disk (this machine's `/tmp` is ext4), where an unlinked copy
+/// stays recoverable after the room is gone, and R3's exception covers the
+/// library entry, not a scratch copy (review of #657, pass 3). A room that
+/// is not tmpfs refuses the save rather than falling through to the disk,
+/// as `incognito::images_forgettable` withholds `image_generate`. Any other
+/// chat stages in the host temp directory, as before.
+fn scratch_parent(key: &str, ws: &std::path::Path) -> Result<PathBuf, &'static str> {
+    if !super::incognito::is_incognito_key(key) {
+        return Ok(std::env::temp_dir());
+    }
+    let room = ws
+        .parent()
+        .ok_or("this incognito chat has no room to stage the picture in")?;
+    match super::incognito::is_tmpfs(room) {
+        Ok(true) => Ok(room.to_path_buf()),
+        _ => Err("this incognito chat's room is not in RAM, so the picture was not staged"),
+    }
 }
 
 /// A private scratch directory for one staged portrait, removed on drop.
@@ -946,7 +980,12 @@ mod tempdir {
 
     impl Dir {
         pub fn new() -> std::io::Result<Dir> {
-            let dir = std::env::temp_dir().join(format!("mecha-libsave-{}", uuid::Uuid::new_v4()));
+            Dir::new_in(&std::env::temp_dir())
+        }
+
+        /// One under `parent`, which must already exist.
+        pub fn new_in(parent: &Path) -> std::io::Result<Dir> {
+            let dir = parent.join(format!("mecha-libsave-{}", uuid::Uuid::new_v4()));
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
@@ -1567,9 +1606,51 @@ mod route_tests {
         );
     }
 
+    #[test]
+    fn an_incognito_save_is_locked_whatever_the_box_says() {
+        let incognito = "incognito-0123456789abcdef012345";
+        assert!(save_locked(incognito, false));
+        assert!(save_locked(incognito, true));
+        assert!(!save_locked("main", false));
+        assert!(save_locked("main", true));
+    }
+
+    #[test]
+    fn an_incognito_save_never_stages_on_the_host_temp_dir() {
+        let incognito = "incognito-0123456789abcdef012345";
+        assert_eq!(
+            scratch_parent("main", std::path::Path::new("/anywhere/main")),
+            Ok(std::env::temp_dir())
+        );
+        // A room wherever this machine's temp directory is: staged in it
+        // only when that is RAM, and refused — never the host temp
+        // directory — when it is not.
+        let room = std::env::temp_dir().join(format!("mecha-room-{}", uuid::Uuid::new_v4()));
+        let ws = room.join(incognito);
+        std::fs::create_dir_all(&ws).unwrap();
+        let got = scratch_parent(incognito, &ws);
+        match super::super::incognito::is_tmpfs(&room) {
+            Ok(true) => assert_eq!(got, Ok(room.clone())),
+            _ => assert!(got.is_err(), "{got:?}"),
+        }
+        assert_ne!(got, Ok(std::env::temp_dir()));
+        std::fs::remove_dir_all(&room).ok();
+        // And a room that is RAM stages in it, where one can be made.
+        let shm = std::path::Path::new("/dev/shm");
+        if super::super::incognito::is_tmpfs(shm).unwrap_or(false) {
+            let room = shm.join(format!("mecha-room-{}", uuid::Uuid::new_v4()));
+            let ws = room.join(incognito);
+            std::fs::create_dir_all(&ws).unwrap();
+            assert_eq!(scratch_parent(incognito, &ws), Ok(room.clone()));
+            std::fs::remove_dir_all(&room).ok();
+        }
+    }
+
     #[tokio::test]
-    async fn an_incognito_chat_cannot_save_or_look_up_a_source() {
-        let f = fixture();
+    async fn an_incognito_key_reaches_the_save_and_source_routes() {
+        // No such chat is open, so each answers as any unknown chat does —
+        // the point is that neither refuses the key for being incognito.
+        let f = fixture_with(Some(super::super::chat::test_chat()));
         let r = f
             .app
             .clone()
@@ -1580,7 +1661,32 @@ mod route_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            r.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "the key rides in the body, out of the middleware's sight"
+        );
+        let incognito_body = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        // The same answer an ordinary chat that is not open gets: unknown,
+        // never refused for being incognito.
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/save",
+                serde_json::json!({"key": "notopen", "path": "images/a.png",
+                                   "name": "x", "description": "y"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap(),
+            incognito_body
+        );
         let r = f
             .app
             .clone()
@@ -1589,7 +1695,14 @@ mod route_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = f
+            .app
+            .clone()
+            .oneshot(get("/api/library/source?key=..%2Fx&path=images/a.png"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

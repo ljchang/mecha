@@ -198,8 +198,10 @@ The rules, each a measurement:
 No tool description changes per turn; the library is never listed in the
 system prompt (the cached prefix). An incognito chat may call
 `image_library` and generate with a cast — both only read — and
-`image_library_propose` is withheld there, because it writes outside the
-room.
+`image_library_propose` stages there **locked** (`ToolCtx::stage_locked`;
+the owner's ruling, 2026-10-12, on `persona_propose`'s footing): the write
+outside the room is a candidate the owner keeps on purpose, hidden behind the
+lock until unlocked. *Until that ruling it was withheld there.*
 
 ## 5. Manifests
 
@@ -294,7 +296,11 @@ The decisions that are this design's rather than the owner's:
   jail now, stages it in a 0700 scratch directory, reads the seed from its
   manifest, and runs `add-character`. The lock box starts checked when the
   picture's manifest names a locked character (`GET /api/library/source`).
-  Both routes refuse an incognito key.
+  From an incognito chat the save is always locked — the box shows checked
+  and fixed, and `save_locked` locks it whatever the box sends (the owner's
+  ruling, 2026-10-12; until then both routes refused an incognito key). An
+  incognito save stages its scratch copy in the chat's RAM room, not the host
+  temp directory, and refuses where the room is not tmpfs.
 - **Add and edit from the tab (2026-09-29, the owner's ask).** An *Add
   character* tile takes an uploaded portrait, a name and a description; *Add
   style* takes a name and text; *Edit* on an approved entry takes a new
