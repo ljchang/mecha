@@ -124,7 +124,7 @@ impl Renderer {
 
     /// Draw the bundle in `bundle` and return the screenshot, cropped to the
     /// page's content. `scratch` is a directory the caller owns and removes.
-    pub fn render(&self, bundle: &Path, scratch: &Path) -> Result<Vec<u8>> {
+    pub fn render(&self, bundle: &Path, scratch: &Path) -> Result<Cropped> {
         let out = scratch.join("out");
         crate::create_private_dir(&out)?;
         let browser_dir = self
@@ -210,15 +210,6 @@ pub fn sandbox_args(browser_dir: &Path, bundle: &Path, out: &Path, mecha: &Path)
         "--ro-bind",
         "/usr",
         "/usr",
-        "--symlink",
-        "usr/lib",
-        "/lib",
-        "--symlink",
-        "usr/bin",
-        "/bin",
-        "--symlink",
-        "usr/sbin",
-        "/sbin",
         "--proc",
         "/proc",
         "--dev",
@@ -231,6 +222,22 @@ pub fn sandbox_args(browser_dir: &Path, bundle: &Path, out: &Path, mecha: &Path)
     .iter()
     .map(|s| s.to_string())
     .collect();
+    // The top-level system directories as this machine has them — each a
+    // symlink into /usr on a merged-/usr distribution, or a real directory —
+    // asked rather than assumed, as `Sandbox::bwrap_args` asks: x86-64's ELF
+    // interpreter is in /lib64, and a sandbox without it cannot exec this
+    // binary at all (review of #662).
+    for dir in ["/bin", "/sbin", "/lib", "/lib32", "/lib64"] {
+        match std::fs::symlink_metadata(dir) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if let Ok(target) = std::fs::read_link(dir) {
+                    a.extend(["--symlink".into(), s(&target), dir.into()]);
+                }
+            }
+            Ok(_) => a.extend(["--ro-bind".into(), dir.into(), dir.into()]),
+            Err(_) => {}
+        }
+    }
     // Fonts, so text renders as it does for the owner; skipped if absent.
     if Path::new("/etc/fonts").exists() {
         a.extend(["--ro-bind".into(), "/etc/fonts".into(), "/etc/fonts".into()]);
@@ -269,7 +276,7 @@ fn which(name: &str) -> Option<PathBuf> {
 /// Cut the empty background below the last panel, keeping a margin. The
 /// background is the bottom-left pixel; a row is content if any pixel in it
 /// differs from that.
-pub fn crop(png: &[u8]) -> Result<Vec<u8>> {
+pub fn crop(png: &[u8]) -> Result<Cropped> {
     let img = image::load_from_memory(png)
         .context("the screenshot is not a picture")?
         .to_rgba8();
@@ -288,7 +295,20 @@ pub fn crop(png: &[u8]) -> Result<Vec<u8>> {
     cropped
         .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
         .context("encoding the cropped screenshot")?;
-    Ok(out)
+    // Content in the last rows: the page ran past the viewport, and what is
+    // below it is not in the picture (review of #662).
+    Ok(Cropped {
+        png: out,
+        cut: last + 1 >= h,
+    })
+}
+
+/// A screenshot cropped to its content, and whether the page ran past the
+/// viewport — panels below it are not in the picture, and the model is told.
+#[derive(Debug, Clone)]
+pub struct Cropped {
+    pub png: Vec<u8>,
+    pub cut: bool,
 }
 
 // ---- inside the sandbox -------------------------------------------------

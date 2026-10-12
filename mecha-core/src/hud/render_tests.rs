@@ -22,6 +22,13 @@ fn the_sandbox_has_no_network_and_binds_only_its_four_paths() {
     let a = sandbox_args(&browser, &bundle, &out, &mecha);
     assert_eq!(a[0], "--unshare-all", "{a:?}");
     assert!(!a.iter().any(|x| x == "--share-net"), "{a:?}");
+    // The ELF interpreter's directory as this machine has it: /lib64 on
+    // x86-64, /lib on aarch64 (review of #662).
+    for dir in ["/lib", "/lib64"] {
+        if std::fs::symlink_metadata(dir).is_ok() {
+            assert!(a.iter().any(|x| x == dir), "{dir} is reachable: {a:?}");
+        }
+    }
     let allowed = [&browser, &bundle, &out, &mecha].map(|p| p.to_string_lossy().into_owned());
     let mut from_home = Vec::new();
     for (i, x) in a.iter().enumerate() {
@@ -56,9 +63,19 @@ fn a_screenshot_is_cropped_to_its_content() {
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .unwrap();
-    let cropped = image::load_from_memory(&crop(&png).unwrap()).unwrap();
+    let shot = crop(&png).unwrap();
+    assert!(!shot.cut);
+    let cropped = image::load_from_memory(&shot.png).unwrap();
     assert_eq!(cropped.height(), 50 + 24);
     assert_eq!(cropped.width(), 40);
+    // Content in the last row: the page ran past the viewport, and says so.
+    let mut tall = image::RgbaImage::from_pixel(40, 200, image::Rgba([240, 240, 240, 255]));
+    tall.put_pixel(20, 199, image::Rgba([10, 10, 10, 255]));
+    tall.put_pixel(0, 199, image::Rgba([240, 240, 240, 255]));
+    let mut png = Vec::new();
+    tall.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    assert!(crop(&png).unwrap().cut, "a page past the viewport is said");
 }
 
 fn get(port: u16, path: &str) -> String {
@@ -150,7 +167,7 @@ fn a_page_is_drawn_inside_the_sandbox() {
     )
     .unwrap();
     let png = match renderer.render(&bundle, &root) {
-        Ok(png) => png,
+        Ok(shot) => shot.png,
         Err(e) if !require => {
             eprintln!("skipped: the sandbox could not render here: {e:#}");
             let _ = std::fs::remove_dir_all(&root);
