@@ -73,7 +73,14 @@ async def transcribe(file: UploadFile = File(...), model: str = Form("parakeet")
         # as a gateway error rather than as "nothing was recorded". A
         # request with nothing in it is the caller's mistake, said so.
         raise HTTPException(status_code=400, detail="empty audio: the clip has no samples")
+    t0 = time.perf_counter()
     stream = recognizer.create_stream()
     stream.accept_waveform(rate, samples)
     recognizer.decode_stream(stream)
+    # The speed line `mecha system` reads (system/models.rs `fold_perf`), in
+    # the speech engine's shape. Numbers only: never the words.
+    ms = (time.perf_counter() - t0) * 1000.0
+    audio = samples.size / rate
+    print(f"[Perf] Total {ms:.1f} ms (audio {audio:.2f} s, RTF {ms / 1000.0 / audio:.3f})",
+          flush=True)
     return {"text": stream.result.text.strip()}

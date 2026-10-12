@@ -21,8 +21,9 @@ pub struct Args {
 pub enum Cmd {
     /// Record one minute of the host's load, by kind of work only, into
     /// ~/.mecha/system/series.sqlite — what `scripts/mecha-system-sample.timer`
-    /// runs each minute. No process, unit or model name is ever written; a
-    /// sample that cannot be read is refused and exits non-zero.
+    /// runs each minute. No process or unit name is ever written — the one
+    /// name is a model's, in its server's row (R6); a sample that cannot be
+    /// read is refused and exits non-zero.
     Sample {
         #[arg(long)]
         json: bool,
@@ -164,7 +165,11 @@ fn sample(json: bool) -> Result<()> {
     // `[messages] dir` and `[agent] timezone`, so the scans read what their
     // owners read; a config that does not load keeps the defaults.
     let cfg = mecha_core::config::Config::load_global().ok();
-    let recorded = system::record(&db, &system::collect(Utc::now(), since, cfg.as_ref())?)?;
+    let journal_since = system::journal_cursor(&db);
+    let recorded = system::record(
+        &db,
+        &system::collect(Utc::now(), since, journal_since, cfg.as_ref())?,
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&recorded)?);
     } else {
@@ -178,6 +183,29 @@ fn sample(json: bool) -> Result<()> {
                 format!("{:.2} GiB", m as f64 / 1073741824.0)
             });
             println!("  {:<17} {mem:>11}  cpu {pct}", c.category);
+        }
+        for m in &recorded.models {
+            let mem = m.mem_bytes.map_or("—".to_string(), |b| {
+                format!("{:.2} GiB", b as f64 / 1073741824.0)
+            });
+            let what = match (&m.model, m.running, m.model_known) {
+                (_, false, _) => "stopped".to_string(),
+                (Some(name), true, _) => name.clone(),
+                (None, true, true) => "running, no model loaded".to_string(),
+                (None, true, false) => "running, model unknown".to_string(),
+            };
+            let speed = [
+                m.prompt_tps.map(|t| format!("prompt {t:.0} tok/s")),
+                m.gen_tps.map(|t| format!("generation {t:.1} tok/s")),
+                m.rtf.map(|r| format!("RTF {r:.2}")),
+                m.job_secs.map(|s| format!("{s:.0} s/picture")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+            let line = format!("  {:<17} {mem:>11}  {what}  {speed}", m.kind);
+            println!("{}", line.trim_end());
         }
     }
     Ok(())

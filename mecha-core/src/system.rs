@@ -13,8 +13,9 @@
 //! loader, a spec or review — it is enforced by what is ever written down. The
 //! sampler aggregates at the moment of sampling into rows that hold only
 //! numbers and a [`Category`]; a unit name, a process name, a command line, a
-//! pid, a path or a model name never reaches the store, so nothing downstream
-//! can leak one. A unit this table does not know is [`Category::Other`],
+//! pid or a path never reaches the store, so nothing downstream can leak
+//! one. The one name the store holds is a *model's*, in [`models`]' rows —
+//! the owner's ruling of 2026-10-12 — and never the unit that runs it. A unit this table does not know is [`Category::Other`],
 //! summed and never itemised — a new service shows up as a bigger `Other`,
 //! which is the right failure. The test that pins it greps the database file
 //! itself for a unit name and expects nothing.
@@ -57,6 +58,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 pub mod floor;
 pub mod measure;
+pub mod models;
 pub mod source;
 
 pub use measure::{Measurement, Reader, Reading};
@@ -162,6 +164,12 @@ pub struct Sample {
     pub now: Vec<(Measurement, Reading)>,
     /// The cumulative counters the `Rate` measurements are differences of.
     pub counters: Counters,
+    /// Each model server's row (`models`): the one place a name — the
+    /// model's, never a unit's — is part of a sample.
+    pub models: Vec<models::ModelLoad>,
+    /// Whether the model rows' journal window was read; when it was not,
+    /// the cursor stays where it was ([`journal_cursor`]).
+    pub model_window_read: bool,
 }
 
 /// Cumulative counters, as read this minute. `Err(Reading::NotHere)` is a
@@ -268,6 +276,7 @@ fn reading_order() -> Vec<Measurement> {
 pub fn collect(
     at: DateTime<Utc>,
     since: Option<DateTime<Utc>>,
+    journal_since: Option<DateTime<Utc>>,
     cfg: Option<&crate::config::Config>,
 ) -> Result<Sample> {
     let reader = Reader::until(std::time::Instant::now() + SAMPLE_BUDGET).configured(cfg);
@@ -311,6 +320,15 @@ pub fn collect(
                 .collect::<Vec<_>>()
         });
 
+    // The kernel-log read before the model rows: the OOM counts are the
+    // older finding with readers, and the model rows' commands and connect
+    // must not spend the deadline it shares (#641's shape; review of #658).
+    let counters = read_counters(&reader, since);
+    let (models, model_window_read) =
+        models::collect(&units, gpu_apps.as_deref(), journal_since, at, cfg, || {
+            reader.budget()
+        });
+
     Ok(Sample {
         at,
         mem,
@@ -322,7 +340,9 @@ pub fn collect(
         disk: reader.disk(),
         by_category: fold(&units, gpu_apps.as_deref()),
         now,
-        counters: read_counters(&reader, since),
+        counters,
+        models,
+        model_window_read,
     })
 }
 
@@ -573,6 +593,14 @@ CREATE TABLE IF NOT EXISTS reading_minute (
 CREATE TABLE IF NOT EXISTS category_reading_minute (
   at TEXT NOT NULL, measurement INTEGER NOT NULL, category INTEGER NOT NULL, value REAL,
   PRIMARY KEY (at, measurement, category));
+CREATE TABLE IF NOT EXISTS model_kinds (id INTEGER PRIMARY KEY, label TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS model_minute (
+  at TEXT NOT NULL, kind INTEGER NOT NULL, model TEXT, model_known INTEGER NOT NULL,
+  running INTEGER NOT NULL,
+  mem_bytes INTEGER, cpu_pct REAL, gpu_mib INTEGER,
+  requests INTEGER, prompt_tokens INTEGER, gen_tokens INTEGER,
+  prompt_tps REAL, gen_tps REAL, rtf REAL, job_secs REAL,
+  PRIMARY KEY (at, kind));
 CREATE TABLE IF NOT EXISTS counter_state (
   key TEXT PRIMARY KEY, value INTEGER NOT NULL, ident INTEGER NOT NULL, at TEXT NOT NULL);
 ";
@@ -583,6 +611,26 @@ pub struct Recorded {
     pub at: String,
     pub cpu_pct: Option<f64>,
     pub by_category: Vec<CategoryRecorded>,
+    pub models: Vec<ModelRecorded>,
+}
+
+/// One model server's row, as written.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ModelRecorded {
+    pub kind: &'static str,
+    pub model: Option<String>,
+    pub model_known: bool,
+    pub running: bool,
+    pub mem_bytes: Option<u64>,
+    pub cpu_pct: Option<f64>,
+    pub gpu_mib: Option<u64>,
+    pub requests: Option<u64>,
+    pub prompt_tokens: Option<u64>,
+    pub gen_tokens: Option<u64>,
+    pub prompt_tps: Option<f64>,
+    pub gen_tps: Option<f64>,
+    pub rtf: Option<f64>,
+    pub job_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -763,10 +811,11 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
     )?;
 
     record_readings(&tx, s, &at, machine_pct)?;
+    let models = record_models(&tx, s, &at, unified)?;
 
     rollup(&tx, s.at)?;
     let cutoff = |days: i64| ts(s.at - Duration::days(days));
-    for table in ["reading_minute", "category_reading_minute"] {
+    for table in ["reading_minute", "category_reading_minute", "model_minute"] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE at < ?1"),
             params![cutoff(MINUTE_KEEP_DAYS)],
@@ -794,7 +843,93 @@ pub fn record(db: &Path, s: &Sample) -> Result<Recorded> {
         at,
         cpu_pct: machine_pct,
         by_category: shown,
+        models,
     })
+}
+
+/// Each model server's row for one minute. Memory follows the categories'
+/// rule — on unified memory a server's GPU allocations are added to its
+/// cgroup's, and unknown when the GPU did not answer — and CPU is a delta of
+/// the unit's counter, kept per kind in `counter_state`. A server whose log
+/// could not be read writes NULL in every speed column; one whose log says
+/// nothing happened writes zero requests and NULL rates.
+fn record_models(
+    tx: &rusqlite::Transaction<'_>,
+    s: &Sample,
+    at: &str,
+    unified: bool,
+) -> Result<Vec<ModelRecorded>> {
+    for k in models::ModelKind::ALL {
+        tx.execute(
+            "INSERT OR REPLACE INTO model_kinds (id, label) VALUES (?1, ?2)",
+            params![k as u8, k.label()],
+        )?;
+    }
+    // Where the next sample's journal window starts: this sample's own
+    // instant, which is where this one's ended (`journal_cursor`). Not
+    // moved when no row's journal was read, so the next sample reads the
+    // window this one lost rather than dropping its requests (still capped
+    // at ten minutes; review of #658).
+    if s.model_window_read {
+        tx.execute(
+            "INSERT OR REPLACE INTO counter_state (key, value, ident, at) VALUES (?1, ?2, 0, ?3)",
+            params![JOURNAL_CURSOR, s.at.timestamp_micros(), ts(s.at)],
+        )?;
+    }
+    let ncpu = s.cores.map(|n| n as f64);
+    let mut out = Vec::new();
+    for m in &s.models {
+        let mem = if unified {
+            m.gpu_mib.map(|g| m.mem_bytes + g * 1024 * 1024)
+        } else {
+            Some(m.mem_bytes)
+        };
+        let key = format!("model.cpu.{}", m.kind as u8);
+        let cpu_pct = delta(tx, &key, m.cpu_usec, 0, s.at)?
+            .zip(ncpu)
+            .map(|((usec, secs), n)| usec as f64 / (secs * 1e6 * n) * 100.0);
+        let p = m.perf;
+        tx.execute(
+            "INSERT OR REPLACE INTO model_minute (at, kind, model, model_known, running, mem_bytes,
+               cpu_pct, gpu_mib, requests, prompt_tokens, gen_tokens, prompt_tps, gen_tps, rtf,
+               job_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                at,
+                m.kind as u8,
+                m.model,
+                m.model_known,
+                m.running,
+                mem.map(|b| b as i64),
+                cpu_pct,
+                m.gpu_mib.map(|g| g as i64),
+                p.map(|p| p.requests as i64),
+                p.map(|p| p.prompt_tokens as i64),
+                p.map(|p| p.gen_tokens as i64),
+                p.and_then(|p| p.prompt_tps()),
+                p.and_then(|p| p.gen_tps()),
+                p.and_then(|p| p.rtf()),
+                p.and_then(|p| p.job_secs()),
+            ],
+        )?;
+        out.push(ModelRecorded {
+            kind: m.kind.label(),
+            model: m.model.clone(),
+            model_known: m.model_known,
+            running: m.running,
+            mem_bytes: mem,
+            cpu_pct,
+            gpu_mib: m.gpu_mib,
+            requests: p.map(|p| p.requests),
+            prompt_tokens: p.map(|p| p.prompt_tokens),
+            gen_tokens: p.map(|p| p.gen_tokens),
+            prompt_tps: p.and_then(|p| p.prompt_tps()),
+            gen_tps: p.and_then(|p| p.gen_tps()),
+            rtf: p.and_then(|p| p.rtf()),
+            job_secs: p.and_then(|p| p.job_secs()),
+        });
+    }
+    Ok(out)
 }
 
 /// The named measurements' rows for one minute: every `Now` reading as it
@@ -989,6 +1124,26 @@ pub fn last_sample_at(db: &Path) -> Option<DateTime<Utc>> {
     chrono::NaiveDateTime::parse_from_str(&at, "%Y-%m-%d %H:%M:%S")
         .ok()
         .map(|t| t.and_utc())
+}
+
+/// The `counter_state` key holding where the model rows' journal window
+/// ended, in microseconds.
+const JOURNAL_CURSOR: &str = "model.journal";
+
+/// Where the next sample's journal window starts: the previous sample's own
+/// instant, to the microsecond. Not [`last_sample_at`], which is stamped
+/// after the sample's reads and would leave the time they took in no window
+/// (review of #658). Read-only; `None` without a previous sample.
+pub fn journal_cursor(db: &Path) -> Option<DateTime<Utc>> {
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let micros: i64 = conn
+        .query_row(
+            "SELECT value FROM counter_state WHERE key = ?1",
+            params![JOURNAL_CURSOR],
+            |r| r.get(0),
+        )
+        .ok()?;
+    DateTime::from_timestamp_micros(micros)
 }
 
 /// What a probe found: one reading, or one per category.
